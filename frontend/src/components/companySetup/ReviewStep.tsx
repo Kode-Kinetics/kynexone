@@ -10,6 +10,8 @@ import {
 } from '../../lib/companySetupWizard';
 import { conflictNamesRow, draftValueLabel, isOpenBucket, reviewBucket, reviewCounts, savedInStep4, type ReviewBucket as Bucket } from './reviewModel';
 import { StructureTree } from './StructureTree';
+import { ReviewerReviewCheck } from './ReviewerReviewCheck';
+import { isReviewerWarning } from '../../lib/payReviewerCheck';
 import { Notice, useWizardForm } from './wizardForm';
 
 /**
@@ -275,10 +277,12 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
         </div>
       </div>
 
-      {plan.warnings.length > 0 && (
+      {visibleSteps.includes(8) && <ReviewerReviewCheck plan={plan} onGoToApprovers={() => onGoTo(8)} />}
+
+      {plan.warnings.filter(w => !(visibleSteps.includes(8) && isReviewerWarning(w.code))).length > 0 && (
         <Notice tone="warning" role="status">
           <p className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4 shrink-0" aria-hidden="true" />{t('Worth knowing. These do not stop you.')}</p>
-          <ul className="mt-1 list-disc space-y-1 ps-5">{plan.warnings.map((w, i) => <li key={i}>{problemText(w)}</li>)}</ul>
+          <ul className="mt-1 list-disc space-y-1 ps-5">{plan.warnings.filter(w => !(visibleSteps.includes(8) && isReviewerWarning(w.code))).map((w, i) => <li key={i}>{problemText(w)}</li>)}</ul>
         </Notice>
       )}
 

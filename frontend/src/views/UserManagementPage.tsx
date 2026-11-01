@@ -33,6 +33,7 @@ import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginD
 import { ResetTwoStepDialog } from '../components/access/ResetTwoStepDialog';
 import { ResetPasswordDialog } from '../components/access/ResetPasswordDialog';
 import { PayApprovalSetupCard } from '../components/access/PayApprovalSetupCard';
+import { ApprovalDeadEndCard } from '../components/dashboard/ApprovalDeadEndCard';
 import { UserRowActions, type UserRowAction } from '../components/access/UserRowActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useAppToast } from '../components/ui/AppToast';
@@ -309,6 +310,7 @@ export function UsersTab() {
 
   return (
     <div className="space-y-4">
+      <ApprovalDeadEndCard companyId={searchParams?.get('companyId') || selectedCompanyId} canManage={canManageUsers} onCreate={() => setShowCreate(true)} />
       {canManageUsers && <PayApprovalSetupCard companyId={searchParams?.get('companyId') || selectedCompanyId} revision={users} onCreate={() => setShowCreate(true)} />}
       {/* Subscription inactive banner */}
       {subscriptionBanner && (

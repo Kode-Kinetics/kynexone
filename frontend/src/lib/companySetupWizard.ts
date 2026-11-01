@@ -12,8 +12,16 @@ import type {
  * only stop Next on a `*` field and say, on that field, what to enter.
  */
 
-export type StepId = 1 | 2 | 3 | 4 | 5 | 6 | 7;
-export const STEP_IDS: StepId[] = [1, 2, 3, 4, 5, 6, 7];
+/**
+ * Step 8 (Approvers) sits between 6 and 7 in the journey. Ids 1-7 keep their meaning because the server stores a draft's
+ * step as 1-7 and names the pay reviewer's problems at step 6; only the order below says where each step falls.
+ */
+export type StepId = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export const STEP_IDS: StepId[] = [1, 2, 3, 4, 5, 6, 8, 7];
+/** Position of a step in the journey, for "has the reader got this far" comparisons. */
+export const stepOrder = (step: StepId): number => STEP_IDS.indexOf(step);
+/** The step number a draft stores: the Approvers step is saved as the administrator step it follows. */
+export const serverStep = (step: StepId): number => (step === 8 ? 6 : step);
 
 export const WIZARD_STEPS: Record<StepId, { title: string; description: string }> = {
   1: { title: msg('Start'), description: msg('Plan, drafts and starting point') },
@@ -23,6 +31,7 @@ export const WIZARD_STEPS: Record<StepId, { title: string; description: string }
   5: { title: msg('Work & pay rules'), description: msg('Week, holidays, leave, numbering') },
   6: { title: msg('Company super admin'), description: msg('Who runs this company') },
   7: { title: msg('Review & create'), description: msg('Check the plan, then create') },
+  8: { title: msg('Approvers'), description: msg('Who reviews pay, apart from the administrator') },
 };
 
 /**
@@ -290,7 +299,7 @@ export const AREA_STEP: Record<PlanArea, StepId> = {
   branch: 3, location: 3,
   costCentre: 4, department: 4, designation: 4, grade: 4,
   employeeIdRule: 5, holidayCalendar: 5, leavePolicy: 5, gccSetting: 5, workWeek: 5,
-  companyAdmin: 6,
+  companyAdmin: 6, payReviewer: 8,
 };
 
 export const AREA_LABEL: Record<PlanArea, string> = {
@@ -298,7 +307,7 @@ export const AREA_LABEL: Record<PlanArea, string> = {
   branch: msg('Branch'), location: msg('Location'),
   costCentre: msg('Cost centre'), department: msg('Department'), designation: msg('Designation'), grade: msg('Grade'),
   employeeIdRule: msg('Employee numbering'), holidayCalendar: msg('Holiday calendar'), leavePolicy: msg('Leave policy'),
-  gccSetting: msg('End-of-service settings'), workWeek: msg('Working week'), companyAdmin: msg('Company super admin'),
+  gccSetting: msg('End-of-service settings'), workWeek: msg('Working week'), companyAdmin: msg('Company super admin'), payReviewer: msg('Independent pay reviewer'),
 };
 
 export interface FieldError { field: string; message: string; params?: MessageParams }
@@ -339,6 +348,7 @@ export function emptyBody(countryCode = ''): CompanySetupDraftBody {
       employeeNumbering: { prefix: 'EMP', useCountryPrefix: false, useBranchPrefix: false, useDepartmentPrefix: false, useYear: false, paddingLength: 4, nextSequence: 1 },
     },
     companyAdmin: { mode: 'groupOnly' },
+    payReviewer: { mode: 'groupOnly' },
   };
 }
 
@@ -551,6 +561,39 @@ function validateStepRaw(step: StepId, { body, context, adminStepVisible = true 
     }
     case 7:
       break;
+    case 8: {
+      // The Approvers step goes with the administrator step: whoever may not appoint an administrator does not see it.
+      if (!adminStepVisible) break;
+      errors.push(...payReviewerErrors(body, c.emailDomain));
+      break;
+    }
+  }
+  return errors;
+}
+
+/** The Approvers step's blockers: the reviewer must be a real, different person on a company address. */
+export function payReviewerErrors(body: CompanySetupDraftBody, emailDomain?: string | null): FieldError[] {
+  const errors: FieldError[] = [];
+  const r = body.payReviewer;
+  if (!r) return errors;
+  const admin = body.companyAdmin;
+  const same = msg('The reviewer must be a different person from the administrator.');
+  if (r.mode === 'invite') {
+    if (blank(r.fullNameEn)) errors.push({ field: 'payReviewer.fullNameEn', message: msg('Enter the pay reviewer’s full name in English.') });
+    const email = (r.email ?? '').trim();
+    const domain = (emailDomain ?? '').trim().toLowerCase();
+    if (!email) errors.push({ field: 'payReviewer.email', message: msg('Enter the pay reviewer’s official work email.') });
+    else if (!EMAIL.test(email)) errors.push({ field: 'payReviewer.email', message: msg('Enter a full email address, such as name@company.sa.') });
+    else if (domain && !email.toLowerCase().endsWith(`@${domain}`))
+      errors.push({ field: 'payReviewer.email', message: msg('Use an address on {domain}. KynexOne never creates mailboxes, so the pay reviewer signs in with their company email.'), params: { domain } });
+    else if (PUBLIC_EMAIL_DOMAINS.has(email.toLowerCase().split('@')[1] ?? ''))
+      errors.push({ field: 'payReviewer.email', message: msg('{domain} is a public email service. Use the person’s company email; KynexOne never creates mailboxes.'), params: { domain: email.toLowerCase().split('@')[1] } });
+    else if (admin.mode === 'invite' && email.toLowerCase() === (admin.email ?? '').trim().toLowerCase())
+      errors.push({ field: 'payReviewer.email', message: same });
+  }
+  if (r.mode === 'existing') {
+    if (blank(r.existingUserId)) errors.push({ field: 'payReviewer.existingUserId', message: msg('Choose the user who will be the pay reviewer.') });
+    else if (admin.mode === 'existing' && r.existingUserId === admin.existingUserId) errors.push({ field: 'payReviewer.existingUserId', message: same });
   }
   return errors;
 }
@@ -563,6 +606,8 @@ export function stepWarnings(step: StepId, input: ValidationInput): FieldError[]
     warnings.push({ field: 'company.legalNameAr', message: msg('The Arabic legal name has no Arabic letters. Enter the name as it is written on the commercial registration.') });
   if (step === 3 && body.branches.length > 0 && body.branches.every(b => b.locations.length === 0))
     warnings.push({ field: 'locations', message: msg('No locations yet. Until you add one, employees can punch in at any geofenced site in the workspace. Add a location to each branch, or add them later in Setup → Locations.') });
+  if (step === 8 && !body.existingCompanyId && input.adminStepVisible !== false && (!body.payReviewer || body.payReviewer.mode === 'groupOnly'))
+    warnings.push({ field: 'payReviewer.mode', message: msg('No pay reviewer yet. Pay entered here cannot be approved until a different person with Finance Approver access is added.') });
   return warnings;
 }
 
@@ -609,6 +654,15 @@ export function problemsByField(problems: readonly Problem[]): Map<string, Probl
   const map = new Map<string, Problem>();
   for (const p of problems) map.set(normalizeFieldPath(p.field), p);
   return map;
+}
+
+/**
+ * The server names the pay reviewer's problems at step 6 (it follows the administrator in its numbering); on screen they
+ * belong to the Approvers step.
+ */
+export function withScreenSteps<T extends { problems: Problem[]; warnings: Problem[] }>(plan: T): T {
+  const fix = (p: Problem): Problem => (normalizeFieldPath(p.field).startsWith('payReviewer') ? { ...p, step: 8 } : p);
+  return { ...plan, problems: plan.problems.map(fix), warnings: plan.warnings.map(fix) };
 }
 
 export interface PlanGroup { step: StepId; items: PlanItem[]; conflicts: number }
@@ -753,6 +807,7 @@ export function positionOfField(field: string | null | undefined, fallbackStep: 
   if (f.startsWith('branches') || f === 'locations') return { step: 3 };
   if (f.startsWith('rules.')) return { step: 5, part: 'workRules' };
   if (f.startsWith('companyAdmin')) return { step: 6 };
+  if (f.startsWith('payReviewer')) return { step: 8 };
   return { step: fallbackStep };
 }
 
