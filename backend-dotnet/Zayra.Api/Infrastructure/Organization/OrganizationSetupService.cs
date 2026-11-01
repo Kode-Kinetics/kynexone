@@ -787,7 +787,17 @@ public class OrganizationSetupService : IOrganizationSetupService
     public async Task<bool> DeleteDepartmentAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
     {
         await EnsureDepartmentNotInUseAsync(tenantId, id, cancellationToken);
-        return await SoftDelete(_db.Departments, tenantId, id, "organization.department_deleted", context, cancellationToken);
+        var department = await _db.Departments.FindAsync([id], cancellationToken);
+        if (department is null || department.TenantId != tenantId) return false;
+        var before = DepartmentSnapshot(department);
+        department.IsDeleted = true;
+        department.DeletedAtUtc = DateTime.UtcNow;
+        department.DeletedBy = context.UserId;
+        // Staged with the delete so a crash between the two cannot leave an unaudited delete, and carrying the before/after snapshot.
+        _audit.Stage("organization.department_deleted", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
+            DepartmentAuditJson(before, department, null), department.CompanyId);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     /// <summary>A department that people, positions, designations or child departments still point at cannot be

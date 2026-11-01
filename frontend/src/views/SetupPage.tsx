@@ -851,6 +851,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
               {costCenters.filter((c) => !form.companyId || c.companyId === form.companyId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </FormField>
+          <FormField label={t('Parent department')}>
+            <select value={form.parentDepartmentId ?? ''} onChange={(e) => f('parentDepartmentId', e.target.value || undefined)} className="select w-full">
+              <option value="">{t('None')}</option>
+              {items.filter((d) => d.id !== editing?.id && (!form.companyId || d.companyId === form.companyId)).map((d) => <option key={d.id} value={d.id}>{d.nameEn}</option>)}
+            </select>
+          </FormField>
           <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
               <option value="true">{t('Active')}</option>
