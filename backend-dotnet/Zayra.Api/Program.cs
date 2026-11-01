@@ -339,6 +339,7 @@ builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuar
     sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor, Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndMonitor>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();

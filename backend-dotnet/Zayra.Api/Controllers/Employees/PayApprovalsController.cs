@@ -71,7 +71,7 @@ public sealed class PayApprovalsController : ControllerBase
             if (!scope.CanAccessCompany(e.CompanyId) || IsInPost(e)) continue;
             // The same conditions that block activation, not only an open gap row: a package can be unapproved through a path
             // that never opened one, and it must still reach a reviewer.
-            if (!await NeedsApprovalAsync(tenantId, e, ct)) continue;
+            if (!await CompensationApprovalGate.NeedsApprovalAsync(_db, tenantId, e, ct)) continue;
             if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, e, caller.Value, ct)) { requiresOtherReviewerCount++; continue; }
             if (items.Count >= MaxListed) { hasMore = true; continue; }
             var view = await BuildAsync(tenantId, e, ct);
@@ -105,7 +105,7 @@ public sealed class PayApprovalsController : ControllerBase
         if (!await ScopedBypass.TenantWide(_db.Companies, tenantId, "Pay approval setup: validate the already scope-checked company.")
                 .AnyAsync(c => c.Id == companyId && c.IsActive && !c.IsDeleted, ct)) return NotFound();
         var operators = await PayApprovalRouting.UsableOperatorsAsync(_db, tenantId, companyId, ct,
-            HttpContext.RequestServices.GetService<IConfiguration>());
+            HttpContext.RequestServices?.GetService<IConfiguration>());
         var reviewers = operators.Where(o => o.CanApprovePay).ToArray();
         var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
                 "Pay approval setup: pending employees for the explicitly scope-checked company.").AsNoTracking()
@@ -116,7 +116,7 @@ public sealed class PayApprovalsController : ControllerBase
             .OrderBy(e => e.Id).ToListAsync(ct);
         var pending = new List<Employee>();
         foreach (var candidate in employees)
-            if (await NeedsApprovalAsync(tenantId, candidate, ct)) pending.Add(candidate);
+            if (await CompensationApprovalGate.NeedsApprovalAsync(_db, tenantId, candidate, ct)) pending.Add(candidate);
         var items = new List<object>();
         var strandedCount = 0;
         // Bounded diagnostic: ordinary queues remain usable for larger imports.
@@ -129,6 +129,7 @@ public sealed class PayApprovalsController : ControllerBase
             if (eligible.Count == 0) strandedCount++;
             items.Add(new { employeeId = employee.Id, name = DisplayName(employee), eligibleReviewers = eligible });
         }
+        await SyncDeadEndsAsync(tenantId, companyId, "setup_view", ct);
         return Ok(new {
             independentReviewerCount = reviewers.Count(r => r.Id != caller.Value),
             readyForNewHires = operators.Any(w => w.CanEnterPay && reviewers.Any(r => r.Id != w.Id)),
@@ -147,7 +148,7 @@ public sealed class PayApprovalsController : ControllerBase
         var caller = GetUserId();
         var employee = await FindInScopeAsync(tenantId, employeeId, ct);
         if (employee is null || caller is null) return NotFound();
-        if (!await NeedsApprovalAsync(tenantId, employee, ct)) return NotPending();
+        if (!await CompensationApprovalGate.NeedsApprovalAsync(_db, tenantId, employee, ct)) return NotPending();
         if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, employee, caller.Value, ct)) return SecondPersonRequired();
         var v = await BuildAsync(tenantId, employee, ct);
         var p = v.Package;
@@ -179,7 +180,7 @@ public sealed class PayApprovalsController : ControllerBase
         var caller = GetUserId();
         var employee = await FindInScopeAsync(tenantId, employeeId, ct);
         if (employee is null || caller is null) return NotFound();
-        if (!await NeedsApprovalAsync(tenantId, employee, ct)) return NotPending();
+        if (!await CompensationApprovalGate.NeedsApprovalAsync(_db, tenantId, employee, ct)) return NotPending();
         if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, employee, caller.Value, ct)) return SecondPersonRequired();
 
         var decision = body.Decision?.Trim().ToLowerInvariant();
@@ -216,6 +217,7 @@ public sealed class PayApprovalsController : ControllerBase
             await _db.SaveChangesAsync(ct);
             await _audit.WriteAsync(RejectedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(meta), ct);
             await RefreshReadinessAsync(tenantId, employee.Id, ct);
+            await SyncDeadEndsAsync(tenantId, employee.CompanyId, "decision", ct);
             return Ok(new { decision = "rejected" });
         }
 
@@ -238,7 +240,19 @@ public sealed class PayApprovalsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync(CompensationApprovalGate.ApprovedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(meta), ct);
         await RefreshReadinessAsync(tenantId, employee.Id, ct);
+        await SyncDeadEndsAsync(tenantId, employee.CompanyId, "decision", ct);
         return Ok(new { decision = "approved" });
+    }
+
+    /// <summary>Keeps the company's "no eligible reviewer" notice current. Read-only toward the approval; never throws.</summary>
+    private async Task SyncDeadEndsAsync(Guid tenantId, Guid? companyId, string trigger, CancellationToken ct)
+    {
+        if (companyId is not Guid company) return;
+        var services = HttpContext.RequestServices;
+        var monitor = services?.GetService<IPayApprovalDeadEndMonitor>();
+        if (monitor is not null) { await monitor.SyncCompanyAsync(tenantId, company, trigger, ct); return; }
+        await PayApprovalDeadEnds.SyncTaskAsync(_db, tenantId, company, GetUserId(), trigger, Context(tenantId), null, ct,
+            services?.GetService<IConfiguration>());
     }
 
     private async Task RefreshReadinessAsync(Guid tenantId, int employeeId, CancellationToken ct)
@@ -337,13 +351,6 @@ public sealed class PayApprovalsController : ControllerBase
 
     // ── rules ────────────────────────────────────────────────────────────────────────────────────
     private static bool IsInPost(Employee e) => Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(e.Status);
-
-    /// <summary>A pending package: a hire not yet in post whose stored figures are not the approved ones.</summary>
-    private async Task<bool> NeedsApprovalAsync(Guid tenantId, Employee employee, CancellationToken ct) =>
-        !IsInPost(employee)
-        && (await CompensationApprovalGate.IsOpenAsync(_db, tenantId, employee.Id, ct)
-            || await CompensationApprovalGate.HasDriftedFromApprovalAsync(_db, tenantId, employee.Id, ct)
-            || await CompensationApprovalGate.CarriesUnapprovedPayAsync(_db, tenantId, employee.Id, ct));
 
     /// <summary>An opaque, per-employee token for a pay fingerprint: it identifies the reviewed package but is not the stored hash.</summary>
     internal static string Token(Guid tenantId, int employeeId, string fingerprint) =>
