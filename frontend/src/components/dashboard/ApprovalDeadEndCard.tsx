@@ -28,7 +28,7 @@ export function ApprovalDeadEndCard({ companyId, canManage, onCreate }: {
 }) {
   const t = useT();
   const target = canManage ? companyId : null;
-  const { data, loading, error, reload } = usePayApprovalSetup(target);
+  const { data, loading, error, reload } = usePayApprovalSetup(target, undefined, { refreshOnFocus: false });
   const [open, setOpen] = useState(false);
   const listId = useId();
   const view = deadEndView({ companyId: target, setup: data, loading, error });

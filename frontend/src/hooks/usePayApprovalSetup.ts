@@ -14,10 +14,14 @@ export interface PayApprovalSetupState {
 
 /**
  * Who can review pay for one company (GET /api/pay-approvals/setup). Reloads when `revision` changes, on demand, and when
- * the window regains focus: the person usually leaves to finish a sign-in and comes back. A failed or malformed reply
+ * the window regains focus (unless `refreshOnFocus` is false: a passive card on a busy page must not fetch on every tab switch): the
+ * person usually leaves to finish a sign-in and comes back. A failed or malformed reply
  * is `error`, never an empty "ready" answer.
  */
-export function usePayApprovalSetup(companyId: string | null, revision?: unknown): PayApprovalSetupState {
+export function usePayApprovalSetup(
+  companyId: string | null, revision?: unknown, options?: { refreshOnFocus?: boolean },
+): PayApprovalSetupState {
+  const refreshOnFocus = options?.refreshOnFocus ?? true;
   const [data, setData] = useState<PayApprovalSetup | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -34,9 +38,10 @@ export function usePayApprovalSetup(companyId: string | null, revision?: unknown
     return () => { current = false; };
   }, [companyId, revision, refresh]);
   useEffect(() => {
+    if (!refreshOnFocus) return;
     window.addEventListener('focus', reload);
     return () => window.removeEventListener('focus', reload);
-  }, [reload]);
+  }, [reload, refreshOnFocus]);
   return { data, loading, error, reload };
 }
 

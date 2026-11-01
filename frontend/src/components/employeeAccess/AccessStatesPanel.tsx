@@ -12,6 +12,10 @@ const EMPLOYEE_CHIP: Record<EmployeeRowState, { label: string; tone: AccessTone;
   not_active: { label: 'Not active yet', tone: 'slate', icon: <Circle className={ICON} aria-hidden="true" /> },
   awaiting_pay_approval: { label: 'Awaiting pay approval', tone: 'amber', icon: <Clock className={ICON} aria-hidden="true" /> },
   active: { label: 'Active', tone: 'emerald', icon: <CheckCircle2 className={ICON} aria-hidden="true" /> },
+  suspended: { label: 'Employment suspended', tone: 'amber', icon: <Ban className={ICON} aria-hidden="true" /> },
+  offboarded: { label: 'Offboarding in progress', tone: 'amber', icon: <Clock className={ICON} aria-hidden="true" /> },
+  ended: { label: 'Employment ended', tone: 'slate', icon: <Circle className={ICON} aria-hidden="true" /> },
+  inactive: { label: 'Employee inactive', tone: 'slate', icon: <Circle className={ICON} aria-hidden="true" /> },
 };
 const LOGIN_CHIP: Record<LoginRowState, { label: string; tone: AccessTone; icon: ReactNode }> = {
   no_login: { label: 'No login yet', tone: 'slate', icon: <Circle className={ICON} aria-hidden="true" /> },
@@ -77,6 +81,7 @@ export function AccessStatesPanel({
 
   // A: who decides activation is employees.approve; the button waits for the server's own blockers.
   const activateNext = states.employee === 'active' ? 'Nothing to do.'
+    : ['suspended', 'offboarded', 'ended', 'inactive'].includes(states.employee) ? 'Change the employment status from the employee record.'
     : !activation.allowed ? 'Ask an HR approver to activate.'
       : activation.loading ? 'Loading readiness…'
         : activation.unavailable ? 'Readiness could not be checked.'

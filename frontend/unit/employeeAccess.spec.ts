@@ -221,3 +221,23 @@ test('the three-state copy exists in English and Arabic', async () => {
     expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
   }
 });
+
+test('a suspended, offboarded, terminated or inactive person is never "not active yet"', () => {
+  const expected: Record<string, string> = {
+    Suspended: 'suspended', Offboarded: 'offboarded', Terminated: 'ended', Exited: 'ended', Archived: 'ended', Inactive: 'inactive',
+  };
+  for (const [status, row] of Object.entries(expected)) {
+    expect(deriveThreeStates(person(status), { state: 'not_started' }, null).employee, status).toBe(row);
+    // A leftover pay blocker does not turn a person who left into a hire awaiting pay approval.
+    expect(deriveThreeStates(person(status), { state: 'not_started' }, PAY).employee, status).toBe(row);
+  }
+  expect(deriveThreeStates(person('suspended'), null, null).employee).toBe('suspended');
+  expect(deriveThreeStates(person('Draft'), null, null).employee).toBe('not_active');
+  expect(deriveThreeStates(person('Invited'), null, PAY).employee).toBe('awaiting_pay_approval');
+});
+
+test('the labels for people on hold or gone read in Arabic', () => {
+  for (const key of ['Employment suspended', 'Offboarding in progress', 'Employment ended', 'Employee inactive', 'Change the employment status from the employee record.']) {
+    expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
+  }
+});

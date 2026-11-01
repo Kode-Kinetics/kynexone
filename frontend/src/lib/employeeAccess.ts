@@ -265,7 +265,12 @@ export const BLOCKED_REASON_KEYS: Record<string, string> = {
  * `passwordConfigured`). When both are present they decide the login and password rows; an older
  * API without them falls back to deriving the rows from the merged `state`, which is less precise.
  */
-export type EmployeeRowState = 'not_active' | 'awaiting_pay_approval' | 'active';
+export type EmployeeRowState = 'not_active' | 'awaiting_pay_approval' | 'active' | 'suspended' | 'offboarded' | 'ended' | 'inactive';
+
+/** Statuses of a person who was in post and no longer is (or is on hold): never "not active yet", which means a hire still to start. */
+const LEFT_OR_HELD: Readonly<Record<string, EmployeeRowState>> = {
+  suspended: 'suspended', offboarded: 'offboarded', terminated: 'ended', exited: 'ended', archived: 'ended', inactive: 'inactive',
+};
 export type LoginRowState = 'no_login' | 'login_enabled' | 'access_stopped';
 export type PasswordRowState = 'not_set_up' | 'code_given' | 'password_set' | 'unknown';
 
@@ -286,8 +291,9 @@ export function deriveThreeStates(
   readiness: { blocking: ReadonlyArray<{ key: string }> } | null,
 ): ThreeStates {
   const emp: EmployeeRowState = employee.status === 'Active' ? 'active'
-    : readiness?.blocking.some((item) => item.key === PAY_GAP_KEY) ? 'awaiting_pay_approval'
-      : 'not_active';
+    : LEFT_OR_HELD[(employee.status ?? '').trim().toLowerCase()]
+    ?? (readiness?.blocking.some((item) => item.key === PAY_GAP_KEY) ? 'awaiting_pay_approval'
+      : 'not_active');
   const email = (access?.workEmail ?? employee.workEmail ?? '').trim();
   const needsWorkEmail = !email || access?.state === 'waiting_for_work_email';
   if (!access) return { employee: emp, login: null, password: null, needsWorkEmail, newCodeLive: false };
