@@ -96,7 +96,11 @@ public class DepartmentsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        try
+        {
+            return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (InvalidOperationException ex) { return Conflict(OrganizationRuleException.Payload(ex)); }
     }
 
     // ── Export ────────────────────────────────────────────────────────────────
@@ -350,9 +354,10 @@ public class DepartmentsController : ControllerBase
             CostCenterId: row.ClearCostCenter ? null : string.IsNullOrWhiteSpace(row.CostCenterCode) ? existing?.CostCenterId : costCentersByCode[OrgCodes.Normalize(row.CostCenterCode)],
             Code: row.Code,
             NameEn: row.NameEn,
-            NameAr: row.NameAr,
-            ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[OrgCodes.Normalize(row.ManagerCode)],
-            IsActive: row.IsActive,
+            NameAr: string.IsNullOrWhiteSpace(row.NameAr) ? existing?.NameAr : row.NameAr,
+            // A blank cell keeps what the department already has (like the parent and cost-centre links): a trimmed file must not wipe managers, Arabic names or reactivate inactive rows.
+            ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? existing?.ManagerEmployeeId : empByCode[OrgCodes.Normalize(row.ManagerCode)],
+            IsActive: row.IsActive ?? existing?.IsActive ?? true,
             CompanyId: companyId,
             Reason: row.ClearParent || row.ClearCostCenter ? reason : null);
 
@@ -394,14 +399,14 @@ public class DepartmentsController : ControllerBase
                 ParentCode: IsClearToken(parentRaw) ? string.Empty : parentRaw,
                 ManagerCode: row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim(),
                 CostCenterCode: IsClearToken(costCentreRaw) ? string.Empty : costCentreRaw,
-                IsActive: !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                IsActive: row.TryGetValue("IsActive", out var activeVal) && !string.IsNullOrWhiteSpace(activeVal) ? !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase) : null,
                 ClearParent: IsClearToken(parentRaw),
                 ClearCostCenter: IsClearToken(costCentreRaw));
 
             if (string.IsNullOrWhiteSpace(importRow.Code)) importRow.Errors.Add("Code is required");
-            else if (importRow.Code.Length > 20) importRow.Errors.Add("Code must be at most 20 characters");
+            else if (importRow.Code.Length > 40) importRow.Errors.Add("Code must be at most 40 characters");
             if (string.IsNullOrWhiteSpace(importRow.NameEn)) importRow.Errors.Add("NameEn is required");
-            else if (importRow.NameEn.Length > 100) importRow.Errors.Add("NameEn must be at most 100 characters");
+            else if (importRow.NameEn.Length > 180) importRow.Errors.Add("NameEn must be at most 180 characters");
 
             if (!string.IsNullOrWhiteSpace(importRow.Code) && !seenCodes.Add(importRow.Code))
                 importRow.Errors.Add($"Duplicate Code '{importRow.Code}' within this batch");
@@ -499,7 +504,7 @@ public class DepartmentsController : ControllerBase
         string ParentCode,
         string ManagerCode,
         string CostCenterCode,
-        bool IsActive,
+        bool? IsActive,
         bool ClearParent = false,
         bool ClearCostCenter = false)
     {

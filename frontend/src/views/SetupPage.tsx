@@ -742,7 +742,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await departmentsApi.listAll()); } catch { /**/ }
+    try { setItems(await departmentsApi.listAll()); } catch (e) { notifyApiError(e); }
     finally { setLoading(false); }
   }, []);
 
@@ -779,7 +779,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       <TableShell
-        columns={[msg('Code'), msg('Name'), msg('Company'), msg('Status')]}
+        columns={[msg('Code'), msg('Name'), msg('Company'), msg('Cost Center'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Department')}
         loading={loading}
@@ -802,6 +802,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-slate-400">{d.code}</td>
             <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{d.nameEn}</td>
             <td className="px-4 py-3"><CompanyCell name={org.nameOf(d.companyId)} /></td>
+            <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{costCenters.find((c) => c.id === d.costCenterId)?.name ?? '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
               <div className="flex items-center gap-1">
@@ -848,6 +849,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
               <option value="">{t('None')}</option>
               {costCenters.filter((c) => !form.companyId || c.companyId === form.companyId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </FormField>
+          <FormField label={t('Parent department')}>
+            <select value={form.parentDepartmentId ?? ''} onChange={(e) => f('parentDepartmentId', e.target.value || undefined)} className="select w-full">
+              <option value="">{t('None')}</option>
+              {items.filter((d) => d.id !== editing?.id && (!form.companyId || d.companyId === form.companyId)).map((d) => <option key={d.id} value={d.id}>{d.nameEn}</option>)}
             </select>
           </FormField>
           <FormField label={t('Status')}>

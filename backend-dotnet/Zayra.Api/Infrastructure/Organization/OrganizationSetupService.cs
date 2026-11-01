@@ -784,7 +784,39 @@ public class OrganizationSetupService : IOrganizationSetupService
         return deleted;
     }
     public Task<bool> DeleteBranchAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Branches, tenantId, id, "organization.branch_deleted", context, cancellationToken);
-    public Task<bool> DeleteDepartmentAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Departments, tenantId, id, "organization.department_deleted", context, cancellationToken);
+    public async Task<bool> DeleteDepartmentAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken)
+    {
+        await EnsureDepartmentNotInUseAsync(tenantId, id, cancellationToken);
+        var department = await _db.Departments.FindAsync([id], cancellationToken);
+        if (department is null || department.TenantId != tenantId) return false;
+        var before = DepartmentSnapshot(department);
+        department.IsDeleted = true;
+        department.DeletedAtUtc = DateTime.UtcNow;
+        department.DeletedBy = context.UserId;
+        // Staged with the delete so a crash between the two cannot leave an unaudited delete, and carrying the before/after snapshot.
+        _audit.Stage("organization.department_deleted", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
+            DepartmentAuditJson(before, department, null), department.CompanyId);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>A department that people, positions, designations or child departments still point at cannot be
+    /// deleted: soft-deleting it would orphan them (children vanish from the tree, employees keep a dead link).
+    /// Deactivate it instead, or move the references first.</summary>
+    private async Task EnsureDepartmentNotInUseAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
+    {
+        var children = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).CountAsync(x => x.ParentDepartmentId == id && !x.IsDeleted, cancellationToken);
+        var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, OrgScopeJustification).CountAsync(x => x.DepartmentId == id && !x.IsDeleted, cancellationToken);
+        var positions = await ScopedBypass.TenantWide(_db.Positions, tenantId, OrgScopeJustification).CountAsync(x => x.DepartmentId == id && !x.IsDeleted, cancellationToken);
+        var designations = await ScopedBypass.TenantWide(_db.Designations, tenantId, OrgScopeJustification).CountAsync(x => x.DepartmentId == id && !x.IsDeleted, cancellationToken);
+        if (children + employees + positions + designations == 0) return;
+        var parts = new List<string>();
+        if (employees > 0) parts.Add($"{employees} employee(s)");
+        if (children > 0) parts.Add($"{children} child department(s)");
+        if (positions > 0) parts.Add($"{positions} position(s)");
+        if (designations > 0) parts.Add($"{designations} designation(s)");
+        throw new InvalidOperationException($"This department is still in use by {string.Join(", ", parts)}. Move them to another department or deactivate this one instead of deleting it.");
+    }
     public Task<bool> DeleteDesignationAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Designations, tenantId, id, "organization.designation_deleted", context, cancellationToken);
     public Task<bool> DeleteGradeAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Grades, tenantId, id, "organization.grade_deleted", context, cancellationToken);
 
@@ -1138,6 +1170,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         // company the caller cannot see still counts — the unique index would refuse it anyway.
         var exists = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
         if (exists) throw new InvalidOperationException("Department code already exists in this company.");
+        // The unique index still counts soft-deleted rows, so a code held by a deleted department must be refused here
+        // with a clear message rather than surface as a database error (a 500) on save.
+        var heldByDeleted = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification).AnyAsync(x => x.CompanyId == companyId && x.IsDeleted && x.Code.ToUpper() == clean && x.Id != excludedId, cancellationToken);
+        if (heldByDeleted) throw new InvalidOperationException("That department code belongs to a deleted department in this company and cannot be reused yet. Choose a different code.");
     }
 
     private async Task EnsureDesignationCodeUnique(Guid tenantId, Guid? companyId, string code, Guid? excludedId, CancellationToken cancellationToken)
@@ -1260,6 +1296,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (request.ParentDepartmentId is Guid parentId)
         {
             if (parentId == selfId) throw new InvalidOperationException("A department cannot be its own parent.");
+            if (selfId is Guid self) await EnsureNoParentCycleAsync(tenantId, self, parentId, cancellationToken);
             var parent = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification)
                 .Where(x => x.Id == parentId && !x.IsDeleted)
                 .Select(x => new { x.CompanyId }).FirstOrDefaultAsync(cancellationToken)
@@ -1276,6 +1313,19 @@ public class OrganizationSetupService : IOrganizationSetupService
                 if (check.Code == CostCentreRefCodes.OtherCompany) throw Mismatch("cost centre");
                 throw new CostCentreRefException(check.Code!, check.Message!);
             }
+        }
+    }
+
+    /// <summary>Walks up from the proposed parent; reaching the department itself means the new link would close a loop.</summary>
+    private async Task EnsureNoParentCycleAsync(Guid tenantId, Guid selfId, Guid proposedParentId, CancellationToken cancellationToken)
+    {
+        var seen = new HashSet<Guid> { selfId };
+        Guid? cursor = proposedParentId;
+        while (cursor is Guid current)
+        {
+            if (!seen.Add(current)) throw new InvalidOperationException("That parent would make the department its own ancestor. Choose a different parent department.");
+            cursor = await ScopedBypass.TenantWide(_db.Departments, tenantId, OrgScopeJustification)
+                .Where(x => x.Id == current).Select(x => x.ParentDepartmentId).FirstOrDefaultAsync(cancellationToken);
         }
     }
 
