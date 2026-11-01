@@ -16,10 +16,13 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
     private readonly ITokenService _tokens;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IAuditService _audit;
+    private readonly Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks _deadEnds;
 
-    public EnterpriseIdentityService(ZayraDbContext db, ITokenService tokens, IPasswordHasher passwordHasher, IAuditService audit)
+    public EnterpriseIdentityService(ZayraDbContext db, ITokenService tokens, IPasswordHasher passwordHasher, IAuditService audit,
+        Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _db = db;
+        _deadEnds = new Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks(db, deadEndMonitor);
         _tokens = tokens;
         _passwordHasher = passwordHasher;
         _audit = audit;
@@ -327,6 +330,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
         }
 
         await ExecuteScimMutationAsync(eventId, () => EnterpriseIdentityEventActions.ScimUserUpdated, PatchOnceAsync, ct);
+        if (found) await _deadEnds.AfterUserChangedAsync(tenantId, userId, "directory_sync", false, ct);
         return found ? result : null;
     }
 
@@ -380,6 +384,7 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
         }
 
         await ExecuteScimMutationAsync(eventId, () => EnterpriseIdentityEventActions.ScimUserDeactivated, DeactivateOnceAsync, ct);
+        if (found) await _deadEnds.AfterUserChangedAsync(tenantId, userId, "directory_sync", false, ct);
         return found;
     }
 

@@ -633,9 +633,15 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
-    public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
-        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null) =>
-        RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
+    public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
+        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
+    {
+        var result = await RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
+        // The file committed with pay waiting for Finance: check each company still has a reviewer (best effort, after the commit).
+        if (result is OkObjectResult)
+            await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(RequireTenant(), null, "import", ct);
+        return result;
+    }
 
     /// <summary>
     /// The most rows one employee file may carry. The import holds the whole file — every row's employee, payroll
@@ -4857,6 +4863,8 @@ public class EmployeesController : ControllerBase
         // read the row for this employee. Idempotent — a no-op if the employee was already terminated.
         await EmployeeManagementService.DeactivatePayrollFootprintAsync(
             _db, _audit, tenantId, id, "soft_deleted", deactivateSalaryStructure: true, context, cancellationToken);
+        // The person may have been a reviewer, or their own pay package may have been the pending one.
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, id, "employee_deleted", cancellationToken);
     }
 
     /// <summary>

@@ -395,6 +395,18 @@ public partial class PayrollController : ControllerBase
         foreach (var employee in employees)
             await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, prior[employee.Id], context, ct);
         await _db.SaveChangesAsync(ct);
+        foreach (var companyId in employees.Where(e => e.CompanyId.HasValue).Select(e => e.CompanyId!.Value)) _paySubmittedCompanies.Add(companyId);
+    }
+
+    private readonly HashSet<Guid> _paySubmittedCompanies = [];
+
+    /// <summary>After the salary write has committed: check each touched company still has a pay reviewer (best effort).</summary>
+    private async Task SyncPayApprovalAsync(CancellationToken ct)
+    {
+        var hooks = Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext);
+        foreach (var companyId in _paySubmittedCompanies.ToList())
+            await hooks.SyncCompanyAsync(GetTenantId(), companyId, "pay_submitted", ct);
+        _paySubmittedCompanies.Clear();
     }
 
     [HttpPost("employee-salary-structures")]
@@ -445,6 +457,7 @@ public partial class PayrollController : ControllerBase
         await PayrollAudit("payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(), new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await ReconcilePayAsync(priorPay, cancellationToken);
+        await SyncPayApprovalAsync(cancellationToken);
         return Created($"/api/payroll/employee-salary-structures/{assignment.Id}", SalaryStructureAssignmentDto.Project(assignment, true));
     }
 
@@ -11838,6 +11851,7 @@ public partial class PayrollController : ControllerBase
             if (conflictErrors.Count == 0) conflictErrors.Add("Another active salary row was written for one of these employees and dates at the same time.");
             return UnprocessableEntity(new { error = "salary_row_conflict", message = "The import was not applied: two active salary rows would exist for one employee on one date. Nothing from this file was applied; re-import it.", errors = conflictErrors.Concat(errors).Take(20) });
         }
+        await SyncPayApprovalAsync(cancellationToken);
         return Ok(new { received = rows.Count, created, updated, skipped, errors = errors.Take(20) });
     }
 

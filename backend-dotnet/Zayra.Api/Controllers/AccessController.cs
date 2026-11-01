@@ -1341,6 +1341,7 @@ public class AccessController : ControllerBase
         grant.UpdatedAtUtc = DateTime.UtcNow;
         await RevokeActiveRefreshTokensAsync(grant.UserId, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await _accessManagement.AfterApproverAccessChangedAsync(tenantId.Value, grant.UserId, cancellationToken: cancellationToken);
         return NoContent();
     }
 
@@ -1380,6 +1381,7 @@ public class AccessController : ControllerBase
 
         await RevokeActiveRefreshTokensAsync(userId, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await _accessManagement.AfterApproverAccessChangedAsync(tenantId.Value, userId, allCompanies: true, cancellationToken: cancellationToken);
         return NoContent();
     }
 

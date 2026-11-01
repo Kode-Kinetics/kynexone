@@ -1994,6 +1994,7 @@ public class PlatformController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterUserChangedAsync(tenantId, user.Id, "platform_user", true, ct);
 
         return Ok(new { user.Id, user.Email, user.FullName, tenantSlug = tenant.Slug });
     }
@@ -2246,6 +2247,7 @@ public class PlatformController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterUserChangedAsync(tenantId, user.Id, "platform_user", false, ct);
 
         return Ok(new
         {
@@ -2576,6 +2578,9 @@ public class PlatformController : ControllerBase
             await ApplyOnceAsync(ct);
         }
 
+        // A reactivated workspace can review pay again; best effort, after the commit.
+        if (activate && outcome.Allowed && outcome.SubscriptionFound && !outcome.AlreadyInTargetState)
+            await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(tenantId, null, "tenant_reactivated", ct);
         return outcome;
     }
 
@@ -4909,6 +4914,7 @@ public class PlatformController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow
         });
         await _db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(tenantId, null, "security_policy", ct);
         return Ok(new
         {
             tenantId,

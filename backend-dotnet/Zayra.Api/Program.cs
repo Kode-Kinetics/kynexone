@@ -340,6 +340,8 @@ builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuar
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor, Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndMonitor>();
+// Backstop for the change hooks: a periodic per-tenant re-check of companies with pending pay packages (PayApprovalDeadEndSweep__Enabled=false turns it off).
+Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndSweepServiceCollectionExtensions.AddPayApprovalDeadEndSweep(builder.Services, builder.Configuration);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();

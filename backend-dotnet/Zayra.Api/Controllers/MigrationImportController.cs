@@ -283,6 +283,7 @@ public sealed partial class MigrationImportController : ControllerBase
             batch.UpdatedAtUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync(ct);
             await _audit.WriteAsync("migration.import_completed", nameof(MigrationImportBatch), batch.Id.ToString(), Context(), JsonSerializer.Serialize(new { batch.PackageChecksum, batch.Status, batch.ReceivedRows, batch.ErrorRows }), ct);
+            if (!request.DryRun) await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(tenantId, null, "import", ct);
             return Ok(ToDto(batch, ReadCounts(batch.ReconciliationJson), ReadErrors(batch.ErrorJson)));
         }
         catch (Exception ex) when (ex is FormatException or InvalidOperationException or DbUpdateException)

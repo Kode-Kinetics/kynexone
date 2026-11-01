@@ -21,11 +21,13 @@ public class OrganizationSetupService : IOrganizationSetupService
 {
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
+    private readonly Employees.Onboarding.PayApprovalDeadEndHooks _deadEnds;
 
-    public OrganizationSetupService(ZayraDbContext db, IAuditService audit)
+    public OrganizationSetupService(ZayraDbContext db, IAuditService audit, Employees.Onboarding.IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _db = db;
         _audit = audit;
+        _deadEnds = new Employees.Onboarding.PayApprovalDeadEndHooks(db, deadEndMonitor);
     }
 
     public async Task<PagedResult<CompanyDto>> GetCompaniesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken, IReadOnlyCollection<Guid>? accessibleCompanyIds = null)
@@ -781,6 +783,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             id,
             DeleteOnceAsync,
             cancellationToken);
+        if (deleted) await _deadEnds.AfterCompanyChangedAsync(tenantId, id, "company_removed", cancellationToken);
         return deleted;
     }
     public Task<bool> DeleteBranchAsync(Guid tenantId, Guid id, RequestContext context, CancellationToken cancellationToken) => SoftDelete(_db.Branches, tenantId, id, "organization.branch_deleted", context, cancellationToken);
