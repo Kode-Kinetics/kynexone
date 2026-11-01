@@ -50,7 +50,7 @@ public class PayrollRunConcurrencyPostgresTests
     }
 
     [Fact]
-    public async Task TwoSimultaneousSettles_PostExactlyOneNetSettlement_TheLoserGets409()
+    public async Task TwoSimultaneousSettles_PostExactlyOneNetSettlement_TheLoserIsRefused()
     {
         await using var k = await NewKitAsync();
         for (var round = 0; round < Rounds; round++)
@@ -62,8 +62,11 @@ public class PayrollRunConcurrencyPostgresTests
 
             results.Should().NotContainNulls($"round {round}: the loser must fail cleanly, never with a 500");
             results.OfType<OkObjectResult>().Should().HaveCount(1, $"round {round}: exactly one settle wins");
-            results.OfType<ConflictObjectResult>().Should().ContainSingle($"round {round}: the loser gets 409")
-                .Subject.Value!.ToString().Should().Contain("already_settled");
+            // The settle runs under the per-batch advisory lock, so the loser reads the batch AFTER the winner committed:
+            // it is already Paid, and the status guard (400 batch_not_accepted) refuses it before the already_settled
+            // idempotency check (409) is reached. Either way it is a refusal that posts nothing.
+            results.OfType<BadRequestObjectResult>().Should().ContainSingle($"round {round}: the loser is refused, not a second success")
+                .Subject.Value!.ToString().Should().Contain("batch_not_accepted");
 
             await using var db = k.NewContext();
             var gl = await k.RunGlAsync(run.Id, db);

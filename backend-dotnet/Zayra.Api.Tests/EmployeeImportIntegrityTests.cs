@@ -221,7 +221,7 @@ public class EmployeeImportIntegrityTests
         var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\nEMP-1,Fine Person,{ImportCountry},2024-01-01\nEMP-2,{longName},{ImportCountry},2024-01-01\n";
         var body = Refusal(await Import(Controller(db, tenantId), csv));
 
-        Assert.Equal("import_rows_invalid", body.GetProperty("error").GetString());
+        Assert.Equal("import_row_invalid", body.GetProperty("error").GetString());
         var failed = body.GetProperty("failedRows");
         Assert.Equal(1, failed.GetArrayLength());
         Assert.Equal(3, failed[0].GetProperty("row").GetInt32());
@@ -239,7 +239,7 @@ public class EmployeeImportIntegrityTests
         var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\n{longCode},Person,{ImportCountry},2024-01-01\n";
         var body = Refusal(await Import(Controller(db, tenantId), csv));
 
-        Assert.Equal("import_rows_invalid", body.GetProperty("error").GetString());
+        Assert.Equal("import_row_invalid", body.GetProperty("error").GetString());
         Assert.Equal(2, body.GetProperty("failedRows")[0].GetProperty("row").GetInt32());
         Assert.Contains("50", body.GetProperty("failedRows")[0].GetProperty("problem").GetString());
         Assert.Equal(0, await db.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));

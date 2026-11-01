@@ -660,8 +660,6 @@ public class EmployeesController : ControllerBase
     internal const int MaxImportBodyBytes = 5 * 1024 * 1024;
     /// <summary>The most people one export file carries (the CSV is built in memory).</summary>
     internal const int MaxExportRows = 20_000;
-    internal const int MaxImportNameLength = 150;   // employees.full_name
-    internal const int MaxImportCodeLength = 50;    // employees.employee_code
 
     private IActionResult? TooManyRows(int count) => count <= MaxImportRows ? null : UnprocessableEntity(new
     {
@@ -2236,18 +2234,6 @@ public class EmployeesController : ControllerBase
             if (name.Length == 0)
             {
                 refusals.Add(new ImportRowRefusal(rowNum, code, "FullName is empty — every row must name the person"));
-                continue;
-            }
-            // The column widths (employees.full_name 150, employees.employee_code 50): a longer value used to
-            // fail the whole file at SaveChanges with a generic 422. Validated in code so the row is named.
-            if (name.Length > MaxImportNameLength)
-            {
-                refusals.Add(new ImportRowRefusal(rowNum, code, $"FullName is {name.Length} characters — at most {MaxImportNameLength} fit"));
-                continue;
-            }
-            if (code.Length > MaxImportCodeLength)
-            {
-                refusals.Add(new ImportRowRefusal(rowNum, code.Length > 60 ? code[..60] + "…" : code, $"EmployeeCode is {code.Length} characters — at most {MaxImportCodeLength} fit"));
                 continue;
             }
             if (code.Length == 0) continue;
