@@ -47,6 +47,19 @@ public class DepartmentIntegrityTests
     }
 
     [Fact]
+    public async Task Delete_WritesAnAuditRowWithABeforeSnapshot_InTheSameSave()
+    {
+        var w = await Seed();
+        var d = await Create(w, "OPS");
+        await w.Svc.DeleteDepartmentAsync(w.Tenant, d.Id, Ctx(w.Tenant), default);
+
+        var row = await w.Db.AuditLogs.Where(x => x.EntityName == "Department" && x.Action == "organization.department_deleted").SingleAsync();
+        row.CompanyId.Should().Be(w.A.Id);
+        var json = System.Text.Json.JsonDocument.Parse(row.Metadata!).RootElement;
+        json.GetProperty("before").GetProperty("code").GetString().Should().Be("OPS");
+    }
+
+    [Fact]
     public async Task Delete_ADepartmentWithAnEmployee_IsRefused_AndNothingChanges()
     {
         var w = await Seed();
