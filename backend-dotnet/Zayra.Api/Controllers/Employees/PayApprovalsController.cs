@@ -61,13 +61,17 @@ public sealed class PayApprovalsController : ControllerBase
             .Select(g => g.EmployeeId).Distinct().ToListAsync(ct);
         var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
                 "Pay approval queue: candidates are resolved tenant-wide and then filtered by the caller's company scope below.")
-            .AsNoTracking().Where(e => ids.Contains(e.Id) && !e.IsDeleted).OrderBy(e => e.Id).ToListAsync(ct);
+            .AsNoTracking().Where(e => !e.IsDeleted && (ids.Contains(e.Id) || e.Status == EmployeeStatuses.Draft || e.Status == EmployeeStatuses.Invited))
+            .OrderBy(e => e.Id).ToListAsync(ct);
         var items = new List<object>();
         var hasMore = false;
         var requiresOtherReviewerCount = 0;
         foreach (var e in employees)
         {
             if (!scope.CanAccessCompany(e.CompanyId) || IsInPost(e)) continue;
+            // The same conditions that block activation, not only an open gap row: a package can be unapproved through a path
+            // that never opened one, and it must still reach a reviewer.
+            if (!await NeedsApprovalAsync(tenantId, e, ct)) continue;
             if (await CompensationApprovalGate.IsBarredAsync(_db, tenantId, e, caller.Value, ct)) { requiresOtherReviewerCount++; continue; }
             if (items.Count >= MaxListed) { hasMore = true; continue; }
             var view = await BuildAsync(tenantId, e, ct);
@@ -106,10 +110,13 @@ public sealed class PayApprovalsController : ControllerBase
         var employees = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
                 "Pay approval setup: pending employees for the explicitly scope-checked company.").AsNoTracking()
             .Where(e => e.TenantId == tenantId && e.CompanyId == companyId && !e.IsDeleted
-                && _db.EmployeeImportGaps.Any(g => g.TenantId == tenantId && g.EmployeeId == e.Id
-                    && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null))
+                && (e.Status == EmployeeStatuses.Draft || e.Status == EmployeeStatuses.Invited
+                    || _db.EmployeeImportGaps.Any(g => g.TenantId == tenantId && g.EmployeeId == e.Id
+                        && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null)))
             .OrderBy(e => e.Id).ToListAsync(ct);
-        var pending = employees.Where(e => !IsInPost(e)).ToArray();
+        var pending = new List<Employee>();
+        foreach (var candidate in employees)
+            if (await NeedsApprovalAsync(tenantId, candidate, ct)) pending.Add(candidate);
         var items = new List<object>();
         var strandedCount = 0;
         // Bounded diagnostic: ordinary queues remain usable for larger imports.
@@ -125,8 +132,8 @@ public sealed class PayApprovalsController : ControllerBase
         return Ok(new {
             independentReviewerCount = reviewers.Count(r => r.Id != caller.Value),
             readyForNewHires = operators.Any(w => w.CanEnterPay && reviewers.Any(r => r.Id != w.Id)),
-            pendingCount = pending.Length, checkedCount = items.Count, strandedCount,
-            hasMore = pending.Length > MaxListed, items
+            pendingCount = pending.Count, checkedCount = items.Count, strandedCount,
+            hasMore = pending.Count > MaxListed, items
         });
     }
 

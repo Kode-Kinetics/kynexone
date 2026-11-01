@@ -174,6 +174,33 @@ public class ApprovalRecoveryHttpTests
     }
 
     [Fact]
+    public async Task A_package_that_blocks_activation_without_an_open_gap_still_reaches_the_queue_and_the_setup_count()
+    {
+        await using var fixture = new Fixture();
+        var fx = await fixture.Start();
+        var maker = await fx.NewUserAsync("maker", "employees.write", "employees.read");
+        var reviewer = await fx.NewUserAsync("reviewer", "payroll.approve", "security.manage");
+        using var created = await fx.SendAsync(HttpMethod.Post, "/api/employees", new {
+            englishName = "No Gap Package", companyId = fx.CompanyId, salaryBreakdown = new { basicSalary = 7000m }
+        }, maker);
+        created.StatusCode.Should().Be(HttpStatusCode.Created, await created.Content.ReadAsStringAsync());
+        var id = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        using (var scope = fx.Host.Services.CreateScope())
+        {
+            // The state a path with no hook leaves behind: figures stored and never approved, but no gap row.
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            db.EmployeeImportGaps.RemoveRange(db.EmployeeImportGaps.Where(g => g.EmployeeId == id
+                && g.GapType == Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.GapType));
+            await db.SaveChangesAsync();
+        }
+        using var queue = await fx.SendAsync(HttpMethod.Get, "/api/pay-approvals", null, reviewer);
+        (await queue.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("items").EnumerateArray()
+            .Should().Contain(i => i.GetProperty("employeeId").GetInt32() == id);
+        using var setup = await fx.SendAsync(HttpMethod.Get, $"/api/pay-approvals/setup?companyId={fx.CompanyId}", null, reviewer);
+        (await setup.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("pendingCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
     public async Task Pay_approval_refresh_preserves_advisory_import_gaps_and_editor_attribution()
     {
         await using var fixture = new Fixture();
