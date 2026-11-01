@@ -177,16 +177,22 @@ public static class CompensationApprovalGate
         ZayraDbContext db, Guid tenantId, IEmployeeReadinessEvaluator evaluator, EmployeeReadinessSnapshot snapshot,
         ResolvedReadinessPolicy policy, CancellationToken ct)
     {
-        var readiness = evaluator.Evaluate(snapshot, policy);
-        if (await IsOpenAsync(db, tenantId, snapshot.EmployeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, snapshot.EmployeeId, ct)
-            || await CarriesUnapprovedPayAsync(db, tenantId, snapshot.EmployeeId, ct))
+        var readiness = await MergeBlockersAsync(db, tenantId, snapshot.EmployeeId, evaluator.Evaluate(snapshot, policy), ct);
+        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
+        return readiness;
+    }
+
+    public static async Task<EmployeeReadiness> MergeBlockersAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, EmployeeReadiness readiness, CancellationToken ct)
+    {
+        if (await IsOpenAsync(db, tenantId, employeeId, ct) || await HasDriftedFromApprovalAsync(db, tenantId, employeeId, ct)
+            || await CarriesUnapprovedPayAsync(db, tenantId, employeeId, ct))
         {
             var blocker = new ReadinessItem(
                 Key: GapType, Label: "Pay package awaiting Finance approval", Category: "pay", Reason: "statutory",
                 Jurisdiction: null, Gate: "activate", FixKind: "pay", FixTarget: null, DocumentType: null);
             readiness = readiness with { State = "Blocked", Blocking = readiness.Blocking.Concat([blocker]).ToList() };
         }
-        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
         return readiness;
     }
 
@@ -225,7 +231,7 @@ public static class CompensationApprovalGate
 
     /// <summary>
     /// True when <paramref name="caller"/> may not approve this hire's pay (CD39 / CD46): the creator, anyone who wrote the pay since
-    /// the last approval (including the workflow approver of a change), the last editor of the employee or profile, the subject, or
+    /// the last approval (including the workflow approver of a change), the last editor of the payroll profile, the subject, or
     /// the person who handed the subject their sign-in code. Shared by the full approve route and the scoped approval view.
     /// </summary>
     public static async Task<bool> IsBarredAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid caller, CancellationToken ct)
@@ -235,7 +241,8 @@ public static class CompensationApprovalGate
         var makers = new HashSet<Guid>(await PayWritersSinceApprovalAsync(db, tenantId, employee.Id, ct));
         if (profile?.CreatedBy is Guid pc) makers.Add(pc);
         if (profile?.UpdatedBy is Guid pu) makers.Add(pu);
-        if (employee.UpdatedBy is Guid eu) makers.Add(eu);
+        // employee.UpdatedBy is deliberately NOT a maker: it moves on any edit of the record (a phone number, a manager).
+        // Every write that changes the pay package is audited by ReconcileAsync and arrives through PayWritersSinceApprovalAsync.
         var subjects = new HashSet<Guid>(await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(db, tenantId, employee.Id, ct));
         if (employee.UserAccountId is Guid u) subjects.Add(u);
         var refusal = RefusalFor(caller, employee.CreatedBy, subjects.Contains(caller) ? caller : employee.UserAccountId, makers);

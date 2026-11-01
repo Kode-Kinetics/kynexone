@@ -75,10 +75,18 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         Guid tenantId, Guid? companyId, EmployeeReadinessSnapshot snapshot, RequestContext ctx, CancellationToken ct)
     {
         var policy = await _resolver.ResolveAsync(tenantId, companyId, snapshot.CountryCode, snapshot.Nationality, ct);
-        EmployeeReadiness readiness;
-        try { readiness = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.EnsureActivatableAsync(_db, tenantId, _evaluator, snapshot, policy, ct); }
-        catch (EmployeeActivationBlockedException blocked) { throw await Zayra.Api.Application.Onboarding.OnboardingTaskBlockers.MergeAsync(_db, tenantId, blocked, ct); }   // P3 (AC67): list open blocking tasks beside the other blockers
-        return await Zayra.Api.Application.Onboarding.OnboardingTaskBlockers.EnsureNoneOpenAsync(_db, tenantId, snapshot.EmployeeId, readiness, policy, ct);
+        var readiness = await MergeActivationBlockersAsync(tenantId, snapshot.EmployeeId, _evaluator.Evaluate(snapshot, policy), ct);
+        if (readiness.IsBlocked) throw new EmployeeActivationBlockedException(snapshot.EmployeeId, readiness, policy);
+        return readiness;
+    }
+
+    // One composition of approval/task gates for the checklist, badge and activation. Field validation at
+    // activation belongs to EmployeeInputGuard: it may have just staged an authorized, audited exception.
+    // Re-reading persisted field waivers here would reject that valid exception before its transaction commits.
+    private async Task<EmployeeReadiness> MergeActivationBlockersAsync(Guid tenantId, int employeeId, EmployeeReadiness readiness, CancellationToken ct)
+    {
+        readiness = await Onboarding.CompensationApprovalGate.MergeBlockersAsync(_db, tenantId, employeeId, readiness, ct);
+        return await Zayra.Api.Application.Onboarding.OnboardingTaskBlockers.MergeBlockersAsync(_db, tenantId, employeeId, readiness, ct);
     }
 
     public async Task<EmployeeReadinessSnapshot?> BuildSnapshotAsync(Guid tenantId, int employeeId, CancellationToken ct)
@@ -97,7 +105,9 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         // Durable advisory self-heal: close import gaps the operator has since completed, fold still-open
         // ones back in so the NeedsAttention signal survives this edit (activation stays unblocked).
         readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
-        readiness = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, employee.TenantId.Value, employee.Id, employee.Status, readiness, ct);   // CD28
+        if (!EstablishmentOccupancy.IsOccupyingStatus(employee.Status))
+            readiness = await MergeActivationBlockersAsync(employee.TenantId.Value, employee.Id, readiness, ct);
+        readiness = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, employee.TenantId.Value, employee.Id, employee.Status, readiness, ct);
         employee.ReadinessState = readiness.State;
         employee.ActivationBlockersCount = readiness.Blocking.Count;
         employee.ReadinessEvaluatedAtUtc = System.DateTime.UtcNow;
@@ -117,7 +127,10 @@ public sealed class EmployeeActivationGuard : IEmployeeActivationGuard
         var snapshot = await BuildSnapshotAsync(tenantId, employeeId, ct);
         if (snapshot is null) return null;
         var policy = await _resolver.ResolveAsync(tenantId, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
-        var evaluated = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, tenantId, employeeId, employee.Status, _evaluator.Evaluate(snapshot, policy), ct);   // CD28
+        var evaluated = _evaluator.Evaluate(snapshot, policy);
+        if (!EstablishmentOccupancy.IsOccupyingStatus(employee.Status))
+            evaluated = await MergeActivationBlockersAsync(tenantId, employeeId, evaluated, ct);
+        evaluated = await Onboarding.EmployeeStoredDataCheck.MergeBlockersAsync(_db, tenantId, employeeId, employee.Status, evaluated, ct);
         return (evaluated, policy);
     }
 }

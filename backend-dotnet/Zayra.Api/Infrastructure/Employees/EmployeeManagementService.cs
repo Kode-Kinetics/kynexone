@@ -2178,26 +2178,8 @@ public class EmployeeManagementService : IEmployeeManagementService
     // ReadinessEvaluatedAtUtc) for the list badge. Display-only and best-effort (never throws) — the
     // activation gate always recomputes live and never trusts these columns. Callers SaveChanges after.
     // "already calls CalculateCompleteness" is FALSE for these paths — each needs an explicit refresh.
-    private async Task RefreshReadinessSnapshotAsync(Employee employee, CancellationToken ct)
-    {
-        if (employee.TenantId is null || employee.Id == 0) return;
-        var snapshot = await _activationGuard.BuildSnapshotAsync(employee.TenantId.Value, employee.Id, ct);
-        if (snapshot is null) return;
-        var policy = await _activationGuard.ResolvePolicyAsync(employee.TenantId.Value, employee.CompanyId, employee.CountryCode, employee.Nationality, ct);
-        var readiness = _activationGuard.Evaluate(snapshot, policy);
-        // Durable advisory self-heal (import gaps): close ones now completed, keep still-open ones as a
-        // NeedsAttention signal — never touches Blocking, so activation stays unblocked.
-        readiness = await ImportGapHealer.HealAndMergeAsync(_db, employee, readiness, ct);
-        employee.ReadinessState = readiness.State;
-        employee.ActivationBlockersCount = readiness.Blocking.Count;
-        employee.ReadinessEvaluatedAtUtc = DateTime.UtcNow;
-        // Policy-aware completeness (§4.2): the score now reflects readiness against the resolved policy
-        // so the % and the badge never contradict (was a fixed ~22-field HR denominator with ZERO
-        // statutory fields — an employee read 100% while missing Iqama/GOSI/IBAN). Only overwrite when a
-        // policy actually applies, so a no-policy tenant keeps the prior HR-completeness signal.
-        if (policy.Items.Count > 0)
-            employee.ProfileCompletenessScore = readiness.Score;
-    }
+    private Task RefreshReadinessSnapshotAsync(Employee employee, CancellationToken ct)
+        => _activationGuard.StampReadinessAsync(employee, ct);
 
     private async Task RefreshEmployeeReadinessByIdAsync(Guid tenantId, int employeeId, CancellationToken ct)
     {

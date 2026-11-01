@@ -31,7 +31,7 @@ namespace Zayra.Api.Tests.Security;
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Integration")]
-public sealed class EmployeeAccessTests
+public sealed partial class EmployeeAccessTests
 {
     private readonly PostgresFixture _fx;
     public EmployeeAccessTests(PostgresFixture fx) => _fx = fx;
