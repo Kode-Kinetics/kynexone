@@ -47,6 +47,11 @@ interface BootOptions {
   locationWithoutRadius?: boolean;
   /** Addendum B2: how the next section save fails, once. */
   sectionFailure?: 'network' | 'problem' | 'lost';
+  /**
+   * Existing mode, the Approvers step's live check: whether a usable pay reviewer exists. `waitingPassword` = created but
+   * has not set a password; `failOnce` / `failAlways` = the pay-approval call errors. Default `ready`.
+   */
+  reviewer?: 'ready' | 'none' | 'waitingPassword' | 'failOnce' | 'failAlways';
 }
 
 /**
@@ -104,6 +109,10 @@ class ContractServer {
   /** Every short link sent to the map-link resolver. */
   mapLinks: string[] = [];
   sequence = 0;
+  /** GET /api/pay-approvals/setup calls, so Retry can be proven to ask again. */
+  reviewerChecks = 0;
+  /** `failOnce` answers 500 until the test flips this, so an earlier setup call cannot use up the failure. */
+  reviewerHealthy = false;
   constructor(public options: BootOptions) {}
 
   get scopeGroup() { return this.options.persona !== 'companyAdmin'; }
@@ -223,6 +232,7 @@ class ContractServer {
         ? { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'update', reason: reason(numberingChanged) }
         : { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'unchanged' },
       ...(body.companyAdmin.mode !== 'groupOnly' ? [{ area: 'companyAdmin' as const, code: body.companyAdmin.email ?? body.companyAdmin.existingUserId ?? '', label: body.companyAdmin.fullNameEn ?? 'Existing user', action: 'create' as const }] : []),
+      ...(body.payReviewer && body.payReviewer.mode !== 'groupOnly' ? [{ area: 'payReviewer' as const, code: body.payReviewer.email ?? body.payReviewer.existingUserId ?? '', label: body.payReviewer.fullNameEn ?? 'Existing user', action: 'create' as const }] : []),
     ];
     return { ok: problems.length === 0, items, problems, warnings };
   }
@@ -265,7 +275,27 @@ class ContractServer {
       { area: 'employeeIdRule', code: body.rules.employeeNumbering.prefix, label: 'Employee numbering', action: 'create' },
       ...(body.companyAdmin.mode !== 'groupOnly' ? [{ area: 'companyAdmin' as const, code: body.companyAdmin.email ?? body.companyAdmin.existingUserId ?? '', label: body.companyAdmin.fullNameEn ?? 'Existing user', action: 'create' as const }] : []),
     ];
-    return { ok: !items.some(i => i.action === 'conflict'), items, problems: [], warnings: [] };
+    // As the planner reports the independent pay reviewer (step 6 in its numbering): same person as the admin refuses,
+    // none requested warns, a requested one is an item.
+    const reviewer = body.payReviewer;
+    const problems: CompanySetupPlan['problems'] = [];
+    const warnings: CompanySetupPlan['warnings'] = [];
+    if (!reviewer || reviewer.mode === 'groupOnly')
+      warnings.push({ step: 6, field: 'payReviewer.mode', code: 'pay_reviewer_missing', message: 'No independent pay reviewer is set up yet. Pay entered here cannot be approved until a different person with Finance Approver access is added.', messageAr: 'لم يتم تعيين مراجع أجور مستقل بعد.' });
+    else if (reviewer.mode === 'invite' && body.companyAdmin.mode === 'invite' && (reviewer.email ?? '').toLowerCase() === (body.companyAdmin.email ?? '').toLowerCase())
+      problems.push({ step: 6, field: 'payReviewer.email', code: 'pay_reviewer_same_as_admin', message: 'The pay reviewer must be a different person from the company super admin.', messageAr: 'يجب أن يكون مراجع الأجور شخصاً مختلفاً عن مسؤول الشركة.' });
+    else if ((reviewer.email ?? '').startsWith('taken@'))
+      problems.push({ step: 6, field: 'payReviewer.email', code: 'pay_reviewer_email_exists', message: `${reviewer.email} already has a login in this workspace. Choose "Use an existing user" instead.` });
+    else items.push({ area: 'payReviewer', code: reviewer.email ?? reviewer.existingUserId ?? '', label: reviewer.fullNameEn ?? 'Existing user', action: 'create' });
+    return { ok: problems.length === 0 && !items.some(i => i.action === 'conflict'), items, problems, warnings };
+  }
+
+  /** The server's `payReviewer` readiness item: done only when a reviewer can really sign in; otherwise why not. */
+  reviewerReadiness(href: string) {
+    const mode = this.options.reviewer ?? 'ready';
+    if (mode === 'waitingPassword') return { key: 'payReviewer', label: 'Omar Haddad has not set a password yet, so cannot review pay. Send their sign-in link', labelAr: 'لم يعيّن عمر حداد كلمة مرور بعد، لذا لا يمكنه مراجعة الأجور. أرسل رابط تسجيل الدخول', status: 'todo' as const, scope: 'company' as const, href, userId: 'u-omar' };
+    if (mode === 'none') return { key: 'payReviewer', label: 'Add an independent pay reviewer: a different person from the administrator, with Finance Approver access', labelAr: 'أضف مراجع أجور مستقلاً', status: 'todo' as const, scope: 'company' as const, href };
+    return { key: 'payReviewer', label: 'Independent pay reviewer', labelAr: 'مراجع الأجور المستقل', status: 'done' as const, scope: 'company' as const, href };
   }
 
   summaries() {
@@ -428,6 +458,7 @@ class ContractServer {
         { key: 'glMapping', label: 'GL mapping', labelAr: 'ربط دفتر الأستاذ', status: 'todo', scope: 'company', href: href('glMapping') },
         { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: href('gccSettings') },
         { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'recommended', scope: 'workspace', href: '/setup?tab=emailConfig' },
+        ...(this.options.reviewer ? [this.reviewerReadiness(href('users'))] : []),
       ]);
     }
     this.errors.push(`unexpected ${method} /api/company-setup${rest}`);
@@ -502,7 +533,18 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
     }
     if (p === '/api/access/users') return reply(paged([
       { id: 'u-sara', email: 'sara@riyadhtrading.sa', fullName: 'Sara Al-Qahtani', status: 'Active', isActive: true, isLocked: false, mustChangePassword: false, roles: ['HR Manager'], accessMode: 'Standard', createdAtUtc: '2026-01-01T00:00:00Z', phoneNumber: '' },
+      { id: 'u-fatima', email: 'fatima@riyadhtrading.sa', fullName: 'Fatima Finance', status: 'Active', isActive: true, isLocked: false, mustChangePassword: false, roles: ['Finance Approver'], accessMode: 'Standard', createdAtUtc: '2026-01-01T00:00:00Z', phoneNumber: '' },
     ]));
+    if (p === '/api/pay-approvals/setup') {
+      server.reviewerChecks++;
+      const mode = server.options.reviewer ?? 'ready';
+      if (mode === 'failAlways' || (mode === 'failOnce' && !server.reviewerHealthy)) return reply({ title: 'down' }, 500);
+      const usable = mode === 'ready' || mode === 'failOnce';
+      return reply({
+        independentReviewerCount: usable ? 1 : 0, readyForNewHires: usable, pendingCount: 0, checkedCount: 0, strandedCount: 0, hasMore: false,
+        items: usable ? [{ employeeId: 7, name: 'Layla Al-Harbi', eligibleReviewers: [{ id: 'u-fatima', name: 'Fatima Finance' }] }] : [],
+      });
+    }
     if (p === '/api/tenant-admin/localization') return reply({ countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh' });
     if (p === '/api/features/disabled-keys') return reply(['release_a']);
     if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
@@ -572,7 +614,7 @@ async function startAndFillCompany(page: Page, t: ReturnType<typeof T>) {
 }
 
 for (const locale of ['en', 'ar'] as const) {
-  test(`seven-step happy path creates the company in one commit (${locale})`, async ({ page }, info) => {
+  test(`eight-step happy path creates the company in one commit (${locale})`, async ({ page }, info) => {
     const t = T(locale);
     const { server, pageErrors } = await boot(page, { locale });
     await openWizardFromCompanies(page, t);
@@ -696,14 +738,34 @@ for (const locale of ['en', 'ar'] as const) {
     await shot(page, info, `${locale}-6-admin`);
     await next(page, t);
 
+    // Step 7: Approvers. The administrator's own address cannot be the reviewer's.
+    await expectStep(page, t, 'Approvers');
+    await expect(page.getByText(t('Pay is entered by one person and approved by another. Create both now.'))).toBeVisible();
+    await page.getByLabel(t('Create a new pay reviewer')).check();
+    await page.getByLabel(t('Full name (English)')).fill('Omar Haddad');
+    await page.getByLabel(t('Official work email')).fill('sara@riyadhtrading.sa');
+    await next(page, t);
+    await expect(page.locator('#ccw-payReviewer-email-error')).toHaveText(t('The reviewer must be a different person from the administrator.'));
+    await expect(page.getByLabel(t('Official work email'))).toBeFocused();
+    await expectStep(page, t, 'Approvers');
+    await page.getByLabel(t('Official work email')).fill('omar@riyadhtrading.sa');
+    await expect(page.getByTestId('reviewer-checklist')).toContainText(t('Role: Finance Approver, this company only'));
+    // Created is not ready: the checklist says what the person still has to do, and never turns green for it.
+    await expect(page.getByTestId('reviewer-not-ready')).toContainText(t('Not ready until the person sets a password and finishes two-step sign-in. Pay stays blocked until then.'));
+    await contained(page);
+    await shot(page, info, `${locale}-7-approvers`);
+    await next(page, t);
+
     await expectStep(page, t, 'Review & create');
+    await expect(page.getByTestId('review-reviewer')).toHaveAttribute('data-satisfied', 'true');
+    await expect(page.getByTestId('plan-group-8')).toContainText('Omar Haddad');
     await expect(page.getByTestId('review-plan')).toBeVisible();
     await expect(page.getByTestId('plan-group-4')).toContainText('Human Resources');
     await expect(page.getByTestId('plan-group-6')).toContainText('Sara Al-Qahtani');
     const create = page.getByRole('button', { name: t('Create company'), exact: true });
     await expect(create).toBeEnabled();
     await contained(page);
-    await shot(page, info, `${locale}-7-review`);
+    await shot(page, info, `${locale}-8-review`);
     await create.click();
 
     await expect(page.getByTestId('create-company-success')).toBeVisible();
@@ -713,7 +775,7 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(gl.getByRole('link')).toHaveAttribute('href', '/setup?tab=glMapping&companyId=new-company');
     await expect(page.getByTestId('company-readiness')).toContainText(t('Applies to all companies'));
     await contained(page);
-    await shot(page, info, `${locale}-8-created`);
+    await shot(page, info, `${locale}-9-created`);
 
     // One commit, keyed by the draft, naming the version the server last saved.
     expect(server.commits).toHaveLength(1);
@@ -730,6 +792,9 @@ for (const locale of ['en', 'ar'] as const) {
     expect(server.copyCalls).toEqual([{ fromCompanyId: sister.id, section: 'departments' }]);
     expect(server.sectionApplies).toEqual([]); // create mode: nothing is written before Create
     expect(saved.companyAdmin).toMatchObject({ mode: 'invite', email: 'sara@riyadhtrading.sa' });
+    expect(saved.payReviewer).toMatchObject({ mode: 'invite', fullNameEn: 'Omar Haddad', email: 'omar@riyadhtrading.sa' });
+    // The draft stores 1-7 (the server's check constraint), so the Approvers step is saved as the step before it.
+    expect(server.puts.every(put => put.step >= 1 && put.step <= 7)).toBe(true);
     expect(server.dryRuns.length).toBeGreaterThan(0);
     expect(server.errors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -826,6 +891,7 @@ test('a company-scoped admin is refused at step 1 and never sees the super admin
   await expect(page.getByText(t('Only a group administrator can create a company. Ask your group super admin.'))).toBeVisible();
   await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(6);
   await expect(page.getByTestId('wizard-rail')).not.toContainText(t('Company super admin'));
+  await expect(page.getByTestId('wizard-rail')).not.toContainText(t('Approvers'));
   await expect(page.getByRole('button', { name: t('Start'), exact: true })).toBeDisabled();
   expect([...server.drafts.values()]).toEqual([]);
 });
@@ -860,7 +926,7 @@ test('the server answer on granting a company super admin wins over the role cei
   const t = T('en');
   await boot(page, { adminRefused: true, context: { canGrantCompanyAdmin: true } });
   await openWizardFromCompanies(page, t);
-  await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(7);
+  await expect(page.getByTestId('wizard-rail').getByRole('listitem')).toHaveCount(8);
   await expect(page.getByTestId('wizard-rail')).toContainText(t('Company super admin'));
 });
 
@@ -943,6 +1009,8 @@ async function createWithInvitedAdmin(page: Page, loc: Locale = 'en') {
   await page.getByLabel(t('Invite a new company super admin')).check();
   await page.getByLabel(t('Full name (English)')).fill('Sara Al-Qahtani');
   await page.getByLabel(t('Official work email')).fill('sara@riyadhtrading.sa');
+  await next(page, t);
+  await expectStep(page, t, 'Approvers');
   await next(page, t);
   await expectStep(page, t, 'Review & create');
   await page.getByRole('button', { name: t('Create company'), exact: true }).click();
@@ -1158,6 +1226,9 @@ for (const locale of ['en', 'ar'] as const) {
     await contained(page);
     await vshot(page, info, `existing-${locale}-6-admin`);
     await next(page, t);
+    await expectStep(page, t, 'Approvers');
+    await expect(page.getByTestId('reviewer-live')).toHaveAttribute('data-state', 'ready');
+    await next(page, t);
 
     await expectStep(page, t, 'Review & update');
     // The department was saved by Save & next, so the review shows only the branch changes.
@@ -1253,6 +1324,8 @@ for (const locale of ['en', 'ar'] as const) {
     await page.getByLabel(t('Official work email')).fill('omar@evostel.com');
     await contained(page);
     await vshot(page, info, `existing-${locale}-6-admin-company-admin`);
+    await next(page, t);
+    await expectStep(page, t, 'Approvers');
     await next(page, t);
     await expectStep(page, t, 'Review & update');
     await expect(page.getByTestId('plan-group-6')).toContainText('Omar Haddad');
@@ -2127,3 +2200,154 @@ for (const locale of ['en', 'ar'] as const) {
     await shot(page, info, `parts-${locale}-375-departments-full`);
   });
 }
+
+// ── Approvers step: the independent pay reviewer ─────────────────────────────
+
+async function toApprovers(page: Page, t: ReturnType<typeof T>) {
+  await openWizardFromCompanies(page, t);
+  await startAndFillCompany(page, t);
+  await nextUntil(page, t, 'Approvers');
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Approvers: the same email as the administrator, or a public domain, blocks Next (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server, pageErrors } = await boot(page, { locale });
+    await openWizardFromCompanies(page, t);
+    await startAndFillCompany(page, t);
+    await nextUntil(page, t, 'Company super admin');
+    await page.getByLabel(t('Invite a new company super admin')).check();
+    await page.getByLabel(t('Full name (English)')).fill('Sara Al-Qahtani');
+    await page.getByLabel(t('Official work email')).fill('sara@riyadhtrading.sa');
+    await next(page, t);
+    await expectStep(page, t, 'Approvers');
+    // Nothing requested yet: advice, not a blocker.
+    await expect(page.getByTestId('reviewer-checklist-none')).toBeVisible();
+    await shot(page, info, `${locale}-approvers-none`);
+    await page.getByLabel(t('Create a new pay reviewer')).check();
+    await expect(page.getByLabel(t('Role for this login'))).toHaveValue('Finance Approver');
+    await expect(page.getByLabel(t('Role for this login'))).toHaveAttribute('readonly', '');
+    await page.getByLabel(t('Full name (English)')).fill('Omar Haddad');
+    await page.getByLabel(t('Official work email')).fill('SARA@riyadhtrading.sa');
+    await next(page, t);
+    await expectStep(page, t, 'Approvers');
+    await expect(page.locator('#ccw-payReviewer-email-error')).toHaveText(t('The reviewer must be a different person from the administrator.'));
+    await page.getByLabel(t('Official work email')).fill('omar@gmail.com');
+    await next(page, t);
+    await expect(page.locator('#ccw-payReviewer-email-error')).toHaveText(t('Use an address on {domain}. KynexOne never creates mailboxes, so the pay reviewer signs in with their company email.', { domain: 'riyadhtrading.sa' }));
+    await expectStep(page, t, 'Approvers');
+    await shot(page, info, `${locale}-approvers-blocked`);
+    const axe = await new AxeBuilder({ page }).include('[data-testid="create-company-wizard"]').analyze();
+    expect(axe.violations.map(v => `${v.id}: ${v.nodes.map(n => n.target.join(' ')).join(' | ')}`)).toEqual([]);
+    await contained(page);
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('Approvers: skipping the reviewer is allowed, and the review warns with a link back to the step', async ({ page }) => {
+  const t = T('en');
+  const { server, pageErrors } = await boot(page);
+  await toApprovers(page, t);
+  await next(page, t);
+  await expectStep(page, t, 'Review & create');
+  const warning = page.getByTestId('review-reviewer');
+  await expect(warning).toHaveAttribute('data-satisfied', 'false');
+  await expect(warning).toContainText(t('Pay approval will be blocked'));
+  // Warn, not block: the company can still be created.
+  await expect(page.getByRole('button', { name: t('Create company'), exact: true })).toBeEnabled();
+  await warning.getByRole('button', { name: t('Go to Approvers') }).click();
+  await expectStep(page, t, 'Approvers');
+  expect(server.errors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Approvers: a server refusal about the reviewer lands on the Approvers step, not the administrator step', async ({ page }) => {
+  const t = T('en');
+  const { server, pageErrors } = await boot(page);
+  await toApprovers(page, t);
+  // The mock planner refuses an address that already has a login, naming it at step 6 as the real planner does.
+  await page.getByLabel(t('Create a new pay reviewer')).check();
+  await page.getByLabel(t('Full name (English)')).fill('Taken Person');
+  await page.getByLabel(t('Official work email')).fill('taken@riyadhtrading.sa');
+  await nextUntil(page, t, 'Review & create');
+  await expect(page.getByTestId('review-decision')).toHaveAttribute('data-state', 'blocked');
+  await expect(page.getByRole('list', { name: t('Things to fix') })).toContainText(t('Approvers'));
+  await page.getByRole('button', { name: t('Fix this'), exact: true }).click();
+  await expectStep(page, t, 'Approvers');
+  await expect(page.getByLabel(t('Official work email'))).toBeFocused();
+  expect(server.errors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Approvers when completing a company: Checking, then Ready with the reviewer's name (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server, pageErrors } = await boot(page, { locale, reviewer: 'ready' });
+    await startEvostel(page, t);
+    await nextUntil(page, t, 'Approvers');
+    const live = page.getByTestId('reviewer-live');
+    await expect(live).toHaveAttribute('data-state', 'ready');
+    await expect(live).toContainText(t('A usable reviewer exists: {name}', { name: 'Fatima Finance' }));
+    expect(server.reviewerChecks).toBeGreaterThan(0);
+    await shot(page, info, `${locale}-approvers-ready`);
+    const axe = await new AxeBuilder({ page }).include('[data-testid="create-company-wizard"]').analyze();
+    expect(axe.violations.map(v => v.id)).toEqual([]);
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`Approvers when completing a company: a reviewer who has not set a password is Not ready, never green (${locale})`, async ({ page }, info) => {
+    const t = T(locale);
+    const { server, pageErrors } = await boot(page, { locale, reviewer: 'waitingPassword' });
+    await startEvostel(page, t);
+    await nextUntil(page, t, 'Approvers');
+    const live = page.getByTestId('reviewer-live');
+    await expect(live).toHaveAttribute('data-state', 'notReady');
+    await expect(live).toContainText(t('Not ready'));
+    await expect(live).toContainText(locale === 'ar' ? 'لم يعيّن عمر حداد كلمة مرور بعد' : 'Omar Haddad has not set a password yet');
+    await expect(live).not.toContainText(t('A usable reviewer exists.'));
+    await expect(live.getByRole('link', { name: t('Open Users') })).toHaveAttribute('href', /tab=users/);
+    await shot(page, info, `${locale}-approvers-not-ready`);
+    // Not ready is a warning on the review, not a block.
+    await nextUntil(page, t, 'Review & update');
+    await expect(page.getByTestId('review-reviewer')).toHaveAttribute('data-satisfied', 'false');
+    expect(server.errors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+}
+
+test('Approvers when completing a company: a failed check says so and Retry asks again', async ({ page }, info) => {
+  const t = T('en');
+  const { server, pageErrors } = await boot(page, { reviewer: 'failOnce' });
+  await startEvostel(page, t);
+  await nextUntil(page, t, 'Approvers');
+  const live = page.getByTestId('reviewer-live');
+  await expect(live).toHaveAttribute('data-state', 'error');
+  await expect(live).toContainText(t('Could not check pay reviewers.'));
+  await shot(page, info, 'en-approvers-check-failed');
+  const before = server.reviewerChecks;
+  server.reviewerHealthy = true;
+  await live.getByRole('button', { name: t('Retry') }).click();
+  await expect(live).toHaveAttribute('data-state', 'ready');
+  expect(server.reviewerChecks).toBeGreaterThan(before);
+  expect(server.errors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Approvers: choosing an existing user lists only active Finance Approvers', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await toApprovers(page, t);
+  await page.getByLabel(t('Make an existing user a reviewer')).check();
+  const select = page.getByRole('combobox', { name: new RegExp(`^${t('User')}`) });
+  await expect(select.locator('option')).toHaveText([t('Choose a user…'), 'Fatima Finance · fatima@riyadhtrading.sa'], { timeout: 15_000 });
+  await next(page, t);
+  await expect(page.locator('#ccw-payReviewer-existingUserId-error')).toHaveText(t('Choose the user who will be the pay reviewer.'));
+  await select.selectOption('u-fatima');
+  await next(page, t);
+  await expectStep(page, t, 'Review & create');
+  await expect.poll(() => server.dryRuns.at(-1)?.payReviewer).toMatchObject({ mode: 'existing', existingUserId: 'u-fatima' });
+});

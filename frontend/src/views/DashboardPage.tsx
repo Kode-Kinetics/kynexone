@@ -32,6 +32,7 @@ import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
 import { AttentionStrip } from '../components/dashboard/AttentionStrip';
+import { ApprovalDeadEndCard } from '../components/dashboard/ApprovalDeadEndCard';
 import { PayrollHero } from '../components/dashboard/PayrollHero';
 import { KpiRow } from '../components/dashboard/KpiRow';
 import { AttendanceHeatmap } from '../components/dashboard/AttendanceHeatmap';
@@ -197,6 +198,8 @@ export function DashboardPage() {
     </div>
   );
 
+  // Pay packages no reviewer can approve: only for someone who can fix it (create a user), one company at a time.
+  const deadEndEl = <ApprovalDeadEndCard companyId={selectedCompanyId} canManage={hasPermission('security.manage')} />;
   const attentionEl = data ? <AttentionStrip items={attention} findingsUnavailable={findings.enabled && findings.failed} /> : null;
   const wide = useMediaQuery('(min-width: 1280px)');
   const heroEl = data && canReadPayroll
@@ -218,7 +221,7 @@ export function DashboardPage() {
         {header}
         {!data ? skeleton : (
           <DashboardViews
-            today={<div className="flex flex-col gap-4">{attentionEl}{heroEl}{kpiEl}</div>}
+            today={<div className="flex flex-col gap-4">{deadEndEl}{attentionEl}{heroEl}{kpiEl}</div>}
             actions={<div className="flex flex-col gap-4">{approvalsEl}{expiryEl}{activityEl}</div>}
             insights={<div className="flex flex-col gap-4">{payDeptEl}{heatEl}{compEl}</div>}
             badges={{ actions: pending }}
@@ -234,6 +237,7 @@ export function DashboardPage() {
       {header}
       {!data ? skeleton : (
         <>
+          {deadEndEl}
           {attentionEl}
           {/* At a glance: two independent columns that each stack upward, so no box waits
               for its neighbour's height and nothing leaves a gap. Below 1280 px the same pieces

@@ -7,6 +7,10 @@ must not be made active to obtain the approval needed to activate that employee.
 
 1. Establish the company's administrative logins in Setup → Users. These can be direct users without
    employee records. Grant a pay-entry operator and a different Finance Approver access to the company.
+   New-company setup (step 6) can create both logins together: the company super admin and an optional independent pay
+   reviewer (Finance Approver, this company only). The reviewer is a direct login with no employee record, so it is usable
+   before anyone's own onboarding finishes, and it must be a different person from the administrator. Setup grants no
+   approval: the Guided setup item "Independent pay reviewer" only reports whether a usable reviewer exists.
 2. Each person completes their own password setup and required sign-in security. A pending, locked,
    disabled, out-of-scope or permission-denied reviewer does not count as ready.
 3. Check **Independent pay approval** in Users and the independent reviewer item in Guided setup.

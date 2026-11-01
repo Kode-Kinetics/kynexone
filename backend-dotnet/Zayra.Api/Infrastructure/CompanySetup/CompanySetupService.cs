@@ -50,6 +50,8 @@ public sealed class CompanySetupService
     public const string SetupCompletedAction = "company.setup_completed";
     /// <summary>The audit row written when the company super admin could not be written after the commit.</summary>
     public const string AdminFailedAction = "company.setup_admin_failed";
+    /// <summary>The audit row written when the independent pay reviewer could not be written after the commit.</summary>
+    public const string ReviewerFailedAction = "company.setup_reviewer_failed";
 
     private readonly ZayraDbContext _db;
     private readonly IOrganizationSetupService _organization;
@@ -622,6 +624,14 @@ public sealed class CompanySetupService
         return admin?.Mode is CompanySetupVocabulary.AdminInvite or CompanySetupVocabulary.AdminExisting ? admin : null;
     }
 
+    /// <summary>True when the draft's commit would create or grant a pay reviewer login. That is a pay-approval grant, so the
+    /// controller asks for the same "Confirm it's you" step as for an administrator.</summary>
+    public async Task<bool> GrantsPayReviewerAsync(Guid tenantId, Guid draftId, CancellationToken ct)
+    {
+        var draft = await _db.CompanySetupDrafts.AsNoTracking().SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == draftId, ct);
+        return (draft is null ? null : ReadBody(draft)?.PayReviewer)?.Mode is CompanySetupVocabulary.AdminInvite or CompanySetupVocabulary.AdminExisting;
+    }
+
     internal static CompanySetupDraftBody? ReadBody(CompanySetupDraftRecord row)
     {
         try { return JsonSerializer.Deserialize<CompanySetupDraftBody>(row.Body, BodyJson); }
@@ -1058,6 +1068,9 @@ public sealed class CompanySetupService
         // transaction (it cannot join this one); a failure never rolls the company back — readiness shows it.
         if (executed is not null && executed.CompanyAdminAction == V.ActionCreate)
             await ProvisionCompanyAdminAsync(caller, result!.CompanyId, executed.CompanyAdmin, ct);
+        // The independent pay reviewer follows the same path: after the commit, its own failure audit, never a rollback.
+        if (executed is { PayReviewer: not null } && executed.PayReviewerAction == V.ActionCreate)
+            await ProvisionPayReviewerAsync(caller, result!.CompanyId, executed.PayReviewer, ct);
         var readiness = await ReadinessAsync(tenantId, result!.CompanyId, ct);
         return CompanySetupOutcome<CompanySetupResult>.Ok(result with { Readiness = readiness ?? [] }, result.Replayed ? 200 : 201);
     }
@@ -1387,7 +1400,20 @@ public sealed class CompanySetupService
     /// the person gets in through the existing single-use sign-in (password-reset) link, which User Management
     /// emails or hands over — the readiness item says so until they have signed in. KynexOne creates no mailbox.</para>
     /// </summary>
-    internal async Task<string?> ProvisionCompanyAdminAsync(CompanySetupCaller caller, Guid companyId, CompanySetupCompanyAdmin admin, CancellationToken ct)
+    internal Task<string?> ProvisionCompanyAdminAsync(CompanySetupCaller caller, Guid companyId, CompanySetupCompanyAdmin admin, CancellationToken ct) =>
+        ProvisionAccessAsync(caller, companyId, admin, "Admin", "Company Administrator", AdminFailedAction, ct);
+
+    /// <summary>
+    /// The independent pay reviewer: the same post-commit path as the administrator, with the seeded Finance Approver role
+    /// (which holds the pay approval permission) instead of Admin. Invite creates a direct login with no employee link, so it
+    /// is usable before any employee record finishes onboarding. A workspace whose role is missing or no longer holds the
+    /// permission fails visibly (audit row + readiness), never with a different role. Nothing here approves any pay.
+    /// </summary>
+    internal Task<string?> ProvisionPayReviewerAsync(CompanySetupCaller caller, Guid companyId, CompanySetupCompanyAdmin reviewer, CancellationToken ct) =>
+        ProvisionAccessAsync(caller, companyId, reviewer, PayReviewerRole.Name, "Company User", ReviewerFailedAction, ct);
+
+    private async Task<string?> ProvisionAccessAsync(CompanySetupCaller caller, Guid companyId, CompanySetupCompanyAdmin person,
+        string roleName, string grantRole, string failedAction, CancellationToken ct)
     {
         var ctx = caller.Context with { TenantId = caller.TenantId };
         string? failure = null;
@@ -1396,19 +1422,24 @@ public sealed class CompanySetupService
         string? code = null;
         try
         {
-            if (admin.Mode == V.AdminInvite)
+            if (person.Mode == V.AdminInvite)
             {
-                if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, ct) is { } seats) { failure = seats.Message; code = UserSeatLimit.Refusal.Code; }
+                if (roleName == PayReviewerRole.Name && await PayReviewerRole.ResolveAsync(_db, caller.TenantId, ct) is null)
+                {
+                    failure = $"This workspace has no active '{PayReviewerRole.Name}' role that holds payroll.approve.";
+                    code = "pay_reviewer_role_missing";
+                }
+                else if (await UserSeatLimit.CheckAsync(_db, caller.TenantId, ct) is { } seats) { failure = seats.Message; code = UserSeatLimit.Refusal.Code; }
                 else
                 {
                     var secret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48)) + "aA1!";
                     await _access.CreateUserAsync(caller.TenantId, new CreateUserRequest(
-                        admin.Email!.Trim().ToLowerInvariant(), admin.FullNameEn!.Trim(), secret, ["Admin"], CompanyId: companyId, IsGroupScope: false), ctx, ct);
+                        person.Email!.Trim().ToLowerInvariant(), person.FullNameEn!.Trim(), secret, [roleName], CompanyId: companyId, IsGroupScope: false), ctx, ct);
                 }
             }
-            else if (admin.Mode == V.AdminExisting && admin.ExistingUserId is Guid userId)
+            else if (person.Mode == V.AdminExisting && person.ExistingUserId is Guid userId)
             {
-                await _access.CreateEntityGrantAsync(caller.TenantId, userId, companyId, "Company Administrator", EntityGrantModes.SelectedCompanies, ctx, ct);
+                await _access.CreateEntityGrantAsync(caller.TenantId, userId, companyId, grantRole, EntityGrantModes.SelectedCompanies, ctx, ct);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or PrivilegeCeilingException or DbUpdateException)
@@ -1424,12 +1455,12 @@ public sealed class CompanySetupService
         if (failure is null) return null;
 
         _db.ChangeTracker.Clear();
-        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, AdminFailedAction, nameof(Company), companyId.ToString(), ctx,
-            JsonSerializer.Serialize(new { mode = admin.Mode, code, reason = failure }, BodyJson));
+        var row = AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, failedAction, nameof(Company), companyId.ToString(), ctx,
+            JsonSerializer.Serialize(new { mode = person.Mode, code, reason = failure }, BodyJson));
         row.CompanyId = companyId;
         _db.AuditLogs.Add(row);
         try { await _db.SaveChangesAsync(ct); }
-        catch (DbUpdateException) { /* the readiness item still shows the admin as missing */ }
+        catch (DbUpdateException) { /* the readiness item still shows the login as missing */ }
         return failure;
     }
 

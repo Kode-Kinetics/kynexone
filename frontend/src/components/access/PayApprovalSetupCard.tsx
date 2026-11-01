@@ -1,32 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { payApprovalsApi, type PayApprovalSetup } from '../../api/payApprovals';
+import { usePayApprovalSetup } from '../../hooks/usePayApprovalSetup';
 import { useLocale } from '../../contexts/LocaleContext';
 
 export function PayApprovalSetupCard({ companyId, revision, onCreate }: {
   companyId: string | null; revision: unknown; onCreate: () => void;
 }) {
   const { t } = useLocale();
-  const [data, setData] = useState<PayApprovalSetup | null>(null);
-  const [error, setError] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  const reload = useCallback(() => setRefresh(n => n + 1), []);
-  useEffect(() => {
-    let current = true;
-    setData(null); setError(false);
-    if (!companyId) return;
-    setLoading(true);
-    payApprovalsApi.setup(companyId).then(value => { if (current) setData(value); })
-      .catch(() => { if (current) setError(true); })
-      .finally(() => { if (current) setLoading(false); });
-    return () => { current = false; };
-  }, [companyId, revision, refresh]);
-  useEffect(() => {
-    window.addEventListener('focus', reload);
-    return () => window.removeEventListener('focus', reload);
-  }, [reload]);
+  const { data, error, loading, reload } = usePayApprovalSetup(companyId, revision);
   if (!companyId) return <p className="text-sm text-slate-600 dark:text-slate-300">{t('Select a company to check independent pay reviewers.')}</p>;
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-slate-900" aria-labelledby="pay-reviewer-setup">
