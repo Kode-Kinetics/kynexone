@@ -288,6 +288,11 @@ test('a Payroll accounting tab the reader may not see falls back to the first on
 });
 
 test('a link from outside Setup that names a company still opens its wizard', async ({ page }) => {
+  // Visit the wizard route once first. On a dev server its first compile reloads the document, and a reloaded Setup
+  // rightly ignores a deep link (setupLandingCompanyLink: the address is then one Setup wrote itself) and opens the chooser.
+  // That is not the behaviour under test, and a built server never compiles on request.
+  await boot(page, { url: '/setup/company/fixture-company/complete', expectWizard: true });
+  await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
   await boot(page, { url: '/setup?tab=aiSetup&path=guided&companyId=fixture-company', expectWizard: true });
   await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
   // The old studio's bookmark form too.
