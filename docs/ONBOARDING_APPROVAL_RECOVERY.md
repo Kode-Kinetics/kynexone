@@ -40,7 +40,7 @@ No schema migration or bulk data repair is required. Deploy the API and frontend
 Existing pay gaps, approval fingerprints, audit history, roles and passwords remain intact.
 
 Automated coverage includes readiness/activation parity, company scope, unusable reviewer accounts,
-creator/last-editor exclusions, an isolated 46-hire Saudi company through approval, activation,
+creator, audited pay-writer, payroll-profile-editor, subject and credential-handler exclusions, an isolated 46-hire Saudi company through approval, activation,
 welcome-code redemption and real password login, and responsive/Arabic approval UI checks.
 Use disposable data for these tests; never exercise all production passwords or redeem employees'
 real welcome codes to demonstrate a release.

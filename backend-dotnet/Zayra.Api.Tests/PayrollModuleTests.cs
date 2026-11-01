@@ -154,6 +154,29 @@ public class PayrollModuleTests
     }
 
     [Fact]
+    public async Task AssignEmployeeSalary_OnHireAwaitingFinance_RecordsTheWriterSoTheyCannotApproveIt()
+    {
+        var (db, conn) = CreateSqliteDb();
+        await using var _ = conn;
+        var tenantId = Guid.NewGuid();
+        var employee = new Employee { TenantId = tenantId, EmployeeCode = "HW-001", FullName = "Hire Awaiting", Status = "Draft", Salary = 8_000m, JoiningDate = new DateTime(2026, 1, 1) };
+        var structure = new SalaryStructure { TenantId = tenantId, Code = "STD", Name = "Standard", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1) };
+        db.Employees.Add(employee);
+        db.SalaryStructures.Add(structure);
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId).AssignEmployeeSalary(
+            new EmployeeSalaryStructureRequest(employee.Id, structure.Id, 9_000m, 0m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2026, 1, 1), "SAR"),
+            CancellationToken.None);
+
+        result.Should().BeOfType<CreatedResult>();
+        (await db.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.EntityName == "Employee" && a.EntityId == employee.Id.ToString()
+            && a.UserId != null && (a.Action == Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.CreatedAction
+                || a.Action == Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.WrittenAction)))
+            .Should().BeTrue("the person who set the pay must be on record as its writer");
+    }
+
+    [Fact]
     public async Task Process_UsesLatestSalaryAssignmentEffectiveForRunPeriod()
     {
         var (db, conn) = CreateSqliteDb();

@@ -348,6 +348,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
         IReadOnlyList<string> unknown;
+        var priorPay = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.LiveFingerprintAsync(db, tenantId, employee.Id, ct);
         try
         {
             unknown = await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, tenantId, employee, changes, change.ApprovedByUserId, ct);
@@ -367,6 +368,12 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                         : "The staffing budget does not allow this change.",
                     ct);
         }
+
+        // A scheduled pay change on a hire still waiting for Finance leaves the same audit trail as the other write paths:
+        // the requester is the maker and the approver of the change is a second pair of eyes, never the package's approver.
+        await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(db, employee, priorPay,
+            new RequestContext(null, SystemActor, change.RequestedByUserId ?? change.ApprovedByUserId, tenantId), ct,
+            workflowApprover: change.ApprovedByUserId);
 
         // 6. Applied — the marker is written in the same transaction as the values.
         var now = DateTime.UtcNow;

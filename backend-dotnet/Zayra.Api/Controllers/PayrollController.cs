@@ -373,6 +373,30 @@ public partial class PayrollController : ControllerBase
 
     private static string FormatGuidSet(string? json) => string.Join(';', ReadGuidSet(json));
 
+    /// <summary>The pay fingerprint of each employee before a salary-structure write, so a change can be audited to its writer.</summary>
+    private async Task<Dictionary<int, string>> PriorPayAsync(IReadOnlyCollection<int> employeeIds, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var prior = new Dictionary<int, string>();
+        foreach (var id in employeeIds)
+            prior[id] = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.LiveFingerprintAsync(_db, tenantId, id, ct);
+        return prior;
+    }
+
+    /// <summary>
+    /// A salary-structure write changes the pay package, so a hire still waiting for Finance keeps the same trail as every other
+    /// write path: the gap reopens and the writer is recorded, which bars them from approving their own figures.
+    /// </summary>
+    private async Task ReconcilePayAsync(Dictionary<int, string> prior, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var context = new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), tenantId);
+        var employees = await _db.Employees.Where(e => e.TenantId == tenantId && prior.Keys.Contains(e.Id) && !e.IsDeleted).ToListAsync(ct);
+        foreach (var employee in employees)
+            await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, prior[employee.Id], context, ct);
+        await _db.SaveChangesAsync(ct);
+    }
+
     [HttpPost("employee-salary-structures")]
     [HasPermission("payroll.write")]
     public async Task<IActionResult> AssignEmployeeSalary(EmployeeSalaryStructureRequest req, CancellationToken cancellationToken)
@@ -409,6 +433,7 @@ public partial class PayrollController : ControllerBase
             if (grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary)
                 return BadRequest(new { message = $"Salary package exceeds grade {grade.Code} maximum {grade.MaxSalary:N2} {grade.Currency}." });
         }
+        var priorPay = await PriorPayAsync(new[] { req.EmployeeId }, cancellationToken);
         // Salary assignments are an effective-dated schedule. Replacing one date must
         // not deactivate the current package when the new package starts in the future.
         await _db.EmployeeSalaryStructures
@@ -419,6 +444,7 @@ public partial class PayrollController : ControllerBase
         _db.EmployeeSalaryStructures.Add(assignment);
         await PayrollAudit("payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(), new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await ReconcilePayAsync(priorPay, cancellationToken);
         return Created($"/api/payroll/employee-salary-structures/{assignment.Id}", SalaryStructureAssignmentDto.Project(assignment, true));
     }
 
@@ -11739,6 +11765,7 @@ public partial class PayrollController : ControllerBase
         var firstSeen = new Dictionary<(int EmployeeId, DateOnly EffectiveDate), string>();
         async Task WriteAsync()
         {
+                var priorPay = await PriorPayAsync(planned.Select(r => r.EmployeeId).Distinct().ToList(), cancellationToken);
                 foreach (var row in planned)
                 {
                     var key = (row.EmployeeId, row.EffectiveDate);
@@ -11771,6 +11798,7 @@ public partial class PayrollController : ControllerBase
                 }
                 await PayrollAudit("payroll.employee_salary.imported", "EmployeeSalary", "bulk", new { received = rows.Count, created, updated, skipped, errors = errors.Count }, cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
+                await ReconcilePayAsync(priorPay, cancellationToken);
         }
         try
         {
