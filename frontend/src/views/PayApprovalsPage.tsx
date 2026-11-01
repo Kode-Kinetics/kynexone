@@ -40,9 +40,15 @@ export function PayApprovalsPage() {
       </header>
 
       <div aria-live="polite">
-        {data && !loading && (data.requiresOtherReviewerCount ?? 0) > 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-          {t('{count} packages need another reviewer because you are not independent of them.', { count: data.requiresOtherReviewerCount ?? 0 })}
-          {hasPermission('security.manage') && <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>}
+        {data && !loading && (data.requiresOtherReviewerCount ?? 0) > 0 && <p data-testid="pay-approvals-hidden-notice" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          {data.items.length === 0
+            ? (data.requiresOtherReviewerCount === 1
+              ? t('You created {count} pay package, so someone else must approve it. It does not appear in your queue.', { count: 1 })
+              : t('You created {count} pay packages, so someone else must approve them. They do not appear in your queue.', { count: data.requiresOtherReviewerCount ?? 0 }))
+            : t('{count} packages need another reviewer because you are not independent of them.', { count: data.requiresOtherReviewerCount ?? 0 })}
+          {hasPermission('security.manage')
+            ? <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>
+            : data.items.length === 0 && <span className="ms-2">{t('Ask your administrator.')}</span>}
         </p>}
         {loading && <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />{t('Loading…')}</p>}
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200">{t('Could not load the pay approvals.')}</p>}

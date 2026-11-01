@@ -4,6 +4,8 @@ interface StatusChipProps {
   label: string;
   tone?: 'blue' | 'cyan' | 'emerald' | 'amber' | 'rose' | 'slate';
   dot?: boolean;
+  /** A glyph so the state never rests on colour alone. */
+  icon?: React.ReactNode;
 }
 
 const toneClasses: Record<NonNullable<StatusChipProps['tone']>, string> = {
@@ -24,12 +26,13 @@ const dotColors: Record<NonNullable<StatusChipProps['tone']>, string> = {
   slate: 'bg-slate-400',
 };
 
-export function StatusChip({ label, tone = 'slate', dot }: StatusChipProps) {
+export function StatusChip({ label, tone = 'slate', dot, icon }: StatusChipProps) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold ring-1 ${toneClasses[tone]}`}
     >
-      {dot && (
+      {icon}
+      {dot && !icon && (
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColors[tone]}`} aria-hidden="true" />
       )}
       {label}

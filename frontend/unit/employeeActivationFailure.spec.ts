@@ -19,3 +19,10 @@ test('activation explains each returned blocker instead of hiding Finance approv
 test('a failed network request still gives a usable error', () => {
   expect(employeeActivationFailure(new Error('offline'))).toContain('could not be activated');
 });
+
+test('a refused activation shows the server message verbatim, untranslated', async () => {
+  const { activationRejectionMessage } = await import('../src/lib/employeeActivationFailure');
+  const refused = { response: { data: { message: 'Pay must be approved by someone else.', blocking: [{ label: 'Other label' }] } } };
+  expect(activationRejectionMessage(refused, text => `AR:${text}`)).toBe('Pay must be approved by someone else.');
+  expect(activationRejectionMessage({ response: { data: {} } }, text => `AR:${text}`)).toMatch(/^AR:The employee could not be activated/);
+});

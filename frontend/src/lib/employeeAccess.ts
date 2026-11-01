@@ -1,5 +1,6 @@
-import type { EmployeeAccessState, IssuedWelcomeCode, WorkEmailRow } from '../api/employeeAccess';
+import type { EmployeeAccessDto, EmployeeAccessState, IssuedWelcomeCode, WorkEmailRow } from '../api/employeeAccess';
 import { dateLocale } from './format';
+import { PAY_GAP_KEY } from './payApprovals';
 
 /**
  * Pure helpers for the HR side of employee sign-in access: the one label, tone and button per
@@ -255,3 +256,43 @@ export const BLOCKED_REASON_KEYS: Record<string, string> = {
   email_belongs_to_existing_login: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
   email_belongs_to_former_employee: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
 };
+
+/**
+ * Three separate questions the profile answers: is the person an active employee, is a login
+ * enabled, is a password configured. Signing in never activates employment.
+ *
+ * The access API returns ONE merged `state`, so login and password are derived from it and are
+ * only as precise as it is. Missing independent fields (backend): see unit/employeeAccess.spec.ts.
+ */
+export type EmployeeRowState = 'not_active' | 'awaiting_pay_approval' | 'active';
+export type LoginRowState = 'no_login' | 'login_enabled' | 'access_stopped';
+export type PasswordRowState = 'not_set_up' | 'code_given' | 'password_set' | 'unknown';
+
+export interface ThreeStates {
+  employee: EmployeeRowState;
+  /** Null while the access status is unavailable. */
+  login: LoginRowState | null;
+  password: PasswordRowState | null;
+  /** No work email on record: rows B and C cannot start. */
+  needsWorkEmail: boolean;
+}
+
+export function deriveThreeStates(
+  employee: { status: string; workEmail?: string | null },
+  access: Pick<EmployeeAccessDto, 'state'> & { workEmail?: string | null } | null,
+  readiness: { blocking: ReadonlyArray<{ key: string }> } | null,
+): ThreeStates {
+  const emp: EmployeeRowState = employee.status === 'Active' ? 'active'
+    : readiness?.blocking.some((item) => item.key === PAY_GAP_KEY) ? 'awaiting_pay_approval'
+      : 'not_active';
+  const email = (access?.workEmail ?? employee.workEmail ?? '').trim();
+  const needsWorkEmail = !email || access?.state === 'waiting_for_work_email';
+  if (!access) return { employee: emp, login: null, password: null, needsWorkEmail };
+  switch (access.state) {
+    case 'active': return { employee: emp, login: 'login_enabled', password: 'password_set', needsWorkEmail };
+    case 'code_given': return { employee: emp, login: 'login_enabled', password: 'code_given', needsWorkEmail };
+    // The merged state cannot say whether a password was set before the stop.
+    case 'stopped': return { employee: emp, login: 'access_stopped', password: 'unknown', needsWorkEmail };
+    default: return { employee: emp, login: 'no_login', password: 'not_set_up', needsWorkEmail };
+  }
+}

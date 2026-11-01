@@ -7,3 +7,13 @@ export function employeeActivationFailure(error: unknown, translate: (message: s
   if (typeof data?.message === 'string' && data.message.trim()) return translate(data.message);
   return translate('The employee could not be activated. Reload the readiness checks and try again.');
 }
+
+/**
+ * The refusal as the server wrote it: its `message`, verbatim and untranslated, so what the person
+ * reads is what the audit trail holds. A body with no message falls back to the generic sentence.
+ */
+export function activationRejectionMessage(error: unknown, translate: (message: string) => string = message => message): string {
+  const message = (error as { response?: { data?: { message?: unknown } } } | null)?.response?.data?.message;
+  if (typeof message === 'string' && message.trim()) return message;
+  return translate('The employee could not be activated. Reload the readiness checks and try again.');
+}
