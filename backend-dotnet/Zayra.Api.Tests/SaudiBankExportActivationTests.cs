@@ -147,7 +147,7 @@ public class SaudiBankExportActivationTests
     }
 
     [Fact]
-    public async Task Controller_DefaultOff_RejectsEveryGatedAction_EvenWithFullPermissions_AndWritesNothing()
+    public async Task Controller_DefaultOff_RejectsEveryBatchAction_EvenWithFullPermissions_AndWritesNothing()
     {
         var (db, tenant, company, batch) = await SeedAsync();
         var ctrl = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null,
@@ -155,9 +155,6 @@ public class SaudiBankExportActivationTests
 
         var auditCountBefore = db.PayrollAuditLogs.Count();
 
-        AssertDisabled(ctrl.Formats());
-        AssertDisabled(await ctrl.GetSettings(company, default));
-        AssertDisabled(await ctrl.PutSettings(company, SaudiBankExportTestData.Settings(), default));
         AssertDisabled(await ctrl.Context(batch, default));
         AssertDisabled(await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default));
         AssertDisabled(await ctrl.Generate(batch, SaudiBankExportTestData.Request(), default));
@@ -165,6 +162,47 @@ public class SaudiBankExportActivationTests
 
         db.BankTransferFiles.Count().Should().Be(0);
         db.PayrollAuditLogs.Count().Should().Be(auditCountBefore, "disabled calls must add no audit or business writes beyond fixture setup");
+    }
+
+    // Setup > Bank and WPS must work before the first payment, and an export is never activated for a company that has not
+    // saved its employer settings yet. The employer's own account and establishment facts therefore need no activation; only
+    // the file (validate, generate, download) and everything that reads a batch stay behind the operator switch.
+    [Fact]
+    public async Task Settings_AndFormats_DefaultOff_AreReadableAndSavable_WithTheirPermissions()
+    {
+        var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var company = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
+        var ctrl = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null,
+            "payroll.export", "payroll.structure_manage");
+
+        ctrl.Formats().Should().BeOfType<OkObjectResult>();
+        (await ctrl.GetSettings(company, default)).Should().BeOfType<OkObjectResult>();
+        (await ctrl.PutSettings(company, SaudiBankExportTestData.Settings(), default)).Should().BeOfType<OkObjectResult>();
+
+        var saved = (await ctrl.GetSettings(company, default)).Should().BeOfType<OkObjectResult>().Subject.Value
+            .Should().BeOfType<SaudiBankExportSettingsDto>().Subject;
+        saved.MainAccountNumber.Should().Be(SaudiBankExportTestData.Settings().MainAccountNumber);
+    }
+
+    [Fact]
+    public async Task Settings_DefaultOff_StillNeedTheirPermissionsAndCompanyScope()
+    {
+        var db = NewDb();
+        var tenant = Guid.NewGuid();
+        var company = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
+        var other = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
+
+        var exportOnly = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null, "payroll.export");
+        (await exportOnly.PutSettings(company, SaudiBankExportTestData.Settings(), default)).Should().BeOfType<ForbidResult>();
+
+        var noPermission = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null, "payroll.structure_manage");
+        noPermission.Formats().Should().BeOfType<ForbidResult>();
+        (await noPermission.GetSettings(company, default)).Should().BeOfType<ForbidResult>();
+
+        var scoped = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null, "payroll.export", "payroll.structure_manage");
+        (await scoped.GetSettings(other, default)).Should().BeOfType<ForbidResult>();
+        (await scoped.PutSettings(other, SaudiBankExportTestData.Settings(), default)).Should().BeOfType<ForbidResult>();
     }
 
     [Fact]
@@ -210,10 +248,13 @@ public class SaudiBankExportActivationTests
             .Outcome.Should().Be(SaudiBankExportOutcome.Ok);
         var enabledOnlyForA = SaudiBankExportTests.EnabledActivationConfig(tenant, companyA);
 
+        var batchA = await SaudiBankExportTestData.SeedBatchAsync(db, tenant, companyA, 9);
+        var batchB = await SaudiBankExportTestData.SeedBatchAsync(db, tenant, companyB, 9);
+
         (await SaudiBankExportTests.Ctrl(db, tenant, companyA, enabledOnlyForA, "payroll.export")
-            .GetSettings(companyA, default)).Should().BeOfType<OkObjectResult>();
+            .Context(batchA, default)).Should().BeOfType<OkObjectResult>();
         AssertDisabled(await SaudiBankExportTests.Ctrl(db, tenant, companyB, enabledOnlyForA, "payroll.export")
-            .GetSettings(companyB, default));
+            .Context(batchB, default));
     }
 
     [Fact]

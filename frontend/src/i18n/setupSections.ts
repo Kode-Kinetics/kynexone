@@ -54,6 +54,8 @@ const ar: Record<string, string> = {
   'Bonus types': 'أنواع المكافآت',
   'The kinds of bonus paid through payroll.': 'أنواع المكافآت التي تُصرف عبر الرواتب.',
   'The layout of the payslips employees receive.': 'تصميم كشوف الرواتب التي يتسلمها الموظفون.',
+  'Bank and WPS': 'البنك وحماية الأجور',
+  'The employer account and establishment details for the bank payment file, set before the first payment.': 'بيانات حساب صاحب العمل والمنشأة لملف الدفع البنكي، تُدخل قبل أول دفعة.',
 
   // Talent & employee services
   'The tasks a new joiner and their team complete, as reusable checklists.': 'المهام التي ينجزها الموظف الجديد وفريقه، في قوائم قابلة لإعادة الاستخدام.',
