@@ -69,3 +69,14 @@ test('payslip_templates_open_for_the_roles_the_template_list_serves', () => {
   expect(opens('payslipTemplates', persona(['Finance'], ['payroll.read']))).toBe(false);
   expect(opens('payslipTemplates', persona(['Payroll Officer'], []))).toBe(false);
 });
+
+test('bank_and_wps_opens_for_whoever_the_settings_read_serves_and_says_so_to_a_reader_who_cannot_save', () => {
+  // SaudiBankExportsController.Actor(): every action, GET settings and GET formats included, needs payroll.export;
+  // PUT settings also needs payroll.structure_manage. A section is offered for what its READ serves, so a holder of
+  // structure_manage alone (who would answer 403 on load) is not shown it, and an export-only reader is (the form says
+  // they cannot save).
+  expect(opens('bankWps', persona(['Payroll Manager'], ['payroll.export', 'payroll.structure_manage']))).toBe(true);
+  expect(opens('bankWps', persona(['Payroll Officer'], ['payroll.export']))).toBe(true);
+  expect(opens('bankWps', persona(['Payroll Manager'], ['payroll.structure_manage']))).toBe(false);
+  expect(opens('bankWps', persona(['Admin'], []))).toBe(false);
+});

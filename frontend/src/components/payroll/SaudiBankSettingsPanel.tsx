@@ -15,11 +15,31 @@ import {
 import type { CompanyDto } from '../../api/organization';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
+import { bankSettingsBaseline, bankSettingsLoadProblem, resolveBankSettingsScope, type BankSettingsLoadProblem } from '../../lib/saudiBankSettingsScope';
 import {
-  AR, Alert, EMPTY_SETTINGS, EN, SAUDI_CODES, SaudiBankSettingsForm, btn, checkSettings, normaliseSettings, sameSettings,
+  AR, Alert, EMPTY_SETTINGS, EN, SaudiBankSettingsForm, btn, checkSettings, normaliseSettings, sameSettings,
 } from './SaudiBankExportPanel';
 
-type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
+type Load = { status: 'loading' } | { status: 'error'; message: string; problem: BankSettingsLoadProblem } | { status: 'ready' };
+
+// This section's own words (the form and its field copy come from the shared EN/AR tables).
+const COPY = {
+  en: {
+    noSaudi: 'No Saudi company is available here. These bank settings are for Saudi companies; for any other company, enter the WPS employer ID on the company itself (Setup > Companies).',
+    scopeNotSaudi: (name: string) => `${name} is not a Saudi company, so it has no bank file settings. Enter its WPS employer ID on the company itself (Setup > Companies), or choose a Saudi company in the scope.`,
+    choose: 'Choose a company to enter its bank settings.',
+    forbidden: 'Your account cannot open these settings. Bank and WPS settings need the payroll export permission; ask an administrator to grant it.',
+    notFound: 'This company could not be found. Choose another company, or reload the page.',
+  },
+  ar: {
+    noSaudi: 'لا توجد شركة سعودية متاحة هنا. هذه الإعدادات خاصة بالشركات السعودية؛ أما الشركات الأخرى فأدخل رقم صاحب العمل في حماية الأجور في بيانات الشركة (الإعداد > الشركات).',
+    scopeNotSaudi: (name: string) => `${name} ليست شركة سعودية، فلا إعدادات ملف بنكي لها. أدخل رقم صاحب العمل في حماية الأجور في بيانات الشركة (الإعداد > الشركات)، أو اختر شركة سعودية في النطاق.`,
+    choose: 'اختر شركة لإدخال إعدادات البنك الخاصة بها.',
+    forbidden: 'لا يمكن لحسابك فتح هذه الإعدادات. تتطلب إعدادات البنك وحماية الأجور صلاحية تصدير الرواتب؛ اطلب من المسؤول منحها.',
+    notFound: 'تعذّر العثور على هذه الشركة. اختر شركة أخرى أو أعد تحميل الصفحة.',
+  },
+} as const;
+
 
 export interface SaudiBankSettingsPanelProps {
   /** The company chosen in Setup's scope, when there is one. */
@@ -37,9 +57,10 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   const { hasPermission } = useAuth();
   const uid = useId();
 
-  const saudi = useMemo(() => (companies ?? []).filter(x => SAUDI_CODES.has((x.countryCode ?? '').toUpperCase())), [companies]);
+  const words = COPY[locale === 'ar' ? 'ar' : 'en'];
   const [picked, setPicked] = useState('');
-  const selected = saudi.find(x => x.id === companyId) ?? saudi.find(x => x.id === picked) ?? (saudi.length === 1 ? saudi[0] : null);
+  const scope = useMemo(() => resolveBankSettingsScope({ companyId, companies, picked }), [companyId, companies, picked]);
+  const selected = scope.kind === 'selected' ? scope.company : null;
   const selectedId = selected?.id ?? '';
 
   const [load, setLoad] = useState<Load>({ status: 'loading' });
@@ -55,7 +76,9 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   activeRef.current = selectedId;
 
   useEffect(() => {
-    setSaved(null); setDraft(EMPTY_SETTINGS); setShowErrors(false); setError(''); setNotice('');
+    // A save still in flight for the company just left must not keep this one's Save button disabled (its result is
+    // already ignored by activeRef).
+    setSaved(null); setDraft(EMPTY_SETTINGS); setShowErrors(false); setError(''); setNotice(''); setSaving(false);
     if (!selectedId) { setLoad({ status: 'ready' }); return; }
     const ac = new AbortController();
     setLoad({ status: 'loading' });
@@ -66,17 +89,18 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
           saudiBankExportsApi.getSettings(selectedId, { signal: ac.signal }),
         ]);
         if (ac.signal.aborted) return;
-        const norm = normaliseSettings(settings);
         const list = Array.isArray(fmts) ? fmts : [];
+        // The only supported format is pre-selected as an explicit, visible choice while nothing is saved yet; that
+        // default is the baseline, so an untouched form is not "unsaved".
+        const base = bankSettingsBaseline(normaliseSettings(settings), list);
         setFormats(list);
-        setSaved(norm);
-        // The only supported format is pre-selected as an explicit, visible choice while nothing is saved yet.
-        setDraft(!norm.formatId && list.length === 1 ? { ...norm, formatId: list[0].id } : norm);
+        setSaved(base);
+        setDraft(base);
         setLoad({ status: 'ready' });
       } catch (err) {
         if (ac.signal.aborted || isAbortError(err)) return;
-        const { message } = await extractApiError(err, c.loadFailed);
-        if (!ac.signal.aborted) setLoad({ status: 'error', message });
+        const { status, message } = await extractApiError(err, c.loadFailed);
+        if (!ac.signal.aborted) setLoad({ status: 'error', message, problem: bankSettingsLoadProblem(status) });
       }
     })();
     return () => ac.abort();
@@ -120,36 +144,33 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
       if (status === 401 || status === 402) return; // handled globally
       setError(status === 409 && message === c.genericError ? c.conflict : message);
     } finally {
-      setSaving(false);
+      if (activeRef.current === startedFor) setSaving(false);
     }
   };
 
-  if (saudi.length === 0) {
-    return (
-      <section className="surface p-4" aria-label={c.setupTitle}>
-        <Alert tone="info">{locale === 'ar'
-          ? 'إعدادات البنك لحماية الأجور تخص الشركات السعودية. للشركات الأخرى أدخل رقم صاحب العمل في حماية الأجور ضمن بيانات الشركة.'
-          : 'These bank settings are for Saudi companies. For any other company, enter the WPS employer ID on the company itself (Setup > Companies).'}</Alert>
-      </section>
-    );
+  if (scope.kind === 'noSaudi') {
+    return <section className="surface p-4" aria-label={c.setupTitle}><Alert tone="info">{words.noSaudi}</Alert></section>;
+  }
+  if (scope.kind === 'scopeNotSaudi') {
+    return <section className="surface p-4" aria-label={c.setupTitle}><Alert tone="info">{words.scopeNotSaudi(companyName(scope.scoped))}</Alert></section>;
   }
 
   return (
     <section className="surface overflow-hidden" aria-label={c.setupTitle}>
       <div className="space-y-4 p-4">
-        {saudi.length > 1 && !companyId && (
+        {(scope.kind === 'choose' || (scope.kind === 'selected' && scope.showPicker)) && (
           <label className="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <span className="font-medium">{c.company}</span>
             <select aria-label={c.company} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
               value={selectedId} onChange={e => setPicked(e.target.value)}>
-              <option value="">—</option>
-              {saudi.map(x => <option key={x.id} value={x.id}>{companyName(x)}</option>)}
+              <option value="">{words.choose}</option>
+              {scope.options.map(x => <option key={x.id} value={x.id}>{companyName(x)}</option>)}
             </select>
           </label>
         )}
         {selected && <p className="text-sm text-slate-500 dark:text-slate-400"><strong className="text-slate-800 dark:text-slate-100">{companyName(selected)}</strong></p>}
 
-        {!selected && <Alert tone="info">{locale === 'ar' ? 'اختر شركة لإدخال إعدادات البنك.' : 'Choose a company to enter its bank settings.'}</Alert>}
+        {!selected && <Alert tone="info">{words.choose}</Alert>}
 
         {selected && load.status === 'loading' && (
           <div className="flex items-center gap-2 py-6 text-sm text-slate-400" role="status">
@@ -159,10 +180,14 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
 
         {selected && load.status === 'error' && (
           <div className="space-y-3">
-            <Alert tone="error"><span role="alert">{load.message}</span></Alert>
-            <button type="button" className={btn.ghost} onClick={() => setReloadToken(n => n + 1)}>
-              <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
-            </button>
+            <Alert tone="error"><span role="alert">
+              {load.problem.kind === 'forbidden' ? words.forbidden : load.problem.kind === 'notFound' ? words.notFound : load.message}
+            </span></Alert>
+            {load.problem.retry && (
+              <button type="button" className={btn.ghost} onClick={() => setReloadToken(n => n + 1)}>
+                <RefreshCw className="h-4 w-4" aria-hidden="true" /> {c.retry}
+              </button>
+            )}
           </div>
         )}
 

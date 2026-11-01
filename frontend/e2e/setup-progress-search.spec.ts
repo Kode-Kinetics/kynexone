@@ -64,7 +64,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       roles: [options.readOnly ? 'Auditor' : 'Admin'],
       permissions: options.permissions ?? (options.readOnly
         ? ['organization.read']
-        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.rates.read']),
+        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.export', 'payroll.rates.read']),
       accountType: 'Group', isGroupScope: true,
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SA', isActive: true })),
     });

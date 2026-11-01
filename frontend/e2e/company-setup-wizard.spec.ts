@@ -408,7 +408,7 @@ class ContractServer {
         created: { company: 1, branch: draft.body.branches.length }, reused: { department: 1 },
         readiness: [
           { key: 'glMapping', label: 'GL mapping', labelAr: 'ربط دفتر الأستاذ', status: 'todo', scope: 'company', href: '/setup?tab=glMapping&companyId=new-company' },
-          { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/setup?tab=gccSettings&companyId=new-company' },
+          { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/setup?tab=bankWps&companyId=new-company' },
           draft.body.companyAdmin.mode === 'invite'
             // An invited admin has not signed in yet: the server names the login to send the sign-in link to.
             ? { key: 'companyAdmin', label: `Send ${draft.body.companyAdmin.fullNameEn} their sign-in link`, labelAr: `أرسل رابط تسجيل الدخول إلى ${draft.body.companyAdmin.fullNameEn}`, status: 'todo', scope: 'company', href: '/user-management?companyId=new-company', userId: INVITED_USER_ID }
@@ -426,7 +426,7 @@ class ContractServer {
       return reply([
         { key: 'branches', label: 'Branches and head office', labelAr: 'الفروع والمقر الرئيسي', status: 'done', scope: 'company', href: href('branches') },
         { key: 'glMapping', label: 'GL mapping', labelAr: 'ربط دفتر الأستاذ', status: 'todo', scope: 'company', href: href('glMapping') },
-        { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: href('gccSettings') },
+        { key: 'bankWps', label: 'Bank and WPS settings (before first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: href('bankWps') },
         { key: 'smtp', label: 'Outgoing email (SMTP)', labelAr: 'البريد الصادر (SMTP)', status: 'recommended', scope: 'workspace', href: '/setup?tab=emailConfig' },
       ]);
     }

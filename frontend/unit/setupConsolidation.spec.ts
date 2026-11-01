@@ -239,3 +239,10 @@ test('setup_is_offered_only_to_someone_with_a_section_to_open', () => {
   // The menu entry asks the same question, not only "holds one of the permissions".
   expect(navigationItems.find(item => item.path === '/setup')?.requiresSetupSection).toBe(true);
 });
+
+test('every_section_label_and_description_has_an_arabic_translation', async () => {
+  const { translate } = await import('../src/i18n/translations');
+  const missing = SETUP_MODULE_SECTIONS.flatMap(section => [section.label, section.description])
+    .filter(text => translate('ar', text) === text);
+  expect(missing, 'Setup sections shown in English to an Arabic user').toEqual([]);
+});

@@ -1,3 +1,4 @@
+using Zayra.Api.Application.Common;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CompanySetup;
 using Zayra.Api.Data;
@@ -27,7 +28,8 @@ public static class CompanySetupReadiness
     {
         var items = new List<ReadinessItem>();
         var id = company.Id;
-        var isSa = string.Equals(company.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
+        // "SAU" is the same country: rows saved before the writers normalised to ISO-2 can still hold it.
+        var isSa = CountryCodeStandard.NormalizeToIso2(company.CountryCode) == "SA";
         void Add(string key, string label, string labelAr, bool done, string missing, string href, string scope = V.ScopeCompany) =>
             items.Add(new ReadinessItem(key, label, labelAr, done ? V.ReadinessDone : missing, scope, href));
 
