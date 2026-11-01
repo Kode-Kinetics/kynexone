@@ -22,6 +22,9 @@ public class BulkWriteCompanyScopeRatchetTests
     private static readonly Dictionary<string, int> Approved = new()
     {
         ["Controllers/Finance/BonusesController.cs|EmployeeBonus"] = 1,
+        // A pay decision refreshes only the derived readiness badge, by bulk update so the decider does not become the employee's
+        // last editor. The id is the one employee FindInScopeAsync returned, which yields only a person in the caller's company scope.
+        ["Controllers/Employees/PayApprovalsController.cs|Employee"] = 1,
         ["Controllers/PayrollController.cs|EmployeeBonus"] = 1,
         ["Controllers/PayrollController.cs|PayrollDeduction"] = 1,
         // Moved with the payroll pass (queued job). Both go through the company-scoped read view (Op), the tenant and
