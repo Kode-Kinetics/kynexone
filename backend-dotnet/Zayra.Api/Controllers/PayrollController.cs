@@ -2582,7 +2582,14 @@ public partial class PayrollController : ControllerBase
             }
             foreach (var a in empAdv)
             {
-                var due = isSettlingEmployee ? a.OutstandingBalance : Math.Min(a.InstallmentAmount, a.OutstandingBalance);
+                // The schedule rounds each installment down to cents and puts the remainder in the LAST row, so the last
+                // installment recovers the whole remaining balance (same rule as loans above); a stale count never
+                // accelerates a material balance or a legacy fractional installment.
+                var isFinalAdvanceInstallment = a.Installments > 0 && a.InstallmentAmount > 0m
+                    && decimal.Round(a.InstallmentAmount, 2) == a.InstallmentAmount
+                    && a.OutstandingBalance < a.InstallmentAmount + a.Installments * .01m
+                    && a.TotalRepaid >= a.InstallmentAmount * (a.Installments - 1);
+                var due = isSettlingEmployee || isFinalAdvanceInstallment ? a.OutstandingBalance : Math.Min(a.InstallmentAmount, a.OutstandingBalance);
                 if (due <= 0m) continue;
                 var take = Math.Min(due, debtBudget);
                 if (take > 0m) { advTakenById[a.Id] = take; advEmi += take; debtBudget -= take; }

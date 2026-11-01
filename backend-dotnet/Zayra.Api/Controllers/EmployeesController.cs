@@ -4388,7 +4388,9 @@ public class EmployeesController : ControllerBase
         var tenantId = RequireTenant();
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var history = await employeeManagement.GetHistoryAsync(tenantId, id, cancellationToken);
-        return Ok(history.Select(EmployeeHistoryDto.Project).ToList());
+        // Personal values follow the detail view's rule: employees.sensitive, or the employee on their own record.
+        var includePersonal = CanViewSensitive() || await GetCallerEmployeeId(cancellationToken) == id;
+        return Ok(history.Select(h => EmployeeHistoryDto.Project(h, includePersonal)).ToList());
     }
 
     [HttpPost("{id:int}/activate")]

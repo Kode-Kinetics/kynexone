@@ -424,7 +424,7 @@ public record EmployeeDetailDto
             PayrollProfile                = payrollProfile is not null ? EmployeePayrollProfileDto.Project(payrollProfile, includeSensitive) : null,
             ComplianceRecords             = complianceRecords ?? [],
             Documents                     = documentDtos ?? documents?.Select(document => EmployeeDocumentDto.Project(document, includeSensitive)).ToList() ?? [],
-            History                       = history?.Select(EmployeeHistoryDto.Project).ToList() ?? [],
+            History                       = history?.Select(h => EmployeeHistoryDto.Project(h, personal)).ToList() ?? [],
             Transfers                     = transfers?.Select(EmployeeTransferDto.Project).ToList() ?? [],
         };
     }
@@ -900,22 +900,53 @@ public record EmployeeHistoryDto
     public Guid? CreatedByUserId { get; init; }
     public DateTime CreatedAtUtc { get; init; }
 
-    public static EmployeeHistoryDto Project(EmployeeHistory h) => new()
+    /// <summary>The personal fields the detail view shows only to employees.sensitive callers and the employee on their own
+    /// record (see <see cref="EmployeeDetailDto.Project"/>). Their history values and snapshot copies follow the same rule.</summary>
+    private static readonly HashSet<string> PersonalFields = new(StringComparer.Ordinal)
     {
-        Id                  = h.Id,
-        EmployeeId          = h.EmployeeId,
-        EventType           = h.EventType,
-        FieldName           = h.FieldName,
-        OldValue            = h.OldValue,
-        NewValue            = h.NewValue,
-        EffectiveDate       = h.EffectiveDate,
-        Reason              = h.Reason,
-        ApprovedByUserId    = h.ApprovedByUserId,
-        SupportingDocumentId = h.SupportingDocumentId,
-        SnapshotJson        = h.SnapshotJson,
-        CreatedByUserId     = h.CreatedByUserId,
-        CreatedAtUtc        = h.CreatedAtUtc,
+        "personalemail", "phone", "dateofbirth", "maritalstatus", "emergencycontactname", "emergencycontactphone", "sponsorname",
     };
+
+    /// <param name="includePersonal">The same flag the detail view uses: <c>includeSensitive || includeOwnPersonal</c>.</param>
+    public static EmployeeHistoryDto Project(EmployeeHistory h, bool includePersonal)
+    {
+        var personalRow = !includePersonal
+            && PersonalFields.Contains(Zayra.Api.Application.Common.SensitiveFieldClassifier.Normalise(h.FieldName));
+        return new()
+        {
+            Id                  = h.Id,
+            EmployeeId          = h.EmployeeId,
+            EventType           = h.EventType,
+            FieldName           = h.FieldName,
+            OldValue            = personalRow && h.OldValue.Length > 0 ? Zayra.Api.Application.Common.SensitiveValueMask.Redacted : h.OldValue,
+            NewValue            = personalRow && h.NewValue.Length > 0 ? Zayra.Api.Application.Common.SensitiveValueMask.Redacted : h.NewValue,
+            EffectiveDate       = h.EffectiveDate,
+            Reason              = h.Reason,
+            ApprovedByUserId    = h.ApprovedByUserId,
+            SupportingDocumentId = h.SupportingDocumentId,
+            SnapshotJson        = includePersonal ? h.SnapshotJson : WithoutPersonalFields(h.SnapshotJson),
+            CreatedByUserId     = h.CreatedByUserId,
+            CreatedAtUtc        = h.CreatedAtUtc,
+        };
+    }
+
+    /// <summary>The snapshot with the personal fields removed. Anything that is not a JSON object is dropped rather than passed through.</summary>
+    private static string WithoutPersonalFields(string snapshotJson)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotJson)) return "{}";
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(snapshotJson) is not System.Text.Json.Nodes.JsonObject node) return "{}";
+            foreach (var name in node.Select(p => p.Key).ToList())
+                if (PersonalFields.Contains(Zayra.Api.Application.Common.SensitiveFieldClassifier.Normalise(name)))
+                    node.Remove(name);
+            return node.ToJsonString();
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "{}";
+        }
+    }
 }
 
 /// <summary>
