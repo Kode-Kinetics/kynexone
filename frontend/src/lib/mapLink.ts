@@ -170,3 +170,14 @@ export function parseLocationInput(raw: string): ParsedLocation {
   }
   return asCoordinates(parseDecimal(text) ?? parseDms(text), 'text') ?? { kind: 'unreadable' };
 }
+
+/**
+ * Text to search as an address: anything that is not a link or coordinates and has at least three characters, one of
+ * them a letter. A link we cannot read stays an error (searching "https://…" would only mislead).
+ */
+export function addressQuery(raw: string): string | null {
+  const text = (raw ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length < 3 || text.length > 200) return null;
+  if (/^(https?:\/\/|www\.|maps\.|goo\.gl\/|google\.)/i.test(text) || /^[a-z0-9.-]+\.[a-z]{2,}\/\S*/i.test(text)) return null;
+  return /\p{L}/u.test(text) ? text : null;
+}

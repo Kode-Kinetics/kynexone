@@ -2,12 +2,13 @@
 
 import { useId, useRef, useState, type ClipboardEvent } from 'react';
 import dynamic from 'next/dynamic';
-import { ExternalLink, LocateFixed, MapPin } from 'lucide-react';
+import { ExternalLink, LocateFixed, MapPin, Search } from 'lucide-react';
 import { useT } from '../../hooks/useT';
-import { geoApi } from '../../api/geo';
+import { useLocale } from '../../contexts/LocaleContext';
+import { geoApi, type AddressSuggestion } from '../../api/geo';
 import type { CompanySetupLocation } from '../../api/companySetup';
 import {
-  RADIUS_PRESETS, countryCentre, formatCoordinates, googleMapsUrl, isInGcc, looksSwapped, parseLocationInput, roundCoordinate,
+  RADIUS_PRESETS, addressQuery, countryCentre, formatCoordinates, googleMapsUrl, isInGcc, looksSwapped, parseLocationInput, roundCoordinate,
 } from '../../lib/mapLink';
 import { Notice, WizardField, useWizardForm } from './wizardForm';
 
@@ -38,10 +39,13 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
   name: string;
 }) {
   const t = useT();
+  const { locale } = useLocale();
   const { readOnly, errorFor } = useWizardForm();
   const id = useId();
   const [paste, setPaste] = useState('');
-  const [busy, setBusy] = useState<'' | 'resolving' | 'locating'>('');
+  const [busy, setBusy] = useState<'' | 'resolving' | 'locating' | 'searching'>('');
+  /** Candidate places for the typed address, until one is chosen or the person keeps their own pin. null = no search shown. */
+  const [suggestions, setSuggestions] = useState<{ query: string; items: AddressSuggestion[] } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   /** The device's accuracy for the pin it placed; dropped once the pin moves. */
   const [fix, setFix] = useState<{ key: string; accuracy: number } | null>(null);
@@ -64,7 +68,23 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
     setFeedback(text ? { tone: 'success', text } : null);
   };
 
+  const search = async (query: string) => {
+    setBusy('searching'); setFeedback(null); setSuggestions(null);
+    try {
+      const items = await geoApi.searchAddress(query, countryCode || undefined, locale === 'ar' ? 'ar' : 'en');
+      setSuggestions({ query, items });
+    } catch {
+      setFeedback({ tone: 'error', text: t('The address search is not available right now. Paste a Google Maps link, enter coordinates, or click the map.') });
+    } finally { setBusy(''); }
+  };
+
+  const choose = (item: AddressSuggestion) => {
+    pin(item.latitude, item.longitude, t('Pin placed at the address you chose. Drag it to fine-tune.'));
+    setSuggestions(null);
+  };
+
   const place = async (raw: string) => {
+    setSuggestions(null);
     const parsed = parseLocationInput(raw);
     if (parsed.kind === 'coordinates') {
       pin(parsed.latitude, parsed.longitude, parsed.from === 'link' ? t('Pin placed from the link.') : t('Pin placed from the coordinates.'));
@@ -72,7 +92,9 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
       return;
     }
     if (parsed.kind === 'unreadable') {
-      setFeedback({ tone: 'error', text: t('This is not a map link or coordinates we can read. Paste a Google Maps link, or coordinates such as 24.7136, 46.6753.') });
+      const query = addressQuery(raw);
+      if (query) { await search(query); return; }
+      setFeedback({ tone: 'error', text: t('This is not a map link, coordinates or address we can read. Type an address, paste a Google Maps link, or enter coordinates such as 24.7136, 46.6753.') });
       return;
     }
     setBusy('resolving'); setFeedback(null);
@@ -131,14 +153,14 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
 
       {!readOnly && (
         <div className="space-y-2">
-          <label htmlFor={`${id}-paste`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Paste a Google Maps link or coordinates')}</label>
-          <p id={`${id}-paste-help`} className="text-xs leading-5 text-slate-500 dark:text-slate-400">{t('For example 24.7136, 46.6753, or the link from Share in Google Maps.')}</p>
+          <label htmlFor={`${id}-paste`} className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Search an address, or paste a Google Maps link or coordinates')}</label>
+          <p id={`${id}-paste-help`} className="text-xs leading-5 text-slate-500 dark:text-slate-400">{t('For example Olaya Street, Riyadh, or 24.7136, 46.6753, or the link from Share in Google Maps.')}</p>
           <div className="flex flex-wrap gap-2">
-            <input id={`${id}-paste`} className="input min-w-0 flex-1 basis-56" dir="ltr" inputMode="url" autoComplete="off" spellCheck={false}
-              aria-describedby={`${id}-paste-help`} value={paste} onChange={e => setPaste(e.target.value)} onPaste={onPaste}
+            <input id={`${id}-paste`} className="input min-w-0 flex-1 basis-56" dir="auto" inputMode="search" autoComplete="off" spellCheck={false}
+              aria-describedby={`${id}-paste-help`} value={paste} onChange={e => { setPaste(e.target.value); setSuggestions(null); }} onPaste={onPaste}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (paste.trim()) void place(paste); } }} data-testid="pin-paste" />
             <button type="button" className="btn-secondary" disabled={!paste.trim() || !!busy} onClick={() => void place(paste)}>
-              {busy === 'resolving' ? t('Reading the link…') : t('Place pin')}
+              <Search className="h-4 w-4" aria-hidden="true" />{busy === 'resolving' ? t('Reading the link…') : busy === 'searching' ? t('Searching…') : t('Find place')}
             </button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -156,6 +178,27 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
       <div aria-live="polite" data-testid="pin-feedback">
         {feedback && <p className={`text-sm ${feedback.tone === 'error' ? 'font-medium text-rose-700 dark:text-rose-300' : 'text-emerald-800 dark:text-emerald-300'}`}>{feedback.text}</p>}
       </div>
+
+      {suggestions && (
+        <div className="space-y-2 rounded-lg border border-sapphire/30 bg-sapphire/5 p-3 dark:border-cyanAccent/30 dark:bg-cyanAccent/5" data-testid="pin-suggestions">
+          {suggestions.items.length > 0 ? (
+            <>
+              <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{t('Is it one of these? Choose the right place, or keep what you typed.')}</p>
+              <ul className="space-y-1.5">
+                {suggestions.items.map((item, index) => (
+                  <li key={`${item.latitude},${item.longitude},${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm dark:bg-white/5">
+                    <span className="min-w-0 flex-1 text-slate-800 dark:text-slate-200"><bdi>{item.label}</bdi></span>
+                    <button type="button" className="btn-secondary" onClick={() => choose(item)} data-testid="pin-suggestion">{t('Use this place')}</button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-sm text-slate-700 dark:text-slate-300">{t('No place matched "{query}". Add the city or district, paste a Google Maps link, or click the map.', { query: suggestions.query })}</p>
+          )}
+          <button type="button" className="btn-secondary" onClick={() => setSuggestions(null)} data-testid="pin-keep">{t('Keep what I typed')}</button>
+        </div>
+      )}
 
       <LocationMap latitude={pinned ? lat : null} longitude={pinned ? lng : null} radius={radius} fallback={countryCentre(countryCode)} readOnly={readOnly}
         label={t('Map of {name}', { name })} onMove={(latitude, longitude) => pin(latitude, longitude)} />
