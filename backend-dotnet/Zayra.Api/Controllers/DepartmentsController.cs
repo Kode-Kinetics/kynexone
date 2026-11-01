@@ -96,7 +96,11 @@ public class DepartmentsController : ControllerBase
         if (!this.HasGroupEntityScope()) return Forbid();
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        try
+        {
+            return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (InvalidOperationException ex) { return Conflict(OrganizationRuleException.Payload(ex)); }
     }
 
     // ── Export ────────────────────────────────────────────────────────────────
