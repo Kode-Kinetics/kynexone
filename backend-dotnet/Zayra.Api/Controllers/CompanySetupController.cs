@@ -152,8 +152,8 @@ public class CompanySetupController : ControllerBase
         // Making someone an Admin — inviting a company super admin, or giving an existing user the role — needs
         // "Confirm it's you" here too, exactly as on Setup → Users (StepUpService; fails closed).
         var adminGrant = request is null ? null : await _setup.AdminGrantAsync(caller.TenantId, request.DraftId, ct);
-        var reviewerGrant = request is not null && await _setup.GrantsPayReviewerAsync(caller.TenantId, request.DraftId, ct);
-        if ((adminGrant is not null || reviewerGrant)
+        var reviewerGrantee = request is null ? null : await _setup.PayReviewerGrantAsync(caller.TenantId, request.DraftId, ct);
+        if ((adminGrant is not null || reviewerGrantee is not null)
             && !(_stepUp is not null && await _stepUp.IsConfirmedAsync(caller.UserId, caller.TenantId, Request.Headers[StepUpService.HeaderName].ToString(), ct)))
             return StatusCode(StatusCodes.Status403Forbidden, new
             {
@@ -163,11 +163,12 @@ public class CompanySetupController : ControllerBase
             });
         var outcome = await _setup.CommitAsync(caller, request, key, ct);
         if (adminGrant is not null && outcome.Error is null) await NoticeAdminGrantAsync(caller, adminGrant, ct);
+        if (reviewerGrantee is not null && outcome.Error is null) await NoticeAdminGrantAsync(caller, reviewerGrantee, ct, payReviewer: true);
         return Map(outcome);
     }
 
-    /// <summary>Every other active Admin is told that a company setup made someone an Admin. Never fails the commit.</summary>
-    private async Task NoticeAdminGrantAsync(CompanySetupCaller caller, CompanySetupCompanyAdmin grant, CancellationToken ct)
+    /// <summary>Every other active Admin is told that a company setup made someone an Admin (or gave someone the pay reviewer role). Never fails the commit.</summary>
+    private async Task NoticeAdminGrantAsync(CompanySetupCaller caller, CompanySetupCompanyAdmin grant, CancellationToken ct, bool payReviewer = false)
     {
         if (_notices is null) return;
         try
@@ -190,9 +191,11 @@ public class CompanySetupController : ControllerBase
                     UserId = recipient,
                     EventCode = "security.admin_account_action",
                     EntityName = "User",
-                    EntityId = $"company-setup:{sentAt:yyyyMMddHHmmssfff}",
-                    Title = "An administrator account was changed",
-                    Message = $"{actor} made {who} a company super admin while setting up a company. If this was not expected, contact the workspace owner or KynexOne support now.",
+                    EntityId = $"{(payReviewer ? "company-setup-reviewer" : "company-setup")}:{sentAt:yyyyMMddHHmmssfff}",
+                    Title = payReviewer ? "A pay reviewer was added" : "An administrator account was changed",
+                    Message = payReviewer
+                        ? $"{actor} gave {who} the pay reviewer role while setting up a company. They can approve new-hire pay. If this was not expected, contact the workspace owner or KynexOne support now."
+                        : $"{actor} made {who} a company super admin while setting up a company. If this was not expected, contact the workspace owner or KynexOne support now.",
                 }, ct);
         }
         catch (Exception)

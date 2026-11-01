@@ -632,6 +632,14 @@ public sealed class CompanySetupService
         return (draft is null ? null : ReadBody(draft)?.PayReviewer)?.Mode is CompanySetupVocabulary.AdminInvite or CompanySetupVocabulary.AdminExisting;
     }
 
+    /// <summary>The pay reviewer a draft's commit would create or grant, or null when it names none. The other admins are told about it after the commit.</summary>
+    public async Task<CompanySetupCompanyAdmin?> PayReviewerGrantAsync(Guid tenantId, Guid draftId, CancellationToken ct)
+    {
+        var draft = await _db.CompanySetupDrafts.AsNoTracking().SingleOrDefaultAsync(d => d.TenantId == tenantId && d.Id == draftId, ct);
+        var reviewer = draft is null ? null : ReadBody(draft)?.PayReviewer;
+        return reviewer?.Mode is CompanySetupVocabulary.AdminInvite or CompanySetupVocabulary.AdminExisting ? reviewer : null;
+    }
+
     internal static CompanySetupDraftBody? ReadBody(CompanySetupDraftRecord row)
     {
         try { return JsonSerializer.Deserialize<CompanySetupDraftBody>(row.Body, BodyJson); }
