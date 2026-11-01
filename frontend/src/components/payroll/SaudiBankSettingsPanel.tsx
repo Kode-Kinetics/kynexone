@@ -15,6 +15,7 @@ import {
 import type { CompanyDto } from '../../api/organization';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useConfirm } from '../ui/useConfirm';
 import { bankSettingsBaseline, bankSettingsLoadProblem, resolveBankSettingsScope, type BankSettingsLoadProblem } from '../../lib/saudiBankSettingsScope';
 import {
   AR, Alert, CUSTOM_COPY, EMPTY_SETTINGS, EN, SaudiBankSettingsForm, btn, checkSettings, customFormatsOf, normaliseSettings, sameSettings,
@@ -31,6 +32,8 @@ const COPY = {
     forbidden: 'Your account cannot open these settings. Bank and WPS settings need the payroll export permission; ask an administrator to grant it.',
     notFound: 'This company could not be found. Choose another company, or reload the page.',
     discard: 'You have unsaved bank details. Switch company and discard them?',
+    discardTitle: 'Discard unsaved changes?',
+    discardConfirm: 'Discard and switch',
   },
   ar: {
     noSaudi: 'لا توجد شركة سعودية متاحة هنا. هذه الإعدادات خاصة بالشركات السعودية؛ أما الشركات الأخرى فأدخل رقم صاحب العمل في حماية الأجور في بيانات الشركة (الإعداد > الشركات).',
@@ -39,6 +42,8 @@ const COPY = {
     forbidden: 'لا يمكن لحسابك فتح هذه الإعدادات. تتطلب إعدادات البنك وحماية الأجور صلاحية تصدير الرواتب؛ اطلب من المسؤول منحها.',
     notFound: 'تعذّر العثور على هذه الشركة. اختر شركة أخرى أو أعد تحميل الصفحة.',
     discard: 'لديك بيانات بنكية غير محفوظة. هل تريد تغيير الشركة وتجاهلها؟',
+    discardTitle: 'تجاهل التغييرات غير المحفوظة؟',
+    discardConfirm: 'تجاهل وتبديل الشركة',
   },
 } as const;
 
@@ -60,6 +65,7 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   const uid = useId();
 
   const words = COPY[locale === 'ar' ? 'ar' : 'en'];
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [picked, setPicked] = useState('');
   const scope = useMemo(() => resolveBankSettingsScope({ companyId, companies, picked }), [companyId, companies, picked]);
   const selected = scope.kind === 'selected' ? scope.company : null;
@@ -114,6 +120,11 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   }, [selectedId, reloadToken]);
 
   const dirty = !!saved && !sameSettings(saved, draft);
+  // Leaving a company with unsaved bank details asks first, in the app's own dialog; declining keeps the edits where they are.
+  const pickCompany = async (next: string) => {
+    if (dirty && !(await confirm({ title: words.discardTitle, message: words.discard, confirmLabel: words.discardConfirm }))) return;
+    setPicked(next);
+  };
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
@@ -162,12 +173,13 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
 
   return (
     <section className="surface overflow-hidden" aria-label={c.setupTitle}>
+      {confirmDialog}
       <div className="space-y-4 p-4">
         {(scope.kind === 'choose' || (scope.kind === 'selected' && scope.showPicker)) && (
           <label className="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <span className="font-medium">{c.company}</span>
             <select aria-label={c.company} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
-              value={selectedId} onChange={e => { if (dirty && !window.confirm(words.discard)) return; setPicked(e.target.value); }}>
+              value={selectedId} onChange={e => { void pickCompany(e.target.value); }}>
               <option value="">{words.choose}</option>
               {scope.options.map(x => <option key={x.id} value={x.id}>{companyName(x)}</option>)}
             </select>
