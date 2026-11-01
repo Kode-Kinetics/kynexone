@@ -49,7 +49,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
     ] },
     { id: 'payroll', destinations: [
       ['glMapping', '/setup?tab=glMapping'], ['fiscalYears', '/setup?tab=fiscalYears'],
-      ['payroll', '/payroll'], ['payslipTemplates', '/setup?tab=payslipTemplates'],
+      ['payroll', '/payroll'], ['payslipTemplates', '/setup?tab=payslipTemplates'], ['bankWps', '/setup?tab=bankWps'],
     ] },
     { id: 'performance', destinations: [
       ['performanceScorecards', '/setup?tab=performanceScorecards'],
@@ -70,7 +70,7 @@ test('catalogue_keeps_exactly_twelve_areas_and_all_existing_destinations', () =>
       ['gosiFiling', '/gosi-filing'], ['adminAuditLogs', '/setup?tab=adminAuditLogs'],
     ] },
   ]);
-  expect(destinations()).toHaveLength(61);
+  expect(destinations()).toHaveLength(62);
 });
 
 test('every_destination_has_stable_group_and_order', () => {
@@ -150,7 +150,7 @@ test('every_destination_has_stable_group_and_order', () => {
     ] },
     { areaId: 'payroll', groups: [
       { id: 'posting-calendars', label: 'Posting and calendars', order: 0, destinations: ['glMapping', 'fiscalYears'] },
-      { id: 'payroll-configuration', label: 'Payroll configuration', order: 1, destinations: ['payroll', 'payslipTemplates'] },
+      { id: 'payroll-configuration', label: 'Payroll configuration', order: 1, destinations: ['payroll', 'payslipTemplates', 'bankWps'] },
     ] },
     { areaId: 'performance', groups: [
       { id: 'cycles-templates', label: 'Cycles and templates', order: 0, destinations: ['performanceScorecards'] },
@@ -187,7 +187,7 @@ test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unch
     gradeBenefits: 'Benefits by grade', loanTypes: 'Loan types', loanPolicies: 'Loan policies', advancePolicy: 'Salary advance policy',
     bonusTypes: 'Bonus types', merit: 'Merit planning and benchmarks', benefits: 'Benefit enrolments', loans: 'Loans and advances',
     glMapping: 'Payroll accounting', fiscalYears: 'Fiscal years', payroll: 'Payroll and salary structures',
-    payslipTemplates: 'Payslip templates', performanceScorecards: 'Review scorecards', performance: 'Performance cycles',
+    payslipTemplates: 'Payslip templates', bankWps: 'Bank and WPS', performanceScorecards: 'Review scorecards', performance: 'Performance cycles',
     succession: 'Succession and development',
     learning: 'Learning catalogue and rules', hrRequests: 'Request center', hrLetters: 'HR letters', letterTemplates: 'Letter templates',
     engagement: 'Engagement survey templates', engagementPrivacy: 'Survey privacy', notificationTemplates: 'Notifications',

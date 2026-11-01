@@ -67,7 +67,9 @@ public static class CompanySetupReadiness
         else
             bank = !string.IsNullOrWhiteSpace(company.WpsEmployerId);
         Add("bankWps", "Bank and WPS settings (before the first payment)", "إعدادات البنك وحماية الأجور (قبل أول دفعة)", bank, V.ReadinessTodo,
-            $"/payroll?companyId={id}");
+            // Saudi: the bank settings section in Setup, which works before any payroll run exists. Elsewhere the item is the
+            // company's WPS employer id, edited on the company itself.
+            isSa ? $"/setup?tab=bankWps&companyId={id}" : $"/setup?tab=companies&companyId={id}");
 
         if (isSa)
         {

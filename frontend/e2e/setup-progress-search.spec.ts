@@ -15,7 +15,7 @@ const READINESS = [
   { key: 'locations', label: 'Work locations and geofences', labelAr: 'مواقع العمل والنطاقات الجغرافية', status: 'done', scope: 'company', href: '/setup?tab=locations&companyId=fixture-company' },
   { key: 'gccSettings', label: 'Country settings (end of service, weekend)', labelAr: 'إعدادات الدولة (نهاية الخدمة، العطلة الأسبوعية)', status: 'todo', scope: 'company', href: '/setup?tab=gccSettings&companyId=fixture-company' },
   { key: 'statutoryRules', label: 'Statutory rules for the country', labelAr: 'الأنظمة النظامية للدولة', status: 'done', scope: 'company', href: '/setup?tab=statutoryRules&companyId=fixture-company' },
-  { key: 'bankWps', label: 'Bank and WPS settings (before the first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/payroll?companyId=fixture-company' },
+  { key: 'bankWps', label: 'Bank and WPS settings (before the first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/setup?tab=bankWps&companyId=fixture-company' },
   { key: 'nitaqat', label: 'Nitaqat establishment profile', labelAr: 'ملف المنشأة في نطاقات', status: 'recommended', scope: 'company', href: '/saudi-compliance?companyId=fixture-company' },
   { key: 'companyAdmin', label: 'Company super admin', labelAr: 'مسؤول الشركة الأعلى', status: 'done', scope: 'company', href: '/user-management?companyId=fixture-company' },
   { key: 'masterData', label: 'Employee reference lists (applies to all companies)', labelAr: 'القوائم المرجعية للموظفين (ينطبق على جميع الشركات)', status: 'todo', scope: 'workspace', href: '/setup?tab=masterData&companyId=fixture-company' },

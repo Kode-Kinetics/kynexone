@@ -41,9 +41,8 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpGet("formats")]
     public IActionResult Formats()
     {
-        if (Actor() is not { } a) return Forbid();
-        if (!SaudiBankExportActivation.EnabledCompanies(_activationConfiguration, a.TenantId)
-                .Any(c => this.GetEntityScope().CanAccessCompany(c))) return Disabled();
+        // The list of supported formats is static and holds no tenant data: Setup shows it before any export is activated.
+        if (Actor() is null) return Forbid();
         return Ok(SaudiBankExportFormats.Supported);
     }
 
@@ -52,7 +51,6 @@ public sealed class SaudiBankExportsController : ControllerBase
     {
         if (Actor() is not { } a) return Forbid();
         if (await CompanyScopeErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
-        if (!SaudiBankExportActivation.IsEnabled(_activationConfiguration, a.TenantId, companyId)) return Disabled();
         return Ok(await _service.GetSettingsAsync(a.TenantId, companyId, ct));
     }
 
@@ -61,7 +59,6 @@ public sealed class SaudiBankExportsController : ControllerBase
     {
         if (Actor() is not { } a || !HasPermission("payroll.structure_manage")) return Forbid();
         if (await CompanyScopeErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
-        if (!SaudiBankExportActivation.IsEnabled(_activationConfiguration, a.TenantId, companyId)) return Disabled();
         if (body is null) return BadRequest(new { error = "settings_required" });
         var result = await _service.SaveSettingsAsync(a.TenantId, companyId, a.UserId, body, ct);
         return Map(result, v => Ok(v));
