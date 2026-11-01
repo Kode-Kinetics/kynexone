@@ -30,6 +30,10 @@ public sealed record EmployeeAccessDto(
     public string? ReasonCode { get; init; }
     public string? StoppedReasonText { get; init; }
     public string? BlockedReasonText { get; init; }
+    /// <summary>A usable login exists (linked, active, access not switched off). Independent of <see cref="State"/>.</summary>
+    public bool LoginEnabled { get; init; }
+    /// <summary>The login's password is set, whether or not a new welcome code is live. Independent of <see cref="State"/>.</summary>
+    public bool PasswordConfigured { get; init; }
 }
 
 /// <summary><c>Delivery</c>: "print" never emails — the codes come back (and are recorded as disclosed) even when the
@@ -185,6 +189,8 @@ public sealed class EmployeeAccessService
             ReasonCode = reasonCode,
             StoppedReasonText = state.StoppedText,
             BlockedReasonText = state.BlockedReason,
+            LoginEnabled = EmployeeAccessStates.LoginEnabled(facts),
+            PasswordConfigured = EmployeeAccessStates.PasswordConfigured(facts),
         };
     }
 

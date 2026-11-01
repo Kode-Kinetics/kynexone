@@ -339,28 +339,25 @@ test('email regression: bulk entry keeps full addresses from different domains i
   expect(errors).toEqual([]);
 });
 
-test('the Self-service card shows one status and one button per state', async ({ page }, testInfo) => {
+test('the Self-service card shows three separate states and at most one button per row', async ({ page }, testInfo) => {
   const { errors } = await openPeople(page);
-  const expectations: Array<[string, string, string | null, RegExp]> = [
-    ['Noah Williams', 'No access yet', 'Give access', /No code has been given yet\./],
-    ['Layla Haddad', 'Code given, not signed in yet', 'Give new code', /Code given by Sara Ali\. Valid until Wednesday 14 October 2026 \(3 Jumada I 1448 AH\)\./],
-    ['Omar Saleh', 'Using KynexOne', 'Reset sign-in', /Last signed in on Thursday 1 October 2026/],
-    ['Sara Ali', 'Waiting for work email', 'Add work email', /Add a work email so Sara Ali can sign in\./],
-    ['Hamad Qahtani', 'Access stopped', null, /Access stopped because the employee has left the company\./],
-    ['Fatima Zahrani', 'Needs admin help', null, /The company email ending .* is not set up\./],
-    ['Rana Saeed', 'No access yet', null, /No code has been given yet\./],
+  // [name, employee, login, password, buttons, detail]
+  const expectations: Array<[string, string, string, string, string[], RegExp | null]> = [
+    ['Noah Williams', 'Active', 'No login yet', 'Not set up', ['Give access'], null],
+    ['Layla Haddad', 'Active', 'Login enabled', 'Code given, not used', ['Give new code'], /Code given by Sara Ali\. Valid until Wednesday 14 October 2026 \(3 Jumada I 1448 AH\)\./],
+    ['Omar Saleh', 'Active', 'Login enabled', 'Password set', ['Reset sign-in'], /Last signed in on Thursday 1 October 2026/],
+    ['Sara Ali', 'Active', 'No login yet', 'Not set up', ['Add work email'], null],
+    ['Hamad Qahtani', 'Not active yet', 'Access stopped', 'Password status unknown', ['Activate'], /Access stopped because the employee has left the company\./],
+    ['Fatima Zahrani', 'Active', 'No login yet', 'Not set up', [], /The company email ending .* is not set up\./],
+    ['Rana Saeed', 'Not active yet', 'No login yet', 'Not set up', ['Activate'], null],
   ];
-  for (const [name, label, button, detailText] of expectations) {
+  for (const [name, employee, login, password, buttons, detailText] of expectations) {
     const card = await openProfile(page, name);
-    await expect(card.getByText(label, { exact: true })).toBeVisible();
-    await expect(card.getByTestId('access-detail')).toHaveText(detailText);
-    const buttons = card.getByRole('button');
-    if (button) {
-      await expect(buttons).toHaveCount(1);
-      await expect(buttons.first()).toHaveText(button);
-    } else {
-      await expect(buttons).toHaveCount(0);
-    }
+    await expect(card.getByTestId('state-employee')).toContainText(employee);
+    await expect(card.getByTestId('state-login')).toContainText(login);
+    await expect(card.getByTestId('state-password')).toContainText(password);
+    if (detailText) await expect(card.getByTestId('access-detail')).toHaveText(detailText);
+    await expect(card.getByRole('button')).toHaveText(buttons);
     expect(await card.innerText()).not.toMatch(JARGON);
     expect(await card.innerText()).not.toContain('Server English');
     if (name === 'Rana Saeed') await expect(card.getByTestId('access-reason')).toHaveText('Waiting for approval. You can give access once Rana Saeed is approved.');
@@ -410,7 +407,7 @@ test('Give access opens the bilingual slip with the code and QR, and stores noth
   await expect(page.getByText('4821 7730')).toHaveCount(0);
   await expectNoCodeStored(page, ['48217730']);
   // The card reloads after the slips close.
-  await expect(page.getByTestId('employee-access-card').getByText('Code given, not signed in yet', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('state-password')).toContainText('Code given, not used');
   expect(errors).toEqual([]);
 });
 
@@ -443,7 +440,7 @@ test('a skip on a single issue is explained on the card, with no slip', async ({
 test('bulk print skips anyone already using KynexOne and says why', async ({ page }, testInfo) => {
   const { writes, errors } = await openPeople(page);
   const pill = page.getByRole('row').filter({ hasText: 'Layla Haddad' }).getByTestId('access-pill');
-  await expect(pill).toHaveText('Code given, not signed in yet');
+  await expect(pill).toContainText('Code given, not used');
   for (const name of ['Noah Williams', 'Layla Haddad', 'Omar Saleh', 'Sara Ali']) await page.getByRole('checkbox', { name: `Select ${name}` }).check();
   const bulk = page.getByRole('button', { name: 'Print sign-in slips (4)' });
   await expect(bulk).toBeVisible();
@@ -595,25 +592,18 @@ test('Add work emails: paste, preview counts, save, then give access and print',
   expect(errors).toEqual([]);
 });
 
-test('when the company can email codes, Email sign-in code leads and Print sign-in slip is second', async ({ page }) => {
+test('when the company can email codes, the profile row offers Email sign-in code', async ({ page }) => {
   const { writes } = await openPeople(page, { emailDelivery: true });
   const card = await openProfile(page, 'Noah Williams');
-  const buttons = card.getByRole('button');
-  await expect(buttons).toHaveText(['Email sign-in code', 'Print sign-in slip']);
+  // One button per row: Email leads; slips are printed from the list's bulk Print.
+  await expect(card.getByRole('button')).toHaveText(['Email sign-in code']);
   await card.getByRole('button', { name: 'Email sign-in code' }).click();
   const summary = page.getByTestId('welcome-codes-summary');
   await expect(summary).toContainText('Sign-in codes emailed: 1.');
   await expect(page.getByTestId('sign-in-slips')).toHaveCount(0);
   await page.getByRole('dialog').getByRole('button', { name: 'Close' }).last().click();
 
-  await page.getByTestId('employee-access-card').getByRole('button', { name: 'Print sign-in slip' }).click();
-  // Noah now has a code (the mock moved him on), so Give new code confirms first.
-  await page.getByTestId('employee-access-card').getByRole('button', { name: 'Give new code' }).click();
-  await expect(page.getByTestId('sign-in-slip').getByTestId('slip-code')).toHaveText('4821 7730');
-  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([
-    { employeeIds: [42] }, { employeeIds: [42], delivery: 'print' },
-  ]);
-  await expectNoCodeStored(page, ['48217730']);
+  expect(writes.filter((w) => w.path === '/api/employee-access/codes').map((w) => w.body)).toEqual([{ employeeIds: [42] }]);
 });
 
 test('Add Employee with email delivery offers Email sign-in code first', async ({ page }) => {
@@ -725,9 +715,9 @@ test('a bulk print shows each skipped person\'s own reason', async ({ page }) =>
 test('someone who cannot give access sees the state only, without reasons or buttons', async ({ page }) => {
   await openPeople(page, { noIssue: true });
   const card = await openProfile(page, 'Rana Saeed');
-  await expect(card.getByText('No access yet', { exact: true })).toBeVisible();
+  await expect(card.getByTestId('state-login')).toContainText('No login yet');
   await expect(card.getByTestId('access-reason')).toHaveCount(0);
-  await expect(card.getByRole('button')).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Give access' })).toHaveCount(0);
 });
 
 test('the Access stopped filter lists leavers with the stopped card and no action', async ({ page }) => {
@@ -736,9 +726,9 @@ test('the Access stopped filter lists leavers with the stopped card and no actio
   await page.getByTestId('access-filter').getByRole('button', { name: /Access stopped/ }).click();
   await expect(page.getByRole('link', { name: 'Ali Former', exact: true })).toBeVisible();
   const card = await openProfile(page, 'Ali Former');
-  await expect(card.getByText('Access stopped', { exact: true })).toBeVisible();
+  await expect(card.getByTestId('state-login')).toContainText('Access stopped');
   await expect(card.getByTestId('access-detail')).toHaveText('Access stopped because the employee has left the company.');
-  await expect(card.getByRole('button')).toHaveCount(0);
+  await expect(card.getByRole('button', { name: /give|reset|code/i })).toHaveCount(0);
   expect(listQueries.some((q) => new URLSearchParams(q).get('access') === 'stopped')).toBe(true);
 });
 
@@ -790,10 +780,10 @@ test('Add work emails falls back to each status when the save response has no st
   expect(requested).toContain('/api/employee-access/49');
 });
 
-test('Activate employee offers the sign-in slip: Add, Activate, Print', async ({ page }) => {
+test('Activate offers the sign-in slip: Add, Activate, Print', async ({ page }) => {
   const { writes } = await openPeople(page);
   await openProfile(page, 'Rana Saeed');
-  await page.getByRole('button', { name: 'Activate employee' }).click();
+  await page.getByRole('button', { name: 'Activate', exact: true }).click();
   const prompt = page.getByRole('dialog').filter({ has: page.getByTestId('employee-activated') });
   await expect(prompt.getByTestId('employee-activated')).toHaveText('Rana Saeed is now active.');
   await expect(prompt.getByRole('button', { name: 'Later' })).toBeVisible();

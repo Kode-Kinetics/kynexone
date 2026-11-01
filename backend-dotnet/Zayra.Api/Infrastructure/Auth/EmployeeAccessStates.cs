@@ -151,6 +151,15 @@ public static class EmployeeAccessStates
         static Evaluation Block(string code, string? domain) => new(Blocked, BlockedCode: code, BlockedReason: BlockedReason(code, domain));
     }
 
+    /// <summary>The login exists, is active (not deactivated, suspended or locked) and the access mode is not NoLogin. Read from the data, not from the merged state.</summary>
+    public static bool LoginEnabled(Facts f) =>
+        f.Link is not null && f.Login is { IsDeleted: false, IsActive: true } && f.Login.Status is not ("Deactivated" or "Suspended" or "Locked")
+        && f.Link.AccessMode != AccessModes.NoLogin;
+
+    /// <summary>The login exists and its password has been set, whether or not a welcome code is live.</summary>
+    public static bool PasswordConfigured(Facts f) =>
+        f.Link is not null && f.Login is { IsDeleted: false } && !f.Link.RequiresPasswordSetup;
+
     private const string Why =
         "Employee access state: each listed employee's own login and any login already using their work email are read across legal entities; the tenant is re-applied and the employee ids were already scope-filtered by the caller.";
 
@@ -274,7 +283,7 @@ public static class EmployeeAccessStates
         if (items.Count == 0) return items;
         var evaluated = await EvaluateAsync(db, tenantId, items.Select(i => i.Id).ToList(), DateTime.UtcNow, ct);
         return items.Select(i => evaluated.TryGetValue(i.Id, out var e)
-            ? i with { AccessState = e.State.State, WorkEmail = e.Facts.WorkEmail }
+            ? i with { AccessState = e.State.State, WorkEmail = e.Facts.WorkEmail, LoginEnabled = LoginEnabled(e.Facts), PasswordConfigured = PasswordConfigured(e.Facts) }
             : i).ToList();
     }
 }
