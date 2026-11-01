@@ -17,7 +17,7 @@ import { GL_AND_RATES_PERMISSIONS } from './setupAccess';
 export type SetupModuleSectionId =
   | 'openingBalances'
   | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'attendanceRules' | 'overtimePolicies' | 'attendanceDevices'
-  | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates' | 'payrollRules'
+  | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates' | 'payrollRules' | 'bankWps'
   | 'onboardingChecklists' | 'onboardingChecklistTemplates' | 'hireTemplates' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
   | 'taxPolicies' | 'complianceProfiles' | 'saudiCompliance'
   | 'users' | 'roles' | 'permissionMatrix' | 'permissions' | 'permissionGrantors' | 'approvalAuthorities' | 'approvalDelegations' | 'signInSecurity' | 'accessLog'
@@ -76,6 +76,7 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'bonusTypes', group: 'payBenefits', label: msg('Bonus types'), description: msg('The kinds of bonus paid through payroll.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'payrollRules', group: 'payBenefits', label: msg('Payroll rules'), description: msg('Your company’s own payroll choices: rest-day pay, leave payout, probation, part-month pay and absence deductions.'), permissions: ['payroll.rules.manage', 'payroll.approve'], roles: ['Admin', 'HR Manager', 'Payroll Manager', 'Finance Approver'], modulePath: '/payroll' }, // PUT needs payroll.rules.manage (HR proposes); approve/reject need payroll.approve (a different person decides)
   { id: 'payslipTemplates', group: 'payBenefits', label: msg('Payslip templates'), description: msg('The layout of the payslips employees receive.'), permissions: ['payroll.read'], roles: ['Admin', 'HR Manager', 'Payroll Manager', 'Payroll Officer'], modulePath: '/payroll/templates', featureKey: 'payslip_template_designer' },
+  { id: 'bankWps', group: 'payBenefits', label: msg('Bank and WPS'), description: msg('The employer account and establishment details for the bank payment file, set before the first payment.'), permissions: ['payroll.export'], modulePath: '/payroll' },
 
   // Talent & employee services
   { id: 'onboardingChecklists', group: 'talentServices', label: msg('Onboarding checklists'), description: msg('The tasks a new joiner and their team complete, as reusable checklists.'), permissions: ['recruitment.write'], roles: ['Admin', 'HR Manager'], modulePath: '/recruitment', featureKey: 'recruitment' },

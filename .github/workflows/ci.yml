@@ -449,6 +449,7 @@ jobs:
   # produces a green run. That is fine for an advisory suite and disqualifying for a required check.
   chrome-security-gate:
     name: Chrome Security Gate (roles + isolation)
+    # Playwright 1.60 supports Ubuntu 24.04; ubuntu-latest also selects unsupported 26.04.
     runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
@@ -671,7 +672,8 @@ jobs:
 
   schema-gates:
     name: Schema Gates (drift, fresh deploy, upgrade)
-    runs-on: ubuntu-latest
+    # Keep schema proofs on the same supported image as the browser release gates.
+    runs-on: ubuntu-24.04
     services:
       postgres:
         # Services start before steps can configure Docker; use the same official image via its cache.
@@ -1024,6 +1026,7 @@ jobs:
   # bootstrap account must never suppress the client-pilot proof for dashboard + HRM modules.
   browser-pilot:
     name: Browser Pilot (seeded tenant, core modules)
+    # Playwright 1.60 supports Ubuntu 24.04; ubuntu-latest also selects unsupported 26.04.
     runs-on: ubuntu-24.04
     # The production-shaped stack takes about ten minutes to build and provision before the
     # Chromium suite starts (about 1,040 tests since the Setup design wave; 29+ minutes on its own).

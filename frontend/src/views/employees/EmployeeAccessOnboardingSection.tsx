@@ -15,6 +15,7 @@ import { useWelcomeCodes } from '../../components/employeeAccess/useWelcomeCodes
 import { Modal } from '../../components/Modal';
 import { describeApiError } from '../../lib/apiError';
 import { activationFormError, todayCalendarDay } from '../../lib/employeeActivation';
+import { employeeActivationFailure } from '../../lib/employeeActivationFailure';
 
 export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void }) {
   const router = useRouter();
@@ -55,7 +56,13 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       setAccessRefresh((current) => current + 1);
     } catch (e) {
       // The server says why (a readiness blocker, a permission, a concurrent change): show it, don't swallow it.
-      setActivationError(describeApiError(e, t) || t('The employee could not be activated. Review the readiness items and try again.'));
+      // A refusal that names the blockers is shown as those blockers; anything else as the server's own sentence.
+      const blockers = (e as { response?: { data?: { blocking?: unknown[] } } } | null)?.response?.data?.blocking;
+      setActivationError(Array.isArray(blockers) && blockers.length
+        ? employeeActivationFailure(e, t)
+        : describeApiError(e, t) || t('The employee could not be activated. Review the readiness items and try again.'));
+      // The readiness may have changed under us (a reviewer approved, a blocker appeared): reload it.
+      onEmployeeChanged?.();
     } finally {
       setActivating(false);
     }
@@ -91,7 +98,15 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
         : recommendations > 0
           ? (recommendations === 1 ? t('No activation blockers. 1 recommendation remains.') : t('No activation blockers. {count} recommendations remain.', { count: recommendations }))
           : t('No activation blockers remain.')}</p>}
-            {canActivate && <button type="button" onClick={openActivation} disabled={activating || !readiness || activationBlockers > 0} className="btn-primary mt-4 disabled:opacity-50">{t('Activate employee')}</button>}
+      {!!readiness?.blocking.length && <ul className="mt-3 list-disc space-y-1 ps-5 text-sm text-amber-800 dark:text-amber-200">
+        {readiness.blocking.map(item => <li key={item.key}>{t(item.label)}</li>)}
+      </ul>}
+      {readiness?.blocking.some(item => item.key === 'pay:compensationUnapproved') && <div className="mt-3 space-y-2 text-sm">
+        <p>{t('An independent reviewer must approve the pay package before activation. Giving the employee a role or resetting their password does not approve their pay.')}</p>
+        {hasPermission('payroll.approve') && <Link className="btn-secondary" href="/pay-approvals">{t('Pay approvals')}</Link>}
+        {hasPermission('security.manage') && <Link className="btn-secondary ms-2" href={`/setup?tab=users${employee.companyId ? `&companyId=${encodeURIComponent(employee.companyId)}` : ''}`}>{t('Check reviewer setup')}</Link>}
+      </div>}
+      {canActivate && <button type="button" onClick={openActivation} disabled={activating || !readiness || activationBlockers > 0} className="btn-primary mt-4 disabled:opacity-50">{t('Activate employee')}</button>}
     </section>
     {welcome.view}
     <Modal

@@ -124,7 +124,7 @@ const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
   openingBalances: DatabaseBackup,
   leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
   overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
-  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText, payrollRules: Scale,
+  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText, payrollRules: Scale, bankWps: Landmark,
   onboardingChecklists: ListChecks, onboardingChecklistTemplates: ClipboardList, hireTemplates: UserPlus, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
   taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck,
   users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,

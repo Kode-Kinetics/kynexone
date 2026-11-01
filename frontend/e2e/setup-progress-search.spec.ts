@@ -15,7 +15,7 @@ const READINESS = [
   { key: 'locations', label: 'Work locations and geofences', labelAr: 'مواقع العمل والنطاقات الجغرافية', status: 'done', scope: 'company', href: '/setup?tab=locations&companyId=fixture-company' },
   { key: 'gccSettings', label: 'Country settings (end of service, weekend)', labelAr: 'إعدادات الدولة (نهاية الخدمة، العطلة الأسبوعية)', status: 'todo', scope: 'company', href: '/setup?tab=gccSettings&companyId=fixture-company' },
   { key: 'statutoryRules', label: 'Statutory rules for the country', labelAr: 'الأنظمة النظامية للدولة', status: 'done', scope: 'company', href: '/setup?tab=statutoryRules&companyId=fixture-company' },
-  { key: 'bankWps', label: 'Bank and WPS settings (before the first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/payroll?companyId=fixture-company' },
+  { key: 'bankWps', label: 'Bank and WPS settings (before the first payment)', labelAr: 'إعدادات البنك وحماية الأجور (قبل أول دفعة)', status: 'todo', scope: 'company', href: '/setup?tab=bankWps&companyId=fixture-company' },
   { key: 'nitaqat', label: 'Nitaqat establishment profile', labelAr: 'ملف المنشأة في نطاقات', status: 'recommended', scope: 'company', href: '/saudi-compliance?companyId=fixture-company' },
   { key: 'companyAdmin', label: 'Company super admin', labelAr: 'مسؤول الشركة الأعلى', status: 'done', scope: 'company', href: '/user-management?companyId=fixture-company' },
   { key: 'masterData', label: 'Employee reference lists (applies to all companies)', labelAr: 'القوائم المرجعية للموظفين (ينطبق على جميع الشركات)', status: 'todo', scope: 'workspace', href: '/setup?tab=masterData&companyId=fixture-company' },
@@ -64,7 +64,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       roles: [options.readOnly ? 'Auditor' : 'Admin'],
       permissions: options.permissions ?? (options.readOnly
         ? ['organization.read']
-        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.rates.read']),
+        : ['organization.read', 'organization.write', 'organization.setup.apply', 'ai.query', 'dashboard.read', 'leave.read', 'recruitment.read', 'recruitment.write', 'payroll.read', 'payroll.export', 'payroll.rates.read']),
       accountType: 'Group', isGroupScope: true,
       companies: companies.map(item => ({ id: item.id, name: item.legalNameEn, code: item.id, countryCode: 'SA', isActive: true })),
     });
@@ -288,6 +288,11 @@ test('a Payroll accounting tab the reader may not see falls back to the first on
 });
 
 test('a link from outside Setup that names a company still opens its wizard', async ({ page }) => {
+  // Visit the wizard route once first. On a dev server its first compile reloads the document, and a reloaded Setup
+  // rightly ignores a deep link (setupLandingCompanyLink: the address is then one Setup wrote itself) and opens the chooser.
+  // That is not the behaviour under test, and a built server never compiles on request.
+  await boot(page, { url: '/setup/company/fixture-company/complete', expectWizard: true });
+  await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
   await boot(page, { url: '/setup?tab=aiSetup&path=guided&companyId=fixture-company', expectWizard: true });
   await expect(page).toHaveURL(/\/setup\/company\/fixture-company\/complete/);
   // The old studio's bookmark form too.

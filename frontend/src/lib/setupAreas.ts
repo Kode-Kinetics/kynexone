@@ -75,7 +75,7 @@ export const SETUP_SECTION_ORDER: readonly SetupSectionId[] = [
   'companies', 'branches', 'locations', 'costCenters', 'departments',
   'grades', 'designations', 'establishment',
   'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'attendanceDevices', 'overtimePolicies', 'leaveTypes', 'leavePolicies', 'holidayCalendars',
-  'benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates', 'payrollRules',
+  'benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates', 'payrollRules', 'bankWps',
   'onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy', 'notificationTemplates',
   'glMapping', 'fiscalYears', 'gccSettings', 'statutoryRules', 'taxPolicies', 'complianceProfiles', 'saudiCompliance',
   'users', 'roles', 'permissionMatrix', 'permissions', 'permissionGrantors', 'approvalAuthorities', 'approvalDelegations', 'signInSecurity', 'accessLog',
@@ -199,7 +199,7 @@ const SECTION_SCOPE: Readonly<Record<string, SetupDestination['scope']>> = {
   companies: 'company', branches: 'company', departments: 'company', designations: 'company', grades: 'company',
   costCenters: 'mixed', establishment: 'mixed', locations: 'mixed', glMapping: 'mixed',
   leaveTypes: 'mixed', leavePolicies: 'mixed', holidayCalendars: 'mixed', benefitPlans: 'mixed', loanPolicies: 'mixed',
-  letterTemplates: 'mixed', complianceProfiles: 'mixed', taxPolicies: 'mixed', saudiCompliance: 'company', adminAuditLogs: 'mixed',
+  letterTemplates: 'mixed', complianceProfiles: 'mixed', taxPolicies: 'mixed', saudiCompliance: 'company', adminAuditLogs: 'mixed', bankWps: 'company',
 };
 
 /** Module pages that sit beside a group's settings (their daily work, or a configuration that has not moved into Setup). */

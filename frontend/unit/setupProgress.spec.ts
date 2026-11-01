@@ -54,8 +54,8 @@ test('payroll and compliance map their Guided setup items to their destinations'
   expect(areaProgressItems('payrollCompliance', ['glMapping', 'fiscalYears'], items, {})).toEqual([
     { destinationId: 'glMapping', done: true, source: 'guided' },
   ]);
-  expect(areaProgressItems('payBenefits', ['payroll', 'payslipTemplates'], items, {})).toEqual([
-    { destinationId: 'payroll', done: false, source: 'guided' },
+  expect(areaProgressItems('payBenefits', ['payroll', 'payslipTemplates', 'bankWps'], items, {})).toEqual([
+    { destinationId: 'bankWps', done: false, source: 'guided' },
   ]);
   expect(areaProgressItems('payrollCompliance', ['gccSettings', 'statutoryRules', 'saudiCompliance', 'saudiComplianceDashboard', 'gosiFiling'], items, { gccSettings: 0 })).toEqual([
     { destinationId: 'gccSettings', done: false, source: 'guided' },

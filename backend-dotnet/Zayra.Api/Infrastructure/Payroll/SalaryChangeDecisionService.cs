@@ -31,6 +31,9 @@ public sealed class SalaryChangeDecisionService
     /// <summary>The active salary rows each decision found per (employee, date) on its first attempt, so a retry can tell a concurrent writer got in.</summary>
     private readonly Dictionary<(int EmployeeId, DateOnly EffectiveDate), HashSet<Guid>> _seenSalaryRows = new();
 
+    /// <summary>Each first-package employee's last editor as it was BEFORE the decision wrote to the row (applying the figures stamps the decider as editor).</summary>
+    private readonly Dictionary<int, Guid?> _editorBeforeDecision = new();
+
     public SalaryChangeDecisionService(ZayraDbContext db, IEmployeeActivationGuard activationGuard)
     {
         _db = db;
@@ -102,7 +105,7 @@ public sealed class SalaryChangeDecisionService
         var lastEditors = new Dictionary<int, Guid?>();
         foreach (var employee in await _db.Employees.Where(x => x.TenantId == tenantId && ids.Contains(x.Id) && !x.IsDeleted).ToListAsync(ct))
         {
-            lastEditors[employee.Id] = employee.UpdatedBy;
+            lastEditors[employee.Id] = _editorBeforeDecision.TryGetValue(employee.Id, out var before) ? before : employee.UpdatedBy;
             // The approval of the figures is the approval of the hire's pay: the pay ledger closes with it, in this transaction,
             // so "approved" can never be true in one record and false in the other.
             if (approvedIds.Contains(employee.Id))
@@ -257,7 +260,12 @@ public sealed class SalaryChangeDecisionService
             _db.EmployeeSalaryStructures.Add(assignment);
             change.AppliedAssignmentId = assignment.Id;
             if (firstPackage)
+            {
+                // Applying the figures writes the employee row and so makes the decider its last editor; remember who it was before,
+                // so the restore after the decision puts back the real editor rather than the reviewer.
+                _editorBeforeDecision.TryAdd(employee.Id, employee.UpdatedBy);
                 await EmployeeSalaryBreakdownWriter.ApplyFirstPackageEffectsAsync(_db, employee, structure, change, ct);
+            }
             Audit(tenantId, actor, "payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(),
                 new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId });
         }

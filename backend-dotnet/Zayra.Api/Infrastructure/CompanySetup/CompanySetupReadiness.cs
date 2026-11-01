@@ -1,3 +1,4 @@
+using Zayra.Api.Application.Common;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CompanySetup;
 using Zayra.Api.Data;
@@ -23,13 +24,19 @@ public static class CompanySetupReadiness
     public static string SetupHref(string tab, Guid companyId) => $"/setup?tab={tab}&companyId={companyId}";
 
     public static async Task<IReadOnlyList<ReadinessItem>> ComputeAsync(
-        ZayraDbContext db, IEmailService email, Guid tenantId, Company company, CancellationToken ct)
+        ZayraDbContext db, IEmailService email, Guid tenantId, Company company, CancellationToken ct, IConfiguration? config = null)
     {
         var items = new List<ReadinessItem>();
         var id = company.Id;
-        var isSa = string.Equals(company.CountryCode, "SA", StringComparison.OrdinalIgnoreCase);
+        // "SAU" is the same country: rows saved before the writers normalised to ISO-2 can still hold it.
+        var isSa = CountryCodeStandard.NormalizeToIso2(company.CountryCode) == "SA";
         void Add(string key, string label, string labelAr, bool done, string missing, string href, string scope = V.ScopeCompany) =>
             items.Add(new ReadinessItem(key, label, labelAr, done ? V.ReadinessDone : missing, scope, href));
+
+        var payOperators = await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalRouting.UsableOperatorsAsync(db, tenantId, id, ct, config);
+        Add("independentPayReview", "Independent pay reviewer ready to sign in", "مراجع أجور مستقل جاهز لتسجيل الدخول",
+            payOperators.Any(w => w.CanEnterPay && payOperators.Any(r => r.CanApprovePay && r.Id != w.Id)),
+            V.ReadinessTodo, SetupHref("users", id));
 
         var gl = await ScopedBypass.TenantWide(db.GlAccountMappings, tenantId, Why)
             .AnyAsync(m => m.IsActive && (m.CompanyId == id || m.CompanyId == null), ct);
@@ -67,7 +74,9 @@ public static class CompanySetupReadiness
         else
             bank = !string.IsNullOrWhiteSpace(company.WpsEmployerId);
         Add("bankWps", "Bank and WPS settings (before the first payment)", "إعدادات البنك وحماية الأجور (قبل أول دفعة)", bank, V.ReadinessTodo,
-            $"/payroll?companyId={id}");
+            // Saudi: the bank settings section in Setup, which works before any payroll run exists. Elsewhere the item is the
+            // company's WPS employer id, edited on the company itself.
+            isSa ? $"/setup?tab=bankWps&companyId={id}" : $"/setup?tab=companies&companyId={id}");
 
         if (isSa)
         {
