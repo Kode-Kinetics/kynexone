@@ -20,16 +20,19 @@ const TONE_ICON: Record<string, ReactNode> = {
  * employment status and the merged access state only, so it never claims "Awaiting pay approval"
  * (that needs the readiness check on the profile). Reset sign-in is per person, never bulk.
  */
-export function ThreeStateCell({ status, accessState, workEmail, onReset }: {
+export function ThreeStateCell({ status, accessState, loginEnabled, passwordConfigured, workEmail, onReset }: {
   status: string;
   accessState?: EmployeeAccessState;
+  /** Independent facts from the API; absent on older APIs (the cell then derives from accessState). */
+  loginEnabled?: boolean;
+  passwordConfigured?: boolean;
   workEmail?: string | null;
   /** Present only for a holder of employees.access.reset. */
   onReset?(): void;
 }) {
   const { t } = useLocale();
   if (!accessState) return <span className="text-xs text-slate-500 dark:text-slate-400">-</span>;
-  const states = deriveThreeStates({ status, workEmail }, { state: accessState, workEmail }, null);
+  const states = deriveThreeStates({ status, workEmail }, { state: accessState, loginEnabled, passwordConfigured, workEmail }, null);
   const rows: Array<{ label: string; text: string; tone: AccessTone; icon: ReactNode }> = [
     states.employee === 'active'
       ? { label: 'Employee active', text: 'Active', tone: 'emerald', icon: TONE_ICON.ok }
@@ -53,7 +56,7 @@ export function ThreeStateCell({ status, accessState, workEmail, onReset }: {
           </li>
         ))}
       </ul>
-      {onReset && states.password === 'password_set' && (
+      {onReset && states.password === 'password_set' && !states.newCodeLive && states.login !== 'access_stopped' && (
         <button type="button" onClick={onReset} className="btn-secondary min-h-11 px-2 text-xs md:min-h-7">{t('Reset sign-in')}</button>
       )}
     </div>

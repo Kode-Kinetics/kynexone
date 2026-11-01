@@ -11,6 +11,8 @@ const ar: Record<string, string> = {
   'Not set up': 'غير مضبوطة',
   'Code given, not used': 'أُعطي رمز ولم يُستخدم',
   'Password set': 'تم ضبط كلمة المرور',
+  'A new sign-in code is waiting. The current password still works until it is used.': 'يوجد رمز دخول جديد بانتظار الاستخدام. تبقى كلمة المرور الحالية صالحة حتى يُستخدم.',
+  'The login switches on when the employee uses the code.': 'يُفعَّل تسجيل الدخول عندما يستخدم الموظف الرمز.',
   'Password status unknown': 'حالة كلمة المرور غير معروفة',
   'Signing in does not activate employment.': 'تسجيل الدخول لا يُفعّل التوظيف.',
   'Needs work email first': 'يلزم بريد العمل أولًا',

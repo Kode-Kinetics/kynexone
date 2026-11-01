@@ -29,7 +29,18 @@ interface Boot {
   eligibleReviewers?: Array<{ id: string; name: string }>;
   userId?: string;
   emptyQueueCount?: number;
+  /** The server's independent facts. Omitted: what the real server reports for that state. `null`: an older API that sends neither. */
+  facts?: { loginEnabled: boolean; passwordConfigured: boolean } | null;
 }
+// What the server reports for the typical case of each state (a first code leaves the login staged until it is used).
+const TYPICAL_FACTS: Record<AccessState, { loginEnabled: boolean; passwordConfigured: boolean }> = {
+  waiting_for_work_email: { loginEnabled: false, passwordConfigured: false },
+  not_started: { loginEnabled: false, passwordConfigured: false },
+  code_given: { loginEnabled: false, passwordConfigured: false },
+  active: { loginEnabled: true, passwordConfigured: true },
+  stopped: { loginEnabled: true, passwordConfigured: true },
+  blocked: { loginEnabled: false, passwordConfigured: false },
+};
 const FULL = ['employees.read', 'employees.write', 'employees.approve', 'employees.access.issue', 'employees.access.reset', 'dashboard.read'];
 
 async function boot(page: Page, url: string, options: Boot = {}) {
@@ -61,7 +72,8 @@ async function boot(page: Page, url: string, options: Boot = {}) {
       calls.access += 1;
       const workEmail = options.workEmail ?? employees[901].workEmail;
       const state = options.access ?? 'not_started';
-      return reply({ employeeId: 901, employeeName: employees[901].fullName, employeeCode: 'EMP-1', workEmail, state, canIssue: true, emailDelivery: false,
+      const facts = options.facts === null ? {} : options.facts ?? TYPICAL_FACTS[state];
+      return reply({ employeeId: 901, employeeName: employees[901].fullName, employeeCode: 'EMP-1', workEmail, state, ...facts, canIssue: true, emailDelivery: false,
         codeExpiresAtUtc: state === 'code_given' ? '2026-12-01T10:00:00Z' : null, codeIssuedByName: null, lastCodeExpiredAtUtc: null,
         lastSignInAtUtc: state === 'active' ? '2026-10-01T10:00:00Z' : null, stoppedReason: state === 'stopped' ? 'disabled_by_admin' : null, blockedCode: null, blockedReason: null });
     }
@@ -139,12 +151,56 @@ test.describe('profile: three separate states', () => {
     await expect(group(page).getByRole('button', { name: 'Reset sign-in' })).toBeVisible();
   });
 
-  test('profile code given but not used reads as login enabled, password not used', async ({ page }) => {
+  test('profile first code given, never used: login not switched on yet, password not used', async ({ page }) => {
     await boot(page, PROFILE, { access: 'code_given' });
-    await expect(group(page).getByTestId('state-login')).toContainText('Login enabled', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-login')).toContainText('No login yet', { timeout: 45_000 });
     await expect(group(page).getByTestId('state-password')).toContainText('Code given, not used');
     await expect(group(page).getByRole('button', { name: 'Give new code' })).toBeVisible();
     await expect(group(page).getByRole('button', { name: 'Reset sign-in' })).toHaveCount(0);
+  });
+
+  test('profile after a reset: a new code is live but the password is still set', async ({ page }) => {
+    await boot(page, PROFILE, { access: 'code_given', facts: { loginEnabled: true, passwordConfigured: true } });
+    await expect(group(page).getByTestId('state-login')).toContainText('Login enabled', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-password')).toContainText('Password set');
+    await expect(group(page).getByTestId('state-password')).not.toContainText('Code given, not used');
+    await expect(group(page).getByTestId('state-password')).toContainText('A new sign-in code is waiting');
+    await expect(group(page).getByRole('button', { name: 'Give new code' })).toBeVisible();
+    await expect(group(page).getByRole('button', { name: 'Reset sign-in' })).toHaveCount(0);
+  });
+
+  test('profile with an expired code but a password set still reads password set', async ({ page }) => {
+    // The server falls back to not_started once a reset code lapses; the password never went away.
+    await boot(page, PROFILE, { access: 'not_started', facts: { loginEnabled: true, passwordConfigured: true } });
+    await expect(group(page).getByTestId('state-login')).toContainText('Login enabled', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-password')).toContainText('Password set');
+    await expect(group(page).getByRole('button', { name: 'Reset sign-in' })).toBeVisible();
+  });
+
+  test('profile stopped access says whether a password was set, and offers nothing', async ({ page }) => {
+    await boot(page, PROFILE, { access: 'stopped', facts: { loginEnabled: false, passwordConfigured: true } });
+    await expect(group(page).getByTestId('state-login')).toContainText('Access stopped', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-password')).toContainText('Password set');
+    await expect(group(page).getByRole('button', { name: /Reset sign-in|Give new code|Give access/ })).toHaveCount(0);
+  });
+
+  test('profile stopped access with no password ever set says not set up', async ({ page }) => {
+    await boot(page, PROFILE, { access: 'stopped', facts: { loginEnabled: false, passwordConfigured: false } });
+    await expect(group(page).getByTestId('state-password')).toContainText('Not set up', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-password')).not.toContainText('Password status unknown');
+  });
+
+  test('profile blocked access has no login and needs an admin', async ({ page }) => {
+    await boot(page, PROFILE, { access: 'blocked' });
+    await expect(group(page).getByTestId('state-login')).toContainText('No login yet', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-login')).toContainText('This needs a system admin first.');
+    await expect(group(page).getByTestId('state-password')).toContainText('Not set up');
+  });
+
+  test('profile on an older API without the independent facts falls back to the merged state', async ({ page }) => {
+    await boot(page, PROFILE, { access: 'stopped', facts: null });
+    await expect(group(page).getByTestId('state-login')).toContainText('Access stopped', { timeout: 45_000 });
+    await expect(group(page).getByTestId('state-password')).toContainText('Password status unknown');
   });
 
   test('profile Reset sign-in is per person and asks first; no reset-all exists', async ({ page }) => {

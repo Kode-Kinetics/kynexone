@@ -2437,6 +2437,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                         <ThreeStateCell
                           status={employee.status}
                           accessState={employee.accessState}
+                          loginEnabled={employee.loginEnabled}
+                          passwordConfigured={employee.passwordConfigured}
                           workEmail={employee.workEmail}
                           onReset={canResetAccess && employee.accessState === 'active' ? () => setResetFor({ id: employee.id, name: employee.fullName }) : undefined}
                         />

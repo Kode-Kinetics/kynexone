@@ -87,8 +87,10 @@ export function AccessStatesPanel({
     : states.login === 'login_enabled' ? 'Nothing to do.'
       : states.login === 'access_stopped' ? 'A system admin must restore access.'
         : access?.state === 'blocked' ? 'This needs a system admin first.'
+        : states.newCodeLive ? 'The login switches on when the employee uses the code.'
         : canIssue ? 'Give access so the employee can sign in.' : 'Ask HR to give access.';
   const passwordNext = !access || states.needsWorkEmail ? null
+    : states.password === 'password_set' && states.newCodeLive ? 'A new sign-in code is waiting. The current password still works until it is used.'
     : states.password === 'password_set' ? (canReset ? 'Reset sign-in only if the employee is locked out.' : 'Ask an HR manager to reset sign-in.')
       : states.password === 'code_given' ? 'The employee uses the code to set a password.'
         : states.password === 'unknown' ? 'Restore access first.'
@@ -99,8 +101,8 @@ export function AccessStatesPanel({
   const loginButton = !!access && !states.needsWorkEmail && access.state === 'not_started' && canGive
     ? <RowButton primary disabled={issuing} onClick={() => doIssue()}>{issuing ? t('Preparing the slips…') : emailing ? t('Email sign-in code') : t('Give access')}</RowButton>
     : null;
-  const passwordButton = states.needsWorkEmail || !canGive || confirming ? null
-    : states.password === 'code_given' ? <RowButton disabled={issuing} onClick={() => setConfirming('new_code')}>{t('Give new code')}</RowButton>
+  const passwordButton = states.needsWorkEmail || !canGive || confirming || states.login === 'access_stopped' ? null
+    : states.password === 'code_given' || (states.password === 'password_set' && states.newCodeLive) ? <RowButton disabled={issuing} onClick={() => setConfirming('new_code')}>{t('Give new code')}</RowButton>
       : states.password === 'password_set' && canReset ? <RowButton disabled={issuing} onClick={() => setConfirming('reset')}>{t('Reset sign-in')}</RowButton>
         : null;
 

@@ -142,7 +142,7 @@ const person = (status = 'Draft', workEmail: string | null = 'a@co.test') => ({ 
 
 test('login and password are set while the employee is not active: employment stays its own answer', () => {
   const states = deriveThreeStates(person('Draft'), { state: 'active' }, { blocking: [{ key: 'org:department' }] });
-  expect(states).toEqual({ employee: 'not_active', login: 'login_enabled', password: 'password_set', needsWorkEmail: false });
+  expect(states).toEqual({ employee: 'not_active', login: 'login_enabled', password: 'password_set', needsWorkEmail: false, newCodeLive: false });
 });
 
 test('the pay blocker reads as awaiting pay approval; an active status wins', () => {
@@ -161,8 +161,44 @@ test('no login, waiting, blocked: no login and no password', () => {
   }
 });
 
-test('stopped access is not guessed about the password', () => {
+test('an older API without the facts does not guess the password after a stop', () => {
   expect(deriveThreeStates(person('Terminated'), { state: 'stopped' }, null)).toMatchObject({ login: 'access_stopped', password: 'unknown' });
+});
+
+const facts = (loginEnabled: boolean, passwordConfigured: boolean) => ({ loginEnabled, passwordConfigured });
+
+test('with the independent facts, a reset keeps the password set while a new code is live', () => {
+  expect(deriveThreeStates(person(), { state: 'code_given', ...facts(true, true) }, null))
+    .toMatchObject({ login: 'login_enabled', password: 'password_set', newCodeLive: true });
+});
+
+test('with the independent facts, a first code is a staged login with no password', () => {
+  expect(deriveThreeStates(person(), { state: 'code_given', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'code_given', newCodeLive: true });
+});
+
+test('with the independent facts, an expired code falls back to the true password state', () => {
+  expect(deriveThreeStates(person(), { state: 'not_started', ...facts(true, true) }, null))
+    .toMatchObject({ login: 'login_enabled', password: 'password_set', newCodeLive: false });
+  expect(deriveThreeStates(person(), { state: 'not_started', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'not_set_up' });
+});
+
+test('with the independent facts, stopped access never says the password is unknown', () => {
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', ...facts(false, true) }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'password_set' });
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'not_set_up' });
+});
+
+test('with the independent facts, blocked is no login even if a password flag were set elsewhere', () => {
+  expect(deriveThreeStates(person(), { state: 'blocked', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'not_set_up' });
+});
+
+test('a response with only one of the two facts is treated as an older API', () => {
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', loginEnabled: true }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'unknown' });
 });
 
 test('no work email: rows B and C need it first', () => {
