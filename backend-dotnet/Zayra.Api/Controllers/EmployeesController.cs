@@ -6571,6 +6571,10 @@ public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, 
     /// not_started, code_given, active, stopped or blocked. Filter with <c>access=</c>.</summary>
     public string AccessState { get; init; } = string.Empty;
     public string WorkEmail { get; init; } = string.Empty;
+    /// <summary>Independent of <see cref="AccessState"/>: a usable login exists (active, access not switched off).</summary>
+    public bool LoginEnabled { get; init; }
+    /// <summary>Independent of <see cref="AccessState"/>: the login's password is set, even if a new welcome code is live.</summary>
+    public bool PasswordConfigured { get; init; }
 }
 
 // ── Duplicate-person detection DTOs (contract mirrors frontend api/employees.ts) ──────────────────
