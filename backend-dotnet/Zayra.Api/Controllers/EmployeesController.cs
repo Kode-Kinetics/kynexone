@@ -4622,6 +4622,8 @@ public class EmployeesController : ControllerBase
         var incompleteLabels = new List<string>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
 
+        // Each row's status change or delete would re-check the pay-reviewer notice of the same companies; check each company once, after the loop.
+        using var deadEndBatch = Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.BeginBatch();
         foreach (var id in targetIds)
         {
             // Reset per row: a prior row's guard-rejected (rolled-back-but-still-tracked) mutation must
@@ -4684,6 +4686,7 @@ public class EmployeesController : ControllerBase
         }
         // Ensure the batch audit's SaveChanges cannot flush a failed last row's residual mutation.
         _db.ChangeTracker.Clear();
+        await deadEndBatch.FlushAsync(cancellationToken);
 
         var requested = idsMode ? req.EmployeeIds!.Distinct().Count() : targetIds.Count;
         await _audit.WriteAsync("employees.bulk_action", "Employee", "bulk", Context(), JsonSerializer.Serialize(new

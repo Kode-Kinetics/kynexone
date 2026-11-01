@@ -34,6 +34,7 @@ public sealed class PayApprovalDeadEndHooks
     public async Task SyncCompanyAsync(Guid tenantId, Guid? companyId, string trigger, CancellationToken ct = default)
     {
         if (_monitor is null || companyId is not Guid company) return;
+        if (Defer(tenantId, trigger, _ => Task.FromResult(new List<Guid> { company }))) return;
         try { await _monitor.SyncCompanyAsync(tenantId, company, trigger, ct); }
         catch (Exception ex) { Warn(ex, trigger); }
     }
@@ -42,14 +43,31 @@ public sealed class PayApprovalDeadEndHooks
     public async Task AfterEmployeePaySubmittedAsync(Guid tenantId, int employeeId, string trigger, CancellationToken ct = default)
     {
         if (_monitor is null) return;
+        if (Defer(tenantId, trigger, async c => (await EmployeeCompaniesAsync(tenantId, [employeeId], c)))) return;
         try
         {
-            var company = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Pay approval dead ends: company of one employee whose pay changed; tenant pinned.")
-                .AsNoTracking().Where(e => e.Id == employeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
-            await SyncCompanyAsync(tenantId, company, trigger, ct);
+            var companies = await EmployeeCompaniesAsync(tenantId, [employeeId], ct);
+            foreach (var company in companies) await SyncCompanyAsync(tenantId, company, trigger, ct);
         }
         catch (Exception ex) { Warn(ex, trigger); }
     }
+
+    /// <summary>Pay was changed for several employees in one go (a job pass): each affected company is checked once, after the loop.</summary>
+    public async Task AfterEmployeesPaySubmittedAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, string trigger, CancellationToken ct = default)
+    {
+        if (_monitor is null || employeeIds.Count == 0) return;
+        try
+        {
+            var companies = await EmployeeCompaniesAsync(tenantId, employeeIds, ct);
+            foreach (var company in PayApprovalDeadEndRotation.OldestFirst(tenantId, companies).Take(MaxCompaniesPerCall))
+                await SyncCompanyAsync(tenantId, company, trigger, ct);
+        }
+        catch (Exception ex) { Warn(ex, trigger); }
+    }
+
+    private Task<List<Guid>> EmployeeCompaniesAsync(Guid tenantId, IReadOnlyCollection<int> employeeIds, CancellationToken ct) =>
+        ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Pay approval dead ends: companies of the employees whose pay changed; tenant pinned.")
+            .AsNoTracking().Where(e => employeeIds.Contains(e.Id) && e.CompanyId != null).Select(e => e.CompanyId!.Value).Distinct().ToListAsync(ct);
 
     /// <summary>The companies one login can reach (its grants, or every company for group scope), including grants just switched off.</summary>
     public Task AfterUserChangedAsync(Guid tenantId, Guid userId, string trigger, bool allCompanies = false, CancellationToken ct = default) =>
@@ -97,6 +115,7 @@ public sealed class PayApprovalDeadEndHooks
     private async Task RunAsync(Guid tenantId, string trigger, Func<CancellationToken, Task<List<Guid>>> resolve, CancellationToken ct)
     {
         if (_monitor is null) return;
+        if (Defer(tenantId, trigger, resolve)) return;
         try
         {
             var candidates = await resolve(ct);
@@ -105,6 +124,84 @@ public sealed class PayApprovalDeadEndHooks
                 await SyncCompanyAsync(tenantId, company, trigger, ct);
         }
         catch (Exception ex) { Warn(ex, trigger); }
+    }
+
+    // ── batching ────────────────────────────────────────────────────────────────────────────────────
+    private static readonly AsyncLocal<Batch?> Current = new();
+
+    /// <summary>
+    /// Opens a batch on the current async flow: hook calls made while it is open are only recorded, and
+    /// <see cref="Batch.FlushAsync"/> then checks each affected company once. Use around a per-row loop that would
+    /// otherwise re-evaluate the same company for every row. Dispose it (a <c>using</c>) whether or not it was flushed.
+    /// </summary>
+    public static Batch BeginBatch()
+    {
+        var batch = new Batch(Current.Value);
+        Current.Value = batch;
+        return batch;
+    }
+
+    private bool Defer(Guid tenantId, string trigger, Func<CancellationToken, Task<List<Guid>>> resolve)
+    {
+        if (Current.Value is not { IsOpen: true } batch) return false;
+        batch.Add(this, tenantId, trigger, resolve);
+        return true;
+    }
+
+    public sealed class Batch : IDisposable
+    {
+        private const int MaxRecorded = 5_000;
+        private readonly Batch? _previous;
+        private readonly List<(PayApprovalDeadEndHooks Hooks, Guid Tenant, string Trigger, Func<CancellationToken, Task<List<Guid>>> Resolve)> _entries = [];
+        private bool _disposed;
+
+        internal Batch(Batch? previous) => _previous = previous;
+
+        internal bool IsOpen { get; private set; } = true;
+
+        internal void Add(PayApprovalDeadEndHooks hooks, Guid tenantId, string trigger, Func<CancellationToken, Task<List<Guid>>> resolve)
+        {
+            // Past the cap further rows add nothing a later row did not already name for the sweep to find.
+            if (_entries.Count < MaxRecorded) _entries.Add((hooks, tenantId, trigger, resolve));
+        }
+
+        /// <summary>Resolves every recorded change, then checks each distinct company once (capped and rotated per tenant). Never throws.</summary>
+        public async Task FlushAsync(CancellationToken ct = default)
+        {
+            IsOpen = false;
+            var entries = _entries.ToList();
+            _entries.Clear();
+            var groups = new Dictionary<(IPayApprovalDeadEndMonitor Monitor, Guid Tenant), (PayApprovalDeadEndHooks Runner, string Trigger, HashSet<Guid> Companies)>();
+            foreach (var entry in entries)
+            {
+                if (entry.Hooks._monitor is not { } monitor) continue;
+                try
+                {
+                    var ids = await entry.Resolve(ct);
+                    var key = (monitor, entry.Tenant);
+                    if (!groups.TryGetValue(key, out var group)) groups[key] = group = (entry.Hooks, entry.Trigger, []);
+                    foreach (var id in ids) group.Companies.Add(id);
+                }
+                catch (Exception ex) { entry.Hooks.Warn(ex, entry.Trigger); }
+            }
+            foreach (var ((_, tenant), group) in groups)
+            {
+                try
+                {
+                    var worth = await CompaniesWithPendingWorkAsync(group.Runner._db, tenant, group.Companies.ToList(), MaxCompaniesPerCall, ct);
+                    foreach (var company in worth) await group.Runner.SyncCompanyAsync(tenant, company, group.Trigger, ct);
+                }
+                catch (Exception ex) { group.Runner.Warn(ex, group.Trigger); }
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            IsOpen = false;
+            Current.Value = _previous;
+        }
     }
 
     private async Task<List<Guid>> AllCompaniesAsync(Guid tenantId, CancellationToken ct) =>
@@ -139,15 +236,19 @@ public sealed class PayApprovalDeadEndHooks
                         && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null)))
             .Select(e => e.CompanyId!.Value);
         if (within is not null) withCandidates = withCandidates.Where(c => within.Contains(c));
-        var found = await withCandidates.Distinct().OrderBy(c => c).Take(max).ToListAsync(ct);
+        var found = await withCandidates.Distinct().OrderBy(c => c).Take(Pool).ToListAsync(ct);
 
         var openIds = await db.Notifications.AsNoTracking()
             .Where(n => n.TenantId == tenantId && n.EntityName == PayApprovalDeadEnds.EntityName && n.Status != PayApprovalDeadEnds.ResolvedStatus)
-            .Select(n => n.EntityId).Distinct().Take(max).ToListAsync(ct);
+            .Select(n => n.EntityId).Distinct().Take(Pool).ToListAsync(ct);
         foreach (var raw in openIds)
             if (Guid.TryParse(raw, out var id) && (within is null || within.Contains(id)) && !found.Contains(id)) found.Add(id);
-        return found.Take(max).ToList();
+        // The longest-unchecked companies first, so a cap never starves the same ones.
+        return PayApprovalDeadEndRotation.OldestFirst(tenantId, found).Take(max).ToList();
     }
+
+    /// <summary>Most companies read before the cap and the rotation are applied.</summary>
+    private const int Pool = 1000;
 
     private void Warn(Exception ex, string trigger) =>
         _logger?.LogWarning(ex, "Pay approval dead-end hook failed (trigger {Trigger}); the change itself was already saved.", trigger);

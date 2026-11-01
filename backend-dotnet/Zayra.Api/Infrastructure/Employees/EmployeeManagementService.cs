@@ -280,7 +280,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         await WriteWarningOverrideAuditAsync(employee.Id, request, context, cancellationToken);
         // Pay was submitted for review: tell the admins now if nobody can review it (best effort, after the commit).
-        await _deadEnds.SyncCompanyAsync(tenantId, employee.CompanyId, "pay_submitted", cancellationToken);
+        // Only when the create actually opened a pay gap: a hire with no salary or bank details has nothing for a reviewer.
+        if (await Onboarding.CompensationApprovalGate.IsOpenAsync(_db, tenantId, employee.Id, cancellationToken))
+            await _deadEnds.SyncCompanyAsync(tenantId, employee.CompanyId, "pay_submitted", cancellationToken);
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match

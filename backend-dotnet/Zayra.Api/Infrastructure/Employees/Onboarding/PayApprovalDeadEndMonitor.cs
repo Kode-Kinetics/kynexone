@@ -15,13 +15,23 @@ public sealed class PayApprovalDeadEndMonitor : IPayApprovalDeadEndMonitor
         _db = db; _http = http; _config = config; _logger = logger;
     }
 
-    public Task SyncCompanyAsync(Guid tenantId, Guid companyId, string trigger, CancellationToken ct)
+    /// <summary>Config key: seconds during which a repeat change-hook check of the same company is skipped (0 or absent = off).</summary>
+    public const string DebounceSecondsKey = "PayApprovalDeadEnd:DebounceSeconds";
+
+    /// <summary>Triggers that are never skipped: the backstop sweep and the reviewer's own decision always evaluate.</summary>
+    private static bool NeverDebounced(string trigger) => trigger is "sweep" or "decision";
+
+    public async Task SyncCompanyAsync(Guid tenantId, Guid companyId, string trigger, CancellationToken ct)
     {
+        var window = TimeSpan.FromSeconds(Math.Clamp(int.TryParse(_config?[DebounceSecondsKey], out var seconds) ? seconds : 0, 0, 600));
+        if (!NeverDebounced(trigger) && PayApprovalDeadEndRotation.CheckedWithin(tenantId, companyId, window)) return;
+
         var user = _http.HttpContext?.User;
         var raw = user?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? user?.FindFirst("sub")?.Value;
         Guid? actor = Guid.TryParse(raw, out var id) ? id : null;
         var context = new Zayra.Api.Application.Auth.RequestContext(
             _http.HttpContext?.Connection.RemoteIpAddress?.ToString(), _http.HttpContext?.Request.Headers.UserAgent.ToString(), actor, tenantId);
-        return PayApprovalDeadEnds.SyncTaskAsync(_db, tenantId, companyId, actor, trigger, context, _logger, ct, _config);
+        await PayApprovalDeadEnds.SyncTaskAsync(_db, tenantId, companyId, actor, trigger, context, _logger, ct, _config);
+        PayApprovalDeadEndRotation.Touch(tenantId, companyId);
     }
 }

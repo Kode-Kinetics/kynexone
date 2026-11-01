@@ -129,7 +129,6 @@ public sealed class PayApprovalsController : ControllerBase
             if (eligible.Count == 0) strandedCount++;
             items.Add(new { employeeId = employee.Id, name = DisplayName(employee), eligibleReviewers = eligible });
         }
-        await SyncDeadEndsAsync(tenantId, companyId, "setup_view", ct);
         return Ok(new {
             independentReviewerCount = reviewers.Count(r => r.Id != caller.Value),
             readyForNewHires = operators.Any(w => w.CanEnterPay && reviewers.Any(r => r.Id != w.Id)),
@@ -244,15 +243,25 @@ public sealed class PayApprovalsController : ControllerBase
         return Ok(new { decision = "approved" });
     }
 
-    /// <summary>Keeps the company's "no eligible reviewer" notice current. Read-only toward the approval; never throws.</summary>
+    /// <summary>
+    /// Keeps the company's "no eligible reviewer" notice current. Read-only toward the approval. Never throws: it runs after the
+    /// decision has committed, so a failure here must not turn a saved approval into an error response.
+    /// </summary>
     private async Task SyncDeadEndsAsync(Guid tenantId, Guid? companyId, string trigger, CancellationToken ct)
     {
         if (companyId is not Guid company) return;
-        var services = HttpContext.RequestServices;
-        var monitor = services?.GetService<IPayApprovalDeadEndMonitor>();
-        if (monitor is not null) { await monitor.SyncCompanyAsync(tenantId, company, trigger, ct); return; }
-        await PayApprovalDeadEnds.SyncTaskAsync(_db, tenantId, company, GetUserId(), trigger, Context(tenantId), null, ct,
-            services?.GetService<IConfiguration>());
+        try
+        {
+            var services = HttpContext.RequestServices;
+            var monitor = services?.GetService<IPayApprovalDeadEndMonitor>();
+            if (monitor is not null) { await monitor.SyncCompanyAsync(tenantId, company, trigger, ct); return; }
+            await PayApprovalDeadEnds.SyncTaskAsync(_db, tenantId, company, GetUserId(), trigger, Context(tenantId), null, ct,
+                services?.GetService<IConfiguration>());
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // The approval is already saved; the next change or the backstop sweep re-checks the company.
+        }
     }
 
     private async Task RefreshReadinessAsync(Guid tenantId, int employeeId, CancellationToken ct)

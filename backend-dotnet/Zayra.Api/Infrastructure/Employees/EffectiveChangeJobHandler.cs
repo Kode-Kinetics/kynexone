@@ -175,6 +175,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
 
         var tally = Enum.GetValues<EffectiveChangeOutcome>().ToDictionary(x => x, _ => 0);
         var failed = 0;
+        var paidEmployees = new HashSet<int>();
         foreach (var changeId in due)
         {
             var itemKey = $"change:{changeId}";
@@ -211,11 +212,15 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
                     "Approved employee change {ChangeId} (tenant {TenantId}) deferred: {ReasonCode}.", changeId, ctx.TenantId, result.ReasonCode);
             // A scheduled pay change on a hire went in with this item: check the package has a reviewer (best effort, after its commit).
             if (result.Outcome == EffectiveChangeOutcome.Applied && result.EmployeeId is int appliedEmployeeId)
-                await new Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks(ctx.Db,
-                    ctx.Services.GetService<Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor>(), _log)
-                    .AfterEmployeePaySubmittedAsync(ctx.TenantId, appliedEmployeeId, "pay_submitted", ct);
+                paidEmployees.Add(appliedEmployeeId);
             await NotifyAsync(ctx.TenantId, result, ct);
         }
+
+        // Once per affected company, after the loop (best effort; the backstop sweep covers an attempt that ended early).
+        if (paidEmployees.Count > 0)
+            await new Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks(ctx.Db,
+                ctx.Services.GetService<Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor>(), _log)
+                .AfterEmployeesPaySubmittedAsync(ctx.TenantId, paidEmployees, "pay_submitted", ct);
 
         _log.LogInformation(
             "Effective employee changes for tenant {TenantId} on {LocalDate:yyyy-MM-dd}: {Due} due, {Applied} applied, "
