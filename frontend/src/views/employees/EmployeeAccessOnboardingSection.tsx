@@ -13,6 +13,7 @@ import { EmployeeCompletionHandoff } from '../../components/EmployeeCompletionHa
 import { EmployeeAccessCard } from '../../components/employeeAccess/EmployeeAccessCard';
 import { useWelcomeCodes } from '../../components/employeeAccess/useWelcomeCodes';
 import { Modal } from '../../components/Modal';
+import { employeeActivationFailure } from '../../lib/employeeActivationFailure';
 
 export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void }) {
   const router = useRouter();
@@ -44,8 +45,9 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       const access = canIssue ? await employeeAccessApi.get(employee.id).catch(() => null) : null;
       setActivated({ emailDelivery: !!access?.emailDelivery });
       setAccessRefresh((current) => current + 1);
-    } catch {
-      setActivationError('The employee could not be activated. Review the readiness items and try again.');
+    } catch (error) {
+      setActivationError(employeeActivationFailure(error, t));
+      onEmployeeChanged?.();
     } finally {
       setActivating(false);
     }
@@ -82,6 +84,14 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
           ? `No activation blockers. ${recommendations} ${recommendations === 1 ? 'recommendation' : 'recommendations'} remain.`
           : 'No activation blockers remain.'}</p>}
       {activationError && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{activationError}</p>}
+      {!!readiness?.blocking.length && <ul className="mt-3 list-disc space-y-1 ps-5 text-sm text-amber-800 dark:text-amber-200">
+        {readiness.blocking.map(item => <li key={item.key}>{t(item.label)}</li>)}
+      </ul>}
+      {readiness?.blocking.some(item => item.key === 'pay:compensationUnapproved') && <div className="mt-3 space-y-2 text-sm">
+        <p>{t('An independent reviewer must approve the pay package before activation. Giving the employee a role or resetting their password does not approve their pay.')}</p>
+        {hasPermission('payroll.approve') && <Link className="btn-secondary" href="/pay-approvals">{t('Pay approvals')}</Link>}
+        {hasPermission('security.manage') && <Link className="btn-secondary ms-2" href={`/setup?tab=users${employee.companyId ? `&companyId=${encodeURIComponent(employee.companyId)}` : ''}`}>{t('Check reviewer setup')}</Link>}
+      </div>}
       {canActivate && <button type="button" onClick={() => void activate()} disabled={activating || !readiness || activationBlockers > 0} className="btn-primary mt-4 disabled:opacity-50">{activating ? 'Activating…' : 'Activate employee'}</button>}
     </section>
     {welcome.view}

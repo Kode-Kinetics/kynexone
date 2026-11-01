@@ -56,15 +56,17 @@ public sealed class CompanySetupService
     private readonly IAccessManagementService _access;
     private readonly IEmailService _email;
     private readonly IWorkWeekService _workWeek;
+    private readonly IConfiguration? _config;
 
     public CompanySetupService(ZayraDbContext db, IOrganizationSetupService organization, IAccessManagementService access,
-        IWorkWeekService workWeek, IEmailService email)
+        IWorkWeekService workWeek, IEmailService email, IConfiguration? config = null)
     {
         _db = db;
         _organization = organization;
         _access = access;
         _workWeek = workWeek;
         _email = email;
+        _config = config;
         Planner = new CompanySetupPlanner(db, access, workWeek);
     }
 
@@ -124,7 +126,7 @@ public sealed class CompanySetupService
         var cards = new List<CompanySetupManageableCompany>(companies.Count);
         foreach (var company in companies)
         {
-            var readiness = await CompanySetupReadiness.ComputeAsync(_db, _email, caller.TenantId, company, ct);
+            var readiness = await CompanySetupReadiness.ComputeAsync(_db, _email, caller.TenantId, company, ct, _config);
             cards.Add(new CompanySetupManageableCompany(company.Id, company.LegalNameEn, string.IsNullOrWhiteSpace(company.LegalNameAr) ? null : company.LegalNameAr,
                 company.CountryCode, readiness.Count(r => r.Status == V.ReadinessDone), readiness.Count, openDrafts.GetValueOrDefault(company.Id)));
         }
@@ -1450,6 +1452,6 @@ public sealed class CompanySetupService
         var company = await ScopedBypass.TenantWide(_db.Companies, tenantId, Why).AsNoTracking()
             .FirstOrDefaultAsync(c => c.Id == companyId && !c.IsDeleted, ct);
         if (company is null) return null;
-        return await CompanySetupReadiness.ComputeAsync(_db, _email, tenantId, company, ct);
+        return await CompanySetupReadiness.ComputeAsync(_db, _email, tenantId, company, ct, _config);
     }
 }

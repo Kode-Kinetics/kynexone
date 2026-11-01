@@ -1,6 +1,22 @@
 // Pay approvals (views/PayApprovalsPage.tsx, views/PayApprovalDetailPage.tsx, lib/payApprovals.ts) and the link from the hire
 // readiness lists. Plain words only: "pay package" («حزمة الراتب», as hireWizard already says), "Finance» («المالية»).
 const ar: Record<string, string> = {
+  'Check reviewer setup': 'تحقق من إعداد المراجعين',
+  'Independent pay approval': 'موافقة مستقلة على الأجور',
+  'Select a company to check independent pay reviewers.': 'اختر شركة للتحقق من مراجعي الأجور المستقلين.',
+  'Create a separate user with Finance Approver access to this company. They must finish password setup and required two-step sign-in. Their login does not need an active employee record.': 'أنشئ مستخدمًا منفصلًا بصلاحية معتمد المالية لهذه الشركة. يجب أن يُكمل إعداد كلمة المرور والتحقق بخطوتين المطلوب. لا يحتاج تسجيل دخوله إلى سجل موظف نشط.',
+  'Each pay package still needs a reviewer who did not enter or change it and is not its employee. Password resets do not approve pay or activate employment.': 'تحتاج كل حزمة راتب إلى مراجع لم يُدخلها أو يعدّلها وليس الموظف المعني. إعادة تعيين كلمة المرور لا تعتمد الأجور ولا تُفعّل التوظيف.',
+  'Could not check independent reviewers. Reload to try again.': 'تعذر التحقق من المراجعين المستقلين. أعد التحميل للمحاولة مجددًا.',
+  'Separate pay entry and approval users are ready.': 'مستخدمون منفصلون لإدخال الأجور واعتمادها جاهزون.',
+  'Set up separate pay entry and approval users before onboarding employees.': 'أعدّ مستخدمين منفصلين لإدخال الأجور واعتمادها قبل إلحاق الموظفين.',
+  'Pending pay packages: {count}': 'حزم الرواتب المعلقة: {count}',
+  'No eligible reviewer for {count} checked packages.': 'لا يوجد مراجع مؤهل لعدد {count} من الحزم المفحوصة.',
+  'See who can review each pending package': 'اعرض من يمكنه مراجعة كل حزمة معلقة',
+  'Another independent reviewer is needed': 'يلزم مراجع مستقل آخر',
+  'Reviewer checks show the first 100 pending packages. Review these to see the rest.': 'تعرض فحوص المراجعين أول 100 حزمة معلقة. راجعها لعرض الباقي.',
+  '{count} packages need another reviewer because you are not independent of them.': 'تحتاج {count} حزمة إلى مراجع آخر لأنك لست مستقلاً عنها.',
+  'An independent reviewer must approve the pay package before activation. Giving the employee a role or resetting their password does not approve their pay.': 'يجب أن يعتمد مراجع مستقل حزمة الراتب قبل التفعيل. منح الموظف دورًا أو إعادة تعيين كلمة مروره لا يعتمد أجره.',
+  'The employee could not be activated. Reload the readiness checks and try again.': 'تعذر تفعيل الموظف. أعد تحميل فحوص الجاهزية وحاول مجددًا.',
   'Pay approvals': 'موافقات الرواتب',
   'New-hire pay packages waiting for your approval. You see only the figures and bank details needed to decide.': 'حزم رواتب الموظفين الجدد بانتظار موافقتك. تظهر لك فقط الأرقام وبيانات البنك اللازمة للقرار.',
   'No pay packages are waiting for you.': 'لا توجد حزم رواتب بانتظارك.',
