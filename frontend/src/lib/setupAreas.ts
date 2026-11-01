@@ -238,6 +238,7 @@ export const SETUP_AREAS: readonly SetupAreaDefinition[] = [
       setting('payroll', 'fiscalYears', 'tenant', navigation('posting-calendars', 'Posting and calendars', 0, 1)),
       route('payroll', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', navigation('payroll-configuration', 'Payroll configuration', 1, 0)),
       moduleSetting('payroll', 'payslipTemplates', 'tenant', navigation('payroll-configuration', 'Payroll configuration', 1, 1)),
+      moduleSetting('payroll', 'bankWps', 'company', navigation('payroll-configuration', 'Payroll configuration', 1, 2)),
     ],
   },
   {
