@@ -290,12 +290,12 @@ public class TerminateSeparationLifecycleTests
 
         // The ONLY separation action taken is the direct terminate command.
         await svc.TerminateAsync(tenantId, emp.Id,
-            new EmployeeStatusChangeRequest("Terminated", new DateOnly(2023, 1, 1), "Role eliminated"),
+            new EmployeeStatusChangeRequest("Terminated", new DateOnly(2022, 12, 31), "Role eliminated"),
             Ctx, default);
 
         var payroll = MakePayrollCtrl(db, tenantId);
         var result = await payroll.FinalSettlement(
-            new FinalSettlementRequest(emp.Id, new DateOnly(2023, 1, 1)), default);
+            new FinalSettlementRequest(emp.Id, new DateOnly(2022, 12, 31)), default);
 
         result.Should().NotBeOfType<BadRequestObjectResult>(
             "the direct-terminate path must now satisfy the leaver gate — this is the dead end D1 closes");

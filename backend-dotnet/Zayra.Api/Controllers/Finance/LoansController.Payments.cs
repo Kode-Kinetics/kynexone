@@ -221,8 +221,9 @@ public partial class LoansController
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
         // The confirmer must not be the beneficiary of any loan in the batch (the approver is already barred, above).
+        // Read untracked: a tracked copy loaded before LockLoansAsync would be reused by the post-lock reload and hide a hold committed while waiting for the lock.
         var batchLoanIds = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == tid && x.BatchId == batchId).Select(x => x.LoanId).ToListAsync(ct);
-        foreach (var batchLoan in await _db.EmployeeLoans.Where(x => x.TenantId == tid && batchLoanIds.Contains(x.Id)).ToListAsync(ct))
+        foreach (var batchLoan in await _db.EmployeeLoans.AsNoTracking().Where(x => x.TenantId == tid && batchLoanIds.Contains(x.Id)).ToListAsync(ct))
             if (await IsLoanBorrowerAsync(batchLoan, GetUserId()!.Value, ct))
                 return BadRequest("Maker-checker control: a loan beneficiary cannot confirm payment of their own loan.");
         if (batch.Status == "Paid" && batch.PaymentReference == req.Reference.Trim() && batch.PaidDate == req.PaidDate && batch.PaymentMethod == req.PaymentMethod)

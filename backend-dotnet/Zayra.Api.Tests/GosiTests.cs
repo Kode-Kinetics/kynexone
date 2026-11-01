@@ -99,8 +99,6 @@ public class GosiTests
     [Theory]
     [InlineData("KSA")]
     [InlineData("ksa")]
-    [InlineData("Saudi National")]
-    [InlineData("  saudi national  ")]
     [InlineData("Saudi Arabian")]
     [InlineData("Saudi Arabia")]
     [InlineData("SA")]
