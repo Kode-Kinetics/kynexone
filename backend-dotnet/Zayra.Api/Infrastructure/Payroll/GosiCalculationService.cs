@@ -105,7 +105,11 @@ public static class GosiCalculationService
             .GroupBy(r => (r.Branch, r.Payer))
             .Select(g =>
                 g.FirstOrDefault(r => r.TenantId == tenantId)   // tenant override wins
-             ?? g.First(r => r.TenantId == Guid.Empty))         // fall back to global default
+             ?? g.FirstOrDefault(r => r.TenantId == Guid.Empty) // fall back to global default
+             ?? throw new InvalidOperationException(
+                    $"No default GOSI contribution rule is seeded for {classification} / {g.Key.Branch} / {g.Key.Payer} " +
+                    $"effective {periodDate:yyyy-MM-dd}, and this tenant has no override of its own. Only other tenants' " +
+                    "overrides exist for it. Restore the system default rule (TenantId = empty) before computing GOSI."))
             .ToList();
     }
 

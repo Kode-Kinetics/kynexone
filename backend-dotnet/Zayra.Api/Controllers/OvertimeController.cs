@@ -8,8 +8,10 @@ using Zayra.Api.Application.Organization;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
@@ -26,9 +28,11 @@ public class OvertimeController : ControllerBase
     private readonly IHrmHierarchyService _hierarchyService;
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _ruleReader;
+    private readonly IConfiguration? _configuration;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null)
     {
+        _configuration = configuration;
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
@@ -53,7 +57,14 @@ public class OvertimeController : ControllerBase
     public async Task<ActionResult<OvertimePolicy>> CreatePolicy(OvertimePolicyRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        if (await _db.OvertimePolicies.AnyAsync(x => x.TenantId == tenantId && x.Code == req.Code && !x.IsDeleted, ct))
+        if (string.IsNullOrWhiteSpace(req.Code) || string.IsNullOrWhiteSpace(req.Name))
+            return BadRequest(new { message = "Policy code and name are required." });
+        if (req.Code.Trim().Length > 50 || req.Name.Trim().Length > 200)
+            return BadRequest(new { message = "Policy code must be at most 50 characters and name at most 200." });
+        var invalid = await ValidatePolicyAsync(tenantId, req, ct);
+        if (invalid is not null) return BadRequest(new { message = invalid });
+        // The unique index spans deleted rows too, so a deleted policy's code is still taken.
+        if (await _db.OvertimePolicies.AnyAsync(x => x.TenantId == tenantId && x.Code == req.Code.Trim(), ct))
             return Conflict(new { message = "Overtime policy code already exists." });
         var policy = new OvertimePolicy
         {
@@ -76,10 +87,74 @@ public class OvertimeController : ControllerBase
         _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "RegularDay", Multiplier = req.RegularDayMultiplier <= 0 ? regularDayDefault : req.RegularDayMultiplier });
         _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "Weekend", Multiplier = req.WeekendMultiplier <= 0 ? 1.5m : req.WeekendMultiplier });
         _db.OvertimeMultipliers.Add(new OvertimeMultiplier { TenantId = tenantId, OvertimePolicyId = policy.Id, DayCategory = "PublicHoliday", Multiplier = req.HolidayMultiplier <= 0 ? 2.0m : req.HolidayMultiplier });
-        await SaveAudit("overtime.policy.created", "OvertimePolicy", policy.Id.ToString(), ct);
+        var regularMultiplier = req.RegularDayMultiplier <= 0 ? regularDayDefault : req.RegularDayMultiplier;
+        await SaveAudit("overtime.policy.created", "OvertimePolicy", policy.Id.ToString(), ct, AuditChange(null, new
+        {
+            policy.Code, policy.Name, policy.HourlyRateBasis, policy.FixedHourlyRate, policy.StandardMonthlyHours,
+            policy.MinimumMinutes, policy.MaximumMinutesPerDay, policy.MonthlyCapMinutes, policy.RoundingRule,
+            policy.RequiresApproval, policy.AllowCompOffConversion,
+            RegularDayMultiplier = regularMultiplier,
+            WeekendMultiplier = req.WeekendMultiplier <= 0 ? 1.5m : req.WeekendMultiplier,
+            HolidayMultiplier = req.HolidayMultiplier <= 0 ? 2.0m : req.HolidayMultiplier,
+        }));
         await _db.SaveChangesAsync(ct);
         return Created($"/api/overtime/policies/{policy.Id}", policy);
     }
+
+    internal static readonly string[] AllowedHourlyRateBases =
+    {
+        OvertimeStatutoryCalculator.BasisBasicSalary, OvertimeStatutoryCalculator.BasisGrossSalary, OvertimeStatutoryCalculator.BasisFixedHourlyRate,
+    };
+    internal static readonly string[] AllowedRoundingRules = { "None", "Nearest15", "Up15", "Down15", "Nearest30" };
+    internal const decimal MaxPolicyMultiplier = 5m;
+    internal const decimal MaxFixedHourlyRate = 10_000m;
+
+    /// <summary>
+    /// OVT-07. Null when the policy is acceptable, else the refusal. A zero quantity still means "use the
+    /// default" (the create endpoint's long-standing contract); negatives and out-of-range values are refused.
+    /// Multipliers are held between the jurisdiction's statutory floor for the day type and 5x - the floor
+    /// is applied at calculation anyway, so a lower figure only ever misrepresented what would be paid.
+    /// </summary>
+    private async Task<string?> ValidatePolicyAsync(Guid tenantId, OvertimePolicyRequest req, CancellationToken ct)
+    {
+        if (req.HourlyRateBasis is not null && !AllowedHourlyRateBases.Contains(req.HourlyRateBasis))
+            return $"Hourly rate basis must be one of: {string.Join(", ", AllowedHourlyRateBases)}.";
+        if (req.RoundingRule is not null && !AllowedRoundingRules.Contains(req.RoundingRule))
+            return $"Rounding rule must be one of: {string.Join(", ", AllowedRoundingRules)}.";
+        if (req.FixedHourlyRate < 0 || req.FixedHourlyRate > MaxFixedHourlyRate)
+            return $"Fixed hourly rate must be between 0 and {MaxFixedHourlyRate:0}.";
+        if (req.StandardMonthlyHours < 0 || req.StandardMonthlyHours > 744)
+            return "Standard monthly hours must be between 1 and 744.";
+        if (req.MinimumMinutes < 0) return "Minimum minutes cannot be negative.";
+        if (req.MaximumMinutesPerDay < 0 || req.MaximumMinutesPerDay > 1440)
+            return "Maximum minutes per day must be between 1 and 1440.";
+        if (req.MonthlyCapMinutes < 0 || req.MonthlyCapMinutes > 744 * 60)
+            return "Monthly cap minutes must be between 1 and 44640.";
+        if (req.MinimumMinutes > 0 && req.MaximumMinutesPerDay > 0 && req.MinimumMinutes > req.MaximumMinutesPerDay)
+            return "Minimum minutes cannot exceed the daily maximum.";
+
+        // Statutory floors, when the tenant's country pack resolves; otherwise ordinary pay (1x).
+        var (cc, jur) = await ResolveCountryPackAsync(tenantId, null, null, ct);
+        OvertimeStatutoryContext? statutory = string.IsNullOrWhiteSpace(cc)
+            ? null
+            : await _ruleReader.ResolveAsync(cc, jur, DateOnly.FromDateTime(DateTime.UtcNow), tenantId, ct);
+        foreach (var (label, value, category) in new[]
+        {
+            ("Regular-day", req.RegularDayMultiplier, OvertimeStatutoryCalculator.DayCategoryRegular),
+            ("Weekend", req.WeekendMultiplier, OvertimeStatutoryCalculator.DayCategoryWeekend),
+            ("Public-holiday", req.HolidayMultiplier, OvertimeStatutoryCalculator.DayCategoryPublicHoliday),
+        })
+        {
+            if (value == 0) continue; // "use the default"
+            var floor = Math.Max(1m, statutory?.FloorFor(category) ?? 1m);
+            if (value < floor || value > MaxPolicyMultiplier)
+                return $"{label} multiplier must be between {floor:0.##} (the statutory floor) and {MaxPolicyMultiplier:0.##}.";
+        }
+        return null;
+    }
+
+    private static string AuditChange(object? oldValues, object? newValues) =>
+        System.Text.Json.JsonSerializer.Serialize(new { old = oldValues, @new = newValues });
 
     [HttpGet("types")]
     [AllowEntityReturn("Flat entity — no navigation properties. Fields: Code, Name, Category, IsActive. No employee data, salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
@@ -95,9 +170,23 @@ public class OvertimeController : ControllerBase
     public async Task<ActionResult<OvertimeType>> CreateType(OvertimeTypeRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        var type = new OvertimeType { TenantId = tenantId, Code = req.Code.Trim(), Name = req.Name.Trim(), Category = req.Category ?? "Regular" };
+        if (string.IsNullOrWhiteSpace(req.Code) || string.IsNullOrWhiteSpace(req.Name))
+            return BadRequest(new { message = "Type code and name are required." });
+        var code = req.Code.Trim();
+        // Case-insensitive, and across inactive rows too: the unique index spans every row of the tenant.
+        if (await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Code.ToUpper() == code.ToUpper(), ct))
+            return Conflict(new { message = "Overtime type code already exists." });
+        var type = new OvertimeType { TenantId = tenantId, Code = code, Name = req.Name.Trim(), Category = req.Category ?? "Regular" };
         _db.OvertimeTypes.Add(type);
-        await _db.SaveChangesAsync(ct);
+        await SaveAudit("overtime.type.created", "OvertimeType", type.Id.ToString(), ct, AuditChange(null, new { type.Code, type.Name, type.Category }));
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            return Conflict(new { message = "Overtime type code already exists." });
+        }
         return Created($"/api/overtime/types/{type.Id}", type);
     }
 
@@ -151,6 +240,9 @@ public class OvertimeController : ControllerBase
         // (after the daily maximum, before the monthly cap) so no existing client sees a new message.
         if (limits.Limit is OvertimeLimitKind.BelowMinimum or OvertimeLimitKind.AboveDailyMaximum)
             return BadRequest(new { message = OvertimePolicyLimits.RefusalMessage(limits.Limit, policy) });
+        // OVT-03: after the policy's own refusals (so no client sees a new message ahead of an old one).
+        var dateError = await ValidateWorkDateAsync(tenantId, employee.Id, req, ct);
+        if (dateError is not null) return BadRequest(new { message = dateError });
         if (await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == req.EmployeeId
                 && x.Status != "Rejected" && req.StartTimeUtc < x.EndTimeUtc && req.EndTimeUtc > x.StartTimeUtc, ct))
             return Conflict(new { message = "This overtime request overlaps an existing request." });
@@ -168,7 +260,9 @@ public class OvertimeController : ControllerBase
             StartTimeUtc = req.StartTimeUtc,
             EndTimeUtc = req.EndTimeUtc,
             RequestedMinutes = minutes,
-            Source = req.Source ?? "Manual",
+            // OVT-10: the public door is always "Manual". "Attendance" rows are minted only by
+            // detect-from-attendance (which de-duplicates on it), so a caller-supplied value was a forgery hook.
+            Source = "Manual",
             Reason = req.Reason ?? string.Empty,
             Status = "PendingManager",
             CreatedBy = GetUserId()
@@ -177,6 +271,43 @@ public class OvertimeController : ControllerBase
         await SaveAudit("overtime.request.created", "OvertimeRequest", request.Id.ToString(), ct);
         await _db.SaveChangesAsync(ct);
         return Created($"/api/overtime/requests/{request.Id}", request);
+    }
+
+    private const int DefaultMaxLookbackDays = 60;
+
+    /// <summary>
+    /// OVT-03. The work date must be the (tenant-time-zone) date the overtime started - an overnight shift keeps
+    /// the date it began on and may spill one day - no more than a day ahead, no older than the configurable
+    /// look-back (<c>Overtime:MaxLookbackDays</c>, default 60) and not in a payroll-locked period.
+    /// Returns the refusal message, or null when the date is acceptable.
+    /// </summary>
+    private async Task<string?> ValidateWorkDateAsync(Guid tenantId, int employeeId, OvertimeRequestCreate req, CancellationToken ct)
+    {
+        var tzId = await _db.TenantLocalizationSettings.AsNoTracking().Where(x => x.TenantId == tenantId)
+            .Select(x => x.DefaultTimezone).FirstOrDefaultAsync(ct);
+        TimeZoneInfo tz;
+        try { tz = string.IsNullOrWhiteSpace(tzId) ? TimeZoneInfo.Utc : TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException) { tz = TimeZoneInfo.Utc; }
+
+        static DateOnly LocalDate(DateTime utc, TimeZoneInfo zone) =>
+            DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), zone));
+        var startDate = LocalDate(req.StartTimeUtc, tz);
+        var endDate = LocalDate(req.EndTimeUtc, tz);
+        if (req.WorkDate != startDate)
+            return "Work date must be the date the overtime started.";
+        if (endDate > req.WorkDate.AddDays(1))
+            return "Overtime may spill past midnight by at most one day.";
+
+        var today = LocalDate(DateTime.UtcNow, tz);
+        if (req.WorkDate > today.AddDays(1))
+            return "Work date cannot be more than one day in the future.";
+        var lookback = _configuration?.GetValue<int?>("Overtime:MaxLookbackDays") is int configured && configured > 0
+            ? configured : DefaultMaxLookbackDays;
+        if (req.WorkDate < today.AddDays(-lookback))
+            return $"Overtime older than {lookback} days cannot be filed.";
+        if (await AttendancePayrollLock.IsLockedAsync(_db, tenantId, employeeId, req.WorkDate, ct))
+            return "That work date is inside a payroll-locked period.";
+        return null;
     }
 
     /// <summary>
@@ -332,8 +463,14 @@ public class OvertimeController : ControllerBase
             return BadRequest(new { message = "Maker-checker violation: requester cannot approve their own overtime." });
         // The requester rule above bars whoever FILED it; this bars whoever it is ABOUT. HR or a manager
         // whose overtime a colleague keyed in must not approve it, whatever their role.
-        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), request.EmployeeId, ct))
+        if (await CallerIsSubjectAsync(tenantId, request.EmployeeId, ct))
             return BadRequest(SubjectDecisionBar.Refusal("This overtime is yours. Someone else has to approve it."));
+        // OVT-02(b): one decider per approval step - whoever advanced stage 1 cannot also close stage 2.
+        if (request.Status == "PendingHR" && await CallerDecidedStageOneAsync(tenantId, request.Id, ct))
+            return BadRequest(new { message = "Separation of duties: the person who approved the manager step cannot also give the final approval." });
+        // OVT-06: nothing is decided for someone who has left (or whose record is gone).
+        if (!await EmployeeCanHaveOvertimeDecidedAsync(tenantId, request.EmployeeId, ct))
+            return BadRequest(new { message = "This employee is not active; overtime cannot be approved." });
 
         var isAdmin = User.IsInRole("Admin");
         var isHR = User.IsInRole("HR Manager");
@@ -345,13 +482,17 @@ public class OvertimeController : ControllerBase
         // Admin bypasses all steps; HR Manager finalises from PendingHR
         if (isAdmin || (isHR && request.Status == "PendingHR"))
         {
+            // OVT-15: validate the input BEFORE touching the tracked request or queueing any row. The
+            // checks used to follow the mutations, so a refused call left Status = Approved tracked and the
+            // next SaveChanges on the same context persisted it.
+            var approvedMinutes = req.ApprovedMinutes > 0 ? req.ApprovedMinutes : request.RequestedMinutes;
+            if (approvedMinutes <= 0 || approvedMinutes > request.RequestedMinutes)
+                return BadRequest(new { message = "Approved minutes must be positive and cannot exceed requested minutes." });
             _db.OvertimeApprovals.Add(NewOvertimeApproval(
                 tenantId, request.Id, "Final", "Approved", req.Notes));
             request.Status = "Approved";
             request.DecisionVersion++;
-            request.ApprovedMinutes = req.ApprovedMinutes > 0 ? req.ApprovedMinutes : request.RequestedMinutes;
-            if (request.ApprovedMinutes <= 0 || request.ApprovedMinutes > request.RequestedMinutes)
-                return BadRequest(new { message = "Approved minutes must be positive and cannot exceed requested minutes." });
+            request.ApprovedMinutes = approvedMinutes;
             request.DecidedAtUtc = DateTime.UtcNow;
             var calc = await Calculate(request, ct);
             _db.OvertimeCalculations.Add(calc);
@@ -400,8 +541,12 @@ public class OvertimeController : ControllerBase
         if (!request.Status.StartsWith("Pending")) return BadRequest(new { message = "Only pending overtime can be rejected." });
         if (request.CreatedBy.HasValue && request.CreatedBy == GetUserId())
             return BadRequest(new { message = "Maker-checker violation: requester cannot reject their own overtime." });
-        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), request.EmployeeId, ct))
+        if (await CallerIsSubjectAsync(tenantId, request.EmployeeId, ct))
             return BadRequest(SubjectDecisionBar.Refusal("This overtime is yours. Someone else has to reject it."));
+        if (request.Status == "PendingHR" && await CallerDecidedStageOneAsync(tenantId, request.Id, ct))
+            return BadRequest(new { message = "Separation of duties: the person who approved the manager step cannot also decide the final step." });
+        if (!await EmployeeCanHaveOvertimeDecidedAsync(tenantId, request.EmployeeId, ct))
+            return BadRequest(new { message = "This employee is not active; overtime cannot be rejected." });
         var isAdmin = User.IsInRole("Admin");
         var isHR = User.IsInRole("HR Manager");
         var isManager = User.IsInRole("Manager") || User.IsInRole("Supervisor");
@@ -434,8 +579,7 @@ public class OvertimeController : ControllerBase
     }
 
     [HttpGet("calculations")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: OvertimeRequestId, EmployeeId, ApprovedHours, HourlyRate (derived from salary for computation), Multiplier, Amount, CalculationJson. Scope-filtered to caller's accessible employees. No bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<IReadOnlyCollection<OvertimeCalculation>>> Calculations([FromQuery] int? employeeId, [FromQuery] int pageSize = 100, CancellationToken ct = default)
+    public async Task<ActionResult<IReadOnlyCollection<OvertimeCalculationView>>> Calculations([FromQuery] int? employeeId, [FromQuery] int pageSize = 100, CancellationToken ct = default)
     {
         pageSize = Math.Clamp(pageSize, 1, 100);
         var tenantId = RequireTenant();
@@ -444,8 +588,14 @@ public class OvertimeController : ControllerBase
         var query = _db.OvertimeCalculations.AsNoTracking().Where(x => x.TenantId == tenantId);
         if (setFilter is not null) query = query.Where(x => setFilter.Contains(x.EmployeeId));
         else if (singleId.HasValue) query = query.Where(x => x.EmployeeId == singleId.Value);
-        return Ok(await query.OrderByDescending(x => x.CreatedAtUtc).Take(pageSize).ToListAsync(ct));
+        var rows = await query.OrderByDescending(x => x.CreatedAtUtc).Take(pageSize).ToListAsync(ct);
+        // OVT-14: the hourly rate is derived from salary. Pay roles see it; the employee sees their own.
+        var seesRates = CanSeeOvertimeRates();
+        return Ok(rows.Select(x => OvertimeCalculationView.From(x, seesRates || (scope.CallerEmployeeId is int self && self == x.EmployeeId))).ToList());
     }
+
+    private bool CanSeeOvertimeRates() =>
+        User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("Payroll Officer") || User.IsInRole("Payroll Manager");
 
     [HttpGet("budgets")]
     [Authorize(Roles = "Admin,HR Manager,Payroll Officer,Payroll Manager,Finance Approver,Auditor")]
@@ -491,8 +641,20 @@ public class OvertimeController : ControllerBase
         var policy = request.OvertimePolicyId.HasValue ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == request.OvertimePolicyId && x.TenantId == tenantId, ct) : null;
         if (policy is null || !policy.AllowCompOffConversion) return BadRequest(new { message = "Comp-off conversion is not allowed by this policy." });
         if (req.CompOffDays <= 0) return BadRequest(new { message = "Comp-off days must be positive." });
+        // OVT-01: the days are bounded by the hours actually approved, over the working day. Unbounded days
+        // let one hour of overtime mint any amount of paid leave.
+        var maxDays = MaxCompOffDays(request.ApprovedMinutes);
+        if (req.CompOffDays > maxDays)
+            return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
             return Conflict(new { message = "This overtime request has already been converted to comp-off." });
+        // OVT-01: the same overtime must never be both cash and leave. Cash already paid cannot be taken back
+        // here; cash still waiting for payroll is withdrawn in the same save as the credit.
+        var impacts = await _db.OvertimePayrollImpacts.Where(x => x.TenantId == tenantId && x.OvertimeRequestId == request.Id).ToListAsync(ct);
+        if (impacts.Any(x => x.Status == "Processed" || x.PayrollRunId != null))
+            return Conflict(new { message = "This overtime has already been paid through payroll and cannot be converted to comp-off." });
+        _db.OvertimePayrollImpacts.RemoveRange(impacts);
+        await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
         var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = req.CompOffDays, Status = "Approved" };
         _db.OvertimeCompOffConversions.Add(compOff);
         _db.CompOffCredits.Add(new CompOffCredit
@@ -518,6 +680,19 @@ public class OvertimeController : ControllerBase
         }
         return Created($"/api/overtime/comp-off-conversions/{compOff.Id}", compOff);
     }
+
+    /// <summary>Hours in one working day for comp-off: the 240 h / 30 d statutory monthly basis (8 h/day).</summary>
+    internal const decimal CompOffHoursPerWorkingDay = 8m;
+
+    /// <summary>
+    /// Most comp-off days a request's approved minutes can be converted to: the approved hours over the working
+    /// day, rounded UP to a whole day (minimum one). Whole-day rounding is deliberate and generous - the existing
+    /// suites convert a 120-minute request to one day - so the bound stops 30-day (or any multi-day) grants for
+    /// an hour of overtime, but a part-day of overtime may still earn one day. Tighten to fractional days only
+    /// together with those suites.
+    /// </summary>
+    internal static decimal MaxCompOffDays(int approvedMinutes) =>
+        Math.Max(1m, Math.Ceiling(approvedMinutes / 60m / CompOffHoursPerWorkingDay));
 
     [HttpGet("reports/summary")]
     public async Task<ActionResult<object>> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
@@ -700,9 +875,9 @@ public class OvertimeController : ControllerBase
             ? 1.5m
             : 1.25m;
 
-    private async Task SaveAudit(string action, string entity, string entityId, CancellationToken ct)
+    private async Task SaveAudit(string action, string entity, string entityId, CancellationToken ct, string? metadataJson = null)
     {
-        _db.OvertimeAuditLogs.Add(new OvertimeAuditLog { TenantId = RequireTenant(), Action = action, EntityName = entity, EntityId = entityId, UserId = GetUserId() });
+        _db.OvertimeAuditLogs.Add(new OvertimeAuditLog { TenantId = RequireTenant(), Action = action, EntityName = entity, EntityId = entityId, UserId = GetUserId(), MetadataJson = metadataJson ?? "{}" });
         await Task.CompletedTask;
     }
 
@@ -739,6 +914,41 @@ public class OvertimeController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// True when the caller IS the employee the overtime is about: a linked login (the shared
+    /// <see cref="SubjectDecisionBar"/>) or the caller's own <c>employee_id</c> claim.
+    /// </summary>
+    private async Task<bool> CallerIsSubjectAsync(Guid tenantId, int subjectEmployeeId, CancellationToken ct)
+    {
+        if (int.TryParse(User.FindFirstValue("employee_id"), out var claimEmployeeId) && claimEmployeeId == subjectEmployeeId)
+            return true;
+        return await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), subjectEmployeeId, ct);
+    }
+
+    /// <summary>True when the caller already approved the manager step (stage 1) of this request.</summary>
+    private async Task<bool> CallerDecidedStageOneAsync(Guid tenantId, Guid requestId, CancellationToken ct)
+    {
+        var userId = GetUserId();
+        if (userId is null) return true; // cannot tell who is deciding: refuse
+        return await _db.OvertimeApprovals.AsNoTracking().AnyAsync(a => a.TenantId == tenantId && a.OvertimeRequestId == requestId
+            && a.ApprovalLevel == "Manager" && a.Decision == "Approved" && a.DecidedByUserId == userId, ct);
+    }
+
+    private static readonly string[] EmployeeStatusesBarredFromDecision =
+    {
+        EmployeeStatuses.Inactive, EmployeeStatuses.Terminated, EmployeeStatuses.Exited,
+        EmployeeStatuses.Offboarded, EmployeeStatuses.Archived,
+    };
+
+    /// <summary>False when the employee is gone, soft-deleted, or has left (inactive/terminated/exited/offboarded/archived).</summary>
+    private async Task<bool> EmployeeCanHaveOvertimeDecidedAsync(Guid tenantId, int employeeId, CancellationToken ct)
+    {
+        var employee = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Deciding overtime needs the employee's employment state whatever the caller's company scope; nothing is returned.")
+            .AsNoTracking().Where(e => e.Id == employeeId).Select(e => new { e.IsDeleted, e.Status }).FirstOrDefaultAsync(ct);
+        return employee is not null && !employee.IsDeleted && !EmployeeStatusesBarredFromDecision.Contains(employee.Status);
+    }
+
     private Guid RequireTenant() => Guid.Parse(User.FindFirstValue("tenant_id")!);
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
     private async Task<bool> IsCurrentUserResolvedApproverAsync(Guid tenantId, int employeeId, string workflowType, CancellationToken ct)
@@ -768,4 +978,18 @@ public record DetectOvertimeRequest(DateOnly FromDate, DateOnly ToDate, Guid? Ov
 public record DetectOvertimeResult(
     IReadOnlyCollection<OvertimeRequest> Created,
     IReadOnlyCollection<AttendanceException> Capped);
+/// <summary>
+/// An overtime calculation as the list endpoint returns it. Same JSON shape as the entity, except
+/// <c>hourlyRate</c> is nullable: it is derived from salary and withheld (with the rate breakdown in
+/// <c>calculationJson</c>) from callers who are neither a pay role nor the employee concerned.
+/// </summary>
+public record OvertimeCalculationView(
+    Guid Id, Guid OvertimeRequestId, int EmployeeId, int ApprovedMinutes, decimal ApprovedHours,
+    decimal? HourlyRate, decimal Multiplier, decimal Amount, string Currency, string CalculationJson, DateTime CreatedAtUtc)
+{
+    public static OvertimeCalculationView From(OvertimeCalculation x, bool includeRate) => new(
+        x.Id, x.OvertimeRequestId, x.EmployeeId, x.ApprovedMinutes, x.ApprovedHours,
+        includeRate ? x.HourlyRate : null, x.Multiplier, x.Amount, x.Currency,
+        includeRate ? x.CalculationJson : "{}", x.CreatedAtUtc);
+}
 public record CompOffConversionRequest(Guid OvertimeRequestId, decimal CompOffDays);

@@ -102,7 +102,7 @@ public class StatutoryEosbEndToEndTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.CalculateEosb(
-            new EosbCalculationRequest(employeeId, new DateTime(2026, 1, 1), null),
+            new EosbCalculationRequest(employeeId, new DateTime(2025, 12, 31), null),
             CancellationToken.None);
 
         // 12 years: 5 × ½ month + 7 × 1 month = 9.5 months of the LAST WAGE (SAR 30,000).
@@ -130,7 +130,7 @@ public class StatutoryEosbEndToEndTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.CalculateEosb(
-            new EosbCalculationRequest(employeeId, new DateTime(2026, 1, 1), null),
+            new EosbCalculationRequest(employeeId, new DateTime(2025, 12, 31), null),
             CancellationToken.None);
 
         var notices = Prop<object>(result, "statutoryNotices");
@@ -159,7 +159,7 @@ public class StatutoryEosbEndToEndTests
         var offboarding = new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = employeeId, SeparationType = "Termination",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2026, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2025, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         };
         db.EmployeeOffboardings.Add(offboarding);
 

@@ -42,6 +42,16 @@ public class EmployeeSelfServiceController : ControllerBase
         "preferredName", "personalEmail", "phone", "maritalStatus", "emergencyContactName", "emergencyContactPhone"
     };
 
+    // Longest value HR may approve per self-service field (the Create DTO's bounds, so both doors agree).
+    private static readonly Dictionary<string, int> ProfileFieldLimits = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["preferredName"] = 120, ["personalEmail"] = 254, ["phone"] = 60, ["maritalStatus"] = 60,
+        ["emergencyContactName"] = 150, ["emergencyContactPhone"] = 60,
+    };
+
+    private static bool IsPlausibleEmail(string value) =>
+        System.Net.Mail.MailAddress.TryCreate(value, out var parsed) && parsed.Address == value && value.Contains('.', StringComparison.Ordinal);
+
     private readonly ZayraDbContext _db;
     private readonly ILetterService _letters;
     private readonly PdfRenderGate _pdfGate;
@@ -356,19 +366,46 @@ public class EmployeeSelfServiceController : ControllerBase
             return await HttpContext.RequestServices.GetRequiredService<Zayra.Api.Application.Employees.Ess.EssSectionDecisionService>()
                 .ApproveAsync(change, employee, request, User, GetUserId(), cancellationToken);
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
+        // Validate every requested value BEFORE any is applied: a bad one is a 400 that leaves the record and
+        // the request untouched, never a half-applied change or a database error.
+        var proposed = new List<(string Field, string Text)>();
         foreach (var (field, value) in values)
         {
             var text = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ToString().Trim();
+            if (!ProfileFieldLimits.TryGetValue(field, out var limit))
+                return BadRequest(new { message = $"Unsupported profile field '{field}'." });
+            if (text.Length > limit)
+                return BadRequest(new { message = $"'{field}' is too long (at most {limit} characters)." });
+            if (field.Equals("personalEmail", StringComparison.OrdinalIgnoreCase) && text.Length > 0 && !IsPlausibleEmail(text))
+                return BadRequest(new { message = "Personal email is not a valid email address." });
+            proposed.Add((field, text));
+        }
+        var decisionDate = DateOnly.FromDateTime(DateTime.UtcNow);
+        foreach (var (field, text) in proposed)
+        {
+            string label, previous;
             switch (field.ToLowerInvariant())
             {
-                case "preferredname": employee.PreferredName = text; break;
-                case "personalemail": employee.PersonalEmail = text; break;
-                case "phone": employee.Phone = text; break;
-                case "maritalstatus": employee.MaritalStatus = text; break;
-                case "emergencycontactname": employee.EmergencyContactName = text; break;
-                case "emergencycontactphone": employee.EmergencyContactPhone = text; break;
+                case "preferredname": label = "PreferredName"; previous = employee.PreferredName; employee.PreferredName = text; break;
+                case "personalemail": label = "PersonalEmail"; previous = employee.PersonalEmail; employee.PersonalEmail = text; break;
+                case "phone": label = "Phone"; previous = employee.Phone; employee.Phone = text; break;
+                case "maritalstatus": label = "MaritalStatus"; previous = employee.MaritalStatus; employee.MaritalStatus = text; break;
+                case "emergencycontactname": label = "EmergencyContactName"; previous = employee.EmergencyContactName; employee.EmergencyContactName = text; break;
+                case "emergencycontactphone": label = "EmergencyContactPhone"; previous = employee.EmergencyContactPhone; employee.EmergencyContactPhone = text; break;
                 default: return BadRequest(new { message = $"Unsupported profile field '{field}'." });
             }
+            if (previous == text) continue;
+            // Who approved which personal-detail change and what it was before; values pass through the same
+            // field-aware sanitiser as the rest of the employee history.
+            _db.EmployeeHistories.Add(new EmployeeHistory
+            {
+                TenantId = tenantId, EmployeeId = employee.Id, EventType = label + "Change", FieldName = label,
+                OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, previous),
+                NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, text),
+                EffectiveDate = decisionDate, Reason = "Employee profile change request approved",
+                ApprovedByUserId = GetUserId(), CreatedByUserId = GetUserId(),
+                SnapshotJson = EmployeeSafeSnapshot.Serialize(employee),
+            });
         }
         change.Status = "Approved";
         change.DecidedAtUtc = DateTime.UtcNow;

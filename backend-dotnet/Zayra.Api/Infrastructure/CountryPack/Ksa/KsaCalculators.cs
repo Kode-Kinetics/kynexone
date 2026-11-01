@@ -402,9 +402,12 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         }
     }
 
-    // Returns (fullMonths, remainingDays) excluding the termination month's excess days
-    private static (int fullMonths, int remDays) ServicePeriod(DateOnly start, DateOnly end)
+    // Returns (fullMonths, remainingDays). PAY-01: `end` is the LAST DAY OF SERVICE and is INCLUSIVE, so
+    // 2020-01-01 through 2021-12-31 is two full years, not 1y11m30d. The span is measured to the day AFTER
+    // the last day worked.
+    private static (int fullMonths, int remDays) ServicePeriod(DateOnly start, DateOnly lastDay)
     {
+        var end = lastDay.AddDays(1);
         int months = (end.Year - start.Year) * 12 + (end.Month - start.Month);
         int days   = end.Day - start.Day;
         if (days < 0)

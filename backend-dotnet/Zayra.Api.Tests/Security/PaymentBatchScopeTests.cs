@@ -406,6 +406,105 @@ public class PaymentBatchScopeTests
         dir.Should().NotBeNull("the test must be able to locate the Zayra.Api source tree");
         return Path.Combine(dir!.FullName, "Zayra.Api");
     }
+
+    // ── PAY-07: /companies and /overview honour the caller's company scope ─────────────────────────
+
+    private static (Guid A, Guid B) SeedTwoCompanies(ZayraDbContext db, Guid tenantId)
+    {
+        var a = new Company { Id = Guid.NewGuid(), TenantId = tenantId, LegalNameEn = "Company A", DefaultCurrency = "SAR", IsActive = true, WpsEmployerId = "7-1111111", GosiEmployerId = "GOSI-A" };
+        var b = new Company { Id = Guid.NewGuid(), TenantId = tenantId, LegalNameEn = "Company B", DefaultCurrency = "SAR", IsActive = true, WpsEmployerId = "7-2222222", GosiEmployerId = "GOSI-B" };
+        db.Companies.AddRange(a, b);
+        db.Employees.Add(new Employee { TenantId = tenantId, CompanyId = b.Id, EmployeeCode = "B1", FullName = "B One", Status = "Active", JoiningDate = DateTime.UtcNow });
+        db.SaveChanges();
+        return (a.Id, b.Id);
+    }
+
+    [Fact]
+    public async Task ListPayrollCompanies_ExcludesOutOfScopeCompanies_AndTheirEstablishmentIds()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var (a, _) = SeedTwoCompanies(db, tenantId);
+
+        var result = await MakeCtrl(db, tenantId, a).ListPayrollCompanies(default);
+
+        var json = JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value);
+        json.Should().Contain("Company A").And.Contain("7-1111111");
+        json.Should().NotContain("Company B").And.NotContain("7-2222222").And.NotContain("GOSI-B");
+    }
+
+    [Fact]
+    public async Task ListPayrollCompanies_GroupScope_StillSeesEveryCompany()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        SeedTwoCompanies(db, tenantId);
+
+        var result = await MakeCtrl(db, tenantId, null).ListPayrollCompanies(default);
+
+        var json = JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value);
+        json.Should().Contain("Company A").And.Contain("Company B");
+    }
+
+    [Fact]
+    public async Task PayrollOverview_ExcludesOutOfScopeCompanies_AndTheirCounts_EvenWhenRequestedByCompanyId()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var (a, b) = SeedTwoCompanies(db, tenantId);
+
+        foreach (var requested in new Guid?[] { null, b })
+        {
+            var result = await MakeCtrl(db, tenantId, a).PayrollOverview(requested, 2026, 7, default);
+            var json = JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value);
+            json.Should().NotContain("Company B").And.NotContain("7-2222222").And.NotContain("GOSI-B");
+            json.Should().Contain("\"TotalActiveEmployees\":0", "the other company's employee must not be counted for this caller");
+        }
+    }
+
+
+    // ── PAY-09: ListRunApprovals resolves the run through the caller's company scope first ─────────
+
+    [Fact]
+    public async Task ListRunApprovals_OtherCompanysRun_Is404_AndDisclosesNoApprovalRows()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var companyB = Guid.NewGuid();
+        var (_, runId) = SeedBatch(db, tenantId, companyB);
+        db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = runId, Decision = "Approved", Notes = "B-only approval note" });
+        await db.SaveChangesAsync();
+
+        var result = await MakeCtrl(db, tenantId, Guid.NewGuid()).ListRunApprovals(runId, default);
+
+        result.Should().BeOfType<NotFoundResult>("an out-of-scope run is indistinguishable from a missing one");
+    }
+
+    [Fact]
+    public async Task ListRunApprovals_OwnCompanyRun_ReturnsItsApprovals_AndGroupScopeSeesAnyRun()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var companyA = Guid.NewGuid();
+        var (_, runId) = SeedBatch(db, tenantId, companyA);
+        db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = runId, Decision = "Approved" });
+        await db.SaveChangesAsync();
+
+        foreach (var caller in new[] { companyA, (Guid?)null })
+        {
+            var result = await MakeCtrl(db, tenantId, caller).ListRunApprovals(runId, default);
+            ((System.Collections.IEnumerable)result.Should().BeOfType<OkObjectResult>().Subject.Value!).Cast<object>().Should().ContainSingle();
+        }
+    }
+
+    [Fact]
+    public async Task ListRunApprovals_UnknownRun_Is404()
+    {
+        using var db = NewDb();
+        var result = await MakeCtrl(db, Guid.NewGuid(), null).ListRunApprovals(Guid.NewGuid(), default);
+        result.Should().BeOfType<NotFoundResult>();
+    }
+
 }
 
 file sealed class _PbUnrestrictedScope : Zayra.Api.Application.Common.IDataScopeService

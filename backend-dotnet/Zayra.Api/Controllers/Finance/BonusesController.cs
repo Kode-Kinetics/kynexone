@@ -7,6 +7,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Governance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -277,6 +278,26 @@ public class BonusesController : ControllerBase
 
     // ── Employee Bonuses ──────────────────────────────────────────────────────
 
+    private const decimal MaxBonusMoney = 999999999.99m;
+    private const decimal MaxBonusPercent = 1000m;
+
+    /// <summary>Range check shared by every path that sets a bonus calculation: a salary is not negative, the
+    /// value is positive and (for a percentage) at most 1000, and the resulting gross is a positive amount that
+    /// fits the column. Null when acceptable.</summary>
+    private static string? BonusInputRefusal(string? method, decimal basicSalary, decimal value)
+    {
+        var percentage = method == "PercentageSalary";
+        if (basicSalary < 0 || basicSalary > MaxBonusMoney)
+            return "Basic salary must be between 0 and 999,999,999.99.";
+        if (value <= 0 || value > (percentage ? MaxBonusPercent : MaxBonusMoney))
+            return percentage ? "The bonus percentage must be greater than 0 and at most 1000."
+                              : "The bonus amount must be greater than 0 and at most 999,999,999.99.";
+        var gross = percentage ? Math.Round(basicSalary * (value / 100m), 2) : value;
+        if (gross <= 0 || gross > MaxBonusMoney)
+            return "The calculated bonus must be a positive amount of at most 999,999,999.99.";
+        return null;
+    }
+
     [HttpPost("batches/{batchId:guid}/employees")]
     [HasPermission("payroll.write")]
     public async Task<IActionResult> AddEmployeeBonus(Guid batchId, [FromBody] AddEmployeeBonusRequest req, CancellationToken ct)
@@ -293,6 +314,8 @@ public class BonusesController : ControllerBase
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
         if (!identity.IsSuccess) return BadRequest(identity.Error);
         var employee = identity.Employee!;
+        if (BonusInputRefusal(req.CalculationMethod, req.BasicSalary, req.CalculationValue) is { } inputRefusal)
+            return BadRequest(inputRefusal);
         if (await _db.EmployeeBonuses.AnyAsync(
                 x => x.TenantId == tid && x.BonusBatchId == batchId &&
                      x.EmployeeIntId == employee.Id && !x.IsDeleted, ct))
@@ -359,6 +382,13 @@ public class BonusesController : ControllerBase
             empQuery = empQuery.Where(e => e.CompanyId == req.CompanyId.Value);
         if (req.GradeId.HasValue)
             empQuery = empQuery.Where(e => e.GradeId == req.GradeId.Value);
+
+        if (req.OverrideCalculationValue.HasValue)
+        {
+            var overrideMax = bonusType.CalculationMethod == "PercentageSalary" ? MaxBonusPercent : MaxBonusMoney;
+            if (req.OverrideCalculationValue.Value <= 0 || req.OverrideCalculationValue.Value > overrideMax)
+                return BadRequest("The override value must be greater than 0 and within the allowed maximum.");
+        }
 
         var employees = await empQuery.ToListAsync(ct);
 
@@ -447,6 +477,7 @@ public class BonusesController : ControllerBase
         var method = req.CalculationMethod ?? eb.CalculationMethod;
         var value  = req.CalculationValue ?? eb.CalculationValue;
         var salary = req.BasicSalary ?? eb.BasicSalary;
+        if (BonusInputRefusal(method, salary, value) is { } inputRefusal) return BadRequest(inputRefusal);
         decimal gross = method == "PercentageSalary" ? Math.Round(salary * (value / 100m), 2) : value;
         // Per-company CompanyTaxPolicy override (FIX 3) keyed on the bonus's company.
         decimal tax   = (bonusType?.IsTaxable == true)
@@ -498,15 +529,29 @@ public class BonusesController : ControllerBase
         return Ok(batch);
     }
 
+    // Serialized on the batch: the status check below is read-then-write, so two simultaneous approvals (or a
+    // simultaneous approve and mark-paid) could both pass it and both post a journal. Same mechanism as
+    // AdvancesController.Approve.
     [HttpPatch("batches/{id:guid}/approve")]
     [HasPermission("payroll.approve")]
-    public async Task<IActionResult> ApproveBatch(Guid id, [FromBody] BatchApproveRequest req, CancellationToken ct)
+    public Task<IActionResult> ApproveBatch(Guid id, [FromBody] BatchApproveRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeBonusBatch, GetTenantId(), id, () => ApproveBatchCore(id, req, ct), ct);
+
+    private async Task<IActionResult> ApproveBatchCore(Guid id, BatchApproveRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();
         if (batch.Status != "PendingApproval") return BadRequest("Batch is not pending approval.");
+        // Maker-checker: whoever created the batch, or submitted it for approval (read from the submit audit row,
+        // not UpdatedBy, which any later write overwrites), cannot also approve it.
+        var submittedBy = await _db.BonusAuditLogs.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.BonusBatchId == id && x.Action == "BatchSubmitted")
+            .OrderByDescending(x => x.CreatedAtUtc).Select(x => x.PerformedBy).FirstOrDefaultAsync(ct);
+        if (uid.HasValue && (batch.CreatedBy == uid || submittedBy == uid))
+            return BadRequest("Maker-checker control: the person who created or submitted a bonus batch cannot approve it.");
 
         // POD-B1b-FIX (P1-6) — approving accrues per company; a company-scoped approver used to see only
         // their own slice, accrue only that, and still flip the whole batch to Approved, stranding the
@@ -767,7 +812,11 @@ public class BonusesController : ControllerBase
 
     [HttpPatch("batches/{id:guid}/mark-paid")]
     [HasPermission("payroll.approve")]
-    public async Task<IActionResult> MarkBatchPaid(Guid id, [FromBody] MarkBatchPaidRequest req, CancellationToken ct)
+    public Task<IActionResult> MarkBatchPaid(Guid id, [FromBody] MarkBatchPaidRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeBonusBatch, GetTenantId(), id, () => MarkBatchPaidCore(id, req, ct), ct);
+
+    private async Task<IActionResult> MarkBatchPaidCore(Guid id, MarkBatchPaidRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
         var uid = GetUserId();

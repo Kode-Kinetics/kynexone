@@ -309,6 +309,16 @@ public class EmployeesController : ControllerBase
             var accessibleIds = entityScope.AccessibleCompanyIds;
             exportQuery = exportQuery.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
+        var exportCount = await exportQuery.CountAsync(ct);
+        if (exportCount > MaxExportRows)
+            return UnprocessableEntity(new
+            {
+                error = "export_too_many_rows",
+                message = $"This export would have {exportCount:N0} people; one export file takes at most {MaxExportRows:N0}. "
+                          + "Filter the People list (department, status or company) and export in parts.",
+                received = exportCount,
+                maxRows = MaxExportRows,
+            });
         var emps = await exportQuery.OrderBy(e => e.EmployeeCode).ToListAsync(ct);
         var includesSensitive = User.HasPermission("employees.sensitive");
         var csv = await BuildEmployeesCsvAsync(emps, tenantId, includesSensitive, ct);
@@ -633,6 +643,7 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
+    [RequestSizeLimit(MaxImportBodyBytes)]
     public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null) =>
         RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
@@ -645,6 +656,12 @@ public class EmployeesController : ControllerBase
     /// refused up front, with a coded message, rather than risking an out-of-memory restart half-way.
     /// </summary>
     internal const int MaxImportRows = 1_000;
+    /// <summary>Largest import request body (the CSV travels as one JSON string and is held in memory).</summary>
+    internal const int MaxImportBodyBytes = 5 * 1024 * 1024;
+    /// <summary>The most people one export file carries (the CSV is built in memory).</summary>
+    internal const int MaxExportRows = 20_000;
+    internal const int MaxImportNameLength = 150;   // employees.full_name
+    internal const int MaxImportCodeLength = 50;    // employees.employee_code
 
     private IActionResult? TooManyRows(int count) => count <= MaxImportRows ? null : UnprocessableEntity(new
     {
@@ -2221,6 +2238,18 @@ public class EmployeesController : ControllerBase
                 refusals.Add(new ImportRowRefusal(rowNum, code, "FullName is empty — every row must name the person"));
                 continue;
             }
+            // The column widths (employees.full_name 150, employees.employee_code 50): a longer value used to
+            // fail the whole file at SaveChanges with a generic 422. Validated in code so the row is named.
+            if (name.Length > MaxImportNameLength)
+            {
+                refusals.Add(new ImportRowRefusal(rowNum, code, $"FullName is {name.Length} characters — at most {MaxImportNameLength} fit"));
+                continue;
+            }
+            if (code.Length > MaxImportCodeLength)
+            {
+                refusals.Add(new ImportRowRefusal(rowNum, code.Length > 60 ? code[..60] + "…" : code, $"EmployeeCode is {code.Length} characters — at most {MaxImportCodeLength} fit"));
+                continue;
+            }
             if (code.Length == 0) continue;
             if (firstRowOfCode.TryGetValue(code, out var firstRow))
             {
@@ -2615,6 +2644,7 @@ public class EmployeesController : ControllerBase
 
     [HttpPost("import-preview")]
     [HasPermission("employees.bulk_import")]
+    [RequestSizeLimit(MaxImportBodyBytes)]
     public async Task<IActionResult> ImportPreview([FromBody] ImportEmployeesRequest req,
         CancellationToken ct = default,
         [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
@@ -2921,7 +2951,9 @@ public class EmployeesController : ControllerBase
     {
         var tenantId = RequireTenant();
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
-        var employee = await employeeManagement.GetAsync(tenantId, id, CanViewSensitive(), Context(), cancellationToken);
+        // The employee's own record keeps their own personal data visible even without employees.sensitive.
+        var isOwnRecord = !CanViewSensitive() && await GetCallerEmployeeId(cancellationToken) == id;
+        var employee = await employeeManagement.GetAsync(tenantId, id, CanViewSensitive(), Context(), cancellationToken, includeOwnPersonal: isOwnRecord);
         return employee is null ? NotFound() : Ok(employee);
     }
 
@@ -5553,7 +5585,8 @@ public class EmployeesController : ControllerBase
         if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != expectedStatus)
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot move to '{nextStatus}'." });
-        if (!User.IsInRole("Admin") && !User.IsInRole("HR Manager"))
+        // employees.approve (not a role name) is the HR bypass, so a per-user Deny on it is honoured.
+        if (!User.HasPermission("employees.approve"))
         {
             var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
             if (callerEmployeeId is null || expectedManagerId(transfer) != callerEmployeeId)

@@ -15,7 +15,7 @@ public interface IEmployeeManagementService
 
     /// <summary>As above, plus the self-service access state filter (<c>access=</c>, comma-separated states).</summary>
     Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken);
-    Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken);
+    Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken, bool includeOwnPersonal = false);
     /// <param name="includeSensitive">The CALLER's own sensitive-data entitlement (EmployeesController.CanViewSensitive()).
     /// Defaults to FALSE so a forgotten call site masks rather than leaks: a mutation response must never
     /// return salary / bank / identity fields the same caller's GET would mask.</param>

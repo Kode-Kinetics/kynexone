@@ -274,7 +274,8 @@ public class KsaWpsReviewFixesTests
     // ── 6 & 7. Server-owned lifecycle, honest label, maker-checker ──────────────────────────────
 
     internal static PayrollController Payroll(ZayraDbContext db, Guid tenantId, Guid userId,
-        Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null)
+        Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null,
+        Zayra.Api.Application.CountryPack.ICountryPackResolver? resolver = null)
     {
         var claims = new List<Claim>
         {
@@ -282,7 +283,7 @@ public class KsaWpsReviewFixesTests
             new("permission", "payroll.export"), new("is_group_scope", "true"),
         };
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
-        return new PayrollController(db, new _RfScope(), new _RfHttp(http), new _RfNotifications(), new _RfKsaPackResolver(),
+        return new PayrollController(db, new _RfScope(), new _RfHttp(http), new _RfNotifications(), resolver ?? new _RfKsaPackResolver(),
             new StubRuleReader(), new _RfLetters(), storage ?? new MemoryDocumentStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1))
         {
             ControllerContext = new ControllerContext { HttpContext = http },
@@ -571,6 +572,32 @@ public class KsaWpsReviewFixesTests
         GeneratedWpsFileStore.Sha256Hex(first).Should().Be((await db.WPSFileBatches.SingleAsync(f => f.PaymentBatchId == batch)).FileHash);
     }
 
+    // PAY-03: "latest generation" means the highest ResubmissionNumber, not whichever row has the newest timestamp
+    // (clocks skew between instances and a restored/replayed row can carry any CreatedAtUtc).
+    [Fact]
+    public async Task Download_serves_the_highest_resubmission_even_when_an_older_row_has_a_later_timestamp()
+    {
+        var (db, tenant, company, batch, empId) = await SeedKsaRegisterBatchAsync();
+        await SaveBankSettings(db, tenant, company, "7-1234567");
+        (await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+        var firstBytes = ((FileContentResult)await Payroll(db, tenant, Guid.NewGuid()).DownloadWpsFile(batch, default)).FileContents;
+
+        // The bank rejects the file; the operator corrects the data and generates a second one.
+        (await db.PayrollPaymentBatches.SingleAsync(b => b.Id == batch)).WpsStatus = WpsStatuses.Rejected;
+        (await db.Employees.SingleAsync(e => e.Id == empId)).FullName = "Omar Renamed";
+        await db.SaveChangesAsync();
+        (await Payroll(db, tenant, Guid.NewGuid()).GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
+
+        var files = await db.WPSFileBatches.Where(f => f.PaymentBatchId == batch).OrderBy(f => f.ResubmissionNumber).ToListAsync();
+        files.Select(f => f.ResubmissionNumber).Should().Equal(0, 1);
+        files[0].CreatedAtUtc = files[1].CreatedAtUtc.AddMinutes(5);   // the OLDER generation now looks newest
+        await db.SaveChangesAsync();
+
+        var served = ((FileContentResult)await Payroll(db, tenant, Guid.NewGuid()).DownloadWpsFile(batch, default)).FileContents;
+        GeneratedWpsFileStore.Sha256Hex(served).Should().Be(files[1].FileHash, "the latest resubmission is the file to serve");
+        served.Should().NotEqual(firstBytes);
+    }
+
     [Theory]
     [InlineData(WpsStatuses.Accepted, false)]
     [InlineData(WpsStatuses.Paid, false)]
@@ -685,6 +712,23 @@ public class KsaWpsReviewFixesTests
         (await ctrl.GenerateWps(batch, true, false, default)).Should().BeOfType<OkObjectResult>();
         var xml = Encoding.UTF8.GetString(((FileContentResult)await ctrl.DownloadWpsFile(batch, default)).FileContents);
         xml.Should().Contain("<MolEstablishmentId>7-1111111</MolEstablishmentId>");
+    }
+
+    // ── PAY-02: a non-KSA wage file is refused when the employer IBAN header field would be blank ──
+
+    [Fact]
+    public async Task Uae_wage_file_is_refused_with_no_row_when_there_is_no_employer_iban()
+    {
+        var (db, tenant, company, batch, _) = await SeedKsaRegisterBatchAsync();
+        var co = await db.Companies.SingleAsync(c => c.Id == company);
+        co.CountryCode = "AE"; co.Jurisdiction = Zayra.Api.Application.CountryPack.Jurisdictions.UAEMainland; co.WpsEmployerId = "1234567";
+        await db.SaveChangesAsync();
+
+        var res = await Payroll(db, tenant, Guid.NewGuid(), resolver: new _RfUaePackResolver()).GenerateWps(batch, true, false, default);
+
+        res.Should().BeOfType<UnprocessableEntityObjectResult>();
+        JsonSerializer.Serialize(((ObjectResult)res).Value).Should().Contain("wps_employer_iban_missing");
+        db.WPSFileBatches.Should().BeEmpty();
     }
 
     // ── 10. Cash/cheque and zero-net employees are left out of the bank batch, by name ──────────
@@ -1295,6 +1339,17 @@ file sealed class _RfKsaPackResolver : Zayra.Api.Application.CountryPack.ICountr
     public Zayra.Api.Application.CountryPack.INationalizationTracker ResolveNationalizationTracker(string cc, string j) => new Zayra.Api.Infrastructure.CountryPack.DefaultNationalizationTracker();
     public Zayra.Api.Application.CountryPack.ILocalizationProfile ResolveLocalizationProfile(string cc, string j) => new Zayra.Api.Infrastructure.CountryPack.DefaultLocalizationProfile();
     public Zayra.Api.Application.CountryPack.ICountryPackDescriptor ResolveDescriptor(string cc, string j) => new KsaDescriptor();
+}
+
+file sealed class _RfUaePackResolver : Zayra.Api.Application.CountryPack.ICountryPackResolver
+{
+    private readonly _RfKsaPackResolver _inner = new();
+    public Zayra.Api.Application.CountryPack.IStatutoryDeductionCalculator ResolveDeductionCalculator(string cc, string j) => _inner.ResolveDeductionCalculator(cc, j);
+    public Zayra.Api.Application.CountryPack.IEndOfServiceCalculator ResolveEndOfServiceCalculator(string cc, string j) => _inner.ResolveEndOfServiceCalculator(cc, j);
+    public Zayra.Api.Application.CountryPack.IWageProtectionExporter ResolveWageProtectionExporter(string cc, string j) => new Zayra.Api.Infrastructure.CountryPack.Uae.UaeWageProtectionExporter();
+    public Zayra.Api.Application.CountryPack.INationalizationTracker ResolveNationalizationTracker(string cc, string j) => _inner.ResolveNationalizationTracker(cc, j);
+    public Zayra.Api.Application.CountryPack.ILocalizationProfile ResolveLocalizationProfile(string cc, string j) => _inner.ResolveLocalizationProfile(cc, j);
+    public Zayra.Api.Application.CountryPack.ICountryPackDescriptor ResolveDescriptor(string cc, string j) => _inner.ResolveDescriptor(cc, j);
 }
 
 file sealed class _RfQiwaService : IQiwaIntegrationService

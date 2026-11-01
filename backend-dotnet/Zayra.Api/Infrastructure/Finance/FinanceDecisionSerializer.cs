@@ -55,6 +55,8 @@ public static class FinanceDecisionSerializer
 {
     public const string ScopeLoan = "finance.loan";
     public const string ScopeAdvance = "finance.advance";
+    /// <summary>Bonus batch approve / mark-paid: both flip batch state and post journals after a read-then-write status check.</summary>
+    public const string ScopeBonusBatch = "finance.bonus-batch";
     /// <summary>Release A per-employee lock: every writer of an employee's package, salary, contract term or renewal
     /// case (loan request, Apply, Correction, freeze) serialises on (tenant, employee PublicId). Fixed order inside
     /// it: case row → contract → salary → entitlement rows.</summary>

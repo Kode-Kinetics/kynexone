@@ -21,7 +21,7 @@ public class StatutoryS1BaselineProbe
         var result = await calc.CalculateAsync(new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(18_000m, 7_500m, 4_500m, 0m),
-            new DateOnly(2014, 1, 1), new DateOnly(2026, 1, 1),
+            new DateOnly(2014, 1, 1), new DateOnly(2025, 12, 31),
             "Termination", "Indefinite", "SAU"));
 
         Assert.Equal(9.5m * 30_000m, result.TotalGratuity);

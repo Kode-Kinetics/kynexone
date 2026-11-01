@@ -151,12 +151,12 @@ public class OpeningBalanceConsumptionTests
     /// 2027-08-31 with eleven years of service.
     ///
     /// <para>The importer carries <c>PriorServiceStartDate=2016-09-01</c> and always has. Nothing read
-    /// it, so the award was measured from 2026-09-01 — 0.9989 years — and came to
-    /// <b>SAR 6,492.58</b> against the <b>SAR 110,485.16</b> Art. 84 actually requires: the leaver was
-    /// short by SAR 103,992.58, and the shortfall grows with every year of carried service.</para>
+    /// it, so the award was measured from 2026-09-01 — 1.0 years — and came to
+    /// <b>SAR 6,500.00</b> against the <b>SAR 110,500.00</b> Art. 84 actually requires: the leaver was
+    /// short by SAR 104,000.00, and the shortfall grows with every year of carried service.</para>
     ///
     /// <para>Art. 84 on the 13,000 last wage: five years at half a month (5 × 0.5 × 13,000 = 32,500)
-    /// plus 5.9989 years at a full month (77,985.16).</para>
+    /// plus 6 years at a full month (78,000). PAY-01: the last day is INCLUSIVE, so 2016-09-01 through 2027-08-31 is exactly eleven years.</para>
     /// </summary>
     [Fact]
     public async Task CarriedPriorService_IsHonouredByTheGratuity_NotSilentlyDropped()
@@ -172,7 +172,7 @@ public class OpeningBalanceConsumptionTests
         var emp = await db.Employees.AsNoTracking().SingleAsync(e => e.TenantId == tid);
         var bare = await Payroll(db, tid).CalculateEosb(
             new EosbCalculationRequest(emp.Id, lastDay, "Termination"), CancellationToken.None);
-        Eosb(bare).Should().Be(6_492.58m,
+        Eosb(bare).Should().Be(6_500.00m,
             "without the carried service the award is measured from the 2026-09-01 KynexOne joining date");
         db.ChangeTracker.Clear();
 
@@ -188,9 +188,9 @@ public class OpeningBalanceConsumptionTests
         var settled = await Payroll(db, tid).CalculateEosb(
             new EosbCalculationRequest(emp.Id, lastDay, "Termination"), CancellationToken.None);
 
-        Eosb(settled).Should().Be(110_485.16m,
-            "Art. 84 measures eleven years of service: 5 x half a month + 5.9989 x a full month of the 13,000 last wage");
-        (Eosb(settled) - Eosb(bare)).Should().Be(103_992.58m,
+        Eosb(settled).Should().Be(110_500.00m,
+            "Art. 84 measures eleven years of service: 5 x half a month + 6 x a full month of the 13,000 last wage");
+        (Eosb(settled) - Eosb(bare)).Should().Be(104_000.00m,
             "this is what every migrated leaver was short by, per eleven years of carried service");
 
         // The substitution is announced, not applied silently — an approver must be able to see that the
@@ -215,7 +215,7 @@ public class OpeningBalanceConsumptionTests
 
         var before = await Payroll(db, tid).CalculateEosb(
             new EosbCalculationRequest(emp.Id, lastDay, "Termination"), CancellationToken.None);
-        Eosb(before).Should().Be(110_485.16m);
+        Eosb(before).Should().Be(110_500.00m);
         db.ChangeTracker.Clear();
 
         // A carried row claiming service from 2021 — later than the joining date already on record.
@@ -230,9 +230,9 @@ public class OpeningBalanceConsumptionTests
         var after = await Payroll(db, tid).CalculateEosb(
             new EosbCalculationRequest(emp.Id, lastDay, "Termination"), CancellationToken.None);
 
-        Eosb(after).Should().Be(110_485.16m,
+        Eosb(after).Should().Be(110_500.00m,
             "a later carried date is ignored: it can only be a stale row, and shortening a statutory entitlement on that evidence is unlawful");
-        Eosb(after).Should().BeLessThan(2m * 110_485.16m,
+        Eosb(after).Should().BeLessThan(2m * 110_500.00m,
             "and the two periods are never summed — one employee, one continuous service period");
         Notices(after).Should().NotContain("[MIGRATION]",
             "nothing was substituted, so there is nothing to announce");
@@ -288,7 +288,7 @@ public class OpeningBalanceConsumptionTests
 
         // And a cursor will actually hand it to a settlement.
         var cursor = await EosbProvisionLedger.LoadCursorAsync(db, tid, emp.Id, CancellationToken.None);
-        var (position, taken) = cursor.Take(emp.Id, company.Id, 110_485.16m);
+        var (position, taken) = cursor.Take(emp.Id, company.Id, 110_500.00m);
         taken.Should().Be(52_500m, "the settlement expenses only the shortfall above what was already provided");
         position!.ProvisionAccount.Should().Be("2310 - End of Service Benefit Provision");
         cursor.Take(emp.Id, company.Id, 1m).Taken.Should().Be(0m, "a position cannot be consumed twice");

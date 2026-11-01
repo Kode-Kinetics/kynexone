@@ -158,7 +158,7 @@ public class EosbUnificationTests
         await db.SaveChangesAsync();
 
         var result = await MakeCtrl(db, tenantId).CalculateEosb(
-            new EosbCalculationRequest(employeeId, new DateTime(2023, 1, 1), "Termination"), CancellationToken.None);
+            new EosbCalculationRequest(employeeId, new DateTime(2022, 12, 31), "Termination"), CancellationToken.None);
 
         Prop<decimal>(result, "eligibleSalary").Should().Be(12_000m);
         EosbFrom(result).Should().Be(18_000m, "three KSA years use half of the configured 12,000 last-wage base per year");
@@ -206,11 +206,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "3 × 0.5 × 10,000 (Art.84 tier-1); kills the old ~10,000 inline underpay");
@@ -222,11 +222,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(5_000m, "⅓ of 15,000 (Art.85) — previously impossible on final-settlement");
@@ -256,11 +256,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 6, 30), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 7, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2023, 6, 30), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(2_500m,
@@ -293,7 +293,7 @@ public class EosbUnificationTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.CalculateEosb(
-            new EosbCalculationRequest(empId, new DateTime(2023, 7, 1, 0, 0, 0, DateTimeKind.Utc), "Termination"),
+            new EosbCalculationRequest(empId, new DateTime(2023, 6, 30, 0, 0, 0, DateTimeKind.Utc), "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(2_500m, "pre-gate removed; short-service termination is pro-rated");
@@ -310,14 +310,14 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2022, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
 
         // No TerminationReason on the request → must pick up "Resignation" from the record.
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(5_000m, "recorded resignation is discounted per Art.85 without an explicit override");
@@ -333,13 +333,13 @@ public class EosbUnificationTests
         db.EmployeeOffboardings.Add(new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = empId, SeparationType = "Resignation",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2023, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2022, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         });
         await db.SaveChangesAsync();
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1), 0, "Termination"),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31), 0, "Termination"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "explicit request reason takes precedence over the offboarding record");
@@ -365,7 +365,7 @@ public class EosbUnificationTests
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
@@ -380,11 +380,11 @@ public class EosbUnificationTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 1, 1), "Termination");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2022, 12, 31), "Termination");
         var ctrl = MakeCtrl(db, tenantId);
 
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 1, 1)),
+            new FinalSettlementRequest(empId, new DateOnly(2022, 12, 31)),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(15_000m, "recorded termination takes the full Art.84 award");
@@ -416,7 +416,7 @@ public class EosbUnificationTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2018, 1, 1), new DateOnly(2023, 1, 1), // exactly 60 months = 5.0 yrs
+            new DateOnly(2018, 1, 1), new DateOnly(2022, 12, 31), // exactly 60 months = 5.0 yrs (last day inclusive)
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);

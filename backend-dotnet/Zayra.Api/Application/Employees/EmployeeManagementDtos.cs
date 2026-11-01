@@ -306,8 +306,13 @@ public record EmployeeDetailDto
         IReadOnlyCollection<EmployeeDocument>? documents = null,
         IReadOnlyCollection<EmployeeHistory>? history = null,
         IReadOnlyCollection<EmployeeTransferRequest>? transfers = null,
-        IReadOnlyCollection<EmployeeDocumentDto>? documentDtos = null) =>
-        new()
+        IReadOnlyCollection<EmployeeDocumentDto>? documentDtos = null,
+        bool includeOwnPersonal = false)
+    {
+        // Date of birth, private contact details, marital status, emergency contact and sponsor are personal data
+        // (PEO-02): shown to employees.sensitive callers and to the employee on their own record, nobody else.
+        var personal = includeSensitive || includeOwnPersonal;
+        return new()
         {
             Id                            = e.Id,
             PublicId                      = e.PublicId,
@@ -318,18 +323,18 @@ public record EmployeeDetailDto
             ArabicName                    = e.ArabicName,
             PreferredName                 = e.PreferredName,
             ProfilePhotoUrl               = e.ProfilePhotoUrl,
-            PersonalEmail                 = e.PersonalEmail,
+            PersonalEmail                 = personal ? e.PersonalEmail : string.Empty,
             WorkEmail                     = e.WorkEmail,
-            Phone                         = e.Phone,
+            Phone                         = personal ? e.Phone : string.Empty,
             Gender                        = e.Gender,
-            DateOfBirth                   = e.DateOfBirth,
-            MaritalStatus                 = e.MaritalStatus,
+            DateOfBirth                   = personal ? e.DateOfBirth : null,
+            MaritalStatus                 = personal ? e.MaritalStatus : string.Empty,
             Nationality                   = e.Nationality,
             NationalityCode               = e.NationalityCode,
             NationalityMappingState       = e.NationalityMappingState,
             CountryCode                   = e.CountryCode,
-            EmergencyContactName          = e.EmergencyContactName,
-            EmergencyContactPhone         = e.EmergencyContactPhone,
+            EmergencyContactName          = personal ? e.EmergencyContactName : string.Empty,
+            EmergencyContactPhone         = personal ? e.EmergencyContactPhone : string.Empty,
             Department                    = e.Department,
             Designation                   = e.Designation,
             Branch                        = e.Branch,
@@ -375,7 +380,7 @@ public record EmployeeDetailDto
             DisciplinaryRecords           = includeSensitive ? e.DisciplinaryRecords : string.Empty,
             TerminationReason             = includeSensitive ? e.TerminationReason : string.Empty,
             // Compliance identifiers and expiry metadata are sensitive in GCC HR contexts.
-            SponsorName                   = e.SponsorName,
+            SponsorName                   = personal ? e.SponsorName : string.Empty,
             PassportIssueDate             = includeSensitive ? e.PassportIssueDate : null,
             PassportExpiryDate            = includeSensitive ? e.PassportExpiryDate : null,
             VisaIssueDate                 = includeSensitive ? e.VisaIssueDate : null,
@@ -422,6 +427,7 @@ public record EmployeeDetailDto
             History                       = history?.Select(EmployeeHistoryDto.Project).ToList() ?? [],
             Transfers                     = transfers?.Select(EmployeeTransferDto.Project).ToList() ?? [],
         };
+    }
 }
 
 /// <summary>

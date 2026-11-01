@@ -122,6 +122,8 @@ public partial class LoansController
         foreach (var loan in loans)
         {
             if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+            if (await IsLoanBorrowerAsync(loan, GetUserId()!.Value, ct))
+                return BadRequest("Maker-checker control: a loan beneficiary cannot prepare their own payment batch.");
             if (loan.Status != "Approved" || loan.IsLockedByPayroll || loan.DisbursementDate.HasValue || !IsMoney(loan.ApprovedAmount) || loan.ApprovedInstallments < 1)
                 return Conflict($"Loan {loan.LoanNumber} is not awaiting disbursement.");
             if (await DisbursementAlreadyPostedAsync(tid, loan.Id, ct)) return Conflict("A loan already has a disbursement journal.");
@@ -218,6 +220,11 @@ public partial class LoansController
         var batch = await _db.Set<LoanDisbursementBatch>().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == batchId, ct);
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
+        // The confirmer must not be the beneficiary of any loan in the batch (the approver is already barred, above).
+        var batchLoanIds = await _db.Set<LoanDisbursementLine>().Where(x => x.TenantId == tid && x.BatchId == batchId).Select(x => x.LoanId).ToListAsync(ct);
+        foreach (var batchLoan in await _db.EmployeeLoans.Where(x => x.TenantId == tid && batchLoanIds.Contains(x.Id)).ToListAsync(ct))
+            if (await IsLoanBorrowerAsync(batchLoan, GetUserId()!.Value, ct))
+                return BadRequest("Maker-checker control: a loan beneficiary cannot confirm payment of their own loan.");
         if (batch.Status == "Paid" && batch.PaymentReference == req.Reference.Trim() && batch.PaidDate == req.PaidDate && batch.PaymentMethod == req.PaymentMethod)
         {
             if (req.RepaymentStartDate.HasValue && await (from line in _db.Set<LoanDisbursementLine>()
@@ -308,6 +315,8 @@ public partial class LoansController
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == id && !x.IsDeleted, ct);
         if (loan == null) return NotFound();
         if (!await CanAccessLoanAsync(loan, ct)) return Forbid();
+        if (await IsLoanBorrowerAsync(loan, GetUserId()!.Value, ct))
+            return BadRequest("Maker-checker control: a loan beneficiary cannot record a repayment on their own loan.");
         var existing = await _db.Set<LoanRepayment>().FirstOrDefaultAsync(x => x.TenantId == tid && x.LoanId == id && x.Reference == req.Reference.Trim(), ct);
         if (existing != null)
             return !existing.IsReversed && existing.Amount == req.Amount && existing.PaidDate == req.PaidDate && existing.PaymentMethod == req.PaymentMethod
