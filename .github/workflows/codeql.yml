@@ -49,6 +49,10 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Add swap (the backend compile peaks near the runner's 16 GB)
+        if: matrix.language == 'csharp'
+        run: ./scripts/ci/add-swap.sh
+
       - name: Build shipped backend for CodeQL
         if: matrix.language == 'csharp'
         run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj --configuration Release

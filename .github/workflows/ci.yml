@@ -494,6 +494,9 @@ jobs:
 
       # SourceRevisionId is baked into the assembly and reported by /health/live as `commit`, so the
       # preflight can prove the API under test is this build and not a leftover one.
+      - name: Add swap (the backend compile peaks near the runner's 16 GB)
+        run: ./scripts/ci/add-swap.sh
+
       - name: Build backend
         run: python3 scripts/ci/run-with-resource-snapshots.py dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Release -p:SourceRevisionId=${{ github.sha }}
 
@@ -707,6 +710,9 @@ jobs:
       # Build ONCE, then never pass --no-build to an ef command below. `dotnet ef --no-build`
       # reads the STALE compiled snapshot, so drift is reported that does not exist and
       # `migrations add` regenerates the same delta forever. This bit us in Wave 0.
+      - name: Add swap (the backend compile peaks near the runner's 16 GB)
+        run: ./scripts/ci/add-swap.sh
+
       - name: Build API
         run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj -c Debug
 
@@ -719,6 +725,8 @@ jobs:
       # visible to EF, and `dotnet ef database update` exited 0 having silently skipped them.
       # It runs FIRST because a discrepancy here invalidates every gate after it.
       - name: Gate — every migration on disk is visible to EF
+        env:
+          MIGRATION_VISIBILITY_NO_BUILD: '1' # "Build API" above just compiled it; a second compile is what exhausted the runner
         run: ./scripts/check-migration-visibility.sh backend-dotnet/Zayra.Api/Zayra.Api.csproj
 
       - name: Gate — no EF model/migration drift
