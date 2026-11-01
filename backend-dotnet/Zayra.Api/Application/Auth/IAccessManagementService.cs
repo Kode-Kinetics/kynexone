@@ -100,6 +100,14 @@ public interface IAccessManagementService
 
     // Permission override delete
     Task<bool> DeletePermissionOverrideAsync(Guid tenantId, Guid userId, Guid overrideId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+
+    // Pay-approval dead-end detection. Call AFTER the change is committed. Best effort: never throws, never changes access.
+    /// <summary>Re-checks the companies one login can reach (including grants just switched off; allCompanies when its scope was widened or narrowed).</summary>
+    Task AfterApproverAccessChangedAsync(Guid tenantId, Guid userId, bool allCompanies = false, CancellationToken cancellationToken = default);
+    /// <summary>Re-checks the companies reached by every login that holds the role.</summary>
+    Task AfterRoleAccessChangedAsync(Guid tenantId, Guid roleId, CancellationToken cancellationToken = default);
+    /// <summary>Re-checks one company, or every company of the tenant when <paramref name="companyId"/> is null.</summary>
+    Task AfterCompanyAccessChangedAsync(Guid tenantId, Guid? companyId, CancellationToken cancellationToken = default);
 }
 
 public record EmployeeTeamMemberDto(int EmployeeId, string EmployeeCode, string FullName, string Department, string Designation, int? ManagerEmployeeId, int Depth);

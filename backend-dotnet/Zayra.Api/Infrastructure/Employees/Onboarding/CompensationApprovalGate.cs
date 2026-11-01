@@ -217,6 +217,13 @@ public static class CompensationApprovalGate
         return !string.Equals(approved, await LiveFingerprintAsync(db, tenantId, employeeId, ct), StringComparison.Ordinal);
     }
 
+    /// <summary>A pending package: a hire not yet in post whose stored figures are not the approved ones.</summary>
+    public static async Task<bool> NeedsApprovalAsync(ZayraDbContext db, Guid tenantId, Employee employee, CancellationToken ct) =>
+        !Zayra.Api.Application.Organization.EstablishmentOccupancy.IsOccupyingStatus(employee.Status)
+        && (await IsOpenAsync(db, tenantId, employee.Id, ct)
+            || await HasDriftedFromApprovalAsync(db, tenantId, employee.Id, ct)
+            || await CarriesUnapprovedPayAsync(db, tenantId, employee.Id, ct));
+
     public static Task<bool> IsOpenAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct) =>
         db.EmployeeImportGaps.AsNoTracking().AnyAsync(g => g.TenantId == tenantId && g.EmployeeId == employeeId
             && g.GapType == GapType && g.ResolvedAtUtc == null, ct);

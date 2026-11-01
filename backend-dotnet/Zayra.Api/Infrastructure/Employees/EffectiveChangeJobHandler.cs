@@ -209,6 +209,11 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
             else if (result.Outcome == EffectiveChangeOutcome.Deferred)
                 _log.LogInformation(
                     "Approved employee change {ChangeId} (tenant {TenantId}) deferred: {ReasonCode}.", changeId, ctx.TenantId, result.ReasonCode);
+            // A scheduled pay change on a hire went in with this item: check the package has a reviewer (best effort, after its commit).
+            if (result.Outcome == EffectiveChangeOutcome.Applied && result.EmployeeId is int appliedEmployeeId)
+                await new Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks(ctx.Db,
+                    ctx.Services.GetService<Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor>(), _log)
+                    .AfterEmployeePaySubmittedAsync(ctx.TenantId, appliedEmployeeId, "pay_submitted", ct);
             await NotifyAsync(ctx.TenantId, result, ct);
         }
 
