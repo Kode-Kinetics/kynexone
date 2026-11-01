@@ -22,6 +22,9 @@ export function resolveBankSettingsScope({ companyId, companies, picked }: {
     const scoped = all.find(c => c.id === companyId);
     if (scoped && isSaudiCountry(scoped.countryCode)) return { kind: 'selected', company: scoped, showPicker: false, options };
     if (scoped) return { kind: 'scopeNotSaudi', scoped };
+    // Roles that may run payroll but not read the company list (Payroll Manager) get an empty list. The company Setup is
+    // scoped to is still theirs to configure; the API authorises the company, so use it rather than claiming none exists.
+    if (all.length === 0) return { kind: 'selected', company: { id: companyId, legalNameEn: '', tradeName: '', countryCode: 'SA' } as CompanyDto, showPicker: false, options };
   }
   if (options.length === 0) return { kind: 'noSaudi' };
   if (options.length === 1) return { kind: 'selected', company: options[0], showPicker: false, options };

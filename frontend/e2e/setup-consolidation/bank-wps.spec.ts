@@ -83,3 +83,34 @@ test('Arabic users see the section in Arabic', async ({ page }) => {
   await boot(page, { persona: withExport(), url: '/setup?tab=guidedSetup', locale: 'ar', mocks: mocks() });
   await expect(page.getByRole('link', { name: 'البنك وحماية الأجور' })).toBeVisible({ timeout: 30_000 });
 });
+
+test('a payroll-only user who cannot list companies still gets the form for their company', async ({ page }) => {
+  await boot(page, {
+    persona: { roles: ['Payroll Manager'], permissions: ['dashboard.read', 'ess.read', 'payroll.read', 'payroll.export', 'payroll.structure_manage'] }, url,
+    mocks: mocks({ [SETTINGS_PATH]: { formatId: '' }, '/api/companies': { status: 403, body: { error: 'forbidden' } } }),
+  });
+  await expect(page.getByLabel('ANB main account number')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/No Saudi company is available/i)).toHaveCount(0);
+});
+
+test('switching company with unsaved bank details asks first, and keeping the edits keeps them', async ({ page }) => {
+  const co = (id: string, name: string) => ({ id, legalNameEn: name, countryCode: 'SA', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' });
+  await boot(page, {
+    persona: withExport(['payroll.structure_manage']), url: '/setup?tab=bankWps',
+    mocks: mocks({
+      '/api/companies': { items: [co('co-a', 'Alpha LLC'), co('co-b', 'Beta LLC')], total: 2, page: 1, pageSize: 100 },
+      [`${BASE}/companies/co-a/settings`]: { formatId: '' }, [`${BASE}/companies/co-b/settings`]: { formatId: '' },
+    }),
+  });
+  const picker = page.getByRole('combobox', { name: /company/i });
+  await picker.selectOption('co-a');
+  await page.getByLabel(/MOL establishment/i).fill('7-1234567');
+  let asked = 0;
+  page.once('dialog', d => { asked++; void d.dismiss(); });
+  await picker.selectOption('co-b');
+  await expect.poll(() => asked).toBe(1);
+  await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('7-1234567');
+  page.once('dialog', d => { asked++; void d.accept(); });
+  await picker.selectOption('co-b');
+  await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('');
+});

@@ -14,6 +14,13 @@ test('scope: no Saudi company in the list says so, and a list that has not arriv
   expect(resolveBankSettingsScope({ companyId: null, companies: [], picked: '' })).toEqual({ kind: 'noSaudi' });
 });
 
+test('scope: a company Setup is scoped to is used even when the reader cannot list companies (payroll-only roles)', () => {
+  const r = resolveBankSettingsScope({ companyId: 'z', companies: [], picked: '' });
+  expect(r).toMatchObject({ kind: 'selected', showPicker: false });
+  expect(r.kind === 'selected' && r.company.id).toBe('z');
+  expect(resolveBankSettingsScope({ companyId: 'z', companies: undefined, picked: '' }).kind).toBe('selected');
+});
+
 test('scope: SA, SAU and KSA are all Saudi, in any case', () => {
   for (const code of ['SA', 'sa', 'SAU', 'sau', 'KSA']) {
     expect(resolveBankSettingsScope({ companyId: 'a', companies: [company('a', code)], picked: '' }).kind, code).toBe('selected');
