@@ -419,7 +419,12 @@ public class EmployeeSelfServiceController : ControllerBase
         // The decision, the applied profile values and the audit row are saved in one SaveChanges, so a
         // decision never lands without its audit record.
         await EssAudit(tenantId, employee.Id, "ess.profile_change.approved", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
-        return Ok(change);
+        // Only the decision is returned; the proposed values (RequestedChangesJson) and the step-up fields stay server-side.
+        return Ok(new
+        {
+            change.Id, change.EmployeeId, change.Status, change.Section,
+            change.DecidedAtUtc, change.DecidedBy, change.ReviewNote,
+        });
     }
 
     [HttpPost("profile-change-requests/{id:guid}/reject")]
