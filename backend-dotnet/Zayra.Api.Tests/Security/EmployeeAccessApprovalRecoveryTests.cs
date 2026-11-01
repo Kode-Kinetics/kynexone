@@ -45,8 +45,15 @@ public sealed partial class EmployeeAccessTests
             };
             ids.Add((await Employees(db).CreateAsync(w.TenantId, request, Ctx(w.AdminId, w.TenantId), default)).Id);
         }
-        // Mirror the reported cohort: the second reviewer is the last editor of one record.
-        await UpdateEmployeeAsync(ids[^1], e => e.UpdatedBy = reviewer);
+        // Mirror the reported cohort: the reviewer is the last editor of one record without touching its pay (allowed),
+        // and a genuine pay writer on another (barred; a third independent reviewer must decide).
+        await UpdateEmployeeAsync(ids[^2], e => e.UpdatedBy = reviewer);
+        await using (var audit = _fx.CreateDb())
+        {
+            audit.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, CompensationApprovalGate.WrittenAction, "Employee",
+                ids[^1].ToString(), Ctx(reviewer, w.TenantId), "{}"));
+            await audit.SaveChangesAsync();
+        }
         var beforeApproval = await IssueAsync(w, w.HrOfficerId, ids.ToArray());
         beforeApproval.Issued.Should().BeEmpty();
         beforeApproval.Skipped.Should().HaveCount(46).And.OnlyContain(s => s.ReasonCode == EmployeeAccessService.Skip.AwaitingApproval);
