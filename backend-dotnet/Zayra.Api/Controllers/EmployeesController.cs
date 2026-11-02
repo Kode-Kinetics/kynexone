@@ -645,9 +645,15 @@ public class EmployeesController : ControllerBase
     [HttpPost("import")]
     [HasPermission("employees.bulk_import")]
     [RequestSizeLimit(MaxImportBodyBytes)]
-    public Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
-        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null) =>
-        RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
+    public async Task<IActionResult> Import([FromBody] ImportEmployeesRequest req, CancellationToken ct,
+        [FromServices] Zayra.Api.Application.CountryPack.ICountryPackResolver? countryPacks = null)
+    {
+        var result = await RunEmployeeImportAsync(req, dryRun: false, ct, countryPacks);
+        // The file committed with pay waiting for Finance: check each company still has a reviewer (best effort, after the commit).
+        if (result is OkObjectResult)
+            await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(RequireTenant(), null, "import", ct);
+        return result;
+    }
 
     /// <summary>
     /// The most rows one employee file may carry. The import holds the whole file — every row's employee, payroll
@@ -4684,6 +4690,8 @@ public class EmployeesController : ControllerBase
         var incompleteLabels = new List<string>();
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
 
+        // Each row's status change or delete would re-check the pay-reviewer notice of the same companies; check each company once, after the loop.
+        using var deadEndBatch = Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.BeginBatch();
         foreach (var id in targetIds)
         {
             // Reset per row: a prior row's guard-rejected (rolled-back-but-still-tracked) mutation must
@@ -4746,6 +4754,7 @@ public class EmployeesController : ControllerBase
         }
         // Ensure the batch audit's SaveChanges cannot flush a failed last row's residual mutation.
         _db.ChangeTracker.Clear();
+        await deadEndBatch.FlushAsync(cancellationToken);
 
         var requested = idsMode ? req.EmployeeIds!.Distinct().Count() : targetIds.Count;
         await _audit.WriteAsync("employees.bulk_action", "Employee", "bulk", Context(), JsonSerializer.Serialize(new
@@ -4925,6 +4934,8 @@ public class EmployeesController : ControllerBase
         // read the row for this employee. Idempotent — a no-op if the employee was already terminated.
         await EmployeeManagementService.DeactivatePayrollFootprintAsync(
             _db, _audit, tenantId, id, "soft_deleted", deactivateSalaryStructure: true, context, cancellationToken);
+        // The person may have been a reviewer, or their own pay package may have been the pending one.
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, id, "employee_deleted", cancellationToken);
     }
 
     /// <summary>
@@ -6640,6 +6651,10 @@ public record EmployeeListItemDto(int Id, string EmployeeCode, string FullName, 
     /// not_started, code_given, active, stopped or blocked. Filter with <c>access=</c>.</summary>
     public string AccessState { get; init; } = string.Empty;
     public string WorkEmail { get; init; } = string.Empty;
+    /// <summary>Independent of <see cref="AccessState"/>: a usable login exists (active, access not switched off).</summary>
+    public bool LoginEnabled { get; init; }
+    /// <summary>Independent of <see cref="AccessState"/>: the login's password is set, even if a new welcome code is live.</summary>
+    public bool PasswordConfigured { get; init; }
 }
 
 // ── Duplicate-person detection DTOs (contract mirrors frontend api/employees.ts) ──────────────────

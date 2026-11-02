@@ -10,6 +10,7 @@ using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -453,6 +454,7 @@ public class OffboardingController : ControllerBase
         }
 
         if (refusal is not null) return refusal;
+        await PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, employeeId!.Value, "offboarding", ct);
         var committed = await _db.EmployeeOffboardings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         return committed is null ? NotFound() : Ok(committed);
@@ -529,6 +531,7 @@ public class OffboardingController : ControllerBase
         }
 
         if (refusal is not null) return refusal;
+        await PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, employeeId!.Value, "offboarding", ct);
         var committed = await _db.EmployeeOffboardings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (committed is null) return NotFound();
@@ -657,6 +660,7 @@ public class OffboardingController : ControllerBase
         }
 
         if (refusal is not null) return refusal;
+        await PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, employeeId!.Value, "offboarding", ct);
         var committed = await _db.EmployeeOffboardings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         return committed is null ? NotFound() : Ok(committed);
@@ -1082,6 +1086,7 @@ public class OffboardingController : ControllerBase
         }
 
         if (refusal is not null) return refusal;
+        await PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, employeeId!.Value, "offboarding", ct);
         var committed = await _db.EmployeeOffboardings.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (committed is null) return NotFound();

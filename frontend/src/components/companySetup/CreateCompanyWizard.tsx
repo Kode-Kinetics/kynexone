@@ -15,7 +15,7 @@ import {
 } from '../../api/companySetup';
 import { orgRowsApi, type OrgRowKind } from '../../api/orgRows';
 import {
-  GUIDED_SETUP_HREF, PART_COPY, STEP_IDS, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingPosition, isOrgPart, normalizeFieldPath,
+  GUIDED_SETUP_HREF, PART_COPY, STEP_IDS, serverStep, stepOrder, withScreenSteps, buildTree, canCommit, completeCompanyHref, emptyBody, firstBlockingPosition, isOrgPart, normalizeFieldPath,
   partState, partsOf, planIsNoChange, positionKey, positionOfField, problemsByField, resumePart, sectionChanges, setupCodeCopy, stepCopy,
   stepIssueCounts, stepState, stepStateFromParts, validatePosition, withPart, wizardPositions,
   type FieldError, type PartId, type PartState, type StepId, type StepState, type WizardMode, type WizardPosition,
@@ -31,6 +31,7 @@ import { OrganisationStep } from './OrganisationStep';
 import { RulesStep } from './RulesStep';
 import type { RulesPartId } from './rules/rulesShared';
 import { AdminStep } from './AdminStep';
+import { ApproversStep } from './ApproversStep';
 import { ReviewStep } from './ReviewStep';
 import { CompanyReadinessList } from './CompanyReadinessList';
 import { CompanySummaryStep } from './CompanySummaryStep';
@@ -55,6 +56,7 @@ const STEP_HEADINGS: Record<StepId, { heading: string; help: string }> = {
   5: { heading: msg('Work & pay rules'), help: msg('Confirm what the country pack sets up. Change only what is different for this company.') },
   6: { heading: msg('Company super admin'), help: msg('Choose who administers this company.') },
   7: { heading: msg('Review & create'), help: msg('This is exactly what Create will do. Nothing is created until you press Create company.') },
+  8: { heading: msg('Approvers'), help: msg('Choose who reviews pay, apart from the administrator.') },
 };
 
 /** Existing mode (Addendum A) reads differently only where the journey differs: the summary, Organisation and the review. */
@@ -99,7 +101,7 @@ function WizardSkeleton({ label }: { label: string }) {
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-white/10 sm:px-6"><div className={`h-4 w-40 ${bar}`} /><div className={`h-9 w-36 ${bar}`} /></div>
       <div className="grid lg:grid-cols-[13.5rem_minmax(0,1fr)] xl:grid-cols-[13.5rem_minmax(0,1fr)_17rem]">
         <div className="space-y-1 border-b border-slate-200 bg-slate-50/80 p-3 dark:border-white/10 dark:bg-white/[0.02] lg:border-b-0 lg:border-e lg:p-4">
-          {Array.from({ length: 7 }, (_, i) => <div key={i} className={`h-11 ${bar}`} />)}
+          {Array.from({ length: 8 }, (_, i) => <div key={i} className={`h-11 ${bar}`} />)}
         </div>
         <div className="space-y-4 p-4 sm:p-6">
           <div className={`h-3 w-24 ${bar}`} /><div className={`h-6 w-48 ${bar}`} /><div className={`h-4 w-2/3 ${bar}`} />
@@ -197,7 +199,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     return () => query.removeEventListener('change', sync);
   }, []);
 
-  const autosave = useDraftAutosave({ draftId, body, step });
+  const autosave = useDraftAutosave({ draftId, body, step: serverStep(step) });
   const errorBody = (err: unknown) => (err as { response?: { data?: Partial<CompanySetupErrorBody> & { plan?: CompanySetupPlan | null } } } | null)?.response?.data;
   /** The server's refusal in the reader's language, or ''. A known code reads as what to do next. */
   const serverText = (err: unknown) => {
@@ -225,13 +227,18 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
     ? serverGrant
     : groupAdmin && ceiling !== 'loading' && (adminRole ? adminRole.canAssign : true);
   const adminDecided = !context || typeof serverGrant === 'boolean' || !groupAdmin || ceiling !== 'loading';
-  const steps = useMemo(() => STEP_IDS.filter(s => s !== 6 || adminStepVisible), [adminStepVisible]);
+  const steps = useMemo(() => STEP_IDS.filter(s => (s !== 6 && s !== 8) || adminStepVisible), [adminStepVisible]);
   const positions = useMemo(() => wizardPositions(steps), [steps]);
 
   useEffect(() => {
     if (adminDecided && !adminStepVisible && draftId && body.companyAdmin.mode !== 'groupOnly')
       setBody(b => ({ ...b, companyAdmin: { mode: 'groupOnly' } }));
   }, [adminDecided, adminStepVisible, draftId, body.companyAdmin.mode]);
+  // The reviewer is a role grant like the administrator: without the right to grant it, none is requested.
+  useEffect(() => {
+    if (adminDecided && !adminStepVisible && draftId && (body.payReviewer?.mode ?? 'groupOnly') !== 'groupOnly')
+      setBody(b => ({ ...b, payReviewer: { mode: 'groupOnly' } }));
+  }, [adminDecided, adminStepVisible, draftId, body.payReviewer?.mode]);
 
   // ── Load context, drafts and (when linked) the draft to resume ─────────────
   const draftAddress = useCallback((id: string) => (existingCompanyId ? completeCompanyHref(existingCompanyId, id) : `/setup/new-company?draft=${id}`), [existingCompanyId]);
@@ -260,8 +267,8 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
       const resumeAt = resumePart(resumeStep, urlPart, { body: draft.body, context: null });
       setStep(resumeStep);
       setPart(resumeAt);
-      setVisited(new Set(STEP_IDS.filter(s => s <= resumeStep)));
-      setVisitedParts(new Set(wizardPositions(STEP_IDS).filter(p => p.part && (p.step < resumeStep || (p.step === resumeStep && partsOf(p.step).indexOf(p.part) <= partsOf(p.step).indexOf(resumeAt!)))).map(positionKey)));
+      setVisited(new Set(STEP_IDS.filter(s => stepOrder(s) <= stepOrder(resumeStep))));
+      setVisitedParts(new Set(wizardPositions(STEP_IDS).filter(p => p.part && (stepOrder(p.step) < stepOrder(resumeStep) || (p.step === resumeStep && partsOf(p.step).indexOf(p.part) <= partsOf(p.step).indexOf(resumeAt!)))).map(positionKey)));
       setChoice({ startFrom: draft.body.startFrom, countryCode: draft.body.company.countryCode, copyFromCompanyId: draft.body.copyFromCompanyId });
       router.replace(withPart(draftAddress(draft.id), resumeAt), { scroll: false });
       (existingCompanyId
@@ -426,7 +433,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
 
   const refreshPlan = useCallback(async (forBody: CompanySetupDraftBody) => {
     setPlanState('loading');
-    try { const next = await companySetupApi.dryRun(forBody); planBody.current = forBody; setPlan(next); setPlanState('idle'); }
+    try { const next = withScreenSteps(await companySetupApi.dryRun(forBody)); planBody.current = forBody; setPlan(next); setPlanState('idle'); }
     catch { setPlanState('error'); }
   }, []);
 
@@ -1045,6 +1052,7 @@ export function CreateCompanyWizard({ existingCompanyId }: { existingCompanyId?:
                   {step === 5 && <RulesStep defaults={defaults} preview={plan} previewState={planState} part={part && !isOrgPart(part) ? part as RulesPartId : undefined}
                     onPartChange={p => goToPosition({ step: 5, part: p })} confirmLeaveRef={rulesLeaveRef} beforeLeave={autosave.flush} />}
                   {step === 6 && adminStepVisible && <AdminStep />}
+                  {step === 8 && adminStepVisible && <ApproversStep />}
                   {step === 7 && <ReviewStep plan={plan} state={planState} onRetry={() => void refreshPlan(body)} onGoTo={goToField} visibleSteps={steps}
                     onChangeAndCheck={changeAndCheck} onReloadPrefill={existing ? reloadFromCompany : undefined}
                     savedSections={[...savedParts]} />}

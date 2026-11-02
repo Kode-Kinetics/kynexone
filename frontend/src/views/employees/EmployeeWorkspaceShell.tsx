@@ -161,7 +161,7 @@ export function EmployeeWorkspaceShell({
           {section === 'employment' && <EmployeeEmploymentSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} onEmployeeChanged={onCostCentreChanged} />}
           {section === 'pay-benefits' && <EmployeePayBenefitsSection employee={employee} panel={panel} canWrite={canWrite} returnTo={returnTo} />}
           {section === 'compliance-documents' && <EmployeeComplianceDocumentsSection employee={employee} readiness={readiness.data} panel={panel} returnTo={returnTo} />}
-          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} />}
+          {section === 'access-onboarding' && <EmployeeAccessOnboardingSection employee={employee} readiness={readiness.data} returnTo={returnTo} onEmployeeChanged={onEmployeeChanged} onRetryReadiness={onRetryReadiness} readinessLoading={readiness.loading} />}
           {section === 'activity' && <EmployeeActivitySection employee={employee} panel={panel} returnTo={returnTo} />}
         </section>
       </div>

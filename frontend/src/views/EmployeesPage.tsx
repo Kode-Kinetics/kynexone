@@ -35,6 +35,7 @@ import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, Ski
 import { ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, REPLACES_A_CODE, skipReasonKey, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey } from '../lib/employeeAccess';
 import { EmployeeCompletionHandoff } from '../components/EmployeeCompletionHandoff';
 import { EmployeeAccessCard } from '../components/employeeAccess/EmployeeAccessCard';
+import { ThreeStateCell } from '../components/employeeAccess/ThreeStateCell';
 import { AddWorkEmailsDialog } from '../components/employeeAccess/AddWorkEmailsDialog';
 import { useWelcomeCodes } from '../components/employeeAccess/useWelcomeCodes';
 import { WorkEmailField } from '../components/employeeAccess/WorkEmailField';
@@ -503,6 +504,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [welcomeReturnEmployeeId, setWelcomeReturnEmployeeId] = useState<number | null>(null);
   const [workEmailsOpen, setWorkEmailsOpen] = useState(false);
   // Code given → bulk print confirms first (their old codes stop working).
+  // Reset sign-in from a row: one person, confirmed first. There is no bulk reset.
+  const [resetFor, setResetFor] = useState<{ id: number; name: string } | null>(null);
   const [bulkPrintConfirm, setBulkPrintConfirm] = useState<{ ids: number[]; names: Record<number, string>; preSkipped: SkippedWelcomeCode[]; delivery: 'print' | 'email' } | null>(null);
   // Whether the company can email codes: read from one selected employee's access status (null = not checked yet).
   const [companyEmails, setCompanyEmails] = useState<boolean | null>(null);
@@ -2440,10 +2443,15 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           </div>
                         </div>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3" data-testid="access-pill">
-                        {employee.accessState && ACCESS_STATE_COPY[employee.accessState]
-                          ? <StatusChip label={t(ACCESS_STATE_COPY[employee.accessState].label)} tone={ACCESS_STATE_COPY[employee.accessState].tone} dot />
-                          : <span className="text-xs text-slate-400">-</span>}
+                      <td className="px-4 py-3" data-testid="access-pill">
+                        <ThreeStateCell
+                          status={employee.status}
+                          accessState={employee.accessState}
+                          loginEnabled={employee.loginEnabled}
+                          passwordConfigured={employee.passwordConfigured}
+                          workEmail={employee.workEmail}
+                          onReset={canResetAccess && employee.accessState === 'active' ? () => setResetFor({ id: employee.id, name: employee.fullName }) : undefined}
+                        />
                       </td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.department || '-'}</td>
                       <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee.designation || '-'}</td>
@@ -3048,6 +3056,27 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             />
           </div>
         )}
+      </Modal>
+
+      <Modal
+        isOpen={resetFor !== null}
+        title={t('Reset sign-in')}
+        size="sm"
+        onClose={() => setResetFor(null)}
+        footer={
+          <>
+            <button type="button" onClick={() => setResetFor(null)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" disabled={welcome.busy} className="btn-primary disabled:opacity-60" onClick={() => {
+              const target = resetFor;
+              setResetFor(null);
+              if (target) void welcome.issue([target.id], { names: { [target.id]: target.name }, delivery: 'print', companyEmails: !!companyEmails });
+            }}>{t('Reset and print')}</button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-700 dark:text-slate-200" data-testid="row-reset-confirm">
+          {t("Reset {name}'s sign-in? Their current password keeps working until they use the new code. Then print a new slip for them.", { name: resetFor?.name ?? '' })}
+        </p>
       </Modal>
 
       <Modal

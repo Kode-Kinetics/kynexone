@@ -4,6 +4,8 @@ interface StatusChipProps {
   label: string;
   tone?: 'blue' | 'cyan' | 'emerald' | 'amber' | 'rose' | 'slate';
   dot?: boolean;
+  /** A glyph so the state never rests on colour alone. */
+  icon?: React.ReactNode;
 }
 
 // Legacy tone names kept for the ~45 call sites; each maps onto a semantic badge role.
@@ -25,10 +27,11 @@ const dotColors: Record<NonNullable<StatusChipProps['tone']>, string> = {
   slate: 'bg-fg-subtle',
 };
 
-export function StatusChip({ label, tone = 'slate', dot }: StatusChipProps) {
+export function StatusChip({ label, tone = 'slate', dot, icon }: StatusChipProps) {
   return (
     <span className={`badge ${toneClasses[tone]}`}>
-      {dot && (
+      {icon}
+      {dot && !icon && (
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotColors[tone]}`} aria-hidden="true" />
       )}
       {label}

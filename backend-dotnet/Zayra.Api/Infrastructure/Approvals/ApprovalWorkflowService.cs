@@ -36,6 +36,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     private readonly IDataScopeService _dataScopes;
     private readonly IHttpContextAccessor? _http;
     private readonly IDocumentStorage? _documentStorage;
+    private readonly Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks _deadEnds;
     private readonly Dictionary<RequestContext, DataScope> _jawazatScopes = new();
     private readonly Dictionary<(Guid TenantId, int EmployeeId), IReadOnlyCollection<Guid>> _subjectUserIds = new();
 
@@ -58,9 +59,11 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         IDataProtectionProvider? dataProtection = null,
         IDataScopeService? dataScopes = null,
         IHttpContextAccessor? http = null, IDocumentStorage? documentStorage = null,
-        IEnumerable<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate>? effectiveChangeGates = null)
+        IEnumerable<Zayra.Api.Infrastructure.Employees.IEffectiveChangeGate>? effectiveChangeGates = null,
+        Zayra.Api.Infrastructure.Employees.Onboarding.IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _db = db;
+        _deadEnds = new Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks(db, deadEndMonitor);
         _effectiveChangeGates = effectiveChangeGates?.ToList() ?? [];
         _audit = audit;
         _changeBaselineProtector = dataProtection is null ? null : EmployeeChangeBaseline.CreateProtector(dataProtection);
@@ -764,6 +767,9 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // SUC: after the commit, the slate's own audit row and the decision notice to its submitter. No-op for anything else.
         await Zayra.Api.Infrastructure.Succession.SuccessionSlateApprovalSync.AfterCommitAsync(_db, _audit, _http?.HttpContext?.RequestServices, approval,
             normalizedDecision, context, cancellationToken);
+        // An approved change to a hire's pay may have put a package in front of Finance: check it has a reviewer (best effort, after the commit).
+        if (approval.EntityName == nameof(EmployeeChangeRequest) && approval.RequestedForEmployeeId is int paySubject)
+            await _deadEnds.AfterEmployeePaySubmittedAsync(tenantId, paySubject, "pay_submitted", cancellationToken);
         return JawazatApprovalSync.IsJawazat(approval)
             ? await GetRequestAsync(tenantId, approval.Id, context, cancellationToken)
             : (await GetRequestAsync(tenantId, approval.Id, cancellationToken))!;

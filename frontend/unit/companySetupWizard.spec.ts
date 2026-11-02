@@ -6,6 +6,7 @@ import {
   completeCompanyHref, draftHref, firstPayrollMonthLocked, isPlanChange, planCounts, planIsNoChange, readinessProgress, rowChanged, stepCopy, wizardMode,
   legacyWarnings, reasonFields, setupCodeCopy, setupLandingCompanyLink,
   gradeWarnings, sortedGradeIndexes, suggestedMidpoint,
+  STEP_IDS, serverStep, stepOrder, withScreenSteps, positionOfField as screenPositionOfField, wizardPositions as screenPositions,
   CHANGED_ELSEWHERE, chooseWeekend, countryDisplayName, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
@@ -539,4 +540,81 @@ test('Arabic-Indic and Persian digits are checked as the digits they are; a Saud
   expect(validateStep(2, { body: b, context })).toEqual([]);
   b.company.taxNumber = '123';
   expect(fields(validateStep(2, { body: b, context }))).toEqual(['company.taxNumber']);
+});
+
+// ── Approvers step (step 8, after the administrator) ─────────────────────────
+
+test('Approvers sits between the administrator and the review, while ids 1-7 keep their server meaning', () => {
+  expect(STEP_IDS).toEqual([1, 2, 3, 4, 5, 6, 8, 7]);
+  expect(stepOrder(8)).toBeGreaterThan(stepOrder(6));
+  expect(stepOrder(8)).toBeLessThan(stepOrder(7));
+  // A draft stores 1-7: the Approvers step is saved as the step it follows.
+  expect([1, 2, 3, 4, 5, 6, 7, 8].map(s => serverStep(s as never))).toEqual([1, 2, 3, 4, 5, 6, 7, 6]);
+  expect(stepCopy(8, 'create').title).toBe('Approvers');
+  expect(screenPositions(STEP_IDS).map(p => p.step).slice(-3)).toEqual([6, 8, 7]);
+});
+
+test('pay reviewer: the same email as the administrator, a public domain or a missing name blocks Next', () => {
+  const b = saudiBody();
+  b.company.emailDomain = 'acme.sa';
+  b.companyAdmin = { mode: 'invite', fullNameEn: 'Sara', email: 'sara@acme.sa' };
+  b.payReviewer = { mode: 'invite', fullNameEn: 'Omar', email: 'Sara@acme.sa' };
+  const same = validateStep(8, { body: b, context });
+  expect(same.map(e => e.field)).toEqual(['payReviewer.email']);
+  expect(same[0].message).toBe('The reviewer must be a different person from the administrator.');
+  b.payReviewer = { mode: 'invite', fullNameEn: 'Omar', email: 'omar@acme.sa' };
+  expect(validateStep(8, { body: b, context })).toEqual([]);
+  b.payReviewer = { mode: 'invite', fullNameEn: '', email: 'omar@acme.sa' };
+  expect(fields(validateStep(8, { body: b, context }))).toEqual(['payReviewer.fullNameEn']);
+  b.company.emailDomain = '';
+  b.payReviewer = { mode: 'invite', fullNameEn: 'Omar', email: 'omar@gmail.com' };
+  expect(validateStep(8, { body: b, context }).map(e => e.params)).toEqual([{ domain: 'gmail.com' }]);
+  b.company.emailDomain = 'acme.sa';
+  b.payReviewer = { mode: 'invite', fullNameEn: 'Omar', email: 'omar@other.sa' };
+  expect(validateStep(8, { body: b, context }).map(e => e.params)).toEqual([{ domain: 'acme.sa' }]);
+});
+
+test('pay reviewer: an existing user is required and cannot be the administrator; none, or a hidden step, never blocks', () => {
+  const b = saudiBody();
+  b.companyAdmin = { mode: 'existing', existingUserId: 'u1' };
+  b.payReviewer = { mode: 'existing' };
+  expect(fields(validateStep(8, { body: b, context }))).toEqual(['payReviewer.existingUserId']);
+  b.payReviewer = { mode: 'existing', existingUserId: 'u1' };
+  expect(fields(validateStep(8, { body: b, context }))).toEqual(['payReviewer.existingUserId']);
+  b.payReviewer = { mode: 'existing', existingUserId: 'u2' };
+  expect(validateStep(8, { body: b, context })).toEqual([]);
+  b.payReviewer = { mode: 'existing' };
+  expect(validateStep(8, { body: b, context, adminStepVisible: false })).toEqual([]);
+  b.payReviewer = { mode: 'groupOnly' };
+  expect(validateStep(8, { body: b, context })).toEqual([]);
+  delete b.payReviewer;
+  expect(validateStep(8, { body: b, context })).toEqual([]);
+});
+
+test('no reviewer is advice on the Approvers step, not a blocker, and only when creating', () => {
+  const b = saudiBody();
+  expect(stepWarnings(8, { body: b, context }).map(w => w.field)).toEqual(['payReviewer.mode']);
+  b.payReviewer = { mode: 'invite', fullNameEn: 'Omar', email: 'omar@acme.sa' };
+  expect(stepWarnings(8, { body: b, context })).toEqual([]);
+  b.payReviewer = { mode: 'groupOnly' };
+  b.existingCompanyId = 'c9';
+  expect(stepWarnings(8, { body: b, context })).toEqual([]);
+});
+
+test('server problems about the reviewer are shown on the Approvers step even though the server numbers them 6', () => {
+  const plan: CompanySetupPlan = {
+    ok: false, items: [],
+    problems: [{ step: 6, field: 'payReviewer.email', code: 'pay_reviewer_same_as_admin', message: 'x' }, { step: 6, field: 'companyAdmin.email', code: 'required', message: 'y' }],
+    warnings: [{ step: 6, field: 'payReviewer.mode', code: 'pay_reviewer_missing', message: 'z' }],
+  };
+  const fixed = withScreenSteps(plan);
+  expect(fixed.problems.map(p => p.step)).toEqual([8, 6]);
+  expect(fixed.warnings.map(p => p.step)).toEqual([8]);
+  expect(screenPositionOfField('payReviewer.existingUserId')).toEqual({ step: 8 });
+  expect(screenPositionOfField('PayReviewer.Email')).toEqual({ step: 8 });
+  expect(stepState(8, { body: saudiBody(), context, visited: new Set([8] as const), serverProblems: fixed.problems })).toBe('blocked');
+});
+
+test('an old draft has no reviewer and empty bodies ask for none', () => {
+  expect(emptyBody('SA').payReviewer).toEqual({ mode: 'groupOnly' });
 });

@@ -51,7 +51,7 @@ export function WizardRail({ steps, current, currentPart, states, saved, issues,
         <div className="h-full origin-left rounded-full bg-sapphire transition-transform duration-200 ease-out motion-reduce:transition-none rtl:origin-right"
           style={{ transform: `scaleX(${clamped})` }} data-testid="wizard-progress" data-progress={clamped.toFixed(2)} />
       </div>
-      <ol className={`grid gap-1 lg:grid-cols-1 ${steps.length === 6 ? 'grid-cols-6' : 'grid-cols-7'}`} data-testid="wizard-rail">
+      <ol className={`grid gap-1 lg:grid-cols-1 ${steps.length <= 6 ? 'grid-cols-6' : steps.length === 7 ? 'grid-cols-7' : 'grid-cols-8'}`} data-testid="wizard-rail">
         {steps.map((id, index) => {
           const active = id === current;
           const state = states[id];

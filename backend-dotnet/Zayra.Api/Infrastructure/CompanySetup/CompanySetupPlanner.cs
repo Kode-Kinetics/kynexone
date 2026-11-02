@@ -11,6 +11,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Payroll.SaudiBankExports;
 using Zayra.Api.Infrastructure.Seed;
@@ -87,6 +88,9 @@ public sealed class CompanySetupPlanModel
     public required CompanySetupCompanyAdmin CompanyAdmin { get; init; }
     /// <summary>The admin step's planned action: create (invite / grant) or reuse (group admins, an existing group admin).</summary>
     public required string CompanyAdminAction { get; init; }
+    /// <summary>Null when no pay reviewer was requested in this setup.</summary>
+    public CompanySetupCompanyAdmin? PayReviewer { get; init; }
+    public string? PayReviewerAction { get; init; }
     public required IReadOnlyList<PlanItem> Items { get; init; }
 }
 
@@ -1279,6 +1283,8 @@ public sealed class CompanySetupPlanner
         // ── Step 6: company super admin ──────────────────────────────────────────────────────────────────
         var admin = body.CompanyAdmin ?? new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null);
         var adminAction = await PlanCompanyAdminAsync(c, caller, admin, emailDomain, ceiling, ex?.Company.Id, ct);
+        var payReviewer = body.PayReviewer;
+        var reviewerAction = await PlanPayReviewerAsync(c, caller, payReviewer, admin, emailDomain, ceiling, ex?.Company.Id, ct);
 
         var plan = Finish(c, focus);
         if (!plan.Ok) return (plan, null);
@@ -1355,6 +1361,8 @@ public sealed class CompanySetupPlanner
             WorkWeekUpdate = workWeekUpdate,
             CompanyAdmin = admin,
             CompanyAdminAction = adminAction,
+            PayReviewer = reviewerAction is null ? null : payReviewer,
+            PayReviewerAction = reviewerAction,
             Items = plan.Items,
         });
     }
@@ -1698,6 +1706,163 @@ public sealed class CompanySetupPlanner
         c.Item(Areas.CompanyAdmin, user.Id.ToString(), user.FullName, V.ActionCreate,
             "Gets access to this company with their Admin role; their other access is unchanged.");
         return V.ActionCreate;
+    }
+
+    /// <summary>
+    /// Step 6, second person. An independent pay reviewer: a login with the seeded Finance Approver role (which holds the pay
+    /// approval permission) and access to this company only, who is a different person from the company super admin. It is
+    /// created as a direct login (no employee record), so it is usable before anyone's own employee onboarding finishes.
+    /// Returns null when none was requested. Nothing here approves pay: the decision endpoint keeps its own per-package rules.
+    /// </summary>
+    private async Task<string?> PlanPayReviewerAsync(Collector c, CompanySetupCaller caller, CompanySetupCompanyAdmin? reviewer,
+        CompanySetupCompanyAdmin admin, string companyEmailDomain, AccessCeilingDto? ceiling, Guid? existingCompanyId, CancellationToken ct)
+    {
+        var mode = (reviewer?.Mode ?? string.Empty).Trim();
+        if (reviewer is null || mode.Length == 0 || mode == V.AdminGroupOnly)
+        {
+            if (existingCompanyId is null)
+                c.Warn(6, "payReviewer.mode", "pay_reviewer_missing",
+                    "No independent pay reviewer is set up yet. Pay entered here cannot be approved until a different person with Finance Approver access is added.",
+                    "لم يتم تعيين مراجع أجور مستقل بعد. لا يمكن اعتماد الأجور حتى تتم إضافة شخص آخر بصلاحية معتمد مالي.");
+            return null;
+        }
+        if (mode is not (V.AdminInvite or V.AdminExisting))
+        {
+            c.Problem(6, "payReviewer.mode", "mode_invalid", "Choose how the independent pay reviewer will be set up.");
+            return V.ActionConflict;
+        }
+
+        var role = ceiling?.Roles.FirstOrDefault(r => string.Equals(r.Name, PayReviewerRole.Name, StringComparison.OrdinalIgnoreCase));
+        var key = mode == V.AdminInvite ? (reviewer.Email ?? string.Empty).Trim().ToLowerInvariant() : reviewer.ExistingUserId?.ToString() ?? string.Empty;
+        var mayGrant = (caller.IsGroupScope || existingCompanyId is not null) && ceiling is { IsAdmin: true }
+            && ceiling.HeldPermissions.Contains("security.manage", StringComparer.Ordinal)
+            && (mode == V.AdminExisting || role is { CanAssign: true } || role is null);
+        if (!mayGrant)
+        {
+            c.Conflict(Areas.PayReviewer, key, "Independent pay reviewer", 6, "payReviewer.mode", "pay_reviewer_grant_not_permitted",
+                role?.AssignRefusalEn ?? "Only an administrator who may assign the Finance Approver role can set up the pay reviewer.",
+                role?.AssignRefusalAr ?? "يمكن فقط لمسؤول يملك صلاحية تعيين دور المعتمد المالي إعداد مراجع الأجور.");
+            return V.ActionConflict;
+        }
+
+        if (mode == V.AdminInvite)
+        {
+            var email = key;
+            if (string.IsNullOrWhiteSpace(reviewer.FullNameEn)) c.Problem(6, "payReviewer.fullNameEn", "required", "Enter the pay reviewer's full name in English.");
+            if (!IsEmail(email)) { c.Problem(6, "payReviewer.email", "email_invalid", "Enter the pay reviewer's official work email."); return V.ActionConflict; }
+            var host = email[(email.LastIndexOf('@') + 1)..];
+            if (CompanyEmailDomainRules.PublicDomains.Contains(host))
+            {
+                c.Problem(6, "payReviewer.email", "admin_email_public_domain",
+                    $"'{host}' is a public email service. Use the person's official company email.", "استخدم البريد الرسمي للشركة.");
+                return V.ActionConflict;
+            }
+            if (companyEmailDomain.Length > 0 && !string.Equals(host, companyEmailDomain, StringComparison.Ordinal))
+            {
+                c.Problem(6, "payReviewer.email", "admin_email_off_domain",
+                    $"The pay reviewer's email must be on the company's email domain (@{companyEmailDomain}).",
+                    $"يجب أن يكون البريد على نطاق الشركة (@{companyEmailDomain}).");
+                return V.ActionConflict;
+            }
+            if (await SameAsAdminAsync(caller, admin, email, null, ct))
+            {
+                c.Conflict(Areas.PayReviewer, email, reviewer.FullNameEn?.Trim() ?? email, 6, "payReviewer.email", "pay_reviewer_same_as_admin",
+                    "The pay reviewer must be a different person from the company super admin.", "يجب أن يكون مراجع الأجور شخصاً مختلفاً عن مسؤول الشركة.");
+                return V.ActionConflict;
+            }
+            var normalized = AuthService.Normalize(email);
+            if (await ScopedBypass.TenantWide(_db.Users, caller.TenantId, Why).AsNoTracking().AnyAsync(u => u.NormalizedEmail == normalized, ct))
+            {
+                c.Conflict(Areas.PayReviewer, email, reviewer.FullNameEn?.Trim() ?? email, 6, "payReviewer.email", "pay_reviewer_email_exists",
+                    $"{email} already has a login in this workspace. Choose \"Use an existing user\" instead.",
+                    "لهذا البريد حساب في مساحة العمل. اختر مستخدماً حالياً بدلاً من ذلك.");
+                return V.ActionConflict;
+            }
+            if (await PayReviewerRole.ResolveAsync(_db, caller.TenantId, ct) is null)
+                c.Warn(6, "payReviewer.mode", "pay_reviewer_role_missing",
+                    $"This workspace has no active '{PayReviewerRole.Name}' role holding payroll.approve, so the reviewer login cannot be created. Restore the role in Setup → Roles, or add the reviewer later.",
+                    $"لا يوجد دور '{PayReviewerRole.Name}' فعال يملك صلاحية اعتماد الرواتب، لذا لا يمكن إنشاء حساب المراجع.");
+            c.Item(Areas.PayReviewer, email, reviewer.FullNameEn?.Trim() ?? email, V.ActionCreate,
+                "Invited as this company's independent pay reviewer (Finance Approver, this company only; no employee record needed).", reviewer.FullNameAr);
+            return V.ActionCreate;
+        }
+
+        if (reviewer.ExistingUserId is not Guid userId)
+        {
+            c.Problem(6, "payReviewer.existingUserId", "required", "Choose the user who will be the independent pay reviewer.");
+            return V.ActionConflict;
+        }
+        var user = await ScopedBypass.TenantWide(_db.Users, caller.TenantId, Why).AsNoTracking()
+            .Include(u => u.UserRoles).ThenInclude(r => r.Role).ThenInclude(r => r!.RolePermissions).ThenInclude(p => p.Permission)
+            .Include(u => u.PermissionOverrides).Include(u => u.EmployeeUserAccounts)
+            .Include(u => u.EntityAccesses)
+            .SingleOrDefaultAsync(u => u.Id == userId, ct);
+        if (user is null || user.IsDeleted || !user.IsActive || user.Status != "Active")
+        {
+            c.Problem(6, "payReviewer.existingUserId", "user_not_active", "Choose an active user of this workspace.");
+            return V.ActionConflict;
+        }
+        if (await SameAsAdminAsync(caller, admin, null, user, ct))
+        {
+            c.Conflict(Areas.PayReviewer, user.Id.ToString(), user.FullName, 6, "payReviewer.existingUserId", "pay_reviewer_same_as_admin",
+                "The pay reviewer must be a different person from the company super admin.", "يجب أن يكون مراجع الأجور شخصاً مختلفاً عن مسؤول الشركة.");
+            return V.ActionConflict;
+        }
+        if (user.Id == caller.UserId)
+        {
+            c.Problem(6, "payReviewer.existingUserId", "self_grant_refused", "You cannot make yourself the independent pay reviewer.");
+            return V.ActionConflict;
+        }
+        if (user.UserRoles.Any(r => r.Role is { NormalizedName: "ADMIN", IsActive: true, IsDeleted: false }))
+        {
+            c.Conflict(Areas.PayReviewer, user.Id.ToString(), user.FullName, 6, "payReviewer.existingUserId", "pay_reviewer_is_administrator",
+                $"{user.FullName} is an administrator. The pay reviewer must be a separate person from the administrators.",
+                "يجب أن يكون مراجع الأجور شخصاً منفصلاً عن المسؤولين.");
+            return V.ActionConflict;
+        }
+        if (!AuthService.GetPermissions(user).Contains(CompensationApprovalGate.ApprovePermission, StringComparer.OrdinalIgnoreCase))
+        {
+            c.Conflict(Areas.PayReviewer, user.Id.ToString(), user.FullName, 6, "payReviewer.existingUserId", "existing_user_cannot_approve_pay",
+                $"{user.FullName} does not hold the pay approval permission. Invite a new pay reviewer, or choose someone who already has it.",
+                "لا يملك هذا المستخدم صلاحية اعتماد الأجور. ادعُ مراجعاً جديداً أو اختر من يملكها.");
+            return V.ActionConflict;
+        }
+        if (user.IsGroupScope || (existingCompanyId is Guid target && user.EntityAccesses.Any(e => e.IsActive && e.CompanyId == target)))
+        {
+            c.Item(Areas.PayReviewer, user.Id.ToString(), user.FullName, user.IsGroupScope ? V.ActionReuse : V.ActionUnchanged,
+                "Already has access to this company.");
+            return user.IsGroupScope ? V.ActionReuse : V.ActionUnchanged;
+        }
+        try { await _access.AssertMayChangeUserAccessAsync(caller.TenantId, user.Id, caller.Context with { TenantId = caller.TenantId }, ct); }
+        catch (PrivilegeCeilingException ex)
+        {
+            c.Conflict(Areas.PayReviewer, user.Id.ToString(), user.FullName, 6, "payReviewer.existingUserId", ex.Refusal.Code, ex.Refusal.MessageEn, ex.Refusal.MessageAr);
+            return V.ActionConflict;
+        }
+        c.Item(Areas.PayReviewer, user.Id.ToString(), user.FullName, V.ActionCreate,
+            "Gets access to this company; their roles and other access are unchanged.");
+        return V.ActionCreate;
+    }
+
+    /// <summary>True when the proposed reviewer (by email, or by user) is the person the same setup makes the company super admin.</summary>
+    private async Task<bool> SameAsAdminAsync(CompanySetupCaller caller, CompanySetupCompanyAdmin admin,
+        string? reviewerEmail, User? reviewerUser, CancellationToken ct)
+    {
+        var mode = (admin.Mode ?? string.Empty).Trim();
+        if (mode == V.AdminInvite)
+        {
+            var adminEmail = AuthService.Normalize(admin.Email ?? string.Empty);
+            var theirs = reviewerEmail is not null ? AuthService.Normalize(reviewerEmail) : reviewerUser?.NormalizedEmail;
+            return adminEmail.Length > 0 && string.Equals(adminEmail, theirs, StringComparison.Ordinal);
+        }
+        if (mode == V.AdminExisting && admin.ExistingUserId is Guid adminId)
+        {
+            if (reviewerUser is not null) return reviewerUser.Id == adminId;
+            var adminNormalized = await ScopedBypass.TenantWide(_db.Users, caller.TenantId, Why).AsNoTracking()
+                .Where(u => u.Id == adminId).Select(u => u.NormalizedEmail).FirstOrDefaultAsync(ct);
+            return adminNormalized is not null && reviewerEmail is not null && string.Equals(adminNormalized, AuthService.Normalize(reviewerEmail), StringComparison.Ordinal);
+        }
+        return false;
     }
 
     /// <summary>Whether <paramref name="caller"/> may make someone a company super admin: the Admin role, the Admin role

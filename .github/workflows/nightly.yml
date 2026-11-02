@@ -57,6 +57,7 @@ jobs:
               playwright.employee-hire.config.ts
               playwright.pay-approvals.config.ts
               playwright.onboarding-p3.config.ts
+              playwright.access-states.config.ts
               playwright.ess-complete-profile.config.ts
               playwright.esign.config.ts
               playwright.ess-workspace.config.ts

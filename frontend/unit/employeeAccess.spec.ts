@@ -3,7 +3,7 @@ import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   ACCESS_STATE_COPY, BULK_PRINTABLE_STATES, CANONICAL_CONFLICT_CODES, CANONICAL_SKIP_CODES, CONFLICT_REASON_KEYS, DEFAULT_CONFLICT_KEY, GENERIC_SKIP_KEY, SKIP_REASON_KEYS,
   WORK_EMAIL_ERROR_KEYS, appAddress, dateLine, formatWelcomeCode, pairUp, parseWorkEmailRows, skipReasonKey, sortSlips,
-  welcomeQrUrl, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey, STOPPED_REASON_KEYS, BLOCKED_REASON_KEYS,
+  welcomeQrUrl, deriveThreeStates, workEmailErrorCode, workEmailLocalProblem, workEmailProblemKey, STOPPED_REASON_KEYS, BLOCKED_REASON_KEYS,
 } from '../src/lib/employeeAccess';
 
 // HR side of employee sign-in access (lib/employeeAccess.ts): the slip's formatting, the paste parser,
@@ -134,4 +134,110 @@ test('complete-address validation rejects malformed dots and domain labels witho
   }
   expect(workEmailLocalProblem('noah.smith@external-mail.test')).toBeNull();
   expect(workEmailLocalProblem(`${'n'.repeat(64)}@external.test`)).toBeNull();
+});
+
+// Three separate answers: employment, login, password. Signing in never activates employment.
+const PAY = { blocking: [{ key: 'pay:compensationUnapproved' }] };
+const person = (status = 'Draft', workEmail: string | null = 'a@co.test') => ({ status, workEmail });
+
+test('login and password are set while the employee is not active: employment stays its own answer', () => {
+  const states = deriveThreeStates(person('Draft'), { state: 'active' }, { blocking: [{ key: 'org:department' }] });
+  expect(states).toEqual({ employee: 'not_active', login: 'login_enabled', password: 'password_set', needsWorkEmail: false, newCodeLive: false });
+});
+
+test('the pay blocker reads as awaiting pay approval; an active status wins', () => {
+  expect(deriveThreeStates(person('Draft'), { state: 'not_started' }, PAY).employee).toBe('awaiting_pay_approval');
+  expect(deriveThreeStates(person('Active'), { state: 'not_started' }, PAY).employee).toBe('active');
+  expect(deriveThreeStates(person('Draft'), { state: 'not_started' }, null).employee).toBe('not_active');
+});
+
+test('a live code is an enabled login whose password is not set yet', () => {
+  expect(deriveThreeStates(person(), { state: 'code_given' }, null)).toMatchObject({ login: 'login_enabled', password: 'code_given' });
+});
+
+test('no login, waiting, blocked: no login and no password', () => {
+  for (const state of ['not_started', 'blocked'] as const) {
+    expect(deriveThreeStates(person(), { state }, null)).toMatchObject({ login: 'no_login', password: 'not_set_up' });
+  }
+});
+
+test('an older API without the facts does not guess the password after a stop', () => {
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped' }, null)).toMatchObject({ login: 'access_stopped', password: 'unknown' });
+});
+
+const facts = (loginEnabled: boolean, passwordConfigured: boolean) => ({ loginEnabled, passwordConfigured });
+
+test('with the independent facts, a reset keeps the password set while a new code is live', () => {
+  expect(deriveThreeStates(person(), { state: 'code_given', ...facts(true, true) }, null))
+    .toMatchObject({ login: 'login_enabled', password: 'password_set', newCodeLive: true });
+});
+
+test('with the independent facts, a first code is a staged login with no password', () => {
+  expect(deriveThreeStates(person(), { state: 'code_given', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'code_given', newCodeLive: true });
+});
+
+test('with the independent facts, an expired code falls back to the true password state', () => {
+  expect(deriveThreeStates(person(), { state: 'not_started', ...facts(true, true) }, null))
+    .toMatchObject({ login: 'login_enabled', password: 'password_set', newCodeLive: false });
+  expect(deriveThreeStates(person(), { state: 'not_started', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'not_set_up' });
+});
+
+test('with the independent facts, stopped access never says the password is unknown', () => {
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', ...facts(false, true) }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'password_set' });
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'not_set_up' });
+});
+
+test('with the independent facts, blocked is no login even if a password flag were set elsewhere', () => {
+  expect(deriveThreeStates(person(), { state: 'blocked', ...facts(false, false) }, null))
+    .toMatchObject({ login: 'no_login', password: 'not_set_up' });
+});
+
+test('a response with only one of the two facts is treated as an older API', () => {
+  expect(deriveThreeStates(person('Terminated'), { state: 'stopped', loginEnabled: true }, null))
+    .toMatchObject({ login: 'access_stopped', password: 'unknown' });
+});
+
+test('no work email: rows B and C need it first', () => {
+  expect(deriveThreeStates(person('Draft', ''), { state: 'waiting_for_work_email', workEmail: '' }, null).needsWorkEmail).toBe(true);
+  expect(deriveThreeStates(person('Draft', null), null, null).needsWorkEmail).toBe(true);
+  expect(deriveThreeStates(person('Draft', 'a@co.test'), { state: 'not_started' }, null).needsWorkEmail).toBe(false);
+});
+
+test('an unavailable access status leaves login and password unanswered, never invented', () => {
+  expect(deriveThreeStates(person(), null, PAY)).toMatchObject({ employee: 'awaiting_pay_approval', login: null, password: null });
+});
+
+test('the three-state copy exists in English and Arabic', async () => {
+  const { accessStates } = await import('../src/i18n/accessStates');
+  for (const key of Object.keys(accessStates.ar)) {
+    expect(LOCALE_DICTS.en[key], key).toBe(key);
+    expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
+  }
+  for (const key of ['Active', 'Access stopped', 'Give access', 'Give new code', 'Reset sign-in', 'Activate', 'Retry', 'Loading readiness…']) {
+    expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
+  }
+});
+
+test('a suspended, offboarded, terminated or inactive person is never "not active yet"', () => {
+  const expected: Record<string, string> = {
+    Suspended: 'suspended', Offboarded: 'offboarded', Terminated: 'ended', Exited: 'ended', Archived: 'ended', Inactive: 'inactive',
+  };
+  for (const [status, row] of Object.entries(expected)) {
+    expect(deriveThreeStates(person(status), { state: 'not_started' }, null).employee, status).toBe(row);
+    // A leftover pay blocker does not turn a person who left into a hire awaiting pay approval.
+    expect(deriveThreeStates(person(status), { state: 'not_started' }, PAY).employee, status).toBe(row);
+  }
+  expect(deriveThreeStates(person('suspended'), null, null).employee).toBe('suspended');
+  expect(deriveThreeStates(person('Draft'), null, null).employee).toBe('not_active');
+  expect(deriveThreeStates(person('Invited'), null, PAY).employee).toBe('awaiting_pay_approval');
+});
+
+test('the labels for people on hold or gone read in Arabic', () => {
+  for (const key of ['Employment suspended', 'Offboarding in progress', 'Employment ended', 'Employee inactive', 'Change the employment status from the employee record.']) {
+    expect(LOCALE_DICTS.ar[key], key).toMatch(/[؀-ۿ]/);
+  }
 });

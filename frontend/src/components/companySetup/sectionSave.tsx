@@ -15,15 +15,15 @@ import type { StepId } from '../../lib/companySetupWizard';
  * company. Organisation (Step 4) has no section Save here: each part has its own "Save {part} & next", which
  * writes to an existing company at once.
  */
-export type SectionId = 'company' | 'branches' | 'rules' | 'companyAdmin';
+export type SectionId = 'company' | 'branches' | 'rules' | 'companyAdmin' | 'payReviewer';
 
 export const STEP_SECTIONS: Record<StepId, SectionId[]> = {
-  1: [], 2: ['company'], 3: ['branches'], 4: [], 5: ['rules'], 6: ['companyAdmin'], 7: [],
+  1: [], 2: ['company'], 3: ['branches'], 4: [], 5: ['rules'], 6: ['companyAdmin'], 7: [], 8: ['payReviewer'],
 };
 
 export const SECTION_TITLE: Record<SectionId, string> = {
   company: msg('Company details'), branches: msg('Branches & locations'),
-  rules: msg('Work & pay rules'), companyAdmin: msg('Company super admin'),
+  rules: msg('Work & pay rules'), companyAdmin: msg('Company super admin'), payReviewer: msg('Independent pay reviewer'),
 };
 
 export const sectionHeadingId = (id: SectionId) => `ccw-section-${id}`;
@@ -34,6 +34,7 @@ export function sectionOfField(field: string): SectionId | null {
   if (field.startsWith('branches') || field === 'locations') return 'branches';
   if (field.startsWith('rules')) return 'rules';
   if (field.startsWith('companyAdmin')) return 'companyAdmin';
+  if (field.startsWith('payReviewer')) return 'payReviewer';
   return null;
 }
 
@@ -41,7 +42,7 @@ export function sectionOfField(field: string): SectionId | null {
 export function sectionSnapshot(body: CompanySetupDraftBody, id: SectionId): string {
   // Rules: the Work rules part only (week and employee numbers); the leave part's choices are not this section's.
   const slice = id === 'company' ? body.company : id === 'rules' ? { workWeek: body.rules.workWeek, employeeNumbering: body.rules.employeeNumbering }
-    : id === 'companyAdmin' ? body.companyAdmin : body[id];
+    : id === 'companyAdmin' ? body.companyAdmin : id === 'payReviewer' ? body.payReviewer : body[id];
   return JSON.stringify(slice ?? null);
 }
 

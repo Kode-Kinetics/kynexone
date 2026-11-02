@@ -38,10 +38,13 @@ public sealed class DraftDiscardService
     private readonly ZayraDbContext _db;
     private readonly IAuditService _audit;
 
-    public DraftDiscardService(ZayraDbContext db, IAuditService audit)
+    private readonly PayApprovalDeadEndHooks _deadEnds;
+
+    public DraftDiscardService(ZayraDbContext db, IAuditService audit, IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _db = db;
         _audit = audit;
+        _deadEnds = new PayApprovalDeadEndHooks(db, deadEndMonitor);
     }
 
     public async Task<bool> HasActivityAsync(Guid tenantId, int employeeId, CancellationToken ct)
@@ -84,5 +87,7 @@ public sealed class DraftDiscardService
         await _audit.WriteAsync(AuditAction, "Employee", employeeId.ToString(System.Globalization.CultureInfo.InvariantCulture), context,
             JsonSerializer.Serialize(new { employeeId, employeeCode = employee.EmployeeCode }), ct);
         await EmployeeManagementService.DeactivatePayrollFootprintAsync(_db, _audit, tenantId, employeeId, "draft_discarded", deactivateSalaryStructure: true, context, ct);
+        // A discarded draft may have been the only pending package, or the linked login of a reviewer.
+        await _deadEnds.AfterEmployeeChangedAsync(tenantId, employeeId, "draft_discarded", ct);
     }
 }

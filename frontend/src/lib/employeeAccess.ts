@@ -1,5 +1,6 @@
-import type { EmployeeAccessState, IssuedWelcomeCode, WorkEmailRow } from '../api/employeeAccess';
+import type { EmployeeAccessDto, EmployeeAccessState, IssuedWelcomeCode, WorkEmailRow } from '../api/employeeAccess';
 import { dateLocale } from './format';
+import { PAY_GAP_KEY } from './payApprovals';
 
 /**
  * Pure helpers for the HR side of employee sign-in access: the one label, tone and button per
@@ -255,3 +256,58 @@ export const BLOCKED_REASON_KEYS: Record<string, string> = {
   email_belongs_to_existing_login: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
   email_belongs_to_former_employee: 'This email is already used to sign in by someone else. Ask your system admin to fix it.',
 };
+
+/**
+ * Three separate questions the profile answers: is the person an active employee, is a login
+ * enabled, is a password configured. Signing in never activates employment.
+ *
+ * The access API returns a merged `state` plus two independent booleans (`loginEnabled`,
+ * `passwordConfigured`). When both are present they decide the login and password rows; an older
+ * API without them falls back to deriving the rows from the merged `state`, which is less precise.
+ */
+export type EmployeeRowState = 'not_active' | 'awaiting_pay_approval' | 'active' | 'suspended' | 'offboarded' | 'ended' | 'inactive';
+
+/** Statuses of a person who was in post and no longer is (or is on hold): never "not active yet", which means a hire still to start. */
+const LEFT_OR_HELD: Readonly<Record<string, EmployeeRowState>> = {
+  suspended: 'suspended', offboarded: 'offboarded', terminated: 'ended', exited: 'ended', archived: 'ended', inactive: 'inactive',
+};
+export type LoginRowState = 'no_login' | 'login_enabled' | 'access_stopped';
+export type PasswordRowState = 'not_set_up' | 'code_given' | 'password_set' | 'unknown';
+
+export interface ThreeStates {
+  employee: EmployeeRowState;
+  /** Null while the access status is unavailable. */
+  login: LoginRowState | null;
+  password: PasswordRowState | null;
+  /** No work email on record: rows B and C cannot start. */
+  needsWorkEmail: boolean;
+  /** A welcome code is live (a first code, or a new one after a reset). Independent of whether a password is set. */
+  newCodeLive: boolean;
+}
+
+export function deriveThreeStates(
+  employee: { status: string; workEmail?: string | null },
+  access: Pick<EmployeeAccessDto, 'state' | 'loginEnabled' | 'passwordConfigured'> & { workEmail?: string | null } | null,
+  readiness: { blocking: ReadonlyArray<{ key: string }> } | null,
+): ThreeStates {
+  const emp: EmployeeRowState = employee.status === 'Active' ? 'active'
+    : LEFT_OR_HELD[(employee.status ?? '').trim().toLowerCase()]
+    ?? (readiness?.blocking.some((item) => item.key === PAY_GAP_KEY) ? 'awaiting_pay_approval'
+      : 'not_active');
+  const email = (access?.workEmail ?? employee.workEmail ?? '').trim();
+  const needsWorkEmail = !email || access?.state === 'waiting_for_work_email';
+  if (!access) return { employee: emp, login: null, password: null, needsWorkEmail, newCodeLive: false };
+  const newCodeLive = access.state === 'code_given';
+  if (typeof access.loginEnabled === 'boolean' && typeof access.passwordConfigured === 'boolean') {
+    const login: LoginRowState = access.state === 'stopped' ? 'access_stopped' : access.loginEnabled ? 'login_enabled' : 'no_login';
+    const password: PasswordRowState = access.passwordConfigured ? 'password_set' : newCodeLive ? 'code_given' : 'not_set_up';
+    return { employee: emp, login, password, needsWorkEmail, newCodeLive };
+  }
+  switch (access.state) {
+    case 'active': return { employee: emp, login: 'login_enabled', password: 'password_set', needsWorkEmail, newCodeLive };
+    case 'code_given': return { employee: emp, login: 'login_enabled', password: 'code_given', needsWorkEmail, newCodeLive };
+    // An older API: the merged state cannot say whether a password was set before the stop.
+    case 'stopped': return { employee: emp, login: 'access_stopped', password: 'unknown', needsWorkEmail, newCodeLive };
+    default: return { employee: emp, login: 'no_login', password: 'not_set_up', needsWorkEmail, newCodeLive };
+  }
+}

@@ -615,7 +615,7 @@ test('onboarding readiness distinguishes recommendations from activation blocker
   await expect(page.getByText('3 of 5 readiness checks are complete.', { exact: true })).toBeVisible();
   await expect(page.getByText('No activation blockers. 2 recommendations remain.', { exact: true })).toBeVisible();
   await expect(page.getByText(/required items are complete/i)).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Activate employee' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Activate', exact: true })).toBeEnabled();
 });
 
 test('workspace permission persona never renders sensitive values or unauthorized mutation controls', async ({ page }) => {

@@ -193,6 +193,8 @@ public sealed class EmployeeHireController : ControllerBase
         await _db.SaveChangesAsync(ct);
         await _audit.WriteAsync("employee.rehired", "Employee", id.ToString(), context,
             JsonSerializer.Serialize(new { previousStatus = oldStatus, startDate }), ct);
+        // A rehire is a new hire again: its pay waits for Finance, and the person's own login may have been a reviewer.
+        await PayApprovalDeadEndHooks.For(_db, HttpContext).AfterEmployeeChangedAsync(tenantId, id, "pay_submitted", ct);
         return Ok(new { id, status = employee.Status, joiningDate = employee.JoiningDate });
     }
 

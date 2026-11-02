@@ -1,27 +1,32 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { KeyRound } from 'lucide-react';
 import { employeeAccessApi, type EmployeeAccessDto, type IssueWelcomeCodesResult } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
-import { ACCESS_STATE_COPY, BLOCKED_REASON_KEYS, GENERIC_SKIP_KEY, STOPPED_REASON_KEYS, dateLine, skipReasonKey } from '../../lib/employeeAccess';
-import { StatusChip } from '../StatusChip';
+import { BLOCKED_REASON_KEYS, GENERIC_SKIP_KEY, STOPPED_REASON_KEYS, dateLine, deriveThreeStates, skipReasonKey } from '../../lib/employeeAccess';
+import { AccessStatesPanel } from './AccessStatesPanel';
 import type { IssueOptions } from './useWelcomeCodes';
 
 /**
- * Self-service on the employee profile: one status, one line of detail, one button.
- *
- *   Waiting for work email → Add work email      No access yet → Give access
- *   Code given             → Give new code (confirms: the old code stops working)
- *   Using KynexOne         → Reset sign-in (employees.access.reset only; confirms first)
- *   Access stopped / Needs admin help → no button, the reason instead
+ * Self-service on the employee profile: loads the sign-in status and renders it as three separate
+ * answers (Employee active, Login enabled, Password configured), see AccessStatesPanel.
+ * Reset sign-in is one person at a time and needs employees.access.reset; it confirms first.
  */
 export function EmployeeAccessCard({
-  employeeId, employeeName, refreshKey, canIssue, canReset, isSelf = false, issuing, onIssue, onAddWorkEmail,
+  employeeId, employeeName, employeeStatus, workEmail, readiness, readinessLoading = false, canApprove, activating, onActivate, refreshKey, canIssue, canReset, isSelf = false, issuing, onIssue, onAddWorkEmail,
 }: {
   employeeId: number;
   employeeName: string;
+  employeeStatus: string;
+  workEmail?: string | null;
+  /** Null when readiness could not be loaded. */
+  readiness: { blocking: ReadonlyArray<{ key: string }> } | null;
+  readinessLoading?: boolean;
+  /** employees.approve */
+  canApprove: boolean;
+  activating: boolean;
+  onActivate(): void;
   /** Bumped by the page after a slip view closes or a work email is saved. */
   refreshKey: number;
   /** employees.access.issue */
@@ -40,30 +45,24 @@ export function EmployeeAccessCard({
   const { defaultTimezone } = useTenantSettings();
   const [access, setAccess] = useState<EmployeeAccessDto | null>(null);
   const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
-  // Which delivery the pending confirmation is for (Give new code can be emailed or printed).
-  const [confirming, setConfirming] = useState<false | 'email' | 'print'>(false);
   const [skipNote, setSkipNote] = useState('');
   const lang = locale === 'ar' ? 'ar' : 'en';
   const when = (iso: string) => dateLine(iso, lang, defaultTimezone);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setFailed(false);
     try {
       setAccess(await employeeAccessApi.get(employeeId));
     } catch {
       setAccess(null);
-      setFailed(true);
     } finally {
       setLoading(false);
     }
   }, [employeeId]);
 
-  useEffect(() => { setConfirming(false); setSkipNote(''); void load(); }, [load, refreshKey]);
+  useEffect(() => { setSkipNote(''); void load(); }, [load, refreshKey]);
 
   const issue = async (delivery?: 'email' | 'print') => {
-    setConfirming(false);
     setSkipNote('');
     const result = await onIssue([employeeId], { names: { [employeeId]: employeeName }, quietSkips: true, delivery, companyEmails: !!access?.emailDelivery });
     if (result && result.issued.length === 0 && result.skipped.length > 0) {
@@ -72,85 +71,43 @@ export function EmployeeAccessCard({
     }
   };
 
-  if (loading && !access) {
-    return <Shell title={t('Self-service')}><p className="text-xs text-slate-500">{t('Checking self-service…')}</p></Shell>;
-  }
-  if (failed || !access) {
-    return (
-      <Shell title={t('Self-service')}>
-        <p className="text-xs text-slate-600 dark:text-slate-300">{t('Self-service could not be checked.')}</p>
-        <button type="button" onClick={() => void load()} className="btn-secondary mt-2 h-8 px-3 text-xs">{t('Try again')}</button>
-      </Shell>
-    );
-  }
+  const problem: 'loading' | 'failed' | null = access ? null : loading ? 'loading' : 'failed';
 
-  const copy = ACCESS_STATE_COPY[access.state] ?? ACCESS_STATE_COPY.blocked;
-  const detail = detailLine(access, employeeName, t, when);
-
-  // The one button (or, when the company can email codes, "Email sign-in code" first and
-  // "Print sign-in slip" second), if this person may press it.
-  const emailing = !!access.emailDelivery;
+  const detail = access ? detailLine(access, employeeName, t, when) : '';
   // Something the API (or this screen) says stands in the way: the one sentence replaces the button.
   // Only people who can give access see why they can't right now; everyone else sees the state alone.
-  const waitingReason = !canIssue || access.state === 'stopped' || access.state === 'blocked' ? null
+  const waitingCode = !access || !canIssue || access.state === 'stopped' || access.state === 'blocked' ? null
     : isSelf ? 'cannot_issue_for_self'
       : !access.canIssue && access.reasonCode && skipReasonKey(access.reasonCode) ? access.reasonCode
         : null;
-  const replacesCode = access.state === 'code_given';
-  let primary: { label: string; delivery?: 'email' | 'print'; run?: () => void } | null = null;
-  let secondary: { label: string; delivery: 'print' } | null = null;
-  let confirmText = '';
-  let confirmLabel = '';
-  if (waitingReason) primary = null;
-  else if (access.state === 'waiting_for_work_email' && canIssue) primary = { label: t('Add work email'), run: onAddWorkEmail };
-  else if (access.canIssue && (access.state === 'not_started' || replacesCode) && canIssue) {
-    primary = emailing ? { label: t('Email sign-in code'), delivery: 'email' } : { label: replacesCode ? t('Give new code') : t('Give access') };
-    if (emailing) secondary = { label: t('Print sign-in slip'), delivery: 'print' };
-    if (replacesCode) { confirmText = t('The old code will stop working. Continue?'); confirmLabel = t('Give new code'); }
-  } else if (access.canIssue && access.state === 'active' && canReset) {
-    primary = { label: t('Reset sign-in'), delivery: emailing ? 'print' : undefined };
-    confirmText = t("Reset {name}'s sign-in? Their current password keeps working until they use the new code. Then print a new slip for them.", { name: employeeName });
-    confirmLabel = t('Reset and print');
-  }
-
-  const press = (delivery?: 'email' | 'print', run?: () => void) => {
-    if (run) { run(); return; }
-    if (confirmText) { setConfirming(delivery ?? 'print'); return; }
-    void issue(delivery);
-  };
+  const states = deriveThreeStates({ status: employeeStatus, workEmail: workEmail ?? access?.workEmail }, access, readiness);
 
   return (
-    <Shell title={t('Self-service')} pill={<StatusChip label={t(copy.label)} tone={copy.tone} dot />}>
-      {detail && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="access-detail">{detail}</p>}
-      {waitingReason && <p className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{say(waitingReason)}</p>}
-      {skipNote && <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p>}
-      {primary && !confirming && (
-        <div className="mt-2.5 flex flex-col gap-1.5">
-          <button
-            type="button"
-            disabled={issuing}
-            onClick={() => press(primary!.delivery, primary!.run)}
-            className="btn-primary h-9 w-full justify-center px-3 text-sm disabled:opacity-60"
-          >
-            <KeyRound className="h-4 w-4" aria-hidden="true" />
-            {issuing ? t('Preparing the slips…') : primary.label}
-          </button>
-          {secondary && (
-            <button type="button" disabled={issuing} onClick={() => press(secondary!.delivery)} className="btn-secondary h-9 w-full justify-center px-3 text-sm disabled:opacity-60">
-              {secondary.label}
-            </button>
-          )}
-        </div>
-      )}
-      {confirmText && confirming && (
-        <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50 p-2.5 dark:border-amber-500/30 dark:bg-amber-500/10" role="alertdialog" aria-label={primary?.label}>
-          <p className="text-xs text-amber-900 dark:text-amber-200">{confirmText}</p>
-          <div className="mt-2 flex justify-end gap-2">
-            <button type="button" onClick={() => setConfirming(false)} className="btn-secondary h-8 px-3 text-xs">{t('Cancel')}</button>
-            <button type="button" disabled={issuing} onClick={() => void issue(emailing ? confirming || undefined : undefined)} className="btn-primary h-8 px-3 text-xs disabled:opacity-60">{confirmLabel}</button>
-          </div>
-        </div>
-      )}
+    <Shell title={t('Self-service')}>
+      <AccessStatesPanel
+        states={states}
+        access={access}
+        accessProblem={problem}
+        onRetryAccess={() => void load()}
+        detailRow={access && (access.state === 'stopped' || access.state === 'blocked') ? 'login' : 'password'}
+        employeeName={employeeName}
+        activation={{
+          allowed: canApprove && employeeStatus !== 'Active',
+          unavailable: !readiness,
+          loading: readinessLoading && !readiness,
+          blocked: (readiness?.blocking.length ?? 0) > 0,
+          busy: activating,
+          onActivate,
+        }}
+        canIssue={canIssue}
+        canReset={canReset}
+        waitingReason={waitingCode ? say(waitingCode) : null}
+        issuing={issuing}
+        detail={detail}
+        onIssue={(delivery) => void issue(delivery)}
+        onAddWorkEmail={onAddWorkEmail}
+        workEmailNote={skipNote ? <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p> : undefined}
+      />
     </Shell>
   );
 }
@@ -184,12 +141,11 @@ function detailLine(
   }
 }
 
-function Shell({ title, pill, children }: { title: string; pill?: React.ReactNode; children: React.ReactNode }) {
+function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="rounded-lg border border-slate-200 p-3 dark:border-white/10" data-testid="employee-access-card" aria-label={title}>
-      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase text-slate-400">{title}</p>
-        {pill}
+      <div className="mb-2">
+        <p className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">{title}</p>
       </div>
       {children}
     </section>

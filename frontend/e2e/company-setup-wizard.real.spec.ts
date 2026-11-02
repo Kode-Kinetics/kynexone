@@ -244,6 +244,9 @@ async function fillMiddleSteps(page: Page, t: ReturnType<typeof T>, info: TestIn
 }
 
 async function reachReview(page: Page, t: ReturnType<typeof T>) {
+  // The Approvers step sits between the super admin and the review; "Add one later" (the default) only warns.
+  await next(page, t);
+  await expectStep(page, t, 'Approvers');
   await next(page, t);
   await expectStep(page, t, 'Review & create');
   await expect(page.getByTestId('review-plan')).toBeVisible({ timeout: 20_000 });

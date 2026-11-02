@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -39,7 +40,9 @@ public class NotificationsController : ControllerBase
         var items = await _db.Notifications
             .Where(x => x.TenantId == tenantId
                 && ((userId != null && x.UserId == userId)
-                    || (x.UserId == null && !personSpecific.Contains(x.EntityName))))
+                    || (x.UserId == null && !personSpecific.Contains(x.EntityName)))
+                // A closed dead-end notice is history, not something to show in the bell.
+                && !(x.EntityName == PayApprovalDeadEnds.EntityName && x.Status == PayApprovalDeadEnds.ResolvedStatus))
             .OrderByDescending(x => x.CreatedAtUtc)
             .Take(50)
             .ToListAsync(cancellationToken);
@@ -60,7 +63,10 @@ public class NotificationsController : ControllerBase
         if (userId is null) return NotFound();
         var notification = await _db.Notifications.FirstOrDefaultAsync(
             x => x.Id == id && x.TenantId == tenantId && x.UserId == userId, cancellationToken);
-        if (notification is null) return NotFound();
+        // Marking a closed dead-end notice read would reopen it (Resolved is the only closed state).
+        if (notification is null
+            || (notification.EntityName == PayApprovalDeadEnds.EntityName && notification.Status == PayApprovalDeadEnds.ResolvedStatus))
+            return NotFound();
         notification.Status = "Read";
         notification.ReadAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(cancellationToken);

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { CheckCircle2, Mail, Printer, ShieldCheck } from 'lucide-react';
 import { employeesApi, type EmployeeDetail, type EmployeeReadiness } from '../../api/employees';
 import { employeeAccessApi } from '../../api/employeeAccess';
@@ -13,27 +13,25 @@ import { EmployeeCompletionHandoff } from '../../components/EmployeeCompletionHa
 import { EmployeeAccessCard } from '../../components/employeeAccess/EmployeeAccessCard';
 import { useWelcomeCodes } from '../../components/employeeAccess/useWelcomeCodes';
 import { Modal } from '../../components/Modal';
+import { ActivationBlockers } from '../../components/employeeAccess/ActivationBlockers';
 import { describeApiError } from '../../lib/apiError';
 import { activationFormError, todayCalendarDay } from '../../lib/employeeActivation';
-import { employeeActivationFailure } from '../../lib/employeeActivationFailure';
+import { activationRejectionMessage, employeeActivationFailure } from '../../lib/employeeActivationFailure';
 
-export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void }) {
+export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; onRetryReadiness?(): void; readinessLoading?: boolean }) {
   const router = useRouter();
   const { hasPermission, user } = useAuth();
   const { t } = useLocale();
   const canWrite = hasPermission('employees.write');
   const canIssue = hasPermission('employees.access.issue');
   const canReset = hasPermission('employees.access.reset');
-  const canActivate = hasPermission('employees.approve') && employee.status !== 'Active';
+  const canApprove = hasPermission('employees.approve');
   const activationBlockers = readiness?.blocking.length ?? 0;
   const recommendations = readiness?.recommended.length ?? 0;
   const [accessRefresh, setAccessRefresh] = useState(0);
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState('');
   const [confirming, setConfirming] = useState(false);
-  // A refused activation can mean the readiness changed under us; it is reloaded when the dialog closes, not while the
-  // refusal is still being read (a reload remounts this section and would take the dialog, and its message, away).
-  const readinessStale = useRef(false);
   const [form, setForm] = useState({ effectiveDate: '', reason: '' });
   const [activated, setActivated] = useState<{ emailDelivery: boolean } | null>(null);
   const welcome = useWelcomeCodes(useCallback(() => {
@@ -48,7 +46,6 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
   };
   const closeConfirm = () => {
     setConfirming(false);
-    if (readinessStale.current) { readinessStale.current = false; onEmployeeChanged?.(); }
   };
   const activate = async () => {
     const invalid = activationFormError(form);
@@ -62,13 +59,16 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       setActivated({ emailDelivery: !!access?.emailDelivery });
       setAccessRefresh((current) => current + 1);
     } catch (e) {
-      // The server says why (a readiness blocker, a permission, a concurrent change): show it, don't swallow it.
+      // The server says why (a readiness blocker, a permission, a concurrent change): show it in the dialog, don't swallow it.
       // A refusal that names the blockers is shown as those blockers; anything else as the server's own sentence.
       const blockers = (e as { response?: { data?: { blocking?: unknown[] } } } | null)?.response?.data?.blocking;
       setActivationError(Array.isArray(blockers) && blockers.length
         ? employeeActivationFailure(e, t)
-        : describeApiError(e, t) || t('The employee could not be activated. Review the readiness items and try again.'));
-      readinessStale.current = true;
+        : describeApiError(e, t) || activationRejectionMessage(e, t));
+      // The server is the authority: read readiness and access again (readiness only: a whole-record reload would unmount
+      // this section and take the dialog, and its message, away), and let the button be pressed again.
+      setAccessRefresh((current) => current + 1);
+      onRetryReadiness?.();
     } finally {
       setActivating(false);
     }
@@ -81,10 +81,17 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
         {canWrite && <Link href={editHref} className="btn-secondary">{t('Edit onboarding')}</Link>}
       </header>
       <div className="grid gap-4 p-5 md:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 p-5 dark:border-white/10"><Mail className="h-5 w-5 text-blue-600" /><h3 className="mt-3 font-semibold">{t('Work email')}</h3><p className="mt-1 text-sm text-slate-500">{employee.workEmail || t('No work email has been recorded.')}</p></div>
+        <div className="rounded-xl border border-slate-200 p-5 dark:border-white/10"><Mail className="h-5 w-5 text-blue-600" /><h3 className="mt-3 font-semibold">{t('Work email')}</h3><p className="mt-1 break-words text-sm text-slate-500" dir="auto">{employee.workEmail || t('No work email has been recorded.')}</p></div>
         <EmployeeAccessCard
           employeeId={employee.id}
           employeeName={employee.fullName}
+          employeeStatus={employee.status}
+          workEmail={employee.workEmail}
+          readiness={readiness}
+          readinessLoading={readinessLoading}
+          canApprove={canApprove}
+          activating={activating}
+          onActivate={openActivation}
           refreshKey={accessRefresh}
           canIssue={canIssue}
           canReset={canReset}
@@ -96,23 +103,23 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       </div>
     </section>
     {canWrite && <EmployeeCompletionHandoff employeeId={employee.id} onChanged={onEmployeeChanged} />}
-    <section className="surface p-5">
-      <div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5 text-emerald-600" /><h2 className="text-lg font-semibold">{t('Onboarding readiness')}</h2></div>
-      <p className="mt-3 text-sm text-slate-500">{readiness ? t('{done} of {total} readiness checks are complete.', { done: readiness.progress.present, total: readiness.progress.requiredTotal }) : t('Readiness is currently unavailable.')}</p>
+    <section className="surface p-5" aria-labelledby="onboarding-readiness-title">
+      <div className="flex items-center gap-3"><ShieldCheck className="h-5 w-5 text-emerald-600" aria-hidden="true" /><h2 id="onboarding-readiness-title" className="text-lg font-semibold">{t('Onboarding readiness')}</h2></div>
+      <p className="mt-3 text-sm text-slate-500">{readiness ? t('{done} of {total} readiness checks are complete.', { done: readiness.progress.present, total: readiness.progress.requiredTotal }) : readinessLoading ? t('Loading readiness…') : t('Readiness is currently unavailable.')}</p>
       {readiness && <p className="mt-1 text-sm font-semibold text-slate-700 dark:text-slate-200">{activationBlockers > 0
         ? (activationBlockers === 1 ? t('1 activation blocker remains.') : t('{count} activation blockers remain.', { count: activationBlockers }))
         : recommendations > 0
           ? (recommendations === 1 ? t('No activation blockers. 1 recommendation remains.') : t('No activation blockers. {count} recommendations remain.', { count: recommendations }))
           : t('No activation blockers remain.')}</p>}
-      {!!readiness?.blocking.length && <ul className="mt-3 list-disc space-y-1 ps-5 text-sm text-amber-800 dark:text-amber-200">
-        {readiness.blocking.map(item => <li key={item.key}>{t(item.label)}</li>)}
-      </ul>}
-      {readiness?.blocking.some(item => item.key === 'pay:compensationUnapproved') && <div className="mt-3 space-y-2 text-sm">
-        <p>{t('An independent reviewer must approve the pay package before activation. Giving the employee a role or resetting their password does not approve their pay.')}</p>
-        {hasPermission('payroll.approve') && <Link className="btn-secondary" href="/pay-approvals">{t('Pay approvals')}</Link>}
-        {hasPermission('security.manage') && <Link className="btn-secondary ms-2" href={`/setup?tab=users${employee.companyId ? `&companyId=${encodeURIComponent(employee.companyId)}` : ''}`}>{t('Check reviewer setup')}</Link>}
-      </div>}
-      {canActivate && <button type="button" onClick={openActivation} disabled={activating || !readiness || activationBlockers > 0} className="btn-primary mt-4 disabled:opacity-50">{t('Activate employee')}</button>}
+      <div className="mt-3">
+        <ActivationBlockers
+          blockers={readiness ? readiness.blocking : null}
+          employeeId={employee.id}
+          companyId={employee.companyId}
+          loading={readinessLoading && !readiness}
+          onRetry={onRetryReadiness}
+        />
+      </div>
     </section>
     {welcome.view}
     <Modal

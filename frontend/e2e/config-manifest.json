@@ -1,6 +1,10 @@
 {
   "_comment": "Playwright configs that no PR workflow runs directly. Each is nightly (listed in nightly.yml), manual, or manual-stack, with a reason. frontend/scripts/check-playwright-configs.mjs fails CI on any config that is neither referenced by a workflow nor listed here.",
   "configs": {
+    "playwright.access-states.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
     "playwright.app-chrome.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."

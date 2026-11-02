@@ -296,6 +296,25 @@ public partial class PayrollController : ControllerBase
 
     private static string FormatGuidSet(string? json) => string.Join(';', ReadGuidSet(json));
 
+    /// <summary>A staged salary change is a pending pay approval: remember the company so its approver cover is re-checked once the request has committed.</summary>
+    private async Task NotePaySubmittedAsync(int employeeId, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var companyId = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == employeeId).Select(x => x.CompanyId).FirstOrDefaultAsync(ct);
+        if (companyId.HasValue) _paySubmittedCompanies.Add(companyId.Value);
+    }
+
+    private readonly HashSet<Guid> _paySubmittedCompanies = [];
+
+    /// <summary>After the salary write has committed: check each touched company still has a pay reviewer (best effort).</summary>
+    private async Task SyncPayApprovalAsync(CancellationToken ct)
+    {
+        var hooks = Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext);
+        foreach (var companyId in _paySubmittedCompanies.ToList())
+            await hooks.SyncCompanyAsync(GetTenantId(), companyId, "pay_submitted", ct);
+        _paySubmittedCompanies.Clear();
+    }
+
     [HttpPost("employee-salary-structures")]
     [HasPermission("payroll.write")]
     public async Task<IActionResult> AssignEmployeeSalary(EmployeeSalaryStructureRequest req, CancellationToken cancellationToken)
@@ -349,6 +368,8 @@ public partial class PayrollController : ControllerBase
         await PayrollAudit("payroll.employee_salary.change_requested", "SalaryChangeRequest", change.Id.ToString(),
             new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        await NotePaySubmittedAsync(req.EmployeeId, cancellationToken);
+        await SyncPayApprovalAsync(cancellationToken);
         return Accepted($"/api/payroll/salary-changes/{change.Id}", SalaryChangeDto.Project(change));
     }
 
@@ -9106,6 +9127,9 @@ public partial class PayrollController : ControllerBase
                 new { received = rows.Count, pending, skipped, errors = errors.Count }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
         }
+        foreach (var companyId in planned.Select(p => allEmployees.Values.First(e => e.Id == p.EmployeeId).CompanyId).Where(c => c.HasValue).Select(c => c!.Value).Distinct())
+            _paySubmittedCompanies.Add(companyId);
+        await SyncPayApprovalAsync(cancellationToken);
         return Ok(new { received = rows.Count, created = 0, updated = 0, pendingApproval = pending, batchId = pending > 0 ? batchId : (Guid?)null, skipped, errors = errors.Take(20) });
     }
 

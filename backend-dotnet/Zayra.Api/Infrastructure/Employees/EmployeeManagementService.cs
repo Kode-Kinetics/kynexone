@@ -41,10 +41,12 @@ public class EmployeeManagementService : IEmployeeManagementService
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
     private readonly IHttpContextAccessor? _http;
     private readonly Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? _inputGuard;
+    private readonly Onboarding.PayApprovalDeadEndHooks _deadEnds;
 
-    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null, Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? inputGuard = null)
+    public EmployeeManagementService(ZayraDbContext db, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHttpContextAccessor? httpContextAccessor = null, Zayra.Api.Application.Employees.Onboarding.IEmployeeInputGuard? inputGuard = null, Onboarding.IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _http = httpContextAccessor;
+        _deadEnds = new Onboarding.PayApprovalDeadEndHooks(db, deadEndMonitor);
         // Hire input guard (validation, references, acknowledgement). DI always supplies it in production;
         // direct-construction test sites that predate it pass nothing and skip it.
         _inputGuard = inputGuard;
@@ -312,6 +314,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         await WriteWarningOverrideAuditAsync(employee.Id, request, context, cancellationToken);
+        // Pay was submitted for review: tell the admins now if nobody can review it (best effort, after the commit).
+        // Only when the create actually opened a pay gap: a hire with no salary or bank details has nothing for a reviewer.
+        if (await Onboarding.CompensationApprovalGate.IsOpenAsync(_db, tenantId, employee.Id, cancellationToken))
+            await _deadEnds.SyncCompanyAsync(tenantId, employee.CompanyId, "pay_submitted", cancellationToken);
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
         // NEVER-SILENT-DUP: a create that proceeded despite a detected match is durably audited against the
         // real employee id — an acknowledged STRONG override, or a probable (name+DOB / passport-only) match
@@ -359,7 +365,11 @@ public class EmployeeManagementService : IEmployeeManagementService
             .Select(x => (Guid?)x.PublicId).FirstOrDefaultAsync(cancellationToken);
         if (!publicId.HasValue) return null;
         var updateAuditId = Guid.NewGuid();
-        return await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, publicId.Value, UpdateOnceAsync, cancellationToken);
+        Guid? submittedCompanyId = null;
+        var savedUpdate = await FinanceDecisionSerializer.SerializeAsync(_db, AdditionalBenefitGrants.LockScope, tenantId, publicId.Value, UpdateOnceAsync, cancellationToken);
+        // After the update has committed; best effort.
+        if (savedUpdate is not null) await _deadEnds.SyncCompanyAsync(tenantId, submittedCompanyId, "pay_submitted", cancellationToken);
+        return savedUpdate;
 
         async Task<EmployeeDetailDto?> UpdateOnceAsync()
         {
@@ -458,6 +468,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _db.SaveChangesAsync(cancellationToken);
         await WriteWarningOverrideAuditAsync(id, request, context, cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
+        submittedCompanyId = employee.CompanyId;
         // Same mask gate as GET {id} — see CreateAsync.
         var updated = await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);
         return updated is null ? null : updated with { LoginUsernameDiffers = workEmailAudit.LoginUsernameDiffers };
@@ -950,6 +961,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // only this call's exact stable marker/history tuple before returning the authoritative DTO.
         if (!employeeFound && !await ExactCommitExistsAsync(cancellationToken)) return null;
         _db.ChangeTracker.Clear();
+        // The person's status decides whether a linked login can still review pay, and whether their own package is pending.
+        await _deadEnds.AfterEmployeeChangedAsync(tenantId, id, "employee_status", cancellationToken);
         // Same mask gate as GET {id} — see CreateAsync. A PATCH {id}/status must not be a salary/IBAN
         // read primitive for a caller who cannot read those fields through the read endpoint.
         return await GetAsync(tenantId, id, includeSensitive, context, cancellationToken);

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { translate } from '../src/i18n/translations';
 
 // OD4: the scoped new-hire pay approval view. Every API call is intercepted; nothing is written.
 const SHOTS = process.env.PAY_APPROVALS_SHOTS_DIR;
@@ -25,10 +26,14 @@ test.beforeEach(async ({ page }) => {
 });
 test.afterEach(async ({ page }) => { expect(errorsByPage.get(page), 'No application runtime errors').toEqual([]); });
 
-interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean; requiresOtherReviewerCount?: number }
+interface Boot { arabic?: boolean; permissions?: string[]; detail?: typeof DETAIL; decideStatus?: number; decideCode?: string; empty?: boolean; requiresOtherReviewerCount?: number;
+  /** Overrides for GET /api/pay-approvals/setup (the dead-end card reads strandedCount, items and hasMore). */
+  setup?: Record<string, unknown> }
 
 async function boot(page: Page, url: string, options: Boot = {}) {
   const decisions: Array<Record<string, unknown>> = [];
+  // Flip `control.setupFails` to make GET /api/pay-approvals/setup answer 503, and `control.setupCalls` counts the asks.
+  const control = { setupFails: false, setupCalls: 0 };
   await page.addInitScript(({ arabic }) => {
     localStorage.setItem('zayra_access_token', 'fixture');
     localStorage.setItem('kynexone-locale-choice-v2', arabic ? 'ar' : 'en');
@@ -52,18 +57,23 @@ async function boot(page: Page, url: string, options: Boot = {}) {
     }
     if (path === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
     if (path === '/api/access/roles' || path === '/api/access/permissions') return reply([]);
-    if (path === '/api/pay-approvals/setup') return reply({
-      independentReviewerCount: 1, readyForNewHires: true, pendingCount: 46, checkedCount: 46, strandedCount: 1, hasMore: false,
-      items: [
-        { employeeId: 41, name: 'Layla Al-Harbi', eligibleReviewers: [{ id: 'reviewer', name: 'Fatima Finance Approver' }] },
-        { employeeId: 42, name: 'Omar Al-Qahtani', eligibleReviewers: [] },
-      ],
-    });
+    if (path === '/api/pay-approvals/setup') {
+      control.setupCalls++;
+      if (control.setupFails) return reply({ message: 'unavailable' }, 503);
+      return reply({
+        independentReviewerCount: 1, readyForNewHires: true, pendingCount: 46, checkedCount: 46, strandedCount: 1, hasMore: false,
+        items: [
+          { employeeId: 41, name: 'Layla Al-Harbi', eligibleReviewers: [{ id: 'reviewer', name: 'Fatima Finance Approver' }] },
+          { employeeId: 42, name: 'Omar Al-Qahtani', eligibleReviewers: [] },
+        ],
+        ...(options.setup ?? {}),
+      });
+    }
     if (path.startsWith('/api/features')) return reply([]);
     return reply({ items: [], total: 0, page: 1, pageSize: 25 });
   });
   await page.goto(url);
-  return { decisions };
+  return { decisions, control };
 }
 
 async function shot(page: Page, name: string) { if (SHOTS) await page.screenshot({ path: `${SHOTS}/od4-${name}.png`, fullPage: true }); }
@@ -112,7 +122,7 @@ test.describe('Pay approvals queue', () => {
   });
   test('explains all 46 hidden packages and links the administrator to reviewer setup', async ({ page }) => {
     await boot(page, '/pay-approvals', { empty: true, requiresOtherReviewerCount: 46, permissions: ['payroll.approve', 'security.manage', 'dashboard.read'] });
-    await expect(page.getByText('46 packages need another reviewer because you are not independent of them.')).toBeVisible();
+    await expect(page.getByText('You created 46 pay packages, so someone else must approve them. They do not appear in your queue.')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Check reviewer setup' })).toHaveAttribute('href', '/setup?tab=users');
     expect(await page.locator('main').innerText()).not.toContain('10,500');
   });
@@ -194,3 +204,64 @@ test.describe('Pay approval detail', () => {
     if (info.project.name === 'desktop') await shot(page, 'detail-ar-1440');
   });
 });
+
+
+// The "Approval dead end" card: pay packages that no reviewer can approve. It is for people who can create the reviewer.
+const STRANDED = {
+  strandedCount: 3, pendingCount: 3, checkedCount: 3, readyForNewHires: false, independentReviewerCount: 0,
+  items: [
+    { employeeId: 41, name: 'Layla Al-Harbi', eligibleReviewers: [] },
+    { employeeId: 42, name: 'Omar Al-Qahtani', eligibleReviewers: [] },
+    { employeeId: 43, name: 'Huda Al-Otaibi', eligibleReviewers: [] },
+  ],
+};
+const MANAGE = ['security.manage', 'payroll.approve', 'dashboard.read'];
+
+for (const arabic of [false, true]) {
+  test.describe(`Approval dead end card (${arabic ? 'ar' : 'en'})`, () => {
+    const t = (key: string, params?: Record<string, string | number>) => translate(arabic ? 'ar' : 'en', key, params);
+
+    test('shows the count, lists the packages, and opens the Create User dialog', async ({ page }, info) => {
+      await boot(page, '/setup?tab=users&companyId=c1', { arabic, permissions: MANAGE, setup: { ...STRANDED, hasMore: true } });
+      const card = page.getByRole('region', { name: t('Approval dead end') });
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect(card).toContainText(t('{count, plural, one {No reviewer can approve # pay package.} other {No reviewer can approve # pay packages.}}', { count: 3 }));
+      const expander = card.getByRole('button', { name: t('Show packages') });
+      await expect(expander).toHaveAttribute('aria-expanded', 'false');
+      await expect(card.getByText('Layla Al-Harbi')).toBeHidden();
+      await expander.click();
+      await expect(card.getByRole('button', { name: t('Hide packages') })).toHaveAttribute('aria-expanded', 'true');
+      await expect(card.getByText('Layla Al-Harbi')).toBeVisible();
+      await expect(card.getByText('Huda Al-Otaibi')).toBeVisible();
+      await expect(card.getByText(t('Showing the first 100.'))).toBeVisible();
+      await expect(card.getByRole('link', { name: t('Open pay approvals') })).toHaveAttribute('href', '/pay-approvals');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+      const result = await new AxeBuilder({ page }).include('[data-testid="approval-dead-end"]').withTags(['wcag2a', 'wcag2aa']).analyze();
+      expect(result.violations).toEqual([]);
+      if (info.project.name === 'desktop') await shot(page, `dead-end-${arabic ? 'ar' : 'en'}-1440`);
+      await card.getByRole('button', { name: t('Create a pay reviewer') }).click();
+      await expect(page.getByRole('dialog', { name: t('Create User') })).toBeVisible();
+    });
+
+    test('is not drawn when no package is stranded', async ({ page }) => {
+      const quiet = await boot(page, '/setup?tab=users&companyId=c1', { arabic, permissions: MANAGE, setup: { strandedCount: 0, items: [] } });
+      await expect(page.getByRole('region', { name: t('Independent pay approval') })).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => quiet.control.setupCalls).toBeGreaterThan(0);
+      await expect(page.getByTestId('approval-dead-end')).toHaveCount(0);
+      await expect(page.getByTestId('dead-end-error')).toHaveCount(0);
+    });
+
+    test('says quietly that it could not check, and Retry asks again', async ({ page }) => {
+      const { control } = await boot(page, '/setup?tab=users&companyId=c1', { arabic, permissions: MANAGE, setup: STRANDED });
+      control.setupFails = true;
+      await page.reload();
+      const quiet = page.getByTestId('dead-end-error');
+      await expect(quiet).toContainText(t('Could not check reviewers'), { timeout: 30_000 });
+      await expect(page.getByTestId('approval-dead-end')).toHaveCount(0);
+      control.setupFails = false;
+      await quiet.getByRole('button', { name: t('Retry') }).click();
+      await expect(page.getByRole('region', { name: t('Approval dead end') })).toBeVisible();
+      await expect(quiet).toHaveCount(0);
+    });
+  });
+}

@@ -49,6 +49,9 @@ export interface EmployeeListItem {
   // Employee sign-in access (api/employee-access). Optional so an older API still renders.
   workEmail?: string | null;
   accessState?: EmployeeAccessState;
+  /** Independent of accessState; absent on older APIs. */
+  loginEnabled?: boolean;
+  passwordConfigured?: boolean;
 }
 
 /** Read-only Ex-Employees archive row (former staff retained for statutory audit). */

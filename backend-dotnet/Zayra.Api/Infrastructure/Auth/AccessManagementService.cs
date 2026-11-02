@@ -11,6 +11,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Data;
+using Zayra.Api.Infrastructure.Employees.Onboarding;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
 
@@ -24,18 +25,32 @@ public class AccessManagementService : IAccessManagementService
     private readonly ITokenService _tokenService;
     private readonly string _appUrl;
     private readonly ILogger<AccessManagementService>? _logger;
+    private readonly PayApprovalDeadEndHooks _deadEnds;
 
     public AccessManagementService(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService auditService, ITokenService tokenService, IConfiguration? configuration = null,
-        ILogger<AccessManagementService>? logger = null)
+        ILogger<AccessManagementService>? logger = null, IPayApprovalDeadEndMonitor? deadEndMonitor = null)
     {
         _db = db;
         _logger = logger;
+        _deadEnds = new PayApprovalDeadEndHooks(db, deadEndMonitor, logger);
         _passwordHasher = passwordHasher;
         _auditService = auditService;
         _tokenService = tokenService;
         _appUrl = AuthLinkBuilder.ResolvePublicAppUrl(
             configuration?["APP_URL"] ?? Environment.GetEnvironmentVariable("APP_URL"));
     }
+
+    // ── Pay-approval dead-end hooks ───────────────────────────────────────────
+    // Each is called only AFTER the change has committed, is best effort and never throws (PayApprovalDeadEndHooks).
+
+    public Task AfterApproverAccessChangedAsync(Guid tenantId, Guid userId, bool allCompanies = false, CancellationToken cancellationToken = default) =>
+        _deadEnds.AfterUserChangedAsync(tenantId, userId, "access_change", allCompanies, cancellationToken);
+
+    public Task AfterRoleAccessChangedAsync(Guid tenantId, Guid roleId, CancellationToken cancellationToken = default) =>
+        _deadEnds.AfterRoleChangedAsync(tenantId, roleId, "role_change", cancellationToken);
+
+    public Task AfterCompanyAccessChangedAsync(Guid tenantId, Guid? companyId, CancellationToken cancellationToken = default) =>
+        _deadEnds.AfterCompanyChangedAsync(tenantId, companyId, "company_change", cancellationToken);
 
     public async Task<IReadOnlyCollection<RoleDto>> GetRolesAsync(Guid tenantId, CancellationToken cancellationToken)
     {
@@ -283,9 +298,11 @@ public class AccessManagementService : IAccessManagementService
             await CreateOnceAsync(cancellationToken);
         }
 
-        return await ReconcileCommittedUserAsync(cancellationToken)
+        var createdUser = await ReconcileCommittedUserAsync(cancellationToken)
             ?? throw new InvalidOperationException(
                 "The user-creation commit could not be reconciled; the operation result was not disclosed.");
+        await AfterApproverAccessChangedAsync(tenantId, userId, allCompanies: request.IsGroupScope, cancellationToken: cancellationToken);
+        return createdUser;
     }
 
     public async Task<EmployeeLoginInvitationDto> InviteEmployeeLoginAsync(
@@ -717,9 +734,12 @@ public class AccessManagementService : IAccessManagementService
             await IssueOnceAsync(cancellationToken);
         }
 
-        return await ReconcileCommittedInvitationAsync(cancellationToken)
+        var invited = await ReconcileCommittedInvitationAsync(cancellationToken)
             ?? throw new InvalidOperationException(
                 "The invitation commit could not be reconciled; the invitation token was not disclosed.");
+        if (issuedUserId is Guid invitedUserId)
+            await AfterApproverAccessChangedAsync(tenantId, invitedUserId, cancellationToken: cancellationToken);
+        return invited;
     }
 
     // ── Linking an existing login to an employee record ───────────────────────
@@ -858,7 +878,9 @@ public class AccessManagementService : IAccessManagementService
     {
         try
         {
-            return await LinkExistingLoginCoreAsync(tenantId, request, entityScope, context, cancellationToken);
+            var linked = await LinkExistingLoginCoreAsync(tenantId, request, entityScope, context, cancellationToken);
+            await AfterApproverAccessChangedAsync(tenantId, request.UserId, cancellationToken: cancellationToken);
+            return linked;
         }
         catch (EmployeeLinkRefusedException ex)
         {
@@ -1557,6 +1579,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.roles_assigned", AssignOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         var committed = await _db.Users.AsNoTracking()
             .Include(x => x.Tenant)
             .Include(x => x.UserRoles).ThenInclude(x => x.Role).ThenInclude(x => x!.RolePermissions).ThenInclude(x => x.Permission)
@@ -1702,6 +1725,7 @@ public class AccessManagementService : IAccessManagementService
             await ChangeOnceAsync(cancellationToken);
         }
 
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         return result ?? await GetUserAccessAsync(tenantId, userId, entityScope, cancellationToken);
     }
 
@@ -1783,6 +1807,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.permission_override", SetOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         return await GetUserAccessAsync(tenantId, userId, entityScope, cancellationToken);
     }
 
@@ -2335,6 +2360,7 @@ public class AccessManagementService : IAccessManagementService
         {
             ok = await ResetOnceAsync(cancellationToken);
         }
+        if (ok) await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         return ok ? new MfaAdminResetResult(MfaAdminResetOutcome.Reset, auditId) : new MfaAdminResetResult(outcome);
     }
 
@@ -2379,6 +2405,7 @@ public class AccessManagementService : IAccessManagementService
         }
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.user_deleted", DeleteOnceAsync, cancellationToken);
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         return true;
     }
 
@@ -2638,6 +2665,8 @@ public class AccessManagementService : IAccessManagementService
             await UpdateOnceAsync(cancellationToken);
         }
 
+        // The sign-in policy decides who may review pay, for every company of the tenant.
+        await AfterCompanyAccessChangedAsync(tenantId, null, cancellationToken);
         if (result is not null) return result;
         var committed = await _db.SecuritySettings.AsNoTracking()
             .SingleAsync(x => x.TenantId == tenantId, cancellationToken);
@@ -2944,6 +2973,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.permission_granted", GrantOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterApproverAccessChangedAsync(tenantId, targetUserId, cancellationToken: cancellationToken);
         return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
     }
 
@@ -3146,6 +3176,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.permission_bulk_grant", GrantBulkOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterApproverAccessChangedAsync(tenantId, targetUserId, cancellationToken: cancellationToken);
         return await GetUserAccessAsync(tenantId, targetUserId, entityScope, cancellationToken);
     }
 
@@ -3279,6 +3310,7 @@ public class AccessManagementService : IAccessManagementService
             context with { TenantId = tenantId },
             System.Text.Json.JsonSerializer.Serialize(new { companyId, role, grantMode })));
         await _db.SaveChangesAsync(cancellationToken);
+        await AfterApproverAccessChangedAsync(tenantId, userId, allCompanies: companyId is null, cancellationToken: cancellationToken);
         return grant;
     }
 
@@ -3742,6 +3774,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.role_updated", UpdateOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterRoleAccessChangedAsync(tenantId, roleId, cancellationToken);
         var committed = await _db.Roles.AsNoTracking()
             .Include(x => x.RolePermissions).ThenInclude(x => x.Permission)
             .SingleAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, cancellationToken);
@@ -3787,6 +3820,7 @@ public class AccessManagementService : IAccessManagementService
         }
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.role_activated", ActivateOnceAsync, cancellationToken);
+        await AfterRoleAccessChangedAsync(tenantId, roleId, cancellationToken);
         return true;
     }
 
@@ -3829,6 +3863,7 @@ public class AccessManagementService : IAccessManagementService
         }
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.role_deactivated", DeactivateOnceAsync, cancellationToken);
+        await AfterRoleAccessChangedAsync(tenantId, roleId, cancellationToken);
         return true;
     }
 
@@ -3956,6 +3991,7 @@ public class AccessManagementService : IAccessManagementService
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.role_permissions_set", SetOnceAsync, cancellationToken);
         _db.ChangeTracker.Clear();
+        await AfterRoleAccessChangedAsync(tenantId, roleId, cancellationToken);
         var committed = await _db.Roles.AsNoTracking()
             .Include(x => x.RolePermissions).ThenInclude(x => x.Permission)
             .SingleAsync(x => x.TenantId == tenantId && x.Id == roleId && !x.IsDeleted, cancellationToken);
@@ -4070,6 +4106,8 @@ public class AccessManagementService : IAccessManagementService
         }
 
         await ExecuteAuthorizationTransactionAsync(auditId, "access.permission_matrix_saved", SaveOnceAsync, cancellationToken);
+        if (roleIds.Count > 0)
+            await _deadEnds.AfterRolesChangedAsync(tenantId, roleIds, "role_change", cancellationToken);
     }
 
     // ── Effective permissions ─────────────────────────────────────────────────
@@ -4120,6 +4158,7 @@ public class AccessManagementService : IAccessManagementService
             context with { TenantId = tenantId },
             System.Text.Json.JsonSerializer.Serialize(new { userId, permission = ov.PermissionKey, previousEffect = ov.Effect })));
         await _db.SaveChangesAsync(cancellationToken);
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
         return true;
     }
 
@@ -4448,6 +4487,7 @@ public class AccessManagementService : IAccessManagementService
         if (!_db.Database.IsRelational())
         {
             await MutateOnceAsync(cancellationToken);
+            await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
             return;
         }
 
@@ -4459,6 +4499,7 @@ public class AccessManagementService : IAccessManagementService
                 .AnyAsync(x => x.Id == auditId && x.Action == auditAction, ct),
             IsolationLevel.ReadCommitted,
             cancellationToken);
+        await AfterApproverAccessChangedAsync(tenantId, userId, cancellationToken: cancellationToken);
     }
 
     /// <summary>Adds the before/after account status to an eligibility audit row's metadata.</summary>

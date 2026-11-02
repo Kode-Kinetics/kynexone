@@ -252,6 +252,7 @@ public sealed class EssSectionDecisionService(ZayraDbContext db, IApprovalWorkfl
         // so they cannot be the approver. Reads the saved figure, hence after the save above.
         await CompensationApprovalGate.ReconcileAsync(db, employee, prior, context, ct, forceReopen: true);
         await db.SaveChangesAsync(ct);
+        await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(db, Http).AfterEmployeePaySubmittedAsync(tenantId, employee.Id, "pay_submitted", ct);
         return new OkObjectResult(EssDecisionView.From(change, employee, Http.User));
     }
 

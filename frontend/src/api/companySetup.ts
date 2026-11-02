@@ -126,6 +126,15 @@ export interface CompanySetupAdmin {
   email?: string;
 }
 
+/** The independent pay reviewer: a second login next to the administrator. Omitted or `groupOnly` = none. */
+export interface CompanySetupPayReviewer {
+  mode: CompanyAdminMode;
+  existingUserId?: string | null;
+  fullNameEn?: string;
+  fullNameAr?: string | null;
+  email?: string | null;
+}
+
 export interface CompanySetupDraftBody {
   /** Addendum A1: null/absent = create a company; set = complete setup for that existing, active company. */
   existingCompanyId?: string | null;
@@ -142,6 +151,8 @@ export interface CompanySetupDraftBody {
   removals?: Partial<Record<OrgSection, string[]>> | null;
   rules: CompanySetupRules;
   companyAdmin: CompanySetupAdmin;
+  /** Optional; drafts saved before the Approvers step have none. */
+  payReviewer?: CompanySetupPayReviewer;
 }
 
 export type CompanySetupDraftStatus = 'Open' | 'Submitted' | 'Discarded';
@@ -149,7 +160,7 @@ export type CompanySetupDraftStatus = 'Open' | 'Submitted' | 'Discarded';
 export interface CompanySetupDraft {
   id: string;
   version: number;
-  /** 1-7 */
+  /** 1-7 as stored (the server holds 1 to 7); the Approvers step is saved as 6. */
   step: number;
   status: CompanySetupDraftStatus;
   body: CompanySetupDraftBody;
@@ -172,7 +183,7 @@ export interface CompanySetupDraftSummary {
 
 export type PlanArea =
   | 'company' | 'branch' | 'location' | 'costCentre' | 'department' | 'designation' | 'grade'
-  | 'employeeIdRule' | 'cutover' | 'holidayCalendar' | 'leavePolicy' | 'gccSetting' | 'workWeek' | 'companyAdmin';
+  | 'employeeIdRule' | 'cutover' | 'holidayCalendar' | 'leavePolicy' | 'gccSetting' | 'workWeek' | 'companyAdmin' | 'payReviewer';
 /** A3: `update` = an existing row with changed fields; `unchanged` = an existing row left as it is. There are no deletes. */
 export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict' | 'remove';
 

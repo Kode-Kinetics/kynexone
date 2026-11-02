@@ -30,6 +30,10 @@ export interface EmployeeAccessDto {
   employeeCode: string;
   workEmail: string | null;
   state: EmployeeAccessState;
+  /** Independent of `state`: a usable login exists (linked, active, access not switched off). Absent on older APIs. */
+  loginEnabled?: boolean;
+  /** Independent of `state`: the password is set, even while a new code is live. Absent on older APIs. */
+  passwordConfigured?: boolean;
   codeExpiresAtUtc: string | null;
   codeIssuedByName: string | null;
   lastCodeExpiredAtUtc: string | null;

@@ -49,6 +49,7 @@ public static class CompanySetupVocabulary
         public const string GccSetting = "gccSetting";
         public const string WorkWeek = "workWeek";
         public const string CompanyAdmin = "companyAdmin";
+        public const string PayReviewer = "payReviewer";
     }
 
     /// <summary>Addendum B2/B3: the Organisation sections, in dependency order (each references only earlier ones).</summary>
@@ -132,6 +133,10 @@ public sealed record CompanySetupDraftBody(
     /// <summary>Addendum A1: null = create a new company; set = complete this existing company. Fixed for the draft's life.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     Guid? ExistingCompanyId = null,
+    /// <summary>Optional independent pay reviewer, same shape as <see cref="CompanyAdmin"/>. Null or mode "groupOnly" = none
+    /// requested here. Stored inside the draft's JSON body: no schema change.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    CompanySetupCompanyAdmin? PayReviewer = null,
     /// <summary>Existing-company mode: existing organisation rows the user removed in the wizard. Applied by the next section
     /// save or the commit, through the same Remove rule as Setup (never used = deleted, in use = turned off). Null = none.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -416,7 +421,8 @@ public sealed record CompanySetupResult(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyDictionary<string, int>? Updated = null);
 
-/// <summary><see cref="UserId"/> is set only on the <c>companyAdmin</c> item while that admin has not signed in yet: the
+/// <summary><see cref="UserId"/> is set only on the <c>companyAdmin</c> and <c>payReviewer</c> items while that login is not
+/// yet usable: the
 /// login the screen can send a single-use sign-in link to (<c>POST /api/access/users/{userId}/password-reset-link</c>).</summary>
 public sealed record ReadinessItem(
     string Key,
