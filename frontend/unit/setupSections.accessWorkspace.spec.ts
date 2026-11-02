@@ -65,7 +65,7 @@ test('the_workspace_sections_open_for_security_manage_only', () => {
   // country rules (:317-:417). Modules: TenantModulesController.cs:39-40 is the same permission. Field help text: the
   // list is any signed-in user (HelpTextController.cs:17,26) but upsert and delete are [Authorize(Roles = "Admin")]
   // (:40,:63), enforced as security.manage (LegacyRolePermissionAuthorization.cs:HelpText).
-  for (const id of ['planBilling', 'modules', 'localization', 'branding', 'helpText', 'countryPayrollKeys']) {
+  for (const id of ['planBilling', 'modules', 'localization', 'branding', 'helpText']) {
     expect(canOpen(id, admin), `${id} for Admin`).toBe(true);
     expect(canOpen(id, consoleAdmin), `${id} for a custom role holding security.manage`).toBe(true);
     expect(canOpen(id, hrDirector), `${id} for HR Director`).toBe(false);

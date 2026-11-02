@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 
 export interface FieldDef {
   key: string;
@@ -83,8 +84,9 @@ export const payslipTemplatesApi = {
   registry: () =>
     client.get<SectionDef[]>('/api/payslip-templates/registry').then((r) => r.data),
 
-  list: () =>
-    client.get<TemplateListItem[]>('/api/payslip-templates').then((r) => r.data),
+  /** `includeTurnedOff` (Setup's "Show turned-off") also returns templates that were turned off or removed unused. */
+  list: (opts?: { includeTurnedOff?: boolean }) =>
+    client.get<TemplateListItem[]>('/api/payslip-templates', opts?.includeTurnedOff ? { params: { includeTurnedOff: true } } : undefined).then((r) => r.data),
 
   get: (id: string) =>
     client.get<TemplateDto>(`/api/payslip-templates/${id}`).then((r) => r.data),
@@ -111,8 +113,8 @@ export const payslipTemplatesApi = {
   setDefault: (id: string) =>
     client.post(`/api/payslip-templates/${id}/set-default`).then((r) => r.data),
 
-  delete: (id: string) =>
-    client.delete(`/api/payslip-templates/${id}`),
+  /** Setup's Remove / Restore: unused = deleted, used by an issued payslip = turned off. */
+  removal: setupRowApi('/api/payslip-templates'),
 
   uploadLogo: async (file: File): Promise<string> => {
     const form = new FormData();

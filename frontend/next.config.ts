@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
   // Keep the local/self-hosted rewrite alive through that backend budget plus transport
   // overhead. This does not extend deployment ingress limits or retry failed POSTs.
   experimental: { proxyTimeout: 120_000 },
+  // Lint is enforced by `npm run lint` (the baseline ratchet in scripts/lint-ratchet.mjs), which
+  // tolerates the frozen legacy violations and fails on new ones. The build's own lint pass knows
+  // nothing of that baseline and would fail every build on them.
+  eslint: { ignoreDuringBuilds: true },
 
   async rewrites() {
     return [
@@ -110,4 +114,22 @@ const nextConfig: NextConfig = {
   // next/image is not used. No remotePatterns, so /_next/image cannot be used to fetch other sites.
 };
 
-export default withBundleAnalyzer(nextConfig);
+const configured = withBundleAnalyzer(nextConfig);
+
+// Source-map upload to Sentry happens ONLY when SENTRY_AUTH_TOKEN is set (a Vercel build variable, never in the
+// repo). Without it the config is exported exactly as before: no plugin, no upload, no build step that can fail.
+// SENTRY_ORG and SENTRY_PROJECT are read from the environment by the plugin. An upload problem warns; it never
+// fails the build. Runtime reporting is separate and keyed on the DSN (instrumentation*.ts).
+function withOptionalSentryUpload(config: NextConfig): NextConfig {
+  if (!process.env.SENTRY_AUTH_TOKEN?.trim()) return config;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { withSentryConfig } = require('@sentry/nextjs') as typeof import('@sentry/nextjs');
+  return withSentryConfig(config, {
+    silent: true,
+    telemetry: false,
+    sourcemaps: { deleteSourcemapsAfterUpload: true },
+    errorHandler: (error: Error) => console.warn(`[sentry] source map upload skipped: ${error.message}`),
+  });
+}
+
+export default withOptionalSentryUpload(configured);

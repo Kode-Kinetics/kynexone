@@ -40,9 +40,14 @@ public sealed class ImportRepairLookups
             ProfilesByEmployee = (await profiles.ToListAsync(ct))
                 .GroupBy(p => p.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.First()),
+            // A first package now waits for Finance as a pending SalaryChangeRequest: the employee already HAS a salary in flight,
+            // so the same file re-imported is not "salary the import could not apply".
             ActiveSalaryEmployeeIds = (await db.EmployeeSalaryStructures.AsNoTracking()
                 .Where(s => s.TenantId == tenantId && s.IsActive)
                 .Select(s => s.EmployeeId)
+                .Union(db.SalaryChangeRequests.AsNoTracking()
+                    .Where(s => s.TenantId == tenantId && s.Status == SalaryChangeRequest.Pending)
+                    .Select(s => s.EmployeeId))
                 .ToListAsync(ct)).ToHashSet(),
         };
     }

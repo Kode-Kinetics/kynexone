@@ -121,8 +121,8 @@ public class EnterpriseIdentityService : IEnterpriseIdentityService
         setting.ScimTokenRotatedAtUtc = now;
         setting.UpdatedAtUtc = now;
         setting.UpdatedBy = context.UserId;
+        _audit.Stage(EnterpriseIdentityEventActions.ScimConfigUpdated, "TenantIdentityProviderSetting", setting.Id.ToString(), context, "{\"rotated\":true}");
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync(EnterpriseIdentityEventActions.ScimConfigUpdated, "TenantIdentityProviderSetting", setting.Id.ToString(), context, "{\"rotated\":true}", ct);
         return new RotateScimTokenResponse(raw, now);
     }
 

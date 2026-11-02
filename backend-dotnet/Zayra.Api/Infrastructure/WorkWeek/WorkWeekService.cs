@@ -36,7 +36,7 @@ public sealed class WorkWeekService : IWorkWeekService
         // ── GCCComplianceSetting (company override → tenant default), country-matched first ──
         // IgnoreQueryFilters is intentional: system read — explicitly scoped by TenantId below; never reads another tenant.
         var settings = await _db.GCCComplianceSettings.IgnoreQueryFilters().AsNoTracking()
-            .Where(s => s.TenantId == tenantId)
+            .Where(s => s.TenantId == tenantId && s.IsActive)
             .Select(s => new SettingRow(s.CompanyId, s.CountryCode, s.WeekendDays, s.WorkWeek))
             .ToListAsync(ct);
 

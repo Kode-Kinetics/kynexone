@@ -1,5 +1,6 @@
 'use client';
 
+import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiErrorReason, notifyApiError } from '../api/client';
 import { requestFailureReason } from '../lib/requestFailure';
@@ -66,9 +67,9 @@ function KpiCard({ label, value, sub, definition, drill }: {
   return (
     <div className="surface flex flex-col p-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
-      <p className={`mt-1 font-bold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? t('Restricted') : value}</p>
+      <p className={`mt-1 font-semibold ${withheld ? 'text-sm text-slate-400' : 'text-2xl text-slate-900 dark:text-white'}`}>{withheld ? t('Restricted') : value}</p>
       {withheld ? <p className="mt-0.5 text-xs text-slate-400">{t('Needs access to this data')}</p> : sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
-      <p className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">{definition}</p>
+      <p className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">{definition}</p>
       {drill && !withheld && (
         <Link href={drill.href} className="mt-2 text-xs font-semibold text-sapphire underline underline-offset-2">{drill.label}</Link>
       )}
@@ -187,7 +188,7 @@ function AnalyticsDashboard() {
       ) : kpis && (
         <>
           <div>
-            <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Workforce</h3>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Workforce</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KpiCard label={t('Active Employees')} value={kpis.headcount.totalActive} definition={t('Employees whose status is Active.')}
                 drill={{ href: '/people?status=Active', label: t('Show these employees') }} />
@@ -198,7 +199,7 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Today</h3>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Today</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KpiCard label={t('Present Today')} value={kpis.attendance.presentToday} definition={t("Today's attendance records marked present, late or half day.")} />
               <KpiCard label={t('Late Today')} value={kpis.attendance.lateToday} definition={t("Today's attendance records with late minutes.")} />
@@ -208,7 +209,7 @@ function AnalyticsDashboard() {
             </div>
           </div>
           <div>
-            <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
+            <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Finance & Compliance</h3>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <KpiCard label={t('Pending OT')} value={kpis.overtime.pendingOT} definition={t('Overtime requests waiting for a decision.')} />
               <KpiCard label={t('Active Loans')} value={kpis.financial.activeLoans} sub={t('Outstanding: {amount}', { amount: fmt(kpis.financial.outstandingLoanBalance) })}
@@ -220,7 +221,7 @@ function AnalyticsDashboard() {
           </div>
           {kpis.payroll.lastRunYear && (
             <div>
-              <h3 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
+              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Last Payroll Run</h3>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <KpiCard label={t('Period')} value={`${kpis.payroll.lastRunYear}-${String(kpis.payroll.lastRunMonth).padStart(2, '0')}`}
                   definition={t('The latest pay period with a payroll run. Draft and voided runs are not counted.')}
@@ -480,7 +481,7 @@ function ReportLibrary() {
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/10 sticky top-0 bg-white dark:bg-slate-900">
                       {columns.map((c) => (
-                        <th key={c} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>
+                        <th key={c} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>
                       ))}
                     </tr>
                   </thead>
@@ -520,6 +521,8 @@ function ReportLibrary() {
 // ── Saved Reports ─────────────────────────────────────────────────────────────
 
 function SavedReportsTab() {
+  const { t } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [items, setItems] = useState<SavedReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string | null>(null);
@@ -556,7 +559,8 @@ function SavedReportsTab() {
   };
 
   const deleteSaved = async (id: string) => {
-    if (!confirm('Delete this saved report?')) return;
+    const ok = await confirm({ title: t('Delete saved report'), message: t('Delete this saved report?'), confirmLabel: t('Delete') });
+    if (!ok) return;
     try { await reportsApi.deleteSaved(id); load(); } catch (e) { notifyApiError(e); }
   };
 
@@ -570,7 +574,7 @@ function SavedReportsTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Name', 'Category', 'Report', 'Created By', 'Shared', ''].map((h) => (
-                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -615,7 +619,7 @@ function SavedReportsTab() {
           </div>
           <div className="overflow-x-auto max-h-64 surface">
             <table className="w-full text-xs">
-              <thead><tr className="border-b border-slate-100 dark:border-white/10">{columns.map((c) => <th key={c} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>)}</tr></thead>
+              <thead><tr className="border-b border-slate-100 dark:border-white/10">{columns.map((c) => <th key={c} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">{c}</th>)}</tr></thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                 {result.data.data.slice(0, 100).map((row, i) => (
                   <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -627,6 +631,7 @@ function SavedReportsTab() {
           </div>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -634,6 +639,8 @@ function SavedReportsTab() {
 // ── Scheduled Reports ─────────────────────────────────────────────────────────
 
 function ScheduledReportsTab() {
+  const { t } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   // Creating, pausing and deleting a schedule are `reports.schedule` on the API (ReportsController).
   const { hasPermission } = useAuth();
   const canSchedule = hasPermission('reports.schedule');
@@ -679,7 +686,8 @@ function ScheduledReportsTab() {
   };
 
   const deleteSchedule = async (id: string) => {
-    if (!confirm('Delete this schedule?')) return;
+    const ok = await confirm({ title: t('Delete schedule'), message: t('Delete this schedule?'), confirmLabel: t('Delete') });
+    if (!ok) return;
     try { await reportsApi.deleteSchedule(id); load(); } catch (e) { notifyApiError(e); }
   };
 
@@ -708,7 +716,7 @@ function ScheduledReportsTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Report', 'Frequency', 'Delivery', 'Recipients', 'Format', 'Next Run', 'Health', 'Active', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -800,6 +808,7 @@ function ScheduledReportsTab() {
           </div>
         </div>
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -845,7 +854,7 @@ function ExecutionHistoryTab() {
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/[0.07]">
               {['Report', 'Format', 'Rows', 'Duration', 'Run By', 'Time', 'Status'].map((h) => (
-                <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
@@ -903,7 +912,7 @@ export function ReportsPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Reports & Analytics</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Reports & Analytics</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Enterprise reporting, live analytics, and scheduled delivery
         </p>

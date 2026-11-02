@@ -530,7 +530,7 @@ function Kpi({ label, cell, note, testId }: { label: string; cell: ReturnType<ty
   return (
     <article className="surface rounded-xl border-s-[3px] border-s-sapphire p-4" data-testid={testId}>
       <p className="text-xs font-semibold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">{label}</p>
-      <p className={cell.kind === 'suppressed' ? 'mt-2 text-sm font-semibold text-slate-600 dark:text-slate-300' : 'mt-2 text-2xl font-bold tracking-tight text-slate-950 dark:text-white'}>
+      <p className={cell.kind === 'suppressed' ? 'mt-2 text-sm font-semibold text-slate-600 dark:text-slate-300' : 'mt-2 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white'}>
         {cell.text}
       </p>
       <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{note}</p>

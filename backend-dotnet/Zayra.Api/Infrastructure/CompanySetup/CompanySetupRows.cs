@@ -48,6 +48,23 @@ public static class CompanySetupRows
         await ScopedBypass.TenantWide(db.Grades, tenantId, Why).AsNoTracking().Where(x => x.CompanyId == companyId)
             .OrderBy(x => x.Level).ThenBy(x => x.Code).ToListAsync(ct));
 
+    /// <summary>What still points at each of the company's organisation rows, by row id (rows nothing points at are absent).
+    /// One read for the planner (code lock) and the draft (the "in use" badge), so they cannot disagree.</summary>
+    public static async Task<IReadOnlyDictionary<Guid, OrgRowUsage>> UsageAsync(ZayraDbContext db, Guid tenantId, CompanyRows org, CancellationToken ct)
+    {
+        var removal = new Zayra.Api.Infrastructure.Organization.OrgRowRemoval(db, null);
+        var all = new Dictionary<Guid, OrgRowUsage>();
+        async Task Add(OrgRowKind kind, IEnumerable<Guid> ids)
+        {
+            foreach (var (id, usage) in await removal.UsageManyAsync(kind, tenantId, ids.ToList(), ct)) all[id] = usage;
+        }
+        await Add(OrgRowKind.CostCenter, org.CostCentres.Where(x => !x.IsDeleted).Select(x => x.Id));
+        await Add(OrgRowKind.Department, org.Departments.Where(x => !x.IsDeleted).Select(x => x.Id));
+        await Add(OrgRowKind.Designation, org.Designations.Where(x => !x.IsDeleted).Select(x => x.Id));
+        await Add(OrgRowKind.Grade, org.Grades.Where(x => !x.IsDeleted).Select(x => x.Id));
+        return all;
+    }
+
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static string? Link(Guid? id, IReadOnlyDictionary<Guid, string> codes) => id is Guid x && codes.TryGetValue(x, out var c) ? c : null;
 

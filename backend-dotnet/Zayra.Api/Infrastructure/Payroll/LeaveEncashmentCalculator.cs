@@ -66,13 +66,19 @@ public sealed record LeaveEncashmentResult(
 /// </summary>
 public static class LeaveEncashmentCalculator
 {
+    /// <summary>The annual-leave type the payout-on-exit setting applies to: code ANNUAL or category Annual.</summary>
+    public static bool IsAnnualType(LeaveType t)
+        => string.Equals(t.Code, "ANNUAL", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(t.Category, "Annual", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The day-rate basis. Kept as gross ÷ 30 — byte-identical to the figure the pre-C1
     /// endpoint displayed — so making the number PAYABLE does not also silently re-rate it.</summary>
     public const string DayRateBasis = "gross/30";
 
     public static async Task<LeaveEncashmentResult> ComputeAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, Guid? companyId,
-        DateOnly lastWorkingDay, decimal monthlyGross, CancellationToken ct)
+        DateOnly lastWorkingDay, decimal monthlyGross, CancellationToken ct,
+        bool statutoryAnnualLeaveCashOut = false, string basisLabel = DayRateBasis)
     {
         var warnings = new List<string>();
         var dailyRate = monthlyGross > 0m ? Math.Round(monthlyGross / 30m, 6) : 0m;
@@ -88,6 +94,12 @@ public static class LeaveEncashmentCalculator
         var leaveTypes = await db.LeaveTypes.AsNoTracking()
             .Where(t => t.TenantId == tenantId && typeIds.Contains(t.Id))
             .ToDictionaryAsync(t => t.Id, ct);
+        // The payout-on-exit setting recognises the annual type by code ANNUAL or category Annual. An employee whose balances
+        // include no such type is paid nothing under it: say so, rather than underpay in silence.
+        if (statutoryAnnualLeaveCashOut && !leaveTypes.Values.Any(IsAnnualType))
+            warnings.Add("[FLAG-COMPLIANCE] The company pays out untaken annual leave on exit (Setup > Payroll rules), but none of this "
+                         + "employee's leave balances belongs to an annual-leave type (code ANNUAL or category Annual), so no annual leave was paid "
+                         + "under Art. 111. If the annual leave type uses another code, set its category to Annual.");
 
         // Company-first policy resolution, mirroring every other company-scoped config read in payroll:
         // the company's own policy wins over the tenant-default (CompanyId == null) row.
@@ -120,6 +132,21 @@ public static class LeaveEncashmentCalculator
                 ? lt.NameEn
                 : (string.IsNullOrWhiteSpace(b.LeaveTypeName) ? b.LeaveTypeId.ToString() : b.LeaveTypeName);
 
+            // The company setting "pay out untaken annual leave when employment ends" (default on, Art. 111): the
+            // annual-leave type is paid its full available balance whether or not a leave policy exists or allows
+            // encashment. A policy that does allow it keeps its own cap, since that is a company choice.
+            var isStatutoryAnnual = statutoryAnnualLeaveCashOut && leaveTypes.TryGetValue(b.LeaveTypeId, out var annualType)
+                && IsAnnualType(annualType);
+            if (isStatutoryAnnual && (!policyByType.TryGetValue(b.LeaveTypeId, out var annualPolicy) || !annualPolicy.EncashmentAllowed))
+            {
+                var statutoryDays = Math.Round(b.Available, 2);
+                if (statutoryDays > 0m)
+                    lines.Add(new EncashableLeave(
+                        b.Id, b.LeaveTypeId, typeName, b.Year,
+                        statutoryDays, statutoryDays, Math.Round(statutoryDays * dailyRate, 2), basisLabel));
+                continue;
+            }
+
             if (!policyByType.TryGetValue(b.LeaveTypeId, out var policy))
             {
                 if (b.Available > 0m)
@@ -149,7 +176,7 @@ public static class LeaveEncashmentCalculator
 
             lines.Add(new EncashableLeave(
                 b.Id, b.LeaveTypeId, typeName, b.Year,
-                available, days, Math.Round(days * dailyRate, 2), DayRateBasis));
+                available, days, Math.Round(days * dailyRate, 2), basisLabel));
         }
 
         return new LeaveEncashmentResult(

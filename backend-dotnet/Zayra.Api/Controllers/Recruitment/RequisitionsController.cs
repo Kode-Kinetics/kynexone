@@ -196,6 +196,13 @@ public class RequisitionsController : ControllerBase
         catch (ApprovalRoutingException ex) { throw new SubmitRefused(UnprocessableEntity(new { code = ex.Code, message = ex.Message })); }
         catch (InvalidOperationException ex) { throw new SubmitRefused(BadRequest(new { message = ex.Message })); }
 
+        // No workflow: the requisition is decided by an Admin or HR Manager who is not the person who raised it. With nobody else in
+        // those roles it would sit Submitted for ever, so the submitter is told now (nothing has been written yet).
+        if (approvalId is null && !await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.AnyOtherUserInRolesAsync(_db, tenantId, ["Admin", "HR Manager"], false,
+                this.GetUserId() is Guid maker ? [maker] : [], ct))
+            throw new SubmitRefused(UnprocessableEntity(Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.Refusal("approvals.decide",
+                "submitting a requisition", "تقديم طلب التوظيف", ("HR Manager or Admin rights", "صلاحية مدير الموارد البشرية أو المسؤول"))));
+
         r.Status = approvalId.HasValue ? "PendingApproval" : "Submitted";
         r.SubmittedAtUtc = DateTime.UtcNow;
         r.ApprovalRequestId = approvalId;
@@ -263,6 +270,9 @@ public class RequisitionsController : ControllerBase
         }
         else
         {
+            // No linked approval to carry the maker-checker rule, so it is enforced here: nobody decides a requisition they raised.
+            if (r.RequestedByUserId is Guid maker && maker == this.GetUserId())
+                return BadRequest(new { error = "maker_cannot_approve", message = "You raised this requisition, so someone else must decide it." });
             r.Status = approved ? "Approved" : "Rejected";
             if (approved) r.ApprovedAtUtc = DateTime.UtcNow;
             else { r.RejectedAtUtc = DateTime.UtcNow; r.RejectionReason = comments ?? string.Empty; }

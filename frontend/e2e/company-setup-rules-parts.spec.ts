@@ -206,8 +206,10 @@ for (const locale of ['en', 'ar'] as const) {
     const eos = page.getByTestId('rules-part-endOfService');
     await expect(eos.getByTestId('save-mode-live').first()).toHaveText(t('Saves as you edit'));
     await expect(eos.getByText(locale === 'ar' ? 'مكافأة نهاية الخدمة (نظام العمل السعودي)' : 'End-of-service (Saudi Labour Law)')).toBeVisible();
-    await expect(eos.getByTestId('country-rules-editor').getByText('SAU', { exact: true })).toBeVisible();
-    await expect(eos.getByTestId('country-rules-editor').getByText('ARE', { exact: true })).toHaveCount(0);
+    // Row actions carry a screen-reader-only country suffix; count only the visible country label.
+    const visibleCountry = (code: string) => eos.getByTestId('country-rules-editor').getByText(code, { exact: true }).and(page.locator(':not(.sr-only)'));
+    await expect(visibleCountry('SAU')).toBeVisible();
+    await expect(visibleCountry('ARE')).toHaveCount(0);
     await contained(page);
     await shot(page, info, `${locale}-part-endOfService`);
 

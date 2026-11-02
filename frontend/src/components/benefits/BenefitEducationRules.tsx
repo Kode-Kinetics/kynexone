@@ -171,7 +171,7 @@ export function ClaimEducationDetails({ claim, coveredCosts }: { claim: BenefitC
     {lines.length > 0 && <div>
       <p className="text-slate-500">{t('Invoice lines')}</p>
       <ul className="mt-1 divide-y divide-slate-100 rounded-lg border border-slate-200 dark:divide-white/5 dark:border-white/10">{lines.map((line, index) => <li key={index} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
-        <span>{t(costLabel(line.type))}{covered && <span className={`ms-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${covered.includes(line.type) ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{covered.includes(line.type) ? t('Covered') : t('Not covered')}</span>}</span>
+        <span>{t(costLabel(line.type))}{covered && <span className={`ms-2 rounded-full px-2 py-0.5 text-caption font-semibold ${covered.includes(line.type) ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>{covered.includes(line.type) ? t('Covered') : t('Not covered')}</span>}</span>
         <span className="font-semibold">{format.money(line.amount, claim.currency)}</span>
       </li>)}</ul>
       <p className="mt-1 font-semibold text-slate-700 dark:text-slate-200">{t('Invoice total {total} · claimed {claimed} · not covered {notCovered}', { total: format.money(invoiceTotal, claim.currency), claimed: format.money(claim.amount, claim.currency), notCovered: format.money(Math.max(0, Math.round((invoiceTotal - claim.amount) * 100) / 100), claim.currency) })}</p>

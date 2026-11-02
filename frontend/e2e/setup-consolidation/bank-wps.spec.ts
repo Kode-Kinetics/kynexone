@@ -105,12 +105,13 @@ test('switching company with unsaved bank details asks first, and keeping the ed
   const picker = page.getByRole('combobox', { name: /company/i });
   await picker.selectOption('co-a');
   await page.getByLabel(/MOL establishment/i).fill('7-1234567');
-  let asked = 0;
-  page.once('dialog', d => { asked++; void d.dismiss(); });
   await picker.selectOption('co-b');
-  await expect.poll(() => asked).toBe(1);
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('You have unsaved bank details');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
   await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('7-1234567');
-  page.once('dialog', d => { asked++; void d.accept(); });
   await picker.selectOption('co-b');
+  await page.getByRole('dialog').getByRole('button', { name: 'Discard and switch' }).click();
   await expect(page.getByLabel(/MOL establishment/i)).toHaveValue('');
 });

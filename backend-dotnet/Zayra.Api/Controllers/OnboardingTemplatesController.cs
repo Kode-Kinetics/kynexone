@@ -34,6 +34,13 @@ public class OnboardingTemplatesController : ControllerBase
     private readonly IAuditService _audit;
     public OnboardingTemplatesController(ZayraDbContext db, IAuditService audit) { _db = db; _audit = audit; }
 
+    /// <summary>Stages the audit row and saves it in one call: the business change was saved just before, so the audit row is the only pending write.</summary>
+    private Task AuditAsync(string action, string entity, string id, string? metadata, CancellationToken ct)
+    {
+        _audit.Stage(action, entity, id, Ctx(), metadata);
+        return _db.SaveChangesAsync(ct);
+    }
+
     private RequestContext Ctx() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 
     private ObjectResult Fail(int status, string code, IDictionary<string, string[]>? errors = null) =>
@@ -90,7 +97,7 @@ public class OnboardingTemplatesController : ControllerBase
                 IsStatutory = t.IsStatutory, LinkSection = t.LinkSection, OrderIndex = i++, Category = "General",
             });
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_checklist_created", "OnboardingChecklist", checklist.Id.ToString(), Ctx(), "{\"source\":\"starter:ksa\"}", ct);
+        await AuditAsync("onboarding_checklist_created", "OnboardingChecklist", checklist.Id.ToString(), "{\"source\":\"starter:ksa\"}", ct);
         return await GetChecklist(checklist.Id, ct);
     }
 
@@ -175,7 +182,7 @@ public class OnboardingTemplatesController : ControllerBase
         {
             return Fail(409, "template_name_taken");
         }
-        await _audit.WriteAsync(created ? "onboarding_checklist_created" : "onboarding_checklist_updated", "OnboardingChecklist", checklist.Id.ToString(), Ctx(), null, ct);
+        await AuditAsync(created ? "onboarding_checklist_created" : "onboarding_checklist_updated", "OnboardingChecklist", checklist.Id.ToString(), null, ct);
         var tasks = await _db.OnboardingChecklistTemplateTasks.AsNoTracking()
             .Where(t => t.TenantId == tid && t.ChecklistId == checklist.Id && t.IsActive).OrderBy(t => t.OrderIndex).ToListAsync(ct);
         var dtoOut = ToDto(checklist, tasks);
@@ -194,7 +201,7 @@ public class OnboardingTemplatesController : ControllerBase
         if (used == 0) { c.IsDeleted = true; c.IsActive = false; c.IsDefault = false; }
         else { c.IsActive = false; c.IsDefault = false; }
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_checklist_removed", "OnboardingChecklist", id.ToString(), Ctx(), JsonSerializer.Serialize(new { used }), ct);
+        await AuditAsync("onboarding_checklist_removed", "OnboardingChecklist", id.ToString(), JsonSerializer.Serialize(new { used }), ct);
         return Ok(new { outcome = used == 0 ? "deleted" : "turnedOff", used });
     }
 
@@ -207,7 +214,7 @@ public class OnboardingTemplatesController : ControllerBase
         if (c is null || !InScope(c.CompanyId)) return NotFound();
         c.IsDeleted = false; c.IsActive = true;
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_checklist_restored", "OnboardingChecklist", id.ToString(), Ctx(), null, ct);
+        await AuditAsync("onboarding_checklist_restored", "OnboardingChecklist", id.ToString(), null, ct);
         return await GetChecklist(id, ct);
     }
 
@@ -221,7 +228,7 @@ public class OnboardingTemplatesController : ControllerBase
         if (!await CompanyUsableAsync(tid, companyId, ct)) return Fail(422, "template_company_mismatch");
         var copy = await CopyChecklistRowsAsync(tid, source, companyId, ct);
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_checklist_created", "OnboardingChecklist", copy.Id.ToString(), Ctx(), JsonSerializer.Serialize(new { copiedFrom = id }), ct);
+        await AuditAsync("onboarding_checklist_created", "OnboardingChecklist", copy.Id.ToString(), JsonSerializer.Serialize(new { copiedFrom = id }), ct);
         return await GetChecklist(copy.Id, ct);
     }
 
@@ -370,7 +377,7 @@ public class OnboardingTemplatesController : ControllerBase
             var nameTaken = await _db.HireTemplates.AsNoTracking().AnyAsync(h => h.TenantId == tid && h.CompanyId == cid && h.NameKey == request.Name.Trim().ToLower() && !h.IsDeleted && h.Id != row.Id, ct);
             return Fail(409, nameTaken ? "template_name_taken" : "template_match_conflict");
         }
-        await _audit.WriteAsync(creating ? "onboarding_hire_template_created" : "onboarding_hire_template_updated", "HireTemplate", row.Id.ToString(), Ctx(), null, ct);
+        await AuditAsync(creating ? "onboarding_hire_template_created" : "onboarding_hire_template_updated", "HireTemplate", row.Id.ToString(), null, ct);
         return creating ? Created($"/api/onboarding/hire-templates/{row.Id}", ToDto(row)) : Ok(ToDto(row));
     }
 
@@ -385,7 +392,7 @@ public class OnboardingTemplatesController : ControllerBase
         var used = h.ChecklistId is Guid cl ? await _db.OnboardingTasks.CountAsync(t => t.TenantId == tid && t.ChecklistId == cl, ct) : 0;
         if (used == 0) { h.IsDeleted = true; h.IsActive = false; } else h.IsActive = false;
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_hire_template_removed", "HireTemplate", id.ToString(), Ctx(), JsonSerializer.Serialize(new { used }), ct);
+        await AuditAsync("onboarding_hire_template_removed", "HireTemplate", id.ToString(), JsonSerializer.Serialize(new { used }), ct);
         return Ok(new { outcome = used == 0 ? "deleted" : "turnedOff", used });
     }
 
@@ -399,7 +406,7 @@ public class OnboardingTemplatesController : ControllerBase
         h.IsDeleted = false; h.IsActive = true;
         try { await _db.SaveChangesAsync(ct); }
         catch (DbUpdateException ex) when (ChecklistGenerator.IsUniqueViolation(ex)) { return Fail(409, "template_name_taken"); }
-        await _audit.WriteAsync("onboarding_hire_template_restored", "HireTemplate", id.ToString(), Ctx(), null, ct);
+        await AuditAsync("onboarding_hire_template_restored", "HireTemplate", id.ToString(), null, ct);
         return Ok(ToDto(h));
     }
 
@@ -457,7 +464,7 @@ public class OnboardingTemplatesController : ControllerBase
         };
         _db.HireTemplates.Add(copy);
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_hire_template_created", "HireTemplate", copy.Id.ToString(), Ctx(), JsonSerializer.Serialize(new { copiedFrom = id }), ct);
+        await AuditAsync("onboarding_hire_template_created", "HireTemplate", copy.Id.ToString(), JsonSerializer.Serialize(new { copiedFrom = id }), ct);
         return Ok(new { template = ToDto(copy), dropped });
     }
 
@@ -560,9 +567,9 @@ public class OnboardingTemplatesController : ControllerBase
         }
         task.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("onboarding_task_updated", "OnboardingTask", id.ToString(), Ctx(), JsonSerializer.Serialize(new { status = task.Status }), ct);
+        await AuditAsync("onboarding_task_updated", "OnboardingTask", id.ToString(), JsonSerializer.Serialize(new { status = task.Status }), ct);
         if (skipping && task.BlocksActivation)
-            await _audit.WriteAsync("onboarding_task_skipped", "OnboardingTask", id.ToString(), Ctx(), JsonSerializer.Serialize(new { reason = skipReason.Length > 500 ? skipReason[..500] : skipReason, employeeId = row.EmployeeId }), ct);
+            await AuditAsync("onboarding_task_skipped", "OnboardingTask", id.ToString(), JsonSerializer.Serialize(new { reason = skipReason.Length > 500 ? skipReason[..500] : skipReason, employeeId = row.EmployeeId }), ct);
         return Ok(new { taskId = task.Id, status = task.Status, dueDate = task.DueDate, evidenceDocumentId = task.EvidenceDocumentId });
     }
 

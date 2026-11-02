@@ -76,7 +76,12 @@ fi
 #
 # ZayraDbContext is the right answer here on purpose: this gate compares Migrations/*.cs
 # against what EF can see, and every one of those files belongs to ZayraDbContext.
-if ! dotnet tool run dotnet-ef migrations list --no-connect \
+# MIGRATION_VISIBILITY_NO_BUILD=1 is for a caller that has JUST built this project in the same job (CI's "Build API"):
+# the compiled assembly is then current, and compiling this 4M-line project a second time is what ran a runner out of memory.
+# Left unset (local use) it still builds, so it can never read a stale assembly.
+ef_build_flag=()
+if [ "${MIGRATION_VISIBILITY_NO_BUILD:-}" = "1" ]; then ef_build_flag=(--no-build); fi
+if ! dotnet tool run dotnet-ef migrations list --no-connect ${ef_build_flag[@]+"${ef_build_flag[@]}"} \
      --project "$PROJECT" --context ZayraDbContext \
      > "$workdir/ef-raw.txt" 2> "$workdir/ef-err.txt"; then
   echo "::error::check-migration-visibility: 'dotnet ef migrations list' failed. Output:" >&2

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { useConfirm } from '@/src/components/ui/useConfirm';
 import {
   ArrowLeft, Plus, Download, Send, RefreshCw, X,
   Pencil, Trash2, CheckCircle, AlertCircle, Clock, Ban,
@@ -147,11 +148,11 @@ function CreateModal({ tenantId, onClose, onCreated }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <div>
             <h2 className="text-sm font-semibold text-white">New Invoice</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">Fill in the details below to create an invoice</p>
+            <p className="text-caption text-slate-500 mt-0.5">Fill in the details below to create an invoice</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" title="Close" className="text-slate-500 hover:text-white transition-colors">
             <X className="h-4 w-4" />
@@ -288,11 +289,11 @@ function EditModal({ tenantId, invoice, onClose, onSaved }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative w-full max-w-lg bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <div>
             <h2 className="text-sm font-semibold text-white">Edit Invoice</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5 font-mono">{invoice.invoiceNumber}</p>
+            <p className="text-caption text-slate-500 mt-0.5 font-mono">{invoice.invoiceNumber}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" title="Close" className="text-slate-500 hover:text-white transition-colors">
             <X className="h-4 w-4" />
@@ -303,20 +304,20 @@ function EditModal({ tenantId, invoice, onClose, onSaved }: {
           {/* Read-only invoice summary */}
           <div className="grid grid-cols-2 gap-3 bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 text-sm">
             <div>
-              <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Amount</p>
+              <p className="text-caption text-slate-600 uppercase tracking-widest mb-1">Amount</p>
               <p className="text-white font-semibold">{fmtAmount(invoice.amount, invoice.currencyCode)}</p>
             </div>
             <div>
-              <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Invoice Date</p>
+              <p className="text-caption text-slate-600 uppercase tracking-widest mb-1">Invoice Date</p>
               <p className="text-slate-300">{fmtDate(invoice.invoiceDate)}</p>
             </div>
             <div>
-              <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Due Date</p>
+              <p className="text-caption text-slate-600 uppercase tracking-widest mb-1">Due Date</p>
               <p className="text-slate-300">{fmtDate(invoice.dueDate)}</p>
             </div>
             {invoice.periodDescription && (
               <div>
-                <p className="text-[10px] text-slate-600 uppercase tracking-widest mb-1">Period</p>
+                <p className="text-caption text-slate-600 uppercase tracking-widest mb-1">Period</p>
                 <p className="text-slate-300 text-xs">{invoice.periodDescription}</p>
               </div>
             )}
@@ -406,7 +407,7 @@ function DeleteDialog({ invoice, onClose, onDeleted }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4">
+      <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 p-6 space-y-4">
         <div className="flex items-center gap-3">
           <div className="h-9 w-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
             <Trash2 className="h-4 w-4 text-rose-400" />
@@ -562,6 +563,7 @@ type LineEditMode = { kind: 'add' } | { kind: 'edit'; line: TenantInvoiceLine };
 function InvoiceDetailPanel({ tenantId, invoice, currency }: {
   tenantId: string; invoice: TenantInvoice; currency: string;
 }) {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [lines, setLines]       = useState<TenantInvoiceLine[] | null>(null);
   const [payments, setPayments] = useState<TenantPayment[] | null>(null);
   const [loading, setLoading]   = useState(true);
@@ -627,7 +629,12 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
   }
 
   async function handleDeleteLine(line: TenantInvoiceLine) {
-    if (!window.confirm(`Delete line "${line.description}"?`)) return;
+    const ok = await confirm({
+      title: 'Delete line',
+      message: `Delete line "${line.description}"?`,
+      confirmLabel: 'Delete',
+    });
+    if (!ok) return;
     try {
       await platformApi.deleteInvoiceLine(tenantId, invoice.id, line.id);
       await loadLines();
@@ -676,10 +683,10 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
           {/* Line Items */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Line Items</p>
+              <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Line Items</p>
               {isDraft && lineMode === null && (
                 <button type="button" onClick={() => { setLineErr(''); setLineMode({ kind: 'add' }); }}
-                  className="flex items-center gap-1 text-[10px] text-blue-400 border border-blue-500/20 hover:border-blue-500/50 px-2 py-0.5 rounded transition-colors">
+                  className="flex items-center gap-1 text-caption text-blue-400 border border-blue-500/20 hover:border-blue-500/50 px-2 py-0.5 rounded transition-colors">
                   <Plus className="h-2.5 w-2.5" /> Add Line
                 </button>
               )}
@@ -688,7 +695,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
             {lines && lines.length > 0 ? (
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-[10px] text-slate-600 uppercase">
+                  <tr className="text-caption text-slate-600 uppercase">
                     <th className="text-start pb-1 font-medium">Description</th>
                     <th className="text-end pb-1 font-medium pe-2">Qty</th>
                     <th className="text-end pb-1 font-medium pe-2">Unit</th>
@@ -733,7 +740,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                 <tfoot className="border-t border-white/[0.06]">
                   <tr>
                     <td colSpan={isDraft ? 5 : 4} className="pt-1.5 text-end text-slate-500 pe-2">Total</td>
-                    <td className="pt-1.5 text-end text-emerald-400 font-bold tabular-nums">{fmtAmount(invoice.amount, currency)}</td>
+                    <td className="pt-1.5 text-end text-emerald-400 font-semibold tabular-nums">{fmtAmount(invoice.amount, currency)}</td>
                     {isDraft && <td />}
                   </tr>
                 </tfoot>
@@ -765,10 +772,10 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
           {/* Payment History */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Payment History</p>
+              <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Payment History</p>
               {canPay && !showPayForm && (
                 <button type="button" onClick={() => { setPayErr(''); setShowPayForm(true); }}
-                  className="flex items-center gap-1 text-[10px] text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/50 px-2 py-0.5 rounded transition-colors">
+                  className="flex items-center gap-1 text-caption text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/50 px-2 py-0.5 rounded transition-colors">
                   <Plus className="h-2.5 w-2.5" /> Record Payment
                 </button>
               )}
@@ -778,7 +785,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
               <>
                 <table className="w-full text-xs mb-2">
                   <thead>
-                    <tr className="text-[10px] text-slate-600 uppercase">
+                    <tr className="text-caption text-slate-600 uppercase">
                       <th className="text-start pb-1 font-medium">Date</th>
                       <th className="text-start pb-1 font-medium">Method</th>
                       <th className="text-start pb-1 font-medium">Status</th>
@@ -791,7 +798,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
                         <td className="py-1 text-slate-500">{p.paidAt ? fmtDate(p.paidAt) : '—'}</td>
                         <td className="py-1 text-slate-400">{p.method}</td>
                         <td className="py-1">
-                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                          <span className={`text-caption font-semibold px-1.5 py-0.5 rounded border ${
                             p.status === 'Completed' ? 'text-emerald-400 border-emerald-700/30 bg-emerald-900/20' :
                             p.status === 'Failed'    ? 'text-rose-400 border-rose-700/30 bg-rose-900/20' :
                             p.status === 'Refunded'  ? 'text-amber-400 border-amber-700/30 bg-amber-900/20' :
@@ -831,6 +838,7 @@ function InvoiceDetailPanel({ tenantId, invoice, currency }: {
             )}
           </div>
         </div>
+        {confirmDialog}
       </td>
     </tr>
   );
@@ -926,7 +934,7 @@ export default function TenantBillingPage() {
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <div>
-            <h1 className="text-lg font-bold text-white">Billing & Invoices</h1>
+            <h1 className="text-lg font-semibold text-white">Billing & Invoices</h1>
             <p className="text-xs text-slate-500 mt-0.5">{invoices.length} invoice{invoices.length !== 1 ? 's' : ''}</p>
           </div>
         </div>
@@ -952,8 +960,8 @@ export default function TenantBillingPage() {
             { label: 'Overdue',      value: fmtAmount(totals.overdue, currency), cls: totals.overdue > 0 ? 'text-rose-400' : 'text-slate-600' },
           ] as const).map(c => (
             <div key={c.label} className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4">
-              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">{c.label}</p>
-              <p className={`text-lg font-bold tabular-nums ${c.cls}`}>{c.value}</p>
+              <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">{c.label}</p>
+              <p className={`text-lg font-semibold tabular-nums ${c.cls}`}>{c.value}</p>
             </div>
           ))}
         </div>
@@ -983,7 +991,7 @@ export default function TenantBillingPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Invoice #', 'Period', 'Amount', 'Status', 'Issued', 'Due', 'Payment', 'Actions'].map(h => (
-                    <th key={h} className="px-4 py-3 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest whitespace-nowrap">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1000,7 +1008,7 @@ export default function TenantBillingPage() {
                         {/* Invoice # */}
                         <td className="px-4 py-3">
                           <p className="text-sm text-white font-mono font-medium">{inv.invoiceNumber}</p>
-                          <p className="text-[10px] text-slate-600 mt-0.5">
+                          <p className="text-caption text-slate-600 mt-0.5">
                             {new Date(inv.createdAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                           </p>
                         </td>
@@ -1014,13 +1022,13 @@ export default function TenantBillingPage() {
                         <td className="px-3 py-3">
                           <p className="text-sm text-white font-semibold tabular-nums">{fmtAmount(inv.amount, inv.currencyCode)}</p>
                           {inv.paidDate && (
-                            <p className="text-[10px] text-emerald-600 mt-0.5">Paid {fmtDate(inv.paidDate)}</p>
+                            <p className="text-caption text-emerald-600 mt-0.5">Paid {fmtDate(inv.paidDate)}</p>
                           )}
                         </td>
 
                         {/* Status */}
                         <td className="px-3 py-3">
-                          <span className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_BADGE[inv.status] ?? ''}`}>
+                          <span className={`inline-flex items-center gap-1 text-caption font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_BADGE[inv.status] ?? ''}`}>
                             <Icon className="h-2.5 w-2.5" />
                             {inv.status}
                           </span>
@@ -1042,7 +1050,7 @@ export default function TenantBillingPage() {
                             <div>
                               <p className="text-slate-400">{inv.paymentMethod}</p>
                               {inv.paymentReference && (
-                                <p className="text-[10px] text-slate-600 font-mono truncate">{inv.paymentReference}</p>
+                                <p className="text-caption text-slate-600 font-mono truncate">{inv.paymentReference}</p>
                               )}
                             </div>
                           ) : (
@@ -1055,19 +1063,19 @@ export default function TenantBillingPage() {
                           <div className="flex items-center gap-1 flex-wrap">
                             {inv.status === 'Draft' && (
                               <button type="button" onClick={() => quickStatus(inv, 'Sent')}
-                                className="text-[10px] text-blue-400 border border-blue-500/20 hover:border-blue-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
+                                className="text-caption text-blue-400 border border-blue-500/20 hover:border-blue-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
                                 Mark Sent
                               </button>
                             )}
                             {(inv.status === 'Draft' || inv.status === 'Sent') && (
                               <button type="button" onClick={() => quickStatus(inv, 'Paid')}
-                                className="text-[10px] text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
+                                className="text-caption text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
                                 Mark Paid
                               </button>
                             )}
                             {inv.status === 'Sent' && (
                               <button type="button" onClick={() => quickStatus(inv, 'Overdue')}
-                                className="text-[10px] text-rose-400 border border-rose-500/20 hover:border-rose-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
+                                className="text-caption text-rose-400 border border-rose-500/20 hover:border-rose-500/50 px-2 py-1 rounded transition-colors whitespace-nowrap">
                                 Overdue
                               </button>
                             )}
@@ -1110,7 +1118,7 @@ export default function TenantBillingPage() {
                       {inv.notes && (
                         <tr key={`notes-${inv.id}`} className="border-b border-white/[0.04]">
                           <td colSpan={8} className="px-4 pb-2.5 pt-0">
-                            <p className="text-[11px] text-slate-600 italic">Note: {inv.notes}</p>
+                            <p className="text-caption text-slate-600 italic">Note: {inv.notes}</p>
                           </td>
                         </tr>
                       )}

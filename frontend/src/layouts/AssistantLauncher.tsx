@@ -29,7 +29,7 @@ export function AssistantLauncher({ open, onOpen }: { open: boolean; onOpen: () 
       className={`wg-press fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] end-4 z-30 flex h-12 items-center gap-3 rounded-full border border-blue-700 bg-blue-700 text-white shadow-soft-md hover:bg-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600 lg:bottom-6 lg:end-6 dark:border-blue-500 dark:bg-blue-600 dark:hover:bg-blue-500 dark:focus-visible:outline-blue-300 ${compact ? '' : 'xl:pe-5'}`}
       data-compact={compact ? 'true' : undefined}
     >
-      <span aria-hidden="true" className="grid h-[46px] w-[46px] shrink-0 place-items-center text-xl font-bold">K</span>
+      <span aria-hidden="true" className="grid h-[46px] w-[46px] shrink-0 place-items-center text-xl font-semibold">K</span>
       <span aria-hidden="true" className={`hidden text-start leading-tight ${compact ? '' : 'xl:block'}`}>
         <span className="block text-sm font-semibold">Kody</span>
         <span className="block text-xs text-blue-100">{t('HR Assistant')}</span>

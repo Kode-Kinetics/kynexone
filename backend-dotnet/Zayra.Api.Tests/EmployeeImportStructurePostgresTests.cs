@@ -44,7 +44,7 @@ public sealed class EmployeeImportStructurePostgresTests
         var structure = Assert.Single(await db.SalaryStructures.Where(s => s.TenantId == tenant).ToListAsync());
         Assert.Equal(company.Id, structure.CompanyId);
         Assert.Equal(1, await db.SalaryComponents.CountAsync(c => c.TenantId == tenant && c.SalaryStructureId == structure.Id));
-        var salaries = await db.EmployeeSalaryStructures.AsNoTracking().Where(s => s.TenantId == tenant).ToListAsync();
+        var salaries = await db.SalaryChangeRequests.AsNoTracking().Where(s => s.TenantId == tenant).ToListAsync(); // staged for Finance
         Assert.Equal(250, salaries.Count);
         Assert.All(salaries, s => { Assert.Equal(structure.Id, s.SalaryStructureId); Assert.Equal("SAR", s.Currency); Assert.Equal(new DateOnly(2024, 1, 1), s.EffectiveDate); });
         Assert.Equal(Enumerable.Range(1, 250).Sum(i => 5000m + i), salaries.Sum(s => s.BasicSalary));
@@ -52,7 +52,7 @@ public sealed class EmployeeImportStructurePostgresTests
         var retry = Assert.IsType<OkObjectResult>(await ctrl.Import(new EmployeesController.ImportEmployeesRequest(csv), CancellationToken.None));
         Assert.Equal(0, JsonSerializer.SerializeToElement(retry.Value).GetProperty("created").GetInt32());
         Assert.Equal(250, await db.Employees.CountAsync(e => e.TenantId == tenant));
-        Assert.Equal(250, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenant));
+        Assert.Equal(250, await db.SalaryChangeRequests.CountAsync(s => s.TenantId == tenant));
         Assert.Equal(1, await db.SalaryStructures.CountAsync(s => s.TenantId == tenant));
     }
 
@@ -74,7 +74,7 @@ public sealed class EmployeeImportStructurePostgresTests
         Assert.Equal(4, JsonSerializer.SerializeToElement(result.Value).GetProperty("created").GetInt32());
         db.ChangeTracker.Clear();
         Assert.Equal(2, await db.SalaryStructures.CountAsync(s => s.TenantId == tenant));
-        var linked = await (from a in db.EmployeeSalaryStructures
+        var linked = await (from a in db.SalaryChangeRequests
             join e in db.Employees on a.EmployeeId equals e.Id
             join s in db.SalaryStructures on a.SalaryStructureId equals s.Id
             where a.TenantId == tenant
@@ -106,7 +106,7 @@ public sealed class EmployeeImportStructurePostgresTests
         var structure = Assert.Single(await db.SalaryStructures.Where(s => s.TenantId == tenant).ToListAsync());
         Assert.Equal("LEGACY-BAND-7", structure.Code);
         Assert.Equal(company.Id, structure.CompanyId);
-        Assert.All(await db.EmployeeSalaryStructures.Where(s => s.TenantId == tenant).ToListAsync(), s => Assert.Equal(structure.Id, s.SalaryStructureId));
+        Assert.All(await db.SalaryChangeRequests.Where(s => s.TenantId == tenant).ToListAsync(), s => Assert.Equal(structure.Id, s.SalaryStructureId));
         Assert.All(await db.EmployeePayrollProfiles.Where(p => p.TenantId == tenant).ToListAsync(), p => Assert.Equal("LEGACY-BAND-7", p.SalaryStructureReference));
     }
 }

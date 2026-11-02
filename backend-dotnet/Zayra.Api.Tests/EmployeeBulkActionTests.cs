@@ -279,7 +279,7 @@ public class EmployeeBulkActionTests
         var req = new EmployeesController.BulkActionRequest("export", "allMatching", null,
             new EmployeesController.BulkSelectAllFilter(null, "Draft", null, null, null), null, null, null);
         var res = await Controller(db, o.TenantId).BulkAction(req, Service(db), CancellationToken.None);
-        var csv = Encoding.UTF8.GetString(res.Should().BeOfType<FileContentResult>().Subject.FileContents);
+        var csv = Encoding.UTF8.GetString(res.Should().BeOfType<FileContentResult>().Subject.FileContents).TrimStart('\uFEFF');
 
         csv.Should().Contain("DRAFT-1");
         csv.Should().NotContain("ACTIVE-1", "export must respect the active filter, not dump the whole roster");

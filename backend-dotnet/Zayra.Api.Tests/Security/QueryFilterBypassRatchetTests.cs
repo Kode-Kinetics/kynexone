@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 
 namespace Zayra.Api.Tests.Security;
 
@@ -34,7 +34,8 @@ public class QueryFilterBypassRatchetTests
         ["Controllers/EmployeesController.cs"] = 20,
         ["Controllers/EstablishmentController.cs"] = 12,
         ["Controllers/Finance/AdvancesController.cs"] = 2,
-        ["Controllers/Finance/BonusesController.cs"] = 3,
+        // 3 -> 4: CallerIsRecipientAsync (payout bar) reads every recipient of the batch; TenantId pinned, register §6.
+        ["Controllers/Finance/BonusesController.cs"] = 4,
         ["Controllers/Finance/GlJournalExportsController.cs"] = 6,
         ["Controllers/Finance/LoansController.cs"] = 2,
         ["Controllers/FinanceGlController.cs"] = 18, // 20 -> 18: reference checks and import go through ScopedBypass.TenantWide
@@ -45,7 +46,8 @@ public class QueryFilterBypassRatchetTests
         ["Controllers/PlatformController.cs"] = 15,
         ["Controllers/RatesController.cs"] = 8, // 11 -> 8: the statutory override queue reads through ScopedBypass.TenantWide
         ["Controllers/StatutoryRulesController.cs"] = 1,
-        ["Data/ZayraDbContext.cs"] = 3,
+        // 3 -> 4: the configuration-write guard reads the tenant's active company list (TenantId pinned, see the call's comment).
+        ["Data/ZayraDbContext.cs"] = 4,
         // 2 -> 3 (Wave 1 B1). ResolveEmployee gained ONE: the device-ingest webhook is
         // [AllowAnonymous], and Employee is the only entity on that path that is
         // ICompanyScopedOperational as well as tenant-owned. The company clause of the read filter
@@ -59,7 +61,7 @@ public class QueryFilterBypassRatchetTests
         // ratchet fails only on count > approved, so the surplus slot was a silently pre-authorised
         // future bypass — the exact thing this table exists to prevent. Pinned to the real count so
         // the next raw bypass added to this file fails the build.
-        ["Infrastructure/Attendance/AttendanceService.cs"] = 3,
+        ["Infrastructure/Attendance/AttendanceService.cs"] = 2, // 3 -> 2: the anonymous device-key lookup now goes through ScopedBypass.SystemWide (AttendanceDevice became ICompanyScoped)
         // Auth-recovery candidate (+10, provisional): every new site pins TenantId or a server-generated unique key; see register §6.
         ["Infrastructure/Auth/AuthService.cs"] = 12,
         ["Infrastructure/Boot/CompanyScopeBackfill.cs"] = 1,

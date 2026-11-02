@@ -65,7 +65,7 @@ function LearningBody() {
   return (
     <div className="space-y-5" data-testid="learning-hr">
       <header>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('Learning')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Learning')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Courses, learning paths, mandatory training and certificates — who has done what, and what is due.')}</p>
       </header>
       <RovingTabList items={tabs} activeId={tab} onChange={change} idPrefix="learning" label={t('Learning sections')} />

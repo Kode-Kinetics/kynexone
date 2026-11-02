@@ -221,7 +221,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
       {/* Subscription card */}
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Subscription</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Subscription</p>
           {!editingSub && (
             <button type="button" onClick={openSubEdit}
               className="flex items-center gap-1 text-xs text-slate-500 hover:text-white transition-colors">
@@ -234,59 +234,59 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
           <div className="px-5 py-4 space-y-4">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Plan</label>
+                <label className="block text-caption text-slate-500 mb-1">Plan</label>
                 <select aria-label="Plan" value={subForm.plan} onChange={e => setSubForm(f => ({ ...f, plan: e.target.value }))} className={selectCls}>
                   {['Trial','Starter','Growth','Enterprise'].map(p => <option key={p}>{p}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Status</label>
+                <label className="block text-caption text-slate-500 mb-1">Status</label>
                 <select aria-label="Status" value={subForm.status} onChange={e => setSubForm(f => ({ ...f, status: e.target.value }))} className={selectCls}>
                   {['Trial','Active','PastDue','Suspended','Cancelled'].map(s => <option key={s}>{s}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Billing Email</label>
+                <label className="block text-caption text-slate-500 mb-1">Billing Email</label>
                 <input type="email" title="Billing email" value={subForm.billingEmail} onChange={e => setSubForm(f => ({ ...f, billingEmail: e.target.value }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Billing Cycle</label>
+                <label className="block text-caption text-slate-500 mb-1">Billing Cycle</label>
                 <select aria-label="Billing cycle" value={subForm.billingCycle} onChange={e => setSubForm(f => ({ ...f, billingCycle: e.target.value }))} className={selectCls}>
                   {['Monthly','Quarterly','Annually'].map(c => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Monthly Amount</label>
+                <label className="block text-caption text-slate-500 mb-1">Monthly Amount</label>
                 <input type="number" title="Monthly amount" min={0} value={subForm.monthlyAmount} onChange={e => setSubForm(f => ({ ...f, monthlyAmount: Number(e.target.value) }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Currency</label>
+                <label className="block text-caption text-slate-500 mb-1">Currency</label>
                 <select aria-label="Currency" value={subForm.currencyCode} onChange={e => setSubForm(f => ({ ...f, currencyCode: e.target.value }))} className={selectCls}>
                   {['AED','USD','EUR','GBP','SAR','QAR','KWD','BHD','OMR'].map(c => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Max Users</label>
+                <label className="block text-caption text-slate-500 mb-1">Max Users</label>
                 <input type="number" title="Max users" min={1} value={subForm.maxUsers} onChange={e => setSubForm(f => ({ ...f, maxUsers: Number(e.target.value) }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Max Employees</label>
+                <label className="block text-caption text-slate-500 mb-1">Max Employees</label>
                 <input type="number" title="Max employees" min={1} value={subForm.maxEmployees} onChange={e => setSubForm(f => ({ ...f, maxEmployees: Number(e.target.value) }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Max Companies</label>
+                <label className="block text-caption text-slate-500 mb-1">Max Companies</label>
                 <input type="number" title="Max companies" min={1} value={subForm.maxCompanies} onChange={e => setSubForm(f => ({ ...f, maxCompanies: Number(e.target.value) }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Max Admin Users</label>
+                <label className="block text-caption text-slate-500 mb-1">Max Admin Users</label>
                 <input type="number" title="Max admin users" min={1} value={subForm.maxAdminUsers} onChange={e => setSubForm(f => ({ ...f, maxAdminUsers: Number(e.target.value) }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Started</label>
+                <label className="block text-caption text-slate-500 mb-1">Started</label>
                 <input type="date" title="Started date" value={subForm.startedAtUtc} onChange={e => setSubForm(f => ({ ...f, startedAtUtc: e.target.value }))} className={inputCls} />
               </div>
               <div>
-                <label className="block text-[11px] text-slate-500 mb-1">Expires (optional)</label>
+                <label className="block text-caption text-slate-500 mb-1">Expires (optional)</label>
                 <input type="date" title="Expires date" value={subForm.expiresAtUtc} onChange={e => setSubForm(f => ({ ...f, expiresAtUtc: e.target.value }))} className={inputCls} />
               </div>
             </div>
@@ -303,7 +303,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
           <div className="divide-y divide-white/[0.04]">
             <div className="px-5 py-3 flex items-center gap-4">
               <span className="text-xs text-slate-500 w-32 shrink-0">Plan</span>
-              <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${PLAN_BADGE[plan] ?? PLAN_BADGE.trial}`}>
+              <span className={`text-caption font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${PLAN_BADGE[plan] ?? PLAN_BADGE.trial}`}>
                 {sub?.plan ?? 'Trial'}
               </span>
             </div>
@@ -373,7 +373,7 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
       {suspendOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setSuspendOpen(false)} />
-          <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl p-6 space-y-4">
+          <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 p-6 space-y-4">
             <h3 className="text-sm font-semibold text-white">Suspend {tenant.name}?</h3>
             <p className="text-sm text-slate-400">This will immediately disable all tenant users. Provide a reason.</p>
             <textarea value={suspendReason} onChange={e => setSuspendReason(e.target.value)} rows={2}
@@ -450,7 +450,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
       )}
       {categories.map(cat => (
         <div key={cat}>
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest mb-2">{cat}</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">{cat}</p>
           <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
             {featureFlags.filter(f => f.category === cat).map(f => {
               // No row means the default: modules are on, opt-in rollout features are off.
@@ -460,7 +460,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
                 <div key={f.key} className="flex items-center gap-4 px-5 py-3.5">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-white">{f.label}</p>
-                    {description && <p className="text-[11px] text-slate-500">{description}</p>}
+                    {description && <p className="text-caption text-slate-500">{description}</p>}
                   </div>
                   <button
                     type="button"
@@ -503,8 +503,8 @@ function UsersTab({ tenantId }: { tenantId: string }) {
     <div className="space-y-4">
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">All Users ({users.length})</p>
-          <Link href={`/platform/tenants/${tenantId}/users`} className="text-[11px] text-sapphire hover:text-blue-300 transition-colors">
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">All Users ({users.length})</p>
+          <Link href={`/platform/tenants/${tenantId}/users`} className="text-caption text-sapphire hover:text-blue-300 transition-colors">
             Manage users →
           </Link>
         </div>
@@ -518,14 +518,14 @@ function UsersTab({ tenantId }: { tenantId: string }) {
           users.map(u => (
             <div key={u.id} className="flex items-center gap-3 px-5 py-2.5 border-b border-white/[0.04] last:border-0">
               <div className="h-7 w-7 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
-                <span className="text-[10px] font-bold text-slate-400">{u.fullName?.slice(0, 2).toUpperCase() ?? '??'}</span>
+                <span className="text-caption font-semibold text-slate-400">{u.fullName?.slice(0, 2).toUpperCase() ?? '??'}</span>
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white font-medium">{u.fullName}</p>
-                <p className="text-[11px] text-slate-500">{u.email}</p>
+                <p className="text-caption text-slate-500">{u.email}</p>
               </div>
-              <span className="text-[10px] text-slate-500 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded">{u.roles?.[0] ?? '—'}</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${u.isActive ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-slate-500 border-white/10'}`}>
+              <span className="text-caption text-slate-500 bg-white/5 border border-white/10 px-1.5 py-0.5 rounded">{u.roles?.[0] ?? '—'}</span>
+              <span className={`text-caption px-1.5 py-0.5 rounded border ${u.isActive ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/5' : 'text-slate-500 border-white/10'}`}>
                 {u.isActive ? 'Active' : 'Inactive'}
               </span>
             </div>
@@ -655,7 +655,7 @@ function BrandingTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; onRe
       </div>
       {(form.logoUrl || form.portalTitle) && (
         <div className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-3">Preview</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-wider mb-3">Preview</p>
           <div className="flex items-center gap-3">
             {form.logoUrl && <img src={form.logoUrl} alt="Logo preview" loading="lazy" decoding="async" className="h-8 object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
             {form.portalTitle && <span className="text-sm text-white">{form.portalTitle}</span>}
@@ -715,18 +715,18 @@ function LocalizationTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; 
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Default Language</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Default Language</label>
           <select title="Default language" value={form.defaultLanguage} onChange={e => sf('defaultLanguage', e.target.value)} className={selectCls}>
             <option value="en">English</option>
             <option value="ar">Arabic</option>
           </select>
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Timezone</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Timezone</label>
           <input title="Default timezone" value={form.defaultTimezone ?? ''} onChange={e => sf('defaultTimezone', e.target.value)} placeholder="Asia/Riyadh" className={inputCls} />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Date Format</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Date Format</label>
           <select title="Date format" value={form.dateFormat} onChange={e => sf('dateFormat', e.target.value)} className={selectCls}>
             <option value="DD/MM/YYYY">DD/MM/YYYY</option>
             <option value="MM/DD/YYYY">MM/DD/YYYY</option>
@@ -734,22 +734,22 @@ function LocalizationTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; 
           </select>
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Currency</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Currency</label>
           <input title="Currency code" value={form.currencyCode ?? ''} onChange={e => sf('currencyCode', e.target.value)} placeholder="SAR" className={inputCls} />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Country</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Country</label>
           <input title="Country code" value={form.countryCode ?? ''} onChange={e => sf('countryCode', e.target.value)} placeholder="SA" className={inputCls} />
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Calendar System</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Calendar System</label>
           <select title="Calendar system" value={form.calendarSystem} onChange={e => sf('calendarSystem', e.target.value)} className={selectCls}>
             <option value="Gregorian">Gregorian</option>
             <option value="Hijri">Hijri</option>
           </select>
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Work Week</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Work Week</label>
           <select title="Work week" value={form.workWeek} onChange={e => sf('workWeek', e.target.value)} className={selectCls}>
             <option value="Sun-Thu">Sun–Thu (GCC)</option>
             <option value="Mon-Fri">Mon–Fri</option>
@@ -757,7 +757,7 @@ function LocalizationTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; 
           </select>
         </div>
         <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Week Starts On</label>
+          <label className="block text-caption font-semibold text-slate-500 uppercase tracking-wider mb-1">Week Starts On</label>
           <select title="Week start day" value={form.weekStartDay} onChange={e => sf('weekStartDay', e.target.value)} className={selectCls}>
             <option value="Sunday">Sunday</option>
             <option value="Monday">Monday</option>
@@ -836,8 +836,8 @@ export default function TenantDetailPage() {
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-lg font-bold text-white">{tenant.name}</h1>
-            <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border bg-slate-700 text-slate-300 border-slate-600">
+            <h1 className="text-lg font-semibold text-white">{tenant.name}</h1>
+            <span className="text-caption font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border bg-slate-700 text-slate-300 border-slate-600">
               {tenant.slug}
             </span>
           </div>
@@ -882,7 +882,7 @@ export default function TenantDetailPage() {
       {deleteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setDeleteOpen(false)} />
-          <div className="relative w-full max-w-sm bg-[#0d1117] border border-rose-900/40 rounded-2xl shadow-2xl p-6 space-y-4">
+          <div className="relative w-full max-w-sm bg-[#0d1117] border border-rose-900/40 rounded-2xl shadow-e3 p-6 space-y-4">
             <div className="flex items-center gap-3">
               <div className="h-9 w-9 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center shrink-0">
                 <Trash2 className="h-4 w-4 text-rose-400" />

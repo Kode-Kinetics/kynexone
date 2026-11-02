@@ -69,7 +69,7 @@ public class CostCentrePermissionTests
         (await Ctl(only).Create(body, default)).Result.Should().BeOfType<CreatedAtActionResult>();
         (await Ctl(only).Update(w.Cc.Id, new CostCenterRequest(w.A.Id, "OPS", "Renamed"), default)).Result.Should().BeOfType<OkObjectResult>();
         (await Ctl(only).Import(import, default)).Should().BeOfType<OkObjectResult>();
-        (await Ctl(only).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<NoContentResult>();
+        (await Ctl(only).Delete(w.Other.Id, "Removed in test", default)).Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]

@@ -1,7 +1,7 @@
 using Zayra.Api.Domain.Entities;
 namespace Zayra.Api.Models;
 
-public class AttendanceDevice : ITenantOwned
+public class AttendanceDevice : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
@@ -10,11 +10,27 @@ public class AttendanceDevice : ITenantOwned
     public string Vendor { get; set; } = string.Empty;
     public string SerialNumber { get; set; } = string.Empty;
     public Guid? BranchId { get; set; }
+    /// <summary>M4 - the legal entity this device belongs to. Device punches resolve employees ONLY inside it. Stamped from the
+    /// branch when the device is saved; null (legacy, no branch) keeps the tenant-wide resolution.
+    /// Plain ICompanyScoped (not Operational): a device is configuration, and CompanyId == null means tenant-wide / visible to
+    /// every company's admins, so existing devices without a company keep working and stay listed.</summary>
+    public Guid? CompanyId { get; set; }
     public string LocationName { get; set; } = string.Empty;
     public string IpAddress { get; set; } = string.Empty;
     public string EndpointUrl { get; set; } = string.Empty;
     public int? Port { get; set; }
     public string ApiKeyReference { get; set; } = string.Empty;
+    /// <summary>F2 - 0 = no signing secret (the static device key alone authenticates). Otherwise the version of the
+    /// per-device secret derived from the server's signing master key; rotating increments it.</summary>
+    public int SigningKeyVersion { get; set; }
+    /// <summary>F2 - when true an unsigned (or badly signed) request from this device is refused. Only settable once a
+    /// secret exists; devices without one keep working on the static key until an operator enforces signing.</summary>
+    public bool RequireSignature { get; set; }
+    /// <summary>F2 - last bridge heartbeat (an offline bridge is otherwise indistinguishable from a quiet device).</summary>
+    public DateTime? LastHeartbeatAtUtc { get; set; }
+    public string? BridgeVersion { get; set; }
+    /// <summary>F2 - bridge host clock minus server clock at the last heartbeat, in seconds (device/host drift signal).</summary>
+    public int? LastClockSkewSeconds { get; set; }
     public string SyncMethod { get; set; } = "Manual upload";
     public string SyncFrequency { get; set; } = "Manual";
     // Flexible auth: None | BasicAuth | Bearer | CustomHeader | ApiKeyParam
@@ -88,6 +104,10 @@ public class AttendanceRawEvent : ITenantOwned
     public string VerificationMethod { get; set; } = "Manual";
     public decimal? ConfidenceScore { get; set; }
     public bool IsProcessed { get; set; }
+    /// <summary>F2 - idempotency key of a DEVICE punch (<c>DevicePunchKey</c>): unique per (tenant, device) when set. Covers
+    /// punches whose employee code is not mapped yet (EmployeeId NULL), which the (tenant, employee, time, direction, device)
+    /// index cannot de-duplicate because NULLs are distinct. Null on every other source and on rows older than F2.</summary>
+    public string? DedupKey { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
 }

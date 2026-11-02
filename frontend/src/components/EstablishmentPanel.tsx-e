@@ -1,0 +1,989 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSetupEditorState } from './setup/SetupEditorState';
+<<<<<<< HEAD
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Plus, ShieldCheck, TrendingUp, Trash2, Building2, Users } from 'lucide-react';
+=======
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Plus, ShieldCheck, Building2 } from 'lucide-react';
+>>>>>>> origin/main
+import { planningApi } from '../api/planning';
+import { establishmentApi, type MatrixLevelCell, type MatrixRow, type StaffingLevelDto } from '../api/establishment';
+import { tenantHrConfigApi, type EstablishmentEnforcementMode, type TenantHrConfigDto } from '../api/tenantHrConfig';
+import { costCentersApi, type CostCenterDto } from '../api/organization';
+import { OrgRowActions, useOrgRowRemoval, useOrgWriteAccess } from './setup/OrgRowActions';
+import { notifyApiError } from '../api/client';
+import { useTenantSettings } from '../contexts/TenantSettingsContext';
+import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
+import { Modal } from './Modal';
+import { computePayPlan, type PayPlanResult } from '../lib/payPlan';
+import { NOTE_MAX_LENGTH, levelNoteEditable, noteChange, noteCounter } from '../lib/establishmentNotes';
+import {
+  SPEND_RESTRICTED_LABEL, SPEND_RESTRICTED_REASON, isSpendWithheld, spendUtilisation, totalSpend, type Utilisation,
+} from '../lib/establishmentSpend';
+
+const NONE = '__none__';
+const ESTABLISHMENT_WRITE = 'organization.establishment.write';
+const ENFORCEMENT_MODES: EstablishmentEnforcementMode[] = ['Off', 'Advisory', 'Enforced'];
+
+/** Replaces {token} placeholders in a translated template. */
+function fmt(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (m, key) => (key in values ? String(values[key]) : m));
+}
+
+interface RowEdit { approved: number; budget: number; costCenterId: string | null; }
+
+/** One staged level-budget change for the reason/confirm modal. */
+interface LevelChange {
+  staffingLevelId: string;
+  levelName: string;
+  before: number | null;
+  after: number | null;
+  current: number;
+  /** Note to send: undefined = unchanged (omitted), '' = clear. */
+  noteChange?: string;
+}
+
+interface PendingSave {
+  row: MatrixRow;
+  edit: RowEdit;
+  envelopeDirty: boolean;
+  costCenterDirty: boolean;
+  levelChanges: LevelChange[];
+  /** Department note to send: undefined = unchanged (omitted), '' = clear. */
+  deptNote?: string;
+}
+
+export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusLevelId }: {
+  readOnly?: boolean;
+  /** Deep-link target (from ?department= on the Setup page): expanded + scrolled into view on mount. */
+  focusDepartmentId?: string;
+  /** Deep-link target (from ?level=): that level's budget input receives focus. */
+  focusLevelId?: string;
+} = {}) {
+  const { currencyCode } = useTenantSettings();
+  const { hasPermission } = useAuth();
+  const { t, locale } = useLocale();
+  const fx = useFormat();
+  const [rows, setRows] = useState<MatrixRow[]>([]);
+  const [levels, setLevels] = useState<StaffingLevelDto[]>([]);
+  const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [edits, setEdits] = useState<Record<string, RowEdit>>({});
+  // Raw level-budget input per department per level: '' = uncontrolled (no row), '0' = frozen.
+  const [levelEdits, setLevelEdits] = useState<Record<string, Record<string, string>>>({});
+  // Raw note inputs. Only touched fields exist; an untouched note falls back to the saved one and is never sent.
+  const [noteEdits, setNoteEdits] = useState<Record<string, { dept?: string; levels: Record<string, string> }>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [savedId, setSavedId] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [newCc, setNewCc] = useState({ code: '', name: '' });
+  const [error, setError] = useState('');
+  const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
+  const [saveReason, setSaveReason] = useState('');
+  const [savingBudget, setSavingBudget] = useState(false);
+  const [hrConfig, setHrConfig] = useState<TenantHrConfigDto | null>(null);
+  const [pendingMode, setPendingMode] = useState<EstablishmentEnforcementMode | null>(null);
+  const [modeReason, setModeReason] = useState('');
+  const [savingMode, setSavingMode] = useState(false);
+
+  const canEdit = !readOnly && hasPermission(ESTABLISHMENT_WRITE);
+  // False when GET /api/establishment/matrix is unavailable and the panel fell back
+  // to the legacy planning endpoint — level features are hidden so no fabricated
+  // zeros are ever displayed (popup numbers must always equal panel numbers).
+  const [matrixAvailable, setMatrixAvailable] = useState(true);
+
+  const rowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const levelInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const focusApplied = useRef(false);
+
+  const load = () => {
+    setLoading(true);
+    const matrixOrFallback: Promise<MatrixRow[]> = establishmentApi.matrix()
+      .then(m => { setMatrixAvailable(true); return m; })
+      .catch(() =>
+        planningApi.establishment().then(rs => {
+          setMatrixAvailable(false);
+          return rs.map(r => ({
+            ...r, allocated: 0, unallocated: r.approvedHeadcount, managerEmployeeId: null,
+            levels: [], unclassifiedCount: 0, unresolvedDepartmentCount: 0,
+          } as MatrixRow));
+        }).catch(() => [] as MatrixRow[]),
+      );
+    Promise.all([
+      matrixOrFallback,
+      // Read-only consumers (e.g. Recruitment) don't fetch the catalog — levels
+      // are derived from the matrix cells instead (see activeLevels).
+      readOnly ? Promise.resolve([] as StaffingLevelDto[]) : establishmentApi.levels().catch(() => [] as StaffingLevelDto[]),
+      costCentersApi.listAll().catch(() => [] as CostCenterDto[]),
+    ])
+      .then(([matrix, lvls, cc]) => { setRows(matrix); setLevels(lvls); setCostCenters(cc); })
+      .catch(() => {}).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Enforcement mode: fetched only for users who can change it (the config endpoint
+  // is write-gated server-side; fetching for viewers would surface access errors).
+  useEffect(() => {
+    if (!canEdit) return;
+    tenantHrConfigApi.get().then(setHrConfig).catch(() => setHrConfig(null));
+  }, [canEdit]);
+
+  // Deep-link focus: expand the offending department, scroll to it, focus the level input.
+  useEffect(() => {
+    if (loading || focusApplied.current || !focusDepartmentId || !matrixAvailable) return;
+    if (!rows.some(r => r.departmentId === focusDepartmentId)) return;
+    focusApplied.current = true;
+    setExpanded(e => ({ ...e, [focusDepartmentId]: true }));
+    setTimeout(() => {
+      rowRefs.current[focusDepartmentId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (focusLevelId) levelInputRefs.current[`${focusDepartmentId}:${focusLevelId}`]?.focus();
+    }, 200);
+  }, [loading, rows, focusDepartmentId, focusLevelId, matrixAvailable]);
+
+  const activeLevels = useMemo(() => {
+    if (levels.length > 0) return levels.filter(l => l.isActive).sort((a, b) => a.rank - b.rank);
+    // Derived from matrix cells for viewers who don't fetch the catalog (cells
+    // arrive rank-ordered from the server, so insertion order is preserved).
+    const byId = new Map<string, StaffingLevelDto>();
+    for (const r of rows) {
+      for (const c of r.levels ?? []) {
+        if (!byId.has(c.staffingLevelId)) {
+          byId.set(c.staffingLevelId, {
+            id: c.staffingLevelId, code: c.levelCode, nameEn: c.levelNameEn, nameAr: c.levelNameAr,
+            rank: byId.size, isActive: true,
+          });
+        }
+      }
+    }
+    return Array.from(byId.values());
+  }, [levels, rows]);
+  const levelName = (l: { nameEn: string; nameAr: string }) => (locale === 'ar' && l.nameAr) ? l.nameAr : l.nameEn;
+
+  const cellFor = (r: MatrixRow, levelId: string): MatrixLevelCell => {
+    const cell = (r.levels ?? []).find(c => c.staffingLevelId === levelId);
+    if (cell) return cell;
+    const lvl = activeLevels.find(l => l.id === levelId);
+    return {
+      staffingLevelId: levelId,
+      levelCode: lvl?.code ?? '', levelNameEn: lvl?.nameEn ?? '', levelNameAr: lvl?.nameAr ?? '',
+      budgeted: null, current: 0, gap: null, exitingIncumbents: 0, positionsAtLevel: 0, positionsExceedBudget: false,
+    };
+  };
+
+  const editFor = (r: MatrixRow): RowEdit =>
+    edits[r.departmentId] ?? { approved: r.approvedHeadcount, budget: r.monthlyBudgetAmount, costCenterId: r.costCenterId };
+  const setEdit = (r: MatrixRow, patch: Partial<RowEdit>) =>
+    setEdits(e => ({ ...e, [r.departmentId]: { ...editFor(r), ...patch } }));
+
+  /** Raw input value for a level budget: undefined edit falls back to the server value. */
+  const levelEditValue = (r: MatrixRow, levelId: string): string => {
+    const perDept = levelEdits[r.departmentId];
+    if (perDept && levelId in perDept) return perDept[levelId];
+    const b = cellFor(r, levelId).budgeted;
+    return b === null ? '' : String(b);
+  };
+  const setLevelEdit = (r: MatrixRow, levelId: string, value: string) =>
+    setLevelEdits(e => ({ ...e, [r.departmentId]: { ...(e[r.departmentId] ?? {}), [levelId]: value } }));
+
+  const parseBudget = (raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === '') return null;
+    const n = parseInt(trimmed, 10);
+    return Number.isFinite(n) ? Math.max(0, n) : null;
+  };
+
+  const deptNoteValue = (r: MatrixRow): string => noteEdits[r.departmentId]?.dept ?? r.note ?? '';
+  const levelNoteValue = (r: MatrixRow, levelId: string): string => noteEdits[r.departmentId]?.levels[levelId] ?? cellFor(r, levelId).note ?? '';
+  const setDeptNote = (r: MatrixRow, value: string) =>
+    setNoteEdits(e => ({ ...e, [r.departmentId]: { ...e[r.departmentId], levels: e[r.departmentId]?.levels ?? {}, dept: value } }));
+  const setLevelNote = (r: MatrixRow, levelId: string, value: string) =>
+    setNoteEdits(e => ({ ...e, [r.departmentId]: { ...e[r.departmentId], levels: { ...(e[r.departmentId]?.levels ?? {}), [levelId]: value } } }));
+  const deptNoteChange = (r: MatrixRow): string | undefined => noteChange(r.note, noteEdits[r.departmentId]?.dept);
+  /** A level note is only sent while the level keeps a budgeted headcount (the server refuses one without). */
+  const levelNoteChange = (r: MatrixRow, levelId: string): string | undefined =>
+    levelNoteEditable(parseBudget(levelEditValue(r, levelId))) ? noteChange(cellFor(r, levelId).note, noteEdits[r.departmentId]?.levels[levelId]) : undefined;
+
+  const levelChangesFor = (r: MatrixRow): LevelChange[] =>
+    activeLevels.flatMap(lvl => {
+      const cell = cellFor(r, lvl.id);
+      const after = parseBudget(levelEditValue(r, lvl.id));
+      const note = levelNoteChange(r, lvl.id);
+      if (after === cell.budgeted && note === undefined) return [];
+      return [{ staffingLevelId: lvl.id, levelName: levelName(lvl), before: cell.budgeted, after, current: cell.current, noteChange: note }];
+    });
+
+  /** Sum of in-edit level budgets (uncontrolled levels excluded — partial allocation is allowed). */
+  const allocatedInEdit = (r: MatrixRow): number =>
+    activeLevels.reduce((sum, lvl) => sum + (parseBudget(levelEditValue(r, lvl.id)) ?? 0), 0);
+
+  const isDirty = (r: MatrixRow): boolean => {
+    const e = editFor(r);
+    return e.approved !== r.approvedHeadcount || e.budget !== r.monthlyBudgetAmount
+      || (e.costCenterId ?? null) !== r.costCenterId || levelChangesFor(r).length > 0 || deptNoteChange(r) !== undefined;
+  };
+  useSetupEditorState(rows.some(isDirty) || !!newCc.code || !!newCc.name || !!pendingMode);
+
+  const beginSave = (r: MatrixRow) => {
+    const e = editFor(r);
+    const envelopeDirty = e.approved !== r.approvedHeadcount || e.budget !== r.monthlyBudgetAmount;
+    const costCenterDirty = (e.costCenterId ?? null) !== r.costCenterId;
+    const levelChanges = levelChangesFor(r);
+    const deptNote = deptNoteChange(r);
+    if (!envelopeDirty && levelChanges.length === 0 && deptNote === undefined) {
+      // Cost-centre-only change: no establishment mutation, no reason required.
+      if (costCenterDirty) void commitSave({ row: r, edit: e, envelopeDirty, costCenterDirty, levelChanges }, '');
+      return;
+    }
+    setSaveReason('');
+    setPendingSave({ row: r, edit: e, envelopeDirty, costCenterDirty, levelChanges, deptNote });
+  };
+
+  const commitSave = async (p: PendingSave, reason: string) => {
+    setSavingBudget(true);
+    setError('');
+    try {
+      if (p.levelChanges.length > 0 || p.deptNote !== undefined) {
+        await establishmentApi.saveBudgets(
+          p.row.departmentId,
+          p.levelChanges.map(c => ({ staffingLevelId: c.staffingLevelId, budgetedHeadcount: c.after, ...(c.noteChange !== undefined ? { note: c.noteChange } : {}) })),
+          reason,
+          p.deptNote,
+        );
+      }
+      if (p.envelopeDirty || p.costCenterDirty) {
+        await planningApi.setEstablishment(p.row.departmentId, {
+          approvedHeadcount: p.edit.approved,
+          monthlyBudgetAmount: p.edit.budget,
+          costCenterId: p.edit.costCenterId ?? null,
+          reason: p.envelopeDirty ? reason : undefined,
+        });
+      }
+      setPendingSave(null);
+      setSavedId(p.row.departmentId); setTimeout(() => setSavedId(''), 1500);
+      setEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
+      setLevelEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
+      setNoteEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
+      load();
+    } catch (err) {
+      notifyApiError(err, t('Could not save the establishment change.'));
+    } finally {
+      setSavingBudget(false);
+    }
+  };
+
+  const commitModeChange = async () => {
+    if (!hrConfig || !pendingMode) return;
+    setSavingMode(true);
+    try {
+      const updated = await tenantHrConfigApi.update(
+        { ...hrConfig, establishmentEnforcementMode: pendingMode },
+        modeReason.trim(),
+      );
+      setHrConfig(updated);
+      setPendingMode(null);
+      setModeReason('');
+    } catch (err) {
+      notifyApiError(err, t('Could not change the enforcement mode.'));
+    } finally {
+      setSavingMode(false);
+    }
+  };
+
+  const addCostCenter = async () => {
+    if (!newCc.code.trim() || !newCc.name.trim()) { setError('Cost centre needs a code and name.'); return; }
+    setError('');
+    await costCentersApi.create({ code: newCc.code.trim().toUpperCase(), name: newCc.name.trim(), isActive: true }).catch(() => setError('Could not create cost centre.'));
+    setNewCc({ code: '', name: '' }); setAdding(false); load();
+  };
+
+  // Remove is the same rule as Setup → Cost centres: the server deletes an unused cost centre and turns a used one off
+  // (departments or employees point at it), naming what uses it. Confirmed first, in the reader's language.
+  const removal = useOrgRowRemoval({ kind: 'costCenter', onDone: () => load() });
+  const costCentreAccess = useOrgWriteAccess();
+
+  const money = (n: number) => `${currencyCode} ${Math.round(n).toLocaleString()}`;
+  // Spend is null when the server withheld it (#131): shown as Restricted, never as 0 or 0%.
+  const spendText = (spend: number | null) => (spend === null ? SPEND_RESTRICTED_LABEL : money(spend));
+  const utilTone = (u: Utilisation) =>
+    u.state !== 'known' ? 'text-slate-400' : u.percent > 100 ? 'text-rose-600 dark:text-rose-400' : u.percent > 85 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400';
+  const utilText = (u: Utilisation, noBudget: string) =>
+    u.state === 'restricted' ? SPEND_RESTRICTED_LABEL : u.state === 'no-budget' ? noBudget : `${u.percent}%`;
+  const spendWithheld = rows.some(r => isSpendWithheld(r.currentMonthlySpend));
+  const gapTone = (approved: number, gap: number) =>
+    approved <= 0 ? 'text-slate-400' : gap > 0 ? 'text-amber-600 dark:text-amber-400' : gap < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400';
+
+  // Group departments by cost center (plus an "Unassigned" bucket).
+  const groups = useMemo(() => {
+    const byId = new Map<string, { id: string | null; name: string; rows: MatrixRow[] }>();
+    for (const cc of costCenters) byId.set(cc.id, { id: cc.id, name: cc.name, rows: [] });
+    byId.set(NONE, { id: null, name: 'Unassigned', rows: [] });
+    for (const r of rows) {
+      const key = r.costCenterId && byId.has(r.costCenterId) ? r.costCenterId : NONE;
+      byId.get(key)!.rows.push(r);
+    }
+    return Array.from(byId.values()).filter(g => g.rows.length > 0 || g.id !== null);
+  }, [rows, costCenters]);
+
+  const rollup = (gr: MatrixRow[]) => ({
+    depts: gr.length,
+    approved: gr.reduce((s, r) => s + r.approvedHeadcount, 0),
+    current: gr.reduce((s, r) => s + r.currentHeadcount, 0),
+    budget: gr.reduce((s, r) => s + r.monthlyBudgetAmount, 0),
+    spend: totalSpend(gr.map(r => r.currentMonthlySpend)),
+    pipeline: gr.reduce((s, r) => s + r.openRequisitionHeadcount, 0),
+  });
+
+  const colSpan = readOnly ? 9 : 11;
+
+  // ── Pay reconciliation (live from the in-edit budget, approved headcount and level headcounts) ──
+  // Whole numbers stay whole; fractions show up to 2 decimals (the server rounds money to 2).
+  const num = (n: number | null | undefined) => (n == null ? '—' : fx.number(n));
+  // Three different "nothing" states, never to be conflated:
+  //   payPlan === undefined          the server predates pay figures: the pay UI is hidden.
+  //   payPlan === null               WITHHELD (no salary permission): show Restricted, never 0.
+  //   payPlan set, level pay === null  UNPRICED: the viewer may see salaries but the level has no usable
+  //                                    range ('No range set'), or the server flagged currencyMismatch.
+  const payAvailable = (r: MatrixRow) => r.payPlan !== undefined;
+  const payRestricted = (r: MatrixRow) => r.payPlan === null;
+  const livePlan = (r: MatrixRow): PayPlanResult => {
+    const e = editFor(r);
+    const live = computePayPlan({
+      approved: e.approved,
+      budget: e.budget,
+      currency: currencyCode,
+      levels: activeLevels.map(lvl => ({ budgeted: parseBudget(levelEditValue(r, lvl.id)), pay: cellFor(r, lvl.id).pay ?? null })),
+    });
+    const server = r.payPlan;
+    if (!server) return live;
+    if (isDirty(r)) {
+      // Recomputed from the form. A mismatched level reaches us unpriced, so the server's verdict is kept.
+      return server.flags.includes('currencyMismatch') && !live.flags.includes('currencyMismatch')
+        ? { ...live, flags: [...live.flags, 'currencyMismatch'] } : live;
+    }
+    // Untouched: show exactly what the server computed, so the screen never disagrees with the saved plan.
+    const comparable = !server.flags.includes('notComparable');
+    return {
+      ...live,
+      avgPerHead: server.avgPerHead,
+      plannedMin: comparable ? server.plannedMin : null,
+      plannedMid: comparable ? server.plannedMid : null,
+      plannedMax: comparable ? server.plannedMax : null,
+      difference: comparable ? server.unallocatedBudget : null,
+      unallocatedBudget: comparable ? server.unallocatedBudget : null,
+      unpricedHeads: server.unpricedHeads,
+      uncontrolledLevels: server.uncontrolledLevels,
+      unallocated: r.unallocated,
+      flags: server.flags,
+    };
+  };
+
+  if (loading && rows.length === 0) return <div className="flex justify-center py-12"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
+
+  return (
+    <div className="space-y-5">
+      <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-400">
+        {readOnly
+          ? <>Headcount &amp; budget per cost centre (configured in <span className="font-medium">Company Setup → Cost Centres &amp; Budget</span>). <span className="font-medium">Current</span> &amp; <span className="font-medium">Spend</span> are live from active employees.</>
+          : <>Plan each cost centre&apos;s departments: set <span className="font-medium">approved headcount</span> and <span className="font-medium">monthly budget</span>, and assign departments to cost centres. Expand a department to set <span className="font-medium">per-level staffing budgets</span> — {t('levels without a budget are uncontrolled ("—"), an explicit 0 freezes the level, and the total approved headcount never hard-blocks — only level budgets do.')}</>}
+      </p>
+
+      {spendWithheld && (
+        <p role="note" className="text-xs text-slate-500 dark:text-slate-400">
+          Spend and utilisation are restricted. {SPEND_RESTRICTED_REASON} Headcount and budgets are unaffected.
+        </p>
+      )}
+
+      {/* ── Enforcement mode (tenant-wide; changes are audited with a reason) ── */}
+      {!readOnly && hrConfig && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 p-3 dark:border-white/10">
+          <ShieldCheck className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
+          <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{t('Establishment enforcement')}</span>
+          <select
+            className="select w-36 text-sm"
+            aria-label={t('Establishment enforcement')}
+            value={hrConfig.establishmentEnforcementMode || 'Enforced'}
+            disabled={!canEdit}
+            onChange={ev => { setModeReason(''); setPendingMode(ev.target.value as EstablishmentEnforcementMode); }}
+          >
+            {ENFORCEMENT_MODES.map(m => <option key={m} value={m}>{t(m)}</option>)}
+          </select>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            {hrConfig.establishmentEnforcementMode === 'Off' && t('Level budgets are ignored everywhere.')}
+            {hrConfig.establishmentEnforcementMode === 'Advisory' && t('Over-budget assignments are allowed but flagged with a warning.')}
+            {(hrConfig.establishmentEnforcementMode === 'Enforced' || !hrConfig.establishmentEnforcementMode) && t('Assignments beyond a level budget are blocked. Levels without a budget row stay uncontrolled.')}
+          </span>
+        </div>
+      )}
+
+      {/* ── Cost-centre rollup cards ─────────────────────────────────────── */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {groups.map(g => {
+          const tot = rollup(g.rows);
+          const u = spendUtilisation(tot.spend, tot.budget);
+          return (
+            <div key={g.id ?? NONE} className="surface p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Building2 className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
+                  <span className="truncate font-semibold text-slate-800 dark:text-white">{g.name}</span>
+                </div>
+                {!readOnly && g.id && (() => {
+                  const cc = costCenters.find(c => c.id === g.id);
+                  if (!cc) return null;
+                  return <OrgRowActions name={cc.name} isActive={cc.isActive} busy={removal.busyId === cc.id} blockedReason={costCentreAccess(cc.companyId).reason}
+                    onEdit={() => { /* edited in Setup → Cost centres */ }} onRemove={() => void removal.remove({ id: cc.id, name: cc.name })}
+                    onRestore={() => void removal.restore({ id: cc.id, name: cc.name })} editable={false} />;
+                })()}
+              </div>
+              <div className="grid grid-cols-2 gap-y-1.5 text-xs">
+                <span className="text-slate-400">Headcount</span>
+                <span className="text-end font-medium text-slate-700 dark:text-slate-200">{tot.current}{tot.approved > 0 && <span className="text-slate-400"> / {tot.approved}</span>}</span>
+                <span className="text-slate-400">Gap</span>
+                <span className={`text-end font-medium ${gapTone(tot.approved, tot.approved - tot.current)}`}>{tot.approved > 0 ? (tot.approved - tot.current > 0 ? `+${tot.approved - tot.current}` : tot.approved - tot.current) : '—'}</span>
+                <span className="text-slate-400">Budget / Spend</span>
+                <span className="text-end font-medium text-slate-700 dark:text-slate-200" title={tot.spend === null ? SPEND_RESTRICTED_REASON : undefined}>{tot.budget > 0 ? `${spendText(tot.spend)} / ${money(tot.budget)}` : spendText(tot.spend)}</span>
+                <span className="text-slate-400">Utilisation</span>
+                <span className={`text-end font-semibold ${utilTone(u)}`} title={u.state === 'restricted' ? SPEND_RESTRICTED_REASON : undefined}>{utilText(u, '— no budget')}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Add cost centre ──────────────────────────────────────────────── */}
+      {!readOnly && (
+        adding ? (
+          <div className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 p-3 dark:border-white/10">
+            <div><label className="mb-1 block text-xs text-slate-500">Code</label><input className="input w-28 text-sm" value={newCc.code} onChange={e => setNewCc(v => ({ ...v, code: e.target.value }))} placeholder="CC-OPS" /></div>
+            <div className="flex-1 min-w-[160px]"><label className="mb-1 block text-xs text-slate-500">Name</label><input className="input w-full text-sm" value={newCc.name} onChange={e => setNewCc(v => ({ ...v, name: e.target.value }))} placeholder="Operations Cost Centre" /></div>
+            <button type="button" className="btn-primary text-sm" onClick={addCostCenter}>Add</button>
+            <button type="button" className="btn-secondary text-sm" onClick={() => { setAdding(false); setNewCc({ code: '', name: '' }); }}>Cancel</button>
+          </div>
+        ) : (
+          <button type="button" className="btn-secondary flex items-center gap-1.5 text-sm" onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" />Add cost centre</button>
+        )
+      )}
+
+      {error && <p className="text-xs text-rose-500">{error}</p>}
+      {removal.notice}
+      {removal.confirmDialog}
+
+      {/* ── Department establishment table, grouped by cost centre ────────── */}
+      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-start text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+            <tr>
+              <th className="w-8 px-2 py-2.5"><span className="sr-only">{t('Staffing levels')}</span></th>
+              <th className="px-4 py-2.5 font-medium">Department</th>
+              {!readOnly && <th className="px-4 py-2.5 font-medium">Cost Centre</th>}
+              <th className="px-4 py-2.5 font-medium text-center">Approved</th>
+              <th className="px-4 py-2.5 font-medium text-center">Current</th>
+              <th className="px-4 py-2.5 font-medium text-center">Pipeline</th>
+              <th className="px-4 py-2.5 font-medium text-center">Gap</th>
+              <th className="px-4 py-2.5 font-medium">Budget</th>
+              <th className="px-4 py-2.5 font-medium">Spend</th>
+              <th className="px-4 py-2.5 font-medium text-center">Util.</th>
+              {!readOnly && <th className="px-4 py-2.5"><span className="sr-only">Actions</span></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+            {groups.map(g => g.rows.length === 0 ? null : (
+              <GroupRows key={g.id ?? NONE} groupName={g.name} colSpan={colSpan}>
+                {g.rows.map(r => {
+                  const e = editFor(r);
+                  const dirty = isDirty(r);
+                  const u = spendUtilisation(r.currentMonthlySpend, r.monthlyBudgetAmount);
+                  const isExpanded = !!expanded[r.departmentId];
+                  const allocated = allocatedInEdit(r);
+                  const unallocated = e.approved - allocated;
+                  const showPay = payAvailable(r);
+                  const restricted = payRestricted(r);
+                  const plan = livePlan(r);
+                  // Budgeted levels the server says have no range (not currency clashes, which have their own chip).
+                  const hasPayStatus = activeLevels.some(l => cellFor(r, l.id).payStatus !== undefined);
+                  const noRangeLevels = hasPayStatus
+                    ? activeLevels.filter(l => parseBudget(levelEditValue(r, l.id)) !== null && cellFor(r, l.id).payStatus === 'noRange').length
+                    : plan.unpricedLevels;
+                  return (
+                    <FragmentRows key={r.departmentId}>
+                      <tr
+                        ref={el => { rowRefs.current[r.departmentId] = el; }}
+                        className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02]"
+                      >
+                        <td className="px-2 py-2">
+                          {matrixAvailable && (
+                            <button
+                              type="button"
+                              aria-expanded={isExpanded}
+                              aria-label={`${t('Staffing levels')} — ${r.departmentName}`}
+                              onClick={() => setExpanded(x => ({ ...x, [r.departmentId]: !isExpanded }))}
+                              className="grid h-6 w-6 place-items-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/[0.07]"
+                            >
+                              {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-4 py-2 font-medium text-slate-800 dark:text-slate-200">{r.departmentName}</td>
+                        {!readOnly && (
+                          <td className="px-4 py-2">
+                            <select className="select w-40 text-sm" aria-label={`Cost centre for ${r.departmentName}`}
+                              disabled={!canEdit}
+                              value={e.costCenterId ?? ''} onChange={ev => setEdit(r, { costCenterId: ev.target.value || null })}>
+                              <option value="">— Unassigned —</option>
+                              {costCenters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                          </td>
+                        )}
+                        <td className="px-4 py-2 text-center">
+                          {!canEdit
+                            ? <span className="font-semibold text-slate-700 dark:text-slate-200">{r.approvedHeadcount || '—'}</span>
+                            : <input type="number" min={0} aria-label={`Approved headcount for ${r.departmentName}`} className="input w-16 text-center text-sm" value={e.approved}
+                                onChange={ev => setEdit(r, { approved: Math.max(0, parseInt(ev.target.value || '0', 10)) })} />}
+                        </td>
+                        <td className="px-4 py-2 text-center font-semibold text-slate-700 dark:text-slate-200">{r.currentHeadcount}</td>
+                        <td className="px-4 py-2 text-center text-slate-500 dark:text-slate-400">{r.openRequisitionHeadcount || '—'}</td>
+                        <td className={`px-4 py-2 text-center font-semibold ${gapTone(r.approvedHeadcount, r.gap)}`}>
+                          {r.approvedHeadcount <= 0 ? '—' : r.gap > 0 ? `+${r.gap}` : r.gap}
+                        </td>
+                        <td className="px-4 py-2">
+                          {!canEdit
+                            ? <span className="text-slate-600 dark:text-slate-300">{r.monthlyBudgetAmount > 0 ? money(r.monthlyBudgetAmount) : '—'}</span>
+                            : <div className="flex items-center gap-1"><span className="text-xs text-slate-400">{currencyCode}</span>
+                                <input type="number" min={0} aria-label={`Monthly budget for ${r.departmentName}`} className="input w-24 text-sm" value={e.budget}
+                                  onChange={ev => setEdit(r, { budget: Math.max(0, parseFloat(ev.target.value || '0')) })} /></div>}
+                        </td>
+                        <td className="px-4 py-2 text-slate-600 dark:text-slate-300" title={r.currentMonthlySpend === null ? SPEND_RESTRICTED_REASON : undefined}>
+                          {r.currentMonthlySpend === null ? SPEND_RESTRICTED_LABEL : r.currentMonthlySpend > 0 ? money(r.currentMonthlySpend) : '—'}
+                        </td>
+                        <td className={`px-4 py-2 text-center font-semibold ${utilTone(u)}`} title={u.state === 'restricted' ? SPEND_RESTRICTED_REASON : undefined}>{utilText(u, '—')}</td>
+                        {!readOnly && (
+                          <td className="px-4 py-2 text-end">
+                            {savedId === r.departmentId
+                              ? <span className="inline-flex items-center gap-1 text-xs text-emerald-500"><CheckCircle2 className="h-3.5 w-3.5" /> Saved</span>
+                              : canEdit
+                                ? <button type="button" className="btn-secondary text-xs disabled:opacity-40" disabled={!dirty} onClick={() => beginSave(r)}>Save</button>
+                                : <span className="text-caption text-slate-400">{t('Read-only')}</span>}
+                          </td>
+                        )}
+                      </tr>
+
+                      {/* ── Per-level staffing budget breakdown ── */}
+                      {isExpanded && matrixAvailable && (
+                        <tr className="bg-slate-50/40 dark:bg-white/[0.015]">
+                          <td colSpan={colSpan} className="px-4 py-3 sm:px-10">
+                            <div className="space-y-2.5">
+                              {showPay && (
+                                <div role="group" aria-label={fmt(t('Pay reconciliation — {dept}'), { dept: r.departmentName })} aria-busy={loading}
+                                  data-testid={`pay-summary-${r.departmentId}`} className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                                  {loading ? (
+                                    <div className="h-6 w-56 animate-pulse rounded-full bg-slate-200 dark:bg-white/10" role="status" aria-label={t('Updating pay figures')} />
+                                  ) : (
+                                    <>
+                                      <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+                                        <div data-testid={`pay-avg-per-head-${r.departmentId}`}>
+                                          <dt className="text-slate-400">{t('Average per head')}</dt>
+                                          <dd className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">{plan.avgPerHead === null ? '—' : <span dir="ltr">{num(plan.avgPerHead)}</span>}</dd>
+                                        </div>
+                                        <div data-testid={`pay-planned-vs-budget-${r.departmentId}`}>
+                                          <dt className="text-slate-400">{t('Planned cost vs budget')}</dt>
+                                          <dd className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                                            {restricted ? (
+                                              <span data-testid={`pay-restricted-${r.departmentId}`} className="font-normal text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                            ) : plan.plannedMid === null ? '—' : (
+                                              <>
+                                                <span dir="ltr">{fmt(t('{planned} vs {budget}'), { planned: num(plan.plannedMid), budget: num(e.budget) })}</span>
+                                                {plan.difference !== null && plan.difference !== 0 && (
+                                                  <span className={`ms-2 text-xs font-medium ${plan.difference < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                                                    {plan.difference < 0
+                                                      ? fmt(t('Over by {n}'), { n: num(Math.abs(plan.difference)) })
+                                                      : fmt(t('Under by {n}'), { n: num(Math.abs(plan.difference)) })}
+                                                  </span>
+                                                )}
+                                              </>
+                                            )}
+                                          </dd>
+                                        </div>
+                                      </dl>
+                                      {restricted && <p role="note" className="text-xs text-slate-500 dark:text-slate-400">{t(SPEND_RESTRICTED_REASON)}</p>}
+                                    </>
+                                  )}
+                                  <div role="status" aria-live="polite" className="flex flex-wrap gap-1.5 text-xs">
+                                    {!loading && !restricted && plan.flags.includes('overBudget') && plan.difference !== null && (
+                                      <span data-testid={`chip-over-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-0.5 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+                                        <TrendingUp className="h-3 w-3" aria-hidden="true" />{fmt(t('Planned cost exceeds budget by {n}'), { n: num(Math.abs(plan.difference)) })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.flags.includes('belowMinimum') && (
+                                      <span data-testid={`chip-below-min-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Budget per head is below the grade minimum')}
+                                      </span>
+                                    )}
+                                    {!loading && e.approved > 0 && plan.unallocated > 0 && (
+                                      <span data-testid={`chip-unallocated-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <Users className="h-3 w-3" aria-hidden="true" />{fmt(t('{n} heads not allocated to a level'), { n: plan.unallocated })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && noRangeLevels > 0 && (
+                                      <span data-testid={`chip-no-range-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                                        <CircleSlash className="h-3 w-3" aria-hidden="true" />{t('{n, plural, one {No pay range set for # level} other {No pay range set for # levels}}', { n: noRangeLevels })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.flags.includes('currencyMismatch') && (
+                                      <span data-testid={`chip-currency-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Pay bands use mixed or different currencies - cost not compared')}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.difference !== null && !plan.flags.includes('overBudget') && !plan.flags.includes('belowMinimum') && !plan.flags.includes('currencyMismatch') && (
+                                      <span data-testid={`chip-within-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                                        <Check className="h-3 w-3" aria-hidden="true" />{t('Within budget')}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              <div className="text-xs">
+                                <label className="mb-1 block text-slate-500 dark:text-slate-400" htmlFor={`dept-note-${r.departmentId}`}>{t('Department note')}</label>
+                                {canEdit ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <input id={`dept-note-${r.departmentId}`} type="text" maxLength={NOTE_MAX_LENGTH} data-testid={`dept-note-${r.departmentId}`}
+                                      className="input w-full max-w-xl text-xs" value={deptNoteValue(r)} onChange={ev => setDeptNote(r, ev.target.value)} />
+                                    <span data-testid={`dept-note-count-${r.departmentId}`} dir="ltr" className="text-[10px] tabular-nums text-slate-400">{noteCounter(deptNoteValue(r))}</span>
+                                  </div>
+                                ) : (
+                                  <p id={`dept-note-${r.departmentId}`} data-testid={`dept-note-${r.departmentId}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{r.note || '—'}</p>
+                                )}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className={`font-semibold ${allocated > e.approved && e.approved > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-600 dark:text-slate-300'}`}>
+                                  {fmt(t('Allocated {allocated} of {approved} (unallocated: {unallocated})'), {
+                                    allocated,
+                                    approved: e.approved > 0 ? e.approved : `— (${t('not set')})`,
+                                    unallocated: e.approved > 0 ? unallocated : '—',
+                                  })}
+                                </span>
+                                {allocated > e.approved && e.approved > 0 && (
+                                  <span className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                    <AlertTriangle className="h-3 w-3" />{t('Level budgets exceed the approved headcount.')}
+                                  </span>
+                                )}
+                                {r.unclassifiedCount > 0 && (
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees with no or unmapped designation — never counted, never blocked.')}>
+                                    {fmt(t('Unclassified: {n}'), { n: r.unclassifiedCount })}
+                                  </span>
+                                )}
+                                {r.unresolvedDepartmentCount > 0 && (
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300" title={t('Employees whose department is stored as free text and could not be resolved.')}>
+                                    {fmt(t('Unresolved department: {n}'), { n: r.unresolvedDepartmentCount })}
+                                  </span>
+                                )}
+                                {r.managerEmployeeId != null && (
+                                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-slate-400 dark:bg-white/10" title={t('The department manager assignment is independent of level budgets and is never used in enforcement.')}>
+                                    {t('Manager assigned')}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-white/10">
+                                <table className="w-full text-xs">
+                                  <thead className="bg-slate-50 text-start text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
+                                    <tr>
+                                      <th className="px-3 py-2 font-medium">{t('Level')}</th>
+                                      <th className="px-3 py-2 font-medium text-center">{t('Budgeted')}</th>
+                                      <th className="px-3 py-2 font-medium text-center">{t('Current')}</th>
+                                      <th className="px-3 py-2 font-medium text-center">{t('Gap')}</th>
+                                      {showPay && <th scope="col" className="px-3 py-2 text-start font-medium">{t('Pay band')}</th>}
+                                      {showPay && <th scope="col" className="px-3 py-2 text-center font-medium">{t('Planned cost')}</th>}
+                                      <th scope="col" className="px-3 py-2 text-start font-medium">{t('Status')}</th>
+                                      <th scope="col" className="px-3 py-2 text-start font-medium">{t('Note')}</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
+                                    {activeLevels.map(lvl => {
+                                      const cell = cellFor(r, lvl.id);
+                                      const raw = levelEditValue(r, lvl.id);
+                                      const inEdit = parseBudget(raw);
+                                      // Live gap while typing — client-side from current vs the in-edit value.
+                                      const liveGap = inEdit === null ? null : inEdit - cell.current;
+                                      const heads = inEdit !== null && inEdit > 0 ? inEdit : 0;
+                                      // payStatus null (or a withheld payPlan) = no salary permission; never read it as unpriced.
+                                      const payWithheld = restricted || cell.payStatus === null;
+                                      return (
+                                        <tr key={lvl.id}>
+                                          <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">
+                                            {levelName(lvl)}
+                                            {inEdit === 0 && <span className="ms-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-caption font-semibold uppercase text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('frozen')}</span>}
+                                          </td>
+                                          <td className="px-3 py-2 text-center">
+                                            {canEdit ? (
+                                              <input
+                                                ref={el => { levelInputRefs.current[`${r.departmentId}:${lvl.id}`] = el; }}
+                                                type="number" min={0}
+                                                aria-label={`${t('Budgeted')} ${levelName(lvl)} — ${r.departmentName}`}
+                                                className="input w-16 text-center text-xs"
+                                                value={raw}
+                                                placeholder="—"
+                                                title={t('Empty = uncontrolled (unlimited). 0 = frozen (no additions).')}
+                                                onChange={ev => setLevelEdit(r, lvl.id, ev.target.value)}
+                                              />
+                                            ) : (
+                                              <span className="font-semibold text-slate-700 dark:text-slate-200">{cell.budgeted === null ? '—' : cell.budgeted}</span>
+                                            )}
+                                          </td>
+                                          <td className="px-3 py-2 text-center font-semibold text-slate-700 dark:text-slate-200">{cell.current}</td>
+                                          <td className="px-3 py-2 text-center">
+                                            {liveGap === null
+                                              ? <span className="text-slate-400" title={t('Level is uncontrolled — no budget row.')}>—</span>
+                                              : liveGap < 0
+                                                ? <span className="font-semibold text-rose-600 dark:text-rose-400">{fmt(t('over-establishment: {n}'), { n: Math.abs(liveGap) })}</span>
+                                                : <span className={`font-semibold ${liveGap === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{liveGap > 0 ? `+${liveGap}` : liveGap}</span>}
+                                          </td>
+                                          {showPay && (
+                                            <td className="px-3 py-2" data-testid={`level-pay-band-${r.departmentId}-${lvl.id}`}>
+                                              {payWithheld
+                                                ? <span className="text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                                : cell.payStatus === 'currencyMismatch'
+                                                  ? <span className="text-slate-400">{t('Currency differs')}</span>
+                                                  : cell.pay && cell.payStatus !== 'noRange'
+                                                    ? <span dir="ltr" className="inline-block tabular-nums text-slate-700 dark:text-slate-200">{num(cell.pay.min)}–{num(cell.pay.max)}</span>
+                                                    : <span className="text-slate-400">{t('No range set')}</span>}
+                                            </td>
+                                          )}
+                                          {showPay && (
+                                            <td className="px-3 py-2 text-center tabular-nums" data-testid={`level-planned-cost-${r.departmentId}-${lvl.id}`}
+                                              aria-label={payWithheld || !heads || !cell.pay || cell.payStatus === 'noRange' || cell.payStatus === 'currencyMismatch' ? undefined : fmt(t('Planned cost {cost} for {level} level'), { cost: num(heads * cell.pay.mid), level: levelName(lvl) })}>
+                                              {payWithheld
+                                                ? <span className="text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                                : heads && cell.pay && (cell.payStatus === undefined || cell.payStatus === 'priced')
+                                                  ? <span dir="ltr" className="text-slate-700 dark:text-slate-200">{heads} × {num(cell.pay.mid)} = {num(heads * cell.pay.mid)}</span>
+                                                  : <span className="text-slate-400">—</span>}
+                                            </td>
+                                          )}
+                                          <td className="px-3 py-2" data-testid={`level-status-${r.departmentId}-${lvl.id}`}>
+                                            <div className="flex flex-wrap gap-1.5">
+                                              {cell.exitingIncumbents <= 0 && !cell.positionsExceedBudget && (
+                                                <span className="inline-flex items-center gap-1 text-slate-400"><Check className="h-3 w-3" aria-hidden="true" />{t('OK')}</span>
+                                              )}
+                                              {cell.exitingIncumbents > 0 && (
+                                                <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                                  {fmt(t('{n} serving notice'), { n: cell.exitingIncumbents })}
+                                                </span>
+                                              )}
+                                              {cell.positionsExceedBudget && (
+                                                <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400" title={t('Level-mapped positions exceed this level budget (warning only).')}>
+                                                  {t('Positions exceed budget')}
+                                                </span>
+                                              )}
+                                            </div>
+                                          </td>
+                                          <td className="px-3 py-2">
+                                            {canEdit ? (
+                                              <div className="flex items-center gap-1.5">
+                                                <input
+                                                  type="text" maxLength={NOTE_MAX_LENGTH}
+                                                  data-testid={`level-note-${r.departmentId}-${lvl.id}`}
+                                                  aria-label={`${t('Note')} ${levelName(lvl)} — ${r.departmentName}`}
+                                                  className="input w-44 text-xs disabled:opacity-60"
+                                                  value={levelNoteValue(r, lvl.id)}
+                                                  disabled={!levelNoteEditable(inEdit)}
+                                                  title={levelNoteEditable(inEdit) ? undefined : t('Set a budgeted headcount (0 = frozen) to add a note to this level.')}
+                                                  onChange={ev => setLevelNote(r, lvl.id, ev.target.value)}
+                                                />
+                                                <span data-testid={`level-note-count-${r.departmentId}-${lvl.id}`} dir="ltr" className="text-[10px] tabular-nums text-slate-400">{noteCounter(levelNoteValue(r, lvl.id))}</span>
+                                              </div>
+                                            ) : (
+                                              <span data-testid={`level-note-${r.departmentId}-${lvl.id}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{cell.note || '—'}</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                    {activeLevels.length === 0 && (
+                                      <tr><td colSpan={showPay ? 8 : 6} className="px-3 py-4 text-center text-slate-400">{t('No staffing levels configured yet.')}</td></tr>
+                                    )}
+                                  </tbody>
+                                  {activeLevels.length > 0 && (
+                                    <tfoot className="border-t border-slate-200 bg-slate-50/60 text-slate-700 dark:border-white/10 dark:bg-white/[0.02] dark:text-slate-200">
+                                      <tr data-testid={`level-total-${r.departmentId}`}>
+                                        <th scope="row" className="px-3 py-2 text-start font-semibold">{t('Total')}</th>
+                                        <td className="px-3 py-2 text-center font-semibold tabular-nums">{plan.allocated}</td>
+                                        <td className="px-3 py-2 text-center font-semibold tabular-nums">{activeLevels.reduce((sum, lvl) => sum + cellFor(r, lvl.id).current, 0)}</td>
+                                        <td className="px-3 py-2" />
+                                        {showPay && <td className="px-3 py-2" />}
+                                        {showPay && (
+                                          <td className="px-3 py-2 text-center font-semibold tabular-nums">
+                                            {restricted ? <span className="font-normal text-slate-400">{t(SPEND_RESTRICTED_LABEL)}</span> : <span dir="ltr">{num(plan.plannedMid)}</span>}
+                                          </td>
+                                        )}
+                                        <td className="px-3 py-2" />
+                                        <td className="px-3 py-2" />
+                                      </tr>
+                                    </tfoot>
+                                  )}
+                                </table>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </FragmentRows>
+                  );
+                })}
+              </GroupRows>
+            ))}
+            {rows.length === 0 && <tr><td colSpan={colSpan} className="px-4 py-8 text-center text-slate-400">No departments yet. Create departments first (or use AI Setup).</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Reason + confirm modal for establishment changes (mandatory, audited) ── */}
+      <Modal
+        isOpen={!!pendingSave}
+        title={t('Confirm establishment change')}
+        onClose={() => setPendingSave(null)}
+        footer={
+          <>
+            <button type="button" className="btn-secondary" onClick={() => setPendingSave(null)}>{t('Cancel')}</button>
+            <button
+              type="button"
+              className="btn-primary disabled:opacity-50"
+              disabled={savingBudget || !saveReason.trim()}
+              onClick={() => pendingSave && commitSave(pendingSave, saveReason.trim())}
+            >
+              {savingBudget ? t('Saving…') : t('Confirm save')}
+            </button>
+          </>
+        }
+      >
+        {pendingSave && (
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-600 dark:text-slate-300">
+              <span className="font-semibold">{pendingSave.row.departmentName}</span>
+            </p>
+
+            {pendingSave.levelChanges.length > 0 && (
+              <ul className="space-y-1.5">
+                {pendingSave.levelChanges.map(c => (
+                  <li key={c.staffingLevelId} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs dark:border-white/10">
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">{c.levelName}</span>
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {c.before === null ? `— (${t('uncontrolled')})` : c.before} → {c.after === null ? `— (${t('uncontrolled')})` : c.after}
+                    </span>
+                    {c.noteChange !== undefined && (
+                      <span className="text-slate-500 dark:text-slate-400">{c.noteChange === '' ? t('Note cleared') : `${t('Note')}: ${c.noteChange}`}</span>
+                    )}
+                    {c.after === null && c.before !== null && (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Clearing a budget returns that level to unlimited.')}</span>
+                    )}
+                    {c.after === 0 && (
+                      <span className="rounded bg-sky-100 px-1.5 py-0.5 font-semibold text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('0 freezes the level — no additions will be sanctioned.')}</span>
+                    )}
+                    {c.after !== null && c.after !== c.before && c.after < c.current && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                        <AlertTriangle className="h-3 w-3" />
+                        {fmt(t('Below current occupancy ({current}) — existing staff are never affected; the level will show as over-establishment.'), { current: c.current })}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {pendingSave.deptNote !== undefined && (
+              <p className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                {pendingSave.deptNote === '' ? t('Department note cleared') : `${t('Department note')}: ${pendingSave.deptNote}`}
+              </p>
+            )}
+
+            {pendingSave.envelopeDirty && (
+              <p className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                {t('Approved headcount / monthly budget')}: {pendingSave.row.approvedHeadcount} → {pendingSave.edit.approved} · {money(pendingSave.row.monthlyBudgetAmount)} → {money(pendingSave.edit.budget)}
+              </p>
+            )}
+
+            {(() => {
+              const approvedTarget = pendingSave.edit.approved;
+              const alloc = allocatedInEdit(pendingSave.row);
+              return approvedTarget > 0 && alloc > approvedTarget ? (
+                <p className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  {fmt(t('Level budgets total {sum}, above the approved headcount of {approved}. Saving is allowed — this is a warning.'), { sum: alloc, approved: approvedTarget })}
+                </p>
+              ) : null;
+            })()}
+
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+              {t('Reason for change')} <span className="text-red-500">*</span>
+              <textarea
+                value={saveReason}
+                onChange={ev => setSaveReason(ev.target.value)}
+                rows={2}
+                className="input mt-1.5 w-full resize-none"
+                placeholder={t('e.g. Approved by management for Q3 expansion')}
+              />
+            </label>
+            <p className="text-xs text-slate-400">{t('A reason is required for every establishment change (audited).')}</p>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Enforcement-mode change modal (reason mandatory, audited) ── */}
+      <Modal
+        isOpen={!!pendingMode}
+        title={t('Change enforcement mode')}
+        onClose={() => setPendingMode(null)}
+        size="sm"
+        footer={
+          <>
+            <button type="button" className="btn-secondary" onClick={() => setPendingMode(null)}>{t('Cancel')}</button>
+            <button
+              type="button"
+              className="btn-primary disabled:opacity-50"
+              disabled={savingMode || !modeReason.trim()}
+              onClick={commitModeChange}
+            >
+              {savingMode ? t('Saving…') : t('Confirm')}
+            </button>
+          </>
+        }
+      >
+        {pendingMode && hrConfig && (
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-600 dark:text-slate-300">
+              {t(hrConfig.establishmentEnforcementMode || 'Enforced')} → <span className="font-semibold">{t(pendingMode)}</span>
+            </p>
+            {pendingMode === 'Off' && (
+              <p className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                {t('Turning enforcement off disables every level budget in this tenant.')}
+              </p>
+            )}
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+              {t('Reason for change')} <span className="text-red-500">*</span>
+              <textarea value={modeReason} onChange={ev => setModeReason(ev.target.value)} rows={2} className="input mt-1.5 w-full resize-none" />
+            </label>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+/** Cost-centre group header + its department rows (kept as table-row siblings). */
+function GroupRows({ groupName, colSpan, children }: { groupName: string; colSpan: number; children: React.ReactNode }) {
+  return (
+    <>
+      <tr className="bg-slate-50/60 dark:bg-white/[0.02]">
+        <td colSpan={colSpan} className="px-4 py-1.5 text-caption font-semibold uppercase tracking-wide text-slate-400">{groupName}</td>
+      </tr>
+      {children}
+    </>
+  );
+}
+
+/** Fragment alias for a department row + its expansion row. */
+function FragmentRows({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}

@@ -13,6 +13,8 @@ public sealed class OrganizationRuleException(string code, string message) : Inv
     public const string CompanyMismatch = "company_mismatch";
     /// <summary>A row's company is fixed once set; copy it to the other company instead.</summary>
     public const string CompanyLocked = "company_locked";
+    /// <summary>A row's code can't change once the row is in use (change the name, or turn the row off and add a new one).</summary>
+    public const string CodeLocked = "code_locked";
 
     public string Code { get; } = code;
 

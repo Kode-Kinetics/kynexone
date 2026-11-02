@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
@@ -49,6 +51,89 @@ internal static class OrgWriteRules
     /// within the caller's grant. A null company is tenant-wide and needs a group grant.</summary>
     public static bool MayWriteCompany(ControllerBase c, Guid? companyId) =>
         c.HasGroupEntityScope() || (companyId is not null && c.GetEntityScope().CanAccessCompany(companyId));
+
+    /// <summary>Creating a row that belongs to one company (department, designation, grade, cost centre): the
+    /// named company must be within the caller's grant. With no company named the service picks the caller's
+    /// only company, so any company-scoped caller may try; an ambiguous request is refused by the service (400).</summary>
+    public static bool MayCreateInCompany(ControllerBase c, Guid? requestedCompanyId) =>
+        c.HasGroupEntityScope()
+        || (requestedCompanyId is null
+            ? c.GetEntityScope().AccessibleCompanyIds.Count > 0
+            : c.GetEntityScope().CanAccessCompany(requestedCompanyId));
+
+    /// <summary>Editing an existing org row: its current company must be within the caller's grant (otherwise it
+    /// reads as not found, as on GET) and so must the company the request names. Null when the edit may go ahead.</summary>
+    public static Task<ActionResult?> GuardEditAsync(
+        ControllerBase c, IOrganizationSetupService organization, OrgRowKind kind, Guid id, Guid? requestedCompanyId, CancellationToken ct)
+        => GuardEditAsync(c, organization.Removal, kind, id, requestedCompanyId, ct);
+
+    public static async Task<ActionResult?> GuardEditAsync(
+        ControllerBase c, IOrgRowRemoval removal, OrgRowKind kind, Guid id, Guid? requestedCompanyId, CancellationToken ct)
+    {
+        var tenantId = c.GetTenantId();
+        if (tenantId is null) return c.Unauthorized();
+        var (found, current) = await removal.CompanyOfAsync(kind, tenantId.Value, id, ct);
+        if (!found || !MayWriteCompany(c, current)) return c.NotFound();
+        if (requestedCompanyId is not null && !MayWriteCompany(c, requestedCompanyId)) return c.Forbid();
+        return null;
+    }
+
+    /// <summary>The shared Remove for every org row: never used -> deleted, in use -> turned off. The server decides.</summary>
+    public static Task<IActionResult> RemoveAsync(
+        ControllerBase c, IOrganizationSetupService organization, OrgRowKind kind, Guid id, RequestContext context, CancellationToken ct, string? reason = null)
+        => RemoveAsync(c, organization.Removal, kind, id, context, ct, reason);
+
+    public static async Task<IActionResult> RemoveAsync(
+        ControllerBase c, IOrgRowRemoval removal, OrgRowKind kind, Guid id, RequestContext context, CancellationToken ct, string? reason = null)
+    {
+        var tenantId = c.GetTenantId();
+        if (tenantId is null) return c.Unauthorized();
+        var (found, current) = await removal.CompanyOfAsync(kind, tenantId.Value, id, ct);
+        if (!found || !MayWriteCompany(c, current))
+        {
+            await removal.RecordRefusalAsync(kind, tenantId.Value, id, "remove", found ? "out_of_scope" : "not_found", context, ct);
+            return c.NotFound();
+        }
+        try
+        {
+            var result = await removal.RemoveAsync(kind, tenantId.Value, id, context, ct, reason);
+            return result is null ? c.NotFound() : c.Ok(Body(result));
+        }
+        catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
+    }
+
+    /// <summary>The shared Restore: turns a turned-off row back on.</summary>
+    public static Task<IActionResult> RestoreAsync(
+        ControllerBase c, IOrganizationSetupService organization, OrgRowKind kind, Guid id, RequestContext context, CancellationToken ct)
+        => RestoreAsync(c, organization.Removal, kind, id, context, ct);
+
+    public static async Task<IActionResult> RestoreAsync(
+        ControllerBase c, IOrgRowRemoval removal, OrgRowKind kind, Guid id, RequestContext context, CancellationToken ct)
+    {
+        var tenantId = c.GetTenantId();
+        if (tenantId is null) return c.Unauthorized();
+        var (found, current) = await removal.CompanyOfAsync(kind, tenantId.Value, id, ct);
+        if (!found || !MayWriteCompany(c, current))
+        {
+            await removal.RecordRefusalAsync(kind, tenantId.Value, id, "restore", found ? "out_of_scope" : "not_found", context, ct);
+            return c.NotFound();
+        }
+        return await removal.RestoreAsync(kind, tenantId.Value, id, context, ct) is null
+            ? c.NotFound()
+            : c.Ok(new { outcome = "restored", message = "Turned back on." });
+    }
+
+    internal static object Body(OrgRowRemovalResult r) => new
+    {
+        outcome = r.Outcome,
+        message = r.Message,
+        usage = new
+        {
+            total = r.Usage.Total,
+            summary = r.Usage.Summary,
+            items = r.Usage.Items.Select(i => new { kind = i.Kind, label = i.Label, count = i.Count }),
+        },
+    };
 
     /// <summary>A tenant-wide write: group grant, then the service call; an
     /// <see cref="InvalidOperationException"/> is the service's validation refusal (400). A null result

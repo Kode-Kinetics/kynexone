@@ -8,7 +8,7 @@ import { TemplatePicker, type AppliedTemplate } from '../TemplatePicker';
 import { useHireTemplate } from '../useHireTemplate';
 import type { HireTemplate } from '@/src/api/onboardingTemplates';
 
-export function HireBasicsStep({ form, set, errorFor, blur, company, lookups, singleCompany, onNameBlur, onCompanyChange, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
+export function HireBasicsStep({ form, set, errorFor, blur, lookups, singleCompany, onNameBlur, onCompanyChange, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
   onNameBlur: () => void;
   onCompanyChange: (companyId: string) => void;
   applied?: AppliedTemplate | null;

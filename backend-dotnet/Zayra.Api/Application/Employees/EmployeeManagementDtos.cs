@@ -52,6 +52,8 @@ public record EmployeeCreateRequest(
     // unacknowledged STRONG national-identity match is refused with 409 possible_duplicate (never-silent-
     // dup). Set only when the operator dismisses the warning; the create then records an audited override.
     bool AcknowledgeDuplicate = false,
+    // Explicit "keep this probation" for a probation longer than the company's own maximum (Setup > Payroll rules).
+    bool AcknowledgeProbationOverLimit = false,
     // CD26: end of a fixed-term contract. Stored on Employee.ContractEndDate; CD17 rules in the input guard.
     DateOnly? ContractEndDate = null,
     // Cost-centre accounting (contract 2.9, M-10): why the employee's cost-centre override is being set or removed. Required (422
@@ -288,6 +290,8 @@ public record EmployeeDetailDto
     /// <summary>Most recent active salary assignment, exposed only with employees.sensitive.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)]
     public EmployeeSalaryBreakdownRequest? SalaryBreakdown { get; init; }
+    /// <summary>"Pending" while <see cref="SalaryBreakdown"/> is a new hire's first package still waiting for Finance (not yet approved pay); null otherwise.</summary>
+    public string? SalaryApprovalState { get; init; }
     public IReadOnlyCollection<EmployeeComplianceRecord> ComplianceRecords { get; init; } = [];
     public IReadOnlyCollection<EmployeeDocumentDto> Documents { get; init; } = [];
     public IReadOnlyCollection<EmployeeHistoryDto> History { get; init; } = [];

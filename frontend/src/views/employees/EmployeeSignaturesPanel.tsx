@@ -48,7 +48,7 @@ export function EmployeeSignaturesPanel({ employee }: { employee: EmployeeDetail
   const statusLabel = (r: SignatureRow) => r.status === 'Signed' ? t('Signed') : r.status === 'Superseded' ? t('Replaced by a newer version') : t('Awaiting signature');
   return (
     <section data-testid="signatures-panel" aria-labelledby="signatures-heading" className="border-t border-slate-200 p-5 dark:border-white/10">
-      <h3 id="signatures-heading" className="text-lg font-extrabold text-slate-950 dark:text-white">{t('Signatures')}</h3>
+      <h3 id="signatures-heading" className="text-lg font-semibold text-slate-950 dark:text-white">{t('Signatures')}</h3>
       <p className="mt-1 text-sm text-slate-500">{t('Electronic acknowledgement of contracts and policies. It is not a qualified electronic signature.')}</p>
       {canRequest && (
         <div className="mt-3 flex flex-wrap items-end gap-2">
@@ -70,7 +70,7 @@ export function EmployeeSignaturesPanel({ employee }: { employee: EmployeeDetail
             return (
               <li key={r.documentId} data-testid="signature-row" className="rounded-xl border border-slate-200 p-4 dark:border-white/10">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><p className="font-bold">{r.title}</p><p className="text-sm text-slate-500"><bdi dir="ltr">{r.fileName}</bdi></p></div>
+                  <div><p className="font-semibold">{r.title}</p><p className="text-sm text-slate-500"><bdi dir="ltr">{r.fileName}</bdi></p></div>
                   <StatusChip label={statusLabel(r)} tone={r.status === 'Signed' ? 'emerald' : r.status === 'Awaiting' ? 'amber' : 'slate'} dot />
                 </div>
                 {r.integrityFlagged && <p role="alert" className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-rose-700 dark:text-rose-300"><ShieldAlert className="h-4 w-4" aria-hidden="true" />{t('esign.error.document_tampered')}</p>}

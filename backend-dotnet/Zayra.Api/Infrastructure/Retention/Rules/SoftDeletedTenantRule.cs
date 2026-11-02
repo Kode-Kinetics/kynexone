@@ -224,6 +224,12 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
             ?? throw new InvalidOperationException(
                 "The tenant erasure must run inside the job runner's per-item transaction; none is open.");
 
+        // The audit tables are append-only at the database. Whole-tenant erasure is the one sanctioned
+        // DELETE, so flag THIS transaction (transaction-local: it ends with the item's commit/rollback and
+        // cannot leak to another pooled connection). UPDATE stays forbidden regardless.
+        if (ctx.Db.Database.IsNpgsql())
+            _ = await ctx.Db.Database.SqlQuery<string>(Zayra.Api.Infrastructure.Audit.AuditTrailGuardSql.ErasureFlagFor(ctx.TenantId))
+                .ToListAsync(ct);
         // Acknowledgement evidence is append-only; this erasure is one of the two things allowed to delete it (transaction-local).
         await RetentionPurgeScope.EnableInCurrentTransactionAsync(ctx.Db, ct);
 

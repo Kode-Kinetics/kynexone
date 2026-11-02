@@ -53,12 +53,12 @@ export function SelfieViewerModal({ rawEventId, employee, time, onClose }: {
 
   if (typeof document === 'undefined') return null;
   return createPortal(
-    <div className="fixed inset-0 z-[9999] overflow-y-auto bg-black/50 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[9999] overflow-y-auto bg-black/50">
       <div className="flex min-h-screen items-start justify-center p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
         <div role="dialog" aria-modal="true" aria-labelledby={titleId}
-          className="relative my-8 w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0e1729]">
+          className="relative my-8 w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface">
           <div className="border-b border-slate-100 px-6 py-4 dark:border-white/[0.07]">
-            <h2 id={titleId} className="text-base font-bold text-slate-900 dark:text-white">
+            <h2 id={titleId} className="text-base font-semibold text-slate-900 dark:text-white">
               {t('Selfie on the punch by {employee} at {time}', { employee, time })}
             </h2>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">

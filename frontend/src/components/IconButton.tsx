@@ -20,7 +20,7 @@ export function IconButton({ label, icon: Icon, onClick, badge }: IconButtonProp
     >
       <Icon className="h-4 w-4" aria-hidden="true" />
       {badge ? (
-        <span className="absolute -end-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-sapphire px-1 text-[10px] font-bold text-white">
+        <span className="absolute -end-1 -top-1 grid min-h-4 min-w-4 place-items-center rounded-full bg-sapphire px-1 text-caption font-semibold text-white">
           {badge}
         </span>
       ) : null}

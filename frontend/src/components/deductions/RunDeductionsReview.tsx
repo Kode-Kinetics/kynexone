@@ -60,7 +60,7 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
     <section className="border-t border-slate-100 px-4 py-4 dark:border-white/[0.07]" data-testid="run-deductions-review" aria-labelledby={`deductions-check-${runId}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 id={`deductions-check-${runId}`} className="flex items-center gap-1.5 text-sm font-bold text-slate-900 dark:text-white">
+          <h3 id={`deductions-check-${runId}`} className="flex items-center gap-1.5 text-sm font-semibold text-slate-900 dark:text-white">
             <Scale className="h-4 w-4 text-sapphire dark:text-cyanAccent" aria-hidden /> {t('Deductions check (Article 93)')}
           </h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -70,7 +70,7 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
         <div role="group" aria-label={t('Show')} className="inline-flex rounded-lg border border-slate-200 p-0.5 text-xs dark:border-white/10">
           {(['attention', 'all'] as const).map((f) => (
             <button key={f} type="button" aria-pressed={filter === f} onClick={() => setFilter(f)}
-              className={`rounded-md px-2.5 py-1 font-semibold ${filter === f ? 'bg-sapphire text-white dark:bg-cyanAccent dark:text-slate-900' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'}`}>
+              className={`rounded-lg px-2.5 py-1 font-semibold ${filter === f ? 'bg-sapphire text-white dark:bg-cyanAccent dark:text-slate-900' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-white/[0.06]'}`}>
               {f === 'attention' ? t('Near or over the limit') : t('Everyone')}
             </button>
           ))}
@@ -95,7 +95,7 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
             <div className="mt-2 overflow-x-auto">
               <table className="w-full min-w-[620px] text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 text-start text-xs font-bold uppercase text-slate-400 dark:border-white/[0.07]">
+                  <tr className="border-b border-slate-100 text-start text-xs font-semibold uppercase text-slate-400 dark:border-white/[0.07]">
                     <th className="px-2 py-2 text-start">{t('Employee')}</th>
                     <th className="px-2 py-2 text-end">{t('Wage due')}</th>
                     <th className="px-2 py-2 text-end">{t('Counted deductions')}</th>
@@ -119,7 +119,7 @@ function RunDeductionsReviewBody({ runId }: { runId: string }) {
                       <td className="px-2 py-2">
                         <CapStatusChip status={r.capStatus} />
                         {r.capStatus !== 'NeedsReview' && r.flags.some((f) => f !== 'DEDUCTIONS_OVER_HALF_WAGE') && (
-                          <p className="mt-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">{t('Needs a look')}</p>
+                          <p className="mt-0.5 text-caption font-semibold text-amber-700 dark:text-amber-300">{t('Needs a look')}</p>
                         )}
                       </td>
                       <td className="px-2 py-2 text-end">

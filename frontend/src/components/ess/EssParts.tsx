@@ -52,7 +52,7 @@ export const essPrimaryButton =
 export function EssPageHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <div>
-      <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{title}</h1>
+      <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{title}</h1>
       <p className="text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
     </div>
   );
@@ -61,7 +61,7 @@ export function EssPageHeader({ title, subtitle }: { title: string; subtitle: st
 export function EssCard({ title, children, testId }: { title: string; children: ReactNode; testId?: string }) {
   return (
     <section data-testid={testId} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]">
-      <h2 className="mb-3 text-sm font-bold text-slate-800 dark:text-slate-100">{title}</h2>
+      <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-100">{title}</h2>
       {children}
     </section>
   );

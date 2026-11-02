@@ -63,9 +63,15 @@ public class CostCentersController : ControllerBase
         => CostCenterEndpoints.UpdateAsync(this, _organization, _db, id, request, Context(), cancellationToken);
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("organization.delete")]
     [Authorize(Roles = "Admin,HR Manager")]
     public Task<IActionResult> Delete(Guid id, [FromQuery] string? reason, CancellationToken cancellationToken)
         => CostCenterEndpoints.DeleteAsync(this, _organization, _db, id, Context(), reason, cancellationToken);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
+        => CostCenterEndpoints.RestoreAsync(this, _organization, id, Context(), cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -75,13 +81,13 @@ public class CostCentersController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var items = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId.Value && !c.IsDeleted).OrderBy(c => c.Code).ToListAsync(ct);
         var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
-        return File(Encoding.UTF8.GetBytes(Csv.Build(CsvHeaders, rows)), "text/csv", $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "cost_centers_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "cost_centers_import_template.csv");
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager")]

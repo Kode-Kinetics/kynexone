@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, Info, X, XCircle } from 'lucide-react';
+import { translate, type LocaleCode } from '@/src/i18n/translations';
 
 type ToastKind = 'success' | 'error' | 'warning' | 'info';
 
@@ -40,53 +41,80 @@ const ICONS: Record<ToastKind, React.ElementType> = {
   info: Info,
 };
 
-const KIND_CLS: Record<ToastKind, { bar: string; icon: string; border: string }> = {
-  success: { bar: 'bg-emerald-500', icon: 'text-emerald-500', border: 'border-emerald-200 dark:border-emerald-800' },
-  error:   { bar: 'bg-red-500',     icon: 'text-red-500',     border: 'border-red-200   dark:border-red-800'   },
-  warning: { bar: 'bg-amber-500',   icon: 'text-amber-500',   border: 'border-amber-200 dark:border-amber-800' },
-  info:    { bar: 'bg-blue-500',    icon: 'text-blue-500',    border: 'border-blue-200  dark:border-blue-800'  },
+const KIND_CLS: Record<ToastKind, { bar: string; icon: string; surface: string }> = {
+  success: { bar: 'bg-success', icon: 'text-success-fg', surface: 'border-line' },
+  error:   { bar: 'bg-danger',  icon: 'text-danger-fg',  surface: 'border-line' },
+  warning: { bar: 'bg-warning', icon: 'text-warning-fg', surface: 'border-line' },
+  info:    { bar: 'bg-primary', icon: 'text-primary-fg', surface: 'border-line' },
 };
+
+// Errors need time to be read and acted on: they linger longer, and every toast pauses while it
+// is hovered or holds keyboard focus (WCAG 2.2.1 Timing Adjustable).
+const DEFAULT_MS: Record<ToastKind, number> = { success: 5000, info: 5000, warning: 8000, error: 10000 };
+
+/** The toast host sits above the locale provider, so the label follows the document language. */
+function documentLocale(): LocaleCode {
+  const lang = typeof document !== 'undefined' ? document.documentElement.lang : 'en';
+  return lang === 'ar' || lang === 'fr' || lang === 'es' ? lang : 'en';
+}
+const dismissLabel = () => translate(documentLocale(), 'Dismiss');
 
 function ToastItem({ t, onClose }: { t: Toast; onClose: (id: string) => void }) {
   const Icon    = ICONS[t.kind];
   const cls     = KIND_CLS[t.kind];
-  const duration = t.duration ?? 5000;
+  const duration = t.duration ?? DEFAULT_MS[t.kind];
   const [progress, setProgress] = useState(100);
-  const start = useRef(Date.now());
+  const [paused, setPaused] = useState(false);
+  const remaining = useRef(duration);
+  const last = useRef(0);
 
   useEffect(() => {
+    if (paused) return;
+    last.current = Date.now();
     const timer = setInterval(() => {
-      const elapsed = Date.now() - start.current;
-      const pct = Math.max(0, 100 - (elapsed / duration) * 100);
-      setProgress(pct);
-      if (elapsed >= duration) {
+      const now = Date.now();
+      remaining.current -= now - last.current;
+      last.current = now;
+      setProgress(Math.max(0, (remaining.current / duration) * 100));
+      if (remaining.current <= 0) {
         clearInterval(timer);
         onClose(t.id);
       }
-    }, 30);
+    }, 50);
     return () => clearInterval(timer);
-  }, [duration, t.id, onClose]);
+  }, [paused, duration, t.id, onClose]);
+
+  // Errors interrupt (alert); everything else is polite status. A non-error toast must not
+  // pre-empt what a screen reader is already announcing.
+  const urgent = t.kind === 'error';
 
   return (
+    // Hover/focus only pauses the auto-dismiss timer; the toast has no action of its own, so the role stays a live region.
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
-      role="alert"
-      className={`relative flex items-start gap-3 rounded-xl border bg-white dark:bg-gray-900 px-4 py-3.5 shadow-lg shadow-black/10 dark:shadow-black/40 min-w-[300px] max-w-[420px] overflow-hidden ${cls.border}`}
-      style={{ animation: 'slideInRight 0.22s ease-out' }}
+      role={urgent ? 'alert' : 'status'}
+      aria-live={urgent ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+      className={`kx-toast relative flex min-w-[300px] max-w-[420px] items-start gap-3 overflow-hidden rounded-xl border bg-surface-overlay px-4 py-3 shadow-e2 ${cls.surface}`}
     >
-      {/* progress bar */}
-      <div className={`absolute bottom-0 start-0 h-0.5 transition-[width] ${cls.bar}`} style={{ width: `${progress}%` }} />
-      <Icon className={`h-5 w-5 shrink-0 mt-0.5 ${cls.icon}`} />
-      <div className="flex-1 min-w-0">
-        {t.title && <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 leading-tight">{t.title}</p>}
-        <p className={`text-sm text-gray-600 dark:text-gray-400 leading-snug ${t.title ? 'mt-0.5' : ''}`}>{t.message}</p>
+      {/* remaining-time bar */}
+      <div className={`absolute bottom-0 start-0 h-0.5 ${cls.bar}`} style={{ width: `${progress}%` }} aria-hidden="true" />
+      <Icon className={`mt-0.5 h-5 w-5 shrink-0 ${cls.icon}`} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        {t.title && <p className="text-body font-semibold leading-tight text-fg">{t.title}</p>}
+        <p className={`text-body leading-snug text-fg-muted ${t.title ? 'mt-0.5' : ''}`}>{t.message}</p>
       </div>
       <button
         type="button"
         onClick={() => onClose(t.id)}
-        aria-label="Dismiss"
-        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors shrink-0 mt-0.5"
+        aria-label={dismissLabel()}
+        className="mt-0.5 shrink-0 rounded text-fg-subtle transition-colors hover:text-fg"
       >
-        <X className="h-4 w-4" />
+        <X className="h-4 w-4" aria-hidden="true" />
       </button>
     </div>
   );
@@ -144,7 +172,7 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <Ctx.Provider value={ctx}>
       {children}
-      <div className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] end-5 z-[9999] flex flex-col gap-2 items-end pointer-events-none lg:bottom-5">
+      <div role="region" suppressHydrationWarning aria-label={translate(documentLocale(), 'Notifications')} className="pointer-events-none fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] end-5 z-[9999] flex flex-col items-end gap-2 lg:bottom-5">
         {toasts.map(t => (
           <div key={t.id} className="pointer-events-auto">
             <ToastItem t={t} onClose={dismiss} />
@@ -152,10 +180,12 @@ export function AppToastProvider({ children }: { children: React.ReactNode }) {
         ))}
       </div>
       <style>{`
-        @keyframes slideInRight {
-          from { opacity: 0; transform: translateX(24px); }
-          to   { opacity: 1; transform: translateX(0);    }
+        @keyframes kx-toast-in {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
         }
+          .kx-toast { animation: kx-toast-in 0.22s ease-out; }
+        @media (prefers-reduced-motion: reduce) { .kx-toast { animation: none; } }
       `}</style>
     </Ctx.Provider>
   );

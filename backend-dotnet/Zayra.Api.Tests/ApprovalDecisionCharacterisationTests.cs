@@ -147,10 +147,12 @@ public class ApprovalDecisionCharacterisationTests
     {
         await using var db = CreateDb();
         var f = await SeedLoanAsync(db, status: "Pending", requestedAmount: 12_000m, requestedInstallments: 6);
+        // Repayment must start in the future, so the date moves with the clock instead of expiring.
+        var repaymentStart = new DateOnly(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1).AddMonths(1);
 
         var result = await Loans(db, f.TenantId, Guid.NewGuid()).DecideApproval(
             f.LoanId, f.ApprovalId,
-            new ApprovalDecisionRequest("Approved", "ok", 9_000m, 3, new DateOnly(2026, 11, 1)),
+            new ApprovalDecisionRequest("Approved", "ok", 9_000m, 3, repaymentStart),
             CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
@@ -160,7 +162,7 @@ public class ApprovalDecisionCharacterisationTests
         Assert.Equal(3, loan.ApprovedInstallments);
         Assert.Equal(3_000m, loan.InstallmentAmount);
         Assert.Equal(0m, loan.OutstandingBalance);
-        Assert.Equal(new DateOnly(2026, 11, 1), loan.RepaymentStartDate);
+        Assert.Equal(repaymentStart, loan.RepaymentStartDate);
         Assert.Null(loan.DisbursementDate);
 
         Assert.Equal(0, await db.LoanInstallments.CountAsync());

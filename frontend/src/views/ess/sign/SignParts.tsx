@@ -26,7 +26,7 @@ export function ConsentText({ consent }: { consent: ConsentView }) {
       {consentOrder(locale).map(lang => lang === 'ar'
         ? <p key="ar" lang="ar" dir="rtl" className="text-start">{consent.textAr}</p>
         : <p key="en" lang="en" dir="ltr" className="text-start">{consent.textEn}</p>)}
-      <p className="text-[11px] text-slate-500">{t('Consent text {version}', { version: consent.consentVersion })}</p>
+      <p className="text-caption text-slate-500">{t('Consent text {version}', { version: consent.consentVersion })}</p>
     </section>
   );
 }

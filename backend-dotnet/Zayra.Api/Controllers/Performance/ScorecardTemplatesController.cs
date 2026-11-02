@@ -5,7 +5,9 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Controllers.Performance;
 
@@ -115,16 +117,46 @@ public class ScorecardTemplatesController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("performance.cycle_manage")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
         var tenantId = this.GetTenantId()!.Value;
         var t = await _db.PerformanceScorecardTemplates
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (t is null) return NotFound();
-        t.IsActive = false;
+        var used = await SetupRemoval.MeasureAsync(this, SetupRowUsage.Probes(_db, tenantId, id, typeof(PerformanceScorecardTemplate), "ScorecardTemplate",
+            new Dictionary<string, (string, string)>
+            {
+                ["PerformanceCycle"] = ("reviewCycle", "review cycles"), ["PerformanceCycleEmployee"] = ("cycleEnrolment", "cycle enrolments"),
+                ["AppraisalReview"] = ("appraisal", "appraisals"),
+            }), ct);
+        if (used.InUse)
+        {
+            t.IsActive = false; t.IsDefault = false; t.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId, null, "ScorecardTemplate", id.ToString(), "TurnedOff", new { t.Name }, new { references = used.WideTotal });
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.TurnedOff(this, used);
+        }
+        _db.PerformanceScorecardTemplates.Remove(t);
+        this.RecordChange(_db, tenantId, null, "ScorecardTemplate", id.ToString(), "Deleted", new { t.Name }, null);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("performance.cycle_manage")]
+    public async Task<IActionResult> Restore(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId()!.Value;
+        var t = await _db.PerformanceScorecardTemplates.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        if (t is null) return NotFound();
+        if (!t.IsActive)
+        {
+            t.IsActive = true; t.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId, null, "ScorecardTemplate", id.ToString(), "Restored", null, new { t.Name });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 }
 

@@ -646,7 +646,7 @@ public class LeaveRequestsController : ControllerBase
         });
         var csv = Csv.Build(LeaveRequestCsvHeaders, rows);
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_requests_export.csv";
-        return Content(csv, "text/csv");
+        return CsvDownload.Result(csv);
     }
 
     [HttpGet("import-template")]
@@ -654,7 +654,7 @@ public class LeaveRequestsController : ControllerBase
     public IActionResult ImportTemplate()
     {
         Response.Headers["Content-Disposition"] = "attachment; filename=leave_requests_import_template.csv";
-        return Content(Csv.Template(LeaveRequestCsvHeaders, LeaveRequestCsvExampleRow), "text/csv");
+        return CsvDownload.Result(Csv.Template(LeaveRequestCsvHeaders, LeaveRequestCsvExampleRow));
     }
 
     [HttpPost("import")]

@@ -243,7 +243,7 @@ public class CostCentreMasterApiGapsTests
         AssertReasonRefusal(await ctl.Delete(cc.Id, "  ", default));
         (await w.Db.CostCenters.AsNoTracking().SingleAsync(c => c.Id == cc.Id)).IsDeleted.Should().BeFalse();
 
-        (await ctl.Delete(cc.Id, "Created by mistake", default)).Should().BeOfType<NoContentResult>();
+        (await ctl.Delete(cc.Id, "Created by mistake", default)).Should().BeOfType<OkObjectResult>();
         LastAudit(w, "organization.cost_center_deleted", cc.Id).GetProperty("reason").GetString().Should().Be("Created by mistake");
     }
 

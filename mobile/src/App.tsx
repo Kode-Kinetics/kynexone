@@ -18,7 +18,14 @@ import {
   getLastNotificationResponseAsync,
   getNotificationRoute,
 } from '@/features/notifications/pushNotifications';
+import { OfflineBanner } from '@/features/safety/OfflineBanner';
+import { AppLockGate } from '@/features/safety/AppLockGate';
+import { noteLaunchFailure, startLaunchHealthCheck } from '@/updates/startupHealth';
+import { initErrorReporting } from '@/observability/initErrorReporting';
+import { reportError } from '@/observability/reportError';
 import { sweepSelfieCache } from '@/features/attendance/selfieFiles';
+
+initErrorReporting();
 
 function openFromNotification(data: Record<string, unknown> | undefined) {
   const { route, params } = getNotificationRoute(data);
@@ -44,6 +51,11 @@ function AppContent() {
     return () => task.cancel();
   }, []);
 
+  // OTA safety: an update that never gets healthy is replaced by what the server serves now.
+  useEffect(() => {
+    void startLaunchHealthCheck().catch((error) => console.warn('[updates] Health check failed:', error?.message));
+  }, []);
+
   // Selfie photos never stay on the phone: delete any left behind by a crash or a kill mid-capture.
   useEffect(() => {
     void sweepSelfieCache();
@@ -54,7 +66,8 @@ function AppContent() {
     let cleanup: () => void = () => {};
     setupNotificationListeners(
       (notification) => {
-        console.log('[Notification] Received:', notification.request.content.title);
+        // Titles can carry names and amounts: nothing about the notification is logged.
+        void notification;
       },
       (response) => {
         openFromNotification(response.notification.request.content.data as Record<string, unknown>);
@@ -83,9 +96,16 @@ function AppContent() {
   return (
     <>
       <StatusBar style={theme.isDark ? 'light' : 'dark'} />
-      <ErrorBoundary ref={TOUR_MODE ? (boundary) => registerBoundaryReset(() => boundary?.reset()) : undefined}>
+      <ErrorBoundary
+        onError={(error, componentStack) => {
+          noteLaunchFailure();
+          reportError(error, { source: 'boundary', tags: { stackDepth: componentStack?.split('\n').length } });
+        }}
+        ref={TOUR_MODE ? (boundary) => registerBoundaryReset(() => boundary?.reset()) : undefined}>
         <RootNavigator />
         {TOUR_MODE ? <ScreenTour /> : null}
+        <OfflineBanner />
+        <AppLockGate />
       </ErrorBoundary>
     </>
   );
