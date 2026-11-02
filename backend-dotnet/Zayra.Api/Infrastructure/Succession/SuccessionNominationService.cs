@@ -173,8 +173,8 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
             throw SuccessionException.Conflict("invalid_transition", "Only a proposed nomination can be taken into review.", new { n.Status });
         n.Status = NominationStatuses.InReview;
         Touch(n);
+        audit.Stage("succession.nomination.in_review", nameof(SuccessionNomination), n.Id.ToString(), actor.Request, null);
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.in_review", nameof(SuccessionNomination), n.Id.ToString(), actor.Request, null, ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -208,9 +208,9 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
         n.Readiness = readiness;
         n.Status = NominationStatuses.Calibrated;
         Touch(n);
+        audit.Stage("succession.nomination.calibrated", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { nominationId = n.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.calibrated", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { nominationId = n.Id }), ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -236,9 +236,9 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
         n.ReadinessReason = why;
         n.ReadinessChangedByUserId = actor.UserId;
         Touch(n);
+        audit.Stage("succession.nomination.readiness_changed", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { nominationId = n.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.readiness_changed", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { nominationId = n.Id }), ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -248,9 +248,9 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
         if (!NominationStatuses.Live.Contains(n.Status)) throw SuccessionException.Conflict("invalid_transition", "This nomination is already closed.");
         var why = SuccessionDb.Reason(input.Reason, "a reason for declining", 5, 1000);
         Close(n, NominationStatuses.Declined, NominationExitReasons.Declined, why, actor.UserId, clock.GetUtcNow().UtcDateTime);
+        audit.Stage("succession.nomination.declined", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { nominationId = n.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.declined", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { nominationId = n.Id }), ct);
         return await GetAsync(actor, id, ct);
     }
 
@@ -263,9 +263,9 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
             throw SuccessionException.Conflict("invalid_transition", "A nomination can be withdrawn by its nominator only before calibration.");
         var why = SuccessionDb.Reason(input.Reason, "a reason for withdrawing", 3, 1000);
         Close(n, NominationStatuses.Withdrawn, NominationExitReasons.Withdrawn, why, actor.UserId, clock.GetUtcNow().UtcDateTime);
+        audit.Stage("succession.nomination.withdrawn", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { nominationId = n.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.withdrawn", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { nominationId = n.Id }), ct);
         return (await MineAsync(actor, ct)).Single(x => x.Id == id);
     }
 
@@ -283,9 +283,9 @@ public sealed class SuccessionNominationService(ZayraDbContext db, IAuditService
         n.CandidateCompanyIdAt = facts?.CompanyId;
         n.CandidateManagerIdAt = facts?.ManagerEmployeeId;
         Touch(n);
+        audit.Stage("succession.nomination.review_cleared", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
+            JsonSerializer.Serialize(new { nominationId = n.Id }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("succession.nomination.review_cleared", nameof(SuccessionNomination), n.Id.ToString(), actor.Request,
-            JsonSerializer.Serialize(new { nominationId = n.Id }), ct);
         return await GetAsync(actor, id, ct);
     }
 

@@ -43,7 +43,7 @@ export default function SupportSessionsPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Support Sessions</h1>
+          <h1 className="text-lg font-semibold text-white">Support Sessions</h1>
           <p className="text-xs text-slate-500 mt-0.5">{total} session{total !== 1 ? 's' : ''} · All support access is logged and audited</p>
         </div>
         <div className="flex items-center gap-2">
@@ -79,7 +79,7 @@ export default function SupportSessionsPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Target User', 'Reason', 'Started By', 'Started', 'Expires', 'Status', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -90,22 +90,22 @@ export default function SupportSessionsPage() {
                     <tr key={s.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
                       <td className="px-4 py-3">
                         <p className="text-sm text-white">{s.targetUserEmail}</p>
-                        <p className="text-[11px] text-slate-600 font-mono">{s.tenantId.slice(0, 8)}</p>
+                        <p className="text-caption text-slate-600 font-mono">{s.tenantId.slice(0, 8)}</p>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-400 max-w-[180px]">
                         <p className="truncate">{s.reason}</p>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-500">{s.startedByEmail}</td>
-                      <td className="px-3 py-3 text-[11px] text-slate-600 whitespace-nowrap">
+                      <td className="px-3 py-3 text-caption text-slate-600 whitespace-nowrap">
                         {new Date(s.startedAtUtc).toLocaleString('en-GB')}
                       </td>
-                      <td className="px-3 py-3 text-[11px] whitespace-nowrap">
+                      <td className="px-3 py-3 text-caption whitespace-nowrap">
                         <span className={expired ? 'text-rose-400' : 'text-slate-500'}>
                           {new Date(s.expiresAtUtc).toLocaleString('en-GB')}
                         </span>
                       </td>
                       <td className="px-3 py-3">
-                        <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border ${
+                        <span className={`text-caption font-semibold uppercase px-1.5 py-0.5 rounded border ${
                           s.isActive && !expired
                             ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
                             : 'text-slate-600 bg-transparent border-slate-800'
@@ -118,7 +118,7 @@ export default function SupportSessionsPage() {
                           <button type="button"
                             onClick={() => endSession(s.id)}
                             disabled={ending === s.id}
-                            className="flex items-center gap-1 text-[11px] text-rose-400 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
+                            className="flex items-center gap-1 text-caption text-rose-400 border border-rose-500/20 hover:border-rose-500/40 px-2 py-1 rounded transition-colors disabled:opacity-40">
                             <StopCircle className="h-3 w-3" />
                             {ending === s.id ? '…' : 'End'}
                           </button>

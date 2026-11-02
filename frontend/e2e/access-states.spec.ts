@@ -302,13 +302,15 @@ test.describe('activation blockers', () => {
     await expect(activate).toBeEnabled({ timeout: 45_000 });
     const readinessBefore = calls.readiness;
     const accessBefore = calls.access;
+    // Activation confirms first (effective date and reason); a refusal is read in that dialog, which stays open.
     await activate.click();
-    const alert = page.getByTestId('activation-blockers').getByRole('alert');
-    await expect(alert).toHaveText(message);
+    const confirm = page.getByRole('dialog', { name: /^Activate .+\?$/ });
+    await confirm.getByRole('button', { name: 'Activate', exact: true }).click();
+    await expect(confirm.getByTestId('activation-error')).toHaveText(message);
     await expect.poll(() => calls.readiness).toBeGreaterThan(readinessBefore);
     await expect.poll(() => calls.access).toBeGreaterThan(accessBefore);
-    await expect(activate).toBeEnabled();
-    await activate.click();
+    await expect(confirm.getByRole('button', { name: 'Activate', exact: true })).toBeEnabled();
+    await confirm.getByRole('button', { name: 'Activate', exact: true }).click();
     await expect(page.getByTestId('employee-activated')).toBeVisible();
     expect(calls.activate).toBe(2);
   });

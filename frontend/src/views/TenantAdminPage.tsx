@@ -13,7 +13,10 @@ import {
   type TenantInvoiceSummary,
   type TenantAiUsageSummary,
 } from '../api/intelligence';
-import client from '../api/client';
+import client, { apiErrorReason } from '../api/client';
+import { useConfirm } from '../components/gl/glUi';
+import { countryRuleRemovalEffect } from '../lib/countryRuleEffects';
+import { msg } from '../i18n/translations';
 import { Toggle } from '../components/ui/Toggle';
 import { useTenantSettingsContext } from '../contexts/TenantSettingsContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
@@ -219,16 +222,16 @@ export function PlanBillingPanel() {
         </div>
       )}
 
-      {loading && <p role="status" className="text-sm text-gray-500">{t('Loading…')}</p>}
+      {loading && <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>}
 
       {/* Subscription */}
       {!loading && (failed.subscription ? (
         <LoadFailed message={t('The subscription could not be loaded.')} error={failed.subscription} onRetry={() => void load()} />
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Current Subscription</h2>
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Current Subscription</h2>
           {!subscription ? (
-            <p className="text-sm text-gray-500">No subscription found. Contact your account manager or support team.</p>
+            <p className="text-sm text-slate-500">No subscription found. Contact your account manager or support team.</p>
           ) : (
             <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
               {[
@@ -244,8 +247,8 @@ export function PlanBillingPanel() {
                 { label: 'Expires', value: subscription.expiresAtUtc ? new Date(subscription.expiresAtUtc).toLocaleDateString() : 'Never' },
               ].map(item => (
                 <div key={item.label}>
-                  <dt className="text-xs font-medium text-gray-500">{item.label}</dt>
-                  <dd className="text-sm font-semibold text-gray-900 mt-0.5">{String(item.value)}</dd>
+                  <dt className="text-xs font-medium text-slate-500">{item.label}</dt>
+                  <dd className="text-sm font-semibold text-slate-900 mt-0.5">{String(item.value)}</dd>
                 </div>
               ))}
             </dl>
@@ -259,8 +262,8 @@ export function PlanBillingPanel() {
 
       {/* Comprehensive usage from new endpoint */}
       {subscriptionUsage && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Plan Limits & Usage</h2>
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Plan Limits & Usage</h2>
           <div className="space-y-4">
             {[
               { label: 'Active Employees', current: subscriptionUsage.usage.activeEmployees, max: subscriptionUsage.limits.maxEmployees },
@@ -275,8 +278,8 @@ export function PlanBillingPanel() {
               return (
                 <div key={label}>
                   <div className="flex items-center justify-between mb-1.5 text-sm">
-                    <span className="font-medium text-gray-700">{label}</span>
-                    <span className={isAtLimit ? 'text-red-600 font-semibold' : isWarn ? 'text-orange-500' : 'text-gray-500'}>
+                    <span className="font-medium text-slate-700">{label}</span>
+                    <span className={isAtLimit ? 'text-red-600 font-semibold' : isWarn ? 'text-orange-500' : 'text-slate-500'}>
                       {current.toLocaleString()} / {isUnlimited ? '∞' : max.toLocaleString()}
                       {isAtLimit && ' — limit reached!'}
                     </span>
@@ -288,8 +291,8 @@ export function PlanBillingPanel() {
               );
             })}
           </div>
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-500 mb-2">Enabled Modules</p>
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <p className="text-xs font-medium text-slate-500 mb-2">Enabled Modules</p>
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(subscriptionUsage.featureFlags)
                 .filter(([, v]) => v)
@@ -297,7 +300,7 @@ export function PlanBillingPanel() {
                   <span key={k} className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-200">{k}</span>
                 ))}
               {Object.entries(subscriptionUsage.featureFlags).every(([, v]) => !v) && (
-                <span className="text-xs text-gray-400">No optional modules enabled</span>
+                <span className="text-xs text-slate-400">No optional modules enabled</span>
               )}
             </div>
           </div>
@@ -309,14 +312,14 @@ export function PlanBillingPanel() {
 
       {/* Usage section */}
       {usage && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Usage</h2>
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Usage</h2>
           <div className="space-y-5">
             {/* Employees progress */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-sm font-medium text-gray-700">Active Employees</span>
-                <span className="text-sm text-gray-500">
+                <span className="text-sm font-medium text-slate-700">Active Employees</span>
+                <span className="text-sm text-slate-500">
                   {usage.maxEmployees === 0
                     ? `${usage.activeEmployees} / Unlimited`
                     : `${usage.activeEmployees} / ${usage.maxEmployees}`}
@@ -338,8 +341,8 @@ export function PlanBillingPanel() {
             {/* Users progress */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-sm font-medium text-gray-700">Active Users</span>
-                <span className="text-sm text-gray-500">
+                <span className="text-sm font-medium text-slate-700">Active Users</span>
+                <span className="text-sm text-slate-500">
                   {usage.maxUsers === 0
                     ? `${usage.activeUsers} / Unlimited`
                     : `${usage.activeUsers} / ${usage.maxUsers}`}
@@ -358,9 +361,9 @@ export function PlanBillingPanel() {
               )}
             </div>
 
-            <dl className="bg-gray-50 rounded-lg px-4 py-3">
-              <dt className="text-xs font-medium text-gray-500">Storage Used</dt>
-              <dd className="text-xl font-bold text-gray-900 mt-0.5">{usage.storageUsedMb} MB</dd>
+            <dl className="bg-slate-50 rounded-lg px-4 py-3">
+              <dt className="text-xs font-medium text-slate-500">Storage Used</dt>
+              <dd className="text-xl font-semibold text-slate-900 mt-0.5">{usage.storageUsedMb} MB</dd>
             </dl>
 
             {/* Request Upgrade button */}
@@ -371,13 +374,13 @@ export function PlanBillingPanel() {
 
       {/* AI usage section */}
       {aiUsage && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Kody Usage</h2>
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-4">Kody Usage</h2>
           <div className="space-y-4">
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-sm font-medium text-gray-700">Monthly Tokens Used</span>
-                <span className="text-sm text-gray-500">
+                <span className="text-sm font-medium text-slate-700">Monthly Tokens Used</span>
+                <span className="text-sm text-slate-500">
                   {aiUsage.isUnlimited
                     ? `${aiUsage.tokensUsed.toLocaleString()} / Unlimited`
                     : `${aiUsage.tokensUsed.toLocaleString()} / ${aiUsage.monthlyTokenLimit.toLocaleString()}`}
@@ -392,18 +395,18 @@ export function PlanBillingPanel() {
                 </p>
               )}
             </div>
-            <dl className="grid grid-cols-3 gap-4 bg-gray-50 rounded-lg px-4 py-3">
+            <dl className="grid grid-cols-3 gap-4 bg-slate-50 rounded-lg px-4 py-3">
               <div>
-                <dt className="text-xs font-medium text-gray-500">Requests</dt>
-                <dd className="text-lg font-bold text-gray-900">{aiUsage.requestCount.toLocaleString()}</dd>
+                <dt className="text-xs font-medium text-slate-500">Requests</dt>
+                <dd className="text-lg font-semibold text-slate-900">{aiUsage.requestCount.toLocaleString()}</dd>
               </div>
               <div>
-                <dt className="text-xs font-medium text-gray-500">Blocked</dt>
-                <dd className="text-lg font-bold text-gray-900">{aiUsage.blockedCount.toLocaleString()}</dd>
+                <dt className="text-xs font-medium text-slate-500">Blocked</dt>
+                <dd className="text-lg font-semibold text-slate-900">{aiUsage.blockedCount.toLocaleString()}</dd>
               </div>
               <div>
-                <dt className="text-xs font-medium text-gray-500">Plan</dt>
-                <dd className="text-lg font-bold text-gray-900">{aiUsage.plan}</dd>
+                <dt className="text-xs font-medium text-slate-500">Plan</dt>
+                <dd className="text-lg font-semibold text-slate-900">{aiUsage.plan}</dd>
               </div>
             </dl>
             {!aiUsage.isUnlimited && aiUsage.usagePct > 90 && (
@@ -419,16 +422,16 @@ export function PlanBillingPanel() {
       {!loading && !everythingFailed && (failed.invoices ? (
         <LoadFailed message={t('The invoices could not be loaded.')} error={failed.invoices} onRetry={() => void load()} />
       ) : (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-900 mb-1">Invoices</h2>
-          <p className="text-xs text-gray-500 mb-4">Invoice records are managed by your account team. Contact support to request changes.</p>
+        <div className="bg-white rounded-xl border border-slate-200 p-6">
+          <h2 className="text-lg font-semibold text-slate-900 mb-1">Invoices</h2>
+          <p className="text-xs text-slate-500 mb-4">Invoice records are managed by your account team. Contact support to request changes.</p>
           {invoices.length === 0 ? (
-            <p className="text-sm text-gray-400 py-6 text-center">No invoice records found. Contact your account manager if you believe this is an error.</p>
+            <p className="text-sm text-slate-400 py-6 text-center">No invoice records found. Contact your account manager if you believe this is an error.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-100 text-xs text-gray-500">
+                  <tr className="border-b border-slate-100 text-xs text-slate-500">
                     <th className="py-2 text-start font-medium">Invoice #</th>
                     <th className="py-2 text-start font-medium">Period</th>
                     <th className="py-2 text-end font-medium">Amount</th>
@@ -437,12 +440,12 @@ export function PlanBillingPanel() {
                     <th className="py-2 text-start font-medium">Paid</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-slate-50">
                   {invoices.map(inv => (
-                    <tr key={inv.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="py-2.5 font-mono text-xs text-gray-700">{inv.invoiceNumber}</td>
-                      <td className="py-2.5 text-gray-600">{inv.periodDescription ?? '—'}</td>
-                      <td className="py-2.5 text-end font-medium text-gray-900">
+                    <tr key={inv.id} className="hover:bg-slate-50 transition-colors">
+                      <td className="py-2.5 font-mono text-xs text-slate-700">{inv.invoiceNumber}</td>
+                      <td className="py-2.5 text-slate-600">{inv.periodDescription ?? '—'}</td>
+                      <td className="py-2.5 text-end font-medium text-slate-900">
                         {inv.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {inv.currencyCode}
                       </td>
                       <td className="py-2.5">
@@ -450,12 +453,12 @@ export function PlanBillingPanel() {
                           inv.status === 'Paid' ? 'bg-green-100 text-green-700' :
                           inv.status === 'Overdue' ? 'bg-red-100 text-red-700' :
                           inv.status === 'Sent' ? 'bg-blue-100 text-blue-700' :
-                          inv.status === 'Cancelled' ? 'bg-gray-100 text-gray-500' :
+                          inv.status === 'Cancelled' ? 'bg-slate-100 text-slate-500' :
                           'bg-amber-100 text-amber-700'
                         }`}>{inv.status}</span>
                       </td>
-                      <td className="py-2.5 text-xs text-gray-500">{inv.dueDate}</td>
-                      <td className="py-2.5 text-xs text-gray-500">{inv.paidDate ?? '—'}</td>
+                      <td className="py-2.5 text-xs text-slate-500">{inv.dueDate}</td>
+                      <td className="py-2.5 text-xs text-slate-500">{inv.paidDate ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -503,8 +506,8 @@ export function ModulesPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900">
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+      <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-700 dark:bg-slate-900">
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
           Switching a module off removes it everywhere — its navigation, its pages, its API and
           its notifications. Modules your organisation is legally required to run, and those the
           rest of the product depends on, are locked and explain why.
@@ -521,12 +524,12 @@ export function ModulesPanel() {
       )}
 
       {modulesLoading && !modules ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-10 text-center dark:border-gray-700 dark:bg-gray-900">
-          <p className="text-sm text-gray-400">Loading modules…</p>
+        <div className="rounded-xl border border-slate-200 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
+          <p className="text-sm text-slate-400">Loading modules…</p>
         </div>
       ) : !modules || modules.modules.length === 0 ? (
-        <div className="rounded-xl border border-gray-200 bg-white p-10 text-center dark:border-gray-700 dark:bg-gray-900">
-          <p className="text-sm text-gray-400">No modules to show.</p>
+        <div className="rounded-xl border border-slate-200 bg-white p-10 text-center dark:border-slate-700 dark:bg-slate-900">
+          <p className="text-sm text-slate-400">No modules to show.</p>
         </div>
       ) : (
         (['Optional', 'Statutory', 'Core'] as const).map(group => {
@@ -546,11 +549,11 @@ export function ModulesPanel() {
           return (
             <section key={group}>
               <div className="mb-2 px-1">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{heading}</h3>
-                <p className="text-xs text-gray-500 dark:text-gray-400">{blurb}</p>
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{heading}</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">{blurb}</p>
               </div>
 
-              <div className="divide-y divide-gray-100 rounded-xl border border-gray-200 bg-white dark:divide-gray-800 dark:border-gray-700 dark:bg-gray-900">
+              <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-700 dark:bg-slate-900">
                 {rows.map(m => (
                   <div
                     key={m.key}
@@ -558,22 +561,22 @@ export function ModulesPanel() {
                   >
                     <div className="min-w-0 pe-0 sm:pe-6">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{m.labelEn}</p>
+                        <p className="text-sm font-medium text-slate-900 dark:text-slate-100">{m.labelEn}</p>
                         {!m.canDisable && (
-                          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                             Locked on
                           </span>
                         )}
                       </div>
-                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{m.description}</p>
+                      <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{m.description}</p>
                       {!m.canDisable && m.lockReason && (
-                        <p className="mt-1.5 text-xs text-gray-400 dark:text-gray-500">{m.lockReason}</p>
+                        <p className="mt-1.5 text-xs text-slate-400 dark:text-slate-500">{m.lockReason}</p>
                       )}
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2 self-start sm:self-center">
                       {moduleBusy === m.key && (
-                        <span className="text-xs text-gray-400">Saving…</span>
+                        <span className="text-xs text-slate-400">Saving…</span>
                       )}
                       {m.canDisable ? (
                         <Toggle
@@ -593,7 +596,7 @@ export function ModulesPanel() {
                           aria-label={`${m.labelEn} is locked on`}
                           disabled
                           title={m.lockReason ?? undefined}
-                          className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full bg-gray-300 opacity-60 dark:bg-gray-600"
+                          className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full bg-slate-300 opacity-60 dark:bg-slate-600"
                         >
                           <span className="inline-block h-4 w-4 translate-x-6 transform rounded-full bg-white shadow rtl:-translate-x-6" />
                         </button>
@@ -651,64 +654,64 @@ export function LocalizationPanel({ onDirtyChange }: PanelProps = {}) {
   }
 
   if (state.status === 'error') return <LoadFailed message={t('The language and region settings could not be loaded.')} error={state.error} onRetry={() => void reload()} />;
-  if (!localization) return <p role="status" className="text-sm text-gray-500">{t('Loading…')}</p>;
+  if (!localization) return <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label htmlFor="loc-language" className="block text-xs font-medium text-gray-700 mb-1">Default Language</label>
+          <label htmlFor="loc-language" className="block text-xs font-medium text-slate-700 mb-1">Default Language</label>
           <select
             id="loc-language"
             value={localization.defaultLanguage}
             onChange={e => edit({ defaultLanguage: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             <option value="en">English</option>
             <option value="ar">Arabic</option>
           </select>
         </div>
         <div>
-          <label htmlFor="loc-calendar" className="block text-xs font-medium text-gray-700 mb-1">Calendar System</label>
+          <label htmlFor="loc-calendar" className="block text-xs font-medium text-slate-700 mb-1">Calendar System</label>
           <select
             id="loc-calendar"
             value={localization.calendarSystem}
             onChange={e => edit({ calendarSystem: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             <option value="Gregorian">Gregorian</option>
             <option value="Hijri">Hijri</option>
           </select>
         </div>
         <div>
-          <label htmlFor="loc-country" className="block text-xs font-medium text-gray-700 mb-1">Country Code</label>
+          <label htmlFor="loc-country" className="block text-xs font-medium text-slate-700 mb-1">Country Code</label>
           <select
             id="loc-country"
             value={localization.countryCode}
             onChange={e => edit({ countryCode: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             {['US', 'GB', 'CA', 'AU', 'DE', 'FR', 'AE', 'SA', 'QA', 'KW', 'BH', 'OM', 'JO', 'EG', 'PK', 'IN', 'SG', 'PH'].map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
         <div>
-          <label htmlFor="loc-currency" className="block text-xs font-medium text-gray-700 mb-1">Currency</label>
+          <label htmlFor="loc-currency" className="block text-xs font-medium text-slate-700 mb-1">Currency</label>
           <select
             id="loc-currency"
             value={localization.currencyCode}
             onChange={e => edit({ currencyCode: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             {['USD', 'GBP', 'EUR', 'CAD', 'AUD', 'SGD', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'JOD', 'EGP', 'PKR', 'INR', 'PHP'].map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
         <div>
-          <label htmlFor="loc-workweek" className="block text-xs font-medium text-gray-700 mb-1">Work Week</label>
+          <label htmlFor="loc-workweek" className="block text-xs font-medium text-slate-700 mb-1">Work Week</label>
           <select
             id="loc-workweek"
             value={localization.workWeek}
             onChange={e => edit({ workWeek: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             <option value="Sun-Thu">Sun–Thu (GCC)</option>
             <option value="Mon-Fri">Mon–Fri</option>
@@ -716,12 +719,12 @@ export function LocalizationPanel({ onDirtyChange }: PanelProps = {}) {
           </select>
         </div>
         <div>
-          <label htmlFor="loc-timezone" className="block text-xs font-medium text-gray-700 mb-1">Timezone</label>
+          <label htmlFor="loc-timezone" className="block text-xs font-medium text-slate-700 mb-1">Timezone</label>
           <select
             id="loc-timezone"
             value={localization.defaultTimezone}
             onChange={e => edit({ defaultTimezone: e.target.value })}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
           >
             {[
               'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
@@ -741,7 +744,7 @@ export function LocalizationPanel({ onDirtyChange }: PanelProps = {}) {
             checked={localization.rtlEnabled}
             onChange={v => edit({ rtlEnabled: v })}
           />
-          <label htmlFor="loc-rtl" className="text-sm text-gray-700 cursor-pointer">RTL Layout</label>
+          <label htmlFor="loc-rtl" className="text-sm text-slate-700 cursor-pointer">RTL Layout</label>
         </div>
         <div className="flex items-center gap-2">
           <Toggle
@@ -749,7 +752,7 @@ export function LocalizationPanel({ onDirtyChange }: PanelProps = {}) {
             checked={localization.hijriDatesEnabled}
             onChange={v => edit({ hijriDatesEnabled: v })}
           />
-          <label htmlFor="loc-hijri" className="text-sm text-gray-700 cursor-pointer">Show Hijri Dates</label>
+          <label htmlFor="loc-hijri" className="text-sm text-slate-700 cursor-pointer">Show Hijri Dates</label>
         </div>
       </div>
 
@@ -805,10 +808,10 @@ export function BrandingPanel({ onDirtyChange }: PanelProps = {}) {
   }
 
   if (state.status === 'error') return <LoadFailed message={t('The branding could not be loaded.')} error={state.error} onRetry={() => void reload()} />;
-  if (state.status === 'loading') return <p role="status" className="text-sm text-gray-500">{t('Loading…')}</p>;
+  if (state.status === 'loading') return <p role="status" className="text-sm text-slate-500">{t('Loading…')}</p>;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+    <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
       {branding && (
         <>
           <div className="grid grid-cols-2 gap-4">
@@ -820,17 +823,17 @@ export function BrandingPanel({ onDirtyChange }: PanelProps = {}) {
               { key: 'faviconUrl', label: 'Favicon URL' },
             ].map(field => (
               <div key={field.key}>
-                <label htmlFor={`brand-${field.key}`} className="block text-xs font-medium text-gray-700 mb-1">{field.label}</label>
+                <label htmlFor={`brand-${field.key}`} className="block text-xs font-medium text-slate-700 mb-1">{field.label}</label>
                 <input
                   id={`brand-${field.key}`}
                   value={branding[field.key as keyof TenantBranding] as string}
                   onChange={e => edit({ [field.key]: e.target.value })}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
                 />
               </div>
             ))}
             <div>
-              <label htmlFor="brand-primaryColor-text" className="block text-xs font-medium text-gray-700 mb-1">Primary Color</label>
+              <label htmlFor="brand-primaryColor-text" className="block text-xs font-medium text-slate-700 mb-1">Primary Color</label>
               <div className="flex items-center gap-2">
                 <input
                   id="brand-primaryColor-picker"
@@ -838,13 +841,13 @@ export function BrandingPanel({ onDirtyChange }: PanelProps = {}) {
                   aria-label="Primary color picker"
                   value={branding.primaryColor}
                   onChange={e => edit({ primaryColor: e.target.value })}
-                  className="h-9 w-16 border border-gray-200 rounded cursor-pointer"
+                  className="h-9 w-16 border border-slate-200 rounded cursor-pointer"
                 />
                 <input
                   id="brand-primaryColor-text"
                   value={branding.primaryColor}
                   onChange={e => edit({ primaryColor: e.target.value })}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono"
+                  className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
                 />
               </div>
             </div>
@@ -864,7 +867,7 @@ export function BrandingPanel({ onDirtyChange }: PanelProps = {}) {
         </>
       )}
       {!branding && (
-        <div className="text-center py-8 text-sm text-gray-400">
+        <div className="text-center py-8 text-sm text-slate-400">
           <p>{t('No branding configured. System defaults are active.')}</p>
           <button
             type="button"
@@ -885,6 +888,7 @@ export function BrandingPanel({ onDirtyChange }: PanelProps = {}) {
  */
 export function CountryPayrollKeysPanel() {
   const { t } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { state, reload, setData } = useLoaded<CountryRule[]>(() => client.get<CountryRule[]>('/api/tenant-admin/country-rules').then(r => r.data));
   const rules = state.status === 'ready' ? state.data : [];
   const rulesLoading = state.status === 'loading';
@@ -893,12 +897,19 @@ export function CountryPayrollKeysPanel() {
   const [showAddRule, setShowAddRule] = useState(false);
   const [ruleError, setRuleError] = useState('');
 
-  async function deleteRule(id: string) {
+  async function deleteRule(rule: CountryRule) {
     setRuleError('');
+    const ok = await confirm({
+      title: t('Delete country payroll key'),
+      message: `${rule.countryCode} · ${rule.ruleKey}. ${t(countryRuleRemovalEffect(rule.ruleKey))}`,
+      confirmLabel: t('Delete'),
+      tone: 'danger',
+    });
+    if (!ok) return;
     try {
-      await client.delete(`/api/tenant-admin/country-rules/${id}`);
-      setData(rules.filter(r => r.id !== id));
-    } catch { setRuleError(t('The rule could not be deleted. Please try again.')); }
+      await client.delete(`/api/tenant-admin/country-rules/${rule.id}`);
+      setData(rules.filter(r => r.id !== rule.id));
+    } catch (e) { setRuleError(apiErrorReason(e, t('The rule could not be deleted. Please try again.'))); }
   }
 
   async function addRule() {
@@ -936,21 +947,21 @@ export function CountryPayrollKeysPanel() {
           onClick={() => setShowAddRule(v => !v)}
           className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700"
         >
-          {showAddRule ? 'Cancel' : '+ Add Rule'}
+          {showAddRule ? t('Cancel') : t('+ Add Rule')}
         </button>
       </div>
 
       {showAddRule && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-          <h3 className="text-sm font-semibold text-gray-900">New Rule</h3>
+        <div className="bg-white dark:bg-white/[0.03] rounded-xl border border-slate-200 dark:border-white/[0.08] p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('New Rule')}</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="rule-country" className="block text-xs font-medium text-gray-700 mb-1">Country</label>
+              <label htmlFor="rule-country" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">{t('Country')}</label>
               <select
                 id="rule-country"
                 value={newRule.countryCode}
                 onChange={e => setNewRule(p => ({ ...p, countryCode: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-200 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100 rounded-lg px-3 py-2 text-sm"
               >
                 {GCC_COUNTRIES.map(c => (
                   <option key={c.code} value={c.code}>{c.name} ({c.code})</option>
@@ -958,36 +969,36 @@ export function CountryPayrollKeysPanel() {
               </select>
             </div>
             <div>
-              <label htmlFor="rule-datatype" className="block text-xs font-medium text-gray-700 mb-1">Data Type</label>
+              <label htmlFor="rule-datatype" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">{t('Data Type')}</label>
               <select
                 id="rule-datatype"
                 value={newRule.dataType}
                 onChange={e => setNewRule(p => ({ ...p, dataType: e.target.value }))}
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-200 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100 rounded-lg px-3 py-2 text-sm"
               >
-                <option value="string">String</option>
-                <option value="number">Number</option>
-                <option value="bool">Boolean</option>
+                <option value="string">{t('String')}</option>
+                <option value="number">{t('Number')}</option>
+                <option value="bool">{t('Boolean')}</option>
               </select>
             </div>
             <div>
-              <label htmlFor="rule-key" className="block text-xs font-medium text-gray-700 mb-1">Rule Key</label>
+              <label htmlFor="rule-key" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">{t('Rule Key')}</label>
               <input
                 id="rule-key"
                 value={newRule.ruleKey}
                 onChange={e => setNewRule(p => ({ ...p, ruleKey: e.target.value }))}
                 placeholder="e.g. min_wage"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-200 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100 rounded-lg px-3 py-2 text-sm"
               />
             </div>
             <div>
-              <label htmlFor="rule-value" className="block text-xs font-medium text-gray-700 mb-1">Rule Value</label>
+              <label htmlFor="rule-value" className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">{t('Rule Value')}</label>
               <input
                 id="rule-value"
                 value={newRule.ruleValue}
                 onChange={e => setNewRule(p => ({ ...p, ruleValue: e.target.value }))}
                 placeholder="e.g. 4000"
-                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm"
+                className="w-full border border-slate-200 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100 rounded-lg px-3 py-2 text-sm"
               />
             </div>
           </div>
@@ -997,57 +1008,57 @@ export function CountryPayrollKeysPanel() {
             disabled={addingRule || !newRule.ruleKey.trim() || !newRule.ruleValue.trim()}
             className="px-5 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-indigo-700"
           >
-            {addingRule ? 'Adding...' : 'Add Rule'}
+            {addingRule ? t('Adding…') : t('Add Rule')}
           </button>
         </div>
       )}
 
       {rulesLoading ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-sm text-gray-400">Loading...</div>
+        <div className="bg-white dark:bg-white/[0.03] rounded-xl border border-slate-200 dark:border-white/[0.08] p-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('Loading…')}</div>
       ) : rules.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-sm text-gray-400">
-          No country rules configured.
+        <div className="bg-white dark:bg-white/[0.03] rounded-xl border border-slate-200 dark:border-white/[0.08] p-8 text-center text-sm text-slate-400">
+          {t('No country rules configured.')}
         </div>
       ) : (
         <div className="space-y-3">
           {Object.entries(rulesByCountry).map(([code, countryRules]) => (
-            <div key={code} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
-                <p className="text-sm font-semibold text-gray-800">
-                  {getCountryName(code)} <span className="text-gray-400 font-normal ms-1">({code})</span>
+            <div key={code} className="bg-white dark:bg-white/[0.03] rounded-xl border border-slate-200 dark:border-white/[0.08] overflow-hidden">
+              <div className="px-5 py-3 bg-slate-50 dark:bg-white/[0.04] border-b border-slate-100 dark:border-white/[0.06]">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                  {getCountryName(code)} <span className="text-slate-400 dark:text-slate-500 font-normal ms-1">({code})</span>
                 </p>
               </div>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-100">
-                    {['Rule Key', 'Rule Value', 'Type', 'Override', 'Eff. From', 'Eff. To', 'Actions'].map(col => (
-                      <th key={col} className="text-start text-xs font-medium text-gray-500 px-4 py-2">{col}</th>
+                  <tr className="border-b border-slate-100 dark:border-white/[0.06]">
+                    {[msg('Rule Key'), msg('Rule Value'), msg('Type'), msg('Override'), msg('Eff. From'), msg('Eff. To'), msg('Actions')].map(col => (
+                      <th key={col} className="text-start text-xs font-medium text-slate-500 dark:text-slate-400 px-4 py-2">{t(col)}</th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50">
+                <tbody className="divide-y divide-slate-50 dark:divide-white/[0.04]">
                   {countryRules.map(rule => (
-                    <tr key={rule.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-2.5 font-mono text-xs text-gray-700">{rule.ruleKey}</td>
-                      <td className="px-4 py-2.5 text-gray-900">{rule.ruleValue}</td>
-                      <td className="px-4 py-2.5 text-gray-500">{rule.dataType}</td>
+                    <tr key={rule.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors">
+                      <td className="px-4 py-2.5 font-mono text-xs text-slate-700 dark:text-slate-300">{rule.ruleKey}</td>
+                      <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100">{rule.ruleValue}</td>
+                      <td className="px-4 py-2.5 text-slate-500 dark:text-slate-400">{rule.dataType}</td>
                       <td className="px-4 py-2.5">
                         {rule.isOverride ? (
-                          <span className="inline-block px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-xs">Override</span>
+                          <span className="inline-block px-1.5 py-0.5 bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300 rounded text-xs">{t('Override')}</span>
                         ) : (
-                          <span className="text-gray-400">—</span>
+                          <span className="text-slate-400 dark:text-slate-500">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-gray-400">{rule.effectiveFrom ? new Date(rule.effectiveFrom).toLocaleDateString() : '—'}</td>
-                      <td className="px-4 py-2.5 text-xs text-gray-400">{rule.effectiveTo ? new Date(rule.effectiveTo).toLocaleDateString() : '—'}</td>
+                      <td className="px-4 py-2.5 text-xs text-slate-400 dark:text-slate-500">{rule.effectiveFrom ? new Date(rule.effectiveFrom).toLocaleDateString() : '—'}</td>
+                      <td className="px-4 py-2.5 text-xs text-slate-400 dark:text-slate-500">{rule.effectiveTo ? new Date(rule.effectiveTo).toLocaleDateString() : '—'}</td>
                       <td className="px-4 py-2.5">
                         <button
                           type="button"
-                          onClick={() => deleteRule(rule.id)}
-                          aria-label={`Delete rule ${rule.ruleKey}`}
-                          className="text-xs text-red-500 hover:text-red-700 transition-colors"
+                          onClick={() => deleteRule(rule)}
+                          aria-label={`${t('Delete rule')} ${rule.ruleKey}`}
+                          className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
                         >
-                          Delete
+                          {t('Delete')}
                         </button>
                       </td>
                     </tr>
@@ -1059,12 +1070,13 @@ export function CountryPayrollKeysPanel() {
         </div>
       )}
 
-      {ruleError && <p role="alert" className="text-sm text-red-600">{ruleError}</p>}
+      {ruleError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{ruleError}</p>}
 
-      <p className="text-sm text-gray-600">
+      <p className="text-sm text-slate-600 dark:text-slate-400">
         {t('Weekend days are also set in Setup → Country rules.')}{' '}
         <Link href="/setup?tab=gccSettings" className="font-medium text-indigo-600 underline hover:text-indigo-800">{t('Open Country rules')}</Link>
       </p>
+      {confirmDialog}
     </div>
   );
 }

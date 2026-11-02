@@ -42,7 +42,7 @@ export default function SupportPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Support Center</h1>
+          <h1 className="text-lg font-semibold text-white">Support Center</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {active > 0
               ? <span className="text-amber-400 font-medium">{active} existing active session{active === 1 ? '' : 's'}</span>
@@ -79,7 +79,7 @@ export default function SupportPage() {
 
       <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
         <div className="px-4 py-2.5 border-b border-white/[0.06]">
-          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Recent Support Sessions</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">Recent Support Sessions</p>
         </div>
         {loading ? (
           <div className="flex items-center justify-center py-10">
@@ -98,9 +98,9 @@ export default function SupportPage() {
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-white font-medium">{session.targetUserEmail}</p>
                 <p className="text-xs text-slate-500 mt-0.5 truncate">{session.reason}</p>
-                <p className="text-[11px] text-slate-600 mt-1">By {session.startedByEmail} · {new Date(session.startedAtUtc).toLocaleString('en-GB')}</p>
+                <p className="text-caption text-slate-600 mt-1">By {session.startedByEmail} · {new Date(session.startedAtUtc).toLocaleString('en-GB')}</p>
               </div>
-              <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0 ${isActive ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 'text-slate-600 border-slate-800'}`}>
+              <span className={`text-caption font-semibold uppercase px-1.5 py-0.5 rounded border shrink-0 ${isActive ? 'text-amber-400 bg-amber-500/10 border-amber-500/20' : 'text-slate-600 border-slate-800'}`}>
                 {isActive ? 'Active' : session.endedAtUtc ? 'Ended' : 'Expired'}
               </span>
             </div>

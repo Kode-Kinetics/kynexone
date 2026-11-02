@@ -18,10 +18,10 @@ const TILE = 'wg-card wg-press flex w-[84%] shrink-0 min-w-0 flex-col sm:w-auto 
 
 function Legend({ items }: { items: Array<{ label: string; value: string; color: string }> }) {
   return (
-    <ul className="flex min-w-0 flex-1 flex-col gap-1.5 text-[13px] [.kx-dense_&]:gap-0.5 [.kx-dense_&]:text-xs">
+    <ul className="flex min-w-0 flex-1 flex-col gap-1.5 text-body-sm [.kx-dense_&]:gap-0.5 [.kx-dense_&]:text-xs">
       {items.map((i) => (
         <li key={i.label} className="flex min-w-0 items-center gap-2 text-slate-700 dark:text-slate-300">
-          <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" ref={(n) => { if (n) n.style.background = i.color; }} />
+          <span aria-hidden className="h-2 w-2 shrink-0 rounded" ref={(n) => { if (n) n.style.background = i.color; }} />
           <span className="min-w-0 truncate">{i.label}</span>
           <b className="ms-auto ps-3 font-semibold tabular-nums text-slate-900 dark:text-white">{i.value}</b>
         </li>
@@ -59,7 +59,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
             { label: t('On leave'), value: f.integer(s.onLeave), color: '#0EA5E9' },
           ]} />
         ) : (
-          <span className="text-[13px] leading-snug text-slate-700 dark:text-slate-300">
+          <span className="text-body-sm leading-snug text-slate-700 dark:text-slate-300">
             {s.onLeave > 0
               ? t('{expected} expected, {onLeave} on approved leave.', { expected: s.activeEmployees, onLeave: s.onLeave })
               : t('{expected} expected.', { expected: s.activeEmployees })}
@@ -89,7 +89,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
         <>
           <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
             {f.integer(lu.takenDays)}
-            <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">
+            <span className="ms-1.5 text-body-sm font-medium text-slate-600 dark:text-slate-400">
               {lu.entitlementDays ? t('/ {time}', { time: days(Math.round(lu.entitlementDays)) }) : t('Days taken')}
             </span>
           </span>
@@ -102,7 +102,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
           <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700 dark:text-slate-300 [.kx-dense_&]:flex [.kx-dense_&]:flex-wrap [.kx-dense_&]:gap-x-3">
             {parts.map((p, i) => (
               <li key={p.label} className="flex items-center gap-1.5 truncate">
-                <span aria-hidden className="h-2 w-2 shrink-0 rounded-sm" ref={(n) => { if (n) n.style.background = leaveColors[i]; }} />
+                <span aria-hidden className="h-2 w-2 shrink-0 rounded" ref={(n) => { if (n) n.style.background = leaveColors[i]; }} />
                 <span className="truncate">{p.label}</span><b className="ms-auto font-semibold tabular-nums text-slate-900 dark:text-white">{f.integer(p.days)}</b>
               </li>
             ))}
@@ -110,7 +110,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
           <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Approved leave, {year}.', { year: String(lu.year) })}</span>
         </>
       ) : (
-        <span className="text-[13px] text-slate-700 dark:text-slate-300">
+        <span className="text-body-sm text-slate-700 dark:text-slate-300">
           <b className="block text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{f.integer(data.overview.openLeaveRequests)}</b> {t('{count, plural, one {leave request waiting for a decision.} other {leave requests waiting for a decision.}}', { count: data.overview.openLeaveRequests })}
         </span>
       )}
@@ -127,7 +127,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Overtime hours')}</span>
       </span>
-      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{t('{count} h', { count: Math.round(s.overtimeHours) })} <span className="text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('Month to date')}</span></span>
+      <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{t('{count} h', { count: Math.round(s.overtimeHours) })} <span className="text-body-sm font-medium text-slate-600 dark:text-slate-400">{t('Month to date')}</span></span>
       <span className="flex items-end gap-1.5" role="img" aria-label={ot.map((p) => p.v == null
         ? t('{month}: no attendance captured', { month: f.period(p.m) })
         : t('{month}: {count, plural, one {# hour} other {# hours}}', { month: f.period(p.m), count: Math.round(p.v) })).join(', ')}>
@@ -135,10 +135,10 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
           <span key={p.m} className="flex flex-1 flex-col items-center gap-1">
             <span className="flex h-[64px] items-end [.kx-dense_&]:h-[36px]">
               {p.v == null
-                ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] rounded-[5px] border border-dashed border-slate-300 dark:border-white/15" />
-                : <span className="wg-bar wg-col3d block w-[16px] rounded-t-[4px] rounded-b-[2px]" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
+                ? <span className="block h-[64px] w-[16px] [.kx-dense_&]:h-[36px] rounded border border-dashed border-slate-300 dark:border-white/15" />
+                : <span className="wg-bar wg-col3d block w-[16px] rounded-t rounded-b" ref={(n) => { if (n) { n.style.height = `${Math.max(3, ((p.v as number) / otMax) * (n.closest('.kx-dense') ? 36 : 64))}px`; n.style.background = p.m === current ? 'var(--viz-1)' : 'var(--viz-recede)'; } }} />}
             </span>
-            <span className={`text-[11px] ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{f.period(p.m, 'short')}</span>
+            <span className={`text-caption ${p.m === current ? 'font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-400'}`}>{f.period(p.m, 'short')}</span>
           </span>
         ))}
       </span>
@@ -156,7 +156,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
       </span>
       <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
         {n.saudizationPct != null ? f.percent(n.saudizationPct, 1) : t('Not set')}
-        <span className="ms-1.5 text-[13px] font-medium text-slate-600 dark:text-slate-400">{t('{saudi} of {total} Saudi', { saudi: n.saudi, total: n.saudi + n.nonSaudi })}</span>
+        <span className="ms-1.5 text-body-sm font-medium text-slate-600 dark:text-slate-400">{t('{saudi} of {total} Saudi', { saudi: n.saudi, total: n.saudi + n.nonSaudi })}</span>
       </span>
       <span className="flex h-3 gap-[2px] overflow-hidden rounded-full" role="img" aria-label={n.unknown
         ? t('Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}, not recorded {unknown}', { saudi: n.saudi, nonSaudi: n.nonSaudi, unknown: n.unknown })

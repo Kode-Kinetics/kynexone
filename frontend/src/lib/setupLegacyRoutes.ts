@@ -12,6 +12,8 @@ export interface SetupLegacyRoute {
   tab?: string;
   /** The Setup section (`/setup?tab=…`) it now opens. */
   section: string;
+  /** The view inside the section (`&view=…`), for a section with tabs. */
+  view?: string;
 }
 
 export const SETUP_LEGACY_ROUTES: readonly SetupLegacyRoute[] = [
@@ -27,7 +29,7 @@ export const SETUP_LEGACY_ROUTES: readonly SetupLegacyRoute[] = [
   { path: '/tenant-admin', tab: 'localization', section: 'localization' },
   { path: '/tenant-admin', tab: 'branding', section: 'branding' },
   { path: '/tenant-admin', tab: 'security', section: 'signInSecurity' },
-  { path: '/tenant-admin', tab: 'country-rules', section: 'countryPayrollKeys' },
+  { path: '/tenant-admin', tab: 'country-rules', section: 'gccSettings', view: 'payrollKeys' },
   { path: '/tenant-admin', tab: 'statutory-rules', section: 'statutoryRules' },
   { path: '/tenant-admin', tab: 'help-text', section: 'helpText' },
   { path: '/user-management', section: 'users' },
@@ -79,6 +81,7 @@ export function legacySetupHref(pathname: string, params: URLSearchParams): stri
   if (!match) return null;
   const next = new URLSearchParams();
   next.set('tab', match.section);
+  if (match.view) next.set('view', match.view);
   // An impersonation request is honoured only on /login (middleware.ts); it never rides along into Setup.
   params.forEach((value, key) => { if (key !== 'tab' && key !== 'impersonate') next.append(key, value); });
   return `/setup?${next.toString()}`;

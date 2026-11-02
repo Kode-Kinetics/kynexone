@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -118,6 +118,7 @@ public class BonusGlRemediationSmeTests
 
     private static BonusesController Bonuses(ZayraDbContext db, Guid tid, HttpContext? http = null)
     {
+        SalaryApprovalKit.EnsureApprover(db, tid); // submitting/approving a batch needs someone else who could approve/release it
         http ??= Ctx(tid);
         return new BonusesController(db, new _SmeScope())
         { ControllerContext = new ControllerContext { HttpContext = http } };
@@ -1064,7 +1065,10 @@ public class BonusGlRemediationSmeTests
         (await Bonuses(scopedDb, tid, scopedHttp).ApproveBatch(batch.Id, new BatchApproveRequest("mine"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("the caller can see every child, so nothing is half-processed");
         scopedDb.ChangeTracker.Clear();
-        (await Bonuses(scopedDb, tid, scopedHttp).MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
+        // Paid by a different person than the approver (the batch is prepared, approved and released by three people).
+        var payerHttp = Ctx(tid, coA.Id);
+        await using var payerDb = new ZayraDbContext(options, new _SmeHttp(payerHttp));
+        (await Bonuses(payerDb, tid, payerHttp).MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         scopedDb.ChangeTracker.Clear();
 

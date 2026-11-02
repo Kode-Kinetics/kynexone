@@ -2,6 +2,7 @@ import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import type { CompanyProfile, MigrationImportBatchDto, OrgStructureImportRequest, SetupDraft } from '../src/api/setupAssistant';
 import { openSetupSection, setupSection } from './setupSections';
+import { translate } from '../src/i18n/translations';
 
 /**
  * Real browser interactions against synthetic, intercepted API responses.
@@ -576,7 +577,8 @@ test('checks import and every settings entry screen for contained navigation', a
 
 
 test('reference-list editor is translated, its row actions are always visible, and delete asks in the app dialog', async ({ page }, info) => {
-  const state = await boot(page, { locale: 'ar', route: '/setup?tab=masterData' });
+  // Drop-down lists are workspace-wide: the API writes them for group scope only (MasterDataController), so Edit and Remove are offered only there.
+  const state = await boot(page, { locale: 'ar', route: '/setup?tab=masterData', groupMode: true });
   const nativeDialogs: string[] = [];
   page.on('dialog', async dialog => { nativeDialogs.push(dialog.message()); await dialog.dismiss(); });
   const deletes: string[] = [];
@@ -588,7 +590,8 @@ test('reference-list editor is translated, its row actions are always visible, a
   await page.route('**/api/admin/master-data/**', async route => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ status: 204, body: '' }); }
+    // Remove answers with what happened (OrgRowRemoval): nothing used the value, so it is deleted.
+    if (request.method() === 'DELETE') { deletes.push(path); return route.fulfill({ json: { outcome: 'deleted', message: 'Removed.', usage: { total: 0, summary: '', items: [] } } }); }
     if (path.endsWith('/types')) return route.fulfill({ json: [genderType] });
     if (path.endsWith(`/types/${genderType.id}/values`)) return route.fulfill({ json: values.filter(v => !deletes.includes(`/api/admin/master-data/values/${v.id}`)) });
     return route.fulfill({ json: [] });
@@ -603,14 +606,17 @@ test('reference-list editor is translated, its row actions are always visible, a
 
   // Row actions say what they do and are visible without hovering (no opacity-0 hover reveal).
   const edit = table.getByRole('button', { name: 'تعديل Male', exact: true });
-  const remove = table.getByRole('button', { name: 'حذف Other', exact: true });
-  await expect(edit).toHaveText('تعديل');
-  await expect(remove).toHaveText('حذف');
+  const remove = table.getByRole('button', { name: `${translate('ar', 'Remove')} Other`, exact: true });
+  // The button's text is the visible label plus a screen-reader-only name (" Male"); the visible part is the action word.
+  await expect(edit).toHaveText('تعديل Male');
+  await expect(edit.locator('.sr-only')).toHaveText('Male');
+  await expect(edit).toBeEnabled();
+  await expect(remove).toHaveText(`${translate('ar', 'Remove')} Other`);
   for (const action of [edit, remove]) {
     expect(await action.evaluate(el => Number(getComputedStyle(el.parentElement as HTMLElement).opacity))).toBe(1);
   }
-  // A system value cannot be deleted, so it offers no delete action.
-  await expect(table.getByRole('button', { name: 'حذف Male', exact: true })).toHaveCount(0);
+  // A system value cannot be deleted: Remove is on the row but disabled, with the reason beside it (never hidden), and Edit stays available.
+  await expect(table.getByRole('button', { name: `${translate('ar', 'Remove')} Male`, exact: true })).toBeDisabled();
 
   // Editing keeps the code fixed: employees store it, so renaming never orphans them.
   await edit.click();
@@ -619,17 +625,18 @@ test('reference-list editor is translated, its row actions are always visible, a
   await expect(valueDialog.getByText('تحفظ سجلات الموظفين هذا الرمز، لذا لا يمكن تغييره.', { exact: false })).toBeVisible();
   await valueDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
 
-  // Delete asks in the app's own translated dialog; cancelling sends nothing.
+  // Remove asks in the app's own translated dialog, naming both possible effects; cancelling sends nothing.
   await remove.click();
-  const confirmDialog = page.getByRole('dialog', { name: 'حذف القيمة', exact: true });
-  await expect(confirmDialog).toContainText('هل تريد حذف "Other"؟');
+  const confirmName = translate('ar', 'Remove {what}', { what: translate('ar', 'drop-down value') });
+  const confirmDialog = page.getByRole('dialog', { name: confirmName, exact: true });
+  await expect(confirmDialog).toContainText(translate('ar', 'Remove {name}?', { name: 'Other' }));
   await evidence(page, info, 'reference-list-delete-confirm-ar');
   await confirmDialog.getByRole('button', { name: 'إلغاء', exact: true }).click();
   await expect(confirmDialog).toHaveCount(0);
   expect(deletes).toEqual([]);
 
   await remove.click();
-  await page.getByRole('dialog', { name: 'حذف القيمة', exact: true }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await page.getByRole('dialog', { name: confirmName, exact: true }).getByRole('button', { name: translate('ar', 'Remove'), exact: true }).click();
   await expect.poll(() => deletes).toEqual(['/api/admin/master-data/values/value-other']);
   await expect(table.getByText('OTHER', { exact: true })).toHaveCount(0);
   expect(nativeDialogs).toEqual([]);

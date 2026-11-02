@@ -82,7 +82,7 @@ test.describe('Performance — who sees what', () => {
     expect(page).toContain('const tabs = TABS.filter(t => canOpenPerformanceTab(t.id, hasPermission));');
     expect(page).toContain('{tabs.map(t => (');
     // HR set-up.
-    expect(page).toContain("{can.setUpCycles && (\n          <button type=\"button\" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className=\"h-4 w-4\" /> New Cycle</button>");
+    expect(page).toContain("{can.setUpCycles && (\n          <button type=\"button\" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className=\"h-4 w-4\" aria-hidden=\"true\" /> {t('New Cycle')}</button>");
     expect(page).toContain("{c.status === 'Draft' && can.setUpCycles && (");
     expect(page).toContain("['Active', 'InReview', 'Calibration', 'FinalApproval'].includes(c.status) && can.setUpCycles && (");
     // HR decisions.

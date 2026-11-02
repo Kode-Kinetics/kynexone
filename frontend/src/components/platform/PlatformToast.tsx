@@ -73,7 +73,7 @@ function ToastItem({ t, onClose }: { t: Toast; onClose: (id: string) => void }) 
   }, [duration, t.id, onClose]);
 
   return (
-    <div className={`relative flex items-start gap-3 rounded-xl border px-4 py-3 shadow-2xl shadow-black/60 backdrop-blur-sm min-w-[280px] max-w-[380px] ${cls.wrap} animate-slide-in-right overflow-hidden`}>
+    <div className={`relative flex items-start gap-3 rounded-xl border px-4 py-3 shadow-e3 shadow-black/60 backdrop-blur-sm min-w-[280px] max-w-[380px] ${cls.wrap} animate-slide-in-right overflow-hidden`}>
       <div className={`absolute bottom-0 start-0 h-0.5 transition-[width] ${barCls[t.kind]}`} style={{ width: `${progress}%` }} />
       <Icon className={`h-4 w-4 shrink-0 mt-0.5 ${cls.icon}`} />
       <p className="flex-1 text-sm text-white leading-relaxed">{t.message}</p>

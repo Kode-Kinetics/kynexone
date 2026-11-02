@@ -10,7 +10,8 @@ public class EmployeePayrollProfile : ITenantOwned
     public string Iban { get; set; } = string.Empty;
     public string AccountNumber { get; set; } = string.Empty;
     public string PaymentMethod { get; set; } = "BankTransfer";
-    public string SalaryCurrency { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string SalaryCurrency { get; set; } = string.Empty;
     public string PayrollGroup { get; set; } = string.Empty;
     public string SalaryStructureReference { get; set; } = string.Empty;
     public bool WpsEligible { get; set; } = true;

@@ -47,7 +47,7 @@ function EmployeeErrorState({ error, returnTo, onRetry }: {
     <main className="mx-auto max-w-4xl space-y-5 px-4 py-10" aria-labelledby="employee-load-error-heading">
       <Link href={returnTo} className="font-semibold text-sapphire hover:underline">Back to People</Link>
       <section className="surface space-y-3 p-6" role="alert">
-        <h1 id="employee-load-error-heading" className="text-xl font-bold text-slate-950 dark:text-white">{heading}</h1>
+        <h1 id="employee-load-error-heading" className="text-xl font-semibold text-slate-950 dark:text-white">{heading}</h1>
         <p className="text-sm text-slate-600 dark:text-slate-300">{error.message}</p>
         <button type="button" className="btn-secondary" onClick={onRetry}>Retry employee record</button>
       </section>
@@ -60,7 +60,7 @@ function InvalidEmployeeLink() {
     <main className="mx-auto max-w-4xl space-y-5 px-4 py-10" aria-labelledby="invalid-employee-link-heading">
       <Link href="/people" className="font-semibold text-sapphire hover:underline">Back to People</Link>
       <section className="surface space-y-2 p-6" role="alert">
-        <h1 id="invalid-employee-link-heading" className="text-xl font-bold text-slate-950 dark:text-white">Invalid employee link</h1>
+        <h1 id="invalid-employee-link-heading" className="text-xl font-semibold text-slate-950 dark:text-white">Invalid employee link</h1>
         <p className="text-sm text-slate-600 dark:text-slate-300">This employee address is not valid. Return to People and open the record again.</p>
       </section>
     </main>

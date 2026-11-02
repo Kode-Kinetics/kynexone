@@ -40,12 +40,12 @@ export function DeductionsDrawer({ open, title, subtitle, onClose, children }: {
   if (!open || typeof document === 'undefined') return null;
   return createPortal(
     <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-[1px]" onClick={onClose} aria-hidden />
+      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} aria-hidden />
       <div role="dialog" aria-modal="true" aria-labelledby={titleId} data-testid="deductions-drawer"
-        className="absolute inset-y-0 end-0 flex w-full max-w-xl flex-col bg-white shadow-2xl dark:bg-slate-900">
+        className="absolute inset-y-0 end-0 flex w-full max-w-xl flex-col bg-white shadow-e3 dark:bg-slate-900">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4 dark:border-white/10">
           <div>
-            <h2 id={titleId} className="text-base font-bold text-slate-900 dark:text-white">{title}</h2>
+            <h2 id={titleId} className="text-base font-semibold text-slate-900 dark:text-white">{title}</h2>
             {subtitle && <p className="text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>}
           </div>
           <button ref={closeRef} type="button" onClick={onClose}

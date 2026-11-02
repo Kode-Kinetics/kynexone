@@ -5,7 +5,7 @@ import { apiErrorReason, notifyApiError } from '../api/client';
 import { TransliterateButton } from '../components/TransliterateButton';
 import {
   CreditCard, DollarSign, Gift, Plus, CheckCircle, XCircle,
-  FileText, TrendingUp, AlertTriangle, BookOpen, ShieldCheck,
+  TrendingUp, AlertTriangle, ShieldCheck,
 } from 'lucide-react';
 import {
   loanTypesApi, loansApi, advancePolicyApi, advancesApi,
@@ -25,6 +25,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { canDecideLoan, loanApprovalRole, loanErrorMessage, localDateToday, repaymentMethodLabels } from '../lib/loanWorkflow';
 import { LoanPaymentsTab } from '../components/loans/LoanPaymentsTab';
 import { msg } from '../i18n/translations';
+import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { LoanLifecyclePanel } from '../components/loans/LoanLifecyclePanel';
 import { LoanAccountSummary, LoanStatement } from '../components/loans/LoanStatement';
@@ -35,6 +36,8 @@ import { LoanLimitCard } from '../components/loans/LoanLimitCard';
 import { LoanConsentStep } from '../components/deductions/LoanConsentStep';
 import { LoanConsentAttach } from '../components/deductions/LoanConsentAttach';
 import { LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { useConfirm } from '../components/ui/useConfirm';
+import { useAppToast } from '../components/ui/AppToast';
 import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
@@ -97,7 +100,7 @@ function SummaryCard({ label, value, sub, icon: Icon, color }: { label: string; 
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
-          <p className={`mt-1 text-2xl font-extrabold ${color}`}>{value}</p>
+          <p className={`mt-1 text-2xl font-semibold ${color}`}>{value}</p>
           {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
         </div>
         <span className={`rounded-lg p-2.5 ${color.replace('text-', 'bg-').replace('-600', '-100').replace('-400', '-900/20')}`}>
@@ -116,7 +119,7 @@ function GlEntriesTable({ entries, fmt }: { entries: FinanceGlEntry[]; fmt: (n: 
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Date', 'Event', 'Debit Account', 'Credit Account', 'Amount', 'Posted By'].map((h) => (
-              <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>
             ))}
           </tr>
         </thead>
@@ -145,7 +148,7 @@ function AuditTrailTable({ logs }: { logs: AuditLogEntry[] }) {
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Timestamp', 'Action', 'Performed By', 'Details'].map((h) => (
-              <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>
             ))}
           </tr>
         </thead>
@@ -175,6 +178,10 @@ export function LoanTypesTab() {
   const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', maxAmount: 0, maxInstallments: 12, minInstallments: 1, repaymentFrequency: 'Monthly', isInterestFree: true, interestRate: 0, minServiceMonths: 6, requiresApproval: true });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState<LoanType | null>(null);
+  const [showOff] = useState(false);
+  const { hasPermission } = useAuth();
+  const canWrite = hasPermission('loans.write');
 
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode, { decimals: 0 });
@@ -182,16 +189,21 @@ export function LoanTypesTab() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems(await loanTypesApi.list()); setLoadError(null); } catch (e) { setItems([]); setLoadError(e); }
+    try { setItems(await loanTypesApi.list({ includeInactive: true })); setLoadError(null); } catch (e) { setItems([]); setLoadError(e); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  const removal = useOrgRowRemoval({ api: loanTypesApi.removal, noun: msg('loan type'), onDone: load });
+  const shown = items.filter(x => showOff || x.isActive);
 
   const save = async () => {
     if (!form.code.trim() || !form.nameEn.trim()) { setError('Code and name are required'); return; }
     if (!Number.isInteger(form.minInstallments) || form.minInstallments < 1 || form.minInstallments > form.maxInstallments) { setError(tr('The shortest repayment cannot be longer than the longest repayment.')); return; }
     setSaving(true); setError('');
-    try { await loanTypesApi.create(form); setModalOpen(false); load(); }
+    try {
+      if (editing) await loanTypesApi.update(editing.id, form); else await loanTypesApi.create(form);
+      setModalOpen(false); setEditing(null); load();
+    }
     catch (e) { setError(apiErrorReason(e, 'Failed to save.')); }
     finally { setSaving(false); }
   };
@@ -209,20 +221,20 @@ export function LoanTypesTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Code', 'Name', `Max Amount (${currencyCode})`, 'Max Installments', 'Frequency', 'Interest', 'Min Service', 'Approval', 'Status'].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                {['Code', 'Name', `Max Amount (${currencyCode})`, 'Max Installments', 'Frequency', 'Interest', 'Min Service', 'Approval', 'Status', ''].map((h, i) => (
+                  <th key={h || `col-${i}`} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h || <span className="sr-only">{tr('Actions')}</span>}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
-                <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+                <tr><td colSpan={10} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : loadError != null ? (
-                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
-              ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loan types yet</td></tr>
-              ) : items.map((t) => (
-                <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
+                <LoadFailedRow colSpan={10} error={loadError} onRetry={() => { void load(); }} />
+              ) : shown.length === 0 ? (
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No loan types yet</td></tr>
+              ) : shown.map((t) => (
+                <tr key={t.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${t.isActive ? '' : 'opacity-70'}`}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{t.code}</td>
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{t.nameEn}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(t.maxAmount)}</td>
@@ -232,6 +244,12 @@ export function LoanTypesTab() {
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t.minServiceMonths}m</td>
                   <td className="px-4 py-3">{t.requiresApproval ? '✓' : '—'}</td>
                   <td className="px-4 py-3"><StatusBadge status={t.isActive ? 'Active' : 'Closed'} /></td>
+                  <td className="px-4 py-3">
+                    <OrgRowActions name={t.nameEn} isActive={t.isActive} busy={removal.busyId === t.id}
+                      blockedReason={canWrite ? undefined : tr('You do not have permission to change this.')}
+                      onEdit={() => { setEditing(t); setForm({ code: t.code, nameEn: t.nameEn, nameAr: t.nameAr ?? '', maxAmount: t.maxAmount, maxInstallments: t.maxInstallments, minInstallments: t.minInstallments ?? 1, repaymentFrequency: t.repaymentFrequency, isInterestFree: t.isInterestFree, interestRate: t.interestRate, minServiceMonths: t.minServiceMonths, requiresApproval: t.requiresApproval }); setError(''); setModalOpen(true); }}
+                      onRemove={() => removal.remove({ id: t.id, name: t.nameEn })} onRestore={() => removal.restore({ id: t.id, name: t.nameEn })} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -239,7 +257,7 @@ export function LoanTypesTab() {
         </div>
       </div>
 
-      <Modal isOpen={modalOpen} title="New Loan Type" onClose={() => setModalOpen(false)} size="lg"
+      <Modal isOpen={modalOpen} title={editing ? tr('Edit loan type') : 'New Loan Type'} onClose={() => { setModalOpen(false); setEditing(null); }} size="lg"
         footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
@@ -480,17 +498,17 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Loan #', 'Employee', 'Type / Repayment', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
-                <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+                <tr><td colSpan={10} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : loadError != null ? (
-                <LoadFailedRow colSpan={9} error={loadError} onRetry={() => { void load(); }} />
+                <LoadFailedRow colSpan={10} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No loans found</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No loans found</td></tr>
               ) : items.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(l)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.loanNumber}</td>
@@ -527,7 +545,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
           <FormField label={t('Employee')} required>
             {self ? <p className="text-sm font-semibold">{user?.fullName}</p> : <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />}
           </FormField>
-          {noTypesOffered && <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+          {noTypesOffered && <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-sm font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
             {t(self ? 'No loan types are offered by your company right now.' : "No loan types are offered by this employee's company right now.")}
           </p>}
           {offeringsUnknown && <p role="status" className="text-xs text-slate-500">{t("We couldn't confirm which loan types your company offers; we'll check when you choose one.")}</p>}
@@ -625,7 +643,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             {detailTab === 'schedule' && selected.installments.length > 0 && (
               <div className="max-h-48 overflow-y-auto surface">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.installments.map((ins) => (
                       <tr key={ins.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -842,7 +860,7 @@ function AdvancesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Advance #', 'Employee', 'Requested', 'Approved', 'Outstanding', 'Repayment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
@@ -957,8 +975,9 @@ export function BonusTypesTab() {
   const [saving, setSaving] = useState(false);
   const { currencyCode } = useTenantSettings();
   const [error, setError] = useState('');
-  const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const removal = useOrgRowRemoval({ api: bonusTypesApi.removal, noun: msg('bonus type'), onDone: () => { void load(); } });
+  const { hasPermission } = useAuth();
+  const canWrite = hasPermission('payroll.write');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -997,16 +1016,6 @@ export function BonusTypesTab() {
     } finally { setSaving(false); }
   };
 
-  const confirmDelete = async () => {
-    if (!deleteId) return;
-    setDeleting(true);
-    try { await bonusTypesApi.delete(deleteId); setDeleteId(null); load(); }
-    catch (e: unknown) {
-      const msg = (e as { response?: { data?: string } })?.response?.data;
-      alert(typeof msg === 'string' ? msg : 'Cannot delete — the bonus type may have active batches. Deactivate it instead.');
-    } finally { setDeleting(false); }
-  };
-
   const taxLabel = (t: BonusType) => {
     if (!t.isTaxable) return <span className="text-xs text-emerald-600 font-semibold dark:text-emerald-400">Tax-Exempt</span>;
     const region = t.taxRegion ?? 'GCC';
@@ -1019,11 +1028,10 @@ export function BonusTypesTab() {
   return (
     <>
       <div className="space-y-4">
+        {removal.notice}
+        {removal.confirmDialog}
         <div className="flex items-center justify-between gap-3">
-          <label className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
-            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} className="h-4 w-4 accent-sapphire" />
-            Show inactive
-          </label>
+          <ShowTurnedOffToggle checked={includeInactive} onChange={setIncludeInactive} />
           <button type="button" onClick={openCreate} className="btn-primary"><Plus className="h-4 w-4" /> New Bonus Type</button>
         </div>
 
@@ -1032,15 +1040,15 @@ export function BonusTypesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Code', 'Name', 'Method', 'Default Value', 'Frequency', 'Compliance', 'Tax Treatment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
-                <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+                <tr><td colSpan={10} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No bonus types yet</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No bonus types yet</td></tr>
               ) : items.map((t) => (
                 <tr key={t.id} className={`hover:bg-slate-50 dark:hover:bg-white/[0.03] ${!t.isActive ? 'opacity-50' : ''}`}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{t.code}</td>
@@ -1066,19 +1074,18 @@ export function BonusTypesTab() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {t.isIncludedInEosb && <span className="text-[10px] font-medium rounded px-1 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">EOSB</span>}
-                      {t.isIncludedInGosiBase && <span className="text-[10px] font-medium rounded px-1 py-0.5 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">GOSI</span>}
-                      {t.isIncludedInWps && <span className="text-[10px] font-medium rounded px-1 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">WPS</span>}
-                      {t.proRataEligibility && <span className="text-[10px] font-medium rounded px-1 py-0.5 bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-400">Pro-rata</span>}
+                      {t.isIncludedInEosb && <span className="text-caption font-medium rounded px-1 py-0.5 bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">EOSB</span>}
+                      {t.isIncludedInGosiBase && <span className="text-caption font-medium rounded px-1 py-0.5 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">GOSI</span>}
+                      {t.isIncludedInWps && <span className="text-caption font-medium rounded px-1 py-0.5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">WPS</span>}
+                      {t.proRataEligibility && <span className="text-caption font-medium rounded px-1 py-0.5 bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-400">Pro-rata</span>}
                     </div>
                   </td>
                   <td className="px-4 py-3">{taxLabel(t)}</td>
                   <td className="px-4 py-3"><StatusBadge status={t.isActive ? 'Active' : 'Closed'} /></td>
                   <td className="px-4 py-3">
-                    <div className="flex gap-1">
-                      <button type="button" onClick={() => openEdit(t)} className="rounded px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10">Edit</button>
-                      <button type="button" onClick={() => setDeleteId(t.id)} className="rounded px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20">Delete</button>
-                    </div>
+                    <OrgRowActions name={t.nameEn} isActive={t.isActive} busy={removal.busyId === t.id}
+                      blockedReason={canWrite ? undefined : 'You do not have permission to change this.'}
+                      onEdit={() => openEdit(t)} onRemove={() => removal.remove({ id: t.id, name: t.nameEn })} onRestore={() => removal.restore({ id: t.id, name: t.nameEn })} />
                   </td>
                 </tr>
               ))}
@@ -1205,20 +1212,9 @@ export function BonusTypesTab() {
             <textarea value={form.notes} onChange={(e) => setForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} placeholder="Internal policy notes (e.g. granted at board discretion, linked to performance rating)" />
           </FormField>
 
-          {editingId && (
-            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-              <input type="checkbox" checked={form.isActive} onChange={(e) => setForm(x => ({ ...x, isActive: e.target.checked }))} className="h-4 w-4 accent-sapphire" />
-              Active (visible in new batches)
-            </label>
-          )}
         </div>
       </Modal>
 
-      {/* Delete confirm */}
-      <Modal isOpen={!!deleteId} title="Delete Bonus Type" onClose={() => setDeleteId(null)}
-        footer={<><button type="button" onClick={() => setDeleteId(null)} className="btn-secondary">Cancel</button><button type="button" onClick={confirmDelete} disabled={deleting} className="bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-60">{deleting ? 'Deleting…' : 'Delete'}</button></>}>
-        <p className="text-sm text-slate-700 dark:text-slate-300">This will soft-delete the bonus type. It cannot be deleted if it has active or approved batches — deactivate it instead.</p>
-      </Modal>
     </>
   );
 }
@@ -1226,6 +1222,9 @@ export function BonusTypesTab() {
 // ── Bonus Batches ─────────────────────────────────────────────────────────────
 
 function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
+  const { t } = useLocale();
+  const toast = useAppToast();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   // A bonus batch has no currency of its own; it is paid in the tenant's. Until the tenant's
   // settings load, that currency is unknown (the context's 'USD' is a placeholder), so amounts
   // are shown bare rather than labelled with a guess.
@@ -1297,17 +1296,20 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
   };
 
   const submitBatch = async (id: string) => {
-    if (!confirm('Submit this batch for approval?')) return;
+    const ok = await confirm({ title: t('Submit for approval'), message: t('Submit this batch for approval?'), confirmLabel: t('Submit for approval') });
+    if (!ok) return;
     try { await bonusBatchesApi.submit(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
   const approveBatch = async (id: string) => {
-    if (!confirm('Approve this bonus batch? This will generate GL entries.')) return;
+    const ok = await confirm({ title: t('Approve batch'), message: t('Approve this bonus batch? This will generate GL entries.'), confirmLabel: t('Approve batch') });
+    if (!ok) return;
     try { await bonusBatchesApi.approve(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
   const markPaidBatch = async (id: string) => {
-    if (!confirm('Mark this batch as paid? This action is final.')) return;
+    const ok = await confirm({ title: t('Mark as paid'), message: t('Mark this batch as paid? This action is final.'), confirmLabel: t('Mark as paid') });
+    if (!ok) return;
     try { await bonusBatchesApi.markPaid(id); load(); if (selected?.batch.id === id) { const d = await bonusBatchesApi.get(id); setSelected(d); } } catch (e) { notifyApiError(e); }
   };
 
@@ -1360,7 +1362,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     try { await bonusBatchesApi.delete(deleteBatchId); setDeleteBatchId(null); load(); }
     catch (e: unknown) {
       const msg = (e as { response?: { data?: string } })?.response?.data;
-      alert(typeof msg === 'string' ? msg : 'Cannot delete batch.');
+      toast.error(typeof msg === 'string' ? msg : t('Cannot delete batch.'));
     } finally { setDeletingBatch(false); }
   };
 
@@ -1381,15 +1383,15 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Batch #', 'Name', 'Type', 'Period', 'Payment Date', 'Employees', 'Total Amount', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
-                <tr><td colSpan={9} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
+                <tr><td colSpan={10} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 text-center text-slate-400">No bonus batches</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No bonus batches</td></tr>
               ) : items.map((b) => (
                 <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(b)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{b.batchNumber}</td>
@@ -1498,7 +1500,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             {detailTab === 'employees' && (
               <div className="surface overflow-hidden max-h-64 overflow-y-auto">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-bold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.bonuses.length === 0 ? (
                       <tr><td colSpan={7} className="py-6 text-center text-slate-400">No employees added yet</td></tr>
@@ -1582,9 +1584,9 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             <div className="rounded-lg bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm">
               <p className="font-semibold text-emerald-700 dark:text-emerald-400 mb-2">Employee Added — Tax Summary</p>
               <div className="grid grid-cols-3 gap-3">
-                <div><p className="text-xs text-slate-400">Gross Bonus</p><p className="font-bold text-slate-900 dark:text-white">{fmt(addResult.grossBonusAmount)}</p></div>
-                <div><p className="text-xs text-slate-400">Federal Withholding (22%)</p><p className="font-bold text-amber-600 dark:text-amber-400">−{fmt(addResult.taxWithheld)}</p></div>
-                <div><p className="text-xs text-slate-400">Net to Employee</p><p className="font-bold text-emerald-600 dark:text-emerald-400">{fmt(addResult.netBonusAmount)}</p></div>
+                <div><p className="text-xs text-slate-400">Gross Bonus</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(addResult.grossBonusAmount)}</p></div>
+                <div><p className="text-xs text-slate-400">Federal Withholding (22%)</p><p className="font-semibold text-amber-600 dark:text-amber-400">−{fmt(addResult.taxWithheld)}</p></div>
+                <div><p className="text-xs text-slate-400">Net to Employee</p><p className="font-semibold text-emerald-600 dark:text-emerald-400">{fmt(addResult.netBonusAmount)}</p></div>
               </div>
             </div>
             <button type="button" onClick={() => { setEmpForm({ basicSalary: 0, calculationMethod: empForm.calculationMethod, calculationValue: 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); }} className="btn-secondary w-full">Add Another Employee</button>
@@ -1604,6 +1606,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
           </div>
         )}
       </Modal>
+      {confirmDialog}
     </>
   );
 }
@@ -1670,12 +1673,12 @@ function AuditReportTab() {
             <SummaryCard label="Outstanding" value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
           </div>
           <div className="surface overflow-hidden">
-            <p className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Loan Register</p>
+            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Loan Register</p>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Loan #', 'Employee', 'Type', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1707,12 +1710,12 @@ function AuditReportTab() {
             <SummaryCard label="Outstanding" value={fmt(advanceAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
           </div>
           <div className="surface overflow-hidden">
-            <p className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Advance Register</p>
+            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Advance Register</p>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Advance #', 'Employee', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1744,12 +1747,12 @@ function AuditReportTab() {
           </div>
           {bonusAudit.byDepartment?.length > 0 && (
             <div className="surface overflow-hidden">
-              <p className="px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Bonus Distribution by Department</p>
+              <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Bonus Distribution by Department</p>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Department', 'Employees', 'Total Bonus'].map((h) => (
-                      <th key={h} className="px-4 py-3 text-start text-xs font-bold uppercase tracking-wide text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1812,7 +1815,7 @@ export function LoansPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {ownAccounts ? 'Apply for a loan, follow approvals and view your repayment statement.' : 'Review scoped employee loans, approval routes and repayment history.'}
           </p>
@@ -1856,6 +1859,35 @@ export function LoansPage() {
         {activeTab === 'bonusBatches' && <BonusBatchesTab bonusTypes={bonusTypes} />}
         {activeTab === 'auditReport' && <AuditReportTab />}
       </div>
+    </div>
+  );
+}
+
+// ── My loans (Self-Service) ───────────────────────────────────────────────────
+
+/**
+ * The employee's own loans, inside the Self-Service workspace (/ess/loans). It is the same account
+ * summary and the same apply / statement flow the admin page uses in its "mine" mode — the API
+ * scopes every call to the caller's own employee — but without leaving the employee's workspace
+ * for the admin Loans page and its menu.
+ */
+export function MyLoansPage() {
+  const { t } = useLocale();
+  const { companyVersion } = useCompany();
+  const [loanTypes, setLoanTypes] = useState<LoanType[]>([]);
+  const [summaryVersion, setSummaryVersion] = useState(0);
+  const refreshSummary = useCallback(() => setSummaryVersion(version => version + 1), []);
+  useEffect(() => {
+    loanTypesApi.list().then(setLoanTypes).catch(() => { /* the apply form reads the offered types itself */ });
+  }, [companyVersion]);
+  return (
+    <div className="space-y-4" data-testid="my-loans">
+      <div>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('My loans')}</h1>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('Apply for a loan, follow its approval and see what is left to repay.')}</p>
+      </div>
+      <LoanAccountSummary key={companyVersion} mine version={summaryVersion} />
+      <LoansTab key={companyVersion} mine loanTypes={loanTypes} onPayments={() => { /* repayment is managed by Finance */ }} onChanged={refreshSummary} />
     </div>
   );
 }

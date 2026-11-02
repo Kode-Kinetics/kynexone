@@ -55,7 +55,7 @@ export function KpiTiles({ canSeeNames, refreshKey = 0 }: { canSeeNames: boolean
         if (metrics.length === 0) return null;
         return (
           <div key={group.id} className="space-y-2">
-            <h2 className="text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t(group.label)}</h2>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t(group.label)}</h2>
             <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5" aria-label={t(group.label)}>
               {metrics.map((m) => (
                 <li key={m.key}>
@@ -72,7 +72,7 @@ export function KpiTiles({ canSeeNames, refreshKey = 0 }: { canSeeNames: boolean
           className="wg-card space-y-3 rounded-2xl p-4 outline-none" aria-label={t(metricLabel[drill.metric.key] ?? drill.metric.key)}>
           <div className="flex items-start justify-between gap-2">
             <div>
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t(metricLabel[drill.metric.key] ?? drill.metric.key)}</h3>
+              <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t(metricLabel[drill.metric.key] ?? drill.metric.key)}</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">{t(metricDefinition[drill.metric.key] ?? drill.metric.key)}</p>
             </div>
             <button type="button" onClick={() => setDrill(null)} className="btn-secondary h-8 shrink-0 gap-1 px-2 text-xs">
@@ -99,13 +99,13 @@ function Tile({ metric, active, locked, onOpen }: { metric: Metric; active: bool
   const body = (
     <>
       <span className="block text-xs font-semibold text-slate-500 dark:text-slate-400">{label}</span>
-      <span className={`mt-1 block text-2xl font-bold tabular-nums ${isGap ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</span>
+      <span className={`mt-1 block text-2xl font-semibold tabular-nums ${isGap ? 'text-rose-700 dark:text-rose-300' : 'text-slate-900 dark:text-white'}`}>{value}</span>
       {isRate(metric) && (
-        <span className="block text-[11px] text-slate-500 dark:text-slate-400">{t('suc.kpi.ofTotal', { count: metric.numerator ?? 0, total: metric.denominator ?? 0 })}</span>
+        <span className="block text-caption text-slate-500 dark:text-slate-400">{t('suc.kpi.ofTotal', { count: metric.numerator ?? 0, total: metric.denominator ?? 0 })}</span>
       )}
-      <span className="mt-1 block text-[11px] font-semibold text-sapphire dark:text-cyanAccent">{locked ? t('suc.kpi.namesNeedAccess') : t('suc.kpi.showRows')}</span>
+      <span className="mt-1 block text-caption font-semibold text-sapphire dark:text-cyanAccent">{locked ? t('suc.kpi.namesNeedAccess') : t('suc.kpi.showRows')}</span>
       <span id={tipId} role="tooltip"
-        className="pointer-events-none absolute inset-x-2 top-full z-20 mt-1 hidden rounded-lg bg-slate-900 p-2 text-[11px] font-normal text-white shadow-lg group-hover:block group-focus-visible:block dark:bg-slate-700">
+        className="pointer-events-none absolute inset-x-2 top-full z-20 mt-1 hidden rounded-lg bg-slate-900 p-2 text-caption font-normal text-white shadow-lg group-hover:block group-focus-visible:block dark:bg-slate-700">
         {definition}
       </span>
     </>
@@ -165,10 +165,10 @@ function DrillRows({ metric, result }: { metric: Metric; result: DrillResult }) 
               <span className="flex flex-wrap items-center gap-1">
                 <StatusChip label={t(planStatusLabel[p.status])} tone={planTone(p.status, p.onTrack)} />
                 {p.overdue > 0 && <StatusChip label={t('suc.plan.overdueCount', { count: p.overdue })} tone="rose" />}
-                <span className="text-[11px] text-slate-500">{t(onTrackReason({ ...p, reviewOverdue: !p.onTrack && p.overdue === 0 }))}</span>
+                <span className="text-caption text-slate-500">{t(onTrackReason({ ...p, reviewOverdue: !p.onTrack && p.overdue === 0 }))}</span>
               </span>
               <ProgressBar percent={p.percentComplete ?? 0} label={t('suc.plan.progressFor', { name: personName(p.employee, locale) })} />
-              <span className="text-[11px] text-slate-500 sm:col-span-3">{t('suc.plan.nextReview', { date: fx.date(p.nextReviewOn) })}</span>
+              <span className="text-caption text-slate-500 sm:col-span-3">{t('suc.plan.nextReview', { date: fx.date(p.nextReviewOn) })}</span>
             </li>
           ))}
         </ul>

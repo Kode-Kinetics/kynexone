@@ -1,0 +1,159 @@
+name: Nightly
+
+# The heavy and per-feature browser suites that used to be orphaned (referenced by no workflow) run
+# here, once a night and on demand, instead of on every pull request. They are route-mocked
+# (page.route), need no backend, and are sharded by area so a night costs four short jobs.
+# Nothing here gates a merge or a deploy. The list of configs MUST match frontend/e2e/config-manifest.json
+# ("nightly" entries); frontend/scripts/check-playwright-configs.mjs (run in CI) enforces that.
+on:
+  schedule:
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  browser-suites:
+    name: Nightly browser suites (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: setup-and-policy
+            configs: >-
+              playwright.setup-consolidation.config.ts
+              playwright.setup-progress-search.config.ts
+              playwright.company-setup-rules.config.ts
+              playwright.company-setup-wizard.config.ts
+              playwright.policy-form-prefill.config.ts
+              playwright.policy-intake-kill-switch.config.ts
+              playwright.statutory-rules.config.ts
+              playwright.leave-floor-warnings.config.ts
+          - name: gl-and-compensation
+            configs: >-
+              playwright.gl-api-keys.config.ts
+              playwright.gl-eosb.config.ts
+              playwright.gl-journal-exports.config.ts
+              playwright.gl-setup.config.ts
+              playwright.gl-cost-centres.config.ts
+              playwright.payroll-cost-centre-journal.config.ts
+              playwright.cost-centres-master.config.ts
+              playwright.cost-centre-employee.config.ts
+              playwright.compensation.config.ts
+              playwright.grade-package.config.ts
+              playwright.benefit-defaults.config.ts
+              playwright.matrix.config.ts
+          - name: people-and-ess
+            configs: >-
+              playwright.employee-import.config.ts
+              playwright.employee-wizard.config.ts
+              playwright.employee-hire.config.ts
+              playwright.pay-approvals.config.ts
+              playwright.onboarding-p3.config.ts
+              playwright.ess-complete-profile.config.ts
+              playwright.esign.config.ts
+              playwright.ess-workspace.config.ts
+              playwright.jawazat.config.ts
+              playwright.leave-per-company.config.ts
+              playwright.loans.config.ts
+              playwright.renewals.config.ts
+              playwright.fixture.config.ts
+          - name: talent-and-chrome
+            configs: >-
+              playwright.learning.config.ts
+              playwright.succession.config.ts
+              playwright.engagement.config.ts
+              playwright.app-chrome.config.ts
+              playwright.g1.config.ts
+    env:
+      # Every feature config reads its own *_BASE_URL; point them all at the one production build below.
+      NIGHTLY_URL: http://127.0.0.1:5197
+      APP_CHROME_BASE_URL: http://127.0.0.1:5197
+      BENEFIT_DEFAULTS_BASE_URL: http://127.0.0.1:5197
+      COMPANY_WIZARD_BASE_URL: http://127.0.0.1:5197
+      COMPENSATION_BASE_URL: http://127.0.0.1:5197
+      EMPLOYEE_WIZARD_BASE_URL: http://127.0.0.1:5197
+      ENGAGEMENT_BASE_URL: http://127.0.0.1:5197
+      GL_API_KEYS_BASE_URL: http://127.0.0.1:5197
+      GL_EOSB_BASE_URL: http://127.0.0.1:5197
+      GL_EXPORTS_BASE_URL: http://127.0.0.1:5197
+      GL_SETUP_BASE_URL: http://127.0.0.1:5197
+      COST_CENTRE_EMPLOYEE_BASE_URL: http://127.0.0.1:5197
+      COST_CENTRES_MASTER_BASE_URL: http://127.0.0.1:5197
+      EMPLOYEE_HIRE_BASE_URL: http://127.0.0.1:5197
+      ESS_COMPLETE_BASE_URL: http://127.0.0.1:5197
+      ESIGN_BASE_URL: http://127.0.0.1:5197
+      FLOOR_BASE_URL: http://127.0.0.1:5197
+      GL_COST_CENTRES_BASE_URL: http://127.0.0.1:5197
+      PAY_APPROVALS_BASE_URL: http://127.0.0.1:5197
+      PAYROLL_CC_BASE_URL: http://127.0.0.1:5197
+      GRADE_PACKAGE_BASE_URL: http://127.0.0.1:5197
+      LEAVE_BASE_URL: http://127.0.0.1:5197
+      LEARNING_BASE_URL: http://127.0.0.1:5197
+      SETUP_EXPERIENCE_BASE_URL: http://127.0.0.1:5197
+      STATUTORY_RULES_BASE_URL: http://127.0.0.1:5197
+      SUCCESSION_BASE_URL: http://127.0.0.1:5197
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Build and start the frontend
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          npx next build
+          nohup npx next start -p 5197 > "$RUNNER_TEMP/next.log" 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:5197/login && break; sleep 2; done
+
+      - name: Run the shard's suites
+        working-directory: frontend
+        env:
+          CONFIGS: ${{ matrix.configs }}
+        run: |
+          failed=""
+          {
+            echo "### Nightly shard: ${{ matrix.name }}"
+            echo "| config | result |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for cfg in $CONFIGS; do
+            if npx playwright test -c "e2e/$cfg" --reporter=list; then r=pass; else r=FAIL; failed="$failed $cfg"; fi
+            echo "| $cfg | $r |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ -n "$failed" ]; then echo "::error::failing configs:$failed"; exit 1; fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-${{ matrix.name }}
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Frontend log on failure
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/next.log" || true

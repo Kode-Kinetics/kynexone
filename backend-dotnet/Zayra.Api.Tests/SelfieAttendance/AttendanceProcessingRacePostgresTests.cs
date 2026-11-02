@@ -226,7 +226,9 @@ public sealed class AttendanceProcessingRacePostgresTests
         foreach (var (at, direction) in new[] { (clockIn, "In"), (clockOut, "Out") })
         {
             await using var db = _fx.CreateDbWithAccessor(new HttpContextAccessor { HttpContext = new DefaultHttpContext() });
-            var result = await Service(db).IngestByDeviceKeyAsync(key, new DeviceIngestRequest(
+            var result = await new AttendanceService(db, new NullNotifications(), new NullHttpClients(),
+                new FixedDayClock(new DateTime(2026, 9, 20, 0, 0, 0, DateTimeKind.Utc))) // fixed dates: the ingest window is relative to the server clock
+                .IngestByDeviceKeyAsync(key, new DeviceIngestRequest(
                 [new DeviceIngestPunch(code, at, direction, null, null, null, null, null, null)], AutoProcess: true), "127.0.0.1", default);
             Assert.NotNull(result);
             Assert.Equal(1, result!.Accepted);
@@ -373,4 +375,9 @@ public sealed class AttendanceProcessingRacePostgresTests
         context.Connection.RemoteIpAddress = System.Net.IPAddress.Loopback;
         return new ControllerContext { HttpContext = context };
     }
+}
+
+internal sealed class FixedDayClock(DateTime utcNow) : TimeProvider
+{
+    public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useState } from 'react';
 import { Download, Upload } from 'lucide-react';
 import {
@@ -203,12 +204,12 @@ function SetDetail({ setId, canManage, onChanged }: { setId: string; canManage: 
                           <select className="input h-8 text-xs" value={r.designationId ?? ''} aria-label={t('Designation for {family} {level}', { family: r.jobFamily, level: r.level })}
                             onChange={(e) => map(r, e.target.value || null, r.gradeId)}>
                             <option value="">{t('No designation')}</option>
-                            {designations.map((d) => <option key={d.id} value={d.id}>{d.titleEn}</option>)}
+                            {pickable(designations, r.designationId).map((d) => <option key={d.id} value={d.id}>{d.titleEn}</option>)}
                           </select>
                           <select className="input h-8 text-xs" value={r.gradeId ?? ''} aria-label={t('Grade for {family} {level}', { family: r.jobFamily, level: r.level })}
                             onChange={(e) => map(r, r.designationId, e.target.value || null)}>
                             <option value="">{t('No grade')}</option>
-                            {grades.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                            {pickable(grades, r.gradeId).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                           </select>
                         </div>
                       ) : (r.designationId || r.gradeId ? t('Mapped') : t('Not mapped'))}

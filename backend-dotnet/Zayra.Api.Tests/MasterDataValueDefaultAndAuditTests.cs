@@ -69,10 +69,14 @@ public class MasterDataValueDefaultAndAuditTests
 
         var created = (MasterDataValue)((OkObjectResult)await controller.CreateValue(type.Id, new MasterDataValueRequest("SEPARATED", "Separated", null, null, 5, IsDefault: false), CancellationToken.None)).Value!;
         await controller.UpdateValue(created.Id, new MasterDataValueRequest("SEPARATED", "Separated (legal)", null, null, 5, IsDefault: false), CancellationToken.None);
-        (await controller.DeleteValue(created.Id, CancellationToken.None)).Should().BeOfType<NoContentResult>();
+        // Remove turns a drop-down value off (records may hold its code); Restore turns it back on.
+        (await controller.DeleteValue(created.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await db.MasterDataValues.SingleAsync(v => v.Id == created.Id)).IsActive.Should().BeFalse();
+        (await controller.RestoreValue(created.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        (await db.MasterDataValues.SingleAsync(v => v.Id == created.Id)).IsActive.Should().BeTrue();
 
         var audit = await db.AdminAuditLogs.Where(a => a.EntityType == "MasterDataValue" && a.EntityId == created.Id.ToString()).OrderBy(a => a.CreatedAtUtc).ToListAsync();
-        audit.Select(a => a.Action).Should().Equal("Created", "Updated", "Deleted");
+        audit.Select(a => a.Action).Should().Equal("Created", "Updated", "TurnedOff", "Restored");
         audit.Should().OnlyContain(a => a.TenantId == tenantId && a.PerformedBy != null);
         audit[1].OldValuesJson.Should().Contain("\"Separated\"");
         audit[1].NewValuesJson.Should().Contain("Separated (legal)");

@@ -17,7 +17,8 @@ public class WorkforcePlan : ITenantOwned
     public int GapCount { get; set; }                               // Planned - Current
     public decimal BudgetAllocated { get; set; }
     public decimal BudgetUtilized { get; set; }
-    public string CurrencyCode { get; set; } = "AED";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string CurrencyCode { get; set; } = string.Empty;
     public string Status { get; set; } = "Draft";                  // Draft/Approved/InProgress/Closed
     public string Notes { get; set; } = string.Empty;
     public Guid? CreatedByUserId { get; set; }

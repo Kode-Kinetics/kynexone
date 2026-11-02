@@ -96,7 +96,7 @@ export default function QuoteConvertPage() {
             <CheckCircle className="h-7 w-7 text-emerald-400" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white">Tenant Provisioned!</h2>
+            <h2 className="text-lg font-semibold text-white">Tenant Provisioned!</h2>
             <p className="text-sm text-slate-400 mt-1">
               <span className="text-white font-medium">{quote.companyName}</span> has been converted to a live tenant.
             </p>
@@ -139,10 +139,10 @@ export default function QuoteConvertPage() {
             <Building2 className="h-4 w-4 text-blue-400" />
           </div>
           <div>
-            <h1 className="text-sm font-bold text-white">{quote.companyName}</h1>
+            <h1 className="text-sm font-semibold text-white">{quote.companyName}</h1>
             <p className="text-xs text-slate-500">{quote.contactEmail}</p>
           </div>
-          <span className={`ms-auto text-[10px] px-2 py-0.5 rounded font-medium ${quote.status === 'Converted' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-blue-900/50 text-blue-300'}`}>
+          <span className={`ms-auto text-caption px-2 py-0.5 rounded font-medium ${quote.status === 'Converted' ? 'bg-emerald-900/50 text-emerald-300' : 'bg-blue-900/50 text-blue-300'}`}>
             {quote.status}
           </span>
         </div>
@@ -154,7 +154,7 @@ export default function QuoteConvertPage() {
             { label: 'Est. Monthly', value: `$${quote.estimatedMonthlyAmount.toLocaleString()}` },
           ].map(({ label, value }) => (
             <div key={label} className="px-4 py-3">
-              <p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p>
+              <p className="text-caption text-slate-500 uppercase tracking-wider">{label}</p>
               <p className="text-sm font-medium text-slate-200 mt-0.5">{value}</p>
             </div>
           ))}

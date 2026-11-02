@@ -42,6 +42,8 @@ export function ApproversStep() {
   }, [reviewer.mode, users, attempt]);
 
   const option = (mode: CompanyAdminMode, title: string, description: string) => (
+    // The radio's text is the two spans below (the same card as AdminStep); the rule cannot see through the wrapper.
+    // eslint-disable-next-line jsx-a11y/label-has-associated-control
     <label className={`flex cursor-pointer gap-3 rounded-xl border p-4 ${reviewer.mode === mode ? 'border-sapphire bg-sapphire/[0.04] dark:border-cyanAccent' : 'border-slate-200 dark:border-white/10'}`}>
       <input type="radio" name="ccw-reviewer-mode" className="mt-1" checked={reviewer.mode === mode} disabled={readOnly} onChange={() => set({ mode })} />
       <span className="min-w-0">

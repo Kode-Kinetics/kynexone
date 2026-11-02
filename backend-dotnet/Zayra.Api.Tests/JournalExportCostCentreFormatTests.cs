@@ -250,7 +250,9 @@ public class JournalExportCostCentreFormatTests
             var rows = ParseCsv(Utf8(Formatter("generic-csv").Format(Poisoned(payload, new Dictionary<string, string>()))));
             var h = rows[0];
             var costed = rows.Skip(1).Single(r => r[h.IndexOf("AccountCode")] == "5000");   // line order follows entry ids
-            var expected = payload.Length > 0 && "=+-@\t\r".Contains(payload[0]) ? "'" + payload : payload;
+            // The one guard (Csv.Guard) looks past leading spaces: a spreadsheet evaluates " =cmd" as readily as "=cmd".
+            var lead = payload.TrimStart(' ');
+            var expected = lead.Length > 0 && "=+-@\t\r".Contains(lead[0]) ? "'" + payload : payload;
 
             costed[h.IndexOf("CostCentre")].Should().Be(expected);
             costed[h.IndexOf("CostCentreName")].Should().Be(expected);

@@ -1,0 +1,321 @@
+{
+ "app/platform/billing/page.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "app/platform/dashboard/page.tsx": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "app/platform/layout.tsx": {
+  "@typescript-eslint/no-unused-vars": 4,
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "app/platform/leads/page.tsx": {
+  "jsx-a11y/click-events-have-key-events": 2,
+  "jsx-a11y/label-has-associated-control": 1,
+  "jsx-a11y/no-static-element-interactions": 2
+ },
+ "app/platform/marketing/page.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/label-has-associated-control": 4,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "app/platform/pricing/page.tsx": {
+  "@typescript-eslint/no-unused-vars": 5,
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "app/platform/team/page.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/label-has-associated-control": 3,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "app/platform/tenants/[id]/GovernanceTab.tsx": {
+  "jsx-a11y/label-has-associated-control": 2
+ },
+ "app/platform/tenants/[id]/billing/page.tsx": {
+  "@typescript-eslint/no-unused-vars": 1,
+  "jsx-a11y/click-events-have-key-events": 3,
+  "jsx-a11y/no-static-element-interactions": 3
+ },
+ "app/platform/tenants/[id]/features/page.tsx": {
+  "@typescript-eslint/no-unused-vars": 2
+ },
+ "app/platform/tenants/[id]/page.tsx": {
+  "@next/next/no-img-element": 1,
+  "@typescript-eslint/no-unused-vars": 2,
+  "jsx-a11y/click-events-have-key-events": 2,
+  "jsx-a11y/label-has-associated-control": 20,
+  "jsx-a11y/no-static-element-interactions": 2,
+  "no-restricted-properties": 1
+ },
+ "app/platform/tenants/[id]/users/page.tsx": {
+  "jsx-a11y/click-events-have-key-events": 2,
+  "jsx-a11y/no-static-element-interactions": 2
+ },
+ "app/platform/tenants/page.tsx": {
+  "@typescript-eslint/no-unused-expressions": 1,
+  "jsx-a11y/click-events-have-key-events": 3,
+  "jsx-a11y/label-has-associated-control": 21,
+  "jsx-a11y/no-static-element-interactions": 3
+ },
+ "app/pricing/page.tsx": {
+  "jsx-a11y/label-has-associated-control": 1,
+  "react/no-unescaped-entities": 1
+ },
+ "src/api/client.ts": {
+  "@typescript-eslint/no-explicit-any": 1
+ },
+ "src/api/offerLifecycle.ts": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/components/ArabicNameField.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/EmployeeCompletionHandoff.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/EmployeeCreateWizard.tsx": {
+  "jsx-a11y/label-has-associated-control": 1
+ },
+ "src/components/EmployeeSearchSelect.tsx": {
+  "react/no-unescaped-entities": 2
+ },
+ "src/components/EstablishmentPanel.tsx": {
+  "jsx-a11y/label-has-associated-control": 2
+ },
+ "src/components/OfferLetterDesigner.tsx": {
+  "@next/next/no-img-element": 1,
+  "react-hooks/exhaustive-deps": 2
+ },
+ "src/components/SetupPolicyExtraction.tsx": {
+  "no-restricted-properties": 1,
+  "prefer-const": 1,
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/StoreBadges.tsx": {
+  "jsx-a11y/role-supports-aria-props": 1
+ },
+ "src/components/access/ResetPasswordDialog.tsx": {
+  "jsx-a11y/label-has-associated-control": 1
+ },
+ "src/components/account/SignInSecurityCard.tsx": {
+  "@next/next/no-img-element": 1
+ },
+ "src/components/attendance/AttendanceDevicesPanel.tsx": {
+  "@typescript-eslint/no-explicit-any": 2,
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/components/attendance/SelfieViewerModal.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/components/benefits/BenefitEnrollmentDrawer.tsx": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/components/companySetup/AdminStep.tsx": {
+  "jsx-a11y/label-has-associated-control": 1
+ },
+ "src/components/companySetup/CompanyStep.tsx": {
+  "react/display-name": 1
+ },
+ "src/components/companySetup/CreateCompanyWizard.tsx": {
+  "@typescript-eslint/no-unused-vars": 2,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/components/companySetup/GuidedSetupChooser.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/companySetup/StartStep.tsx": {
+  "jsx-a11y/label-has-associated-control": 2
+ },
+ "src/components/companySetup/reviewModel.ts": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/components/compensation/CycleWorkspace.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/compliance/JawazatPanel.tsx": {
+  "react-hooks/exhaustive-deps": 4
+ },
+ "src/components/employeeAccess/SignInSlips.tsx": {
+  "@next/next/no-img-element": 1
+ },
+ "src/components/gl/CompanyRatesPanel.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/gl/glUi.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/loans/GradeLimitsPanel.tsx": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/components/payroll/SaudiBankBeneficiaryEditor.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/recruitment/OfferCompensationHandoff.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/recruitment/OfferSendDialog.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/recruitment/OfferWorkspace.tsx": {
+  "react-hooks/exhaustive-deps": 2
+ },
+ "src/components/setup/LocalOnboardingPreparation.tsx": {
+  "no-restricted-properties": 1,
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/setup/ModuleSetupSection.tsx": {
+  "@typescript-eslint/no-unused-vars": 7
+ },
+ "src/components/setup/OnboardingPolicyWorkspace.tsx": {
+  "no-restricted-properties": 1
+ },
+ "src/components/succession/KpiTiles.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/components/succession/SlatePanel.tsx": {
+  "jsx-a11y/label-has-associated-control": 1
+ },
+ "src/hooks/useCanOpenSetup.ts": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/hooks/useLiveGrades.ts": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/layouts/AppLayout.tsx": {
+  "jsx-a11y/no-static-element-interactions": 1,
+  "react-hooks/exhaustive-deps": 2
+ },
+ "src/layouts/TopBar.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/lib/companySetupWizard.ts": {
+  "@typescript-eslint/no-unused-vars": 5
+ },
+ "src/lib/employeeEditDraft.ts": {
+  "@typescript-eslint/no-unused-vars": 2
+ },
+ "src/lib/hire/hireValidation.ts": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/views/AIAssistantPage.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/views/AttendancePage.tsx": {
+  "@typescript-eslint/no-explicit-any": 2,
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/views/CompliancePage.tsx": {
+  "@typescript-eslint/no-unused-vars": 1,
+  "jsx-a11y/label-has-associated-control": 1,
+  "react-hooks/exhaustive-deps": 4
+ },
+ "src/views/ComplianceProfilesPage.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/views/EmployeeSelfServicePage.tsx": {
+  "@next/next/no-img-element": 1,
+  "react-hooks/exhaustive-deps": 1,
+  "react-hooks/rules-of-hooks": 1
+ },
+ "src/views/EmployeesPage.tsx": {
+  "@typescript-eslint/no-unused-vars": 42,
+  "no-restricted-globals": 4
+ },
+ "src/views/HRRequestCenterPage.tsx": {
+  "jsx-a11y/click-events-have-key-events": 2,
+  "jsx-a11y/label-has-associated-control": 5,
+  "jsx-a11y/no-static-element-interactions": 2,
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/views/LeavePage.tsx": {
+  "no-restricted-globals": 2,
+  "react-hooks/exhaustive-deps": 10,
+  "react/no-unescaped-entities": 3
+ },
+ "src/views/LoansPage.tsx": {
+  "@typescript-eslint/no-explicit-any": 7
+ },
+ "src/views/LoginPage.tsx": {
+  "@typescript-eslint/no-explicit-any": 4
+ },
+ "src/views/MyDocumentsPage.tsx": {
+  "react-hooks/exhaustive-deps": 1
+ },
+ "src/views/OrgChartPage.tsx": {
+  "@typescript-eslint/no-unused-expressions": 1,
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 2,
+  "react/no-unescaped-entities": 2
+ },
+ "src/views/OvertimePage.tsx": {
+  "@typescript-eslint/no-unused-vars": 2,
+  "react-hooks/exhaustive-deps": 3
+ },
+ "src/views/PayrollPage.tsx": {
+  "@typescript-eslint/no-unused-vars": 2,
+  "jsx-a11y/label-has-associated-control": 6,
+  "no-restricted-globals": 1,
+  "no-restricted-properties": 4,
+  "react-hooks/exhaustive-deps": 2,
+  "react/no-unescaped-entities": 1
+ },
+ "src/views/PerformancePage.tsx": {
+  "react-hooks/exhaustive-deps": 4
+ },
+ "src/views/PublicCredentialPage.tsx": {
+  "@typescript-eslint/no-explicit-any": 1
+ },
+ "src/views/RecruitmentPage.tsx": {
+  "@typescript-eslint/no-unused-vars": 8,
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/label-has-associated-control": 50,
+  "jsx-a11y/no-static-element-interactions": 1,
+  "no-restricted-properties": 2,
+  "react-hooks/exhaustive-deps": 11
+ },
+ "src/views/ReportsPage.tsx": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/views/SaudiComplianceConfig.tsx": {
+  "@typescript-eslint/no-explicit-any": 2
+ },
+ "src/views/SaudiComplianceDashboard.tsx": {
+  "@typescript-eslint/no-unused-vars": 4
+ },
+ "src/views/SetupPage.tsx": {
+  "@typescript-eslint/no-explicit-any": 12,
+  "jsx-a11y/label-has-associated-control": 9,
+  "no-restricted-globals": 1
+ },
+ "src/views/ShiftsPage.tsx": {
+  "react-hooks/exhaustive-deps": 2
+ },
+ "src/views/UserManagementPage.tsx": {
+  "@typescript-eslint/no-explicit-any": 1,
+  "jsx-a11y/label-has-associated-control": 3
+ },
+ "src/views/WelcomePage.tsx": {
+  "@typescript-eslint/no-explicit-any": 1
+ },
+ "src/views/employees/EmployeeWorkspaceShell.tsx": {
+  "@typescript-eslint/no-unused-vars": 1
+ },
+ "src/views/employees/hire/HireWizard.tsx": {
+  "@next/next/no-html-link-for-pages": 1
+ },
+ "src/views/employees/hire/fields/CountryPicker.tsx": {
+  "jsx-a11y/click-events-have-key-events": 1,
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/views/employees/hire/fields/Dialogs.tsx": {
+  "jsx-a11y/no-static-element-interactions": 1
+ },
+ "src/views/employees/hire/steps/SuccessStep.tsx": {
+  "@next/next/no-html-link-for-pages": 1
+ }
+}

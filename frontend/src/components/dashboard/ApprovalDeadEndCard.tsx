@@ -35,7 +35,7 @@ export function ApprovalDeadEndCard({ companyId, canManage, onCreate }: {
   if (view.state === 'hidden') return null;
   if (view.state === 'loading') return <p className="sr-only" role="status">{t('Checking pay reviewers…')}</p>;
   if (view.state === 'error') return (
-    <p className="flex flex-wrap items-center gap-2 text-[13px] text-slate-600 dark:text-slate-400" data-testid="dead-end-error">
+    <p className="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-400" data-testid="dead-end-error">
       {t('Could not check reviewers')}
       <button type="button" className={`rounded font-semibold underline ${FOCUS_RING}`} onClick={reload}>{t('Retry')}</button>
     </p>

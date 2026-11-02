@@ -89,7 +89,7 @@ function SlateBody({ id }: { id: string }) {
         <Link href={`/performance/succession/positions/${slate.criticalPositionId}`} className="text-sapphire hover:underline dark:text-cyanAccent">{t('suc.review.backToPosition')}</Link>
       </nav>
       <header className="wg-card space-y-2 rounded-2xl p-4">
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
           {t('suc.review.title', { position: slate.snapshot?.positionTitle ?? '—', version: slate.versionNo })}
         </h1>
         <p className="flex flex-wrap items-center gap-2">
@@ -108,7 +108,7 @@ function SlateBody({ id }: { id: string }) {
 
       {pending && (
         <section className="wg-card space-y-3 rounded-2xl p-4" aria-label={t('suc.review.decision')} data-testid="suc-slate-decision">
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('suc.review.decision')}</h2>
+          <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('suc.review.decision')}</h2>
           {blocked
             ? <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="suc-slate-blocked">{approval?.decisionBlockedReason ?? t('suc.review.notYours')}</p>
             : <p className="text-xs text-slate-600 dark:text-slate-300">{t('suc.review.decisionIntro')}</p>}
@@ -123,7 +123,7 @@ function SlateBody({ id }: { id: string }) {
               <label htmlFor="suc-slate-return-reason" className="block text-xs font-semibold text-slate-700 dark:text-slate-200">{t('suc.review.returnReason')}</label>
               <textarea id="suc-slate-return-reason" data-testid="suc-slate-return-reason" className="input min-h-[80px] w-full" value={reason}
                 aria-describedby={reasonProblem ? 'suc-slate-return-reason-error' : undefined} onChange={(e) => setReason(e.target.value)} />
-              {reasonProblem && <p id="suc-slate-return-reason-error" role="alert" className="text-[11px] font-medium text-rose-600">{reasonProblem}</p>}
+              {reasonProblem && <p id="suc-slate-return-reason-error" role="alert" className="text-caption font-medium text-rose-600">{reasonProblem}</p>}
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="btn-secondary text-xs" onClick={() => setReturning(false)}>{t('suc.cancel')}</button>
                 <button type="button" className="btn-primary text-xs" data-testid="suc-slate-return-confirm" disabled={busy} onClick={() => void decide('Reject')}>{t('suc.review.returnConfirm')}</button>
@@ -135,7 +135,7 @@ function SlateBody({ id }: { id: string }) {
       )}
 
       <section className="wg-card space-y-3 rounded-2xl p-4" aria-label={t('suc.review.snapshot')}>
-        <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('suc.review.snapshot')}</h2>
+        <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('suc.review.snapshot')}</h2>
         {slate.anonymised && <p className="text-xs text-slate-500">{t('suc.review.anonymised')}</p>}
         {slate.snapshot ? <SnapshotView snapshot={slate.snapshot} /> : <p className="text-xs text-slate-500">{t('suc.snapshot.noCandidates')}</p>}
       </section>

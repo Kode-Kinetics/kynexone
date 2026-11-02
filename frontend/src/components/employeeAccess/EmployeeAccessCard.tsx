@@ -45,19 +45,16 @@ export function EmployeeAccessCard({
   const { defaultTimezone } = useTenantSettings();
   const [access, setAccess] = useState<EmployeeAccessDto | null>(null);
   const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
   const [skipNote, setSkipNote] = useState('');
   const lang = locale === 'ar' ? 'ar' : 'en';
   const when = (iso: string) => dateLine(iso, lang, defaultTimezone);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setFailed(false);
     try {
       setAccess(await employeeAccessApi.get(employeeId));
     } catch {
       setAccess(null);
-      setFailed(true);
     } finally {
       setLoading(false);
     }
@@ -109,7 +106,7 @@ export function EmployeeAccessCard({
         detail={detail}
         onIssue={(delivery) => void issue(delivery)}
         onAddWorkEmail={onAddWorkEmail}
-        workEmailNote={skipNote ? <p role="alert" className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p> : undefined}
+        workEmailNote={skipNote ? <p role="alert" className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">{skipNote}</p> : undefined}
       />
     </Shell>
   );
@@ -148,7 +145,7 @@ function Shell({ title, children }: { title: string; children: React.ReactNode }
   return (
     <section className="rounded-lg border border-slate-200 p-3 dark:border-white/10" data-testid="employee-access-card" aria-label={title}>
       <div className="mb-2">
-        <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400">{title}</p>
+        <p className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">{title}</p>
       </div>
       {children}
     </section>

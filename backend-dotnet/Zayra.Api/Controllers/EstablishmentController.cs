@@ -89,9 +89,9 @@ public class EstablishmentController : ControllerBase
             CreatedBy = this.GetUserId()
         };
         _db.StaffingLevels.Add(level);
+        _audit.Stage("establishment.level_created", "StaffingLevel", level.Id.ToString(), Context(),
+            JsonSerializer.Serialize(new { level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive }));
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.level_created", "StaffingLevel", level.Id.ToString(), Context(),
-            JsonSerializer.Serialize(new { level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive }), ct);
         return Created($"/api/establishment/levels/{level.Id}", new StaffingLevelDto(level.Id, level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive));
     }
 
@@ -114,9 +114,9 @@ public class EstablishmentController : ControllerBase
         if (body.IsActive.HasValue) level.IsActive = body.IsActive.Value;
         level.UpdatedAtUtc = DateTime.UtcNow;
         level.UpdatedBy = this.GetUserId();
+        _audit.Stage("establishment.level_updated", "StaffingLevel", level.Id.ToString(), Context(),
+            JsonSerializer.Serialize(new { before, after = new { level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive } }));
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.level_updated", "StaffingLevel", level.Id.ToString(), Context(),
-            JsonSerializer.Serialize(new { before, after = new { level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive } }), ct);
         return Ok(new StaffingLevelDto(level.Id, level.Code, level.NameEn, level.NameAr, level.Rank, level.IsActive));
     }
 
@@ -134,9 +134,9 @@ public class EstablishmentController : ControllerBase
         level.IsActive = false;
         level.UpdatedAtUtc = DateTime.UtcNow;
         level.UpdatedBy = this.GetUserId();
+        _audit.Stage("establishment.level_deactivated", "StaffingLevel", level.Id.ToString(), Context(),
+            JsonSerializer.Serialize(new { level.Code, level.NameEn, designationRefs, budgetRefs }));
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.level_deactivated", "StaffingLevel", level.Id.ToString(), Context(),
-            JsonSerializer.Serialize(new { level.Code, level.NameEn, designationRefs, budgetRefs }), ct);
         return Ok(new
         {
             level.Id,
@@ -164,9 +164,9 @@ public class EstablishmentController : ControllerBase
         level.IsDeleted = true;
         level.DeletedAtUtc = DateTime.UtcNow;
         level.DeletedBy = this.GetUserId();
+        _audit.Stage("establishment.level_deleted", "StaffingLevel", level.Id.ToString(), Context(),
+            JsonSerializer.Serialize(new { level.Code, level.NameEn }));
         await _db.SaveChangesAsync(ct);
-        await _audit.WriteAsync("establishment.level_deleted", "StaffingLevel", level.Id.ToString(), Context(),
-            JsonSerializer.Serialize(new { level.Code, level.NameEn }), ct);
         return NoContent();
     }
 

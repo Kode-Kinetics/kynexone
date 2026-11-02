@@ -6,6 +6,9 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '@/config';
 import type { AuthTokens, AuthUser } from '@/types';
+import { parseCachedSession, toCachedSession, type CachedSession } from './cachedSession';
+
+export type { CachedSession };
 
 // SecureStore for sensitive data (tokens)
 export const secureStorage = {
@@ -106,18 +109,28 @@ export const tokenStorage = {
   },
 };
 
-// User session
+// User session: a minimal record in SecureStore (see cachedSession.ts), never the full profile.
 export const userStorage = {
   async saveUser(user: AuthUser): Promise<void> {
-    await appStorage.set(STORAGE_KEYS.USER, user);
+    await secureStorage.set(STORAGE_KEYS.USER, JSON.stringify(toCachedSession(user)));
+    // Earlier builds kept the whole profile (name, email, permissions) in AsyncStorage.
+    await appStorage.delete(STORAGE_KEYS.USER);
   },
 
-  async getUser(): Promise<AuthUser | null> {
-    return appStorage.get<AuthUser>(STORAGE_KEYS.USER);
+  async getUser(): Promise<CachedSession | null> {
+    const secure = parseCachedSession(await secureStorage.get(STORAGE_KEYS.USER));
+    if (secure) return secure;
+    // One-time upgrade from the legacy AsyncStorage copy: keep the ids, drop the rest.
+    const legacy = await appStorage.get<AuthUser>(STORAGE_KEYS.USER);
+    if (!legacy) return null;
+    const cached = toCachedSession(legacy);
+    await secureStorage.set(STORAGE_KEYS.USER, JSON.stringify(cached)).catch(() => undefined);
+    await appStorage.delete(STORAGE_KEYS.USER);
+    return cached;
   },
 
   async clearUser(): Promise<void> {
-    await appStorage.delete(STORAGE_KEYS.USER);
+    await Promise.all([secureStorage.delete(STORAGE_KEYS.USER), appStorage.delete(STORAGE_KEYS.USER)]);
   },
 };
 
@@ -125,35 +138,3 @@ export const userStorage = {
 export async function clearAllAuthData(): Promise<void> {
   await Promise.all([tokenStorage.clearTokens(), userStorage.clearUser()]);
 }
-
-// Offline punch queue
-export interface OfflinePunch {
-  id: string;
-  payload: object;
-  timestamp: number;
-  synced: boolean;
-}
-
-export const offlinePunchStorage = {
-  async getQueue(): Promise<OfflinePunch[]> {
-    return (await appStorage.get<OfflinePunch[]>(STORAGE_KEYS.OFFLINE_PUNCHES)) ?? [];
-  },
-
-  async addToQueue(punch: OfflinePunch): Promise<void> {
-    const queue = await this.getQueue();
-    queue.push(punch);
-    await appStorage.set(STORAGE_KEYS.OFFLINE_PUNCHES, queue);
-  },
-
-  async markSynced(id: string): Promise<void> {
-    const queue = await this.getQueue();
-    const updated = queue.map((p) => (p.id === id ? { ...p, synced: true } : p));
-    await appStorage.set(STORAGE_KEYS.OFFLINE_PUNCHES, updated);
-  },
-
-  async clearSynced(): Promise<void> {
-    const queue = await this.getQueue();
-    const pending = queue.filter((p) => !p.synced);
-    await appStorage.set(STORAGE_KEYS.OFFLINE_PUNCHES, pending);
-  },
-};

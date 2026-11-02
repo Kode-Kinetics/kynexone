@@ -167,13 +167,13 @@ function Row({ label, chip, who, next, detail, note, button, dim, testId, childr
   const { t } = useLocale();
   return (
     <div className="py-3 first:pt-0 last:pb-0" data-testid={testId}>
-      <dt className="text-sm font-bold text-slate-900 dark:text-white">{label}</dt>
+      <dt className="text-sm font-semibold text-slate-900 dark:text-white">{label}</dt>
       <dd className="mt-1 space-y-1">
         {chip}
         <p className="text-xs text-slate-600 dark:text-slate-300"><span className="font-semibold">{t('Who can act')}:</span> {who}</p>
         {next && <p className={`text-xs ${dim ? 'italic text-slate-500 dark:text-slate-400' : 'text-slate-600 dark:text-slate-300'}`} data-testid={`${testId}-next`}><span className="font-semibold not-italic">{t('Next action')}:</span> {next}</p>}
         {detail && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="access-detail">{detail}</p>}
-        {note && <p className="rounded-md bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{note}</p>}
+        {note && <p className="rounded-lg bg-slate-50 px-2 py-1.5 text-xs font-medium text-slate-700 dark:bg-white/[0.05] dark:text-slate-200" data-testid="access-reason">{note}</p>}
         {button}
         {children}
       </dd>

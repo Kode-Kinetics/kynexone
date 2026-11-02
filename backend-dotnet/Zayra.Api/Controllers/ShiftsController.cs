@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
+using Zayra.Api.Infrastructure.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
@@ -7,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Shifts;
 using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Setup;
@@ -103,18 +105,44 @@ public class ShiftsController : ControllerBase
         return Ok(def);
     }
 
+    /// <summary>Setup's Remove: a shift nothing refers to is deleted; one that rosters, attendance or anything else in the data
+    /// model refers to is turned off, so past rosters and attendance still resolve it, and it can be restored.</summary>
     [HttpDelete("definitions/{id:guid}")]
-    [Authorize(Roles = "Admin,HR Manager")]
+    [HasPermission("shifts.write")]
     public async Task<IActionResult> DeleteDefinition(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
         var def = await _db.ShiftDefinitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (def is null) return NotFound();
-        if (await _db.ShiftAssignments.AnyAsync(x => x.TenantId == tenantId && x.ShiftDefinitionId == id, ct))
-            return Conflict(new { message = "Shift definition is in use. Reassign employees before deleting it." });
+        var usage = await SetupRemoval.MeasureAsync(this, SetupRowUsage.Probes(_db, tenantId, id, typeof(ShiftDefinition), "ShiftDefinition",
+            new Dictionary<string, (string, string)> { ["ShiftAssignment"] = ("shiftAssignment", "roster assignments") }), ct);
+        if (usage.InUse)
+        {
+            def.IsActive = false; def.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId, null, "ShiftDefinition", id.ToString(), "TurnedOff", new { def.Code }, new { references = usage.WideTotal });
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.TurnedOff(this, usage);
+        }
         _db.ShiftDefinitions.Remove(def);
+        this.RecordChange(_db, tenantId, null, "ShiftDefinition", id.ToString(), "Deleted", new { def.Code, def.Name }, null);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("definitions/{id:guid}/restore")]
+    [HasPermission("shifts.write")]
+    public async Task<IActionResult> RestoreDefinition(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var def = await _db.ShiftDefinitions.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
+        if (def is null) return NotFound();
+        if (!def.IsActive)
+        {
+            def.IsActive = true; def.UpdatedAtUtc = DateTime.UtcNow;
+            this.RecordChange(_db, tenantId, null, "ShiftDefinition", id.ToString(), "Restored", null, new { def.Code });
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     // ── Roster ────────────────────────────────────────────────────────

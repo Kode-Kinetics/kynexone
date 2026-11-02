@@ -6,10 +6,13 @@ import { create } from 'zustand';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { setErrorTrackingTenant } from '@/observability/reportError';
 import { tokenStorage, userStorage, clearAllAuthData, appStorage } from '@/storage';
 import { STORAGE_KEYS } from '@/config';
 import { authApi, deviceApi, type LoginOutcome } from '@/api/services';
 import { initApiClient, setSessionExpiredHandler } from '@/api/client';
+import { isDefinitiveAuthRefusal } from '@/api/sessionErrors';
+import { ResponseShapeError } from '@/api/schemas';
 import type { AuthTokens, AuthUser } from '@/types';
 import { generateDeviceId } from '@/utils/device';
 import { registerPushToken } from '@/features/notifications/pushNotifications';
@@ -26,6 +29,8 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   sessionExpired: boolean;
+  /** Tokens are kept but /auth/me could not be reached (offline, timeout, 5xx): show the retry screen, not sign-in. */
+  connectionIssue: boolean;
   /** Mandatory two-step sign-in standing for the signed-in user (null = unknown / not asked yet). */
   mfaPrompt: MfaPrompt | null;
   mfaPromptDismissed: boolean;
@@ -57,12 +62,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isInitialized: false,
   error: null,
   sessionExpired: false,
+  connectionIssue: false,
   mfaPrompt: null,
   mfaPromptDismissed: false,
   mfaEnrolledNotice: null,
 
   initialize: async () => {
-    set({ isLoading: true });
+    set({ isLoading: true, connectionIssue: false });
     try {
       const [storedUser, tenantId] = await Promise.all([
         userStorage.getUser(),
@@ -99,12 +105,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isInitialized: true,
           isLoading: false,
           sessionExpired: false,
+          connectionIssue: false,
         });
         void get().refreshMfaStatus();
-      } catch {
+      } catch (error) {
         // /auth/me is the authoritative role/access graph. Cached permissions
         // cannot reopen MainTabs when that graph is unavailable or rejected;
         // an offline mode would need a separate restricted design and TTL.
+        if (error instanceof ResponseShapeError) {
+          // The server answered, but in a shape this app version cannot read. Not a sign-out and not
+          // a retry loop: the compatibility store (set by the client) shows the update screen.
+          set({ user: null, isAuthenticated: false, isInitialized: true, isLoading: false, connectionIssue: false });
+          return;
+        }
+        if (!isDefinitiveAuthRefusal(error)) {
+          // Timeout, airplane mode, 5xx: the credentials were not judged. Keep the
+          // tokens and show the retry screen instead of making the user sign in again.
+          set({ user: null, isAuthenticated: false, isInitialized: true, isLoading: false, connectionIssue: true });
+          return;
+        }
         await clearAllAuthData();
         set({
           user: null,
@@ -270,6 +289,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   handleSessionExpired: () => {
     void clearAllAuthData();
     set({
+      connectionIssue: false,
       user: null,
       tenantId: null,
       isAuthenticated: false,
@@ -292,6 +312,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 }));
 
 /** HTTP status and `{ code }` of a failed request, if it had a response. */
+// Error tracking carries only the opaque tenant GUID (a no-op unless a DSN is configured; a slug is refused).
+useAuthStore.subscribe((state) => setErrorTrackingTenant(state.user?.tenantId));
+
 export function authFailure(error: unknown): { status?: number; code?: string } {
   if (typeof error !== 'object' || error === null || !('response' in error)) return {};
   const response = (error as { response?: { status?: number; data?: { code?: unknown } } }).response;

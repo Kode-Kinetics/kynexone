@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { attemptChunkReload, isChunkLoadError } from '@/src/lib/chunkReload';
+import { captureRenderError } from '@/src/lib/errorTracking';
 
 /**
  * Root-level error boundary. Replaces the root layout when an error escapes it,
@@ -19,6 +20,7 @@ export default function GlobalError({
   reset: () => void;
 }) {
   useEffect(() => {
+    if (!isChunkLoadError(error)) captureRenderError(error); // no-op unless a DSN is configured
     if (isChunkLoadError(error)) {
       attemptChunkReload();
     }

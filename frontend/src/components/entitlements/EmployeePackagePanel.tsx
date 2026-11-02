@@ -127,7 +127,7 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
     <section className="space-y-4" aria-label={t('Package for this contract year')}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Package for this contract year')}</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Package for this contract year')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {[gradeName && fill(t('Grade {grade}'), { grade: gradeName }), companyName,
               view.contract && (view.contract.endDate
@@ -142,7 +142,7 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
               className="inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-60">
               <Lock className="h-3.5 w-3.5" aria-hidden="true" />{busy ? t('Fixing…') : t('Fix the package for this contract year')}
             </button>
-            <span className="max-w-xs text-end text-[11px] text-slate-500 dark:text-slate-400">{t('Later changes to the grade table will not alter this year’s benefits.')}</span>
+            <span className="max-w-xs text-end text-caption text-slate-500 dark:text-slate-400">{t('Later changes to the grade table will not alter this year’s benefits.')}</span>
           </div>
         )}
       </header>
@@ -195,7 +195,7 @@ export function EmployeePackagePanel({ employee }: { employee: EmployeeDetail })
                   {line.reasonCode && <p className="text-xs text-amber-700 dark:text-amber-300">{reasonText(line.reasonCode, t, view.criteria[line.componentCode], line.eligibleFrom, locale)}</p>}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {line.gradeStandardDiffers && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">{t('Reviewed at renewal')}</span>}
+                  {line.gradeStandardDiffers && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-caption font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">{t('Reviewed at renewal')}</span>}
                   <span className={`text-sm tabular-nums ${line.eligible ? 'text-slate-900 dark:text-slate-50' : 'text-slate-400 line-through dark:text-slate-500'}`}>
                     {line.eligible || line.class === 'QiwaWage' ? valueText(line, ctx) : line.reasonCode ? '—' : t('Not included')}
                   </span>

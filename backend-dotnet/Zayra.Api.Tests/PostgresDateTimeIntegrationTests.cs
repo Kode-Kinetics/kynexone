@@ -285,6 +285,7 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
             IsActive = true
         });
         await db.SaveChangesAsync();
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // the import stages first packages for Finance, and refuses when nobody else could approve
         var ctrl = CreateController(db, tenantId);
 
         // 5-row sample with YYYY-MM-DD dates (no Z suffix) — the format that was causing 500s
@@ -304,6 +305,10 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
         Assert.Contains("\"created\":5", json);
         Assert.Contains("\"skipped\":0", json);
 
+        // HR's import staged the packages; a different Finance login approves them before payroll sees them.
+        await SalaryApprovalKit.ApprovePendingAsync(db, tenantId);
+        db.ChangeTracker.Clear();
+
         // 5 employees created
         var empCount = await db.Employees.CountAsync(e => e.TenantId == tenantId && !e.IsDeleted);
         Assert.Equal(5, empCount);
@@ -313,8 +318,9 @@ public class PostgresDateTimeIntegrationTests : IClassFixture<PostgresFixture>
         Assert.Equal(5, profileCount);
 
         // 5 salary structures (all rows have BasicSalary > 0)
-        var salaryCount = await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenantId);
+        var salaryCount = await db.SalaryChangeRequests.CountAsync(s => s.TenantId == tenantId && s.Status == SalaryChangeRequest.Approved);
         Assert.Equal(5, salaryCount);
+        Assert.Equal(5, await db.EmployeeSalaryStructures.CountAsync(s => s.TenantId == tenantId && s.IsActive));
 
         // Spot-check: EMP-PG-001 totals
         var emp1 = await db.Employees.FirstAsync(e => e.TenantId == tenantId && e.EmployeeCode == "EMP-PG-001");

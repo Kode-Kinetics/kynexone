@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 
 namespace Zayra.Api.Infrastructure.Approvals;
 
@@ -31,6 +32,23 @@ public static class SubjectDecisionBar
         // this login and the subject, whatever its status, bars the decision: refusing is the safe answer.
         return await db.EmployeeUserAccounts.AsNoTracking()
             .AnyAsync(l => l.TenantId == tenantId && l.EmployeeId == subjectEmployeeId && l.UserId == uid, ct);
+    }
+
+    /// <summary>
+    /// <see cref="CallerIsSubjectAsync"/> for MANY subjects in two queries instead of up to three per subject: true when the
+    /// caller is a login of ANY of the employees (bonus batches with hundreds of recipients). Same rule: no caller id means true.
+    /// </summary>
+    public static async Task<bool> CallerIsSubjectOfAnyAsync(
+        ZayraDbContext db, Guid tenantId, Guid? callerUserId, IReadOnlyCollection<int> subjectEmployeeIds, CancellationToken ct)
+    {
+        if (subjectEmployeeIds.Count == 0) return false;
+        if (callerUserId is not Guid uid || uid == Guid.Empty) return true;
+        var ids = subjectEmployeeIds.ToArray();
+        if (await ScopedBypass.NullableTenantWide(db.Employees, tenantId,
+                "Exclude the employees an approval is about from deciding it, even when their rows are in another legal entity.")
+            .AsNoTracking().AnyAsync(x => ids.Contains(x.Id) && x.UserAccountId == uid, ct)) return true;
+        return await db.EmployeeUserAccounts.AsNoTracking()
+            .AnyAsync(l => l.TenantId == tenantId && ids.Contains(l.EmployeeId) && l.UserId == uid, ct);
     }
 
     /// <summary>The response body for a refused decision: <c>{ error, message }</c>.</summary>

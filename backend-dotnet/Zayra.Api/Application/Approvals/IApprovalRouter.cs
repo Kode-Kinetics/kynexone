@@ -129,6 +129,17 @@ public sealed record ResolvedApprover(
     string Name,
     bool Escalated);
 
+/// <summary>A change that sets an employee's pay is "HR makes, Finance approves": whoever decides it must hold payroll.approve,
+/// whatever the workflow routed it to. Refused with a stable code (422) so the client can say who to ask.</summary>
+public sealed class SalaryApprovalAuthorityException : ApprovalRoutingException
+{
+    public const string ErrorCode = "salary_approval_needs_finance";
+    public SalaryApprovalAuthorityException(Guid tenantId)
+        : base(ErrorCode, tenantId, "EmployeeChangeRequest",
+            "This change sets the employee's pay, so it must be approved by a Finance approver (payroll.approve). Ask a Finance approver to decide it, or add one.")
+    { }
+}
+
 /// <summary>Base type for approval CONFIGURATION errors. Subclasses <see cref="InvalidOperationException"/>
 /// so every existing catch site already turns it into a 4xx with its message rather than a 500.</summary>
 public abstract class ApprovalRoutingException : InvalidOperationException

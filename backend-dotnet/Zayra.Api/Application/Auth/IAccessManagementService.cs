@@ -50,6 +50,10 @@ public interface IAccessManagementService
     /// </summary>
     Task<AdminPasswordResetLinkDto> IssuePasswordResetLinkAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DeleteUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>Setup's Restore for a deleted user. The account comes back DEACTIVATED, never silently active: the administrator
+    /// reviews its roles and then reactivates it. False when no such deleted user is in the caller's scope; refuses (InvalidOperationException)
+    /// when another account has since taken the email.</summary>
+    Task<bool> RestoreUserAsync(Guid tenantId, Guid userId, EntityScopeContext entityScope, RequestContext context, CancellationToken cancellationToken);
     /// <summary>
     /// An administrator resets ANOTHER user's two-step sign-in (lost phone). Same permission and account ceiling as the
     /// other account actions; never yourself; a 3-500 character reason. In one transaction: factor cleared, every
@@ -82,6 +86,11 @@ public interface IAccessManagementService
     Task<RoleDto?> UpdateRoleAsync(Guid tenantId, Guid roleId, UpdateRoleRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<bool> ActivateRoleAsync(Guid tenantId, Guid roleId, RequestContext context, CancellationToken cancellationToken);
     Task<bool> DeactivateRoleAsync(Guid tenantId, Guid roleId, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>What changing a role would touch: how many people hold it, and whether it is a locked system role. Null when the role does not exist.</summary>
+    Task<RoleImpactDto?> GetRoleImpactAsync(Guid tenantId, Guid roleId, CancellationToken cancellationToken);
+    /// <summary>Setup's Remove for a role: a custom role nobody holds is deleted; a system role or one still assigned is refused
+    /// (the result says why and how many). Same privilege ceiling and locks as deactivating.</summary>
+    Task<RoleRemovalResult?> DeleteRoleAsync(Guid tenantId, Guid roleId, RequestContext context, CancellationToken cancellationToken);
     Task<RoleDto?> SetRolePermissionsAsync(Guid tenantId, Guid roleId, BulkRolePermissionsRequest request, RequestContext context, CancellationToken cancellationToken);
 
     // Permission matrix

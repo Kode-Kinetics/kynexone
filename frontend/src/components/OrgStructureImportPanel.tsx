@@ -204,7 +204,7 @@ export function OrgStructureImportPanel() {
     { label: t('Validate'), done: Boolean(batch && ['DryRunPassed', 'Committed'].includes(batch.status)), active: hasAny && !canCommit && batch?.status !== 'Committed' },
     { label: t('Review & apply'), done: batch?.status === 'Committed', active: canCommit },
   ];
-  const fileInputClass = 'block w-full min-w-0 rounded-lg text-sm text-slate-600 file:me-3 file:cursor-pointer file:rounded-md file:border file:border-slate-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:border-sapphire/40 hover:file:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire/50 focus-visible:ring-offset-2 dark:text-slate-300 dark:file:border-white/15 dark:file:bg-white/5 dark:file:text-slate-200 dark:hover:file:bg-white/10 dark:focus-visible:ring-offset-slate-900';
+  const fileInputClass = 'block w-full min-w-0 rounded-lg text-sm text-slate-600 file:me-3 file:cursor-pointer file:rounded-lg file:border file:border-slate-200 file:bg-white file:px-3 file:py-2 file:text-sm file:font-medium file:text-slate-700 hover:file:border-sapphire/40 hover:file:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sapphire/50 focus-visible:ring-offset-2 dark:text-slate-300 dark:file:border-white/15 dark:file:bg-white/5 dark:file:text-slate-200 dark:hover:file:bg-white/10 dark:focus-visible:ring-offset-slate-900';
 
   return (
     <section aria-labelledby={`${inputId}-heading`} className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.03]">
@@ -378,7 +378,7 @@ function StatusPill({ status, t }: { status: string; t: Translator }) {
     Failed: { label: t('Failed'), cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-200' },
   };
   const s = map[status] ?? { label: status || t('Pending'), cls: 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300' };
-  return <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${s.cls}`}>{s.label}</span>;
+  return <span className={`rounded-full px-2.5 py-1 text-caption font-semibold ${s.cls}`}>{s.label}</span>;
 }
 
 function sectionLabel(section: string, t: Translator): string {

@@ -53,7 +53,7 @@ public sealed class CompensationReReviewGateTests(PostgresFixture fx)
         }
 
         // A different approver approves the re-review after the effective date has passed.
-        await DecideAsync(fx, w, reReview, w.UserHr2, ["HR Manager"], "Approve", "Reviewed the new housing figure");
+        await DecideAsync(fx, w, reReview, w.UserHr2, ["HR Manager"], "Approve", "Reviewed the new housing figure", ["approvals.decide", CompPermissions.Approve, "payroll.approve"]);
 
         await using var verify = fx.CreateDb();
         var after = await verify.EmployeeChangeRequests.AsNoTracking().SingleAsync(c => c.Id == changeId);

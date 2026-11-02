@@ -47,7 +47,7 @@ export function UncostedApprovalAck({ count, affirmed, onChange, amountHint }: {
       <div className="flex items-start gap-2">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-800 dark:text-amber-300" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-bold text-amber-800 dark:text-amber-300">
+          <p className="text-xs font-semibold text-amber-800 dark:text-amber-300">
             {t('{count, plural, one {# employee posts lines on Optional accounts without a cost centre} other {# employees post lines on Optional accounts without a cost centre}}', { count })}
           </p>
           <p className="mt-0.5 text-xs leading-5 text-amber-800 dark:text-amber-400">

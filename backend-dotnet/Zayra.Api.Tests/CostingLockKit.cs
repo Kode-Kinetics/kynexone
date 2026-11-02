@@ -41,6 +41,8 @@ internal sealed class CostingLockKit : IAsyncDisposable
             foreach (var a in await kit.Db.GlAccounts.Where(a => a.TenantId == kit.TenantId).ToListAsync())
                 a.CostCenterRule = a.AccountType is "Expense" or "Revenue" ? "Required" : "NotAllowed";
         await kit.Db.SaveChangesAsync();
+        // Preparing, approving and releasing a bonus batch each need someone else who could decide it (up-front second-approver check).
+        SalaryApprovalKit.EnsureApprover(kit.Db, kit.TenantId);
         return kit;
     }
 
