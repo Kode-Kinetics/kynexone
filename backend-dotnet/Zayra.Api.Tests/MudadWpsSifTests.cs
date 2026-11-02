@@ -1,6 +1,7 @@
 using System.Xml;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
+using Zayra.Api.Infrastructure.Payroll;
 
 namespace Zayra.Api.Tests;
 
@@ -404,5 +405,49 @@ public class MudadWpsSifTests
 
         // Period
         Assert.Contains("<Period>2026-06</Period>", xml);
+    }
+
+    // ── PAY-02: a wage file never carries a placeholder establishment or a blank employer IBAN ─────
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("0000000000")]
+    [InlineData("00000")]
+    [InlineData("0-0000000")]
+    public async Task Exporter_RefusesABlankOrPlaceholderEstablishmentId(string establishmentId)
+    {
+        var input = BuildInput(new[] { Emp("RAM-001", SaudiIban1, SaudiNationalId) }, establishmentId: establishmentId);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => Exporter().ExportAsync(input));
+        Assert.Contains("establishment", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("", "EMPLOYER_ID_MISSING")]
+    [InlineData(null, "EMPLOYER_ID_MISSING")]
+    [InlineData("0000000000", "EMPLOYER_ID_PLACEHOLDER")]
+    [InlineData("0-0000", "EMPLOYER_ID_PLACEHOLDER")]
+    public void Validator_EmployerId_BlankOrPlaceholder_Blocks(string? id, string code)
+    {
+        var issues = WpsSifValidator.ValidateEmployer(id, SaudiIban1, employerIbanRequired: true);
+        Assert.Contains(issues, i => i.Code == code && i.IsBlocking);
+    }
+
+    [Theory]
+    [InlineData("", "EMPLOYER_IBAN_MISSING")]
+    [InlineData(null, "EMPLOYER_IBAN_MISSING")]
+    [InlineData("SA0380000000608010167518", "EMPLOYER_IBAN_INVALID")]   // bad check digits
+    public void Validator_EmployerIban_WhenRequired_BlankOrInvalid_Blocks(string? iban, string code)
+    {
+        var issues = WpsSifValidator.ValidateEmployer("7-1234567", iban, employerIbanRequired: true);
+        Assert.Contains(issues, i => i.Code == code && i.IsBlocking);
+    }
+
+    [Fact]
+    public void Validator_EmployerIban_NotRequired_IsNotChecked_AndAGoodEmployerPasses()
+    {
+        Assert.Empty(WpsSifValidator.ValidateEmployer("7-1234567", "", employerIbanRequired: false));
+        Assert.Empty(WpsSifValidator.ValidateEmployer("7-1234567", SaudiIban1, employerIbanRequired: true));
     }
 }

@@ -149,6 +149,90 @@ public class SensitiveFieldMaskingTests
         dto.TerminationReason.Should().BeEmpty($"{role} must NOT see termination reason");
     }
 
+    // ── PEO-02 — personal / contact PII on the detail projection ──────────────────
+
+    private static void GivePersonalPii(ZayraDbContext db, Employee emp)
+    {
+        emp.DateOfBirth = new DateOnly(1990, 4, 12);
+        emp.PersonalEmail = "private@example.com";
+        emp.Phone = "+966500000001";
+        emp.MaritalStatus = "Married";
+        emp.EmergencyContactName = "Next Of Kin";
+        emp.EmergencyContactPhone = "+966500000002";
+        emp.SponsorName = "Sponsor Co";
+        db.SaveChanges();
+    }
+
+    [Fact]
+    public async Task Detail_UnprivilegedRole_MasksDobAndContactPii()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var emp = SeedEmployee(db, tenantId);
+        GivePersonalPii(db, emp);
+
+        var dto = await CreateService(db).GetAsync(tenantId, emp.Id, includeSensitive: false, TestContext(tenantId), CancellationToken.None);
+
+        dto!.DateOfBirth.Should().BeNull();
+        dto.PersonalEmail.Should().BeEmpty();
+        dto.Phone.Should().BeEmpty();
+        dto.MaritalStatus.Should().BeEmpty();
+        dto.EmergencyContactName.Should().BeEmpty();
+        dto.EmergencyContactPhone.Should().BeEmpty();
+        dto.SponsorName.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Detail_SensitiveCaller_SeesDobAndContactPii()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var emp = SeedEmployee(db, tenantId);
+        GivePersonalPii(db, emp);
+
+        var dto = await CreateService(db).GetAsync(tenantId, emp.Id, includeSensitive: true, TestContext(tenantId), CancellationToken.None);
+
+        dto!.DateOfBirth.Should().Be(new DateOnly(1990, 4, 12));
+        dto.PersonalEmail.Should().Be("private@example.com");
+        dto.Phone.Should().Be("+966500000001");
+        dto.SponsorName.Should().Be("Sponsor Co");
+    }
+
+    [Fact]
+    public async Task Detail_OwnRecord_WithoutSensitive_StillSeesOwnPersonalData()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var emp = SeedEmployee(db, tenantId);
+        GivePersonalPii(db, emp);
+        var controller = PeopleAuditFixtures.CreateController(db, tenantId, "Employee", ["employees.read"], callerEmployeeId: emp.Id);
+
+        var result = await controller.Get(emp.Id, CreateService(db), CancellationToken.None);
+
+        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        dto.DateOfBirth.Should().Be(new DateOnly(1990, 4, 12));
+        dto.Phone.Should().Be("+966500000001");
+        dto.BankIban.Should().BeEmpty("own-record access to personal data must not unlock bank or ID numbers");
+        dto.Salary.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Detail_OtherRecord_WithoutSensitive_MasksPersonalData()
+    {
+        await using var db = CreateDb();
+        var tenantId = Guid.NewGuid();
+        var emp = SeedEmployee(db, tenantId);
+        GivePersonalPii(db, emp);
+        var other = PeopleAuditFixtures.SeedEmployee(db, tenantId, "EMP-0002", "Other");
+        var controller = PeopleAuditFixtures.CreateController(db, tenantId, "Employee", ["employees.read"], callerEmployeeId: other.Id);
+
+        var result = await controller.Get(emp.Id, CreateService(db), CancellationToken.None);
+
+        var dto = Assert.IsType<EmployeeDetailDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        dto.DateOfBirth.Should().BeNull();
+        dto.Phone.Should().BeEmpty();
+    }
+
     // ── ApproveDraft — response type and mask gate ─────────────────────────────────
 
     [Fact]

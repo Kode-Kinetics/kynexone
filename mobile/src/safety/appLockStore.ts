@@ -12,11 +12,14 @@ import {
 interface AppLockState {
   prefs: AppLockPrefs;
   hydrated: boolean;
+  /** Authenticated screens are hidden until stored lock preferences and the first lock decision settle. */
+  initialLockEvaluated: boolean;
   /** Face ID / fingerprint or a device passcode is set up on this phone. */
   canAuthenticate: boolean;
   locked: boolean;
   failed: boolean;
   hydrate: () => Promise<void>;
+  markInitialLockEvaluated: () => void;
   setEnabled: (enabled: boolean) => Promise<void>;
   setTimeoutMinutes: (minutes: LockTimeoutMinutes) => Promise<void>;
   lock: () => void;
@@ -36,6 +39,7 @@ async function deviceCanAuthenticate(): Promise<boolean> {
 export const useAppLockStore = create<AppLockState>((set, get) => ({
   prefs: { ...DEFAULT_APP_LOCK },
   hydrated: false,
+  initialLockEvaluated: false,
   canAuthenticate: false,
   locked: false,
   failed: false,
@@ -47,6 +51,8 @@ export const useAppLockStore = create<AppLockState>((set, get) => ({
     ]);
     set({ prefs: normalizeLockPrefs(stored), canAuthenticate, hydrated: true });
   },
+
+  markInitialLockEvaluated: () => set({ initialLockEvaluated: true }),
 
   setEnabled: async (enabled) => {
     const prefs = { ...get().prefs, enabled };

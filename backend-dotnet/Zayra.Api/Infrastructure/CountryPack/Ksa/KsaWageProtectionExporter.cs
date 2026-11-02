@@ -21,6 +21,11 @@ public sealed class KsaWageProtectionExporter : IWageProtectionExporter
     public Task<WageProtectionExportResult> ExportAsync(
         WageProtectionExportInput input, CancellationToken ct = default)
     {
+        // PAY-02: the register names its establishment in the header. Never print a blank or all-zero
+        // placeholder as if it were one — the callers refuse first; this is the last line of defence.
+        var employerIssue = WpsSifValidator.ValidateEmployer(input.EstablishmentId, null, employerIbanRequired: false).FirstOrDefault();
+        if (employerIssue is not null)
+            throw new InvalidOperationException($"Payroll register refused: establishment ID invalid ({employerIssue.Code}). {employerIssue.Message}");
         var xml = BuildRegisterXml(input);
         var bytes = Encoding.UTF8.GetBytes(xml);
         var fileName = $"payroll-register_INTERNAL-not-a-bank-or-WPS-file_{input.PeriodYear}{input.PeriodMonth:D2}.xml";
