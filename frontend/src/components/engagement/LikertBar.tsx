@@ -48,7 +48,7 @@ export function LikertLegend() {
     <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300" aria-label={t('Answer scale')}>
       {LIKERT_LABELS.map((label, i) => (
         <li key={label} className="flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-sm" style={{ background: `var(--eng-likert-${i + 1})` }} aria-hidden="true" />
+          <span className="h-2.5 w-2.5 rounded" style={{ background: `var(--eng-likert-${i + 1})` }} aria-hidden="true" />
           {t(label)}
         </li>
       ))}

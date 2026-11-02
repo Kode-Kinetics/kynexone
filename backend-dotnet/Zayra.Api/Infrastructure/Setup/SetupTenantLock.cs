@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 using Zayra.Api.Data;
 
 namespace Zayra.Api.Infrastructure.Setup;
@@ -31,5 +32,25 @@ public static class SetupTenantLock
         if (!db.Database.IsNpgsql()) return;
         var key = KeyFor(tenantId);
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+    }
+
+    /// <summary>
+    /// Runs an in-use check and the write it guards as ONE unit: a Serializable transaction holding the
+    /// tenant setup lock, so two setup writers cannot both pass the check, and a concurrent payroll write
+    /// that would change the check's answer makes one side fail instead of both succeeding.
+    /// A plain call on a non-relational provider.
+    /// </summary>
+    public static Task<T> InLockedTransactionAsync<T>(ZayraDbContext db, Guid tenantId, Func<Task<T>> work, CancellationToken ct)
+    {
+        if (!db.Database.IsNpgsql()) return work();
+        var strategy = db.Database.CreateExecutionStrategy();
+        return strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            await AcquireAsync(db, tenantId, ct);
+            var result = await work();
+            await tx.CommitAsync(ct);
+            return result;
+        });
     }
 }

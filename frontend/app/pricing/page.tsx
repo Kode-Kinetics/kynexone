@@ -98,7 +98,7 @@ function NumberInput({ label, value, min, max, onChange, help }: {
         <button
           type="button"
           onClick={() => onChange(Math.max(min, value - 1))}
-          className="h-8 w-8 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-colors text-lg font-light"
+          className="h-8 w-8 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-colors text-lg font-normal"
         >−</button>
         <input
           type="number"
@@ -111,7 +111,7 @@ function NumberInput({ label, value, min, max, onChange, help }: {
         <button
           type="button"
           onClick={() => onChange(Math.min(max, value + 1))}
-          className="h-8 w-8 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-colors text-lg font-light"
+          className="h-8 w-8 flex items-center justify-center rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-colors text-lg font-normal"
         >+</button>
       </div>
     </div>
@@ -235,7 +235,7 @@ function Step3Modules({
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm text-white">{m.name}</span>
                   {m.isEnterpriseOnly && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 font-medium">Enterprise</span>
+                    <span className="text-caption px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 font-medium">Enterprise</span>
                   )}
                 </div>
                 <p className="text-xs text-slate-500 mt-0.5">Included in {planIncludes(m)}</p>
@@ -369,7 +369,7 @@ export default function PricingCalculatorPage() {
           <div className="h-16 w-16 mx-auto rounded-full bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
             <Check className="h-8 w-8 text-emerald-400" />
           </div>
-          <h1 className="text-2xl font-bold text-white">Quote Request Sent!</h1>
+          <h1 className="text-2xl font-semibold text-white">Quote Request Sent!</h1>
           <p className="text-slate-400">
             Thank you, <strong className="text-white">{contact.contactName}</strong>. Our team will send a detailed proposal to <strong className="text-white">{contact.contactEmail}</strong> within 1 business day.
           </p>
@@ -386,7 +386,7 @@ export default function PricingCalculatorPage() {
       {/* Header */}
       <header className="border-b border-white/[0.07] px-6 py-4 flex items-center justify-between">
         <Link href="/" className="flex items-center gap-2 text-slate-300 hover:text-white transition-colors text-sm">
-          <span className="font-bold text-sapphire text-lg">KynexOne</span>
+          <span className="font-semibold text-sapphire text-lg">KynexOne</span>
           <span className="text-slate-600">/</span>
           <span>Request a Proposal</span>
         </Link>
@@ -404,7 +404,7 @@ export default function PricingCalculatorPage() {
           {STEPS.map((label, i) => (
             <div key={i} className="flex items-center gap-1.5 flex-1">
               <div className={`flex items-center gap-1.5 ${i < step ? 'text-emerald-400' : i === step ? 'text-white' : 'text-slate-600'}`}>
-                <div className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold border transition-all ${
+                <div className={`h-6 w-6 rounded-full flex items-center justify-center text-xs font-semibold border transition-all ${
                   i < step  ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' :
                   i === step ? 'bg-sapphire/20 border-sapphire/50 text-sapphire' :
                                'border-white/10 text-slate-600'

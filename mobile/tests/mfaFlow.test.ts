@@ -308,9 +308,10 @@ const BASELINE_DEPENDENCIES = [
 ];
 // Both must ship in the FIRST store binary: the OTA channel, and screen-capture
 // protection for the setup key.
-const ALLOWED_NEW_NATIVE = ['expo-screen-capture', 'expo-updates'];
+// Hardening: NetInfo (offline banner) and Sentry (crash reporting, inert without a DSN) ride the next store build.
+const ALLOWED_NEW_NATIVE = ['@react-native-community/netinfo', '@sentry/react-native', 'expo-screen-capture', 'expo-updates'];
 
-test('new native modules are exactly expo-updates and expo-screen-capture; no clipboard module', () => {
+test('new native modules are exactly the reviewed set; no clipboard module', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.dependencies['expo-clipboard'], undefined);
   const added = Object.keys(pkg.dependencies).filter((name) => !BASELINE_DEPENDENCIES.includes(name)).sort();

@@ -152,7 +152,7 @@ function CourseBody({ enrollmentId }: { enrollmentId: string }) {
       <header className="wg-card space-y-2 rounded-2xl p-4">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="min-w-0">
-            <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{name(item.title, item.titleAr)}</h1>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{name(item.title, item.titleAr)}</h1>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               {t('{path} · {kind} · version {version}', { path: name(detail.pathName, detail.pathNameAr), kind: t(contentKindLabel[item.contentKind]), version: item.courseVersion })}
             </p>
@@ -211,9 +211,9 @@ function CourseBody({ enrollmentId }: { enrollmentId: string }) {
       {/* Content */}
       {!item.isBlocked && !pending && item.nextAction !== 'closed' && (
         <section aria-labelledby="course-content" className="wg-card space-y-3 rounded-2xl p-4">
-          <h2 id="course-content" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Course content')}</h2>
+          <h2 id="course-content" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Course content')}</h2>
           {item.contentKind === 'Lesson' && (launch?.lessonHtml
-            ? <div dir="auto" className="learning-lesson space-y-2 text-sm leading-relaxed text-slate-700 dark:text-slate-200 [&_a]:text-sapphire [&_a]:underline [&_h2]:text-base [&_h2]:font-bold [&_h3]:font-semibold [&_li]:ms-5 [&_ol]:list-decimal [&_ul]:list-disc"
+            ? <div dir="auto" className="learning-lesson space-y-2 text-sm leading-relaxed text-slate-700 dark:text-slate-200 [&_a]:text-sapphire [&_a]:underline [&_h2]:text-base [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ms-5 [&_ol]:list-decimal [&_ul]:list-disc"
                 // Sanitised on the server when the course was saved (LearningHtmlSanitizer rebuilds an allow-list of tags).
                 dangerouslySetInnerHTML={{ __html: launch.lessonHtml }} data-testid="lesson-content" />
             : <button type="button" className="btn-primary inline-flex items-center gap-1.5" onClick={open} disabled={busy !== null}>
@@ -243,7 +243,7 @@ function CourseBody({ enrollmentId }: { enrollmentId: string }) {
       {/* Acknowledgement */}
       {actionable && item.completionRule === 'Acknowledgement' && (
         <section aria-labelledby="course-ack" className="wg-card space-y-3 rounded-2xl p-4">
-          <h2 id="course-ack" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Acknowledge')}</h2>
+          <h2 id="course-ack" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Acknowledge')}</h2>
           {!opened && <p className="text-xs text-slate-500 dark:text-slate-400">{t('Open the course content first.')}</p>}
           <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
             <input type="checkbox" className="mt-0.5" checked={acknowledged} disabled={!opened} onChange={(e) => setAcknowledged(e.target.checked)} />
@@ -258,7 +258,7 @@ function CourseBody({ enrollmentId }: { enrollmentId: string }) {
       {/* Assessment */}
       {!done && item.completionRule === 'Assessment' && (actionable || result) && (
         <section aria-labelledby="course-assessment" className="wg-card space-y-3 rounded-2xl p-4" data-testid="assessment">
-          <h2 id="course-assessment" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Assessment')}</h2>
+          <h2 id="course-assessment" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Assessment')}</h2>
           {result && (
             <div role="status" className={`rounded-xl p-3 text-sm ${result.status === 'Passed'
               ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200'
@@ -294,7 +294,7 @@ function CourseBody({ enrollmentId }: { enrollmentId: string }) {
                   <legend className="px-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
                     {t('{n}. {question}', { n: index + 1, question: name(q.prompt, q.promptAr) })}
                   </legend>
-                  {q.kind === 'Multi' && <p className="text-[11px] text-slate-500">{t('Choose every correct answer.')}</p>}
+                  {q.kind === 'Multi' && <p className="text-caption text-slate-500">{t('Choose every correct answer.')}</p>}
                   {q.options.map((o) => {
                     const chosen = answers[q.id] ?? [];
                     const multi = q.kind === 'Multi';

@@ -9,15 +9,16 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 import {
-  saudiBankExportsApi, isAbortError, extractApiError,
+  saudiBankExportsApi, customBankTemplatesApi, isAbortError, extractApiError,
   type SaudiBankExportFormat, type SaudiBankExportSettings,
 } from '../../api/saudiBankExports';
 import type { CompanyDto } from '../../api/organization';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
+import { useConfirm } from '../ui/useConfirm';
 import { bankSettingsBaseline, bankSettingsLoadProblem, resolveBankSettingsScope, type BankSettingsLoadProblem } from '../../lib/saudiBankSettingsScope';
 import {
-  AR, Alert, EMPTY_SETTINGS, EN, SaudiBankSettingsForm, btn, checkSettings, normaliseSettings, sameSettings,
+  AR, Alert, CUSTOM_COPY, EMPTY_SETTINGS, EN, SaudiBankSettingsForm, btn, checkSettings, customFormatsOf, normaliseSettings, sameSettings,
 } from './SaudiBankExportPanel';
 
 type Load = { status: 'loading' } | { status: 'error'; message: string; problem: BankSettingsLoadProblem } | { status: 'ready' };
@@ -31,6 +32,8 @@ const COPY = {
     forbidden: 'Your account cannot open these settings. Bank and WPS settings need the payroll export permission; ask an administrator to grant it.',
     notFound: 'This company could not be found. Choose another company, or reload the page.',
     discard: 'You have unsaved bank details. Switch company and discard them?',
+    discardTitle: 'Discard unsaved changes?',
+    discardConfirm: 'Discard and switch',
   },
   ar: {
     noSaudi: 'لا توجد شركة سعودية متاحة هنا. هذه الإعدادات خاصة بالشركات السعودية؛ أما الشركات الأخرى فأدخل رقم صاحب العمل في حماية الأجور في بيانات الشركة (الإعداد > الشركات).',
@@ -39,6 +42,8 @@ const COPY = {
     forbidden: 'لا يمكن لحسابك فتح هذه الإعدادات. تتطلب إعدادات البنك وحماية الأجور صلاحية تصدير الرواتب؛ اطلب من المسؤول منحها.',
     notFound: 'تعذّر العثور على هذه الشركة. اختر شركة أخرى أو أعد تحميل الصفحة.',
     discard: 'لديك بيانات بنكية غير محفوظة. هل تريد تغيير الشركة وتجاهلها؟',
+    discardTitle: 'تجاهل التغييرات غير المحفوظة؟',
+    discardConfirm: 'تجاهل وتبديل الشركة',
   },
 } as const;
 
@@ -60,6 +65,7 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   const uid = useId();
 
   const words = COPY[locale === 'ar' ? 'ar' : 'en'];
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [picked, setPicked] = useState('');
   const scope = useMemo(() => resolveBankSettingsScope({ companyId, companies, picked }), [companyId, companies, picked]);
   const selected = scope.kind === 'selected' ? scope.company : null;
@@ -86,15 +92,18 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
     setLoad({ status: 'loading' });
     (async () => {
       try {
-        const [fmts, settings] = await Promise.all([
+        const [fmts, settings, custom] = await Promise.all([
           saudiBankExportsApi.listFormats({ signal: ac.signal }),
           saudiBankExportsApi.getSettings(selectedId, { signal: ac.signal }),
+          // Approved custom templates are selectable like the built-in formats; a failed read must not block the form.
+          customBankTemplatesApi.list(selectedId, { signal: ac.signal }).catch(() => []),
         ]);
         if (ac.signal.aborted) return;
-        const list = Array.isArray(fmts) ? fmts : [];
+        const builtIn = Array.isArray(fmts) ? fmts : [];
+        const list = [...builtIn, ...customFormatsOf(custom)];
         // The only supported format is pre-selected as an explicit, visible choice while nothing is saved yet; that
         // default is the baseline, so an untouched form is not "unsaved".
-        const base = bankSettingsBaseline(normaliseSettings(settings), list);
+        const base = bankSettingsBaseline(normaliseSettings(settings), builtIn);
         setFormats(list);
         setSaved(base);
         setDraft(base);
@@ -111,10 +120,15 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
   }, [selectedId, reloadToken]);
 
   const dirty = !!saved && !sameSettings(saved, draft);
+  // Leaving a company with unsaved bank details asks first, in the app's own dialog; declining keeps the edits where they are.
+  const pickCompany = async (next: string) => {
+    if (dirty && !(await confirm({ title: words.discardTitle, message: words.discard, confirmLabel: words.discardConfirm }))) return;
+    setPicked(next);
+  };
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
-  const errors = useMemo(() => checkSettings(draft, c), [draft, c]);
+  const errors = useMemo(() => checkSettings(draft, c, CUSTOM_COPY[locale === 'ar' ? 'ar' : 'en'].debitInvalid), [draft, c, locale]);
   const setField = useCallback((k: keyof SaudiBankExportSettings, v: string | boolean) => {
     setDraft(d => ({ ...d, [k]: v }));
     setNotice('');
@@ -159,12 +173,13 @@ export function SaudiBankSettingsPanel({ companyId, companies, onDirtyChange }: 
 
   return (
     <section className="surface overflow-hidden" aria-label={c.setupTitle}>
+      {confirmDialog}
       <div className="space-y-4 p-4">
         {(scope.kind === 'choose' || (scope.kind === 'selected' && scope.showPicker)) && (
           <label className="flex flex-wrap items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <span className="font-medium">{c.company}</span>
             <select aria-label={c.company} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-white/10 dark:bg-white/5"
-              value={selectedId} onChange={e => { if (dirty && !window.confirm(words.discard)) return; setPicked(e.target.value); }}>
+              value={selectedId} onChange={e => { void pickCompany(e.target.value); }}>
               <option value="">{words.choose}</option>
               {scope.options.map(x => <option key={x.id} value={x.id}>{companyName(x)}</option>)}
             </select>

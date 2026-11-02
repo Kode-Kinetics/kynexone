@@ -43,7 +43,7 @@ function Block({ name, onEdit, children }: { name: string; onEdit: () => void; c
   );
 }
 
-export function ReviewStep({ form, lookups, currency, companyCountry, company, today, banks, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
+export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
   const { t, locale } = useLocale();
   const ar = locale === 'ar';
   const nat = buildCountryOptions().find(o => o.code === form.nationalityCode);

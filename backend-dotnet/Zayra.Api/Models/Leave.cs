@@ -79,6 +79,8 @@ public class LeavePolicy : ITenantOwned, ICompanyScoped
     /// Read only for a Hajj leave type; it never shortens or lowers anything.
     /// </summary>
     public bool AllowsHajjBeyondStatutoryEligibility { get; set; }
+    /// <summary>Acknowledgements of values set BELOW a statutory minimum (owner decision 2026-10-25): who, when, value, statutory value, citation, note. JSON of <c>StoredFloorAck</c>; null when none.</summary>
+    public string? BelowMinimumAcksJson { get; set; }
     /// <summary>
     /// True only on a policy that was tenant-wide (no company) before the per-company leave backfill, and on the copies
     /// that backfill made of it for each sister company. It keeps the policy's old precedence: a company-specific policy

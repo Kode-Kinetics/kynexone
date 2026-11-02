@@ -117,7 +117,7 @@ export function SectionForm({ section, meta, canWrite, onChanged, onBack }: {
     <section aria-labelledby={`${formId}-title`} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]" data-testid="section-form">
       <button type="button" onClick={onBack} className="text-xs font-semibold text-sapphire underline dark:text-cyanAccent lg:hidden">{t('Back to the list')}</button>
       <div>
-        <h2 id={`${formId}-title`} className="text-base font-bold text-slate-800 dark:text-slate-100">{t(`ess.completion.section.${section.key}.title`)}</h2>
+        <h2 id={`${formId}-title`} className="text-base font-semibold text-slate-800 dark:text-slate-100">{t(`ess.completion.section.${section.key}.title`)}</h2>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-300"><span className="font-semibold">{t('Why HR asks for this')}: </span>{t(`ess.completion.section.${section.key}.purpose`)}</p>
         <p className="mt-2 rounded-lg bg-slate-50 p-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
           <span className="font-semibold" title={noticeVersionNumber(meta.noticeVersion) ? t('Notice version {version}', { version: noticeVersionNumber(meta.noticeVersion) as string }) : undefined}>{t('Privacy notice')}. </span>

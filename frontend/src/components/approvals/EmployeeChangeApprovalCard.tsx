@@ -55,7 +55,7 @@ export function EmployeeChangeApprovalCard({ request }: ApprovalDetailRendererPr
       </div>
       <table className="mt-3 w-full text-sm">
         <thead>
-          <tr className="text-start text-xs font-bold uppercase tracking-wide text-slate-400">
+          <tr className="text-start text-xs font-semibold uppercase tracking-wide text-slate-400">
             <th scope="col" className="py-1 pe-3 text-start">{t('Field')}</th>
             <th scope="col" className="py-1 pe-3 text-start">{t('On file now')}</th>
             <th scope="col" className="py-1 text-start">{t('Proposed')}</th>

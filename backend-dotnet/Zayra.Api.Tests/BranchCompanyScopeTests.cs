@@ -148,7 +148,7 @@ public class BranchCompanyScopeTests
         var w = await Seed(db);
 
         var file = (FileContentResult)await Branches(db, Caller(w.TenantId, null, w.A.Id)).Export(CancellationToken.None);
-        var csv = Encoding.UTF8.GetString(file.FileContents);
+        var csv = Encoding.UTF8.GetString(file.FileContents).TrimStart('\uFEFF');
         csv.Should().Contain("Alpha HQ").And.NotContain("Beta HQ").And.NotContain("Foreign HQ");
     }
 
@@ -198,7 +198,7 @@ public class BranchCompanyScopeTests
         (await Branches(db, Caller(w.TenantId, null, w.A.Id)).Update(w.BranchA.Id, Req(w.A.Id, "A1", "Alpha Head Office"), CancellationToken.None)).Result
             .Should().BeOfType<OkObjectResult>();
         (await Branches(db, Caller(w.TenantId, null, w.A.Id)).Delete(w.BranchA.Id, CancellationToken.None))
-            .Should().BeOfType<NoContentResult>();
+            .Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
@@ -215,7 +215,7 @@ public class BranchCompanyScopeTests
         (await Branches(db, Caller(w.TenantId, w.A.Id)).Update(w.BranchB.Id, Req(w.B.Id, "B1", "Beta Head Office"), CancellationToken.None)).Result
             .Should().BeOfType<OkObjectResult>("the switcher narrows reads, not a group grant's writes");
         (await Branches(db, Caller(w.TenantId, w.A.Id)).Delete(w.BranchB.Id, CancellationToken.None))
-            .Should().BeOfType<NoContentResult>();
+            .Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
@@ -568,7 +568,7 @@ public class BranchCompanyScopeTests
             (await Organization(db, Caller(w.TenantId, selected)).CreateCostCenter(new CostCenterRequest(null, $"CC-G{(selected is null ? 2 : 3)}", "Group 2"), CancellationToken.None)).Result
                 .Should().BeOfType<CreatedResult>();
         }
-        (await CostCenters(db, Caller(w.TenantId, w.A.Id)).Delete(cc.B.Id, "Removed in test", CancellationToken.None)).Should().BeOfType<NoContentResult>();
+        (await CostCenters(db, Caller(w.TenantId, w.A.Id)).Delete(cc.B.Id, "Removed in test", CancellationToken.None)).Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]

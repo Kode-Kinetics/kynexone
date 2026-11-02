@@ -137,6 +137,26 @@ export const overtimeApi = {
   createPolicy: (payload: Partial<OvertimePolicy> & { regularDayMultiplier?: number; weekendMultiplier?: number; holidayMultiplier?: number }) =>
     client.post<OvertimePolicy>('/api/overtime/policies', payload).then((r) => r.data),
 
+  /** One policy with every editable field, including the saved day-category multipliers. */
+  policy: (id: string) =>
+    client.get<OvertimePolicy & { regularDayMultiplier: number; weekendMultiplier: number; holidayMultiplier: number }>(`/api/overtime/policies/${id}`).then((r) => r.data),
+
+  /** Edit a policy. The code is fixed; send every value, multipliers included. */
+  updatePolicy: (id: string, payload: Partial<OvertimePolicy> & { regularDayMultiplier?: number; weekendMultiplier?: number; holidayMultiplier?: number }) =>
+    client.put<OvertimePolicy>(`/api/overtime/policies/${id}`, payload).then((r) => r.data),
+
+  setPolicyActive: (id: string, active: boolean) =>
+    client.post<OvertimePolicy>(`/api/overtime/policies/${id}/active`, null, { params: { active } }).then((r) => r.data),
+
+  /** Only succeeds for a policy no overtime request was ever filed under. */
+  deletePolicy: (id: string) => client.delete(`/api/overtime/policies/${id}`),
+
+  updateType: (id: string, name: string, category?: string) =>
+    client.put<OvertimeType>(`/api/overtime/types/${id}`, { code: '', name, category }).then((r) => r.data),
+
+  setTypeActive: (id: string, active: boolean) =>
+    client.post<OvertimeType>(`/api/overtime/types/${id}/active`, null, { params: { active } }).then((r) => r.data),
+
   types: () =>
     client.get<OvertimeType[]>('/api/overtime/types').then((r) => r.data),
 

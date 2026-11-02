@@ -96,6 +96,7 @@ public sealed class EmployeeImportAtomicityPostgresTests
         Assert.Equal(0, await verify.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(0, await verify.EmployeePayrollProfiles.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(0, await verify.EmployeeSalaryStructures.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
+        Assert.Equal(0, await verify.SalaryChangeRequests.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(0, await verify.SalaryStructures.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(0, await verify.ReportingLines.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(0, await verify.EmployeeImportGaps.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
@@ -107,7 +108,8 @@ public sealed class EmployeeImportAtomicityPostgresTests
         await using var verify = _fixture.CreateDb();
         Assert.Equal(count, await verify.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(count, await verify.EmployeePayrollProfiles.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
-        Assert.Equal(count, await verify.EmployeeSalaryStructures.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
+        Assert.Equal(count, await verify.SalaryChangeRequests.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant)); // first packages are staged
+        Assert.Equal(0, await verify.EmployeeSalaryStructures.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant)); // nothing reaches payroll before approval
         Assert.Equal(1, await verify.SalaryStructures.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenant));
         Assert.Equal(1, await verify.AuditLogs.IgnoreQueryFilters().CountAsync(a => a.TenantId == tenant && a.Action == EmployeesController.ImportCommittedAction));
     }
@@ -117,7 +119,8 @@ public sealed class EmployeeImportAtomicityPostgresTests
     [Theory]
     [InlineData(typeof(Employee), "employees", 3)]
     [InlineData(typeof(EmployeePayrollProfile), "payroll", 250)]
-    [InlineData(typeof(EmployeeSalaryStructure), "payroll", 3)]
+    // First packages are STAGED: the salary save boundary is the SalaryChangeRequest, not EmployeeSalaryStructure.
+    [InlineData(typeof(SalaryChangeRequest), "payroll", 3)]
     [InlineData(typeof(ReportingLine), "links", 3)]
     [InlineData(typeof(EmployeeImportGap), "links", 3)]
     public async Task AFailureAtAnySaveBoundary_PersistsNothing_AndTheRetryImportsEachPersonOnce(Type failOn, string stage, int count)
@@ -159,12 +162,16 @@ public sealed class EmployeeImportAtomicityPostgresTests
         var tenant = await SeedAsync();
         await using (var failing = Db(new FailWhenSaving(typeof(AuditLog))))
         {
+            // The audit seal wraps a database failure (AuditSealFailedException); a hire with pay stages its compensation-set audit row
+            // with the employees, so the failure can also surface at that save and be answered as the 422 persist refusal. Either way
+            // the whole file is rolled back.
             try
             {
                 var response = await Import(failing, tenant, File(3));
                 var refused = Assert.IsType<UnprocessableEntityObjectResult>(response);
                 Assert.Equal("import_persist_failed", Body(refused).GetProperty("error").GetString());
             }
+            catch (Zayra.Api.Data.AuditSealFailedException seal) { Assert.IsAssignableFrom<DbUpdateException>(seal.InnerException); }
             catch (DbUpdateException) { /* thrown after the save boundary: also a refusal */ }
         }
         await AssertNothingPersisted(tenant);

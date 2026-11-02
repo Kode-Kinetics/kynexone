@@ -33,7 +33,7 @@ function InviteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-label="Add Platform Team Member" className="relative z-10 w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label="Add Platform Team Member" className="relative z-10 w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
           <h2 className="text-sm font-semibold text-white">Add Platform Team Member</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="text-slate-500 hover:text-white transition-colors">
@@ -129,7 +129,7 @@ export default function PlatformTeamPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Platform Team</h1>
+          <h1 className="text-lg font-semibold text-white">Platform Team</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {members.length} member{members.length !== 1 ? 's' : ''} · Platform users are separate from all tenant company users
           </p>
@@ -166,7 +166,7 @@ export default function PlatformTeamPage() {
       {/* Role legend */}
       <div className="flex flex-wrap gap-2">
         {PLATFORM_ROLES.map(role => (
-          <span key={role} className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded border ${ROLE_BADGE[role] ?? ''}`}>
+          <span key={role} className={`text-caption font-semibold uppercase tracking-wider px-2 py-0.5 rounded border ${ROLE_BADGE[role] ?? ''}`}>
             {role}
           </span>
         ))}
@@ -188,7 +188,7 @@ export default function PlatformTeamPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Member', 'Role', 'Status', 'Last Login', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -198,17 +198,17 @@ export default function PlatformTeamPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <div className="h-7 w-7 rounded-full bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
-                          <span className="text-[10px] font-bold text-slate-400">{m.fullName.slice(0, 2).toUpperCase()}</span>
+                          <span className="text-caption font-semibold text-slate-400">{m.fullName.slice(0, 2).toUpperCase()}</span>
                         </div>
                         <div className="min-w-0">
                           <p className="text-sm text-white font-medium">{m.fullName}</p>
-                          <p className="text-[11px] text-slate-600">{m.email}</p>
+                          <p className="text-caption text-slate-600">{m.email}</p>
                         </div>
                       </div>
                     </td>
                     <td className="px-3 py-3">
                       {m.role === 'Owner' ? (
-                        <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${ROLE_BADGE[m.role]}`}>
+                        <span className={`text-caption font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${ROLE_BADGE[m.role]}`}>
                           {m.role}
                         </span>
                       ) : (
@@ -226,7 +226,7 @@ export default function PlatformTeamPage() {
                         {m.isActive ? 'Active' : 'Deactivated'}
                       </span>
                     </td>
-                    <td className="px-3 py-3 text-[11px] text-slate-600 whitespace-nowrap">
+                    <td className="px-3 py-3 text-caption text-slate-600 whitespace-nowrap">
                       {m.lastLoginAtUtc
                         ? new Date(m.lastLoginAtUtc).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
                         : '—'}
@@ -237,7 +237,7 @@ export default function PlatformTeamPage() {
                         <button type="button"
                           onClick={() => toggleActive(m)}
                           disabled={updating === m.id}
-                          className={`text-[11px] border px-2 py-1 rounded transition-colors disabled:opacity-40 ${
+                          className={`text-caption border px-2 py-1 rounded transition-colors disabled:opacity-40 ${
                             m.isActive
                               ? 'text-rose-400 border-rose-500/20 hover:border-rose-500/40'
                               : 'text-emerald-400 border-emerald-500/20 hover:border-emerald-500/40'

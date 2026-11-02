@@ -39,9 +39,20 @@ const isProductionRelease =
   (process.env.NODE_ENV === 'production' && !configuredEnvironment);
 const appEnvironment = configuredEnvironment || (isProductionRelease ? 'production' : 'development');
 const configuredApiBaseUrl = value('EXPO_PUBLIC_API_BASE_URL');
-// Native builds should remain connected to the shared backend even when Metro
-// is launched outside a shell that exports the Expo public environment.
-const apiBaseUrl = configuredApiBaseUrl || 'https://zayra-ai-workforce.onrender.com/api';
+// The API host is configuration, not code: release builds take it from the build profile's
+// EXPO_PUBLIC_API_BASE_URL in eas.json (the one place to change when the API moves to a
+// first-party domain; the value is baked into the binary, so a host change needs a new build).
+// Only a local development run without any env falls back to DEV_FALLBACK_API_BASE_URL, so Metro
+// started outside a shell that exports the Expo public environment still reaches a backend.
+const DEV_FALLBACK_API_BASE_URL = 'https://zayra-ai-workforce.onrender.com/api';
+const apiBaseUrl =
+  configuredApiBaseUrl ||
+  (isPackagedBuild || isProductionRelease || appEnvironment === 'production' ? undefined : DEV_FALLBACK_API_BASE_URL);
+// Crash reporting is off unless the owner sets a DSN for the build profile (docs/CRASH_REPORTING.md).
+const sentryDsn = value('EXPO_PUBLIC_SENTRY_DSN');
+const sentryTracesSampleRate = value('EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE');
+const sentryOrg = value('SENTRY_ORG');
+const sentryProject = value('SENTRY_PROJECT');
 const easProjectId = value('EXPO_PUBLIC_EAS_PROJECT_ID');
 
 function assertSafeReleaseConfig() {
@@ -112,14 +123,24 @@ function updatesConfig(projectId) {
   };
 }
 
+// The Sentry config plugin uploads source maps at build time, so it is added only when the
+// owner has configured an organisation and project. Without it Sentry still captures crashes.
+function sentryPlugins(config) {
+  if (!sentryOrg || !sentryProject) return config.plugins;
+  return [...(config.plugins || []), ['@sentry/react-native/expo', { organization: sentryOrg, project: sentryProject }]];
+}
+
 module.exports = ({ config }) => {
   const projectId = easProjectId || config.extra?.eas?.projectId;
   return {
     ...config,
+    plugins: sentryPlugins(config),
     ...updatesConfig(projectId),
     extra: {
       ...(config.extra || {}),
       apiBaseUrl,
+      ...(sentryDsn ? { sentryDsn } : {}),
+      ...(sentryDsn && sentryTracesSampleRate ? { sentryTracesSampleRate } : {}),
       releaseChannel: appEnvironment,
       appEnvironment,
       ...(projectId ? { eas: { ...(config.extra?.eas || {}), projectId } } : {}),

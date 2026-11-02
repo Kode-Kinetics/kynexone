@@ -27,7 +27,7 @@ namespace Zayra.Api.Tests;
 /// </summary>
 public class EosbProvisionAccrualTests
 {
-    private static readonly DateOnly Joined = new(2023, 6, 30);
+    private static readonly DateOnly Joined = new(2023, 7, 1); // 30 Jun 2026 is then exactly three years
     private const string Provision = "2310 - End of Service Benefit Provision";
     private const string Expense = "5110 - End of Service Benefit Expense";
 
@@ -199,6 +199,7 @@ public class EosbProvisionAccrualTests
     /// <summary>Independent oracle for the KSA Art. 84 full award (tier 1 only: under five years here).</summary>
     private static decimal Art84(DateOnly start, DateOnly end, decimal wage)
     {
+        end = end.AddDays(1); // both the first and the last day served count
         var months = (end.Year - start.Year) * 12 + (end.Month - start.Month);
         var days = end.Day - start.Day;
         if (days < 0)

@@ -1,5 +1,6 @@
 'use client';
 
+import { useConfirm } from '@/src/components/ui/useConfirm';
 import { useCallback, useEffect, useState } from 'react';
 import { Shield, Plus, UserX, RefreshCw } from 'lucide-react';
 import { platformApi, PLATFORM_ROLES, type PlatformTeamMember } from '@/src/api/platform';
@@ -121,6 +122,7 @@ const ROLE_CLS: Record<string, string> = {
 type Tab = 'users' | 'matrix';
 
 export default function PlatformRolesPage() {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [tab, setTab] = useState<Tab>('users');
   const [members, setMembers] = useState<PlatformTeamMember[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
@@ -167,7 +169,8 @@ export default function PlatformRolesPage() {
   };
 
   const deactivate = async (id: string, name: string) => {
-    if (!confirm(`Deactivate ${name}? They will lose platform access immediately.`)) return;
+    const ok = await confirm({ title: 'Deactivate team member', message: `Deactivate ${name}? They will lose platform access immediately.`, confirmLabel: 'Deactivate' });
+    if (!ok) return;
     try {
       await platformApi.deactivateTeamMember(id);
       setActionMsg(`${name} deactivated.`);
@@ -181,7 +184,7 @@ export default function PlatformRolesPage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Roles & Permissions</h1>
+          <h1 className="text-lg font-semibold text-white">Roles & Permissions</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             Enforced by <span className="font-mono text-slate-400">RequirePlatformRoleAttribute</span> on every API endpoint.
           </p>
@@ -256,7 +259,7 @@ export default function PlatformRolesPage() {
                     <td className="px-4 py-3 font-medium text-white">{m.fullName}</td>
                     <td className="px-4 py-3 text-slate-400">{m.email}</td>
                     <td className="px-4 py-3">
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${ROLE_CLS[m.role] ?? 'bg-slate-700/50 text-slate-400'}`}>{m.role}</span>
+                      <span className={`text-caption font-semibold px-2 py-0.5 rounded ${ROLE_CLS[m.role] ?? 'bg-slate-700/50 text-slate-400'}`}>{m.role}</span>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`text-xs ${m.isActive ? 'text-emerald-400' : 'text-slate-500'}`}>
@@ -288,7 +291,7 @@ export default function PlatformRolesPage() {
           {MATRIX.map(section => (
             <div key={section.category} className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden">
               <div className="px-4 py-2.5 bg-white/[0.02] border-b border-white/[0.06]">
-                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-widest">{section.category}</p>
+                <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">{section.category}</p>
               </div>
               <div className="divide-y divide-white/[0.04]">
                 {section.actions.map(action => (
@@ -296,7 +299,7 @@ export default function PlatformRolesPage() {
                     <span className="text-sm text-slate-300 flex-1 min-w-0">{action.label}</span>
                     <div className="flex flex-wrap gap-1 justify-end">
                       {action.roles.map(role => (
-                        <span key={role} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ROLE_CLS[role] ?? 'text-slate-400 bg-slate-700/50'}`}>
+                        <span key={role} className={`text-caption font-semibold px-1.5 py-0.5 rounded ${ROLE_CLS[role] ?? 'text-slate-400 bg-slate-700/50'}`}>
                           {role}
                         </span>
                       ))}
@@ -306,7 +309,7 @@ export default function PlatformRolesPage() {
               </div>
             </div>
           ))}
-          <p className="text-[11px] text-slate-700">
+          <p className="text-caption text-slate-700">
             Owner is always allowed regardless of the roles listed. Role is read from the <span className="font-mono">platform_role</span> JWT claim issued at login.
           </p>
         </div>
@@ -316,7 +319,7 @@ export default function PlatformRolesPage() {
       {showInvite && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-white/[0.1] bg-[#0d1117] p-6 space-y-4">
-            <h2 className="font-bold text-white">Invite Platform Team Member</h2>
+            <h2 className="font-semibold text-white">Invite Platform Team Member</h2>
             <label className="block">
               <span className="text-xs text-slate-400">Full name</span>
               <input value={invName} onChange={e => setInvName(e.target.value)} className="mt-1 w-full rounded-lg border border-white/[0.1] bg-[#161b22] px-3 py-2 text-sm text-white" placeholder="Jane Smith" />
@@ -349,6 +352,7 @@ export default function PlatformRolesPage() {
           </div>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

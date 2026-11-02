@@ -1,0 +1,9 @@
+name: KynexOne production CodeQL scope
+
+# Browser journeys and unit tests deliberately move synthetic fixtures between files, HTTP, and screenshot evidence.
+# They are exercised by CI but are not shipped. Keep CodeQL focused on deployable application and bridge code.
+paths-ignore:
+  - frontend/e2e/**
+  - frontend/unit/**
+  - kynexbridge/test/**
+  - mobile/tests/**

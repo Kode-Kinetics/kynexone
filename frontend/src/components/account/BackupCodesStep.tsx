@@ -121,7 +121,7 @@ export function BackupCodesStep({ codes, account, variant, replaced = false, onD
           <p className="lx-sub">{intro}</p>
         </div>
         <ul aria-labelledby={headingId} data-testid="backup-codes-list"
-          className="m-0 grid list-none grid-cols-2 gap-x-4 gap-y-2 rounded-xl border p-4 font-mono text-[15px] tabular-nums tracking-[0.06em]"
+          className="m-0 grid list-none grid-cols-2 gap-x-4 gap-y-2 rounded-xl border p-4 font-mono text-body tabular-nums tracking-[0.06em]"
           style={{ background: 'var(--lx-input)', borderColor: 'var(--lx-input-br)', color: '#F4F8FF' }}>
           {shown.map((c, i) => <li key={`${i}-${c}`} dir="ltr" className="text-center">{c}</li>)}
         </ul>
@@ -158,7 +158,7 @@ export function BackupCodesStep({ codes, account, variant, replaced = false, onD
         <p className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-400">{intro}</p>
       </div>
       <ul aria-labelledby={headingId} data-testid="backup-codes-list"
-        className="grid max-w-md grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-[15px] tabular-nums tracking-[0.06em] text-slate-900 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100">
+        className="grid max-w-md grid-cols-2 gap-x-6 gap-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-body tabular-nums tracking-[0.06em] text-slate-900 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-100">
         {shown.map((c, i) => <li key={`${i}-${c}`} dir="ltr" className="text-center">{c}</li>)}
       </ul>
       <p className="text-sm leading-6 text-slate-700 dark:text-slate-300" data-testid="backup-codes-keep-safe">{keepSafe}</p>
@@ -171,13 +171,13 @@ export function BackupCodesStep({ codes, account, variant, replaced = false, onD
         </button>
       </div>
       <p role="status" aria-live="polite"
-        className={copyStatus ? `text-xs rtl:text-[13px] ${copied === 'failed' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}` : 'sr-only'}>
+        className={copyStatus ? `text-xs rtl:text-body-sm ${copied === 'failed' ? 'text-rose-700 dark:text-rose-300' : 'text-slate-500 dark:text-slate-400'}` : 'sr-only'}>
         {copyStatus}
       </p>
       <div className="flex items-start gap-2.5">
         <input id={`${id}-saved`} type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)}
           required aria-required="true" data-testid="backup-codes-saved"
-          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#0d1225]" />
+          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-surface" />
         <label htmlFor={`${id}-saved`} className="cursor-pointer text-sm font-medium leading-6 text-slate-800 dark:text-slate-200">
           {t("I've saved these codes")}
         </label>

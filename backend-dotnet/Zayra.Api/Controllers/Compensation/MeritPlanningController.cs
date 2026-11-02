@@ -130,7 +130,7 @@ public sealed class MeritPlanningController(ZayraDbContext db, MeritPlanningServ
     [HttpGet("benchmarks/template.csv")]
     [HasPermission(CompPermissions.BenchmarksManage)]
     public IActionResult BenchmarkTemplate() =>
-        File(System.Text.Encoding.UTF8.GetBytes(PayBenchmarkService.TemplateCsv()), "text/csv", "pay-benchmark-template.csv");
+        CsvDownload.Result(PayBenchmarkService.TemplateCsv(), "pay-benchmark-template.csv");
 
     [HttpGet("benchmarks/{id:guid}")]
     public Task<IActionResult> BenchmarkSet(Guid id, CancellationToken ct) =>

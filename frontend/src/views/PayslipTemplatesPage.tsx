@@ -3,35 +3,40 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2, ChevronDown, ChevronUp, Clock, Download, FileText,
-  GripVertical, Loader2, Plus, RefreshCw, Settings2, Star, Trash2, X,
+  GripVertical, Loader2, Plus, RefreshCw, Star, X,
 } from 'lucide-react';
+import { notifyApiError } from '../api/client';
+import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
+import { msg } from '../i18n/translations';
 import {
   DEFAULT_BRANDING, DEFAULT_LAYOUT, PayslipBranding, PayslipLayout,
   PayslipSectionConfig, SectionDef, TemplateDto, TemplateListItem,
   payslipTemplatesApi,
 } from '../api/payslipTemplates';
 import { useAuth } from '../contexts/AuthContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
+import { EnumLabel } from '../components/EnumLabel';
+import { Modal } from '../components/Modal';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-
-const fmtDate = (iso: string) =>
-  new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
 const statusBadge = (status: string) => {
   const map: Record<string, string> = {
     draft:    'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300',
     active:   'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400',
+    off:      'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400',
     archived: 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400',
   };
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${map[status] ?? map.draft}`}>
-      {status}
+    <span className={`rounded px-1.5 py-0.5 text-caption font-semibold uppercase ${map[status] ?? map.draft}`}>
+      <EnumLabel enum="Status" value={status} />
     </span>
   );
 };
 
 const ALLOWED_FONTS = ['NotoSans', 'Roboto', 'SourceSansPro', 'Helvetica'];
-const LOCALES = [{ value: 'en', label: 'English' }, { value: 'ar', label: 'العربية' }, { value: 'bilingual', label: 'Bilingual (EN + AR)' }];
+const LOCALES = [{ value: 'en', label: 'English' }, { value: 'ar', label: 'العربية' }, { value: 'bilingual', label: 'Bilingual (EN + AR)' }] as const;
 
 // ── Style constants ───────────────────────────────────────────────────────────
 
@@ -46,6 +51,8 @@ const btnDanger = 'inline-flex items-center gap-1.5 rounded-lg border border-ros
 /** The payslip layouts, as the Setup → Payslip templates section (Setup shows the section title). */
 export function PayslipTemplatesPanel() {
   const { hasPermission } = useAuth();
+  const { t } = useLocale();
+  const fx = useFormat();
   // The API enforces payroll.write on creating a template (PayslipTemplatesController POST); readers get no create button.
   const mayWrite = hasPermission('payroll.write');
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
@@ -56,12 +63,13 @@ export function PayslipTemplatesPanel() {
   const [versions, setVersions] = useState<TemplateListItem[]>([]);
   const [showVersions, setShowVersions] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showOff, setShowOff] = useState(false);
 
   const reload = async () => {
     setLoading(true);
     const [tmpl, reg] = await Promise.all([
-      payslipTemplatesApi.list().catch(() => [] as TemplateListItem[]),
-      payslipTemplatesApi.registry().catch(() => [] as SectionDef[]),
+      payslipTemplatesApi.list({ includeTurnedOff: true }).catch((e) => { notifyApiError(e, 'The payslip templates could not be loaded.'); return [] as TemplateListItem[]; }),
+      payslipTemplatesApi.registry().catch((e) => { notifyApiError(e, 'The payslip sections could not be loaded.'); return [] as SectionDef[]; }),
     ]);
     setTemplates(tmpl);
     setRegistry(reg);
@@ -69,23 +77,19 @@ export function PayslipTemplatesPanel() {
   };
 
   useEffect(() => { reload(); }, []);
+  const removal = useOrgRowRemoval({ api: payslipTemplatesApi.removal, noun: msg('payslip template'), onDone: () => { void reload(); } });
+  const shown = templates.filter((x) => showOff || x.status !== 'off');
 
   const openNew = () => { setEditing(null); setShowEditor(true); };
-  const openEdit = (t: TemplateListItem) => {
-    payslipTemplatesApi.get(t.id).then((dto) => { setEditing(dto); setShowEditor(true); });
+  const openEdit = (tpl: TemplateListItem) => {
+    payslipTemplatesApi.get(tpl.id).then((dto) => { setEditing(dto); setShowEditor(true); });
   };
 
   const handleSetDefault = async (id: string) => {
     setBusy(true);
-    await payslipTemplatesApi.setDefault(id).catch(() => {});
+    await payslipTemplatesApi.setDefault(id).catch((e) => notifyApiError(e, 'The default template could not be changed.'));
     await reload();
     setBusy(false);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this template? This cannot be undone.')) return;
-    await payslipTemplatesApi.delete(id).catch(() => {});
-    await reload();
   };
 
   const openVersions = async (id: string) => {
@@ -97,16 +101,19 @@ export function PayslipTemplatesPanel() {
   return (
     <div className="flex flex-col gap-6">
       {/* Toolbar */}
+      {removal.notice}
+      {removal.confirmDialog}
       <div className="flex flex-wrap items-center justify-end gap-3">
+        <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={templates.filter((x) => x.status === 'off').length} />
         <div className="flex gap-2">
           <button type="button" className={btnGhost} onClick={reload}>
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
+            {t('Refresh')}
           </button>
           {mayWrite && (
             <button type="button" className={btnPrimary} onClick={openNew}>
-              <Plus className="h-4 w-4" />
-              New Template
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              {t('New Template')}
             </button>
           )}
         </div>
@@ -121,11 +128,11 @@ export function PayslipTemplatesPanel() {
         ) : templates.length === 0 ? (
           <div className="flex flex-col items-center py-20 text-center">
             <FileText className="mb-3 h-10 w-10 text-slate-300 dark:text-slate-600" />
-            <p className="font-medium text-slate-600 dark:text-slate-400">No templates yet</p>
-            {mayWrite && <p className="mt-1 text-sm text-slate-400">Create your first payslip template to get started.</p>}
+            <p className="font-medium text-slate-600 dark:text-slate-400">{t('No templates yet')}</p>
+            {mayWrite && <p className="mt-1 text-sm text-slate-400">{t('Create your first payslip template to get started.')}</p>}
             {mayWrite && (
               <button type="button" className={btnPrimary + ' mt-4'} onClick={openNew}>
-                <Plus className="h-4 w-4" /> Create Template
+                <Plus className="h-4 w-4" aria-hidden="true" /> {t('Create Template')}
               </button>
             )}
           </div>
@@ -133,45 +140,38 @@ export function PayslipTemplatesPanel() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Name', 'Status', 'Version', 'Locale', 'Updated', ''].map((h) => (
-                  <th key={h} className="px-5 py-3 text-start text-xs font-bold uppercase tracking-wider text-slate-400">{h}</th>
+                {[t('Name'), t('Status'), t('Version'), t('Locale'), t('Updated'), ''].map((h, i) => (
+                  <th key={i} className="px-5 py-3 text-start text-xs font-semibold uppercase tracking-wider text-slate-400">{h || <span className="sr-only">{t('Actions')}</span>}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-white/[0.04]">
-              {templates.map((t) => (
-                <tr key={t.id} className="group hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
+              {shown.map((tpl) => (
+                <tr key={tpl.id} className="group hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2">
-                      {t.isDefault && <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />}
-                      <span className="font-medium text-slate-900 dark:text-white">{t.name}</span>
+                      {tpl.isDefault && <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" role="img" aria-label={t('Default template')} />}
+                      <span className="font-medium text-slate-900 dark:text-white">{tpl.name}</span>
                     </div>
                   </td>
-                  <td className="px-5 py-3">{statusBadge(t.status)}</td>
-                  <td className="px-5 py-3 text-slate-500">v{t.version}</td>
-                  <td className="px-5 py-3 text-slate-500">{t.status}</td>
-                  <td className="px-5 py-3 text-xs text-slate-400">{fmtDate(t.updatedAtUtc)}</td>
+                  <td className="px-5 py-3">{statusBadge(tpl.status)}</td>
+                  <td className="px-5 py-3 text-slate-500">v{tpl.version}</td>
+                  <td className="px-5 py-3 text-slate-500"><EnumLabel enum="Status" value={tpl.status} /></td>
+                  <td className="px-5 py-3 text-xs text-slate-400">{fx.date(tpl.updatedAtUtc)}</td>
                   <td className="px-5 py-3">
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {!t.isDefault && t.status !== 'archived' && (
-                        <button type="button" title="Set as default" className={btnGhost} onClick={() => handleSetDefault(t.id)} disabled={busy}>
-                          <Star className="h-3.5 w-3.5" />
+                    <div className="flex flex-wrap items-center gap-1">
+                      {!tpl.isDefault && tpl.status !== 'archived' && (
+                        <button type="button" title={t('Set as default')} aria-label={t('Set as default')} className={btnGhost} onClick={() => handleSetDefault(tpl.id)} disabled={busy}>
+                          <Star className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
                       )}
-                      {t.status !== 'archived' && (
-                        <button type="button" title="Edit" className={btnGhost} onClick={() => openEdit(t)}>
-                          <Settings2 className="h-3.5 w-3.5" />
-                          Edit
-                        </button>
-                      )}
-                      <button type="button" title="Version history" className={btnGhost} onClick={() => openVersions(t.id)}>
-                        <Clock className="h-3.5 w-3.5" />
+                      <button type="button" title={t('Version history')} aria-label={`${t('Version history')} ${tpl.name}`} className={btnGhost} onClick={() => openVersions(tpl.id)}>
+                        <Clock className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
-                      {!t.isDefault && (
-                        <button type="button" title="Delete" className={btnDanger} onClick={() => handleDelete(t.id)}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                      <OrgRowActions name={tpl.name} isActive={tpl.status !== 'off'} busy={removal.busyId === tpl.id}
+                        editable={tpl.status !== 'archived' && tpl.status !== 'off'}
+                        removeBlockedReason={tpl.isDefault ? t('This is the default template. Set another template as default to remove it.') : undefined}
+                        onEdit={() => openEdit(tpl)} onRemove={() => removal.remove({ id: tpl.id, name: tpl.name })} onRestore={() => removal.restore({ id: tpl.id, name: tpl.name })} />
                     </div>
                   </td>
                 </tr>
@@ -199,6 +199,7 @@ export function PayslipTemplatesPanel() {
           onSaved={() => { setShowEditor(false); reload(); }}
         />
       )}
+
     </div>
   );
 }
@@ -208,32 +209,27 @@ export function PayslipTemplatesPanel() {
 function VersionHistoryDrawer({
   versions, onClose, onView,
 }: { versions: TemplateListItem[]; onClose: () => void; onView: (v: TemplateListItem) => void }) {
+  const { t } = useLocale();
+  const fx = useFormat();
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative ms-auto h-full w-80 overflow-y-auto bg-white shadow-2xl dark:bg-slate-900 p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-slate-900 dark:text-white">Version History</h3>
-          <button type="button" onClick={onClose}><X className="h-4 w-4 text-slate-400" /></button>
-        </div>
-        <div className="space-y-2">
-          {versions.map((v) => (
-            <div key={v.id} className="rounded-lg border border-slate-100 dark:border-white/10 p-3 hover:border-sapphire/30">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-slate-900 dark:text-white">v{v.version}</span>
-                {statusBadge(v.status)}
-              </div>
-              <p className="mt-1 text-xs text-slate-400">{fmtDate(v.updatedAtUtc)}</p>
-              {v.status !== 'archived' && (
-                <button type="button" className={btnGhost + ' mt-2'} onClick={() => onView(v)}>
-                  View
-                </button>
-              )}
+    <Modal isOpen title={t('Version History')} onClose={onClose} closeLabel={t('Close')} placement="end" size="sm">
+      <div className="space-y-2">
+        {versions.map((v) => (
+          <div key={v.id} className="rounded-lg border border-slate-100 dark:border-white/10 p-3 hover:border-sapphire/30">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-slate-900 dark:text-white">v{v.version}</span>
+              {statusBadge(v.status)}
             </div>
-          ))}
-        </div>
+            <p className="mt-1 text-xs text-slate-400">{fx.date(v.updatedAtUtc)}</p>
+            {v.status !== 'archived' && (
+              <button type="button" className={btnGhost + ' mt-2'} onClick={() => onView(v)}>
+                {t('View')}
+              </button>
+            )}
+          </div>
+        ))}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -249,6 +245,7 @@ function TemplateEditorDrawer({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const { t } = useLocale();
   const isNew = !initial;
   const parseBranding = (json: string): PayslipBranding => { try { return JSON.parse(json); } catch { return DEFAULT_BRANDING; } };
   const parseLayout = (json: string): PayslipLayout => { try { return JSON.parse(json); } catch { return DEFAULT_LAYOUT; } };
@@ -349,9 +346,9 @@ function TemplateEditorDrawer({
     } catch (err: unknown) {
       if (err && typeof err === 'object' && 'response' in err) {
         const resp = (err as { response?: { data?: { errors?: string[] } } }).response;
-        setErrors(resp?.data?.errors ?? ['Save failed. Check your configuration.']);
+        setErrors(resp?.data?.errors ?? [t('Save failed. Check your configuration.')]);
       } else {
-        setErrors(['Unexpected error. Please try again.']);
+        setErrors([t('Unexpected error. Please try again.')]);
       }
     }
     setSaving(false);
@@ -359,34 +356,42 @@ function TemplateEditorDrawer({
 
   const sortedSections = [...layout.sections].sort((a, b) => a.order - b.order);
 
+  const TAB_LABEL: Record<EditorTab, string> = { branding: t('Branding'), layout: t('Layout'), preview: t('Preview') };
+
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="relative ms-auto flex h-full w-[640px] flex-col bg-white shadow-2xl dark:bg-slate-900">
-        {/* Drawer header */}
-        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4 dark:border-white/[0.07]">
-          <div>
-            <h2 className="font-semibold text-slate-900 dark:text-white">
-              {isNew ? 'New Template' : `Edit: ${initial!.name} (v${initial!.version})`}
-            </h2>
-            {!isNew && <p className="text-xs text-slate-400">Saving creates a new version and archives this one.</p>}
-          </div>
-          <button type="button" onClick={onClose}><X className="h-4 w-4 text-slate-400" /></button>
-        </div>
+    <Modal
+      isOpen
+      title={isNew ? t('New Template') : t('Edit: {name} (v{version})', { name: initial!.name, version: initial!.version })}
+      onClose={onClose}
+      closeLabel={t('Close')}
+      placement="end"
+      size="lg"
+      footer={
+        <>
+          <button type="button" className={btnGhost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btnPrimary} onClick={handleSave} disabled={saving || !name.trim()}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
+            {isNew ? t('Create Template') : t('Save New Version')}
+          </button>
+        </>
+      }
+    >
+      <div className="-mx-3 -my-3 flex flex-col sm:-mx-5 sm:-my-4">
+        {!isNew && <p className="px-5 pt-3 text-xs text-slate-400">{t('Saving creates a new version and archives this one.')}</p>}
 
         {/* Tabs */}
         <div className="flex border-b border-slate-100 dark:border-white/[0.07]">
-          {(['branding', 'layout', 'preview'] as EditorTab[]).map((t) => (
+          {(['branding', 'layout', 'preview'] as EditorTab[]).map((tabKey) => (
             <button
-              key={t}
+              key={tabKey}
               type="button"
-              onClick={() => { setTab(t); if (t === 'preview') loadPreview(); }}
-              className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${tab === t
+              onClick={() => { setTab(tabKey); if (tabKey === 'preview') loadPreview(); }}
+              className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${tab === tabKey
                 ? 'border-sapphire text-sapphire'
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}
             >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
-              {t === 'preview' && !initial && <span className="ms-1 text-[10px] text-slate-400">(save first)</span>}
+              {TAB_LABEL[tabKey]}
+              {tabKey === 'preview' && !initial && <span className="ms-1 text-caption text-slate-400">{t('Save first')}</span>}
             </button>
           ))}
         </div>
@@ -397,43 +402,43 @@ function TemplateEditorDrawer({
             <div className="space-y-5">
               {/* Name + default */}
               <div className="grid gap-3">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">Template Name</label>
-                <input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. KSA Standard" />
+                <label htmlFor="pt-name" className="block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Template Name')}</label>
+                <input id="pt-name" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder={t('Example: KSA Standard')} />
               </div>
               <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} className="rounded" />
-                Set as default template for all payslip downloads
+                {t('Set as default template for all payslip downloads')}
               </label>
 
               <hr className="border-slate-100 dark:border-white/10" />
 
               {/* Locale */}
               <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Locale</label>
-                <select className={inputCls} value={branding.locale} onChange={(e) => syncLocale(e.target.value)}>
-                  {LOCALES.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                <label htmlFor="pt-locale" className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Locale')}</label>
+                <select id="pt-locale" className={inputCls} value={branding.locale} onChange={(e) => syncLocale(e.target.value)}>
+                  {LOCALES.map((l) => <option key={l.value} value={l.value}>{l.value === 'bilingual' ? t('Bilingual (EN + AR)') : l.label}</option>)}
                 </select>
               </div>
 
               {/* Colors */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Primary Color</label>
+                  <label htmlFor="pt-primary" className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Primary Color')}</label>
                   <div className="flex items-center gap-2">
-                    <input type="color" value={branding.primaryColor}
+                    <input type="color" aria-label={t('Primary Color')} value={branding.primaryColor}
                       onChange={(e) => setBranding((b) => ({ ...b, primaryColor: e.target.value }))}
                       className="h-9 w-12 cursor-pointer rounded border border-slate-200 p-0.5 dark:border-white/10" />
-                    <input className={inputCls} value={branding.primaryColor}
+                    <input id="pt-primary" className={inputCls} value={branding.primaryColor}
                       onChange={(e) => setBranding((b) => ({ ...b, primaryColor: e.target.value }))} />
                   </div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Accent Color</label>
+                  <label htmlFor="pt-accent" className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Accent Color')}</label>
                   <div className="flex items-center gap-2">
-                    <input type="color" value={branding.accentColor}
+                    <input type="color" aria-label={t('Accent Color')} value={branding.accentColor}
                       onChange={(e) => setBranding((b) => ({ ...b, accentColor: e.target.value }))}
                       className="h-9 w-12 cursor-pointer rounded border border-slate-200 p-0.5 dark:border-white/10" />
-                    <input className={inputCls} value={branding.accentColor}
+                    <input id="pt-accent" className={inputCls} value={branding.accentColor}
                       onChange={(e) => setBranding((b) => ({ ...b, accentColor: e.target.value }))} />
                   </div>
                 </div>
@@ -441,8 +446,8 @@ function TemplateEditorDrawer({
 
               {/* Font */}
               <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Font Family</label>
-                <select className={inputCls} value={branding.fontFamily}
+                <label htmlFor="pt-font" className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Font Family')}</label>
+                <select id="pt-font" className={inputCls} value={branding.fontFamily}
                   onChange={(e) => setBranding((b) => ({ ...b, fontFamily: e.target.value }))}>
                   {ALLOWED_FONTS.map((f) => <option key={f} value={f}>{f}</option>)}
                 </select>
@@ -450,7 +455,7 @@ function TemplateEditorDrawer({
 
               {/* Logo */}
               <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">Company Logo</label>
+                <p className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Company Logo')}</p>
                 <div className="flex items-center gap-3">
                   {branding.logoStorageUrl && (
                     <span className="truncate rounded bg-slate-100 px-2 py-1 text-xs dark:bg-white/10">
@@ -458,45 +463,45 @@ function TemplateEditorDrawer({
                     </span>
                   )}
                   <button type="button" className={btnGhost} onClick={() => logoInputRef.current?.click()}>
-                    <Download className="h-3.5 w-3.5" />
-                    {branding.logoStorageUrl ? 'Replace Logo' : 'Upload Logo'}
+                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                    {branding.logoStorageUrl ? t('Replace Logo') : t('Upload Logo')}
                   </button>
                   {branding.logoStorageUrl && (
                     <button type="button" className={btnDanger}
                       onClick={() => setBranding((b) => ({ ...b, logoStorageUrl: null }))}>
-                      <X className="h-3.5 w-3.5" /> Remove
+                      <X className="h-3.5 w-3.5" aria-hidden="true" /> {t('Remove')}
                     </button>
                   )}
                 </div>
-                <input ref={logoInputRef} type="file" accept=".png,.jpg,.jpeg,.svg" hidden onChange={handleLogoUpload} />
-                <p className="mt-1 text-xs text-slate-400">PNG, JPG or SVG, max 2 MB. Appears in PDF header.</p>
+                <input ref={logoInputRef} aria-label={t('Company Logo')} type="file" accept=".png,.jpg,.jpeg,.svg" hidden onChange={handleLogoUpload} />
+                <p className="mt-1 text-xs text-slate-400">{t('PNG, JPG or SVG, max 2 MB. Appears in PDF header.')}</p>
               </div>
 
               {/* Header/footer text */}
               <div className="grid gap-3">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">Header Text (EN)</label>
-                <input className={inputCls} maxLength={200} value={branding.headerTextEn}
+                <label htmlFor="pt-hen" className="block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Header Text (EN)')}</label>
+                <input className={inputCls} maxLength={200} id="pt-hen" value={branding.headerTextEn}
                   onChange={(e) => setBranding((b) => ({ ...b, headerTextEn: e.target.value }))}
-                  placeholder="e.g. Confidential payslip for:" />
+                  placeholder={t('Example: Confidential payslip for')} />
               </div>
               {(branding.locale === 'ar' || branding.locale === 'bilingual') && (
                 <div className="grid gap-3">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">Header Text (AR)</label>
-                  <input dir="rtl" className={inputCls} maxLength={200} value={branding.headerTextAr}
+                  <label htmlFor="pt-har" className="block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Header Text (AR)')}</label>
+                  <input dir="rtl" className={inputCls} maxLength={200} id="pt-har" value={branding.headerTextAr}
                     onChange={(e) => setBranding((b) => ({ ...b, headerTextAr: e.target.value }))}
                     placeholder="مثال: كشف راتب سري لـ:" />
                 </div>
               )}
               <div className="grid gap-3">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">Footer Text (EN)</label>
-                <input className={inputCls} maxLength={200} value={branding.footerTextEn}
+                <label htmlFor="pt-fen" className="block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Footer Text (EN)')}</label>
+                <input className={inputCls} maxLength={200} id="pt-fen" value={branding.footerTextEn}
                   onChange={(e) => setBranding((b) => ({ ...b, footerTextEn: e.target.value }))}
-                  placeholder="e.g. This is a system-generated payslip." />
+                  placeholder={t('Example: This is a system-generated payslip.')} />
               </div>
               {(branding.locale === 'ar' || branding.locale === 'bilingual') && (
                 <div className="grid gap-3">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500">Footer Text (AR)</label>
-                  <input dir="rtl" className={inputCls} maxLength={200} value={branding.footerTextAr}
+                  <label htmlFor="pt-far" className="block text-xs font-semibold uppercase tracking-wider text-slate-500">{t('Footer Text (AR)')}</label>
+                  <input dir="rtl" className={inputCls} maxLength={200} id="pt-far" value={branding.footerTextAr}
                     onChange={(e) => setBranding((b) => ({ ...b, footerTextAr: e.target.value }))}
                     placeholder="مثال: هذا كشف راتب صادر من النظام." />
                 </div>
@@ -507,9 +512,7 @@ function TemplateEditorDrawer({
           {tab === 'layout' && (
             <div className="space-y-4">
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                Toggle sections on/off and choose which fields appear. Compliance-locked fields
-                <span className="mx-1 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-semibold text-rose-600 dark:bg-rose-500/10">locked</span>
-                cannot be removed.
+                {t('Toggle sections on/off and choose which fields appear. Compliance-locked fields cannot be removed.')}
               </p>
               {sortedSections.map((sec) => {
                 const def = registry.find((r) => r.key === sec.key);
@@ -535,18 +538,18 @@ function TemplateEditorDrawer({
             <div className="flex flex-col gap-4">
               <div className="flex items-center gap-3">
                 <button type="button" className={btnGhost} onClick={loadPreview} disabled={!initial || previewLoading}>
-                  {previewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                  Regenerate Preview
+                  {previewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />}
+                  {t('Regenerate Preview')}
                 </button>
                 {previewUrl && (
                   <a href={previewUrl} download="preview.pdf" className={btnGhost}>
-                    <Download className="h-3.5 w-3.5" /> Download
+                    <Download className="h-3.5 w-3.5" aria-hidden="true" /> {t('Download')}
                   </a>
                 )}
               </div>
               {!initial && (
                 <div className="rounded-lg border border-slate-200 p-8 text-center text-sm text-slate-400 dark:border-white/10">
-                  Save the template first to generate a preview.
+                  {t('Save the template first to generate a preview.')}
                 </div>
               )}
               {previewLoading && (
@@ -555,7 +558,7 @@ function TemplateEditorDrawer({
                 </div>
               )}
               {previewUrl && !previewLoading && (
-                <iframe src={previewUrl} className="h-[600px] w-full rounded-lg border border-slate-200 dark:border-white/10" title="Payslip Preview" />
+                <iframe src={previewUrl} className="h-[600px] w-full rounded-lg border border-slate-200 dark:border-white/10" title={t('Payslip Preview')} />
               )}
             </div>
           )}
@@ -563,7 +566,7 @@ function TemplateEditorDrawer({
           {/* Validation errors */}
           {errors.length > 0 && (
             <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 dark:border-rose-500/20 dark:bg-rose-500/10">
-              <p className="mb-1 text-xs font-semibold text-rose-600 dark:text-rose-400">Validation errors:</p>
+              <p className="mb-1 text-xs font-semibold text-rose-600 dark:text-rose-400">{t('Validation errors')}</p>
               <ul className="list-inside list-disc space-y-0.5">
                 {errors.map((e, i) => <li key={i} className="text-xs text-rose-600 dark:text-rose-400">{e}</li>)}
               </ul>
@@ -571,16 +574,8 @@ function TemplateEditorDrawer({
           )}
         </div>
 
-        {/* Footer actions */}
-        <div className="flex items-center justify-between border-t border-slate-100 px-5 py-4 dark:border-white/[0.07]">
-          <button type="button" className={btnGhost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btnPrimary} onClick={handleSave} disabled={saving || !name.trim()}>
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-            {isNew ? 'Create Template' : 'Save New Version'}
-          </button>
-        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -598,6 +593,7 @@ function SectionCard({
   isFirst: boolean;
   isLast: boolean;
 }) {
+  const { t } = useLocale();
   const [expanded, setExpanded] = useState(sec.enabled);
 
   return (
@@ -605,19 +601,20 @@ function SectionCard({
       <div className="flex items-center gap-3 px-4 py-3">
         {/* Reorder buttons */}
         <div className="flex flex-col gap-0.5">
-          <button type="button" onClick={onMoveUp} disabled={isFirst} className="text-slate-300 hover:text-slate-500 disabled:opacity-20">
-            <ChevronUp className="h-3.5 w-3.5" />
+          <button type="button" aria-label={t('Move up')} onClick={onMoveUp} disabled={isFirst} className="text-slate-300 hover:text-slate-500 disabled:opacity-20">
+            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
-          <button type="button" onClick={onMoveDown} disabled={isLast} className="text-slate-300 hover:text-slate-500 disabled:opacity-20">
-            <ChevronDown className="h-3.5 w-3.5" />
+          <button type="button" aria-label={t('Move down')} onClick={onMoveDown} disabled={isLast} className="text-slate-300 hover:text-slate-500 disabled:opacity-20">
+            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
 
-        <GripVertical className="h-4 w-4 text-slate-300" />
+        <GripVertical className="h-4 w-4 text-slate-300" aria-hidden="true" />
 
         {/* Toggle */}
         <input
           type="checkbox"
+          aria-label={def.labelEn}
           checked={sec.enabled}
           disabled={!def.canDisable}
           onChange={(e) => { onToggle(e.target.checked); setExpanded(e.target.checked); }}
@@ -629,22 +626,22 @@ function SectionCard({
           <span className="text-sm font-medium text-slate-800 dark:text-white">{def.labelEn}</span>
           {def.labelAr && <span className="ms-2 text-xs text-slate-400">{def.labelAr}</span>}
           {!def.canDisable && (
-            <span className="ms-2 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-bold text-rose-500 dark:bg-rose-500/10">
-              required
+            <span className="ms-2 rounded bg-rose-50 px-1 py-0.5 text-caption font-semibold text-rose-500 dark:bg-rose-500/10">
+              {t('Required')}
             </span>
           )}
         </div>
 
         {sec.enabled && (
-          <button type="button" onClick={() => setExpanded((x) => !x)} className="text-slate-400 hover:text-slate-600">
-            {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          <button type="button" aria-expanded={expanded} aria-label={expanded ? t('Collapse fields') : t('Expand fields')} onClick={() => setExpanded((x) => !x)} className="text-slate-400 hover:text-slate-600">
+            {expanded ? <ChevronUp className="h-4 w-4" aria-hidden="true" /> : <ChevronDown className="h-4 w-4" aria-hidden="true" />}
           </button>
         )}
       </div>
 
       {sec.enabled && expanded && (
         <div className="border-t border-slate-100 px-4 pb-3 pt-2 dark:border-white/[0.07]">
-          <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">Fields</p>
+          <p className="mb-2 text-caption font-semibold uppercase tracking-wider text-slate-400">{t('Fields')}</p>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1">
             {def.fields.map((f) => (
               <label key={f.key} className={`flex items-center gap-2 rounded py-0.5 text-xs ${f.isComplianceLocked ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'}`}>
@@ -657,7 +654,7 @@ function SectionCard({
                 />
                 <span className="text-slate-700 dark:text-slate-300">{f.labelEn}</span>
                 {f.isComplianceLocked && (
-                  <span className="rounded bg-rose-50 px-1 text-[10px] font-bold text-rose-500 dark:bg-rose-500/10">locked</span>
+                  <span className="rounded bg-rose-50 px-1 text-caption font-semibold text-rose-500 dark:bg-rose-500/10">{t('Locked')}</span>
                 )}
               </label>
             ))}

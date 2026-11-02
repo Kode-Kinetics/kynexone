@@ -58,6 +58,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
@@ -247,9 +248,9 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
-        {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
+        {sub && <p className="text-caption text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
     </div>
   );
@@ -395,7 +396,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] dark:border-white/10 dark:bg-[#0D1221]">
+      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
           <h3 className="font-semibold text-slate-900 dark:text-white">New Manpower Requisition</h3>
           <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
@@ -557,7 +558,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{r.departmentName}</td>
                 <td className="px-4 py-3 text-center font-semibold text-slate-800 dark:text-slate-200">{r.headCount}</td>
                 <td className="px-4 py-3">
-                  <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{r.priority}</span>
+                  <span className={`rounded-lg px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{r.priority}</span>
                 </td>
                 <td className="px-4 py-3"><StatusChip {...reqStatusTone(r.status)} /></td>
                 <td className="px-4 py-3">
@@ -650,7 +651,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] dark:border-white/10 dark:bg-[#0D1221]">
+      <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
           <h3 className="font-semibold text-slate-900 dark:text-white">New Job Opening{requisition ? ` from ${requisition.requisitionNumber}` : ''}</h3>
           <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
@@ -675,7 +676,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
               <div className="mb-1 flex items-center justify-between">
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">Job Description</label>
                 <button type="button" onClick={generateWithAi} disabled={aiBusy}
-                  className="flex items-center gap-1 rounded-md border border-sapphire/30 px-2 py-0.5 text-[11px] font-medium text-sapphire transition hover:bg-sapphire/10 disabled:opacity-50 dark:border-cyanAccent/30 dark:text-cyanAccent">
+                  className="flex items-center gap-1 rounded-lg border border-sapphire/30 px-2 py-0.5 text-caption font-medium text-sapphire transition hover:bg-sapphire/10 disabled:opacity-50 dark:border-cyanAccent/30 dark:text-cyanAccent">
                   <Wand2 className="h-3 w-3" />
                   {aiBusy ? 'Generating…' : 'Generate with AI'}
                 </button>
@@ -750,7 +751,7 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
           <div>
             <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white"><Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> Recruitment AI Tools</h3>
@@ -770,7 +771,7 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
             <div className="flex rounded-lg border border-slate-200 p-0.5 dark:border-white/10">
               {(['screen', 'questions'] as const).map(m => (
                 <button key={m} type="button" onClick={() => setMode(m)}
-                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${mode === m ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'text-slate-500 dark:text-slate-400'}`}>
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${mode === m ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'text-slate-500 dark:text-slate-400'}`}>
                   {m === 'screen' ? 'Screen candidates' : 'Interview questions'}
                 </button>
               ))}
@@ -793,9 +794,9 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
               ) : screen.ranked.map((c, i) => (
                 <div key={c.candidateId} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
                   <div className="flex items-center gap-3">
-                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
                     <span className="font-medium text-slate-800 dark:text-slate-200">{c.name}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${recTone(c.recommendation)}`}>{c.recommendation}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${recTone(c.recommendation)}`}>{c.recommendation}</span>
                     <div className="ms-auto flex items-center gap-2">
                       <div className="h-1.5 w-24 rounded-full bg-slate-200 dark:bg-white/10"><div className="h-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${c.score}%` }} /></div>
                       <span className="w-9 text-end text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
@@ -1028,7 +1029,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={() => navigationGuard.run('application-close', onClose)} />
-      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-[#0B1020]">
+      <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-surface">
         {/* Header */}
         <div className="flex items-start gap-3 border-b border-slate-200 p-5 dark:border-white/10">
           <div className="flex-1 min-w-0">
@@ -1086,7 +1087,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             <button key={t} type="button" onClick={() => setTab(t)}
               className={`py-2.5 text-xs font-medium capitalize transition ${tab === t ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
               {t}
-              {t === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] dark:bg-white/10">{detail.interviews.length}</span>}
+              {t === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-caption dark:bg-white/10">{detail.interviews.length}</span>}
             </button>
           ))}
         </div>
@@ -1103,10 +1104,10 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                     <div className="flex-1">
                       <div className="flex items-baseline justify-between">
                         <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{ev.eventType.replace(/([A-Z])/g, ' $1').trim()}</p>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc)}</p>
+                        <p className="text-caption text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc)}</p>
                       </div>
                       {ev.notes && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{ev.notes}</p>}
-                      {ev.performedByName && <p className="text-[10px] text-slate-400">by {ev.performedByName}</p>}
+                      {ev.performedByName && <p className="text-caption text-slate-400">by {ev.performedByName}</p>}
                     </div>
                   </div>
                 ))}
@@ -1126,7 +1127,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 <div key={iv.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{iv.interviewType}</p>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'}`}>{iv.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'}`}>{iv.status}</span>
                   </div>
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{new Date(iv.scheduledAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} · {iv.mode}</p>
                   {iv.interviewerNames && <p className="text-xs text-slate-400">With: {iv.interviewerNames}</p>}
@@ -1177,7 +1178,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-semibold text-slate-800 dark:text-white">Offer Letter</p>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
                   </div>
                   <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400">
                     <div className="flex justify-between"><span>Basic Salary</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>
@@ -1299,7 +1300,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STAGE_COLORS[col.stage] ?? '#64748b' }} />
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{col.stage}</p>
-                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{col.applications.length}</span>
+                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400">{col.applications.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-slate-200/70 bg-slate-50 p-2 dark:border-white/[0.06] dark:bg-white/[0.02]" style={{ minHeight: 120 }}>
                 {col.applications.map(app => (
@@ -1310,12 +1311,12 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
                     className="rounded-lg border border-slate-200 bg-white p-3 text-start shadow-sm transition hover:border-sapphire/30 hover:shadow-md dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-cyanAccent/20"
                   >
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{app.candidateName}</p>
-                    <p className="mt-0.5 text-[10px] text-slate-400 dark:text-slate-500">{app.candidateEmail}</p>
-                    <p className="mt-1.5 text-[10px] text-slate-400 dark:text-slate-500">{ago(app.stageChangedAtUtc ?? app.appliedAtUtc)}</p>
+                    <p className="mt-0.5 text-caption text-slate-400 dark:text-slate-500">{app.candidateEmail}</p>
+                    <p className="mt-1.5 text-caption text-slate-400 dark:text-slate-500">{ago(app.stageChangedAtUtc ?? app.appliedAtUtc)}</p>
                   </button>
                 ))}
                 {col.applications.length === 0 && (
-                  <p className="py-4 text-center text-[10px] text-slate-300 dark:text-slate-700">No candidates</p>
+                  <p className="py-4 text-center text-caption text-slate-300 dark:text-slate-700">No candidates</p>
                 )}
               </div>
             </div>
@@ -1327,13 +1328,13 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full bg-rose-400" />
                 <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">Rejected</p>
-                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10">{rejected.length}</span>
+                <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10">{rejected.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-rose-100 bg-rose-50/50 p-2 dark:border-rose-500/10 dark:bg-rose-500/[0.03]" style={{ minHeight: 60 }}>
                 {rejected.map(app => (
                   <div key={app.id} className="rounded-lg border border-rose-100 bg-white px-3 py-2 dark:border-rose-500/10 dark:bg-white/[0.03]">
-                    <p className="text-[10px] font-medium text-rose-600 dark:text-rose-400">{app.candidateName}</p>
-                    <p className="text-[10px] text-slate-400">{app.stage}</p>
+                    <p className="text-caption font-medium text-rose-600 dark:text-rose-400">{app.candidateName}</p>
+                    <p className="text-caption text-slate-400">{app.stage}</p>
                   </div>
                 ))}
               </div>
@@ -1345,7 +1346,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
       {/* Add candidate modal */}
       {addModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-96 rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+          <div className="w-96 rounded-2xl border border-slate-200 bg-white p-6 shadow-e3 dark:border-white/10 dark:bg-surface">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Add Candidate to Pipeline</h3>
               <button type="button" aria-label="Close" onClick={() => setAddModalOpen(false)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
@@ -1401,7 +1402,7 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] dark:border-white/10 dark:bg-[#0D1221]">
+      <div className="flex w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
           <h3 className="font-semibold text-slate-900 dark:text-white">Add to Talent Pool</h3>
           <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
@@ -1510,7 +1511,7 @@ function CandidatesTab() {
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.totalExperienceYears}y</td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel || '—'}</td>
                 <td className="px-4 py-3">
-                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{c.source}</span>
+                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{c.source}</span>
                 </td>
                 <td className="px-4 py-3">
                   {c.resumeUrl ? (
@@ -1586,7 +1587,7 @@ function WorkforcePlanningTab() {
               <div className={`h-8 w-8 shrink-0 rounded-lg grid place-items-center ${k.color}`}>
                 <Target className="h-4 w-4" />
               </div>
-              <div><p className="text-2xl font-extrabold text-slate-950 dark:text-white">{k.value}</p><p className="text-xs text-slate-500 dark:text-slate-400">{k.label}</p></div>
+              <div><p className="text-2xl font-semibold text-slate-950 dark:text-white">{k.value}</p><p className="text-xs text-slate-500 dark:text-slate-400">{k.label}</p></div>
             </div>
           ))}
         </div>
@@ -1858,7 +1859,7 @@ function InterviewsTab() {
                 <div className="flex items-center gap-2 shrink-0">
                   {iv.overallRating && (
                     <div className="text-end">
-                      <p className="text-lg font-bold text-slate-900 dark:text-white">{iv.overallRating}/5</p>
+                      <p className="text-lg font-semibold text-slate-900 dark:text-white">{iv.overallRating}/5</p>
                       <p className="text-xs text-slate-400">Rating</p>
                     </div>
                   )}
@@ -2191,10 +2192,10 @@ function AssessmentsTab() {
                           <input type="number" min={0} max={assessmentScoreMax(a.totalMarks)} step={1}
                             aria-label={`${a.templateName} result: ${assessmentScoreLabel(a.totalMarks)}`}
                             title={assessmentScoreLabel(a.totalMarks)} placeholder={assessmentScoreLabel(a.totalMarks)}
-                            className="w-32 rounded-md border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
+                            className="w-32 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
                             value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
                           <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
-                            className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                            className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                             {recording === a.id ? '…' : 'Record result'}
                           </button>
                         </div>
@@ -2436,9 +2437,11 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   useEffect(() => { if (!configurationOnly) load(); }, [statusFilter, configurationOnly]);
 
+  const [showOffChecklists, setShowOffChecklists] = useState(false);
+  const checklistRemoval = useOrgRowRemoval({ api: onboardingApi.checklistRemoval, noun: msg('onboarding checklist'), onDone: () => { void loadChecklists(); } });
   const loadChecklists = async () => {
     try {
-      const items = await onboardingApi.listChecklists();
+      const items = await onboardingApi.listChecklists(configurationOnly ? { includeOff: true } : undefined);
       setChecklists(items);
       setSelectedChecklistId(current => current || ((configurationOnly && (policyDraft ?? new URLSearchParams(window.location.search).get('policyDraft') === '1')) ? '' : items[0]?.id) || '');
     } catch (e) { notifyApiError(e); }
@@ -2555,7 +2558,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         <div className="surface p-4">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Overall Onboarding Progress</p>
-            <p className="text-sm font-bold text-slate-900 dark:text-white">{summary.completionPct.toFixed(0)}%</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{summary.completionPct.toFixed(0)}%</p>
           </div>
           <div className="h-2 rounded-full bg-slate-200 dark:bg-white/10">
             <div className="h-2 rounded-full bg-sapphire transition-all" style={{ width: `${summary.completionPct}%` }} />
@@ -2586,8 +2589,19 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           <select aria-label="Onboarding checklist" title="Onboarding checklist" value={selectedChecklistId} disabled={templateSaving} onChange={e => { setSelectedChecklistId(e.target.value); if (activePolicyTask) changeTemplateForm({ checklistId: e.target.value, applicabilityConfirmed: false, overwriteConfirmed: false }); }}
             className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
             <option value="">Select checklist</option>
-            {checklists.map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}
+            {checklists.filter(c => c.isActive || showOffChecklists || c.id === selectedChecklistId).map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}{c.isActive ? '' : ` (${t('Off')})`}</option>)}
           </select>
+          {configurationOnly && <ShowTurnedOffToggle checked={showOffChecklists} onChange={setShowOffChecklists} count={checklists.filter(c => !c.isActive).length} />}
+          {configurationOnly && selectedChecklistId && (() => {
+            const c = checklists.find(x => x.id === selectedChecklistId);
+            return c ? (
+              <OrgRowActions name={c.name} isActive={c.isActive} editable={false} busy={checklistRemoval.busyId === c.id}
+                blockedReason={canWriteTemplates ? undefined : t('You do not have permission to change this.')}
+                onEdit={() => {}} onRemove={() => checklistRemoval.remove({ id: c.id, name: c.name })} onRestore={() => checklistRemoval.restore({ id: c.id, name: c.name })} />
+            ) : null;
+          })()}
+          {checklistRemoval.notice}
+          {checklistRemoval.confirmDialog}
           {selectedChecklistId && (
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
               {templateTasks.length} template tasks
@@ -2776,13 +2790,13 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
                 <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[t.status] ?? ''}`}>{t.status}</span>
                 {t.status !== 'Completed' && (
                   <button type="button" onClick={() => updateStatus(t.id, 'Completed')} disabled={updatingStatus === t.id}
-                    className="rounded-md bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                    className="rounded-lg bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                     {updatingStatus === t.id ? '…' : '✓ Done'}
                   </button>
                 )}
                 {t.status === 'Pending' && (
                   <button type="button" onClick={() => updateStatus(t.id, 'InProgress')} disabled={updatingStatus === t.id}
-                    className="rounded-md border border-blue-200 px-2 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-500/30 dark:text-blue-400">
+                    className="rounded-lg border border-blue-200 px-2 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-500/30 dark:text-blue-400">
                     Start
                   </button>
                 )}
@@ -2814,15 +2828,15 @@ function ReportsTab() {
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="surface p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Hired This Month</p>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">{pipeline?.hiredThisMonth ?? '—'}</p>
+          <p className="text-3xl font-semibold text-slate-900 dark:text-white">{pipeline?.hiredThisMonth ?? '—'}</p>
         </div>
         <div className="surface p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Avg. Time to Hire</p>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">{timeToHire ? `${timeToHire.avgDaysToHire}d` : '—'}</p>
+          <p className="text-3xl font-semibold text-slate-900 dark:text-white">{timeToHire ? `${timeToHire.avgDaysToHire}d` : '—'}</p>
         </div>
         <div className="surface p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Total Hired (YTD)</p>
-          <p className="text-3xl font-bold text-slate-900 dark:text-white">{timeToHire?.hiredCount ?? '—'}</p>
+          <p className="text-3xl font-semibold text-slate-900 dark:text-white">{timeToHire?.hiredCount ?? '—'}</p>
         </div>
       </div>
 
@@ -2946,7 +2960,7 @@ export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { 
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Recruitment & Requisitions</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Recruitment & Requisitions</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Manage manpower requisitions, job openings, and candidate pipeline end-to-end.
         </p>

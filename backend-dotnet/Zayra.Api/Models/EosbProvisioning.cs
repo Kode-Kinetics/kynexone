@@ -39,7 +39,8 @@ public class EosbProvisionSnapshot : ITenantOwned, ICompanyScopedOperational
     public bool IsCatchUp { get; set; }
     public decimal WageBase { get; set; }
     public decimal ServiceYears { get; set; }
-    public string Currency { get; set; } = "SAR";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     /// <summary>The calculator rule the obligation came from (e.g. "KSA-LaborLaw-Art84").</summary>
     public string Rule { get; set; } = string.Empty;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
@@ -65,7 +66,8 @@ public class GlAdjustmentRequest : ITenantOwned, ICompanyScopedOperational
     /// <summary>Signed. True-up: + raises the provision (DR expense / CR 2310), − lowers it.
     /// Reclass: the CREDIT balance being moved (+ = the liability carries a credit).</summary>
     public decimal Amount { get; set; }
-    public string Currency { get; set; } = "SAR";
+    /// <summary>Empty until saved: <see cref="Zayra.Api.Infrastructure.Payroll.CompanyCurrencyDefaults"/> fills it with the employing company's currency.</summary>
+    public string Currency { get; set; } = string.Empty;
     /// <summary>Reclass only: the legacy account label being emptied ("2104 - …").</summary>
     public string? SourceAccount { get; set; }
     /// <summary>The account the other side lands on (true-up: the provision; reclass: the target).</summary>

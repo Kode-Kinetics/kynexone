@@ -1,5 +1,6 @@
 'use client';
 
+import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { essActionsApi, type EssBalance } from '@/src/api/ess';
 import type { LeaveRequest, LeaveType } from '@/src/api/leave';
@@ -18,6 +19,7 @@ const blankForm = { leaveTypeId: '', startDate: '', endDate: '', halfDay: false,
  * waiting for approval. Gated on ess.read; every call is limited to the caller's own record.
  */
 export function MyLeavePage() {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { t, locale } = useLocale();
   const fmtDate = useEssDate();
   const canWrite = useCanWriteEss();
@@ -99,7 +101,8 @@ export function MyLeavePage() {
   };
 
   const cancel = async (r: LeaveRequest) => {
-    if (!window.confirm(t('Cancel this leave request?'))) return;
+    const ok = await confirm({ title: t('Cancel leave request'), message: t('Cancel this leave request?'), confirmLabel: t('Cancel request') });
+    if (!ok) return;
     setCancellingId(r.id);
     setNotice(null);
     try {
@@ -133,18 +136,18 @@ export function MyLeavePage() {
                     <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{typeNameById(b.leaveTypeId, b.leaveTypeName)}</p>
                     {b.statutoryEntitlementDays != null ? (
                       <>
-                        <p className="mt-1 text-sm font-bold text-emerald-700 dark:text-emerald-300">{t('Statutory entitlement')}</p>
+                        <p className="mt-1 text-sm font-semibold text-emerald-700 dark:text-emerald-300">{t('Statutory entitlement')}</p>
                         <p className="text-xs text-slate-600 dark:text-slate-300">
                           {fillTemplate(t('{days} days per event, set by Saudi labour law.'), { days: b.statutoryEntitlementDays })}
                         </p>
                       </>
                     ) : (
-                      <p className="mt-1 text-sm font-bold text-slate-800 dark:text-slate-100">
+                      <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
                         {fillTemplate(t('{available} of {entitled} days available'), { available: b.available, entitled: b.entitled })}
                       </p>
                     )}
                     {b.pending > 0 && (
-                      <p className="text-[11px] text-amber-700 dark:text-amber-300">{fillTemplate(t('{days} days waiting for approval'), { days: b.pending })}</p>
+                      <p className="text-caption text-amber-700 dark:text-amber-300">{fillTemplate(t('{days} days waiting for approval'), { days: b.pending })}</p>
                     )}
                   </li>
                 ))}
@@ -197,7 +200,7 @@ export function MyLeavePage() {
                     </>
                   )}
                   {selectedType?.requiresAttachment && (
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('This leave type needs a supporting document. HR will ask you for it.')}</p>
+                    <p className="text-caption text-slate-500 dark:text-slate-400">{t('This leave type needs a supporting document. HR will ask you for it.')}</p>
                   )}
                   <button type="submit" disabled={submitting} className={`${essPrimaryButton} w-full`}>
                     {submitting ? t('Sending…') : t('Send for approval')}
@@ -242,6 +245,7 @@ export function MyLeavePage() {
           </div>
         </>
       )}
+      {confirmDialog}
     </div>
   );
 }

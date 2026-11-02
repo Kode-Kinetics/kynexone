@@ -172,7 +172,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
       {missingFromServer.length > 0 && <p role="alert" className="mt-2 ps-6 text-sm text-amber-700 dark:text-amber-300">
         {fillTemplate(t('Set a limit for every grade before switching this on. Missing: {grades}.'), { grades: missingFromServer.join(', ') })}
       </p>}
-      {stopOffering.length > 0 && <div role="alert" className="mt-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
+      {stopOffering.length > 0 && <div role="alert" className="mt-2 space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm dark:border-amber-500/40 dark:bg-amber-500/10">
         <p className="font-semibold text-amber-800 dark:text-amber-200">{t('These companies have no loan policy for this loan type. Once it is limited by grade, their employees can no longer apply for it:')}</p>
         <ul className="list-disc ps-5">{stopOffering.map(c => <li key={c.id}>{c.name}</li>)}</ul>
         <p>{t('Publish a loan policy for them first, or confirm that they stop offering this loan type.')}</p>
@@ -188,7 +188,7 @@ export function GradeLimitsPanel({ loanTypes, companies, initialLoanTypeId, onGr
 
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
-    {viewAsOf && <p role="status" className="rounded-md border border-sapphire/30 bg-sapphire/5 p-2 text-sm">
+    {viewAsOf && <p role="status" className="rounded-lg border border-sapphire/30 bg-sapphire/5 p-2 text-sm">
       {fillTemplate(t('Changes from {date}: the grid shows the limits that apply from that date. Until then the current limits stay in force.'), { date: viewAsOf })}
       {' '}<button type="button" className="text-sapphire underline" onClick={() => { setViewAsOf(null); void load(); }}>{t('Show current limits')}</button>
     </p>}

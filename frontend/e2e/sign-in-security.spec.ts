@@ -449,7 +449,7 @@ test.describe('Sign-in security: an everyday user turns it on and off', () => {
     await expect(submit).toBeDisabled();
     await page.getByLabel('Current 6-digit code from your authenticator app').fill('123456');
     await expect(submit).toBeDisabled();
-    await expect(submit).toHaveCSS('background-color', 'rgb(241, 245, 249)');
+    await expect(submit).toHaveCSS('background-color', 'rgb(226, 232, 240)');
     await page.getByRole('checkbox', { name: /only my password will protect this account/ }).check();
     // Enabled, it is the shared danger button: white on rose-700.
     await expect(submit).toHaveClass(/btn-danger/);

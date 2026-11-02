@@ -81,6 +81,7 @@ public class PayrollRunTypeGosiPeriodScopeTests
 
     private static BonusesController Bonuses(ZayraDbContext db, Guid tenantId)
     {
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // submitting/approving a batch needs someone else who could approve/release it
         var httpCtx = new DefaultHttpContext { User = Principal(tenantId, Guid.NewGuid(), "bonus-user") };
         var ctrl = new BonusesController(db, new _B2FixScope());
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };

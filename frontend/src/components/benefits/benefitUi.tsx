@@ -22,7 +22,7 @@ export const enrollmentStatus = (enrollment: Pick<BenefitEnrollment, 'status' | 
 export function StatusPill({ active, label }: { active: boolean; label?: string }) {
   const { t } = useLocale();
   return (
-    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${active
+    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${active
       ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[0.12] dark:text-emerald-300'
       : 'bg-slate-200 text-slate-600 dark:bg-white/[0.08] dark:text-slate-300'}`}>
       {t(label ?? (active ? 'Active' : 'Inactive'))}
