@@ -330,6 +330,34 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
+    public async Task An_existing_address_over_200_characters_is_preserved_but_a_changed_one_is_capped()
+    {
+        var w = await SeedAsync();
+        var longAddress = new string('a', 300);
+        await using (var db = fixture.CreateDb())
+        {
+            var loc = await db.Locations.IgnoreQueryFilters().SingleAsync(l => l.TenantId == w.TenantId && l.Code == "JED-L1");
+            loc.AddressLine1 = longAddress;
+            await db.SaveChangesAsync();
+        }
+        var body = await PrefillAsync(w, w.CompanyId);
+        var untouched = body with
+        {
+            Branches = body.Branches!.Select(b => b with { Locations = b.Locations!.Select(l => l with { RadiusMeters = 300m }).ToList() }).ToList(),
+        };
+        var plan = await DryRunAsync(w, untouched);
+        plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+
+        var edited = body with
+        {
+            Branches = body.Branches!.Select(b => b with { Locations = b.Locations!.Select(l => l with { Address = longAddress + "b" }).ToList() }).ToList(),
+        };
+        var rejected = await DryRunAsync(w, edited);
+        rejected.Ok.Should().BeFalse();
+        rejected.Problems.Should().Contain(p => p.Code == "address_too_long");
+    }
+
+    [Fact]
     public async Task Locations_cost_centres_and_the_company_weekend_are_edited_in_place()
     {
         var w = await SeedAsync();
