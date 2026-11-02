@@ -1240,7 +1240,10 @@ jobs:
   # only the connection-string secret (env stays Development so no JWT/SeedAdmin prod fail-fast).
   migrate-backend:
     name: Apply DB Migrations (deploy gate)
-    runs-on: ubuntu-latest
+    # `dotnet ef database update` compiles the whole backend (EF migrations are ~93% of 4M lines, peak
+    # ~16GB). On the 16GB ubuntu-latest runner this lost the runner mid-compile on the 2026-11-02 deploy
+    # ("hosted runner lost communication"). Same fix as the other heavy jobs.
+    runs-on: kynex-32gb
     # chrome-security-gate added: it is the lane written to be un-fakeable (retries 0, forbidOnly,
     # positive controls), while browser-pilot is CI-safe by design and can go green against a dead
     # backend. Gating the deploy on the fakeable lane and not the strict one was backwards.
