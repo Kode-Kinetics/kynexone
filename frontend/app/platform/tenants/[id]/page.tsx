@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Building2,
@@ -32,7 +32,12 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   risk_scores:          'Churn and burnout risk indicators (advisory)',
   wps_export:           'GCC WPS payroll file generation',
   eosb_calc:            'End-of-service benefit computation',
-  qiwa_integration:     'Saudi Arabia Qiwa platform sync',
+  qiwa_integration:     'Saudization (Nitaqat) banding, ratios and Qiwa reporting',
+  gosi:                 'Saudi social-insurance registration, contribution calculation and monthly filing',
+  timesheets:           'Employee timesheets, project hours and approvals',
+  benefits:             'Benefit plans, eligibility and employee enrolment',
+  hr_letters:           'Employment letters, salary certificates and the issued-letter register',
+  payslip_template_designer: 'Customise payslip layout and wording (payslips still issue from the default template when off)',
   hijri_calendar:       'Show Hijri dates alongside Gregorian',
   mobile_app:           'Enable mobile API endpoints',
   // Opt-in rollout features: OFF for this tenant until switched on here.
@@ -398,39 +403,63 @@ function OverviewTab({ tenant, onRefresh, onDelete }: { tenant: PlatformTenantDe
 
 type FeatureFlagDef = { key: string; label: string; category: string; defaultEnabled?: boolean };
 
-function rolloutConfirmation(label: string, key: string, enabling: boolean): string {
-  const consequence = key === 'release_a'
-    ? (enabling
-      ? ' The older Benefits editors hand over to Benefits by grade, loans apply the Article 92 consent check, and contract renewal cases start being scheduled.'
-      : ' Grade entitlements, packages, deductions and renewal cases are hidden; existing records are kept.')
-    : (enabling ? ' Its menus and screens appear for this tenant\'s users who hold its permissions.' : ' Its menus and screens are hidden; existing records are kept.');
-  return `${enabling ? 'Switch on' : 'Switch off'} ${label} for this tenant?${consequence}`;
-}
+// Obligations a Saudi employer carries whether or not the system helps: switching one off here is allowed (it is the
+// platform's call) but asked about twice, because the tenant's filings then have to happen somewhere else.
+const STATUTORY_FEATURES = new Set(['gosi', 'qiwa_integration', 'compliance']);
 
 function FeaturesTab({ tenant, onRefresh, featureFlags }: {
   tenant: PlatformTenantDetail;
   onRefresh: () => void;
   featureFlags: FeatureFlagDef[];
 }) {
-  const [toggling, setToggling] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const flagMap = Object.fromEntries(tenant.featureFlags.map(f => [f.featureKey, f.isEnabled]));
 
-  async function toggle(key: string, current: boolean) {
-    const flag = featureFlags.find(f => f.key === key);
-    // A rollout feature changes what this live tenant's people see (and Release A changes how pay records are
-    // written), so it is never flipped by a stray click.
-    if (flag?.defaultEnabled === false && !window.confirm(rolloutConfirmation(flag.label, key, !current))) return;
-    setToggling(key);
-    try {
-      await platformApi.setFeature(tenant.id, key, !current);
-      setMsg({ text: `${flag?.label ?? key} ${!current ? 'enabled' : 'disabled'}.`, ok: true });
-      onRefresh();
-    } catch { setMsg({ text: `Failed to update ${key}.`, ok: false }); }
-    finally { setToggling(null); }
+  // What the tenant has today. No row means the default: modules are on, opt-in rollout features are off.
+  const saved = useMemo(() => {
+    const rows = Object.fromEntries(tenant.featureFlags.map(f => [f.featureKey, f.isEnabled]));
+    return Object.fromEntries(featureFlags.map(f => [f.key, rows[f.key] ?? f.defaultEnabled ?? false])) as Record<string, boolean>;
+  }, [tenant.featureFlags, featureFlags]);
+
+  const [draft, setDraft] = useState<Record<string, boolean>>(saved);
+  useEffect(() => { setDraft(saved); }, [saved]);
+
+  const changed = featureFlags.filter(f => draft[f.key] !== saved[f.key]);
+  const categories = Array.from(new Set(featureFlags.map(f => f.category)));
+
+  function setMany(keys: string[], value: boolean) {
+    setDraft(d => ({ ...d, ...Object.fromEntries(keys.map(k => [k, value])) }));
   }
 
-  const categories = Array.from(new Set(featureFlags.map(f => f.category)));
+  function confirmText(): string {
+    const on = changed.filter(f => draft[f.key]).map(f => f.label);
+    const off = changed.filter(f => !draft[f.key]).map(f => f.label);
+    const lines: string[] = [];
+    if (on.length) lines.push(`Switch on: ${on.join(', ')}`);
+    if (off.length) lines.push(`Switch off: ${off.join(', ')}`);
+    const statutoryOff = changed.filter(f => !draft[f.key] && STATUTORY_FEATURES.has(f.key)).map(f => f.label);
+    if (statutoryOff.length)
+      lines.push(`\n${statutoryOff.join(', ')} ${statutoryOff.length === 1 ? 'is a' : 'are'} statutory obligation${statutoryOff.length === 1 ? '' : 's'} for Saudi employers. Switching off hides the screens; the filings then have to be made elsewhere.`);
+    if (changed.some(f => f.defaultEnabled === false))
+      lines.push('\nRollout features change what this live tenant\'s people see. Existing records are kept.');
+    return `Save these changes for ${tenant.name}?\n\n${lines.join('\n')}`;
+  }
+
+  async function save() {
+    if (changed.length === 0 || !window.confirm(confirmText())) return;
+    setSaving(true); setMsg(null);
+    const failed: string[] = [];
+    for (const f of changed) {
+      try { await platformApi.setFeature(tenant.id, f.key, draft[f.key]); }
+      catch { failed.push(f.label); }
+    }
+    setSaving(false);
+    const done = changed.length - failed.length;
+    setMsg(failed.length === 0
+      ? { text: `${done} feature${done === 1 ? '' : 's'} updated.`, ok: true }
+      : { text: `${done} updated; failed: ${failed.join(', ')}.`, ok: false });
+    onRefresh();
+  }
 
   if (featureFlags.length === 0) {
     return (
@@ -441,46 +470,63 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 pb-20">
       {msg && (
         <div className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-sm ${msg.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'}`}>
           {msg.text}
           <button type="button" title="Dismiss" onClick={() => setMsg(null)}><X className="h-3 w-3" /></button>
         </div>
       )}
-      {categories.map(cat => (
-        <div key={cat}>
-          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest mb-2">{cat}</p>
-          <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
-            {featureFlags.filter(f => f.category === cat).map(f => {
-              // No row means the default: modules are on, opt-in rollout features are off.
-              const enabled = flagMap[f.key] ?? f.defaultEnabled ?? false;
-              const description = FLAG_DESCRIPTIONS[f.key];
-              return (
-                <div key={f.key} className="flex items-center gap-4 px-5 py-3.5">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-white">{f.label}</p>
-                    {description && <p className="text-caption text-slate-500">{description}</p>}
-                  </div>
-                  <button
-                    type="button"
-                    title={`${enabled ? 'Disable' : 'Enable'} ${f.label}`}
-                    onClick={() => toggle(f.key, enabled)}
-                    disabled={toggling === f.key}
-                    role="switch"
-                    aria-checked={enabled ? 'true' : 'false'}
-                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none disabled:opacity-40
-                      ${enabled ? 'bg-sapphire' : 'bg-slate-700'}`}
-                  >
-                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform
-                      ${enabled ? 'translate-x-4 rtl:-translate-x-4' : 'translate-x-1 rtl:-translate-x-1'}`} />
-                  </button>
-                </div>
-              );
-            })}
+      {categories.map(cat => {
+        const inCat = featureFlags.filter(f => f.category === cat);
+        const keys = inCat.map(f => f.key);
+        return (
+          <div key={cat}>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">{cat}</p>
+              <div className="flex items-center gap-3 text-caption">
+                <button type="button" onClick={() => setMany(keys, true)} className="text-slate-500 hover:text-white transition-colors">Select all</button>
+                <button type="button" onClick={() => setMany(keys, false)} className="text-slate-500 hover:text-white transition-colors">Clear</button>
+              </div>
+            </div>
+            <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
+              {inCat.map(f => {
+                const description = FLAG_DESCRIPTIONS[f.key];
+                const dirty = draft[f.key] !== saved[f.key];
+                const id = `feature-${f.key}`;
+                return (
+                  <label key={f.key} htmlFor={id}
+                    className={`flex items-center gap-4 px-5 py-3.5 cursor-pointer transition-colors hover:bg-white/[0.02] ${dirty ? 'bg-sapphire/[0.06]' : ''}`}>
+                    <input id={id} type="checkbox" checked={draft[f.key] ?? false} disabled={saving}
+                      onChange={e => setDraft(d => ({ ...d, [f.key]: e.target.checked }))}
+                      className="h-4 w-4 shrink-0 rounded border-white/20 bg-white/[0.04] accent-sapphire cursor-pointer disabled:opacity-40" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white">
+                        {f.label}
+                        {STATUTORY_FEATURES.has(f.key) && <span className="ms-2 text-caption text-amber-400/80">statutory</span>}
+                        {dirty && <span className="ms-2 text-caption text-sapphire">{draft[f.key] ? 'will switch on' : 'will switch off'}</span>}
+                      </p>
+                      {description && <p className="text-caption text-slate-500">{description}</p>}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
           </div>
+        );
+      })}
+
+      {changed.length > 0 && (
+        <div className="fixed bottom-4 start-1/2 -translate-x-1/2 z-40 flex items-center gap-4 bg-[#0d1117] border border-white/10 rounded-xl shadow-e3 px-5 py-3" role="region" aria-label="Unsaved feature changes">
+          <span className="text-sm text-slate-300">{changed.length} unsaved change{changed.length === 1 ? '' : 's'}</span>
+          <button type="button" onClick={() => setDraft(saved)} disabled={saving}
+            className="text-sm text-slate-400 hover:text-white border border-white/10 rounded-lg px-4 py-1.5 transition-colors disabled:opacity-40">Discard</button>
+          <button type="button" onClick={save} disabled={saving}
+            className="text-sm font-semibold text-white bg-sapphire hover:bg-blue-500 rounded-lg px-5 py-1.5 transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
         </div>
-      ))}
+      )}
     </div>
   );
 }
@@ -802,6 +848,7 @@ export default function TenantDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState('');
+  const [deleteTyped, setDeleteTyped] = useState('');
   const [featureFlags, setFeatureFlags] = useState<FeatureFlagDef[]>([]);
 
   useEffect(() => {
@@ -892,14 +939,20 @@ export default function TenantDetailPage() {
                 <p className="text-xs text-slate-500">{tenant.name}</p>
               </div>
             </div>
-            <p className="text-xs text-slate-400">This will deactivate the tenant, cancel the subscription, and revoke all active sessions. This action is irreversible.</p>
+            <p className="text-xs text-slate-400">This signs everyone out, closes the workspace and cancels the subscription. The data is kept until it is purged.</p>
+            <label className="block space-y-1.5">
+              <span className="text-xs text-slate-500">Type <span className="font-mono text-slate-300">{tenant.slug}</span> to confirm</span>
+              <input value={deleteTyped} onChange={e => setDeleteTyped(e.target.value)} autoComplete="off" spellCheck={false}
+                aria-label={`Type ${tenant.slug} to confirm`}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-rose-500/60" />
+            </label>
             {deleteErr && <p className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{deleteErr}</p>}
             <div className="flex gap-3">
-              <button type="button" onClick={() => { setDeleteOpen(false); setDeleteErr(''); }}
+              <button type="button" onClick={() => { setDeleteOpen(false); setDeleteErr(''); setDeleteTyped(''); }}
                 className="flex-1 border border-white/10 text-slate-400 rounded-lg py-2 text-sm transition-colors">Cancel</button>
-              <button type="button" disabled={deleting} onClick={async () => {
+              <button type="button" disabled={deleting || deleteTyped !== tenant.slug} onClick={async () => {
                 setDeleting(true); setDeleteErr('');
-                try { await platformApi.deleteTenant(tenant.id); router.replace('/platform/tenants'); }
+                try { await platformApi.deleteTenant(tenant.id, tenant.slug); router.replace('/platform/tenants'); }
                 catch (e: unknown) {
                   const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
                   setDeleteErr(msg ?? 'Delete failed — you may need Owner role to perform this action.');

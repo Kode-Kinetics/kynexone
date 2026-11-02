@@ -489,6 +489,8 @@ export interface PlatformHealthStatus {
   checkedAtUtc: string;
 }
 
+export type TwoStepPolicy = 'Optional' | 'PrivilegedRoles' | 'Everyone';
+
 export interface TenantSecurityPolicy {
   tenantId: string;
   tenantName: string;
@@ -504,6 +506,10 @@ export interface TenantSecurityPolicy {
   sessionTimeoutMinutes: number;
   refreshTokenExpiryDays: number;
   allowMultipleSessions: boolean;
+  /** 'Optional' (each person chooses) | 'PrivilegedRoles' | 'Everyone'. */
+  mfaPolicy: TwoStepPolicy;
+  /** How long a trusted browser skips the code step: 0 (off) to 90 days. */
+  mfaTrustedDeviceDays: number;
   isCustomPolicy: boolean;
   updatedAtUtc?: string;
 }
@@ -711,8 +717,9 @@ export const platformApi = {
   updateLocalization: (tenantId: string, body: Partial<TenantLocalization>) =>
     platform.put<TenantLocalization>(`/api/platform/tenants/${tenantId}/localization`, body).then(r => r.data),
 
-  deleteTenant: (tenantId: string) =>
-    platform.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`).then(r => r.data),
+  /** Soft delete (Owner only). The server requires the tenant's slug as the typed confirmation. */
+  deleteTenant: (tenantId: string, slug: string) =>
+    platform.delete(`/api/platform/tenants/${tenantId}?confirm=${encodeURIComponent(slug)}`).then(r => r.data),
 
   // ── Soft-delete lifecycle ─────────────────────────────────────────────────
   restoreTenant: (tenantId: string) =>
@@ -855,6 +862,10 @@ export const platformApi = {
 
   updateTenantSecurityPolicy: (tenantId: string, body: Partial<TenantSecurityPolicy>) =>
     platform.put(`/api/platform/tenants/${tenantId}/security-policy`, body),
+
+  /** Who must use two-step sign-in and how long a trusted browser lasts. A reason is required to move to 'Optional'. */
+  updateTenantTwoStepPolicy: (tenantId: string, body: { mfaPolicy?: TwoStepPolicy; mfaTrustedDeviceDays?: number; reason?: string }) =>
+    platform.put<{ mfaPolicy: TwoStepPolicy; mfaTrustedDeviceDays: number }>(`/api/platform/tenants/${tenantId}/two-step-policy`, body).then(r => r.data),
 
   getHealth: () =>
     platform.get<PlatformHealthStatus>('/api/platform/health').then(r => r.data),

@@ -338,7 +338,7 @@ test.describe('Setup → Sign-in security: the two-step sign-in group', () => {
     await expect(group.getByTestId('two-step-optional-note')).toHaveCount(0);
     const days = group.getByLabel('Trusted browsers');
     await expect(days).toHaveValue('30');
-    await expect(days.locator('option')).toHaveText(['Off', '7 days', '14 days', '30 days (default)', '90 days']);
+    await expect(days.locator('option')).toHaveText(['Off', '7 days', '14 days', '30 days (default)', '60 days', '90 days']);
     await shot(page, 'tenant-admin-two-step-en', info.outputPath.bind(info));
 
     await everyone.check();

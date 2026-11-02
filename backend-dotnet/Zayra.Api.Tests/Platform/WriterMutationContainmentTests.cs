@@ -137,7 +137,7 @@ public sealed class WriterMutationContainmentTests : PlatformTestBase
         await db.SaveChangesAsync();
         var controller = CreateController(db);
 
-        (await controller.DeleteTenant(tenant.Id, "DELETE", CancellationToken.None))
+        (await controller.DeleteTenant(tenant.Id, tenant.Slug, CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
         (await controller.RestoreTenant(tenant.Id, CancellationToken.None)).Should().BeOfType<ConflictObjectResult>();
         (await controller.ReactivateTenant(tenant.Id, new TenantActionRequest("bypass attempt"), CancellationToken.None))
@@ -145,9 +145,11 @@ public sealed class WriterMutationContainmentTests : PlatformTestBase
         (await controller.BulkRestoreTenants(
             new BulkTenantActionRequest(new List<Guid> { tenant.Id }, "test"), CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
-        (await controller.BulkDeleteTenants(
-            new BulkDeleteTenantsRequest(new List<Guid> { tenant.Id }, "DELETE"), CancellationToken.None))
-            .Should().BeOfType<ConflictObjectResult>();
+        // Deleting what is already deleted is skipped, never repeated.
+        var bulk = await controller.BulkDeleteTenants(
+            new BulkDeleteTenantsRequest(new List<Guid> { tenant.Id }, "DELETE"), CancellationToken.None);
+        System.Text.Json.JsonSerializer.Serialize(bulk.Should().BeOfType<OkObjectResult>().Subject.Value)
+            .Should().Contain("\"succeeded\":0");
         (await controller.ApproveCompany(tenant.Id, company.Id, CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
 
