@@ -1113,6 +1113,11 @@ jobs:
             echo "E2E_EVOSTEL_PASSWORD=$(gen)"
           } >> "$GITHUB_ENV"
 
+      # The stack's backend image compiles the whole 4M-line backend inside Docker, which needs more than the
+      # runner's 16 GB; without swap that build thrashes for over an hour instead of the usual ~9 minutes.
+      - name: Add swap (the backend image build peaks near the runner's 16 GB)
+        run: ./scripts/ci/add-swap.sh
+
       - name: Start clean stack (EMPTY database — no seeders exist any more)
         env:
           # SEED_DEMO_DATA / SEED_ENTERPRISE_TEST_DATA are deliberately absent: the seeders they
