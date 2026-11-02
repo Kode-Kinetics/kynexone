@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { googleMapsUrl, isAppleMapsHost, isGoogleMapsHost, isInGcc, isOpenStreetMapHost, looksSwapped, parseLocationInput } from '../src/lib/mapLink';
+import { googleMapsUrl, isAppleMapsHost, isGoogleMapsHost, isInGcc, isOpenStreetMapHost, looksSwapped, parseLocationInput, addressQuery } from '../src/lib/mapLink';
 
 const at = (latitude: number, longitude: number, from: 'link' | 'text') => ({ kind: 'coordinates', latitude, longitude, from });
 
@@ -70,4 +70,16 @@ test('map hosts match exactly or as a real subdomain, never as a substring', () 
     'https://www.google.com.evil.com/maps/@24.7,46.6,15z', 'https://www.google.evil.com/maps?q=24.7,46.6', 'https://maps.apple.com.evil.com/?ll=24.7,46.6'])
     expect(parseLocationInput(link), link).toEqual({ kind: 'unreadable' });
   expect(parseLocationInput('https://www.openstreetmap.org/?mlat=24.7&mlon=46.6')).toEqual(at(24.7, 46.6, 'link'));
+});
+
+test('typed text is searched as an address; links and coordinates never are', () => {
+  expect(addressQuery('  Olaya   Street, Riyadh ')).toBe('Olaya Street, Riyadh');
+  expect(addressQuery('شارع العليا، الرياض')).toBe('شارع العليا، الرياض');
+  expect(addressQuery('Riyadh')).toBe('Riyadh');
+  // Too short, digits only, or a link we could not read: not an address.
+  expect(addressQuery('ab')).toBeNull();
+  expect(addressQuery('24.7136, 46.6753')).toBeNull();
+  expect(addressQuery('https://example.com/not-a-map')).toBeNull();
+  expect(addressQuery('maps.app.goo.gl/AbC123')).toBeNull();
+  expect(addressQuery('x'.repeat(201))).toBeNull();
 });

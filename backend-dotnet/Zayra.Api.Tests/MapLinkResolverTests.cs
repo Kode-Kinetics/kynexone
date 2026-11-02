@@ -187,6 +187,6 @@ public class MapLinkResolverTests
     {
         var http = new DefaultHttpContext();
         if (withTenant) http.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("tenant_id", Guid.NewGuid().ToString())], "Test"));
-        return new GeoController(Make(answer).Resolver) { ControllerContext = new ControllerContext { HttpContext = http } };
+        return new GeoController(Make(answer).Resolver, new AddressSearcher(new Factory(new FakeHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)))))) { ControllerContext = new ControllerContext { HttpContext = http } };
     }
 }
