@@ -15,7 +15,8 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    # Only the C# analysis compiles the 4M-line backend; JavaScript stays on the free runner.
+    runs-on: ${{ matrix.language == 'csharp' && 'kynex-32gb' || 'ubuntu-latest' }}
     permissions:
       security-events: write
       actions: read
