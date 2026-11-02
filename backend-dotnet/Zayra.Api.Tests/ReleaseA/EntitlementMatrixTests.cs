@@ -362,9 +362,11 @@ public class EntitlementMatrixTests
         h.Db.BenefitPlans.Add(plan);
         await h.Db.SaveChangesAsync();
         var line = new GradePayScaleComponentRequest("HOUSING", "Housing");
+        // An eligibility rule starts in the future, so the date moves with the clock instead of expiring.
+        var ruleStart = DateOnly.FromDateTime(DateTime.UtcNow).AddMonths(1);
 
         Error(await grades.SetPayScale(h.G[1].Id, [line], default)).Should().Be("moved_to_benefits_by_grade");
-        Error(await benefits.AddEligibility(plan.Id, new BenefitEligibilityRequest(null, h.G[1].Id, Nov1, null), default)).Should().Be("moved_to_benefits_by_grade");
+        Error(await benefits.AddEligibility(plan.Id, new BenefitEligibilityRequest(null, h.G[1].Id, ruleStart, null), default)).Should().Be("moved_to_benefits_by_grade");
         (await h.Db.GradePayScaleComponents.CountAsync()).Should().Be(0);
         (await h.Db.BenefitEligibilityRules.CountAsync()).Should().Be(0);
 
@@ -372,7 +374,7 @@ public class EntitlementMatrixTests
         h.Db.TenantFeatureFlags.Remove(await h.Db.TenantFeatureFlags.SingleAsync());
         await h.Db.SaveChangesAsync();
         (await grades.SetPayScale(h.G[1].Id, [line], default)).Should().BeOfType<OkObjectResult>();
-        (await benefits.AddEligibility(plan.Id, new BenefitEligibilityRequest(null, h.G[1].Id, Nov1, null), default)).Should().BeOfType<OkObjectResult>();
+        (await benefits.AddEligibility(plan.Id, new BenefitEligibilityRequest(null, h.G[1].Id, ruleStart, null), default)).Should().BeOfType<OkObjectResult>();
     }
 
     [Fact]
