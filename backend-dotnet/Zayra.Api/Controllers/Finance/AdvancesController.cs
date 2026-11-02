@@ -54,29 +54,43 @@ public class AdvancesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        if (req.MaxPercentageOfSalary is < 0 or > 100 || decimal.Round(req.MaxPercentageOfSalary, 2) != req.MaxPercentageOfSalary
+            || req.MaxAdvancesPerYear is < 0 or > 100 || req.MinServiceMonths is < 0 or > 600
+            || req.CooldownMonths is < 0 or > 600 || req.MaxInstallments is < 1 or > MaxInstallmentsWithoutPolicy
+            || string.IsNullOrWhiteSpace(req.PolicyName) || req.PolicyName.Length > 200)
+            return BadRequest($"Policy values are out of range: salary percentage 0-100, installments 1-{MaxInstallmentsWithoutPolicy}, counts and months non-negative.");
         var p = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
+        var before = p == null ? null : JsonSerializer.Serialize(PolicyValues(p));
         if (p != null)
         {
             p.PolicyName = req.PolicyName; p.MaxPercentageOfSalary = req.MaxPercentageOfSalary;
             p.MaxAdvancesPerYear = req.MaxAdvancesPerYear; p.MinServiceMonths = req.MinServiceMonths;
             p.AllowInstallments = req.AllowInstallments; p.MaxInstallments = req.MaxInstallments;
             p.CooldownMonths = req.CooldownMonths; p.RequiresApproval = req.RequiresApproval;
-            await _db.SaveChangesAsync(ct);
-            // SAFE-SERIALIZATION: AdvancePolicy is tenant config (percentage caps, cooldowns) — no personal PII.
-            return Ok(p);
         }
-        p = new AdvancePolicy
+        else
         {
-            TenantId = tid, PolicyName = req.PolicyName, MaxPercentageOfSalary = req.MaxPercentageOfSalary,
-            MaxAdvancesPerYear = req.MaxAdvancesPerYear, MinServiceMonths = req.MinServiceMonths,
-            AllowInstallments = req.AllowInstallments, MaxInstallments = req.MaxInstallments,
-            CooldownMonths = req.CooldownMonths, RequiresApproval = req.RequiresApproval, CreatedBy = uid,
-        };
-        _db.AdvancePolicies.Add(p);
+            p = new AdvancePolicy
+            {
+                TenantId = tid, PolicyName = req.PolicyName, MaxPercentageOfSalary = req.MaxPercentageOfSalary,
+                MaxAdvancesPerYear = req.MaxAdvancesPerYear, MinServiceMonths = req.MinServiceMonths,
+                AllowInstallments = req.AllowInstallments, MaxInstallments = req.MaxInstallments,
+                CooldownMonths = req.CooldownMonths, RequiresApproval = req.RequiresApproval, CreatedBy = uid,
+            };
+            _db.AdvancePolicies.Add(p);
+        }
         await _db.SaveChangesAsync(ct);
+        // The audit row is keyed on the policy id (AdvanceId carries no foreign key).
+        await WriteAdvanceAudit(tid, uid, p.Id, "AdvancePolicyChanged", before, JsonSerializer.Serialize(PolicyValues(p)), ct);
         // SAFE-SERIALIZATION: AdvancePolicy is tenant config (percentage caps, cooldowns) — no personal PII.
         return Ok(p);
     }
+
+    private static object PolicyValues(AdvancePolicy p) => new
+    {
+        p.PolicyName, p.MaxPercentageOfSalary, p.MaxAdvancesPerYear, p.MinServiceMonths,
+        p.AllowInstallments, p.MaxInstallments, p.CooldownMonths, p.RequiresApproval,
+    };
 
     // ── Salary Advances ───────────────────────────────────────────────────────
 
@@ -124,8 +138,17 @@ public class AdvancesController : ControllerBase
             return Forbid();
         var installments = await _db.AdvanceInstallments.Where(x => x.AdvanceId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.AdvanceApprovals.Where(x => x.AdvanceId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
-        var auditLogs = await _db.AdvanceAuditLogs.Where(x => x.AdvanceId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var glEntries = await _db.FinanceGlEntries.Where(x => x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct);
+        var auditLogs = await _db.AdvanceAuditLogs.AsNoTracking().Where(x => x.TenantId == tid && x.AdvanceId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        if (!IsHrActor() && !IsFinanceActor())
+        {
+            // As LoansController.GetLoan: salary-bearing snapshots are not a team-manager entitlement. Redact a
+            // detached view (AsNoTracking), never the stored audit evidence.
+            foreach (var log in auditLogs) { log.OldValuesJson = string.Empty; log.NewValuesJson = string.Empty; }
+        }
+        // The journal is a Finance view; other readers get the advance and its schedule only.
+        var glEntries = IsFinanceActor()
+            ? await _db.FinanceGlEntries.Where(x => x.TenantId == tid && x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct)
+            : new List<FinanceGlEntry>();
         return Ok(new { advance = SalaryAdvanceDto.Project(adv), installments, approvals, auditLogs, glEntries });
     }
 
@@ -134,8 +157,8 @@ public class AdvancesController : ControllerBase
     /// so two simultaneous requests for one employee could otherwise both pass the policy.</summary>
     private const string AdvanceCreateLockScope = "finance.advance-create";
 
-    /// <summary>Installment ceiling when the tenant has no active advance policy: the loan module's sanity bound.</summary>
-    private const int MaxInstallmentsWithoutPolicy = 600;
+    /// <summary>Hard installment ceiling for a salary advance (also the ceiling of any policy's MaxInstallments).</summary>
+    private const int MaxInstallmentsWithoutPolicy = 60;
 
     [HttpPost]
     [HasPermission("loans.self", "loans.write")]
@@ -308,7 +331,10 @@ public class AdvancesController : ControllerBase
 
         var oldStatus = adv.Status;
         adv.Status = "Active"; adv.ApprovedAmount = req.ApprovedAmount;
-        adv.InstallmentAmount = req.Installments > 0 ? req.ApprovedAmount / req.Installments : req.ApprovedAmount;
+        // Whole cents per installment; GenerateAdvanceInstallments puts the remainder in the last one so the
+        // schedule sums exactly to the principal.
+        adv.InstallmentAmount = req.Installments > 0
+            ? decimal.Round(req.ApprovedAmount / req.Installments, 2, MidpointRounding.ToZero) : req.ApprovedAmount;
         adv.Installments = req.Installments; adv.OutstandingBalance = req.ApprovedAmount;
         adv.RepaymentStartDate = req.RepaymentStartDate; adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
 
@@ -428,7 +454,8 @@ public class AdvancesController : ControllerBase
             GeneratedAtUtc = DateTime.UtcNow,
             TotalAdvances = advances.Count,
             ActiveAdvances = advances.Count(x => x.Status == "Active"),
-            SettledAdvances = advances.Count(x => x.Status == "Settled"),
+            // Payroll closes a fully deducted advance as "Closed"; a manual settlement used "Settled". Both are settled.
+            SettledAdvances = advances.Count(x => x.Status is "Settled" or "Closed"),
             PendingAdvances = advances.Count(x => x.Status == "Pending"),
             TotalDisbursed = advances.Sum(x => x.ApprovedAmount),
             TotalOutstanding = advances.Sum(x => x.OutstandingBalance),
@@ -447,12 +474,15 @@ public class AdvancesController : ControllerBase
     private void GenerateAdvanceInstallments(Guid tid, SalaryAdvance adv, DateOnly? startDate)
     {
         var start = startDate ?? DateOnly.FromDateTime(DateTime.UtcNow.AddMonths(1));
+        var scheduled = 0m;
         for (int i = 1; i <= adv.Installments; i++)
         {
+            var amount = i == adv.Installments ? adv.ApprovedAmount - scheduled : adv.InstallmentAmount;
+            scheduled += amount;
             _db.AdvanceInstallments.Add(new AdvanceInstallment
             {
                 TenantId = tid, AdvanceId = adv.Id, InstallmentNumber = i,
-                DueDate = start.AddMonths(i - 1), AmountDue = adv.InstallmentAmount, Status = "Pending",
+                DueDate = start.AddMonths(i - 1), AmountDue = amount, Status = "Pending",
             });
         }
     }

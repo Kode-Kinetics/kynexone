@@ -13,6 +13,7 @@ import {
   HEALTHY_AFTER_MS,
   beginLaunch,
   markHealthy,
+  LaunchFailureLatch,
   parseLaunchRecord,
   type LaunchRecord,
 } from './launchHealth';
@@ -20,12 +21,12 @@ import {
 const KEY = 'kynexone_launch_health';
 
 let current: LaunchRecord | null = null;
-let broken = false;
+const failureLatch = new LaunchFailureLatch();
 let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** The ErrorBoundary calls this: a launch that hit a render failure must not be marked healthy. */
 export function noteLaunchFailure(): void {
-  broken = true;
+  failureLatch.noteFailure();
   if (timer) clearTimeout(timer);
   timer = null;
 }
@@ -48,15 +49,17 @@ export async function startLaunchHealthCheck(): Promise<void> {
   const previous = parseLaunchRecord(await appStorage.get<unknown>(KEY));
   const decision = beginLaunch(previous, Updates.isEmbeddedLaunch ? null : Updates.updateId);
   current = decision.record;
-  broken = false;
+  // A render may have failed before the async storage read completed. Do not erase that failure.
   await appStorage.set(KEY, current);
 
-  timer = setTimeout(() => {
-    timer = null;
-    if (broken || !current) return;
-    current = markHealthy(current);
-    void appStorage.set(KEY, current);
-  }, HEALTHY_AFTER_MS);
+  if (!failureLatch.hasFailed) {
+    timer = setTimeout(() => {
+      timer = null;
+      if (failureLatch.hasFailed || !current) return;
+      current = markHealthy(current);
+      void appStorage.set(KEY, current);
+    }, HEALTHY_AFTER_MS);
+  }
 
   if (decision.crashLoop) {
     reportError(new Error('OTA update failed to start healthily'), {

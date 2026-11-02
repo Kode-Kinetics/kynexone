@@ -92,10 +92,11 @@ public class AnalyticsController : ControllerBase
             lateToday = await attendance.CountAsync(x => x.WorkDate == today && x.LateMinutes > 0, ct);
         }
 
-        // Overtime
+        // Overtime. Pending is every "Pending*" status (PendingManager, PendingHR) - the same rule the module's own
+        // summary uses; the literal "Pending" matched nothing overtime ever writes.
         int? pendingOT = null;
         if (Shows("overtime", ["pendingOT"], DataDomains.Overtime))
-            pendingOT = await _db.OvertimeRequests.CountAsync(x => x.TenantId == tid && x.Status == "Pending", ct);
+            pendingOT = await _db.OvertimeRequests.CountAsync(x => x.TenantId == tid && x.Status.StartsWith("Pending"), ct);
 
         // Payroll: the latest pay period's runs across the caller's companies, never a voided or draft run,
         // and never a total added up across currencies (PayrollReporting).

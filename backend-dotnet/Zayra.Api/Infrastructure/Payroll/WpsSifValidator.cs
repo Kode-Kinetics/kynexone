@@ -90,6 +90,40 @@ public static class WpsSifValidator
         };
 
     /// <summary>
+    /// PAY-02 — employer-side facts a wage file must carry. A blank or all-zero establishment id and (for
+    /// formats whose header carries it) a blank or checksum-invalid employer IBAN refuse the file: a
+    /// placeholder printed as an establishment is rejected by the bank at best and misattributes the wages
+    /// at worst. Pure: the caller supplies the values it resolved.
+    /// </summary>
+    public static IReadOnlyList<WpsValidationIssue> ValidateEmployer(
+        string? establishmentId, string? employerIban, bool employerIbanRequired)
+    {
+        var issues = new List<WpsValidationIssue>();
+        var id = establishmentId?.Trim() ?? string.Empty;
+        if (id.Length == 0)
+            issues.Add(EmployerIssue("EMPLOYER_ID_MISSING",
+                "The WPS employer / establishment ID is not set. Enter it before creating a wage file; no placeholder is used."));
+        else if (id.Where(char.IsLetterOrDigit).All(ch => ch == '0'))
+            issues.Add(EmployerIssue("EMPLOYER_ID_PLACEHOLDER",
+                $"The WPS employer / establishment ID '{id}' is a placeholder, not an establishment. Enter the real ID before creating a wage file."));
+
+        if (employerIbanRequired)
+        {
+            var iban = employerIban?.Trim() ?? string.Empty;
+            if (iban.Length == 0)
+                issues.Add(EmployerIssue("EMPLOYER_IBAN_MISSING",
+                    "The employer's debit-account IBAN is not set. This wage file format carries it in its header and the bank rejects a file without it."));
+            else if (!IbanValidator.IsValid(iban))
+                issues.Add(EmployerIssue("EMPLOYER_IBAN_INVALID",
+                    $"The employer IBAN is not a valid IBAN ({IbanValidator.InvalidReason(iban)})."));
+        }
+        return issues;
+    }
+
+    private static WpsValidationIssue EmployerIssue(string code, string message) =>
+        new(code, message, null, null, WpsValidationScope.Run, true);
+
+    /// <summary>
     /// Validates the payroll run + its slips + employee profiles + employee master data
     /// and returns a full validation result.
     ///

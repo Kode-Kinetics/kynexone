@@ -107,6 +107,100 @@ public class AdvancePayrollDeductionTests
         installments.Skip(1).Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m);
     }
 
+    // The schedule rounds each installment DOWN to cents and puts the remainder in the LAST row, so the payroll
+    // deduction must recover that remainder with the final installment: no stray balance, no extra deduction.
+    [Theory]
+    [InlineData(100, 6)]   // 16.66 x 5 + 16.70
+    [InlineData(100, 3)]   // 33.33 x 2 + 33.34
+    [InlineData(2000, 4)]  // evenly divisible: 500 x 4, unchanged
+    [InlineData(100, 1)]   // a one-installment advance
+    public async Task TheFinalInstallment_RecoversTheCentRemainder_SoTheAdvanceClosesAtExactlyZero(int principal, int installments)
+    {
+        var conn = new SqliteConnection("DataSource=:memory:");
+        conn.Open();
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseSqlite(conn).Options);
+        db.Database.EnsureCreated();
+
+        var now = DateTime.UtcNow;
+        var firstMonth = new DateOnly(now.Year, now.Month, 1);
+        var tenantId = Guid.NewGuid();
+        var company = new Company
+        {
+            TenantId = tenantId, LegalNameEn = "Deduction Co", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+            IsActive = true, DefaultCurrency = "SAR",
+        };
+        var structure = new SalaryStructure
+        {
+            TenantId = tenantId, Code = "BASE", Name = "Base", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        };
+        db.AddRange(company, structure);
+        await db.SaveChangesAsync();
+        var emp = new Employee
+        {
+            TenantId = tenantId, CompanyId = company.Id, EmployeeCode = "D002", FullName = "Reem Al-Harbi",
+            Status = "Active", JoiningDate = new DateTime(2022, 3, 1), WorkEmail = "reem@deduction.test",
+            Nationality = "SAU", ContractType = "Indefinite",
+        };
+        db.Employees.Add(emp);
+        await db.SaveChangesAsync();
+        db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, SalaryStructureId = structure.Id, Currency = "SAR",
+            BasicSalary = 12_000m, HousingAllowance = 3_000m, TransportAllowance = 800m,
+            EffectiveDate = new DateOnly(2025, 1, 1), IsActive = true,
+        });
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
+        {
+            TenantId = tenantId, EmployeeId = emp.Id, Iban = "SA4420000001234567891234", MolId = "MOL-D002", SalaryCurrency = "SAR",
+        });
+        db.AdvancePolicies.Add(new AdvancePolicy
+        {
+            TenantId = tenantId, PolicyName = "Standard", MaxPercentageOfSalary = 50, MaxAdvancesPerYear = 2,
+            MinServiceMonths = 6, AllowInstallments = true, MaxInstallments = 6, CooldownMonths = 3, RequiresApproval = true, IsActive = true,
+        });
+        var runs = new List<PayrollRun>();
+        for (var i = 0; i < installments; i++)
+        {
+            var month = firstMonth.AddMonths(i);
+            runs.Add(new PayrollRun
+            {
+                TenantId = tenantId, CompanyId = company.Id, Year = month.Year, Month = month.Month, Status = "Draft", CreatedByUserId = PayrollMaker,
+            });
+        }
+        db.PayrollRuns.AddRange(runs);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Advances(db, tenantId, Requester).Create(
+            new CreateAdvanceRequest(emp.PublicId, emp.FullName, principal, installments == 1 ? "OneTime" : "Installments", installments, firstMonth, "fees", emp.Id),
+            CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var advanceId = (await db.SalaryAdvances.AsNoTracking().SingleAsync()).Id;
+        (await Advances(db, tenantId, Approver).Approve(
+            advanceId, new AdvanceApproveRequest(principal, installments, firstMonth), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var scheduleTotal = (await db.AdvanceInstallments.AsNoTracking().Where(x => x.AdvanceId == advanceId).ToListAsync()).Sum(x => x.AmountDue);
+        scheduleTotal.Should().Be(principal, "the schedule itself sums exactly to the principal");
+
+        foreach (var run in runs)
+        {
+            (await Payroll(db, tenantId).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+            db.ChangeTracker.Clear();
+        }
+
+        var adv = await db.SalaryAdvances.AsNoTracking().SingleAsync(x => x.Id == advanceId);
+        adv.TotalRepaid.Should().Be(principal, "exactly the principal was withheld across the scheduled deductions");
+        adv.OutstandingBalance.Should().Be(0m, "no cent is left for an extra deduction");
+        adv.Status.Should().Be("Closed");
+
+        var rows = await db.AdvanceInstallments.AsNoTracking().Where(x => x.AdvanceId == advanceId).OrderBy(x => x.InstallmentNumber).ToListAsync();
+        rows.Should().OnlyContain(i => i.Status == "Paid");
+        rows.Sum(i => i.AmountPaid).Should().Be(principal);
+        rows.Should().OnlyContain(i => i.AmountPaid == i.AmountDue, "each row recovers exactly what the schedule says is due");
+    }
+
     private static AdvancesController Advances(ZayraDbContext db, Guid tenantId, Guid userId) => new(db, new _DedScope())
     {
         ControllerContext = new ControllerContext

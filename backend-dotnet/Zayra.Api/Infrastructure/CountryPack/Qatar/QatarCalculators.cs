@@ -91,6 +91,9 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
     private readonly IStatutoryRuleReader _rules;
     public QatarEndOfServiceCalculator(IStatutoryRuleReader rules) => _rules = rules;
 
+    internal static decimal ServiceYears(DateOnly start, DateOnly end)
+        => (end.DayNumber - start.DayNumber + 1) / 365m;   // PAY-01: last day of service is INCLUSIVE
+
     public async Task<EndOfServiceResult> CalculateAsync(
         EndOfServiceInput input, CancellationToken ct = default)
     {
@@ -100,8 +103,7 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
         decimal dailyRate = basic / 30m;
 
         var notices = new List<string>();
-        int totalDays = input.ServiceEndDate.DayNumber - input.ServiceStartDate.DayNumber;
-        decimal serviceYears = totalDays / 365m;
+        decimal serviceYears = ServiceYears(input.ServiceStartDate, input.ServiceEndDate);
 
         // ── S1/A8: unpaid leave and the service period ────────────────────────────────────────────
         // [CONF] Qatar turns on "continuous service" with no express exclusion like UAE Art. 51, so the
