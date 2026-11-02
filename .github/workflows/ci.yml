@@ -73,6 +73,10 @@ jobs:
           cache-dependency-path: backend-dotnet/**/*.csproj
       - name: Restore dependencies
         run: dotnet restore backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj
+      # The backend test jobs reuse this build, and compiling Zayra.Api plus its tests peaks near the runner's 16 GB.
+      - name: Add swap (the backend compile peaks near the runner's 16 GB)
+        run: ./scripts/ci/add-swap.sh
+
       - name: Build with periodic resource evidence
         run: python3 scripts/ci/run-with-resource-snapshots.py dotnet build backend-dotnet/Zayra.Api.Tests/Zayra.Api.Tests.csproj --no-restore -c Release
       - name: Package exact-checkout Release outputs
