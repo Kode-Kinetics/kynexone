@@ -17,7 +17,28 @@ namespace Zayra.Api.Tests.Security;
 
 public sealed partial class EmployeeAccessTests
 {
-    private async Task<int> HireWithPayAsync(World w, Guid creator, int seed, Guid? companyId = null)
+    /// <summary>
+    /// A salaried hire is refused up front when nobody else could approve it (the second-approver guard), so a dead end can only
+    /// arise afterwards. These tests build that state the way it really happens: a second approver exists while the hire is
+    /// created, then loses the right (deactivated straight in the database, so no hook runs and the tests decide when to sync).
+    /// </summary>
+    private async Task<T> WithTransientApproverAsync<T>(World w, Func<Task<T>> create)
+    {
+        var approver = await AddUserAsync(w, $"transient.{Guid.NewGuid():N}@{w.Domain}", ["Payroll Approver"], true, staff: true, name: "Transient Approver");
+        try { return await create(); }
+        finally
+        {
+            await using var db = _fx.CreateDb();
+            var user = await db.Users.IgnoreQueryFilters().SingleAsync(u => u.Id == approver);
+            user.IsActive = false;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    private Task<int> HireWithPayAsync(World w, Guid creator, int seed, Guid? companyId = null) =>
+        WithTransientApproverAsync(w, () => HireWithPayCoreAsync(w, creator, seed, companyId));
+
+    private async Task<int> HireWithPayCoreAsync(World w, Guid creator, int seed, Guid? companyId)
     {
         await using var db = _fx.CreateDb();
         var request = Hire($"Dead End Person {seed}", $"deadend.{seed}.{Guid.NewGuid():N}@{w.Domain}", companyId ?? w.CompanyId) with {
@@ -158,14 +179,45 @@ public sealed partial class EmployeeAccessTests
         var reviewer = await AddUserAsync(w, $"fin.{Guid.NewGuid():N}@{w.Domain}", ["Payroll Approver"], true, staff: true);
         await using (var db = _fx.CreateDb())
         {
-            var claims = new List<Claim> { new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, reviewer.ToString()), new("permission", "payroll.approve") };
-            claims.AddRange(EntityScopeClaims.Build(EntityScopeDescriptor.Group, Array.Empty<EntityAccessGrant>()));
-            var c = new PayApprovalsController(db, new AuditService(db)) { ControllerContext = new() { HttpContext = new DefaultHttpContext {
-                User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } } };
+            var c = PayController(db, w, reviewer);
             var detail = (OkObjectResult)await c.Detail(id, default);
             var fp = System.Text.Json.JsonSerializer.SerializeToElement(detail.Value).GetProperty("fingerprint").GetString()!;
             (await c.Decide(id, new(fp, "approve", "Checked fixture evidence"), default)).Should().BeOfType<OkObjectResult>();
         }
         (await DeadEndNoticesAsync(w)).Should().OnlyContain(n => n.Status == PayApprovalDeadEnds.ResolvedStatus);
+    }
+
+    [Fact]
+    public async Task DeadEnd_ZeroResultFromAPartialWindow_DoesNotResolveTheNotice_AndContinuesPastTheWindow()
+    {
+        // Package A can be approved by the one reviewer; package B is that reviewer's own pay, so they cannot.
+        // With a window of one package the first read sees only A: zero stranded, but more left. That is not proof of resolution.
+        var w = await SeedAsync();
+        var reviewer = await AddUserAsync(w, $"fin.{Guid.NewGuid():N}@{w.Domain}", ["Payroll Approver"], true, staff: true);
+        await HireWithPayAsync(w, w.AdminId, 71);
+        var b = await HireWithPayAsync(w, w.AdminId, 72);
+        await UpdateEmployeeAsync(b, e => e.UserAccountId = reviewer);   // B is the reviewer's own pay: they can never approve it
+        await using (var dbg = _fx.CreateDb())
+        {
+            var all = await PayApprovalDeadEnds.EvaluateCompanyAsync(dbg, w.TenantId, w.CompanyId, default);
+            all.StrandedEmployeeIds.Should().Equal(new[] { b }, $"pending={all.PendingCount}");
+        }
+        await SyncAsync(w);
+        (await DeadEndNoticesAsync(w)).Should().Contain(n => n.Status != PayApprovalDeadEnds.ResolvedStatus);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var first = await PayApprovalDeadEnds.EvaluateCompanyAsync(db, w.TenantId, w.CompanyId, default, null, 0, 1);
+            first.StrandedCount.Should().Be(0);
+            first.HasMore.Should().BeTrue();
+            first.NextAfterEmployeeId.Should().NotBeNull();
+            var next = await PayApprovalDeadEnds.EvaluateCompanyAsync(db, w.TenantId, w.CompanyId, default, null, first.NextAfterEmployeeId!.Value, 1);
+            next.StrandedEmployeeIds.Should().Equal(b);
+        }
+
+        await using (var db = _fx.CreateDb())
+            await PayApprovalDeadEnds.SyncTaskAsync(db, w.TenantId, w.CompanyId, w.AdminId, "sweep", Ctx(w.AdminId, w.TenantId), null, default, null, 1);
+        (await DeadEndNoticesAsync(w)).Should().Contain(n => n.Status != PayApprovalDeadEnds.ResolvedStatus, "the stranded package past the first window keeps the notice open");
+        (await CompanyAuditAsync(w)).Should().NotContain(PayApprovalDeadEnds.ResolvedAction);
     }
 }

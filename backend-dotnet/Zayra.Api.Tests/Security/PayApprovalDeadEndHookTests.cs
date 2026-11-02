@@ -88,7 +88,10 @@ public sealed partial class EmployeeAccessTests
         return await AddUserAsync(w, $"secoff.{Guid.NewGuid():N}@{w.Domain}", ["Security Officer"], true, staff: true, name: "Security Officer");
     }
 
-    private async Task<int> HireMonitoredAsync(World w, Guid creator, int seed, IPayApprovalDeadEndMonitor? monitor = null)
+    private Task<int> HireMonitoredAsync(World w, Guid creator, int seed, IPayApprovalDeadEndMonitor? monitor = null) =>
+        WithTransientApproverAsync(w, () => HireMonitoredCoreAsync(w, creator, seed, monitor));
+
+    private async Task<int> HireMonitoredCoreAsync(World w, Guid creator, int seed, IPayApprovalDeadEndMonitor? monitor)
     {
         await using var db = _fx.CreateDb();
         var request = Hire($"Hook Person {seed}", $"hook.{seed}.{Guid.NewGuid():N}@{w.Domain}", w.CompanyId) with {
@@ -316,11 +319,22 @@ public sealed partial class EmployeeAccessTests
     // ── submit time ────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task Submit_Create_OpensTheNotice_WhenNoReviewerExists_AndNotWhenOneDoes()
+    public async Task Submit_Create_IsRefusedWithoutAReviewer_SoNoDeadEndOpens_AndOpensNothingWhenOneExists()
     {
+        // The second-approver guard stops a salaried hire when nobody else could approve it, so creation cannot strand a package.
         var w = await SeedAsync();
-        await HireMonitoredAsync(w, w.AdminId, 21);
-        await AssertOneNoticePerRecipientAsync(w, w.AdminId);
+        await using (var db = _fx.CreateDb())
+        {
+            var request = Hire("Refused Hire", $"refused.{Guid.NewGuid():N}@{w.Domain}", w.CompanyId) with {
+                Nationality = "Indian",
+                ComplianceRecords = [new EmployeeComplianceRecordRequest("SA", "iqama_number", "Iqama", TestIds.ValidIqama(21),
+                    null, DateOnly.FromDateTime(DateTime.UtcNow.AddYears(1)), true, true)],
+                SalaryBreakdown = new EmployeeSalaryBreakdownRequest(9321m, 0, 0, 0, 0, 0, 0, null, null, "SAR")
+            };
+            var act = async () => await EmployeesWith(db, null).CreateAsync(w.TenantId, request, Ctx(w.AdminId, w.TenantId), default);
+            await act.Should().ThrowAsync<Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException>();
+        }
+        (await DeadEndNoticesAsync(w)).Should().BeEmpty();
 
         var other = await SeedAsync();
         await AddReviewerAsync(other);
@@ -421,6 +435,7 @@ public sealed partial class EmployeeAccessTests
         }
         thrower.Calls.Should().BeGreaterThan(0, "the hook did run");
 
+        await AddReviewerAsync(w);   // main's guard needs a second approver to create a salaried hire
         await using (var db = _fx.CreateDb())
             (await EmployeesWith(db, thrower).CreateAsync(w.TenantId,
                 Hire("Throwing Hook", $"throwing.{Guid.NewGuid():N}@{w.Domain}", w.CompanyId) with {

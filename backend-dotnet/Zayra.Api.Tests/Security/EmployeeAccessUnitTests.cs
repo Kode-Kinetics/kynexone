@@ -104,6 +104,21 @@ public sealed class EmployeeAccessUnitTests
         EmployeeAccessStates.Evaluate(F(status: "Terminated", domain: ""), now).State.Should().Be(EmployeeAccessStates.Stopped, "stopped outranks blocked");
     }
 
+    [Fact]
+    public void PasswordConfigured_IsNotInferredFromAnAbsentSetupRequirement()
+    {
+        var now = DateTime.UtcNow;
+        EmployeeAccessStates.Facts F(EmployeeUserAccount link, EmployeeAccessStates.LoginFacts login) =>
+            new(1, "A", "", "E1", "", "", "Active", false, false, "a@acme.sa", Guid.NewGuid(), "acme.sa", null, now, link, login, null);
+        var essLink = new EmployeeUserAccount { AccessMode = AccessModes.EssOnly, RequiresPasswordSetup = false };
+        var usable = new EmployeeAccessStates.LoginFacts(Guid.NewGuid(), "a@acme.sa", "Active", true, false, now);
+        EmployeeAccessStates.PasswordConfigured(F(essLink, usable)).Should().BeTrue();
+        // An offboarding revocation replaces the password with a placeholder and clears the setup requirement: no password is set.
+        EmployeeAccessStates.PasswordConfigured(F(essLink, usable with { PasswordRevoked = true })).Should().BeFalse();
+        // A no-login account carries an unreachable hash by design.
+        EmployeeAccessStates.PasswordConfigured(F(new EmployeeUserAccount { AccessMode = AccessModes.NoLogin, RequiresPasswordSetup = false }, usable)).Should().BeFalse();
+    }
+
     [Theory]
     [InlineData("gmail.com")]
     [InlineData("OUTLOOK.com")]

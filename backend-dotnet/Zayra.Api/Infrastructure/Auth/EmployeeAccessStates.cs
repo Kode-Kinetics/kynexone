@@ -70,7 +70,9 @@ public static class EmployeeAccessStates
         LoginFacts? Login,
         string? EmailOwnerBlockedCode);
 
-    public sealed record LoginFacts(Guid UserId, string Email, string Status, bool IsActive, bool IsDeleted, DateTime? LastLoginAtUtc);
+    /// <param name="PasswordRevoked">The stored password is a placeholder nobody can sign in with: an offboarding revocation (OFFBOARDED$...)
+    /// or a no-login account (access mode NoLogin, which is created or reset with an unreachable hash). "No setup required" alone is not evidence of a password.</param>
+    public sealed record LoginFacts(Guid UserId, string Email, string Status, bool IsActive, bool IsDeleted, DateTime? LastLoginAtUtc, bool PasswordRevoked = false);
 
     public sealed record Evaluation(
         string State,
@@ -158,7 +160,7 @@ public static class EmployeeAccessStates
 
     /// <summary>The login exists and its password has been set, whether or not a welcome code is live.</summary>
     public static bool PasswordConfigured(Facts f) =>
-        f.Link is not null && f.Login is { IsDeleted: false } && !f.Link.RequiresPasswordSetup;
+        f.Link is not null && f.Login is { IsDeleted: false, PasswordRevoked: false } && !f.Link.RequiresPasswordSetup && f.Link.AccessMode != AccessModes.NoLogin;
 
     private const string Why =
         "Employee access state: each listed employee's own login and any login already using their work email are read across legal entities; the tenant is re-applied and the employee ids were already scope-filtered by the caller.";
@@ -194,7 +196,8 @@ public static class EmployeeAccessStates
         var linkedUserIds = primaryLinks.Values.Where(l => l.UserId.HasValue).Select(l => l.UserId!.Value).Distinct().ToList();
         var logins = await ScopedBypass.TenantWide(db.Users, tenantId, Why).AsNoTracking()
             .Where(u => linkedUserIds.Contains(u.Id))
-            .Select(u => new LoginFacts(u.Id, u.Email, u.Status, u.IsActive, u.IsDeleted, u.LastLoginAtUtc))
+            .Select(u => new LoginFacts(u.Id, u.Email, u.Status, u.IsActive, u.IsDeleted, u.LastLoginAtUtc,
+                u.AccessMode == AccessModes.NoLogin || (u.PasswordHash != null && u.PasswordHash.StartsWith("OFFBOARDED$"))))
             .ToDictionaryAsync(u => u.UserId, ct);
 
         // Unlinked employees whose work email is already some login's username.

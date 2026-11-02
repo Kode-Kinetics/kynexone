@@ -210,6 +210,7 @@ public sealed class PayApprovalsController : ControllerBase
                 if (refusal is not null) return refusal;
                 _audit.Stage(CompensationApprovalGate.ApprovedAction, "Employee", employee.Id.ToString(CultureInfo.InvariantCulture), context, JsonSerializer.Serialize(packageMeta), employee.CompanyId);
                 await _db.SaveChangesAsync(ct);
+                await SyncDeadEndsAsync(tenantId, employee.CompanyId, "decision", ct);   // the decision may clear (or leave) the company's dead end
                 return Ok(new { decision = "approved" });
             }
             var rejectRefusal = await FirstPackageDecision.RejectAsync(this, tenantId, employee.Id, reason, ct);

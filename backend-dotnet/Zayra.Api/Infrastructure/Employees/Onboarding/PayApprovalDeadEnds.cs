@@ -28,7 +28,12 @@ public static class PayApprovalDeadEnds
     public const string ResolvedAction = "company.pay_review_dead_end_resolved";
     public const string SecurityManagePermission = "security.manage";
 
-    public sealed record Evaluation(IReadOnlyList<int> StrandedEmployeeIds, int StrandedCount, bool HasMore, int PendingCount);
+    /// <param name="NextAfterEmployeeId">When <paramref name="HasMore"/>: the last employee id this window covered, so the next window
+    /// can continue after it (null when nothing is left).</param>
+    public sealed record Evaluation(IReadOnlyList<int> StrandedEmployeeIds, int StrandedCount, bool HasMore, int PendingCount, int? NextAfterEmployeeId = null);
+
+    /// <summary>Further windows one sync reads before it gives up proving the company clear (each is up to <see cref="MaxChecked"/> packages).</summary>
+    public const int MaxContinuationWindows = 10;
 
     /// <summary>Most candidate rows one evaluation reads; beyond this the result says <c>HasMore</c> rather than reading on.</summary>
     public const int MaxScanned = 1000;
@@ -46,7 +51,7 @@ public static class PayApprovalDeadEnds
     /// tenant and the company explicitly) so a caller whose own scope omits the company still sees that company's gaps.
     /// </summary>
     public static async Task<Evaluation> EvaluateCompanyAsync(
-        ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct, IConfiguration? config = null)
+        ZayraDbContext db, Guid tenantId, Guid companyId, CancellationToken ct, IConfiguration? config = null, int afterEmployeeId = 0, int maxChecked = MaxChecked)
     {
         // Company-scoped rows (the pay gaps) are hidden from a request principal whose scope omits this company; the
         // detection must see them, and nothing here writes or relaxes who may approve.
@@ -60,10 +65,10 @@ public static class PayApprovalDeadEnds
                     || db.EmployeeImportGaps.Any(g => g.TenantId == tenantId && g.EmployeeId == e.Id
                         && g.GapType == CompensationApprovalGate.GapType && g.ResolvedAtUtc == null)));
         var pending = new List<Employee>();
-        var lastId = 0;
+        var lastId = afterEmployeeId;
         var scanned = 0;
         var cutShort = false;
-        while (pending.Count <= MaxChecked)
+        while (pending.Count <= maxChecked)
         {
             var lastSeen = lastId;
             var page = await candidates.Where(e => e.Id > lastSeen).OrderBy(e => e.Id).Take(PageSize).ToListAsync(ct);
@@ -73,21 +78,24 @@ public static class PayApprovalDeadEnds
                 scanned++;
                 lastId = candidate.Id;
                 if (await CompensationApprovalGate.NeedsApprovalAsync(db, tenantId, candidate, ct)) pending.Add(candidate);
-                if (pending.Count > MaxChecked) break;
+                if (pending.Count > maxChecked) break;
             }
-            if (pending.Count > MaxChecked) break;
+            if (pending.Count > maxChecked) break;
             if (page.Count < PageSize) break;
             if (scanned >= MaxScanned) { cutShort = true; break; }
         }
         var stranded = new List<int>();
-        foreach (var employee in pending.Take(MaxChecked))
+        foreach (var employee in pending.Take(maxChecked))
         {
             var anyEligible = false;
             foreach (var reviewer in reviewers)
                 if (!await CompensationApprovalGate.IsBarredAsync(db, tenantId, employee, reviewer.Id, ct)) { anyEligible = true; break; }
             if (!anyEligible) stranded.Add(employee.Id);
         }
-        return new Evaluation(stranded, stranded.Count, pending.Count > MaxChecked || cutShort, pending.Count);
+        var more = pending.Count > maxChecked || cutShort;
+        // Continue after the last package that was actually checked (the one past the window was not), or after the last row read.
+        int? next = !more ? null : pending.Count > maxChecked ? pending[maxChecked - 1].Id : lastId;
+        return new Evaluation(stranded, stranded.Count, more, pending.Count, next);
     }
 
     /// <summary>
@@ -96,7 +104,7 @@ public static class PayApprovalDeadEnds
     /// </summary>
     public static async Task SyncTaskAsync(
         ZayraDbContext db, Guid tenantId, Guid companyId, Guid? actorUserId, string trigger, RequestContext? context,
-        ILogger? logger, CancellationToken ct, IConfiguration? config = null)
+        ILogger? logger, CancellationToken ct, IConfiguration? config = null, int maxChecked = MaxChecked)
     {
         var staged = new List<object>();
         try
@@ -104,7 +112,10 @@ public static class PayApprovalDeadEnds
             // Every query and write below pins the tenant (and the company in the audit row) itself; the scope flag only lifts
             // the caller's company filter so the evaluated company does not depend on who happened to trigger the check.
             using var system = SystemScopeContext.Begin();
-            var result = await EvaluateCompanyAsync(db, tenantId, companyId, ct, config);
+            var result = await EvaluateCompanyAsync(db, tenantId, companyId, ct, config, 0, maxChecked);
+            // A window that found nothing but did not cover every package proves nothing: read on, a bounded number of windows.
+            for (var windows = 0; result.StrandedCount == 0 && result.HasMore && result.NextAfterEmployeeId is int cursor && windows < MaxContinuationWindows; windows++)
+                result = await EvaluateCompanyAsync(db, tenantId, companyId, ct, config, cursor, maxChecked);
             var entityId = companyId.ToString();
             var open = await db.Notifications
                 .Where(n => n.TenantId == tenantId && n.EntityName == EntityName && n.EntityId == entityId && n.Status != ResolvedStatus)
@@ -114,7 +125,8 @@ public static class PayApprovalDeadEnds
 
             if (result.StrandedCount == 0)
             {
-                if (open.Count == 0) return;
+                // Still unchecked packages left after the bounded read: the gap is not shown to be gone, so an open notice stays.
+                if (open.Count == 0 || result.HasMore) return;
                 foreach (var n in open) { n.Status = ResolvedStatus; n.ReadAtUtc ??= now; staged.Add(n); }
                 var row = AuditRow(ResolvedAction, tenantId, companyId, audit, trigger, result, now);
                 db.AuditLogs.Add(row); staged.Add(row);
