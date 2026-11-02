@@ -42,6 +42,8 @@ public class DepartmentStaffingBudget : ITenantOwned
     public Guid DepartmentId { get; set; }
     public Guid StaffingLevelId { get; set; }
     public int BudgetedHeadcount { get; set; }             // >= 0
+    /// <summary>Free-text planning note for this department-level cell (plain text, trimmed, max 500; null = none).</summary>
+    public string? Note { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }

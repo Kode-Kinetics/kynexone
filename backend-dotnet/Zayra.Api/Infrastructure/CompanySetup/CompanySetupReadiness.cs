@@ -42,7 +42,11 @@ public static class CompanySetupReadiness
             .AnyAsync(m => m.IsActive && (m.CompanyId == id || m.CompanyId == null), ct);
         Add("glMapping", "GL posting accounts", "حسابات الترحيل المحاسبي", gl, V.ReadinessTodo, SetupHref("glMapping", id));
 
-        var establishment = await ScopedBypass.TenantWide(db.Positions, tenantId, Why).AnyAsync(p => p.CompanyId == id, ct);
+        // The Headcount & budget screen saves approved headcount and budget on the department, so a department plan counts
+        // as much as a position row does.
+        var establishment = await ScopedBypass.TenantWide(db.Positions, tenantId, Why).AnyAsync(p => p.CompanyId == id, ct)
+            || await ScopedBypass.TenantWide(db.Departments, tenantId, Why)
+                .AnyAsync(d => d.CompanyId == id && !d.IsDeleted && d.IsActive && (d.ApprovedHeadcount > 0 || d.MonthlyBudgetAmount > 0), ct);
         Add("establishment", "Approved positions and budget", "الوظائف المعتمدة والميزانية", establishment, V.ReadinessRecommended, SetupHref("establishment", id));
 
         var branchIds = await db.Branches.AsNoTracking().Where(b => b.TenantId == tenantId && b.CompanyId == id && !b.IsDeleted)

@@ -34,6 +34,36 @@ export interface MatrixLevelCell {
   exitingIncumbents: number;
   positionsAtLevel: number;
   positionsExceedBudget: boolean;
+  /**
+   * Pay range for the level. null = withheld (caller lacks salary permission) or, when the caller may
+   * see salaries, no range set. Never read null as 0. Absent on servers that predate the field.
+   */
+  pay?: LevelPayBand | null;
+  /**
+   * Why the level has (or lacks) a band. null = withheld with `pay` (no salary permission); never
+   * infer it from `pay === null`. Absent on servers that predate the field.
+   */
+  payStatus?: LevelPayStatus | null;
+  /** Free-text note on the budget cell. Never withheld. */
+  note?: string | null;
+}
+
+export type LevelPayStatus = 'priced' | 'noRange' | 'currencyMismatch';
+
+export interface LevelPayBand { min: number; mid: number; max: number; currency: string }
+
+export type PayPlanFlagValue = 'notComparable' | 'overBudget' | 'belowMinimum' | 'underBudget' | 'currencyMismatch';
+
+/** Server-side reconciliation of a department's level plan against its budget. */
+export interface DepartmentPayPlan {
+  avgPerHead: number | null;
+  plannedMin: number | null;
+  plannedMid: number | null;
+  plannedMax: number | null;
+  unallocatedBudget: number | null;
+  unpricedHeads: number;
+  uncontrolledLevels: number;
+  flags: PayPlanFlagValue[];
 }
 
 /** Superset of the legacy planning EstablishmentRow — existing envelope columns keep working. */
@@ -44,6 +74,10 @@ export interface MatrixRow extends EstablishmentRow {
   levels: MatrixLevelCell[];
   unclassifiedCount: number;
   unresolvedDepartmentCount: number;
+  /** null = withheld (no salary permission): show Restricted, never 0. Absent on older servers. */
+  payPlan?: DepartmentPayPlan | null;
+  /** Free-text department note. Never withheld. */
+  note?: string | null;
 }
 
 /**
@@ -77,6 +111,11 @@ export interface BudgetRowUpdate {
   staffingLevelId: string;
   /** null deletes the row → level returns to uncontrolled (unlimited). */
   budgetedHeadcount: number | null;
+  /**
+   * Omitted = unchanged; '' = clear; otherwise trimmed text (max 500). Needs a budgetedHeadcount
+   * (0 = frozen counts); the server answers 400 otherwise.
+   */
+  note?: string;
 }
 
 export interface BudgetSaveWarning {
@@ -174,8 +213,8 @@ export const establishmentApi = {
       .then(r => unwrapMatrix(r.data)),
 
   /** Reason is mandatory server-side; every budget mutation is audited with before/after per level. */
-  saveBudgets: (departmentId: string, rows: BudgetRowUpdate[], reason: string) =>
-    client.put<BudgetSaveResult>(`/api/establishment/departments/${departmentId}/budgets`, { rows, reason }).then(r => r.data),
+  saveBudgets: (departmentId: string, rows: BudgetRowUpdate[], reason: string, note?: string) =>
+    client.put<BudgetSaveResult>(`/api/establishment/departments/${departmentId}/budgets`, { rows, reason, ...(note !== undefined ? { note } : {}) }).then(r => r.data),
 
   mappingSuggestions: () =>
     client.get<MappingSuggestion[]>('/api/establishment/level-mapping/suggestions').then(r => r.data),

@@ -2075,6 +2075,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("departments");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.EstablishmentNote).HasMaxLength(500);
             // Addendum B: a department belongs to one company (legal entity). Codes are unique per
             // (tenant, company); NULLS NOT DISTINCT so two unassigned legacy rows cannot share a code.
             // Serves: create/update duplicate-code check and the import resolver's code lookup.
@@ -2114,6 +2115,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("department_staffing_budgets");
             entity.HasKey(x => x.Id);
+            // Plain-text planning note; bounded at the database too (the API trims and rejects > 500).
+            entity.Property(x => x.Note).HasMaxLength(500);
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId, x.StaffingLevelId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
         });
