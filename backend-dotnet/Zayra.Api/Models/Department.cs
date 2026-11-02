@@ -24,6 +24,8 @@ public class Department : ITenantOwned, ICompanyScoped
     public int ApprovedHeadcount { get; set; }
     /// <summary>Approved monthly salary budget for this department (0 = not set).</summary>
     public decimal MonthlyBudgetAmount { get; set; }
+    /// <summary>Free-text planning note for the department's Headcount &amp; budget row (plain text, trimmed, max 500; null = none).</summary>
+    public string? EstablishmentNote { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }
     public DateTime? UpdatedAtUtc { get; set; }

@@ -42,6 +42,51 @@ public class CompanySetupReadinessHrefTests
         (await Status()).Should().Be("todo", "a permission alone is not a usable reviewer");
     }
 
+    [Fact]
+    public async Task ApprovedPositionsAndBudgetIsDoneOnceADepartmentHasAnApprovedHeadcountOrBudget()
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Acme", CountryCode = "SA", DefaultCurrency = "SAR" };
+        var other = new Company { TenantId = tenantId, LegalNameEn = "Other", CountryCode = "SA", DefaultCurrency = "SAR" };
+        db.Companies.AddRange(company, other);
+        var dept = new Department { TenantId = tenantId, CompanyId = company.Id, NameEn = "Ops", IsActive = true };
+        db.Departments.Add(dept);
+        await db.SaveChangesAsync();
+        async Task<string> Status() => (await CompanySetupReadiness.ComputeAsync(db, new NoEmail(), tenantId, company, default))
+            .Single(i => i.Key == "establishment").Status;
+
+        (await Status()).Should().Be("recommended", "nothing is planned yet");
+        dept.ApprovedHeadcount = 5;
+        await db.SaveChangesAsync();
+        (await Status()).Should().Be("done", "the Headcount & budget screen saves on the department, not on a position");
+        dept.ApprovedHeadcount = 0;
+        dept.MonthlyBudgetAmount = 10000;
+        await db.SaveChangesAsync();
+        (await Status()).Should().Be("done", "a budget alone is a plan");
+        dept.MonthlyBudgetAmount = 0;
+        dept.CompanyId = other.Id;
+        dept.ApprovedHeadcount = 5;
+        await db.SaveChangesAsync();
+        (await Status()).Should().Be("recommended", "another company's plan does not complete this one");
+    }
+
+    [Fact]
+    public async Task InactiveOrDeletedDepartmentPlans_DoNotCompleteTheEstablishmentItem()
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Acme", CountryCode = "SA", DefaultCurrency = "SAR" };
+        db.Companies.Add(company);
+        var inactive = new Department { TenantId = tenantId, CompanyId = company.Id, NameEn = "Old", IsActive = false, ApprovedHeadcount = 5, MonthlyBudgetAmount = 9000 };
+        var deleted = new Department { TenantId = tenantId, CompanyId = company.Id, NameEn = "Gone", IsActive = true, IsDeleted = true, ApprovedHeadcount = 5, MonthlyBudgetAmount = 9000 };
+        db.Departments.AddRange(inactive, deleted);
+        await db.SaveChangesAsync();
+        async Task<string> Status() => (await CompanySetupReadiness.ComputeAsync(db, new NoEmail(), tenantId, company, default))
+            .Single(i => i.Key == "establishment").Status;
+        (await Status()).Should().Be("recommended", "a retired department's plan is not a plan");
+    }
+
     private sealed class NoEmail : IEmailService
     {
         public Task SendAsync(string toAddress, string toName, string subject, string htmlBody,
