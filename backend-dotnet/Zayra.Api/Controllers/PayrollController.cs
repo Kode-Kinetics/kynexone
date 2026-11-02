@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Zayra.Api.Infrastructure.Benefits;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -2989,6 +2989,18 @@ public partial class PayrollController : ControllerBase
         if (!HasPermission("payroll.export")) return Forbid();
 
         var tenantId = GetTenantId();
+        // PAY-04: the "no live batch yet?" probe and the insert run as ONE serialized unit per run (same
+        // advisory-lock serializer the finance decisions use), so two simultaneous requests cannot both
+        // pass the probe and create two live batches for the same run.
+        return await Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, RunPaymentBatchLockScope, tenantId, id,
+            () => CreatePaymentBatchCoreAsync(id, req, tenantId, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>Advisory-lock scope for creating a payment batch against one payroll run.</summary>
+    private const string RunPaymentBatchLockScope = "payroll.run-batch";
+
+    private async Task<IActionResult> CreatePaymentBatchCoreAsync(Guid id, PayrollPaymentBatchRequest req, Guid tenantId, CancellationToken cancellationToken)
+    {
         var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         // C5: payment batch requires a locked run — approval workflow must complete first
@@ -3351,6 +3363,12 @@ public partial class PayrollController : ControllerBase
         var (agentId, agentConflict) = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
         if ((agentConflict ?? WpsEstablishmentError(agentId, isKsaRegister)) is { } estError)
             return UnprocessableEntity(new { error = estError.Code, message = estError.Message, field = estError.Field });
+        // PAY-02: formats other than the KSA register carry the employer's debit-account IBAN in their header.
+        // The product holds no employer IBAN for those countries, so a blank one refuses the file with a named
+        // code (no WPSFileBatch row is written) instead of emitting a header the bank rejects.
+        if (!isKsaRegister && Infrastructure.Payroll.WpsSifValidator.ValidateEmployer(agentId, string.Empty, employerIbanRequired: true)
+                .FirstOrDefault(i => i.Code.StartsWith("EMPLOYER_IBAN", StringComparison.Ordinal)) is { } ibanIssue)
+            return UnprocessableEntity(new { error = "wps_" + ibanIssue.Code.ToLowerInvariant(), message = ibanIssue.Message, field = "employerIban" });
         var currency    = !string.IsNullOrWhiteSpace(batch.Currency) && batch.Currency != "USD"
                             ? batch.Currency
                             : await ResolveCurrencyAsync(tenantId, cancellationToken);
@@ -3541,7 +3559,8 @@ public partial class PayrollController : ControllerBase
 
         var latestFile = await _db.WPSFileBatches
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId)
-            .OrderByDescending(x => x.CreatedAtUtc)
+            .OrderByDescending(x => x.ResubmissionNumber)
+            .ThenByDescending(x => x.CreatedAtUtc)
             .ThenByDescending(x => x.Id)
             .FirstOrDefaultAsync(cancellationToken);
 
@@ -4925,7 +4944,7 @@ public partial class PayrollController : ControllerBase
         // The LATEST generation for the batch (a resubmission after Rejected supersedes the original).
         var wpsFile = await _db.WPSFileBatches.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batchId)
-            .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id)
+            .OrderByDescending(x => x.ResubmissionNumber).ThenByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.Id)   // PAY-03: latest = highest resubmission
             .FirstOrDefaultAsync(cancellationToken);
         if (wpsFile is null) return BadRequest(new { message = "WPS file has not been generated for this batch yet." });
 
@@ -5176,7 +5195,7 @@ public partial class PayrollController : ControllerBase
                     .Where(f => f.TenantId == tenantId && d4BatchIds.Contains(f.PaymentBatchId))
                     .ToListAsync(cancellationToken))
                 .GroupBy(f => f.PaymentBatchId)
-                .ToDictionary(g => g.Key, g => g.OrderByDescending(f => f.CreatedAtUtc).ThenByDescending(f => f.Id).First());
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(f => f.ResubmissionNumber).ThenByDescending(f => f.CreatedAtUtc).ThenByDescending(f => f.Id).First());
         var batchExclusions = await Infrastructure.Payroll.PaymentBatchExclusions.LoadAsync(_db, tenantId, d4BatchIds, cancellationToken);
         var outsideRecorded = await OutsidePaymentRefsAsync(tenantId, batches.Select(b => b.PayrollRunId).Distinct().ToList(), cancellationToken);
         var viewerId = GetUserId();
@@ -5370,6 +5389,13 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> ListRunApprovals(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // PAY-09: resolve the run through the company-scoped PayrollRuns first, then re-check the caller's token
+        // scope explicitly (the ambient filter is off without a request principal). Out of scope == missing.
+        var approvalsRun = await _db.PayrollRuns.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.Id == id)
+            .Select(r => new { r.CompanyId })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (approvalsRun is null || !this.GetEntityScope().CanAccessCompany(approvalsRun.CompanyId)) return NotFound();
         // SAFE-SERIALIZATION: PayrollApproval is a workflow record (who approved, when, status) — no salary amounts.
         return Ok(await _db.PayrollApprovals.AsNoTracking().Where(x => x.TenantId == tenantId && x.PayrollRunId == id).OrderByDescending(x => x.DecidedAtUtc).ToListAsync(cancellationToken));
     }
@@ -8633,9 +8659,13 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> ListPayrollCompanies(CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // PAY-07: the caller's own company scope, from the token — a company-scoped officer must not list
+        // sister companies or read their WPS / GOSI establishment ids.
+        var companyScope = this.GetEntityScope();
         var companies = await _db.Companies
             .AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .Where(c => companyScope.IsGroupLevel || companyScope.AccessibleCompanyIds.Contains(c.Id))
             .OrderBy(c => c.LegalNameEn)
             .Select(c => new { c.Id, Name = c.LegalNameEn, TradeName = c.TradeName, c.DefaultCurrency, c.WpsEmployerId, c.GosiEmployerId })
             .ToListAsync(cancellationToken);
@@ -8652,9 +8682,11 @@ public partial class PayrollController : ControllerBase
         var targetMonth = month ?? now.Month;
         var targetPeriodEnd = new DateOnly(targetYear, targetMonth, 1).AddMonths(1).AddDays(-1);
 
+        var overviewScope = this.GetEntityScope();   // PAY-07
         var companies = await _db.Companies
             .AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .Where(c => overviewScope.IsGroupLevel || overviewScope.AccessibleCompanyIds.Contains(c.Id))
             .ToListAsync(cancellationToken);
 
         if (companyId.HasValue)

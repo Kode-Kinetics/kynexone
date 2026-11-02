@@ -101,7 +101,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         return new PagedResult<EmployeeListItemDto>(items, total, page, pageSize);
     }
 
-    public async Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken)
+    public async Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken, bool includeOwnPersonal = false)
     {
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
         if (employee is null) return null;
@@ -115,7 +115,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             includeSensitive ? await _db.EmployeeComplianceRecords.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted).ToListAsync(cancellationToken) : [],
             await GetDocumentsAsync(tenantId, id, cancellationToken),
             await GetHistoryAsync(tenantId, id, cancellationToken),
-            await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken)) with
+            await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken),
+            includeOwnPersonal: includeOwnPersonal) with
         {
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
             CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),

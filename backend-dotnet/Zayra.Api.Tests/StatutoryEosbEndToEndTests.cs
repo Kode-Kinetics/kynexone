@@ -159,7 +159,7 @@ public class StatutoryEosbEndToEndTests
         var offboarding = new EmployeeOffboarding
         {
             TenantId = tenantId, EmployeeId = employeeId, SeparationType = "Termination",
-            Status = "InProgress", LastWorkingDay = new DateOnly(2026, 1, 1), CreatedAtUtc = DateTime.UtcNow,
+            Status = "InProgress", LastWorkingDay = new DateOnly(2025, 12, 31), CreatedAtUtc = DateTime.UtcNow,
         };
         db.EmployeeOffboardings.Add(offboarding);
 

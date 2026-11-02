@@ -166,7 +166,14 @@ public sealed class UaeMainlandEndOfServiceCalculator : IEndOfServiceCalculator
 
     internal static decimal ServiceYears(DateOnly start, DateOnly end)
     {
-        int totalDays = end.DayNumber - start.DayNumber;
+        // PAY-01: `end` is the last day of service and is INCLUSIVE.
+        return ServiceYearsToExclusiveEnd(start, end.AddDays(1));
+    }
+
+    /// <summary>Years in [start, endExclusive). Used where the boundary is a "first day of the new regime".</summary>
+    internal static decimal ServiceYearsToExclusiveEnd(DateOnly start, DateOnly endExclusive)
+    {
+        int totalDays = endExclusive.DayNumber - start.DayNumber;
         return totalDays / 365m;
     }
 }
@@ -228,8 +235,9 @@ public sealed class UaeDifcEndOfServiceCalculator : IEndOfServiceCalculator
         decimal grandfathered = 0m;
         if (input.ServiceStartDate < cutOver)
         {
-            var preEnd = input.ServiceEndDate < cutOver ? input.ServiceEndDate : cutOver;
-            decimal preYears = UaeMainlandEndOfServiceCalculator.ServiceYears(input.ServiceStartDate, preEnd);
+            // cutOver is the FIRST day of DEWS, i.e. an exclusive end; the leaver's last day is inclusive.
+            var preEndExclusive = input.ServiceEndDate < cutOver ? input.ServiceEndDate.AddDays(1) : cutOver;
+            decimal preYears = UaeMainlandEndOfServiceCalculator.ServiceYearsToExclusiveEnd(input.ServiceStartDate, preEndExclusive);
             decimal dailyRate = basic / 30m;
             decimal t1 = Math.Round(Math.Min(preYears, 5m) * 21m * dailyRate, 2);
             decimal t2 = Math.Round(Math.Max(0m, preYears - 5m) * 30m * dailyRate, 2);
@@ -249,7 +257,7 @@ public sealed class UaeDifcEndOfServiceCalculator : IEndOfServiceCalculator
             decimal postYears = UaeMainlandEndOfServiceCalculator.ServiceYears(postStart, input.ServiceEndDate);
             // Informational only: what the employer SHOULD have remitted monthly. Tiering is on TOTAL
             // service length, not on post-cut-over length, because the 5-year step is a service test.
-            decimal totalYearsAtStart = UaeMainlandEndOfServiceCalculator.ServiceYears(input.ServiceStartDate, postStart);
+            decimal totalYearsAtStart = UaeMainlandEndOfServiceCalculator.ServiceYearsToExclusiveEnd(input.ServiceStartDate, postStart);
             int postMonths = (int)Math.Floor(postYears * 12m);
             int monthsToFiveYears = Math.Max(0, 60 - (int)Math.Floor(totalYearsAtStart * 12m));
             int tier1Months = Math.Min(postMonths, monthsToFiveYears);

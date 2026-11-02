@@ -16,16 +16,18 @@ export function ConnectionIssueScreen() {
   const { t } = useTranslation();
   const initialize = useAuthStore((s) => s.initialize);
   const logout = useAuthStore((s) => s.logout);
+  const isLoading = useAuthStore((s) => s.isLoading);
   const [attempt, setAttempt] = useState(0);
   const [seconds, setSeconds] = useState(() => Math.ceil(backoffDelayMs(0, 0, 2000) / 1000));
 
   const retry = useCallback(() => {
+    if (useAuthStore.getState().isLoading) return; // do not run overlapping refresh attempts
     setAttempt((n) => n + 1);
     void initialize();
   }, [initialize]);
 
-  // The screen unmounts when initialize() succeeds; if it fails again, `attempt` changes and the
-  // countdown restarts with a longer wait (2s, 4s, 8s ... up to 30s).
+  // The screen stays mounted during retry so the increasing backoff counter is preserved.
+  // It unmounts only on successful recovery, definitive refusal or explicit sign-out.
   useEffect(() => {
     const total = Math.ceil(backoffDelayMs(attempt, 0, 2000) / 1000);
     setSeconds(total);
@@ -34,8 +36,8 @@ export function ConnectionIssueScreen() {
   }, [attempt]);
 
   useEffect(() => {
-    if (seconds === 0) retry();
-  }, [seconds, retry]);
+    if (seconds === 0 && !isLoading) retry();
+  }, [seconds, isLoading, retry]);
 
   return (
     <View style={[styles.root, { backgroundColor: theme.colors.canvas }]}>
