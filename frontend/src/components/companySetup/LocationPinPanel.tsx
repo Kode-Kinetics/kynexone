@@ -193,7 +193,7 @@ export function LocationPinPanel({ path, location, onChange, countryCode, name }
               <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{t('Is it one of these? Choose the right place, or keep what you typed.')}</p>
               <ul className="space-y-1.5">
                 {suggestions.items.map((item, index) => (
-                  <li key={`${item.latitude},${item.longitude},${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-white px-3 py-2 text-sm dark:bg-white/5">
+                  <li key={`${item.latitude},${item.longitude},${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white px-3 py-2 text-sm dark:bg-white/5">
                     <span className="min-w-0 flex-1 text-slate-800 dark:text-slate-200"><bdi>{item.label}</bdi></span>
                     <button type="button" className="btn-secondary" onClick={() => choose(item)} data-testid="pin-suggestion">{t('Use this place')}</button>
                   </li>
