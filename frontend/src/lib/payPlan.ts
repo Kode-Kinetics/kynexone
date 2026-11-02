@@ -22,8 +22,9 @@ export interface PayPlanInput {
   budget: number;
   levels: PayPlanLevelInput[];
   /**
-   * The company's default currency. A band in any other currency is left unpriced and flagged
-   * currencyMismatch, as on the server. Without it the first band sets the reference.
+   * The company's default currency, only when known. A band in any other currency is left unpriced and flagged
+   * currencyMismatch, as on the server. Without it the reference is the currency carrying the most budgeted
+   * heads (ties to the lowest code), as on the server. Never pass the tenant display currency here.
    */
   currency?: string | null;
 }
@@ -62,7 +63,12 @@ export function computePayPlan({ approved, budget, levels, currency }: PayPlanIn
   let plannedMin = 0, plannedMid = 0, plannedMax = 0, pricedHeads = 0, unpricedHeads = 0, unpricedLevels = 0, allocated = 0;
   let uncontrolledLevels = 0, currencyMismatch = false;
   // Amounts are never summed across currencies: one reference, everything else is unpriced.
-  const reference = cur(currency) || cur(levels.find(l => l.budgeted !== null && l.pay)?.pay?.currency);
+  let reference = cur(currency);
+  if (!reference) {
+    const heads = new Map<string, number>();
+    for (const l of levels) if (l.pay && l.budgeted !== null && l.budgeted > 0) heads.set(cur(l.pay.currency), (heads.get(cur(l.pay.currency)) ?? 0) + l.budgeted);
+    reference = [...heads.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0] ?? '';
+  }
   for (const level of levels) {
     const heads = level.budgeted;
     if (heads === null) { uncontrolledLevels += 1; continue; }

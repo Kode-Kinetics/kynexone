@@ -140,3 +140,20 @@ test('a one-cent overrun is over budget, and the under-budget boundary is exact 
   const plan = computePayPlan({ approved: 1, budget: 100.2, levels: [lvl(1, band(75.15, 75.15, 75.15))] });
   expect(plan.flags).toContain('underBudget');
 });
+
+test('without a company currency, mixed band currencies are not summed: most heads sets the reference', () => {
+  const plan = computePayPlan({
+    approved: 5, budget: 10000,
+    levels: [lvl(3, { min: 1000, mid: 1000, max: 1000, currency: 'USD' }), lvl(2, { min: 500, mid: 500, max: 500, currency: 'SAR' })],
+  });
+  expect(plan.plannedMid).toBe(3000);
+  expect(plan.unpricedHeads).toBe(2);
+  expect(plan.flags).toContain('currencyMismatch');
+});
+
+test('reference does not depend on level order', () => {
+  const a = lvl(2, { min: 1000, mid: 1000, max: 1000, currency: 'USD' });
+  const b = lvl(2, { min: 500, mid: 500, max: 500, currency: 'SAR' });
+  expect(computePayPlan({ approved: 4, budget: 10000, levels: [a, b] }).plannedMid)
+    .toBe(computePayPlan({ approved: 4, budget: 10000, levels: [b, a] }).plannedMid);
+});

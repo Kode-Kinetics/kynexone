@@ -94,14 +94,38 @@ public static class EstablishmentPayPlan
         decimal? avg = approved > 0 && budget > 0 ? R2(budget / approved) : null;
 
         var bands = new Dictionary<Guid, LevelPayBand>();
+        var ordered = levels.GroupBy(x => x.LevelId).Select(g => g.First()).OrderBy(x => x.LevelId).ToList();
+        foreach (var l in ordered)
+            bands[l.LevelId] = ComputeBand(l.LevelId, deptCompanyId, companyCurrency, designations, grades);
+
+        // Amounts are never summed across currencies. With a company currency every priced band already matches it.
+        // Without one (legacy department, no company) each level was judged alone, so levels may disagree: pick ONE
+        // department-wide reference (the currency carrying the most budgeted heads, ties to the lowest code - so the
+        // result does not depend on input order) and leave every other priced level unpriced + currencyMismatch.
+        var reference = Cur(companyCurrency);
+        if (reference.Length == 0)
+        {
+            reference = ordered
+                .Where(l => l.Budgeted is > 0 && bands[l.LevelId].Band is not null)
+                .GroupBy(l => Cur(bands[l.LevelId].Band!.Currency))
+                .OrderByDescending(g => g.Sum(l => l.Budgeted!.Value)).ThenBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => g.Key).FirstOrDefault() ?? string.Empty;
+            if (reference.Length > 0)
+                foreach (var l in ordered)
+                {
+                    var b = bands[l.LevelId];
+                    if (b.Band is not null && Cur(b.Band.Currency) != reference)
+                        bands[l.LevelId] = new LevelPayBand(null, true, 0, b.PricedDesignations + b.UnpricedDesignations);
+                }
+        }
+
         decimal pMin = 0, pMid = 0, pMax = 0;
         int unpricedHeads = 0, uncontrolled = 0, pricedHeads = 0;
         var currencyMismatch = false;
 
-        foreach (var l in levels.GroupBy(x => x.LevelId).Select(g => g.First()).OrderBy(x => x.LevelId))
+        foreach (var l in ordered)
         {
-            var lb = ComputeBand(l.LevelId, deptCompanyId, companyCurrency, designations, grades);
-            bands[l.LevelId] = lb;
+            var lb = bands[l.LevelId];
             if (l.Budgeted is not { } heads) { uncontrolled++; continue; }
             if (lb.CurrencyMismatch) currencyMismatch = true;
             if (lb.Band is null) { unpricedHeads += heads; continue; }

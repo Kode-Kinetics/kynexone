@@ -422,4 +422,33 @@ public class EstablishmentPayPlanTests
         var bad = G(3000, 2000, 1000);
         EstablishmentPayPlan.ComputeBand(Lvl, null, "SAR", new[] { D(Lvl, bad), new PayDesignation(Lvl, null) }, new[] { bad }).Status.Should().Be("noRange");
     }
+
+    // Legacy department (no company, no company currency): levels in different currencies must never be summed.
+    [Fact]
+    public void Plan_NoCompanyCurrency_MixedLevelCurrencies_NeverSummed_FlagsMismatch()
+    {
+        var usd = G(1000, 1000, 1000, "USD");
+        var sar = G(500, 500, 500, "SAR");
+        var plan = Plan(10000, 5,
+            new[] { L(Lvl, 3), L(Lvl2, 2) },
+            new[] { D(Lvl, usd), D(Lvl2, sar) }, new[] { usd, sar }, cur: null);
+        plan.PlannedMid.Should().Be(3000);          // USD carries the most heads; SAR level is left out
+        plan.UnpricedHeads.Should().Be(2);
+        plan.Flags.Should().Contain(EstablishmentPayPlan.FlagCurrencyMismatch);
+        plan.Bands[Lvl2].Status.Should().Be("currencyMismatch");
+        plan.Bands[Lvl].Status.Should().Be("priced");
+    }
+
+    [Fact]
+    public void Plan_NoCompanyCurrency_MixedLevelCurrencies_IndependentOfInputOrder()
+    {
+        var usd = G(1000, 1000, 1000, "USD");
+        var sar = G(500, 500, 500, "SAR");
+        var d = new[] { D(Lvl, usd), D(Lvl2, sar) };
+        var g = new[] { usd, sar };
+        var a = Plan(10000, 4, new[] { L(Lvl, 2), L(Lvl2, 2) }, d, g, cur: null);
+        var b = Plan(10000, 4, new[] { L(Lvl2, 2), L(Lvl, 2) }, d.Reverse().ToArray(), g.Reverse().ToArray(), cur: null);
+        b.PlannedMid.Should().Be(a.PlannedMid);
+        a.PlannedMid.Should().Be(500 * 2);           // tie on heads: lowest code (SAR < USD) wins
+    }
 }

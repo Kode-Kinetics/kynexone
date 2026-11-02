@@ -349,7 +349,8 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     const live = computePayPlan({
       approved: e.approved,
       budget: e.budget,
-      currency: currencyCode,
+      // No reference currency: the server already priced each band against the department company's currency
+      // (Company.DefaultCurrency), which is not the tenant display currency used for formatting here.
       levels: activeLevels.map(lvl => ({ budgeted: parseBudget(levelEditValue(r, lvl.id)), pay: cellFor(r, lvl.id).pay ?? null })),
     });
     const server = r.payPlan;
