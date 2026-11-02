@@ -48,6 +48,19 @@ public sealed class BonusBatchSodTests : IAsyncDisposable
         await _db.SaveChangesAsync();
     }
 
+    /// <summary>A second Finance login (payroll.approve through an Allow override). The tenant row is never seeded in this world, so the tenant FK is not enforced for this one save.</summary>
+    private async Task<Zayra.Api.Domain.Entities.User> SeedFinanceUserAsync()
+    {
+        var user = new Zayra.Api.Domain.Entities.User { TenantId = _tenant, Email = $"fin-{Guid.NewGuid():N}@test.local", NormalizedEmail = $"FIN-{Guid.NewGuid():N}@TEST.LOCAL", FullName = "Finance", IsGroupScope = true };
+        _db.Users.Add(user);
+        _db.UserPermissionOverrides.Add(new UserPermissionOverride { TenantId = _tenant, UserId = user.Id, PermissionKey = "payroll.approve", Effect = "Allow" });
+        await _db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF");
+        try { await _db.SaveChangesAsync(); }
+        finally { await _db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON"); }
+        _db.ChangeTracker.Clear();
+        return user;
+    }
+
     private BonusesController As(Guid user)
     {
         var claims = new List<Claim>
@@ -141,7 +154,10 @@ public sealed class BonusBatchSodTests : IAsyncDisposable
     {
         await SeedAsync();
         var batch = await PendingBatchAsync(createdBy: Guid.NewGuid(), submittedBy: Guid.NewGuid());
-        var approver = As(Guid.NewGuid());
+        var approver = As((await SeedFinanceUserAsync()).Id);
+        // An independent payer must exist: the approver cannot also release the payment.
+        var payerUser = await SeedFinanceUserAsync();
+        var payer = As(payerUser.Id);
 
         Assert.IsType<OkObjectResult>(await approver.ApproveBatch(batch.Id, new BatchApproveRequest("ok"), Ct));
         Assert.Single(await _db.FinanceGlEntries.Where(x => x.EventType == "BonusAccrual").ToListAsync());
@@ -149,8 +165,8 @@ public sealed class BonusBatchSodTests : IAsyncDisposable
         Assert.IsType<BadRequestObjectResult>(await approver.ApproveBatch(batch.Id, new BatchApproveRequest("again"), Ct));
         Assert.Single(await _db.FinanceGlEntries.Where(x => x.EventType == "BonusAccrual").ToListAsync());
 
-        Assert.IsType<OkObjectResult>(await approver.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), Ct));
-        Assert.IsType<ConflictObjectResult>(await approver.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), Ct));
+        Assert.IsType<OkObjectResult>(await payer.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), Ct));
+        Assert.IsType<ConflictObjectResult>(await payer.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), Ct));
     }
 
     // ── Input ranges ──────────────────────────────────────────────────────────────────────────────

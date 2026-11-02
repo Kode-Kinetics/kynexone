@@ -429,7 +429,7 @@ public class GradeLoanLimitTests
         var facility = await h.Db.PayComponents.SingleAsync(x => x.Code == "LOAN_PERSONAL");
         Assert.Equal((PayEntitlementClasses.Facility, PayComponentTypes.Facility, false), (facility.EntitlementClass, facility.ComponentType, facility.WpsIncluded));
         // GET /types carries the flag for the UI.
-        var types = Json(Ok(await hr.ListLoanTypes(default)), web: true);
+        var types = Json(Ok(await hr.ListLoanTypes(false, default)), web: true);
         Assert.Contains("\"gradeLimited\":true", types);
         Assert.Contains("\"entitlementComponentCode\":\"LOAN_PERSONAL\"", types);
     }

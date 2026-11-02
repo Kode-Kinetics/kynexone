@@ -234,10 +234,13 @@ public static class Csv
     /// <para>Exactly ONE apostrophe is removed, so a re-exported value is not eroded a character per
     /// round trip.</para>
     /// </summary>
-    private static string Unescape(string cell) =>
-        cell.Length >= 2 && cell[0] == '\'' && Array.IndexOf(FormulaTriggers, cell[1]) >= 0
-            ? cell[1..]
-            : cell;
+    private static string Unescape(string cell)
+    {
+        if (cell.Length < 2 || cell[0] != '\'') return cell;
+        var i = 1;
+        while (i < cell.Length && cell[i] == ' ') i++;      // Guard also looks past leading spaces
+        return i < cell.Length && Array.IndexOf(FormulaTriggers, cell[i]) >= 0 ? cell[1..] : cell;
+    }
 
     // Characters that make a spreadsheet treat a cell as a formula. A cell that begins
     // with any of these is prefixed with a leading apostrophe so Excel/Sheets/LibreOffice
@@ -253,15 +256,61 @@ public static class Csv
     /// </summary>
     public static string Escape(string s)
     {
+        s = Guard(s);
+        return s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r')
+            ? "\"" + s.Replace("\"", "\"\"") + "\""
+            : s;
+    }
+
+    /// <summary>
+    /// THE formula-injection guard, in one place (F9): a value whose first non-space character is <c>=  +  -  @</c>, a tab
+    /// or a CR is prefixed with an apostrophe so a spreadsheet shows text instead of evaluating it. Spaces are looked past
+    /// because Excel evaluates <c>" =cmd"</c> as readily as <c>"=cmd"</c>. Every CSV writer in the product - the
+    /// <see cref="Build"/> exports, the report tabulator, the loan payment-instruction file - goes through this method.
+    /// </summary>
+    public static string Guard(string? s)
+    {
         s ??= string.Empty;
         // Direction marks and overrides can reorder what a reader sees; no cell needs them.
         if (s.Any(Zayra.Api.Application.Organization.CostCentreText.IsDirectionControl))
             s = Zayra.Api.Application.Organization.CostCentreText.StripDirectionControls(s);
-        // Neutralize formula injection: a value starting with a trigger char becomes text.
-        if (s.Length > 0 && Array.IndexOf(FormulaTriggers, s[0]) >= 0)
-            s = "'" + s;
-        return s.Contains(',') || s.Contains('"') || s.Contains('\n') || s.Contains('\r')
-            ? "\"" + s.Replace("\"", "\"\"") + "\""
-            : s;
+        var i = 0;
+        while (i < s.Length && s[i] == ' ') i++;
+        return i < s.Length && Array.IndexOf(FormulaTriggers, s[i]) >= 0 && !IsPlainNumber(s) ? "'" + s : s;
+    }
+
+    /// <summary>A cell that is only an optionally signed number (<c>-125.50</c>, <c>+966501234567</c>, <c>1,5</c> is not):
+    /// a spreadsheet reads it as a number, never as a formula, so guarding it would turn money into text.</summary>
+    private static bool IsPlainNumber(string s)
+    {
+        var i = 0;
+        if (i < s.Length && (s[i] == '-' || s[i] == '+')) i++;
+        var digits = 0; var dots = 0;
+        for (; i < s.Length; i++)
+        {
+            if (s[i] >= '0' && s[i] <= '9') digits++;
+            else if (s[i] == '.' && ++dots == 1) { }
+            else return false;
+        }
+        return digits > 0;
+    }
+
+    /// <summary>Guarded and ALWAYS quoted (RFC 4180), for writers that quote every cell.</summary>
+    public static string Quote(string? s) => "\"" + Guard(s).Replace("\"", "\"\"") + "\"";
+
+    /// <summary>The UTF-8 byte-order mark. Excel on Windows opens a BOM-less UTF-8 CSV in the ANSI code page, so an Arabic
+    /// name arrives as mojibake; every CSV a person downloads carries it. (Machine files - ERP journals, bank files -
+    /// deliberately do not: their importers reject a BOM.)</summary>
+    public static ReadOnlySpan<byte> Utf8Bom => new byte[] { 0xEF, 0xBB, 0xBF };
+
+    /// <summary>The CSV text as a downloadable byte array: BOM + UTF-8. <c>GetBytes</c> never writes the preamble, which is
+    /// how these exports shipped without one.</summary>
+    public static byte[] ToDownloadBytes(string csv)
+    {
+        var body = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(csv ?? string.Empty);
+        var bytes = new byte[3 + body.Length];
+        bytes[0] = 0xEF; bytes[1] = 0xBB; bytes[2] = 0xBF;
+        body.CopyTo(bytes, 3);
+        return bytes;
     }
 }

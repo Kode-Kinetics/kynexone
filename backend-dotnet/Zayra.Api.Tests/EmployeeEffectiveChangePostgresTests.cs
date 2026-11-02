@@ -889,7 +889,8 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
         {
             var service = new ApprovalWorkflowService(db, new AuditService(db), new HrmHierarchyService(db, new AuditService(db)), dataProtection: Keys);
             await service.DecideAsync(tenant, approvalId, new ApprovalDecisionRequest("Approve", "Checked"),
-                new RequestContext("127.0.0.1", "test", approver ?? Guid.NewGuid(), tenant, ["HR Manager"], []), default);
+                new RequestContext("127.0.0.1", "test", approver ?? Guid.NewGuid(), tenant, ["HR Manager"],
+                    field == "salaryBreakdown" ? ["payroll.approve"] : []), default); // HR makes, Finance approves: a package is decided by a payroll.approve holder
         }
         return changeId;
     }

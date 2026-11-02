@@ -7,7 +7,7 @@ import { normalizeFieldPath, type TreeNode } from '../../lib/companySetupWizard'
  * A row is in exactly one bucket, in the reader's words: added, changed, saved in Step 4 (Addendum B2), staying as it
  * is (unchanged, or a legacy `reuse`), or needing a fix (`conflict`). The count chips filter by bucket.
  */
-export type ReviewBucket = 'add' | 'update' | 'saved' | 'kept' | 'fix';
+export type ReviewBucket = 'add' | 'update' | 'saved' | 'kept' | 'fix' | 'remove';
 
 const ORG_SECTIONS: readonly [PlanArea, OrgSection][] = [['costCentre', 'costCentres'], ['department', 'departments'], ['grade', 'grades'], ['designation', 'designations']];
 const ORG_AREAS = new Set<PlanArea>(ORG_SECTIONS.map(([area]) => area));
@@ -35,6 +35,7 @@ export function reviewBucket(item: PlanItem, saved: ReadonlySet<string>): Review
   if (item.action === 'conflict') return 'fix';
   if (item.action === 'create') return 'add';
   if (item.action === 'update') return 'update';
+  if (item.action === 'remove') return 'remove';
   if (item.action === 'unchanged' && ORG_AREAS.has(item.area) && saved.has(`${item.area}:${reviewCodeKey(item.code)}`)) return 'saved';
   return 'kept';
 }
@@ -42,11 +43,11 @@ export function reviewBucket(item: PlanItem, saved: ReadonlySet<string>): Review
 /** Shown open: what the review is about. Collapsed: what stays as it is. */
 export const isOpenBucket = (b: ReviewBucket) => b !== 'kept';
 
-export interface ReviewCounts { add: number; update: number; saved: number; kept: number; fix: number }
+export interface ReviewCounts { add: number; update: number; saved: number; kept: number; fix: number; remove: number }
 
 /** Every count is the number of rows the chip opens, except `fix`, which also counts the plan's problems (no rows). */
 export function reviewCounts(plan: CompanySetupPlan, saved: ReadonlySet<string>): ReviewCounts {
-  const out: ReviewCounts = { add: 0, update: 0, saved: 0, kept: 0, fix: plan.problems.length };
+  const out: ReviewCounts = { add: 0, update: 0, saved: 0, kept: 0, fix: plan.problems.length, remove: 0 };
   for (const item of plan.items) out[reviewBucket(item, saved)] += 1;
   return out;
 }

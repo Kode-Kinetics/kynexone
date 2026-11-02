@@ -130,21 +130,21 @@ export const essApi = {
   leaveBalance: () => client.get('/api/ess/leave/balance').then((r) => r.data),
   documents: () => client.get<EssDocument[]>('/api/ess/documents').then((r) => r.data),
   hrRequests: () => client.get<EssHrRequest[]>('/api/ess/hr-requests/my').then((r) => r.data),
-  hrRequestDetail: (id: string) => client.get<EssHrRequestDetail>(`/api/ess/hr-requests/${id}`).then((r) => r.data),
-  addHrRequestComment: (id: string, comment: string) => client.post<EssHrRequestComment>(`/api/ess/hr-requests/${id}/comments`, { comment }).then((r) => r.data),
+  hrRequestDetail: (id: string) => client.get<EssHrRequestDetail>(`/api/ess/hr-requests/${encodeURIComponent(id)}`).then((r) => r.data),
+  addHrRequestComment: (id: string, comment: string) => client.post<EssHrRequestComment>(`/api/ess/hr-requests/${encodeURIComponent(id)}/comments`, { comment }).then((r) => r.data),
   createHrRequest: (payload: HrRequestPayload) => client.post('/api/ess/hr-requests', payload).then((r) => r.data),
   askAi: (question: string) => client.post<{ answer: string }>('/api/ess/ai/ask', { question }).then((r) => r.data),
   notifications: () => client.get<EssNotification[]>('/api/ess/notifications').then((r) => r.data),
-  markNotificationRead: (id: string) => client.patch(`/api/ess/notifications/${id}/read`),
+  markNotificationRead: (id: string) => client.patch(`/api/ess/notifications/${encodeURIComponent(id)}/read`),
   myRoster: (from: string, to: string) =>
     client.get<EssRosterEntry[]>('/api/ess/my-roster', { params: { from, to } }).then((r) => r.data),
   /** The caller's own finalised payslips, newest period first. */
   payslips: () => client.get<EssPayslipSummary[]>('/api/ess/payslips').then((r) => r.data),
   /** One of the caller's own payslips, with its lines. A colleague's id answers 404. */
-  payslipDetail: (id: string) => client.get<EssPayslipDetail>(`/api/ess/payslips/${id}`).then((r) => r.data),
+  payslipDetail: (id: string) => client.get<EssPayslipDetail>(`/api/ess/payslips/${encodeURIComponent(id)}`).then((r) => r.data),
   /** Streams the caller's own payslip PDF and saves it. */
   downloadPayslip: (id: string, filename: string) =>
-    client.get(`/api/ess/payslips/${id}/download`, { responseType: 'blob' }).then((r) => {
+    client.get(`/api/ess/payslips/${encodeURIComponent(id)}/download`, { responseType: 'blob' }).then((r) => {
       const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
       const a = document.createElement('a');
       a.href = url;

@@ -53,8 +53,6 @@ movedSectionSpecs([
     ready: page => page.getByRole('button', { name: /Save/i }).first(),
     mocks: { '/api/saudi-compliance/dashboard': SAUDI_DASHBOARD },
     module: { path: '/saudi-compliance', goneTab: 'Configure', door: 'Saudi compliance settings' } },
-  { id: 'countryPayrollKeys', label: 'Country payroll keys', group: 'Payroll & compliance', old: '/tenant-admin?tab=country-rules',
-    ready: page => page.getByRole('button', { name: /Add/i }).first() },
 ]);
 
 test.describe('Talent & compliance: what the move changes beyond the sections', () => {

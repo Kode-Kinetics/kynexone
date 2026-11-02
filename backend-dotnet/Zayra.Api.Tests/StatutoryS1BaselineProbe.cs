@@ -1,4 +1,4 @@
-using Zayra.Api.Application.CountryPack;
+﻿using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.CountryPack.Uae;
 using Zayra.Api.Models;
@@ -43,7 +43,7 @@ public class StatutoryS1BaselineProbe
         var result = await calc.CalculateAsync(new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(20_000m, 0m, 0m, 0m),
-            new DateOnly(2021, 6, 1), new DateOnly(2026, 1, 1),
+            new DateOnly(2021, 6, 1), new DateOnly(2025, 12, 31),
             "Termination", "Indefinite", "IND"));
 
         Assert.Equal(0m, result.TotalGratuity);
@@ -98,7 +98,7 @@ public class StatutoryS1BaselineProbe
         {
             if (dir?.Parent is null) break;
             dir = dir.Parent;
-            var candidate = Path.Combine(dir.FullName, "Zayra.Api", "Controllers", "PayrollController.cs");
+            var candidate = Path.Combine(dir.FullName, "Zayra.Api", "Infrastructure", "Payroll", "PayrollRunProcessor.cs");
             if (File.Exists(candidate)) controller = candidate;
         }
         if (controller is null) return;

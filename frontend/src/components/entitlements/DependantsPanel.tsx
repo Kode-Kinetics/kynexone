@@ -1,5 +1,6 @@
 'use client';
 
+import { useConfirm } from '../ui/useConfirm';
 import { useCallback, useEffect, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
@@ -15,6 +16,7 @@ const EMPTY: DependantInput = { fullName: '', relationship: 'Child', dateOfBirth
  * change is audited on the server. Read-only without employees.write. "No dependants on file" when there are none.
  */
 export function DependantsPanel({ employeeId, onChanged }: { employeeId: number; onChanged?: () => void }) {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { t, locale } = useLocale();
   const { hasPermission } = useAuth();
   const canEdit = hasPermission('employees.write');
@@ -46,7 +48,8 @@ export function DependantsPanel({ employeeId, onChanged }: { employeeId: number;
   };
 
   const remove = async (row: Dependant) => {
-    if (!window.confirm(t('Remove this dependant from the employee’s file?'))) return;
+    const ok = await confirm({ title: t('Remove dependant'), message: t('Remove this dependant from the employee’s file?'), confirmLabel: t('Remove') });
+    if (!ok) return;
     setBusy(true);
     try { await packageApi.removeDependant(employeeId, row.id); await load(); onChanged?.(); }
     catch { setError(t('The dependant could not be removed.')); }
@@ -114,6 +117,7 @@ export function DependantsPanel({ employeeId, onChanged }: { employeeId: number;
           </div>
         </form>
       )}
+      {confirmDialog}
     </section>
   );
 }

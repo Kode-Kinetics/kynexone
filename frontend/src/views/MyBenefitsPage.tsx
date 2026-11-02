@@ -54,7 +54,7 @@ export function MyBenefitsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t("My Benefits")}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t("My Benefits")}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t("Your enrolled benefit plans, employer contributions, and payroll deductions")}</p>
       </div>
 
@@ -99,10 +99,10 @@ export function MyBenefitsPage() {
               <article key={e.id} className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]">
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100">{e.planName}</h2>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{t(e.planType)} · {t(e.coverageTier)}</p>
+                    <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{e.planName}</h2>
+                    <p className="text-caption text-slate-500 dark:text-slate-400">{t(e.planType)} · {t(e.coverageTier)}</p>
                   </div>
-                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${active
+                  <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${active
                     ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[0.12] dark:text-emerald-300'
                     : 'bg-slate-200 text-slate-600 dark:bg-white/[0.08] dark:text-slate-300'}`}>{t(status)}</span>
                 </div>
@@ -121,15 +121,15 @@ export function MyBenefitsPage() {
                 )}
                 {(e.currentEmployeeAmount !== null || !e.paymentPolicy) && (e.currentEmployeeAmount !== null ? (
                   <dl className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-3 text-xs dark:bg-white/[0.03]">
-                    <div><dt className="text-slate-500 dark:text-slate-400">{t('You pay ({frequency})', { frequency: t(e.contributionFrequency || 'Monthly') })}</dt><dd className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{money(e.currentEmployeeAmount)} {e.currency}</dd></div>
-                    <div><dt className="text-slate-500 dark:text-slate-400">{t("Employer pays")}</dt><dd className="font-mono text-sm font-bold text-slate-800 dark:text-slate-100">{money(e.currentEmployerAmount ?? 0)} {e.currency}</dd></div>
+                    <div><dt className="text-slate-500 dark:text-slate-400">{t('You pay ({frequency})', { frequency: t(e.contributionFrequency || 'Monthly') })}</dt><dd className="font-mono text-sm font-semibold text-slate-800 dark:text-slate-100">{money(e.currentEmployeeAmount)} {e.currency}</dd></div>
+                    <div><dt className="text-slate-500 dark:text-slate-400">{t("Employer pays")}</dt><dd className="font-mono text-sm font-semibold text-slate-800 dark:text-slate-100">{money(e.currentEmployerAmount ?? 0)} {e.currency}</dd></div>
                   </dl>
                 ) : (
                   <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">{t("No contribution is currently recorded for this plan.")}</p>
                 ))}
                 {e.assignmentSource === 'IndividualAdditional' && (e.plannedEmployeeCost != null || e.plannedEmployerCost != null) && <details className="mt-3 rounded-lg border border-slate-200 p-3 text-xs dark:border-white/10"><summary className="cursor-pointer font-semibold text-slate-600 dark:text-slate-300">{t('Approved planned costs')}</summary><dl className="mt-2 grid grid-cols-2 gap-2"><div><dt>{t('Planned employer cost')}</dt><dd>{e.plannedEmployerCost == null ? t('Not specified') : format.money(e.plannedEmployerCost, e.currency)}</dd></div><div><dt>{t('Planned employee cost')}</dt><dd>{e.plannedEmployeeCost == null ? t('Not specified') : format.money(e.plannedEmployeeCost, e.currency)}</dd></div></dl>{e.costFrequency && <p className="mt-1">{t(COST_FREQUENCY_LABELS[e.costFrequency])}</p>}<p className="mt-2 text-slate-500 dark:text-slate-400">{t('These are planned costs. Actual contributions and deductions are shown separately.')}</p></details>}
                 {(!e.paymentPolicy || e.deductions.length > 0) && <div className="mt-3 border-t border-slate-100 pt-3 dark:border-white/[0.06]">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t("Payroll deductions")}</p>
+                  <p className="text-caption font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{t("Payroll deductions")}</p>
                   {e.deductions.length === 0 ? (
                     <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t("No benefit deduction has been recorded on payroll yet.")}</p>
                   ) : (

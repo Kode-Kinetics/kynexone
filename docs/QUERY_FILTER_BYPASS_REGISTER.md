@@ -187,3 +187,10 @@ Each site was classified by scanning its full LINQ statement:
 > TenantId alone is never enough on user-triggered paths. Migrate these to
 > `ScopedBypass.ForCompanies`/`TenantWide` and lower the counts. Pre-auth sites (no principal
 > yet) are the legitimate raw-bypass class.
+
+### 6.1 Separation-of-duties additions
+
+| Site | Why the company filter is dropped | Tenant pin |
+|---|---|---|
+| `Controllers/Finance/BonusesController.cs` `RecipientEmployeeIdsAsync` (feeds `CallerIsRecipientAsync` and the up-front second-approver check; 3 → 4) | the payout bar must see every recipient of the batch, whatever the caller's company scope | `e.TenantId == tid` |
+| `Data/ZayraDbContext.cs` configuration-write guard (3 → 4) | needs the tenant's full active company list to decide whether the caller's scope covers it | `c.TenantId == entryTenant` |

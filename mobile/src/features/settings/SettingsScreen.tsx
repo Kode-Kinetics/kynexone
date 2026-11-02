@@ -15,6 +15,8 @@ import { useTranslation } from 'react-i18next';
 import { reloadAppAsync } from 'expo';
 import { setLanguage } from '@/config/i18n';
 import { useAuthStore } from '@/auth/authStore';
+import { useAppLockStore } from '@/safety/appLockStore';
+import { LOCK_TIMEOUT_MINUTES, type LockTimeoutMinutes } from '@/safety/appLockPolicy';
 import { APP_VERSION } from '@/config';
 import { FEATURES } from '@/config/features';
 import { notificationsApi, selfieAttendanceApi } from '@/api/services';
@@ -52,6 +54,10 @@ export default function SettingsScreen() {
   const [pushSaving, setPushSaving] = useState(false);
   const [pushError, setPushError] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const lockPrefs = useAppLockStore((st) => st.prefs);
+  const lockAvailable = useAppLockStore((st) => st.canAuthenticate);
+  const setLockEnabled = useAppLockStore((st) => st.setEnabled);
+  const setLockTimeout = useAppLockStore((st) => st.setTimeoutMinutes);
   const [verification, setVerification] = useState<AttendanceVerification | null>(null);
   const arabic = i18n.language?.startsWith('ar');
   const name = (arabic ? user?.fullNameAr : undefined) || user?.fullName || user?.email || '';
@@ -184,8 +190,36 @@ export default function SettingsScreen() {
             title={t('account.password.title')}
             subtitle={t('account.settings.passwordSub')}
             onPress={() => navigation.navigate('ChangePassword')}
-            isLast
           />
+          <SettingRow
+            icon="lock-closed-outline"
+            title={t('safety.lock.settingsTitle')}
+            subtitle={lockAvailable ? t('safety.lock.settingsBody') : t('safety.lock.notAvailable')}
+            rightElement={
+              <Switch
+                accessibilityLabel={t('safety.lock.settingsTitle')}
+                value={lockPrefs.enabled && lockAvailable}
+                disabled={!lockAvailable}
+                onValueChange={(next) => void setLockEnabled(next)}
+                trackColor={{ false: theme.colors.border, true: theme.colors.primaryFill }}
+                thumbColor={theme.colors.onFill}
+              />
+            }
+            isLast={!(lockPrefs.enabled && lockAvailable)}
+          />
+          {lockPrefs.enabled && lockAvailable ? (
+            <View style={styles.lockTimeout}>
+              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('safety.lock.timeoutLabel')}</Text>
+              <SegmentedControl
+                segments={LOCK_TIMEOUT_MINUTES.map((m) => ({
+                  key: String(m),
+                  label: m === 0 ? t('safety.lock.immediately') : t('safety.lock.minutes', { value: m }),
+                }))}
+                value={String(lockPrefs.timeoutMinutes)}
+                onChange={(key) => void setLockTimeout(Number(key) as LockTimeoutMinutes)}
+              />
+            </View>
+          ) : null}
         </SettingsSection>
 
         <SettingsSection title={t('account.settings.preferences')}>
@@ -330,4 +364,5 @@ const styles = StyleSheet.create({
   settingIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   rowTitle: { fontWeight: '600' },
   languageSwitch: { fontWeight: '600' },
+  lockTimeout: { paddingHorizontal: 16, paddingBottom: 14, gap: 8 },
 });

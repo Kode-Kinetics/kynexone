@@ -68,6 +68,8 @@ export const ESS_SECTIONS: EssSection[] = [
       // Release A (release_a opt-in flag): the employee's own package and deductions.
       { label: 'My package', tab: 'Package', path: '/ess/package', hint: 'Your pay and the benefits fixed for your contract year.', requiredFeatureKey: 'release_a' },
       { label: 'My deductions', tab: 'Deductions', path: '/ess/deductions', hint: 'What is deducted from your pay, why, and what is left to repay.', requiredFeatureKey: 'release_a' },
+      // Loans are the employee's own too: apply, follow the approval and see the repayment, without the admin Loans page.
+      { label: 'My loans', tab: 'Loans', path: '/ess/loans', hint: 'Apply for a loan, follow its approval and see what is left to repay.', requiredPermission: 'loans.self' },
     ],
   },
   {

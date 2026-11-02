@@ -170,12 +170,12 @@ public class EosbUnificationIndependentTests
         var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var empId = SeedKsaEmployee(db, tenantId, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 7, 1), "Resignation");
+        SeedLeaver(db, tenantId, empId, new DateOnly(2023, 6, 30), "Resignation");
         var ctrl = MakeCtrl(db, tenantId);
 
         // 1.5yr resignation (join 2022-01 → 2023-07).
         var result = await ctrl.FinalSettlement(
-            new FinalSettlementRequest(empId, new DateOnly(2023, 7, 1), 0, "Resignation"),
+            new FinalSettlementRequest(empId, new DateOnly(2023, 6, 30), 0, "Resignation"),
             CancellationToken.None);
 
         EosbFrom(result).Should().Be(0m, "Art.85: resignation with < 2 years service earns nil");

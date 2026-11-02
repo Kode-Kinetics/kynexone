@@ -73,6 +73,7 @@ public static class PayrollValidationEngine
     /// held, not deducted, until the punches are corrected (<c>AttendanceDerivedArtifacts.IsHalfPair</c>). So the run
     /// says out loud what it is not deducting, and HR can correct the punches before it is approved.
     /// </summary>
+    public const string NoHolidayCalendar = "WARN_NO_HOLIDAY_CALENDAR";
     public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
@@ -608,6 +609,17 @@ public static class PayrollValidationEngine
                     emp.Id);
         }
 
+        // ── Rule 10a: no public holiday entered for the period ───────────────────
+        // WARN only, never a block: holidays are entered per the company's own policy (Eid dates move with the
+        // moon and are announced late), so a month with none may be right. It is raised so it is never silent:
+        // without an entered holiday an unpunched holiday is an absence, and work on it is paid as an ordinary day.
+        if (ctx.HolidayCalendarCoversPeriod == false && ctx.ActiveEmployees.Count > 0)
+            Warn(NoHolidayCalendar,
+                $"No public holiday is entered for {ctx.Run.Year}-{ctx.Run.Month:D2}. If the company observes a holiday " +
+                "this month (for example Eid, which is set by the moon-sighting announcement), enter it in Setup > Holidays " +
+                "and process attendance again; otherwise employees who did not punch on it are counted absent and the " +
+                "absence is deducted. If there is no holiday this month, no action is needed.");
+
         // ── Rule 10b: attendance this period changed after payroll paid it ─────
         // WARN only — the run never deducts it (paid days raise no new impacts); HR settles it with an adjustment.
         foreach (var group in ctx.HeldMissingPunchDays.GroupBy(d => d.EmployeeId).OrderBy(g => g.Key))
@@ -927,6 +939,13 @@ public sealed record PayrollValidationContext(
     /// disables the check.
     /// </summary>
     public decimal GosiMinContributoryWageOccupationalHazards { get; init; }
+
+    /// <summary>
+    /// Whether the company has any public holiday dated inside the run's period. Null means "not supplied": the
+    /// check is skipped. False raises <c>WARN_NO_HOLIDAY_CALENDAR</c>: with no holiday entered, an unpunched
+    /// holiday is an absence and work on it is paid as an ordinary day.
+    /// </summary>
+    public bool? HolidayCalendarCoversPeriod { get; init; }
 }
 
 /// <summary>

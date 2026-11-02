@@ -17,8 +17,7 @@ namespace Zayra.Api.Tests;
 public class StatutoryEosbWageBaseTests
 {
     private static readonly DateOnly Start2014 = new(2014, 1, 1);
-    // PAY-01: ServiceEndDate is the LAST DAY of service (inclusive), so 12 full years from 2014-01-01 end on 2025-12-31.
-    private static readonly DateOnly End2026   = new(2025, 12, 31);
+    private static readonly DateOnly End2026   = new(2025, 12, 31); // last day served: exactly 12 years
 
     private static EndOfServiceInput Eosb(
         SalaryBreakdown salary, DateOnly start, DateOnly end,
@@ -340,14 +339,14 @@ public class StatutoryEosbWageBaseTests
 
     [Theory]
     [InlineData(2.0, 1.0 / 3.0)]      // exactly 2 years → ⅓
-    [InlineData(5.0, 1.0 / 3.0)]      // exactly 5 years → still ⅓ (inclusive upper bound)
+    [InlineData(5.0, 2.0 / 3.0)]      // exactly 5 years → ⅔ (the bands are 2 to <5 and 5 to <10)
     [InlineData(5.5, 2.0 / 3.0)]      // above 5, below 10 → ⅔
     [InlineData(10.0, 1.0)]           // 10 or more → full
     public async Task Ksa_Art85_ResignationScale_BoundariesAreExact(double years, double expectedFraction)
     {
         var calc = new KsaEndOfServiceCalculator(new StubRuleReader());
         var start = new DateOnly(2010, 1, 1);
-        var end   = start.AddDays((int)Math.Round(years * 365.2425) - 1); // inclusive last day of a whole span
+        var end   = start.AddDays((int)Math.Round(years * 365.2425) - 1); // last day served
         var salary = new SalaryBreakdown(10_000m, 0m, 0m, 0m);
 
         var resigned = await calc.CalculateAsync(Eosb(salary, start, end, reason: "Resignation"));

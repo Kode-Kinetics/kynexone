@@ -50,7 +50,7 @@ function Card({ title, icon, children, status }: {
     <div className={`bg-[#161b22] border ${borderCls} rounded-xl px-5 py-4`}>
       <div className="flex items-center gap-2 mb-3">
         <span className="text-slate-500">{icon}</span>
-        <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest">{title}</p>
+        <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">{title}</p>
       </div>
       {children}
     </div>
@@ -111,7 +111,7 @@ export default function SystemHealthPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">System Health</h1>
+          <h1 className="text-lg font-semibold text-white">System Health</h1>
           <p className="text-xs text-slate-500 mt-0.5">
             {lastChecked
               ? `Last checked ${lastChecked.toLocaleTimeString()}`
@@ -230,7 +230,7 @@ export default function SystemHealthPage() {
                   </span>
                 </div>
                 {diag.maintenance && diag.maintenanceMsg && (
-                  <p className="text-[11px] text-amber-400/70 bg-amber-500/5 border border-amber-500/10 rounded-lg px-3 py-2">
+                  <p className="text-caption text-amber-400/70 bg-amber-500/5 border border-amber-500/10 rounded-lg px-3 py-2">
                     {diag.maintenanceMsg}
                   </p>
                 )}
@@ -278,11 +278,11 @@ export default function SystemHealthPage() {
                     <InfoRow label="Captured by test mode" value={deliveries.captured ?? 0} mono />
                   </>
                 )}
-                <p className={`mt-2 text-[11px] ${deliveries?.status === 'attention' ? 'text-amber-400' : 'text-slate-500'}`}>
+                <p className={`mt-2 text-caption ${deliveries?.status === 'attention' ? 'text-amber-400' : 'text-slate-500'}`}>
                   {deliveries ? deliveryAttentionSummary(deliveries) : 'This server does not report delivery counts yet.'}
                 </p>
                 {(email?.detail || qiwa?.detail) && (
-                  <p className="mt-1 text-[11px] text-slate-500">{[email?.detail, qiwa?.detail].filter(Boolean).join(' ')}</p>
+                  <p className="mt-1 text-caption text-slate-500">{[email?.detail, qiwa?.detail].filter(Boolean).join(' ')}</p>
                 )}
               </div>
             )}
@@ -297,7 +297,7 @@ export default function SystemHealthPage() {
               className="bg-[#161b22] border border-white/[0.04] rounded-xl px-5 py-4 opacity-35">
               <div className="flex items-center gap-2 mb-3">
                 <Circle className="h-3.5 w-3.5 text-slate-700" />
-                <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{c.label}</p>
+                <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">{c.label}</p>
               </div>
               <div className="flex items-center gap-2 py-1">
                 <Circle className="h-3 w-3 text-slate-700" />

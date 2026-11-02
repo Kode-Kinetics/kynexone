@@ -25,14 +25,14 @@ export default function TermsPage() {
 
       <main className="mx-auto max-w-4xl px-6 py-14">
         <div className="mb-12">
-          <p className="mb-2 text-xs font-bold uppercase tracking-widest text-blue-600">Legal</p>
-          <h1 className="text-4xl font-black tracking-tight text-slate-900">Terms of Service</h1>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-600">Legal</p>
+          <h1 className="text-4xl font-semibold tracking-tight text-slate-900">Terms of Service</h1>
           <p className="mt-3 text-base text-slate-500">
             Effective date: <span className="font-medium text-slate-700">{EFFECTIVE_DATE}</span>
           </p>
         </div>
 
-        <div className="space-y-10 text-[15px] leading-relaxed text-slate-700">
+        <div className="space-y-10 text-body leading-relaxed text-slate-700">
 
           <Section title="1. Acceptance">
             <p>
@@ -147,7 +147,7 @@ export default function TermsPage() {
         </div>
       </main>
 
-      <footer className="border-t border-slate-200 bg-white py-8 text-center text-[13px] text-slate-400">
+      <footer className="border-t border-slate-200 bg-white py-8 text-center text-body-sm text-slate-400">
         &copy; {new Date().getFullYear()} Kode Kinetics. All rights reserved.
         &ensp;·&ensp;
         <Link href="/privacy" className="hover:text-slate-600 transition-colors">Privacy Policy</Link>
@@ -161,7 +161,7 @@ export default function TermsPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h2 className="mb-4 text-xl font-bold text-slate-900">{title}</h2>
+      <h2 className="mb-4 text-xl font-semibold text-slate-900">{title}</h2>
       {children}
     </section>
   );

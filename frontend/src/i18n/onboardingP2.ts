@@ -355,7 +355,7 @@ export const onboardingP2Ar: Record<string, string> = {
   'The ID number fails the checksum. Only an authorised HR user can accept it, with a reason.': 'رقم الهوية لا يجتاز فحص الأرقام. لا يعتمده إلا مستخدم موارد بشرية مخوّل مع ذكر السبب.',
   'Accepted. A Finance approver must now approve the new bank details. It cannot be you or the employee. They apply from the day after Finance approves.': 'تم القبول. يجب أن يعتمد مسؤول اعتماد من المالية البيانات البنكية الجديدة، ولا يمكن أن يكون أنت ولا الموظف. تسري من اليوم التالي لاعتماد المالية.',
   'Accepted and applied to the employee record.': 'تم الاعتماد والتطبيق على سجل الموظف.',
-  'Sent back to the employee.': 'تمت الإعادة إلى الموظف.',
+  'Sent back to the employee.': 'أُعيد إلى الموظف.',
   'Attachments': 'المرفقات',
   'Switch company': 'تبديل الشركة',
   'You need the sensitive-data permission to download this file.': 'تحتاج إلى صلاحية البيانات الحساسة لتنزيل هذا الملف.',

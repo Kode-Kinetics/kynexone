@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Seed;
 
@@ -163,7 +163,7 @@ public class StatutoryOvertimeTests
         {
             if (dir?.Parent is null) return null;
             dir = dir.Parent;
-            var candidate = Path.Combine(dir.FullName, "Zayra.Api", "Controllers", "PayrollController.cs");
+            var candidate = Path.Combine(dir.FullName, "Zayra.Api", "Infrastructure", "Payroll", "PayrollRunProcessor.cs");
             if (File.Exists(candidate)) return candidate;
         }
         return null;

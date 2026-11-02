@@ -48,7 +48,7 @@ public sealed class SyntheticBankRecoveryPostgresTests
         Assert.IsType<OkObjectResult>(await ctrl.Import(
             new EmployeesController.ImportEmployeesRequest(firstCsv), default));
         db.ChangeTracker.Clear();
-        var salariesBefore = await db.EmployeeSalaryStructures.AsNoTracking()
+        var salariesBefore = await db.SalaryChangeRequests.AsNoTracking()
             .Where(x => x.TenantId == tid).OrderBy(x => x.EmployeeId).ToListAsync();
         Assert.Equal(count, salariesBefore.Count);
         // Fault injection in an isolated PostgreSQL fixture, never in the live demo database.
@@ -93,7 +93,7 @@ public sealed class SyntheticBankRecoveryPostgresTests
         // Every row whose file bank details differ from what the employee holds is named for approval.
         var expectedApproval = count - (profileAlreadyRepaired ? 1 : 0);
         Assert.Equal(expectedApproval, JsonSerializer.SerializeToElement(result.Value).GetProperty("approvalRequiredCount").GetInt32());
-        var salariesAfter = await db.EmployeeSalaryStructures.AsNoTracking()
+        var salariesAfter = await db.SalaryChangeRequests.AsNoTracking()
             .Where(x => x.TenantId == tid).OrderBy(x => x.EmployeeId).ToListAsync();
         Assert.Equal(salariesBefore.Select(x => (x.Id,x.BasicSalary,x.Currency,x.EffectiveDate)),
             salariesAfter.Select(x => (x.Id,x.BasicSalary,x.Currency,x.EffectiveDate)));
@@ -109,6 +109,6 @@ public sealed class SyntheticBankRecoveryPostgresTests
         db.ChangeTracker.Clear();
         Assert.Equal(count, await db.Employees.CountAsync(x => x.TenantId == tid));
         Assert.Equal(count, await db.EmployeePayrollProfiles.CountAsync(x => x.TenantId == tid));
-        Assert.Equal(count, await db.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tid));
+        Assert.Equal(count, await db.SalaryChangeRequests.CountAsync(x => x.TenantId == tid));
     }
 }

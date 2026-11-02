@@ -1,0 +1,63 @@
+name: DR documents backup
+
+# ON DEMAND ONLY (dispatch). Copies the production documents bucket to a second bucket, preferably
+# at another provider or region. Not scheduled automatically: the owner decides when to switch on
+# a nightly schedule (see docs/runbooks/disaster-recovery.md, "B2 loss", for the cron line to add
+# once the secrets below exist and a dry run has been reviewed).
+#
+# Owner setup, GitHub > Settings > Environments > production > ENVIRONMENT secrets:
+#   SRC_ACCESS_KEY, SRC_SECRET_KEY   READ-ONLY application key on the documents bucket
+#   DST_ACCESS_KEY, DST_SECRET_KEY   WRITE-ONLY (no delete) key on the backup bucket
+# and ENVIRONMENT variables:
+#   SRC_ENDPOINT, SRC_BUCKET, DST_ENDPOINT, DST_BUCKET   (and optional SRC_REGION, DST_REGION)
+# Environment scope on purpose: repository-scope secrets are visible to every workflow on a public repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (list what would be copied, change nothing)'
+        required: true
+        type: boolean
+        default: true
+      max_age:
+        description: 'Only consider objects newer than this (e.g. 3d). Empty = compare everything.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dr-documents-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Copy documents bucket to backup bucket
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install rclone
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rclone
+      - name: Backup
+        env:
+          SRC_ENDPOINT: ${{ vars.SRC_ENDPOINT }}
+          SRC_BUCKET: ${{ vars.SRC_BUCKET }}
+          SRC_REGION: ${{ vars.SRC_REGION }}
+          SRC_ACCESS_KEY: ${{ secrets.SRC_ACCESS_KEY }}
+          SRC_SECRET_KEY: ${{ secrets.SRC_SECRET_KEY }}
+          DST_ENDPOINT: ${{ vars.DST_ENDPOINT }}
+          DST_BUCKET: ${{ vars.DST_BUCKET }}
+          DST_REGION: ${{ vars.DST_REGION }}
+          DST_ACCESS_KEY: ${{ secrets.DST_ACCESS_KEY }}
+          DST_SECRET_KEY: ${{ secrets.DST_SECRET_KEY }}
+          DR_MAX_AGE: ${{ inputs.max_age }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then bash scripts/dr/b2-backup.sh --dry-run; else bash scripts/dr/b2-backup.sh; fi

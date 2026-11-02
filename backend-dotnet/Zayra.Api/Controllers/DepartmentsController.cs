@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -56,7 +57,7 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Create(DepartmentRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        if (!OrgWriteRules.MayCreateInCompany(this, request.CompanyId)) return Forbid();
         // A cost centre or a parent department decides where the department's people cost to: that is the cost-centre permission, not plain org write.
         if ((request.CostCenterId is not null || request.ParentDepartmentId is not null) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         try
@@ -73,7 +74,8 @@ public class DepartmentsController : ControllerBase
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<ActionResult<DepartmentDto>> Update(Guid id, DepartmentRequest request, CancellationToken cancellationToken)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
+        var denied = await OrgWriteRules.GuardEditAsync(this, _organization, OrgRowKind.Department, id, request.CompanyId, cancellationToken);
+        if (denied is not null) return denied;
         try
         {
             var tenantId = this.GetTenantId();
@@ -90,14 +92,15 @@ public class DepartmentsController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [HasPermission("organization.delete")]
     [Authorize(Roles = "Admin,HR Manager")]
-    public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
-    {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return await _organization.DeleteDepartmentAsync(tenantId.Value, id, Context(), cancellationToken) ? NoContent() : NotFound();
-    }
+    public Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RemoveAsync(this, _organization, OrgRowKind.Department, id, Context(), cancellationToken);
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
+        => OrgWriteRules.RestoreAsync(this, _organization, OrgRowKind.Department, id, Context(), cancellationToken);
 
     // ── Export ────────────────────────────────────────────────────────────────
 
@@ -138,7 +141,7 @@ public class DepartmentsController : ControllerBase
         });
 
         var csv = Csv.Build(CsvHeaders, rows);
-        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"departments_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(csv, $"departments_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     // ── Import Template ───────────────────────────────────────────────────────
@@ -146,7 +149,7 @@ public class DepartmentsController : ControllerBase
     [HttpGet("import-template")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public IActionResult ImportTemplate() =>
-        File(Encoding.UTF8.GetBytes(Csv.Template(CsvHeaders, CsvExampleRow)), "text/csv", "departments_import_template.csv");
+        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "departments_import_template.csv");
 
     /// <summary>A department file that names a cost centre or a parent department on any row re-points cost: it needs the cost-centre permission.</summary>
     private static bool CsvSetsCostAttribution(string csv) => Csv.Parse(csv).Any(r =>
@@ -350,9 +353,10 @@ public class DepartmentsController : ControllerBase
             CostCenterId: row.ClearCostCenter ? null : string.IsNullOrWhiteSpace(row.CostCenterCode) ? existing?.CostCenterId : costCentersByCode[OrgCodes.Normalize(row.CostCenterCode)],
             Code: row.Code,
             NameEn: row.NameEn,
-            NameAr: row.NameAr,
-            ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? null : empByCode[OrgCodes.Normalize(row.ManagerCode)],
-            IsActive: row.IsActive,
+            NameAr: string.IsNullOrWhiteSpace(row.NameAr) ? existing?.NameAr : row.NameAr,
+            // A blank cell keeps what the department already has (like the parent and cost-centre links): a trimmed file must not wipe managers, Arabic names or reactivate inactive rows.
+            ManagerEmployeeId: string.IsNullOrWhiteSpace(row.ManagerCode) ? existing?.ManagerEmployeeId : empByCode[OrgCodes.Normalize(row.ManagerCode)],
+            IsActive: row.IsActive ?? existing?.IsActive ?? true,
             CompanyId: companyId,
             Reason: row.ClearParent || row.ClearCostCenter ? reason : null);
 
@@ -394,14 +398,14 @@ public class DepartmentsController : ControllerBase
                 ParentCode: IsClearToken(parentRaw) ? string.Empty : parentRaw,
                 ManagerCode: row.GetValueOrDefault("ManagerEmployeeCode", string.Empty).Trim(),
                 CostCenterCode: IsClearToken(costCentreRaw) ? string.Empty : costCentreRaw,
-                IsActive: !row.TryGetValue("IsActive", out var activeVal) || !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                IsActive: row.TryGetValue("IsActive", out var activeVal) && !string.IsNullOrWhiteSpace(activeVal) ? !string.Equals(activeVal.Trim(), "false", StringComparison.OrdinalIgnoreCase) : null,
                 ClearParent: IsClearToken(parentRaw),
                 ClearCostCenter: IsClearToken(costCentreRaw));
 
             if (string.IsNullOrWhiteSpace(importRow.Code)) importRow.Errors.Add("Code is required");
-            else if (importRow.Code.Length > 20) importRow.Errors.Add("Code must be at most 20 characters");
+            else if (importRow.Code.Length > 40) importRow.Errors.Add("Code must be at most 40 characters");
             if (string.IsNullOrWhiteSpace(importRow.NameEn)) importRow.Errors.Add("NameEn is required");
-            else if (importRow.NameEn.Length > 100) importRow.Errors.Add("NameEn must be at most 100 characters");
+            else if (importRow.NameEn.Length > 180) importRow.Errors.Add("NameEn must be at most 180 characters");
 
             if (!string.IsNullOrWhiteSpace(importRow.Code) && !seenCodes.Add(importRow.Code))
                 importRow.Errors.Add($"Duplicate Code '{importRow.Code}' within this batch");
@@ -499,7 +503,7 @@ public class DepartmentsController : ControllerBase
         string ParentCode,
         string ManagerCode,
         string CostCenterCode,
-        bool IsActive,
+        bool? IsActive,
         bool ClearParent = false,
         bool ClearCostCenter = false)
     {

@@ -17,9 +17,10 @@ const WRITER_SECTIONS = {
   // and payroll read, so those modules' settings are listed in their groups (lib/setupModuleSections.ts).
   'Time & leave': ['Leave types', 'Leave policies', 'Holiday calendars'],
   'Pay & benefits': ['Payslip templates'],
-  'Talent & employee services': ['Onboarding checklists'],
+  // Notifications sits with the employee services (one area taxonomy, 2026-10-26), ahead of the module sections.
+  'Talent & employee services': ['Notifications', 'Onboarding checklists'],
   'Payroll & compliance': ['Country rules', 'Statutory rules', 'Fiscal years', 'Payroll accounting', 'Tax policies'],
-  Workspace: ['Drop-down lists', 'Record numbering', 'Notifications', 'Email delivery', 'Workspace settings', 'Audit log'],
+  Workspace: ['Drop-down lists', 'Record numbering', 'Email delivery', 'Workspace settings', 'Audit log'],
 } as const;
 const ALL_WRITER_SECTIONS = Object.values(WRITER_SECTIONS).flat();
 
@@ -247,7 +248,7 @@ test('a ?tab= deep link opens its section and marks it, even low in the list', a
 });
 
 test('switching section with unsaved work asks first, and Cancel keeps the work', async ({ page }) => {
-  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=onboarding&setting=onboardingChecklists' });
+  await boot(page, { url: '/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=talentServices&setting=onboardingChecklists' });
   const draft = page.getByPlaceholder('Task title', { exact: true });
   await draft.fill('Keep this task');
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
@@ -406,8 +407,8 @@ test('Guided setup is reopened after a visit to another section, and settings ad
   await page.goto(`${gradesUrl.pathname}${gradesUrl.search}`);
   await expect(sectionHeading(page)).toHaveText('Guided setup');
   // From an area page, a settings section and back to Guided setup: still the chooser, not All setup areas.
-  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=payroll');
-  await expect(page.getByRole('heading', { level: 2, name: 'Payroll', exact: true })).toBeVisible();
+  await page.goto('/setup?tab=aiSetup&path=configuration&companyId=fixture-company&area=payrollCompliance');
+  await expect(page.getByRole('heading', { level: 2, name: 'Payroll & compliance', exact: true })).toBeVisible();
   await openSetupSection(page, 'Branches');
   await expect(sectionHeading(page)).toHaveText('Branches');
   expect(new URL(page.url()).searchParams.has('area')).toBe(false);
@@ -431,17 +432,17 @@ test('All setup areas: an overview without the side rail, then a breadcrumb on e
   await expect(page.getByTestId('setup-studio-workspace').getByRole('complementary')).toHaveCount(0);
   // Each area row is its name plus one line of description.
   const payroll = content.getByRole('link', { name: /^Payroll/ });
-  await expect(payroll).toContainText('Salary structures, posting accounts, rates, fiscal years and payslip layouts.');
+  await expect(payroll).toContainText('Accounting, fiscal years, country rules, statutory rules, taxes and compliance profiles.');
   if (isWide(page)) {
     // The area list takes the content width.
     const [contentBox, workspaceBox] = await Promise.all([content.boundingBox(), page.getByTestId('setup-studio-workspace').boundingBox()]);
     expect(Math.abs(contentBox!.width - workspaceBox!.width)).toBeLessThanOrEqual(2);
   }
   await payroll.click();
-  await expect(page.getByRole('heading', { level: 2, name: 'Payroll', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { level: 2, name: 'Payroll & compliance', exact: true })).toBeFocused();
   const crumbs = content.getByRole('navigation', { name: 'Breadcrumb' });
   await expect(crumbs).toHaveText(/All setup areas\s*\/\s*Payroll/);
-  await expect(crumbs.getByText('Payroll', { exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(crumbs.getByText('Payroll & compliance', { exact: true })).toHaveAttribute('aria-current', 'page');
   if (isWide(page)) {
     const rail = page.getByRole('complementary', { name: 'In this area' });
     await expect(rail).toBeVisible();
@@ -449,7 +450,7 @@ test('All setup areas: an overview without the side rail, then a breadcrumb on e
     await shot(page, `${page.viewportSize()!.width}x${page.viewportSize()!.height}-en-area-payroll`);
   }
   await crumbs.getByRole('link', { name: 'All setup areas', exact: true }).click();
-  await expect(page).not.toHaveURL(/area=payroll/);
+  await expect(page).not.toHaveURL(/area=payrollCompliance/);
   await expect(content.getByRole('link', { name: /^Payroll/ })).toBeVisible();
 });
 
@@ -528,6 +529,8 @@ test('a company-scoped group administrator sees only company-owned settings, Cos
   const nav = setupSectionEntries(page);
   await showList(page);
   await expect(nav.getByRole('listitem').getByRole('link')).toHaveText(['Guided setup', 'All setup areas', 'Policy library', 'Companies', 'Branches', 'Cost centres',
+    // Departments, grades and designations are company-owned since the org catalog became per company.
+    'Departments', 'Grades', 'Designations',
     // Modules' configuration keeps each module page's own rule, which company scope never narrowed.
     'Leave types', 'Leave policies', 'Holiday calendars', 'Payslip templates', 'Onboarding checklists', 'Payroll accounting', 'Tax policies', 'Audit log']);
   await openSetupSection(page, 'Cost centres');

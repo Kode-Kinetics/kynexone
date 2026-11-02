@@ -20,6 +20,8 @@ public class ApprovalRecoveryHttpTests
         await using var fixture = new Fixture();
         var fx = await fixture.Start();
         var maker = await fx.NewUserAsync("maker", "employees.write", "employees.read", "employees.approve");
+        // A hire with a salary needs someone else who can approve it before it can be entered at all.
+        await fx.NewUserAsync("finance-reviewer", "payroll.approve");
         using var created = await fx.SendAsync(HttpMethod.Post, "/api/employees", new {
             englishName = "Readiness Recovery", companyId = fx.CompanyId,
             nationality = "Indian",
@@ -161,6 +163,8 @@ public class ApprovalRecoveryHttpTests
         await using var fixture = new Fixture();
         var fx = await fixture.Start();
         var maker = await fx.NewUserAsync("maker", "employees.write", "employees.read", "payroll.approve", "security.manage");
+        // Entering a salaried hire needs a second approver to exist; the maker still cannot approve their own entry.
+        await fx.NewUserAsync("finance-reviewer", "payroll.approve");
         using var created = await fx.SendAsync(HttpMethod.Post, "/api/employees", new {
             englishName = "Queue Recovery", companyId = fx.CompanyId,
             salaryBreakdown = new { basicSalary = 8123m }

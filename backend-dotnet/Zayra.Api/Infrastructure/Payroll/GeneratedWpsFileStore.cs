@@ -18,25 +18,60 @@ public static class GeneratedWpsFileStore
     public const string Schema = "kynexone.wps-generated-file.v1";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
+    /// <summary><paramref name="Meta"/> is optional JSON describing how the file was produced (a custom bank
+    /// template's id, version and definition hash, the batch reference, ...). Absent on older rows.</summary>
     public sealed record Envelope(string Schema, Guid WpsFileBatchId, Guid PaymentBatchId, string FileName, string Format,
-        string Sha256, string ContentBase64);
+        string Sha256, string ContentBase64, string? Meta = null);
 
-    public sealed record StoredFile(string FileName, string Format, byte[] Bytes, string Sha256);
+    public sealed record StoredFile(string FileName, string Format, byte[] Bytes, string Sha256, string? Meta = null);
 
     public static string RowName(Guid wpsFileBatchId) => $"{Prefix}{wpsFileBatchId:D}";
 
     public static string Sha256Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     /// <summary>Stages the row; the caller's SaveChanges commits it with the WPSFileBatch it belongs to.</summary>
-    public static void Stage(ZayraDbContext db, Guid tenantId, Guid paymentBatchId, Guid wpsFileBatchId,
-        string fileName, string format, byte[] bytes) =>
-        db.BankTransferFiles.Add(new BankTransferFile
+    public static BankTransferFile Stage(ZayraDbContext db, Guid tenantId, Guid paymentBatchId, Guid wpsFileBatchId,
+        string fileName, string format, byte[] bytes, string? meta = null)
+    {
+        var row = new BankTransferFile
         {
             TenantId = tenantId, PaymentBatchId = paymentBatchId, FileName = RowName(wpsFileBatchId),
             FileContent = JsonSerializer.Serialize(new Envelope(Schema, wpsFileBatchId, paymentBatchId, fileName, format,
-                Sha256Hex(bytes), Convert.ToBase64String(bytes)), Json),
+                Sha256Hex(bytes), Convert.ToBase64String(bytes), meta), Json),
             CreatedAtUtc = DateTime.UtcNow,
-        });
+        };
+        db.BankTransferFiles.Add(row);
+        return row;
+    }
+
+    /// <summary>
+    /// The stored files of one or more payment batches whose <see cref="Envelope.Format"/> starts with
+    /// <paramref name="formatPrefix"/> (e.g. <c>custom:</c>), oldest first. Each is verified against its own
+    /// SHA-256; a row that no longer matches throws <see cref="InvalidDataException"/> (tampering), never a regenerate.
+    /// </summary>
+    public static async Task<IReadOnlyList<(Guid WpsFileBatchId, Guid PaymentBatchId, StoredFile File)>> ListByFormatPrefixAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> paymentBatchIds, string formatPrefix, CancellationToken ct)
+    {
+        var rows = await db.BankTransferFiles.AsNoTracking()
+            .Where(f => f.TenantId == tenantId && paymentBatchIds.Contains(f.PaymentBatchId) && f.FileName.StartsWith(Prefix))
+            .OrderBy(f => f.CreatedAtUtc).ThenBy(f => f.Id)
+            .Select(f => f.FileContent).ToListAsync(ct);
+        var result = new List<(Guid, Guid, StoredFile)>();
+        foreach (var raw in rows)
+        {
+            Envelope? env;
+            try { env = JsonSerializer.Deserialize<Envelope>(raw, Json); }
+            catch (JsonException e) { throw new InvalidDataException("Stored WPS file envelope is unreadable.", e); }
+            if (env is null || env.Schema != Schema) throw new InvalidDataException("Stored WPS file envelope is unreadable.");
+            if (!env.Format.StartsWith(formatPrefix, StringComparison.Ordinal)) continue;
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(env.ContentBase64); }
+            catch (FormatException e) { throw new InvalidDataException("Stored WPS file envelope is unreadable.", e); }
+            if (Sha256Hex(bytes) != env.Sha256) throw new InvalidDataException("Stored WPS file no longer matches its SHA-256.");
+            result.Add((env.WpsFileBatchId, env.PaymentBatchId, new StoredFile(env.FileName, env.Format, bytes, env.Sha256, env.Meta)));
+        }
+        return result;
+    }
 
     /// <summary>
     /// The stored file for one generation, or null when none was stored (files generated before this
@@ -63,6 +98,6 @@ public static class GeneratedWpsFileStore
             throw new InvalidDataException("Stored WPS file envelope is unreadable.", e);
         }
         if (Sha256Hex(bytes) != env.Sha256) throw new InvalidDataException("Stored WPS file no longer matches its SHA-256.");
-        return new StoredFile(env.FileName, env.Format, bytes, env.Sha256);
+        return new StoredFile(env.FileName, env.Format, bytes, env.Sha256, env.Meta);
     }
 }

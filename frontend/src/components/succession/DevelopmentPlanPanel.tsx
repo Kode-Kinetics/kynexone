@@ -58,7 +58,7 @@ export function DevelopmentPlanPanel({ employeeId, access }: { employeeId: numbe
               ) : undefined} />
           )}
       {current && access.devplansManage && !creating && current.status !== 'Draft' && (
-        <p className="text-[11px] text-slate-500">{t('suc.plan.oneAtATime')}</p>
+        <p className="text-caption text-slate-500">{t('suc.plan.oneAtATime')}</p>
       )}
       {history.length > 0 && (
         <details className="rounded-xl border border-slate-200 p-3 dark:border-white/10" data-testid="suc-plan-history">
@@ -99,7 +99,7 @@ function CreatePlanForm({ employeeId, onCancel, onDone }: { employeeId: number; 
   };
   return (
     <div className="wg-card space-y-3 rounded-2xl p-4" data-testid="suc-plan-form">
-      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('suc.plan.createTitle')}</h3>
+      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('suc.plan.createTitle')}</h3>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('suc.plan.createIntro')}</p>
       <Field id="suc-plan-purpose" label={t('suc.plan.purpose')} hint={t('suc.plan.purposeHint')} error={touched ? problems.purpose : null}>
         <textarea id="suc-plan-purpose" data-testid="suc-plan-purpose" className="input min-h-[72px] w-full" value={purpose} onChange={(e) => setPurpose(e.target.value)} />
@@ -187,12 +187,12 @@ function PlanCard({ plan, access, onChange, onReload, readOnly }: {
       <div className="space-y-1">
         <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="suc-plan-progress">{t(progress.key, progress.params)}</p>
         <ProgressBar percent={plan.progress.percentComplete ?? 0} label={t('suc.plan.progressLabel')} />
-        {plan.status === 'Draft' && manage && <p className="text-[11px] text-slate-500">{t('suc.plan.draftHint')}</p>}
+        {plan.status === 'Draft' && manage && <p className="text-caption text-slate-500">{t('suc.plan.draftHint')}</p>}
       </div>
 
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-xs font-bold uppercase tracking-wide text-slate-500">{t('suc.plan.actions')}</h4>
+          <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t('suc.plan.actions')}</h4>
           {manage && open && !adding && (
             <button type="button" className="btn-secondary gap-1 text-xs" data-testid="suc-action-add" onClick={() => setAdding(true)}>
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />{t('suc.action.add')}
@@ -251,7 +251,7 @@ function ActionRow({ action, canManage, onUpdate, onConfirm, busy }: {
           {action.isOverdue && !closed && <StatusChip label={t('suc.action.overdue')} tone="rose" />}
         </span>
       </div>
-      <p className="text-[11px] text-slate-500" data-testid="suc-action-method">
+      <p className="text-caption text-slate-500" data-testid="suc-action-method">
         {action.completionMethod
           ? t(completionMethodLabel[action.completionMethod])
           : linked

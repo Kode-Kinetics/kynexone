@@ -111,7 +111,7 @@ export function MyOvertimePage() {
                     <input type="time" className={essInput} value={form.end} onChange={(e) => set('end', e.target.value)} />
                   </EssField>
                 </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('An end time earlier than the start time counts as finishing the next morning.')}</p>
+                <p className="text-caption text-slate-500 dark:text-slate-400">{t('An end time earlier than the start time counts as finishing the next morning.')}</p>
                 {types.length > 0 && (
                   <EssField label={t('Overtime type (optional)')}>
                     <select className={essInput} value={form.overtimeTypeId} onChange={(e) => set('overtimeTypeId', e.target.value)}>

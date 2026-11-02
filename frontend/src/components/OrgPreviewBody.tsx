@@ -22,10 +22,10 @@ export function OrgPreviewBody({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2 text-xs">
-        <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-200">{t('{count} rows', { count: preview.received })}</span>
-        <span className="rounded-md bg-emerald-50 px-2 py-1 font-semibold text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">{t('{count} to create', { count: preview.wouldCreate })}</span>
-        <span className="rounded-md bg-sky-50 px-2 py-1 font-semibold text-sky-800 dark:bg-sky-500/10 dark:text-sky-300">{t('{count} to update', { count: org.wouldUpdate })}</span>
-        {rejected > 0 && <span className="rounded-md bg-rose-50 px-2 py-1 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('{count} rejected', { count: rejected })}</span>}
+        <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-200">{t('{count} rows', { count: preview.received })}</span>
+        <span className="rounded-lg bg-emerald-50 px-2 py-1 font-semibold text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300">{t('{count} to create', { count: preview.wouldCreate })}</span>
+        <span className="rounded-lg bg-sky-50 px-2 py-1 font-semibold text-sky-800 dark:bg-sky-500/10 dark:text-sky-300">{t('{count} to update', { count: org.wouldUpdate })}</span>
+        {rejected > 0 && <span className="rounded-lg bg-rose-50 px-2 py-1 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('{count} rejected', { count: rejected })}</span>}
       </div>
 
       {help && <p data-testid="cc-import-help" className="text-xs text-slate-600 dark:text-slate-300">{t(help)}</p>}
@@ -51,7 +51,7 @@ export function OrgPreviewBody({
       <div className="max-h-[45vh] overflow-auto rounded-lg border border-slate-200 dark:border-white/10" tabIndex={0} role="group" aria-label={t('Rows in the file')}>
         <table className="w-full min-w-[560px] text-sm">
           <thead className="sticky top-0 bg-slate-50 dark:bg-slate-900">
-            <tr className="text-start text-[11px] font-bold uppercase text-slate-500">
+            <tr className="text-start text-caption font-semibold uppercase text-slate-500">
               <th scope="col" className="px-3 py-2 text-start">{t('Row')}</th>
               <th scope="col" className="px-3 py-2 text-start">{t('Code')}</th>
               <th scope="col" className="px-3 py-2 text-start">{t('Name')}</th>

@@ -58,3 +58,13 @@ test('public auth routes strip mixed-case security headers and never replay a 40
     else axios.defaults.headers.common.AUTHORIZATION = oldAuthorization;
   }
 });
+
+test('the public client carries the app-version header', () => {
+  const client = createIsolatedPublicAuthClient({
+    baseURL: 'https://api.example.test',
+    timeout: 1000,
+    tenantHeader: 'X-Tenant-Id',
+    extraHeaders: { 'X-KynexOne-App-Version': '1.2.3' },
+  });
+  assert.equal(client.defaults.headers['X-KynexOne-App-Version'], '1.2.3');
+});

@@ -15,7 +15,7 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
   const t = useT();
   if (items.length === 0) {
     return (
-      <p className="flex items-center gap-2 text-[13px] text-emerald-800 dark:text-emerald-300">
+      <p className="flex items-center gap-2 text-body-sm text-emerald-800 dark:text-emerald-300">
         <CheckCircle2 className="h-4 w-4" aria-hidden />{t('Nothing needs attention: no expired records, missing documents, pending corrections or open rule findings.')}
       </p>
     );
@@ -25,7 +25,7 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
   // tooltip and in the accessible name, so the row costs one line of height, not a card grid.
   return (
     <section aria-labelledby="attention-heading" className="flex min-w-0 items-center gap-2 max-sm:flex-wrap">
-      <h2 id="attention-heading" className="me-1 shrink-0 whitespace-nowrap text-[13px] font-semibold text-slate-900 dark:text-white">
+      <h2 id="attention-heading" className="me-1 shrink-0 whitespace-nowrap text-body-sm font-semibold text-slate-900 dark:text-white">
         {t('Needs attention')}
         <span className="ms-1.5 font-medium text-slate-600 dark:text-slate-400">{t('{critical} critical, {review} to review', { critical, review: items.length - critical })}</span>
         {findingsUnavailable && <span className="ms-1.5 font-normal text-slate-600 dark:text-slate-400">({t('Rules check unavailable')})</span>}
@@ -36,10 +36,10 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
           return (
             <li key={it.id} className="min-w-0 shrink">
               <Link href={it.to} title={`${it.detail} (${it.source})`}
-                className={`wg-press group inline-flex h-8 max-w-full items-center gap-2 rounded-full border px-3 text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
+                className={`wg-press group inline-flex h-8 max-w-full items-center gap-2 rounded-full border px-3 text-body-sm outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
                   crit ? 'border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-300 dark:border-rose-400/25 dark:bg-rose-500/10 dark:text-rose-100'
                        : 'border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-300 dark:border-amber-400/25 dark:bg-amber-500/10 dark:text-amber-100'}`}>
-                <span aria-hidden className={`h-2 w-2 shrink-0 ${crit ? 'rounded-[2px] bg-rose-600' : 'rounded-full bg-amber-500'}`} />
+                <span aria-hidden className={`h-2 w-2 shrink-0 ${crit ? 'rounded bg-rose-600' : 'rounded-full bg-amber-500'}`} />
                 <span className="sr-only">{crit ? t('Critical') : t('Warning')}: </span>
                 <span className="min-w-0 truncate font-medium">{it.title}</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-semibold text-sapphire group-hover:underline dark:text-blue-300">

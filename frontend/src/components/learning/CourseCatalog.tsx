@@ -310,7 +310,7 @@ function CourseEditor({ course, onClose, onSaved }: { course: CourseDetail | nul
       )}>
       <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); void save(false); }} noValidate data-testid="course-editor">
         <fieldset className="grid gap-3 sm:grid-cols-2">
-          <legend className="mb-2 text-sm font-bold">{t('About the course')}</legend>
+          <legend className="mb-2 text-sm font-semibold">{t('About the course')}</legend>
           <Field id="lc-code" label={t('Code')} hint={t('Stays the same across versions.')} error={errors.code}>
             <input id="lc-code" className={inputClass('code')} value={code} onChange={(e) => setCode(e.target.value)} disabled={!!course} dir="ltr" aria-describedby={described('code')} maxLength={40} />
           </Field>
@@ -331,7 +331,7 @@ function CourseEditor({ course, onClose, onSaved }: { course: CourseDetail | nul
         </fieldset>
 
         <fieldset className="space-y-3">
-          <legend className="mb-2 text-sm font-bold">{t('Content')}</legend>
+          <legend className="mb-2 text-sm font-semibold">{t('Content')}</legend>
           <div className="flex flex-wrap gap-3" role="radiogroup" aria-label={t('Content type')}>
             {(['Lesson', 'Link', 'Cmi5'] as ContentKind[]).map((k) => (
               <label key={k} className="flex items-center gap-1.5 text-sm">
@@ -372,7 +372,7 @@ function CourseEditor({ course, onClose, onSaved }: { course: CourseDetail | nul
         </fieldset>
 
         <fieldset className="space-y-3">
-          <legend className="mb-2 text-sm font-bold">{t('How it is completed')}</legend>
+          <legend className="mb-2 text-sm font-semibold">{t('How it is completed')}</legend>
           {kind === 'Cmi5' ? (
             <p className="text-xs text-slate-600 dark:text-slate-300">{t('A cmi5 unit is completed only by what the unit itself reports.')}</p>
           ) : (
@@ -456,7 +456,7 @@ function CourseEditor({ course, onClose, onSaved }: { course: CourseDetail | nul
         </fieldset>
 
         <fieldset className="grid gap-3 sm:grid-cols-2">
-          <legend className="mb-2 text-sm font-bold">{t('Certificate')}</legend>
+          <legend className="mb-2 text-sm font-semibold">{t('Certificate')}</legend>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={certificate} onChange={(e) => setCertificate(e.target.checked)} />{t('Issue a certificate on completion')}
           </label>
@@ -469,7 +469,7 @@ function CourseEditor({ course, onClose, onSaved }: { course: CourseDetail | nul
                 <input type="checkbox" checked={verification} onChange={(e) => setVerification(e.target.checked)} data-testid="course-hr-verification" aria-describedby="lc-verification-hint" />
                 {t('HR checks the completion before the certificate is issued')}
               </label>
-              <p id="lc-verification-hint" className="text-[11px] text-slate-500 dark:text-slate-400">
+              <p id="lc-verification-hint" className="text-caption text-slate-500 dark:text-slate-400">
                 {grantsCredential
                   ? t('Recommended. The unit reports completion from the learner’s browser, so its report alone is not proof. HR confirms it in Records.')
                   : t('Only matters when the unit issues a certificate or expires.')}

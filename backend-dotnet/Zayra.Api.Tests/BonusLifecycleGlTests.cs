@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -73,6 +73,7 @@ public class BonusLifecycleGlTests
 
     private static BonusesController MakeBonusCtrl(ZayraDbContext db, Guid tenantId)
     {
+        SalaryApprovalKit.EnsureApprover(db, tenantId); // submitting/approving a batch needs someone else who could approve/release it
         var httpCtx = new DefaultHttpContext { User = Principal(tenantId, "payroll.write", "payroll.approve") };
         var ctrl = new BonusesController(db, new _B1bScope());
         ctrl.ControllerContext = new ControllerContext { HttpContext = httpCtx };
@@ -285,7 +286,7 @@ public class BonusLifecycleGlTests
         (await bonusCtrl.ApproveBatch(batch.Id, new BatchApproveRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
-        (await bonusCtrl.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
+        (await MakeBonusCtrl(db, tid).MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
@@ -465,7 +466,8 @@ public class BonusLifecycleGlTests
         await db.BonusBatches.Where(b => b.Id == batch.Id)
             .ExecuteUpdateAsync(s => s.SetProperty(b => b.Status, "PendingApproval"));
         db.ChangeTracker.Clear();
-        (await bonusCtrl.ApproveBatch(batch.Id, new BatchApproveRequest(null), CancellationToken.None))
+        // A different approver on the replay: the one who approved first may not approve the same batch again.
+        (await MakeBonusCtrl(db, tid).ApproveBatch(batch.Id, new BatchApproveRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
@@ -787,7 +789,7 @@ public class BonusLifecycleGlTests
         db.ChangeTracker.Clear();
 
         await LockRun(db, MakePayrollCtrl(db, tid), run);
-        (await bonusCtrl.MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
+        (await MakeBonusCtrl(db, tid).MarkBatchPaid(batch.Id, new MarkBatchPaidRequest(null), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 

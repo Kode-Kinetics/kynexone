@@ -1,0 +1,21 @@
+<Project>
+  <!-- CI-only experiment for repeated runner shutdowns around full EF-snapshot compiles.
+       A per-invocation compiler releases its working set when compilation ends rather than
+       keeping it in VBCSCompiler during migration checks/the next project. No migration,
+       source, analyzer, test, or security gate is excluded. Runner OOM is NOT yet proven;
+       the resource snapshots below provide evidence rather than treating SIGTERM as proof. -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+
+  <Target Name="KynexCiResourcesBeforeCompile" BeforeTargets="CoreCompile"
+          Condition="'$(GITHUB_ACTIONS)' == 'true' and '$(OS)' == 'Unix'">
+    <Exec Command="bash &quot;$(MSBuildThisFileDirectory)../scripts/ci/build-resource-snapshot.sh&quot; &quot;$(MSBuildProjectName)&quot; before"
+          IgnoreExitCode="true" StandardOutputImportance="High" StandardErrorImportance="High" />
+  </Target>
+  <Target Name="KynexCiResourcesAfterCompile" AfterTargets="CoreCompile"
+          Condition="'$(GITHUB_ACTIONS)' == 'true' and '$(OS)' == 'Unix'">
+    <Exec Command="bash &quot;$(MSBuildThisFileDirectory)../scripts/ci/build-resource-snapshot.sh&quot; &quot;$(MSBuildProjectName)&quot; after"
+          IgnoreExitCode="true" StandardOutputImportance="High" StandardErrorImportance="High" />
+  </Target>
+</Project>

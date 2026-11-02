@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Setup & Administration section navigation: every API call is intercepted by the spec. Start the frontend
 // separately (SETUP_EXPERIENCE_BASE_URL) — this suite never changes a real organization.
 export default defineConfig({
-  testDir: '.', testMatch: /setup-section-navigation\.spec\.ts/, workers: 1, retries: 0, timeout: 60_000,
+  testDir: '.', testMatch: /(setup-section-navigation|setup-removal-safety|setup-rollout)\.spec\.ts/, workers: 1, retries: 0, timeout: 60_000,
   forbidOnly: !!process.env.CI,
   reporter: 'list', outputDir: '/tmp/kynex-setup-section-navigation-results',
   use: { baseURL: process.env.SETUP_EXPERIENCE_BASE_URL || 'http://127.0.0.1:5197', actionTimeout: 10_000, trace: 'retain-on-failure', screenshot: 'only-on-failure' },

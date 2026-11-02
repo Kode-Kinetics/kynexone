@@ -1,4 +1,6 @@
+import type { FloorAcknowledgement, FloorCheck } from '../lib/belowMinimum';
 import client from './client';
+import { setupRowApi } from './orgRows';
 import { type RawImportCommit, toImportResult } from './organization';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -71,6 +73,10 @@ export interface GCCComplianceSetting {
   emiratesIdRequired: boolean;
   ramadanHoursEnabled: boolean;
   ramadanReducedHoursPerDay: number;
+  /** False once Setup's Remove turned the rule off; payroll and compliance ignore it until it is restored. */
+  isActive?: boolean;
+  /** JSON of the acknowledgements held for end-of-service rates set below the Art. 84 floor. */
+  eosbBelowFloorAcksJson?: string | null;
 }
 
 export interface Location {
@@ -97,6 +103,11 @@ export interface FiscalYear {
   endDate: string;
   status: string;
   isCurrent: boolean;
+  /** What this caller may do, and why not (computed by the server from permission, scope and history). */
+  canClose?: boolean;
+  canDelete?: boolean;
+  closeBlockedReason?: string | null;
+  deleteBlockedReason?: string | null;
 }
 
 export interface NotificationTemplate {
@@ -110,6 +121,8 @@ export interface NotificationTemplate {
   bodyAr: string;
   variables: string;
   isActive: boolean;
+  /** Removed while unused; listed only under "Show turned-off", and restorable. */
+  isDeleted?: boolean;
 }
 
 export interface AdminAuditLog {
@@ -164,6 +177,9 @@ export const numberingRulesApi = {
     client.post<NumberingRule>('/api/admin/numbering-rules', body).then(r => r.data),
 
   delete: (id: string) => client.delete(`/api/admin/numbering-rules/${id}`),
+
+  setActive: (id: string, active: boolean) =>
+    client.patch<NumberingRule>(`/api/admin/numbering-rules/${id}/active`, null, { params: { active } }).then(r => r.data),
 };
 
 export const systemSettingsApi = {
@@ -181,8 +197,15 @@ export const gccSettingsApi = {
   list: (countryCode?: string) =>
     client.get<GCCComplianceSetting[]>('/api/admin/gcc-settings', { params: { countryCode } }).then(r => r.data),
 
-  upsert: (body: Partial<GCCComplianceSetting> & { countryCode: string }) =>
+  upsert: (body: Partial<GCCComplianceSetting> & { countryCode: string; acknowledgedWarnings?: FloorAcknowledgement[] }) =>
     client.post<GCCComplianceSetting>('/api/admin/gcc-settings', body).then(r => r.data),
+
+  /** Dry run: the end-of-service legal minimums that apply to these rates, below or not. Saves nothing. */
+  floorCheck: (body: { countryCode: string; eosbYears1To5Rate: number; eosbYearsAbove5Rate: number }) =>
+    client.post<{ checks: FloorCheck[] }>('/api/admin/gcc-settings/floor-check', body).then(r => r.data.checks),
+
+  /** Setup's Remove / Restore: a country rule is turned off, never erased (payroll history refers to it). */
+  removal: setupRowApi('/api/admin/gcc-settings'),
 };
 
 export const fiscalYearsApi = {
@@ -216,8 +239,8 @@ export const locationsApi = {
 };
 
 export const notificationTemplatesApi = {
-  list: (channel?: string) =>
-    client.get<NotificationTemplate[]>('/api/admin/notification-templates', { params: { channel } }).then(r => r.data),
+  list: (channel?: string, includeRemoved = false) =>
+    client.get<NotificationTemplate[]>('/api/admin/notification-templates', { params: { channel, ...(includeRemoved ? { includeRemoved: true } : {}) } }).then(r => r.data),
 
   create: (body: { code: string; eventType: string; channel: string; subjectEn?: string; subjectAr?: string; bodyEn: string; bodyAr?: string; variables?: string }) =>
     client.post<NotificationTemplate>('/api/admin/notification-templates', body).then(r => r.data),
@@ -225,10 +248,36 @@ export const notificationTemplatesApi = {
   update: (id: string, body: Partial<NotificationTemplate>) =>
     client.put<NotificationTemplate>(`/api/admin/notification-templates/${id}`, body).then(r => r.data),
 
-  delete: (id: string) => client.delete(`/api/admin/notification-templates/${id}`),
+  /** Setup's Remove / Restore. */
+  removal: setupRowApi('/api/admin/notification-templates'),
 };
 
 export const adminAuditApi = {
   list: (params: { entityType?: string; from?: string; to?: string; page?: number; pageSize?: number } = {}) =>
     client.get<{ total: number; page: number; pageSize: number; items: AdminAuditLog[] }>('/api/admin/audit-logs', { params }).then(r => r.data),
+};
+
+export interface BelowMinimumItem {
+  source: 'leave_policy' | 'eosb' | 'payroll_rule';
+  code: string;
+  companyId: string | null;
+  companyName: string | null;
+  rule: string;
+  ruleAr: string;
+  subject: string | null;
+  configured: number | null;
+  statutory: number | null;
+  citation: string | null;
+  citationAr: string | null;
+  message: string;
+  messageAr: string | null;
+  acknowledged: boolean;
+  acknowledgedBy: string | null;
+  acknowledgedAtUtc: string | null;
+  note: string | null;
+}
+
+/** "Rules below the legal minimum": every configured rule under a statutory minimum, acknowledged or not. */
+export const belowMinimumApi = {
+  list: () => client.get<{ items: BelowMinimumItem[] }>('/api/compliance/below-minimum').then(r => r.data.items),
 };

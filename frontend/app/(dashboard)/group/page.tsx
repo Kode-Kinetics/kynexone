@@ -85,7 +85,7 @@ export default function GroupDashboardPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Group Overview</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Group Overview</h1>
           <p className="text-xs text-slate-400">{companies.length} legal entit{companies.length === 1 ? 'y' : 'ies'} in view</p>
         </div>
         {createCompany}
@@ -96,13 +96,13 @@ export default function GroupDashboardPage() {
           <div key={c.companyId} className="flex flex-col rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm dark:border-white/[0.06] dark:bg-white/[0.03]">
             <div className="mb-3 flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <h2 className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">{c.name}</h2>
+                <h2 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">{c.name}</h2>
                 <p className="text-xs text-slate-400">{c.code} · {c.countryCode}</p>
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1">
-                {!c.isActive && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>}
-                {c.approvalStatus !== 'Active' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">{c.approvalStatus}</span>}
-                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${c.complianceReady ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[0.12] dark:text-emerald-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-500/[0.12] dark:text-rose-300'}`}>
+                {!c.isActive && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>}
+                {c.approvalStatus !== 'Active' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">{c.approvalStatus}</span>}
+                <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${c.complianceReady ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/[0.12] dark:text-emerald-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-500/[0.12] dark:text-rose-300'}`}>
                   {c.complianceReady ? 'Compliance ready' : `${c.complianceMissingCount} compliance gap${c.complianceMissingCount === 1 ? '' : 's'}`}
                 </span>
               </div>
@@ -115,8 +115,8 @@ export default function GroupDashboardPage() {
               <Metric label="Absences 30d" value={c.absences30d} highlight={c.absences30d > 0} />
               <Metric label="Docs exp. 60d" value={c.expiringDocs60d} highlight={c.expiringDocs60d > 0} />
               <div className="rounded-lg bg-slate-50 p-2 dark:bg-white/[0.04]">
-                <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-400">Payroll</dt>
-                <dd className="mt-0.5 text-xs font-bold text-slate-700 dark:text-slate-200">
+                <dt className="text-caption font-medium uppercase tracking-wide text-slate-400">Payroll</dt>
+                <dd className="mt-0.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
                   {c.latestPayrollStatus ? `${c.latestPayrollStatus} · ${c.latestPayrollPeriod}` : '—'}
                 </dd>
               </div>
@@ -139,8 +139,8 @@ export default function GroupDashboardPage() {
 function Metric({ label, value, highlight = false }: { label: string; value: number; highlight?: boolean }) {
   return (
     <div className="rounded-lg bg-slate-50 p-2 dark:bg-white/[0.04]">
-      <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-400">{label}</dt>
-      <dd className={`mt-0.5 text-sm font-bold ${highlight ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-200'}`}>{value}</dd>
+      <dt className="text-caption font-medium uppercase tracking-wide text-slate-400">{label}</dt>
+      <dd className={`mt-0.5 text-sm font-semibold ${highlight ? 'text-amber-600 dark:text-amber-400' : 'text-slate-700 dark:text-slate-200'}`}>{value}</dd>
     </div>
   );
 }

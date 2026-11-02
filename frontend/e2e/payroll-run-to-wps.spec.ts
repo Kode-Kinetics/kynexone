@@ -271,7 +271,7 @@ test.describe('Payroll — run to WPS file', () => {
         // Open the run's salary register, so `employeeCount` below is corroborated by rendered
         // rows rather than trusted as a lone number on a card.
         await card.click();
-        const registerRows = content(maker).locator('table tbody tr');
+        const registerRows = content(maker).getByTestId('run-slip-register').locator('tbody tr');
         await expect(registerRows.first()).toBeVisible({ timeout: 30_000 });
         const renderedSlips = await registerRows.count();
         expect(renderedSlips, 'a processed run must render one salary slip per employee').toBeGreaterThan(0);
@@ -446,6 +446,14 @@ test.describe('Payroll — run to WPS file', () => {
         await expect(card).toContainText('Approved');
 
         await card.getByRole('button', { name: 'Lock' }).click();
+
+        // Locking is confirmed in the app's dialog, after the approver has read the summary of what is being frozen:
+        // headcount, gross / deductions / net, the change against the previous run, open issues, exclusions, currency.
+        const lockDialog = finance.getByRole('dialog');
+        await expect(lockDialog.getByTestId('lock-summary'), 'the lock summary must be shown before anything is locked').toBeVisible();
+        await expect(lockDialog.getByTestId('lock-summary-headcount')).toContainText(String(employeeCount));
+        await expect(lockDialog.getByTestId('lock-summary-currency')).toContainText(currency);
+        await lockDialog.getByRole('button', { name: 'Lock run' }).click();
 
         await expect(card, 'locking must move the run to Locked').toContainText('Locked', {
           timeout: 90_000,

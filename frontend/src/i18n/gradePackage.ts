@@ -70,6 +70,18 @@ const ar: Record<string, string> = {
   // Payroll → Employee salary: the automatic structure
   "Salary structure": "هيكل الراتب",
   "The employee's grade package (automatic)": "حزمة أجر درجة الموظف (تلقائياً)",
+  // Salary and bonus changes: HR proposes, a different Finance approver decides
+  "Submitted for Finance approval. The new salary applies once a Finance approver, other than you, confirms it.": "تم إرسال التغيير للاعتماد المالي. يسري الراتب الجديد بعد أن يعتمده مسؤول مالي آخر غيرك.",
+  "Pending Finance approval": "بانتظار الاعتماد المالي",
+  "Proposed by": "اقترحه",
+  "Could not record the decision.": "تعذّر تسجيل القرار.",
+  "You cannot change your own salary. Ask another HR administrator to propose it.": "لا يمكنك تغيير راتبك بنفسك. اطلب من مسؤول موارد بشرية آخر اقتراح التغيير.",
+  "You cannot adjust your own leave balance. Ask another HR administrator.": "لا يمكنك تعديل رصيد إجازاتك بنفسك. اطلب ذلك من مسؤول موارد بشرية آخر.",
+  "The person who prepared or submitted a bonus batch cannot approve it. Ask a Finance approver.": "لا يمكن لمن أعدّ دفعة المكافآت أو أرسلها أن يعتمدها. اطلب من مسؤول مالي اعتمادها.",
+  "You are a recipient in this bonus batch, so you cannot approve it. Ask another Finance approver.": "أنت من مستلمي هذه الدفعة، لذا لا يمكنك اعتمادها. اطلب من مسؤول مالي آخر.",
+  "The person who approved a bonus batch cannot also mark it paid. Ask another Finance user.": "لا يمكن لمن اعتمد دفعة المكافآت أن يعلّمها كمدفوعة أيضاً. اطلب من مستخدم مالي آخر.",
+  "Approve": "اعتماد",
+  "Reject": "رفض",
 };
 
 export const gradePackage = {

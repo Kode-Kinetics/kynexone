@@ -12,7 +12,7 @@ Every populated lane requires a well-formed TRX with at least one executed passi
 
 Schema/EF checks retain independent Debug builds, including the rebuild that detects stale migration assemblies. Chrome retains its own revision-marked Release build, and CodeQL retains its traced build. These lanes do not consume the test artifact.
 
-Periodic build diagnostics record bounded memory/cgroup counters, numeric dotnet residency, executable basenames and disk usage without environment values, full process arguments or binary build logs. Historical source-PR #282 builds at head cca1f559 reached roughly 16.2 GB cgroup high water with zero OOM counters, but failed shutdowns lacked termination-time samples. Those are not measurements of this main-derived candidate. The five newly split test lanes reuse one compilation instead of independently compiling; main's previous combined lane already compiled once. This does not establish why the historical runners stopped or prove that shutdowns are fixed.
+Periodic build diagnostics record bounded memory/cgroup counters, numeric dotnet residency, executable basenames and disk usage without environment values, full process arguments or binary build logs. Successful same-head hosted builds have reached roughly 16.2 GB cgroup high water with zero OOM counters, but failed runner shutdowns lack termination-time samples. Reusing one Release compilation removes four duplicate compilations; it does not establish why the previous runners stopped or prove that shutdowns are fixed.
 
 Run script regressions with:
 
@@ -21,5 +21,3 @@ python3 -m unittest discover -s tests/ci -v
 ```
 
 No third-party Python dependency is required.
-
-This isolated release preserves main compiler policy and all non-backend main lanes. It does not copy the source PR's compiler-lifetime target or optional frontend/browser shortcuts.

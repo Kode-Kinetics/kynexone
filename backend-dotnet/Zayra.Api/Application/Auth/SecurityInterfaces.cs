@@ -29,6 +29,34 @@ public interface IAuditService
     Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken);
 
     /// <summary>
+    /// A STANDALONE event: a row that has no business change in the same request to be atomic with, so there
+    /// is nothing to stage ahead of. Denied or failed attempts, refusals, and the after-the-fact summary of a
+    /// platform job that committed its own batches. Anything that changes a record must use <see cref="Stage"/>
+    /// before that record's save instead; the unstaged-caller ratchet counts <see cref="WriteAsync"/> only,
+    /// so using this for a business change would defeat it.
+    /// </summary>
+    Task RecordEventAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken)
+        => WriteAsync(action, entityName, entityId, context, metadata, cancellationToken);
+
+    /// <summary>
+    /// Adds the audit row to the context without saving, so it commits in the SAME SaveChanges (one
+    /// transaction) as the business change that follows. Prefer this over <see cref="WriteAsync"/> on
+    /// any write path where the change must not exist without its audit row.
+    /// </summary>
+    /// <remarks>The default writes immediately through <see cref="WriteAsync"/> so test doubles that
+    /// record or throw on audit keep their behaviour; the only production implementation
+    /// (<c>AuditService</c>) overrides it with a true no-save stage, and a test pins that.</remarks>
+    void Stage(string action, string entityName, string? entityId, RequestContext context, string? metadata) =>
+        WriteAsync(action, entityName, entityId, context, metadata, CancellationToken.None).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Drops audit rows that were staged but not saved. Call it in a catch block that swallows or
+    /// translates a failed save and keeps using the same context, so the unsaved rows cannot commit
+    /// later as a phantom record of something that was rolled back. Test doubles: no-op.
+    /// </summary>
+    void DiscardStaged() { }
+
+    /// <summary>
     /// Adds the audit row to the context WITHOUT saving, so it commits in the SAME SaveChanges as the business change it describes
     /// (<see cref="WriteAsync"/> saves separately, so a failure between the two leaves a change with no audit row). The context seals the
     /// row into the per-tenant hash chain at save, under the same advisory lock every audit write takes.

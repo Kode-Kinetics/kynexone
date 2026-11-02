@@ -6,7 +6,7 @@ interface AvatarProps {
 }
 
 const sizeClasses = {
-  xs: 'h-6 w-6 text-[10px]',
+  xs: 'h-6 w-6 text-caption',
   sm: 'h-7 w-7 text-xs',
   md: 'h-8 w-8 text-xs',
   lg: 'h-10 w-10 text-sm',
@@ -36,7 +36,7 @@ function colorFor(name: string) {
 export function Avatar({ name, size = 'md' }: AvatarProps) {
   return (
     <span
-      className={`grid shrink-0 place-items-center rounded-full font-bold ${sizeClasses[size]} ${colorFor(name)}`}
+      className={`grid shrink-0 place-items-center rounded-full font-semibold ${sizeClasses[size]} ${colorFor(name)}`}
       aria-hidden="true"
     >
       {initials(name)}

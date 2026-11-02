@@ -34,7 +34,7 @@ public class EosbLastDayInclusiveTests
     }
 
     [Theory]
-    [InlineData(2024, 12, 31, 1, 3)]   // exactly 5.0 yrs inclusive -> 1/3 (band is "up to and including 5")
+    [InlineData(2024, 12, 31, 2, 3)]   // exactly 5.0 yrs inclusive -> 2/3 (main: "five years but under ten" is the upper band)
     [InlineData(2025, 1, 1, 2, 3)]     // 5y + 1d -> 2/3 band
     [InlineData(2029, 12, 30, 2, 3)]   // 10y - 1d -> still 2/3
     [InlineData(2029, 12, 31, 1, 1)]   // exactly 10y inclusive -> full

@@ -137,7 +137,7 @@ public class KsaPackTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2024, 1, 1), new DateOnly(2025, 6, 1),
+            new DateOnly(2024, 1, 1), new DateOnly(2025, 5, 31),
             "Resignation", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);

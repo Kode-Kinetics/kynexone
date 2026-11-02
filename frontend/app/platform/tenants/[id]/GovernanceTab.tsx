@@ -83,7 +83,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
 
       {/* Customer governance */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-        <h2 className="mb-1 text-sm font-bold text-white">Customer governance</h2>
+        <h2 className="mb-1 text-sm font-semibold text-white">Customer governance</h2>
         <p className="mb-4 text-xs text-slate-500">Product behavior for this customer — distinct from the commercial limits on the Billing tab.</p>
         <div className="grid gap-4 md:grid-cols-2">
           <div>
@@ -97,7 +97,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
               <option value="SingleCompany">Single company</option>
               <option value="Group">Group (multiple legal entities)</option>
             </select>
-            <p className="mt-1 text-[10px] text-slate-500">Downgrade is blocked while more than one active company exists.</p>
+            <p className="mt-1 text-caption text-slate-500">Downgrade is blocked while more than one active company exists.</p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-400">Company creation mode</label>
@@ -111,14 +111,14 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
               <option value="GroupDraftPlatformApproval">Group drafts + platform approval</option>
               <option value="PlatformControlled">Platform controlled</option>
             </select>
-            <p className="mt-1 text-[10px] text-slate-500">Who creates legal entities for this customer and how they activate.</p>
+            <p className="mt-1 text-caption text-slate-500">Who creates legal entities for this customer and how they activate.</p>
           </div>
         </div>
       </div>
 
       {/* Legal-entity operations */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-        <h2 className="mb-1 text-sm font-bold text-white">Companies (legal entities)</h2>
+        <h2 className="mb-1 text-sm font-semibold text-white">Companies (legal entities)</h2>
         <p className="mb-4 text-xs text-slate-500">{companies.length} compan{companies.length === 1 ? 'y' : 'ies'} in this account</p>
         {companies.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-8 text-center">
@@ -128,7 +128,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
         ) : (
           <table className="w-full text-start text-sm">
             <thead>
-              <tr className="border-b border-white/[0.06] text-[11px] uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-white/[0.06] text-caption uppercase tracking-wide text-slate-500">
                 <th className="px-2 py-2 font-semibold">Company</th>
                 <th className="px-2 py-2 font-semibold">Code</th>
                 <th className="px-2 py-2 font-semibold">Country</th>
@@ -144,11 +144,11 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
                   <td className="px-2 py-2.5 text-slate-400">{c.countryCode}</td>
                   <td className="px-2 py-2.5">
                     {c.approvalStatus === 'Draft' ? (
-                      <span className="rounded-full bg-amber-500/[0.12] px-2 py-0.5 text-[10px] font-semibold text-amber-300">Draft — awaiting approval</span>
+                      <span className="rounded-full bg-amber-500/[0.12] px-2 py-0.5 text-caption font-semibold text-amber-300">Draft — awaiting approval</span>
                     ) : c.isActive ? (
-                      <span className="rounded-full bg-emerald-500/[0.12] px-2 py-0.5 text-[10px] font-semibold text-emerald-300">Active</span>
+                      <span className="rounded-full bg-emerald-500/[0.12] px-2 py-0.5 text-caption font-semibold text-emerald-300">Active</span>
                     ) : (
-                      <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-[10px] font-semibold text-slate-300">Suspended</span>
+                      <span className="rounded-full bg-white/[0.08] px-2 py-0.5 text-caption font-semibold text-slate-300">Suspended</span>
                     )}
                   </td>
                   <td className="px-2 py-2.5 text-end">
@@ -157,7 +157,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
                         type="button"
                         disabled={saving}
                         onClick={() => void approve(c.id)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 transition hover:bg-emerald-500/[0.08] disabled:opacity-40"
+                        className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 px-2.5 py-1 text-caption font-semibold text-emerald-300 transition hover:bg-emerald-500/[0.08] disabled:opacity-40"
                       >
                         <CheckCircle2 className="h-3 w-3" /> Approve
                       </button>

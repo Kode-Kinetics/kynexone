@@ -236,7 +236,7 @@ export default function TenantUsersPage() {
           className="h-8 w-8 flex items-center justify-center text-slate-500 hover:text-white border border-white/10 rounded-lg transition-colors shrink-0">
           <ArrowLeft className="h-4 w-4" />
         </Link>
-        <h1 className="text-lg font-bold text-white">Tenant Users</h1>
+        <h1 className="text-lg font-semibold text-white">Tenant Users</h1>
       </div>
 
       {/* toast */}
@@ -285,7 +285,7 @@ export default function TenantUsersPage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['User', 'Roles', 'Status', 'Flags', 'Joined', ''].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -294,30 +294,30 @@ export default function TenantUsersPage() {
                   <tr key={u.id} className="border-b border-white/[0.04] last:border-0 hover:bg-white/[0.02] transition-colors">
                     <td className="px-4 py-3">
                       <p className="text-sm text-white font-medium">{u.fullName}</p>
-                      <p className="text-[11px] text-slate-600">{u.email}</p>
+                      <p className="text-caption text-slate-600">{u.email}</p>
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex flex-wrap gap-1">
                         {(u.roles ?? []).slice(0, 3).map(r => (
-                          <span key={r} className="text-[10px] bg-white/[0.05] text-slate-400 px-1.5 py-0.5 rounded">{r}</span>
+                          <span key={r} className="text-caption bg-white/[0.05] text-slate-400 px-1.5 py-0.5 rounded">{r}</span>
                         ))}
                         {(u.roles ?? []).length > 3 && (
-                          <span className="text-[10px] text-slate-600">+{u.roles.length - 3}</span>
+                          <span className="text-caption text-slate-600">+{u.roles.length - 3}</span>
                         )}
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${statusBadge(u)}`}>
+                      <span className={`text-caption font-medium px-1.5 py-0.5 rounded border ${statusBadge(u)}`}>
                         {statusLabel(u)}
                       </span>
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
                         {u.mfaEnabled && (
-                          <span title="MFA enabled" className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">MFA</span>
+                          <span title="MFA enabled" className="text-caption bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded">MFA</span>
                         )}
                         {u.mustChangePassword && (
-                          <span title="Must change password" className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded">PWD</span>
+                          <span title="Must change password" className="text-caption bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded">PWD</span>
                         )}
                       </div>
                     </td>
@@ -327,7 +327,7 @@ export default function TenantUsersPage() {
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1 justify-end">
                         <button type="button" onClick={() => openManage(u)}
-                          className="flex items-center gap-1 text-[11px] text-sapphire border border-sapphire/20 hover:border-sapphire/50 px-2 py-1 rounded transition-colors">
+                          className="flex items-center gap-1 text-caption text-sapphire border border-sapphire/20 hover:border-sapphire/50 px-2 py-1 rounded transition-colors">
                           <Edit2 className="h-3 w-3" />
                           Manage
                         </button>
@@ -352,7 +352,7 @@ export default function TenantUsersPage() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
               <div>
                 <p className="text-sm font-semibold text-white">{selected.fullName}</p>
-                <p className="text-[11px] text-slate-600">{selected.email}</p>
+                <p className="text-caption text-slate-600">{selected.email}</p>
               </div>
               <button type="button" title="Close panel" onClick={closePanel} className="h-7 w-7 flex items-center justify-center rounded-lg hover:bg-white/[0.06] text-slate-500 hover:text-white transition-colors">
                 <X className="h-4 w-4" />
@@ -465,7 +465,7 @@ export default function TenantUsersPage() {
 
               {/* ── Quick Actions ─────────────────────────────────────────── */}
               <div className="border-t border-white/[0.06] pt-4 space-y-2">
-                <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider">Quick Actions</p>
+                <p className="text-caption font-semibold text-slate-600 uppercase tracking-wider">Quick Actions</p>
 
                 {selected.isLocked && (
                   <ActionButton icon={Unlock} label="Unlock Account" desc="Clear lockout and re-activate login"
@@ -490,7 +490,7 @@ export default function TenantUsersPage() {
 
               {/* ── Danger Zone ───────────────────────────────────────────── */}
               <div className="border-t border-rose-500/15 pt-4 space-y-2">
-                <p className="text-[10px] font-semibold text-rose-500/70 uppercase tracking-wider">Danger Zone</p>
+                <p className="text-caption font-semibold text-rose-500/70 uppercase tracking-wider">Danger Zone</p>
                 {!confirmDelete ? (
                   <ActionButton icon={Trash2} label="Remove User" desc="Soft-delete this user and revoke all sessions"
                     color="text-rose-400 border-rose-500/20 hover:border-rose-500/40"
@@ -591,7 +591,7 @@ export default function TenantUsersPage() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">{label}</label>
+      <label className="text-caption font-semibold text-slate-500 uppercase tracking-wider">{label}</label>
       {children}
     </div>
   );
@@ -606,7 +606,7 @@ function ActionButton({ icon: Icon, label, desc, color, onClick }: {
       <Icon className="h-4 w-4 shrink-0 mt-0.5" />
       <div className="text-start">
         <p className="text-xs font-medium">{label}</p>
-        <p className="text-[10px] text-slate-600">{desc}</p>
+        <p className="text-caption text-slate-600">{desc}</p>
       </div>
     </button>
   );
