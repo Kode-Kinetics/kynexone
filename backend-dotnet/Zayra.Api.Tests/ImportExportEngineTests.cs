@@ -345,7 +345,7 @@ public class ImportExportEngineTests
         var result = await ctrl.Export(CancellationToken.None);
 
         var fileResult = Assert.IsType<FileContentResult>(result);
-        var content = System.Text.Encoding.UTF8.GetString(fileResult.FileContents);
+        var content = System.Text.Encoding.UTF8.GetString(fileResult.FileContents).TrimStart('\uFEFF');
         Assert.Contains("Code,NameEn,NameAr,ParentDepartmentCode,ManagerEmployeeCode,CostCenterCode,IsActive", content);
         Assert.Contains("EXP-001", content);
         Assert.Contains("EXP-002", content);
@@ -560,7 +560,7 @@ public class ImportExportEngineTests
         var result = await ctrlA.Export(CancellationToken.None);
 
         var file = Assert.IsType<FileContentResult>(result);
-        var csv = Encoding.UTF8.GetString(file.FileContents);
+        var csv = Encoding.UTF8.GetString(file.FileContents).TrimStart('\uFEFF');
 
         Assert.Contains("A-DEPT", csv);
         Assert.DoesNotContain("B-DEPT", csv);

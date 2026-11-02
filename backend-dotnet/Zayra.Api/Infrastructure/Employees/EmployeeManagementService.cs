@@ -17,6 +17,7 @@ using Zayra.Api.Infrastructure.Entitlements;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Employees;
@@ -105,7 +106,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (includeSensitive)
             await _audit.WriteAsync("employee.sensitive_viewed", "Employee", id.ToString(), context, null, cancellationToken);
 
-        return EmployeeDetailDto.Project(
+        var detail = EmployeeDetailDto.Project(
             employee,
             includeSensitive,
             includeSensitive ? await _db.EmployeePayrollProfiles.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted, cancellationToken) : null,
@@ -117,6 +118,26 @@ public class EmployeeManagementService : IEmployeeManagementService
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
             CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
         };
+        // A new hire's first package waits for Finance as a pending request: no salary row exists yet, but the pay HR typed must not look
+        // lost when the draft is reopened. It is shown (marked Pending, never as approved pay) to exactly the callers who see applied pay.
+        if (includeSensitive && detail.SalaryBreakdown is null
+            && await Onboarding.CompensationApprovalGate.PendingFirstPackageAsync(_db, tenantId, id, cancellationToken) is { } pending)
+        {
+            var structureCode = await _db.SalaryStructures.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && s.Id == pending.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+            var staged = new EmployeeSalaryBreakdownRequest(pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
+                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency);
+            detail = detail with
+            {
+                SalaryBreakdown = staged,
+                Salary = detail.Salary is > 0m ? detail.Salary : EmployeeSalaryBreakdownChanges.Gross(staged),
+                PayrollProfileCode = string.IsNullOrWhiteSpace(detail.PayrollProfileCode) ? structureCode : detail.PayrollProfileCode,
+                PayrollProfile = detail.PayrollProfile is { } pp && string.IsNullOrWhiteSpace(pp.SalaryStructureReference)
+                    ? pp with { SalaryStructureReference = structureCode } : detail.PayrollProfile,
+                SalaryApprovalState = "Pending",
+            };
+        }
+        return detail;
     }
 
     /// <summary>
@@ -184,11 +205,18 @@ public class EmployeeManagementService : IEmployeeManagementService
         // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
         // rationale as the work email below: it is resolved once the legal entity is final.
         await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
+        // PROBATION vs THE COMPANY'S OWN MAXIMUM: advisory 409 until acknowledged; the override is audited after the save.
+        var probationFinding = await ProbationRuleGate.CheckAsync(_db, tenantId, employee.CompanyId,
+            employee.ProbationStartDate ?? DateOnly.FromDateTime(employee.JoiningDate), employee.ProbationEndDate, cancellationToken);
+        if (probationFinding is not null && !request.AcknowledgeProbationOverLimit) throw new ProbationOverLimitException(probationFinding);
         // AUTO-DERIVE WORK EMAIL (server-authoritative) — runs AFTER CompanyId is finalized so it uses the
         // EMPLOYING company's domain (multi-company req). Sets employee.WorkEmail; may throw
         // WorkEmailConflictException for a user-supplied duplicate (the one deliberate stop). Audited post-persist.
         var workEmailAudit = await ResolveWorkEmailAsync(employee, request, tenantId, priorWorkEmail: string.Empty, isUpdate: false, context, cancellationToken);
-        await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true, request.AcknowledgedWarnings);
+        var stagedGross = await ValidatePositionAndSalaryAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken, isNewEmployee: true, request.AcknowledgedWarnings);
+        // The first package waits for a Finance approver who is not the maker: refuse BEFORE anything is saved when nobody could ever approve it.
+        if (stagedGross > 0 && !await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.ExistsAsync(_db, tenantId, "payroll.approve", context.UserId, null, employee.CompanyId, cancellationToken))
+            throw new Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException("payroll.approve", "adding an employee with a salary", "إضافة موظف براتب");
         // Release A: blank cash allowances are filled from Benefits by grade, or refused with the reason — before anything is saved.
         var salaryBreakdown = await PrefillSalaryFromMatrixAsync(employee, request.SalaryBreakdown, tenantId, cancellationToken);
         // Reject a bad IBAN BEFORE persisting anything (position/salary already validate pre-save), so a
@@ -219,7 +247,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 await SynchronizePositionIncumbencyAsync(employee, null, context, cancellationToken);
 
                 await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-                await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: true);
+                await StageFirstSalaryPackageAsync(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: true);
                 await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
                 // Grade defaults are part of the hire transaction, before any individual HR exceptions.
                 await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
@@ -274,7 +302,13 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Stamp the readiness badge now that the employee + payroll/compliance rows are persisted.
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.created", "Employee", employee.Id.ToString(), context, null, cancellationToken);
+        // Employee.Id is database-generated (int): the audit row needs the saved key, so this one stays after the save.
+        // Both rows are staged against the saved key and commit together in one save, in this order.
+        _audit.Stage("employee.created", "Employee", employee.Id.ToString(), context, null);
+        if (probationFinding is not null)
+            _audit.Stage("employee.probation_over_limit_acknowledged", "Employee", employee.Id.ToString(), context,
+                ProbationRuleGate.AuditJson(probationFinding, employee.ProbationStartDate, employee.ProbationEndDate));
+        await _db.SaveChangesAsync(cancellationToken);
         await WriteWorkEmailAuditsAsync(employee, workEmailAudit, context, cancellationToken);
         await WriteWarningOverrideAuditAsync(employee.Id, request, context, cancellationToken);
         var workEmailHasExistingLogin = await WorkEmailLoginGuard.BelongsToExistingLoginAsync(_db, tenantId, employee.WorkEmail, cancellationToken);
@@ -349,6 +383,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
+        var priorProbation = (employee.ProbationStartDate, employee.ProbationEndDate);
         var editAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // A change to an EXISTING employee's attribution counts toward lock SoD; the form already staged the override row with its reason.
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, editAttributionBefore, context.UserId, cancellationToken,
@@ -358,6 +393,18 @@ public class EmployeeManagementService : IEmployeeManagementService
         // kept, a blank one adopts the company's, so editing a record heals a country left blank by an
         // earlier create or import.
         await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
+        // Only a CHANGE of the probation dates is checked: an unrelated edit of an older, longer record is never blocked.
+        ProbationFinding? probationFinding = null;
+        if (priorProbation != (employee.ProbationStartDate, employee.ProbationEndDate))
+        {
+            probationFinding = await ProbationRuleGate.CheckAsync(_db, tenantId, employee.CompanyId,
+                employee.ProbationStartDate ?? DateOnly.FromDateTime(employee.JoiningDate), employee.ProbationEndDate, cancellationToken);
+            if (probationFinding is not null && !request.AcknowledgeProbationOverLimit)
+            {
+                _db.ChangeTracker.Clear();
+                throw new ProbationOverLimitException(probationFinding);
+            }
+        }
         // AUTO-DERIVE / VALIDATE WORK EMAIL against the (possibly reassigned) EMPLOYING company's domain, and
         // run the login-identity rename guard (keeps a linked User in sync; blocks a rename that would collide
         // with another login). Throws before any persist on a user-supplied duplicate / rename collision.
@@ -369,7 +416,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.UpdatedBy = context.UserId;
         employee.ProfileCompletenessScore = CalculateCompleteness(employee, request.PayrollProfile, request.ComplianceRecords);
         await UpsertPayrollProfile(employee, request.PayrollProfile, context, cancellationToken);
-        await UpsertEmployeeSalaryStructure(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
+        // Changing an EXISTING employee's pay is a salary change (HR proposes, Finance approves) or an approved employee change,
+        // never a side effect of saving the profile: the breakdown only writes when the employee has no active salary yet.
+        var hasActiveSalary = await _db.EmployeeSalaryStructures.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.IsActive, cancellationToken);
+        if (!hasActiveSalary)   // a pending first package is kept when the figures are unchanged and replaced when they differ (the writer decides)
+            await StageFirstSalaryPackageAsync(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
@@ -397,6 +448,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         await Onboarding.CompensationApprovalGate.ReconcileAsync(_db, employee, priorPay, context, cancellationToken);
         await RefreshReadinessSnapshotAsync(employee, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
+        if (probationFinding is not null)
+            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, "employee.probation_over_limit_acknowledged", "Employee", id.ToString(),
+                context with { TenantId = tenantId }, ProbationRuleGate.AuditJson(probationFinding, employee.ProbationStartDate, employee.ProbationEndDate)));
         var updateAudit = AuthAuditEntry.Create(updateAuditId, DateTime.UtcNow, "employee.updated", "Employee", id.ToString(), context with { TenantId = tenantId });
         updateAudit.CompanyId = employee.CompanyId;
         _db.AuditLogs.Add(updateAudit);
@@ -656,6 +710,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 {
                     Id = separationId,
                     TenantId = tenantId,
+                    CompanyId = employee.CompanyId,
                     EmployeeId = id,
                     EmployeeName = employee.FullName,
                     EmployeeCode = employee.EmployeeCode,
@@ -1090,9 +1145,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             db, tenantId, employeeId, deactivateSalaryStructure, context, cancellationToken);
         if (profileDeactivated > 0 || salaryDeactivated > 0)
         {
+            audit.Stage("employee.payroll_footprint_deactivated", "Employee", employeeId.ToString(),
+                context, JsonSerializer.Serialize(new { reason, salaryDeactivated, profileDeactivated }));
             await db.SaveChangesAsync(cancellationToken);
-            await audit.WriteAsync("employee.payroll_footprint_deactivated", "Employee", employeeId.ToString(),
-                context, JsonSerializer.Serialize(new { reason, salaryDeactivated, profileDeactivated }), cancellationToken);
         }
         return profileDeactivated + salaryDeactivated;
     }
@@ -1227,8 +1282,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             RequestedByUserId = context.UserId
         };
         _db.EmployeeTransferRequests.Add(transfer);
+        _audit.Stage("employee.transfer_requested", "EmployeeTransferRequest", transfer.Id.ToString(), context, null);
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.transfer_requested", "EmployeeTransferRequest", transfer.Id.ToString(), context, null, cancellationToken);
         return transfer;
     }
 
@@ -1377,9 +1432,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (request.IsRequired.HasValue) doc.IsRequired = request.IsRequired.Value;
         if (request.Notes is not null) doc.Notes = request.Notes.Trim();
 
+        _audit.Stage("employee.document_updated", "EmployeeDocument", doc.Id.ToString(), context,
+            JsonSerializer.Serialize(new { documentType = doc.DocumentType, category = doc.DocumentCategory, expiryDate = doc.ExpiryDate }));
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.document_updated", "EmployeeDocument", doc.Id.ToString(), context,
-            JsonSerializer.Serialize(new { documentType = doc.DocumentType, category = doc.DocumentCategory, expiryDate = doc.ExpiryDate }), cancellationToken);
         return doc;
     }
 
@@ -1417,9 +1472,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         doc.ApprovalStatus = "Rejected";
         doc.Notes = string.IsNullOrWhiteSpace(doc.Notes) ? reason.Trim() : doc.Notes + " | Rejection: " + reason.Trim();
 
+        _audit.Stage("employee.document_rejected", "EmployeeDocument", doc.Id.ToString(), context,
+            JsonSerializer.Serialize(new { before, after = "Rejected", reason, documentType = doc.DocumentType }));
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.document_rejected", "EmployeeDocument", doc.Id.ToString(), context,
-            JsonSerializer.Serialize(new { before, after = "Rejected", reason, documentType = doc.DocumentType }), cancellationToken);
 
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
         if (employee?.UserAccountId is not null)
@@ -1440,9 +1495,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         doc.DeletedAtUtc = DateTime.UtcNow;
         doc.DeletedBy = context.UserId;
 
+        _audit.Stage("employee.document_archived", "EmployeeDocument", doc.Id.ToString(), context,
+            JsonSerializer.Serialize(new { documentType = doc.DocumentType, archivedBy = context.UserId }));
         await _db.SaveChangesAsync(cancellationToken);
-        await _audit.WriteAsync("employee.document_archived", "EmployeeDocument", doc.Id.ToString(), context,
-            JsonSerializer.Serialize(new { documentType = doc.DocumentType, archivedBy = context.UserId }), cancellationToken);
         return true;
     }
 
@@ -1831,7 +1886,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.WpsBankDetails = profile.PaymentMethod;
     }
 
-    private async Task ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken,
+    /// <summary>Returns the gross of the package that will be STAGED (0 when there is none), so a hire can be refused up front when
+    /// no second person could ever approve it.</summary>
+    private async Task<decimal> ValidatePositionAndSalaryAsync(Employee employee, EmployeeSalaryBreakdownRequest? salary, Guid tenantId, CancellationToken cancellationToken,
         bool isNewEmployee, IReadOnlyCollection<Zayra.Api.Application.Employees.Onboarding.AcknowledgedWarning>? acknowledged = null)
     {
         if (employee.PositionId is not null)
@@ -1886,7 +1943,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // the grade's housing is the salary, not the 4,800 alone.
         var package = await EmployeeSalaryBreakdownWriter.EnsureKnownStructureAsync(_db, employee, salary, cancellationToken, fillOmittedFromGrade: isNewEmployee);
 
-        if (employee.GradeId is null) return;
+        if (employee.GradeId is null) return GrossSalary(package);
 
         var grade = await _db.Grades
             .AsNoTracking()
@@ -1895,17 +1952,17 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.Grade = grade.Code;
 
         var grossSalary = GrossSalary(package);
-        if (grossSalary <= 0) return;
+        if (grossSalary <= 0) return 0m;
         var belowMin = grade.MinSalary > 0 && grossSalary < grade.MinSalary;
         var aboveMax = grade.MaxSalary > 0 && grossSalary > grade.MaxSalary;
-        if (!belowMin && !aboveMax) return;
+        if (!belowMin && !aboveMax) return grossSalary;
         if (_inputGuard is not null)
         {
             // With the onboarding guard in place the grade band is a statutory-floor style WARNING (G08): acknowledged
             // with a reason it saves, otherwise the caller gets the 409 warning shape instead of a hard 400.
             // The guard has already checked the reason's length; here only its presence matters.
             const string code = Zayra.Api.Application.Employees.Onboarding.EmployeeWarningCodes.GradeBandOutOfRange;
-            if (acknowledged?.Any(a => a.Code == code) == true) return;
+            if (acknowledged?.Any(a => a.Code == code) == true) return grossSalary;
             throw new Zayra.Api.Application.Employees.Onboarding.EmployeeWarningsRequireAckException([
                 new Zayra.Api.Application.Employees.Onboarding.EmployeeWarning(code, "salaryBreakdown",
                     "Total pay is outside the salary band of the selected grade.")]);
@@ -1944,9 +2001,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// writes no salary, so changing an existing employee's grade never rewrites their pay outside the approved
     /// salary-change path.
     /// </summary>
-    private Task UpsertEmployeeSalaryStructure(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken,
+    private Task StageFirstSalaryPackageAsync(Employee employee, EmployeeSalaryBreakdownRequest? request, RequestContext context, CancellationToken cancellationToken,
         bool isNewEmployee)
-        => EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, request, context, cancellationToken, fillOmittedFromGrade: isNewEmployee);
+        => EmployeeSalaryBreakdownWriter.StageFirstPackageAsync(_db, employee, request, context, cancellationToken, fillOmittedFromGrade: isNewEmployee);
 
     private static DateOnly SalaryEffectiveDate(Employee employee, EmployeeSalaryBreakdownRequest? request) =>
         request?.EffectiveDate ?? DateOnly.FromDateTime(employee.JoiningDate == default ? DateTime.UtcNow : employee.JoiningDate);

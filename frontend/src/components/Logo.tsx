@@ -68,10 +68,10 @@ export function Logo({ collapsed, size = 'md', theme = 'light' }: LogoProps) {
 
       {!collapsed && (
         <div className="min-w-0 leading-tight">
-          <p className={`truncate text-[15px] font-bold tracking-tight ${inverse ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
+          <p className={`truncate text-body font-semibold tracking-tight ${inverse ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
             Kynex<span className={inverse ? 'text-cyan-300' : 'text-blue-600 dark:text-cyan-300'}>One</span>
           </p>
-          <p className={`truncate text-[10px] font-medium tracking-wide ${inverse ? 'text-white/55' : 'text-slate-400'}`}>
+          <p className={`truncate text-caption font-medium tracking-wide ${inverse ? 'text-white/55' : 'text-slate-400'}`}>
             Workforce Platform
           </p>
         </div>

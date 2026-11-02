@@ -37,6 +37,7 @@ import {
   type LetterServerError,
   type LetterType,
 } from './letterRequest';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
 
 type LoadState =
   | { kind: 'loading' }
@@ -58,6 +59,7 @@ function failure(error: unknown): { status?: number; code?: string; message?: st
 }
 
 export default function LettersScreen() {
+  useSensitiveScreen('letters');
   const { t, i18n } = useTranslation();
   const { theme } = useTheme();
   const f = useFormat();

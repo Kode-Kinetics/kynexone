@@ -8,9 +8,21 @@ import axios, {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from 'axios';
-import { APP_CONFIG, API_TIMEOUT_MS } from '@/config';
+import { APP_CONFIG, APP_VERSION, APP_VERSION_HEADER, API_TIMEOUT_MS } from '@/config';
 import { tokenStorage, clearAllAuthData } from '@/storage';
+import i18n from '@/config/i18n';
 import { createIsolatedPublicAuthClient } from './publicAuthClient';
+import { ResponseShapeError, validateRefreshResponse, validateResponse } from './schemas';
+import { useCompatibilityStore } from '@/safety/compatibilityStore';
+import { reportError } from '@/observability/reportError';
+import {
+  NoRefreshTokenError,
+  isDefinitiveAuthRefusal,
+  localizedErrorKey,
+  retryTransient,
+  shouldRetryGet,
+  backoffDelayMs,
+} from './sessionErrors';
 
 // We lazily import authStore to avoid circular deps
 let _onSessionExpired: (() => void) | null = null;
@@ -31,6 +43,7 @@ export function createPublicAuthClient(): AxiosInstance {
     baseURL: APP_CONFIG.API_BASE_URL,
     timeout: API_TIMEOUT_MS,
     tenantHeader: APP_CONFIG.TENANT_HEADER,
+    extraHeaders: { [APP_VERSION_HEADER]: APP_VERSION },
   });
 
   client.interceptors.response.use(
@@ -41,6 +54,41 @@ export function createPublicAuthClient(): AxiosInstance {
     },
   );
   return client;
+}
+
+function guardRefresh(data: unknown) {
+  try {
+    return validateRefreshResponse(data);
+  } catch (error) {
+    noteShapeMismatch(error, true);
+    throw error;
+  }
+}
+
+/**
+ * A reply that no longer matches this app version: say so plainly (never a crash or NaN), tell the
+ * UI to offer the update, and report the route (never the values) to crash reporting.
+ */
+function noteShapeMismatch(error: unknown, blocking = false): void {
+  if (!(error instanceof ResponseShapeError)) return;
+  error.message = i18n.t('safety.update.degraded');
+  useCompatibilityStore.getState().flag(blocking);
+  reportError(error, { source: 'api.schema', tags: { route: error.route, issues: error.issues.join(',') } });
+}
+
+function guard<T>(method: string, url: string, data: T): T {
+  try {
+    return validateResponse(method, url, data);
+  } catch (error) {
+    noteShapeMismatch(error, url.split('?')[0] === '/auth/me');
+    throw error;
+  }
+}
+
+/** Words the errors the app itself owns (permission, lock, connectivity) in the user's language. */
+function localizeError(error: any): void {
+  const key = localizedErrorKey(error);
+  if (key) error.message = i18n.t(key);
 }
 
 function applyServerMessage(error: any): void {
@@ -69,19 +117,22 @@ function getOrStartRefresh(): Promise<string> {
 
 async function refreshAccessToken(): Promise<string> {
   const refreshToken = await tokenStorage.getRefreshToken();
-  if (!refreshToken) throw new Error('No refresh token');
+  if (!refreshToken) throw new NoRefreshTokenError();
 
-  const response = await createPublicAuthClient().post<{
-    accessToken: string;
-    refreshToken: string;
-    expiresAtUtc: string;
-  }>(
-    '/auth/refresh',
-    { refreshToken },
-    { timeout: 10_000 },
+  // A weak signal is not a sign-out: transient failures are retried with backoff
+  // here, and the caller keeps the session if they still fail.
+  const response = await retryTransient(
+    () =>
+      createPublicAuthClient().post<{
+        accessToken: string;
+        refreshToken: string;
+        expiresAtUtc: string;
+      }>('/auth/refresh', { refreshToken }, { timeout: 10_000 }),
+    { retries: 2, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), jitter: Math.random },
   );
 
-  const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = response.data;
+  // A refresh reply without real tokens must not be saved over the working ones.
+  const { accessToken, refreshToken: newRefreshToken, expiresAtUtc } = guardRefresh(response.data);
   const expiresAt = new Date(expiresAtUtc).getTime();
   await tokenStorage.saveTokens({ accessToken, refreshToken: newRefreshToken, expiresAt });
   return accessToken;
@@ -93,6 +144,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
     timeout: API_TIMEOUT_MS,
     headers: {
       'Content-Type': 'application/json',
+      [APP_VERSION_HEADER]: APP_VERSION,
       [APP_CONFIG.TENANT_HEADER]: tenantId,
     },
   });
@@ -125,6 +177,7 @@ export function createApiClient(tenantId: string): AxiosInstance {
     async (error) => {
       const originalRequest = error.config as InternalAxiosRequestConfig & {
         _retry?: boolean;
+        _getRetries?: number;
       };
       if (__DEV__) {
         const method = originalRequest?.method?.toUpperCase() ?? 'GET';
@@ -132,6 +185,14 @@ export function createApiClient(tenantId: string): AxiosInstance {
           `[API] ERROR ${error.response?.status ?? 'NETWORK'} ${method} ${originalRequest?.url ?? ''}`,
           error.response?.data ?? error.message
         );
+      }
+
+      // Reads on a weak connection are replayed (twice, with backoff) before the screen sees an error.
+      const attempt = originalRequest?._getRetries ?? 0;
+      if (originalRequest && shouldRetryGet(originalRequest.method, error, attempt)) {
+        originalRequest._getRetries = attempt + 1;
+        await new Promise((resolve) => setTimeout(resolve, backoffDelayMs(attempt, Math.random(), 800, 4000)));
+        return client(originalRequest);
       }
 
       // Only attempt token refresh for requests that were already authenticated.
@@ -146,8 +207,15 @@ export function createApiClient(tenantId: string): AxiosInstance {
           originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
           return client(originalRequest);
         } catch (refreshError) {
-          await clearAllAuthData();
-          _onSessionExpired?.();
+          // Only a definitive refusal (401/403/423, revoked grant, no token) ends the
+          // session. Timeouts, offline and 5xx keep the tokens so the next request
+          // or the retry screen can recover without a fresh password + 2FA.
+          if (isDefinitiveAuthRefusal(refreshError)) {
+            await clearAllAuthData();
+            _onSessionExpired?.();
+          } else {
+            localizeError(refreshError);
+          }
           return Promise.reject(refreshError);
         }
       }
@@ -157,15 +225,8 @@ export function createApiClient(tenantId: string): AxiosInstance {
       // instead of "Request failed with status code 400".
       applyServerMessage(error);
 
-      // 403: permission denied
-      if (error.response?.status === 403) {
-        error.message = 'You do not have permission to perform this action.';
-      }
-
-      // 423: account locked
-      if (error.response?.status === 423) {
-        error.message = 'Your account is locked. Please contact HR.';
-      }
+      if (error.response?.status === 426) useCompatibilityStore.getState().flag(false);
+      localizeError(error);
 
       return Promise.reject(error);
     }
@@ -204,7 +265,7 @@ export function unwrapApiData<T>(payload: unknown): T {
 
 export async function apiGet<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await getApiClient().get(url, config);
-  return unwrapApiData<T>(response.data);
+  return guard('GET', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPost<T>(
@@ -213,7 +274,7 @@ export async function apiPost<T>(
   config?: AxiosRequestConfig
 ): Promise<T> {
   const response = await getApiClient().post(url, data, config);
-  return unwrapApiData<T>(response.data);
+  return guard('POST', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPatch<T>(
@@ -222,7 +283,7 @@ export async function apiPatch<T>(
   config?: AxiosRequestConfig
 ): Promise<T> {
   const response = await getApiClient().patch(url, data, config);
-  return unwrapApiData<T>(response.data);
+  return guard('PATCH', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiPut<T>(
@@ -231,12 +292,12 @@ export async function apiPut<T>(
   config?: AxiosRequestConfig
 ): Promise<T> {
   const response = await getApiClient().put(url, data, config);
-  return unwrapApiData<T>(response.data);
+  return guard('PUT', url, unwrapApiData<T>(response.data));
 }
 
 export async function apiDelete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
   const response = await getApiClient().delete(url, config);
-  return unwrapApiData<T>(response.data);
+  return guard('DELETE', url, unwrapApiData<T>(response.data));
 }
 
 export function extractErrorMessage(error: unknown): string {

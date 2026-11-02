@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -403,5 +403,6 @@ public class EsignHttpTests(EsignFixture fx)
         packages.Should().Equal(AllowedPackages, "P4 is built-in: no vendor SDK and no new dependency");
     }
 
-    private static readonly string[] AllowedPackages = ["AWSSDK.S3", "DocumentFormat.OpenXml", "MailKit", "Microsoft.AspNetCore.Authentication.JwtBearer", "Microsoft.AspNetCore.DataProtection.EntityFrameworkCore", "Microsoft.EntityFrameworkCore.Design", "Microsoft.Extensions.Caching.StackExchangeRedis", "Npgsql.EntityFrameworkCore.PostgreSQL", "OpenTelemetry.Exporter.OpenTelemetryProtocol", "OpenTelemetry.Extensions.Hosting", "OpenTelemetry.Instrumentation.AspNetCore", "OpenTelemetry.Instrumentation.Http", "OpenTelemetry.Instrumentation.Runtime", "PdfPig", "QuestPDF", "SkiaSharp", "SkiaSharp.NativeAssets.Linux.NoDependencies", "StackExchange.Redis", "Swashbuckle.AspNetCore", "System.IO.Packaging", "System.Security.Cryptography.Pkcs", "System.Security.Cryptography.Xml"];
+    // Sentry.AspNetCore is error tracking (dormant without a DSN), not part of signing.
+    private static readonly string[] AllowedPackages = ["AWSSDK.S3", "DocumentFormat.OpenXml", "MailKit", "Microsoft.AspNetCore.Authentication.JwtBearer", "Microsoft.AspNetCore.DataProtection.EntityFrameworkCore", "Microsoft.EntityFrameworkCore.Design", "Microsoft.Extensions.Caching.StackExchangeRedis", "Npgsql.EntityFrameworkCore.PostgreSQL", "OpenTelemetry.Exporter.OpenTelemetryProtocol", "OpenTelemetry.Extensions.Hosting", "OpenTelemetry.Instrumentation.AspNetCore", "OpenTelemetry.Instrumentation.Http", "OpenTelemetry.Instrumentation.Runtime", "PdfPig", "QuestPDF", "Sentry.AspNetCore", "SkiaSharp", "SkiaSharp.NativeAssets.Linux.NoDependencies", "StackExchange.Redis", "Swashbuckle.AspNetCore", "System.IO.Packaging", "System.Security.Cryptography.Pkcs", "System.Security.Cryptography.Xml"];
 }

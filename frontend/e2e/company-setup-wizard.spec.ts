@@ -97,6 +97,11 @@ class ContractServer {
   copyCalls: { fromCompanyId: string; section: string }[] = [];
   /** Evostel's Organisation rows as the database holds them; section saves write here. */
   orgDb: OrgRows | null = null;
+  /** Rows of Evostel something uses (the server would count employees): removing one turns it off instead of deleting it. */
+  inUseIds = new Set(['dep-hr', 'gr-g1']);
+  /** Rows turned off. */
+  offIds = new Set<string>();
+  restores: string[] = [];
   resetLinks: string[] = [];
   errors: string[] = [];
   /** Every batch of labels sent to the Arabic suggester. */
@@ -124,6 +129,20 @@ class ContractServer {
       ...(this.scopeGroup ? {} : { canGrantCompanyAdmin: true }),
     };
     return { ...base, ...this.options.context };
+  }
+
+  /** The draft as the server reads it: with each existing Organisation row's on/off and in-use state. */
+  dto(draft: CompanySetupDraft): CompanySetupDraft {
+    if (!draft.body.existingCompanyId) return draft;
+    const rowStates: Record<string, { isActive: boolean; inUse: boolean; usageSummary?: string }> = {};
+    for (const section of SECTIONS) {
+      for (const row of this.org()[section] as { existingId?: string | null }[]) {
+        if (!row.existingId) continue;
+        const inUse = this.inUseIds.has(row.existingId);
+        rowStates[row.existingId] = { isActive: !this.offIds.has(row.existingId), inUse, ...(inUse ? { usageSummary: 'Used by 4 employees' } : {}) };
+      }
+    }
+    return { ...draft, rowStates };
   }
 
   openDraftFor(companyId: string) {
@@ -303,13 +322,13 @@ class ContractServer {
       if (open) return reply({ code: 'existing_company_draft_open', message: 'This company already has an open draft.', draftId: open }, 409);
       const draft: CompanySetupDraft = { id: `draft-${++this.sequence}`, version: 1, step: 1, status: 'Open', body, createdByUserId: 'u-admin', createdByName: 'Group Owner', createdAtUtc: now, updatedAtUtc: now };
       this.drafts.set(draft.id, draft);
-      return reply(draft, 201);
+      return reply(this.dto(draft), 201);
     }
     const draftMatch = rest.match(/^\/drafts\/([^/]+)$/);
     if (draftMatch) {
       const draft = this.drafts.get(draftMatch[1]);
       if (!draft || (draft.body.existingCompanyId ? !this.ownCompany(draft.body.existingCompanyId) : !this.scopeGroup)) return reply({ message: 'Not found' }, 404);
-      if (method === 'GET') return reply(draft);
+      if (method === 'GET') return reply(this.dto(draft));
       if (method === 'DELETE') { this.drafts.set(draft.id, { ...draft, status: 'Discarded' }); return route.fulfill({ status: 204 }); }
       if (method === 'PUT') {
         const put = req.postDataJSON() as { version: number; step: number; body: CompanySetupDraftBody };
@@ -317,7 +336,7 @@ class ContractServer {
         if (put.version !== draft.version) return reply({ error: 'draft_version_conflict', message: 'This draft was changed elsewhere.' }, 409);
         const saved = { ...draft, version: draft.version + 1, step: put.step, body: put.body, updatedAtUtc: now };
         this.drafts.set(draft.id, saved);
-        return reply(saved);
+        return reply(this.dto(saved));
       }
     }
     if (rest === '/copy-rows' && method === 'GET') {
@@ -360,13 +379,23 @@ class ContractServer {
         return saved;
       });
       (this.org() as Record<Section, unknown>)[section] = structuredClone(rows);
-      const rebased: CompanySetupDraft = { ...draft, version: draft.version + 1, step: 4, body: { ...draft.body, [section]: rows }, updatedAtUtc: now };
+      // Rows the user removed: an unused one is deleted, one that is in use is turned off (and stays in the draft).
+      const removedIds = (draft.body.removals?.[section] ?? []) as string[];
+      let removed = 0, turnedOff = 0;
+      for (const id of removedIds) {
+        if (this.inUseIds.has(id)) { this.offIds.add(id); turnedOff += 1; } else removed += 1;
+      }
+      const deletedIds = new Set(removedIds.filter(id => !this.inUseIds.has(id)));
+      const keptRows = rows.filter(r => !deletedIds.has(r.existingId as string));
+      (this.org() as Record<Section, unknown>)[section] = structuredClone(keptRows);
+      const { removals: _spent, ...bodyWithoutRemovals } = draft.body;
+      const rebased: CompanySetupDraft = { ...draft, version: draft.version + 1, step: 4, body: { ...bodyWithoutRemovals, [section]: keptRows }, updatedAtUtc: now };
       this.drafts.set(draft.id, rebased);
       this.sectionMarkers.add(marker);
       this.sectionApplies.push({ section, version, replayed: false });
       // A lost response: the write happened, the reply never arrived.
       if (failure === 'lost') { this.options.sectionFailure = undefined; return route.abort('failed'); }
-      return reply({ draft: rebased, section, created, updated, unchanged, replayed: false });
+      return reply({ draft: this.dto(rebased), section, created, updated, unchanged, replayed: false, removed, turnedOff });
     }
     if (rest === '/dry-run' && method === 'POST') {
       const body = req.postDataJSON() as CompanySetupDraftBody;
@@ -467,6 +496,12 @@ async function boot(page: Page, options: BootOptions = {}, server = new Contract
     const reply = (json: unknown, status = 200) => route.fulfill({ status, json });
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, pageSize: 100 });
     if (p.startsWith('/api/company-setup')) return server.handle(route, p.slice('/api/company-setup'.length));
+    const restoreMatch = p.match(/^\/api\/(cost-centers|departments|grades|designations)\/([^/]+)\/restore$/);
+    if (restoreMatch && request.method() === 'POST') {
+      server.restores.push(restoreMatch[2]);
+      server.offIds.delete(restoreMatch[2]);
+      return reply({ outcome: 'restored', message: 'Turned back on.' });
+    }
     if (p === '/api/localization/transliterate/batch' && request.method() === 'POST') {
       const { texts, kind } = request.postDataJSON() as { texts: string[]; kind: string };
       if (kind !== 'organization-label') return reply({ error: 'unsupported_transliteration_kind' }, 400);
@@ -1107,8 +1142,11 @@ for (const locale of ['en', 'ar'] as const) {
     const hq = page.getByTestId('branches-row').first();
     await expect(hq).toHaveAttribute('data-existing', 'true');
     await expect(hq.getByLabel(t('Code')).first()).toHaveAttribute('readonly', '');
-    // No delete in the wizard: removal is managed in Setup.
-    await expect(hq.getByRole('button', { name: new RegExp(`^${t('Remove')}`) })).toHaveCount(0);
+    // Remove is on every row; a saved branch is removed in Setup (it carries head-office and attendance rules), so the button
+    // is shown disabled with the reason beside it, never hidden.
+    // Scoped to the branch's own button: the nested location rows carry their own "Remove Location n".
+    await expect(hq.getByRole('button', { name: new RegExp(`^${t('Remove')} ${t('Branch')}`) })).toBeDisabled();
+    await expect(hq).toContainText(t('Already set up for this company. Edit it here. To change its code or remove it, use Setup: it checks what uses it first.'));
     await expect(hq.getByTestId('manage-in-setup').first()).toHaveAttribute('href', '/setup?tab=branches&companyId=co-evostel');
     await hq.getByLabel(t('Name (English)')).first().fill('Head Office Riyadh');
     await expect(hq).toHaveAttribute('data-changed', 'true');
@@ -1127,14 +1165,15 @@ for (const locale of ['en', 'ar'] as const) {
     await expectStep(page, t, 'Cost centres');
     await expect(page.getByTestId('wizard-next')).toContainText(t('Next: {part}', { part: t('Departments') }));
     await expect(page.getByRole('button', { name: t('Use defaults'), exact: true })).toHaveCount(0);
-    await expect(page.getByTestId('manage-in-setup')).toHaveCount(0);
+    await expect(page.getByTestId('manage-in-setup')).toHaveAttribute('href', '/setup?tab=costCenters&companyId=co-evostel');
     await next(page, t);
     await expectStep(page, t, 'Departments');
     const hr = page.getByTestId('departments-row').first();
     await expect(hr).toHaveAttribute('data-existing', 'true');
-    // A saved row keeps its code and is never removed here; its name is this company's to edit.
+    // HR is in use, so its code is locked, with the reason visible on the row (not a hover tip); its name is this company's to edit.
     await expect(hr.getByLabel(t('Code'))).toHaveAttribute('readonly', '');
-    await expect(hr.getByRole('button', { name: new RegExp(t('Remove')) })).toHaveCount(0);
+    await expect(hr.getByTestId('code-lock-reason')).toContainText('Used by 4 employees');
+    await expect(hr.getByRole('button', { name: new RegExp(t('Remove')) })).toBeEnabled();
     await hr.getByLabel(t('Name (English)')).fill('People & Culture');
     await expect(page.getByTestId('wizard-next')).toContainText(t('Save departments & next'));
     await expect(page.getByTestId('saves-now')).toHaveText(t('Saves to {company} now. You can still change it later in Setup.', { company: locale === 'ar' ? 'شركة إيفوستل' : 'Evostel LLC' }));
@@ -2068,6 +2107,50 @@ test('removing a row leaves "removed · Undo" in its place for 8 s with focus on
   await expect(page.locator('#ccw-costCentres-0-code')).toHaveValue('CC_A');
   await expect(page.locator('#ccw-costCentres-0-code')).toBeFocused();
   await expect(page.getByTestId('row-removed')).toHaveCount(0);
+});
+
+test('a saved row can be removed in the wizard: unused is deleted, in use is turned off and can be restored', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await next(page, t);
+  await next(page, t);
+  await expectStep(page, t, 'Cost centres');
+
+  // ADM is not used by anything: marking it is reversible until the part is saved.
+  const adm = page.getByTestId('costCentres-row').first();
+  await expect(adm.getByLabel(t('Code'))).not.toHaveAttribute('readonly', '');
+  await adm.getByTestId('remove-row').click();
+  await expect(adm).toHaveAttribute('data-removed', 'true');
+  await expect(adm.getByTestId('will-be-removed')).toBeVisible();
+  await expect(adm.getByTestId('removal-note')).toContainText(t('Will be removed when you save. If anything uses it, it is turned off instead, stays in history, and can be restored.'));
+  await adm.getByTestId('undo-remove').click();
+  await expect(adm).not.toHaveAttribute('data-removed', 'true');
+  await adm.getByTestId('remove-row').click();
+  await page.getByTestId('wizard-next').click();
+  await expect.poll(() => server.sectionApplies.map(a => a.section)).toContain('costCentres');
+  await expect(page.getByTestId('costCentres-row')).toHaveCount(0);
+  expect(server.puts.at(-1)?.body.removals?.costCentres).toEqual(['cc-adm']);
+
+  // Grade G1 is in use: Remove turns it off, it stays in the list as Off, and Restore turns it back on at once.
+  await expectStep(page, t, 'Departments');
+  await next(page, t);
+  await expectStep(page, t, 'Grades');
+  const g1 = page.getByTestId('grades-row').first();
+  await expect(g1.getByTestId('code-lock-reason')).toContainText('Used by 4 employees');
+  await g1.getByTestId('remove-row').click();
+  await page.getByTestId('wizard-next').click();
+  await expect.poll(() => server.sectionApplies.map(a => a.section)).toContain('grades');
+  await expectStep(page, t, 'Designations');
+  await page.getByRole('button', { name: new RegExp(t('Back')) }).first().click();
+  await expectStep(page, t, 'Grades');
+  const off = page.getByTestId('grades-row').first();
+  await expect(off.getByTestId('row-off')).toBeVisible();
+  await off.getByTestId('restore-row').click();
+  await expect(off.getByTestId('row-off')).toHaveCount(0);
+  expect(server.restores).toEqual(['gr-g1']);
 });
 
 test('an edit made just before leaving inside the app is saved on the way out, never dropped', async ({ page }) => {

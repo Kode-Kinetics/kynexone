@@ -89,7 +89,7 @@ export function ContractRenewalsPage({ batchActions }: { batchActions?: (caseIds
       <div className="space-y-5">
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('Contract renewals')}</h1>
+            <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Contract renewals')}</h1>
             <p className="text-xs text-slate-500 dark:text-slate-400">
               {fill(t('Every contract ending in the next {n} days, what is due next, and what happens if it is missed.'), { n: radar?.days ?? '…' })}
             </p>

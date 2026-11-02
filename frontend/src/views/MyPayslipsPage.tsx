@@ -84,7 +84,7 @@ export function MyPayslipsPage() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">{t('My Payslips')}</h1>
+        <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('My Payslips')}</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t('Your finalised payslips. Choose a month to see every line, or download the PDF.')}</p>
       </div>
 
@@ -160,7 +160,7 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
   return (
     <div className="space-y-4" data-testid="my-payslip-detail">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 className="text-base font-bold text-slate-800 dark:text-slate-100">{payslipMonthLabel(detail.year, detail.month, locale, detail.periodLabel)}</h2>
+        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{payslipMonthLabel(detail.year, detail.month, locale, detail.periodLabel)}</h2>
         <button
           type="button"
           onClick={onDownload}
@@ -185,16 +185,16 @@ function PayslipDetailView({ detail, downloading, downloadError, onDownload }: {
 
       <div className="flex items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-white dark:bg-white/[0.08]">
         <span className="text-sm font-semibold">{t('Net pay')}</span>
-        <span className="font-mono text-lg font-bold tabular-nums" data-testid="my-payslip-net">{cur} {money(s.net)}</span>
+        <span className="font-mono text-lg font-semibold tabular-nums" data-testid="my-payslip-net">{cur} {money(s.net)}</span>
       </div>
-      <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('Gross pay minus total deductions equals net pay.')}</p>
+      <p className="text-caption text-slate-500 dark:text-slate-400">{t('Gross pay minus total deductions equals net pay.')}</p>
       <PayslipDeductionsBreakdown payslipId={detail.id} />
 
       {s.employerContributions.length > 0 && (
         <div data-testid="my-payslip-employer">
           <LineBlock title={t('Employer contributions (not deducted from your pay)')} lines={s.employerContributions}
             totalLabel={t('Total employer contributions')} total={s.employerTotal} currency={cur} muted />
-          <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+          <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
             {t('Your employer pays these on top of your salary, for example its share of GOSI. They are not taken from your pay.')}
           </p>
         </div>
@@ -216,7 +216,7 @@ function LineBlock({ title, lines, totalLabel, total, currency, empty, muted }: 
   const money = useMoney();
   return (
     <div className={`rounded-xl border p-3 ${muted ? 'border-dashed border-slate-300 dark:border-white/[0.12]' : 'border-slate-200 dark:border-white/[0.06]'}`}>
-      <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h3>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{title}</h3>
       {lines.length === 0 && empty ? (
         <p className="text-xs text-slate-500 dark:text-slate-400">{empty}</p>
       ) : (

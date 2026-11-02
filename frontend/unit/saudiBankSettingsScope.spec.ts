@@ -54,7 +54,7 @@ test('scope: Setup scoped to a non-Saudi company explains it instead of asking t
 });
 
 test('baseline: a pre-selected only format is not an unsaved edit', () => {
-  const empty = { formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '', organizationAddress1: '', organizationAddress2: '', organizationAddress3: '', companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '' };
+  const empty = { formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '', organizationAddress1: '', organizationAddress2: '', organizationAddress3: '', companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '', debitAccountIban: '' };
   const one = [{ id: 'anb-connect-csv-v1' }] as { id: string }[];
   expect(bankSettingsBaseline(empty, one).formatId).toBe('anb-connect-csv-v1');
   // Nothing is invented when there is a choice, when one is already saved, or when there is no format.

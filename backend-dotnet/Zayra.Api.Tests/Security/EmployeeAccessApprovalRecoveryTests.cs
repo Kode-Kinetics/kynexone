@@ -1,5 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Http;
@@ -106,8 +107,15 @@ public sealed partial class EmployeeAccessTests
         var claims = new List<Claim> { new("tenant_id", w.TenantId.ToString()), new(ClaimTypes.NameIdentifier, user.ToString()),
             new("permission", "payroll.approve") };
         claims.AddRange(EntityScopeClaims.Build(EntityScopeDescriptor.Group, Array.Empty<EntityAccessGrant>()));
+        // A pay decision runs through the one salary-change decision service, resolved from the request's services as in the host.
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(db);
+        services.AddSingleton<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard>(new EmployeeActivationGuard(db));
+        services.AddSingleton(sp => new Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService(db,
+            sp.GetRequiredService<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard>()));
         return new(db, new AuditService(db)) { ControllerContext = new() { HttpContext = new DefaultHttpContext {
-            User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test"))
+            User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")),
+            RequestServices = services.BuildServiceProvider()
         } } };
     }
 }

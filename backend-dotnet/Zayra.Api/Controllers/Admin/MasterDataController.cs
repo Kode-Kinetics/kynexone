@@ -175,7 +175,7 @@ public class MasterDataController : ControllerBase
     }
 
     [HttpDelete("values/{id:guid}")]
-    [HasPermission("organization.write")]
+    [HasPermission("organization.delete")]
     public async Task<IActionResult> DeleteValue(Guid id, CancellationToken ct)
     {
         if (!this.HasGroupEntityScope()) return Forbid();
@@ -183,12 +183,36 @@ public class MasterDataController : ControllerBase
         var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (v == null) return NotFound();
         if (v.IsSystemDefined) return BadRequest("System-defined values cannot be deleted.");
+        // Records refer to a drop-down value by its text code, in columns no foreign key covers, so "never used"
+        // can't be proven. Remove therefore always turns the value OFF: it leaves new pick lists, every record that
+        // already holds it keeps showing it, and Restore brings it back.
         var uid = GetUserId();
         var old = ValueSnapshot(v);
-        v.IsDeleted = true; v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
-        AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Deleted", old, Json(new { v.IsDeleted }));
+        v.IsActive = false; v.IsDefault = false; v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
+        AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "TurnedOff", old, Json(new { v.IsActive }));
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return Ok(new
+        {
+            outcome = "turnedOff",
+            message = "Turned off. Records that already use it keep showing it. Restore anytime.",
+            usage = new { total = 0, summary = string.Empty, items = Array.Empty<object>() },
+        });
+    }
+
+    [HttpPost("values/{id:guid}/restore")]
+    [HasPermission("organization.delete")]
+    public async Task<IActionResult> RestoreValue(Guid id, CancellationToken ct)
+    {
+        if (!this.HasGroupEntityScope()) return Forbid();
+        var tid = GetTenantId();
+        var v = await _db.MasterDataValues.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (v == null) return NotFound();
+        var uid = GetUserId();
+        var old = ValueSnapshot(v);
+        v.IsActive = true; v.UpdatedAtUtc = DateTime.UtcNow; v.UpdatedBy = uid;
+        AddAdminAuditLog(tid, uid, "MasterDataValue", id.ToString(), "Restored", old, Json(new { v.IsActive }));
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { outcome = "restored", message = "Turned back on." });
     }
 
     /// <summary>

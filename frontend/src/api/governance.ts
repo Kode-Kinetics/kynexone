@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 
 // Company governance: per-legal-entity tax policies and compliance readiness
 // profiles. CONFIGURABLE FOUNDATION ONLY — never legal, tax, or statutory advice.
@@ -13,6 +14,8 @@ export interface CompanyTaxPolicy {
   incomeTaxRatePercent: number | null;
   appliesToBonus: boolean;
   notes: string;
+  /** True once finalized payroll falls inside the policy window: figures are then history. */
+  usedByPayroll?: boolean;
 }
 
 export interface CompanyTaxPolicyInput {
@@ -65,6 +68,9 @@ export const taxPoliciesApi = {
   update: (id: string, input: CompanyTaxPolicyInput) =>
     client.put<CompanyTaxPolicy>(`/api/company-tax-policies/${id}`, input).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/company-tax-policies/${id}`),
+  /** End-date a policy from a date, keeping it and the payroll that used it. */
+  retire: (id: string, effectiveTo: string) =>
+    client.post<CompanyTaxPolicy>(`/api/company-tax-policies/${id}/retire`, { effectiveTo }).then((r) => r.data),
 };
 
 export const complianceProfilesApi = {
@@ -76,6 +82,8 @@ export const complianceProfilesApi = {
     client.post<CompanyComplianceProfile>('/api/company-compliance-profiles', input).then((r) => r.data),
   update: (id: string, input: Partial<CompanyComplianceProfile>) =>
     client.put<CompanyComplianceProfile>(`/api/company-compliance-profiles/${id}`, input).then((r) => r.data),
+  /** Setup's Remove / Restore: a profile that was in force is retired (Archived), a draft is deleted; Restore puts it back in force. */
+  removal: setupRowApi('/api/company-compliance-profiles'),
   updateJawazatPolicy: (id: string, jawazatPolicyJson: string) =>
     client.patch<CompanyComplianceProfile>(`/api/company-compliance-profiles/${id}/jawazat-policy`, { jawazatPolicyJson }).then((r) => r.data),
 };

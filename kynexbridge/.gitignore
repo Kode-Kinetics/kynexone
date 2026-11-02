@@ -4,3 +4,5 @@ config.json
 inbox/
 archive/
 *.log
+rejected.jsonl
+.cursor.json.tmp

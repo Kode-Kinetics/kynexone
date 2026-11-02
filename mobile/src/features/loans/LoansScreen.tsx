@@ -42,6 +42,7 @@ import {
   type OfferedLoanType,
   type Reason,
 } from './loanRules';
+import { useSensitiveScreen } from '@/safety/useSensitiveScreen';
 
 const NOTES_MAX = 500;
 
@@ -70,6 +71,7 @@ function failure(error: unknown): { status?: number; code?: string } {
 }
 
 export default function LoansScreen() {
+  useSensitiveScreen('loans');
   const { t, i18n } = useTranslation();
   const { theme } = useTheme();
   const f = useFormat();

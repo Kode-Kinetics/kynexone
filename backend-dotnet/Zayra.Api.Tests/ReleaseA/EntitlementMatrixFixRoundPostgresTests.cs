@@ -163,6 +163,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
         {
             var created = await Employees(db).CreateAsync(seed.TenantId, Request(seed, Salary(8_000m, NextMonth)), Ctx(seed.TenantId), default);
             employeeId = created.Id;
+            await SalaryApprovalKit.ApprovePendingAsync(db, seed.TenantId); // first package: Finance applies it
             var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.TenantId == seed.TenantId && x.EmployeeId == created.Id && x.IsActive);
             (assignment.BasicSalary, assignment.HousingAllowance, assignment.TransportAllowance, assignment.OtherAllowance)
                 .Should().Be((8_000m, 2_000m, 800m, 0m));
@@ -175,12 +176,16 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
             (await db.Employees.AsNoTracking().SingleAsync(e => e.Id == created.Id)).Salary.Should().Be(10_800m);
         }
 
-        // Update: a raise to 10,000 re-reads the matrix for the blank allowances.
+        // Update: for an employee with no salary yet, saving a salary stages it, and the blank allowances are re-read from the matrix.
+        // (An employee WITH an active salary is never re-priced by a profile save: that is a salary change, proposed and approved separately.)
         await using (var db = fixture.CreateDb())
         {
-            await Employees(db).UpdateAsync(seed.TenantId, employeeId, Request(seed, Salary(10_000m, NextMonth.AddDays(14))), Ctx(seed.TenantId), default);
-            var latest = await db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.EmployeeId == employeeId && x.IsActive)
-                .OrderByDescending(x => x.EffectiveDate).FirstAsync();
+            var bare = await Employees(db).CreateAsync(seed.TenantId, Request(seed, null!), Ctx(seed.TenantId), default);
+            await Employees(db).UpdateAsync(seed.TenantId, bare.Id, Request(seed, Salary(10_000m, NextMonth.AddDays(14))), Ctx(seed.TenantId), default);
+            var staged = await db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.TenantId == seed.TenantId && x.EmployeeId == bare.Id && x.Status == SalaryChangeRequest.Pending);
+            (staged.BasicSalary, staged.HousingAllowance, staged.TransportAllowance).Should().Be((10_000m, 2_500m, 800m));
+            await SalaryApprovalKit.ApprovePendingAsync(db, seed.TenantId);
+            var latest = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == bare.Id && x.IsActive);
             (latest.HousingAllowance, latest.TransportAllowance).Should().Be((2_500m, 800m));
         }
 
@@ -197,6 +202,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
             // Entered explicitly, the figures are used exactly as typed.
             var explicitSalary = new EmployeeSalaryBreakdownRequest(8_000m, 1_000m, 300m, null, null, 0m, null, null, Today, "SAR");
             var created = await Employees(db).CreateAsync(seed.TenantId, Request(seed, explicitSalary), Ctx(seed.TenantId), default);
+            await SalaryApprovalKit.ApprovePendingAsync(db, seed.TenantId);
             var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive);
             (assignment.HousingAllowance, assignment.TransportAllowance, assignment.OtherAllowance).Should().Be((1_000m, 300m, 0m));
         }
@@ -216,6 +222,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
         // grade's own legacy pay scale, field by field — it used to be dropped (0) as soon as any figure was typed, so the
         // hire was paid basic only.
         var created = await Employees(db).CreateAsync(seed.TenantId, Request(seed, Salary(8_000m, Today)), Ctx(seed.TenantId), default);
+        await SalaryApprovalKit.ApprovePendingAsync(db, seed.TenantId);
         var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == created.Id && x.IsActive);
         (assignment.BasicSalary, assignment.HousingAllowance).Should().Be((8_000m, 9_999m));
         (await db.SalaryComponents.AsNoTracking().Where(x => x.SalaryStructureId == assignment.SalaryStructureId).Select(x => x.Amount).ToListAsync())
@@ -239,6 +246,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
         {
             await Employees(db).CreateAsync(seed.TenantId, Request(seed, explicitSalary), Ctx(seed.TenantId), default);
             var hireB = await Employees(db).CreateAsync(seed.TenantId, Request(seed with { CompanyId = companyB }, explicitSalary), Ctx(seed.TenantId), default);
+            await SalaryApprovalKit.ApprovePendingAsync(db, seed.TenantId);
             var assignment = await db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == hireB.Id && x.IsActive);
             var structure = await db.SalaryStructures.AsNoTracking().SingleAsync(x => x.Id == assignment.SalaryStructureId);
             (structure.Code, structure.CompanyId).Should().Be(("GRADE-G3", (Guid?)companyB));
@@ -257,6 +265,7 @@ public class EntitlementMatrixFixRoundPostgresTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDb();
         var tid = await PostgresFixture.SeedMinimalTenant(db);
+        SalaryApprovalKit.EnsureApprover(db, tid); // a hire with a salary needs someone else who could approve it
         var company = new Company { TenantId = tid, LegalNameEn = $"Masar Logistics {Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true };
         var grade = new Grade { TenantId = tid, Code = "G3", Name = "Supervisor", Level = 30, Currency = "SAR" };
         db.AddRange(company, grade);

@@ -504,7 +504,7 @@ public sealed class EmployeeAccessService
             """;
         try
         {
-            var delivery = await _email.DeliverAsync(tenantId, p.Email, p.Item.EmployeeName, "Your KynexOne welcome code", html, cancellationToken: ct);
+            var delivery = await _email.DeliverResilientAsync(tenantId, p.Email, p.Item.EmployeeName, "Your KynexOne welcome code", html, cancellationToken: ct, kind: "welcome-code");
             return delivery.ReachedARelay;
         }
         catch (Exception)

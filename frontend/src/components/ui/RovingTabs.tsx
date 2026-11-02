@@ -54,8 +54,8 @@ export function RovingTabList<T extends string>({
   };
 
   const shell = variant === 'pill'
-    ? 'rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]'
-    : 'border-b border-slate-200 dark:border-white/[0.08]';
+    ? 'kx-tabs-pill'
+    : 'kx-tabs-underline';
 
   return (
     <div className="overflow-x-auto pb-1" data-roving-tabs={idPrefix}>
@@ -64,11 +64,11 @@ export function RovingTabList<T extends string>({
           const selected = item.id === activeId;
           const Icon = item.icon;
           const selectedClass = variant === 'pill'
-            ? 'bg-white text-sapphire shadow-sm dark:bg-slate-800 dark:text-cyanAccent'
-            : 'border-sapphire text-sapphire';
+            ? 'bg-surface text-primary-fg shadow-e1'
+            : 'border-primary-fg text-primary-fg';
           const idleClass = variant === 'pill'
-            ? 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-            : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200';
+            ? 'text-fg-muted hover:text-fg'
+            : 'border-transparent text-fg-muted hover:text-fg';
           return (
             <button
               key={item.id}
@@ -82,8 +82,8 @@ export function RovingTabList<T extends string>({
               tabIndex={selected ? 0 : -1}
               onClick={() => onChange(item.id)}
               onKeyDown={(event) => move(index, event)}
-              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold transition ${
-                variant === 'underline' ? 'border-b-2 px-4 py-2.5' : `rounded-lg px-3 py-1.5 ${compact ? 'text-xs' : 'text-sm'}`
+              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold transition-colors ${
+                variant === 'underline' ? 'border-b-2 px-4 py-2.5' : `rounded-lg px-3 py-1.5 ${compact ? 'text-meta' : 'text-body'}`
               } ${selected ? selectedClass : idleClass}`}
             >
               {Icon && <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
@@ -113,7 +113,7 @@ export function TabPanel({
       role="tabpanel"
       aria-labelledby={`${idPrefix}-tab-${tabId}`}
       tabIndex={0}
-      className={`outline-none focus-visible:ring-2 focus-visible:ring-sapphire/50 ${className}`}
+      className={`focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${className}`}
     >
       {children}
     </div>

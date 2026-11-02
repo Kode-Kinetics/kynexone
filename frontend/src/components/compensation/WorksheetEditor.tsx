@@ -243,7 +243,7 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
                     <tr key={l.employeeId} data-employee-code={l.employeeCode} className="align-top">
                       <td className="px-3 py-2">
                         <div className="font-medium text-slate-900 dark:text-white">{l.employeeName}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{l.employeeCode} · {l.designationName} · {l.departmentName}</div>
+                        <div className="text-caption text-slate-500 dark:text-slate-400">{l.employeeCode} · {l.designationName} · {l.departmentName}</div>
                         {l.assignedByHr && <div className="mt-1"><Badge tone="violet">{t('Assigned by HR')}</Badge></div>}
                         <div className="mt-1 flex flex-wrap gap-1">
                           {l.flags.filter((x) => !x.endsWith('_benchmark')).map((x) => <Badge key={x} tone={flagTone(x)}>{flagLabel(t, x)}</Badge>)}
@@ -252,9 +252,9 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
                       </td>
                       <td className="px-3 py-2 tabular-nums">
                         <div>{t('Basic {amount}', { amount: f.money(l.currentBasic, l.payCurrency) })}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{t('Gross {amount}', { amount: f.money(l.currentGross, l.payCurrency) })}</div>
+                        <div className="text-caption text-slate-500 dark:text-slate-400">{t('Gross {amount}', { amount: f.money(l.currentGross, l.payCurrency) })}</div>
                         {foreign && l.fxRate != null && (
-                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                          <div className="text-caption text-slate-500 dark:text-slate-400">
                             {t('= {amount} at {rate}', { amount: f.money(l.currentBasicCycle, sheet.currency), rate: f.number(l.fxRate, { maximumFractionDigits: 8 }) })}
                           </div>
                         )}
@@ -264,14 +264,14 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
                         <RangeBar current={l.rangePosition} proposed={newPos}
                           label={t('Range position {now}, after the award {after}', { now: f.percent((l.rangePosition ?? 0) * 100), after: newPos == null ? '—' : f.percent(newPos * 100) })} />
                         {l.gradeMid != null && (
-                          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                          <div className="mt-1 text-caption text-slate-500 dark:text-slate-400">
                             {`${l.gradeName}: ${f.money(l.gradeMin, l.gradeCurrency)} – ${f.money(l.gradeMid, l.gradeCurrency)} – ${f.money(l.gradeMax, l.gradeCurrency)}`}
                           </div>
                         )}
                       </td>
                       <td className="px-3 py-2">
                         <div>{ratingLabel(t, l.rating)}</div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                        <div className="text-caption text-slate-500 dark:text-slate-400">
                           {l.guidelineTargetPercent != null
                             ? t('Guideline {min} – {max}, target {target}', { min: f.percent(l.guidelineMinPercent, 2), max: f.percent(l.guidelineMaxPercent, 2), target: f.percent(l.guidelineTargetPercent, 2) })
                             : t('No guideline for this rating')}
@@ -294,20 +294,20 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
                           sheet.canEdit ? (
                             <textarea className="input mt-1 min-h-[56px] w-56 text-xs" maxLength={2000} aria-label={t('Justification for {name}', { name: l.employeeName })}
                               placeholder={t('Why this is outside the guideline')} value={d.justification} onChange={(e) => set(l.employeeId, { justification: e.target.value })} />
-                          ) : <p className="mt-1 max-w-[14rem] text-[11px] text-slate-600 dark:text-slate-300">{l.justification}</p>
+                          ) : <p className="mt-1 max-w-[14rem] text-caption text-slate-600 dark:text-slate-300">{l.justification}</p>
                         )}
                       </td>
                       <td className="px-3 py-2 tabular-nums">
                         <div className="font-medium">{t('Award {amount}', { amount: f.money(l.proratedIncreasePay, l.payCurrency) })}</div>
                         {l.prorationFactor < 1 && (
-                          <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                          <div className="text-caption text-amber-700 dark:text-amber-300">
                             {t('Prorated: {days} eligible days ({factor})', { days: l.eligibleDays, factor: f.percent(l.prorationFactor * 100, 2) })}
                           </div>
                         )}
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400">{t('New basic {amount}', { amount: f.money(l.newBasic, l.payCurrency) })}</div>
-                        {l.newCompaRatio != null && <div className="text-[11px] text-slate-500 dark:text-slate-400">{t('New compa-ratio {value}', { value: f.number(l.newCompaRatio, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) })}</div>}
-                        {l.blockingMessages.map((m) => <p key={m} className="mt-1 max-w-[16rem] text-[11px] text-rose-700 dark:text-rose-300">{m}</p>)}
-                        {l.applyBlockedReason && <p className="mt-1 max-w-[16rem] text-[11px] text-rose-700 dark:text-rose-300">{l.applyBlockedReason}</p>}
+                        <div className="text-caption text-slate-500 dark:text-slate-400">{t('New basic {amount}', { amount: f.money(l.newBasic, l.payCurrency) })}</div>
+                        {l.newCompaRatio != null && <div className="text-caption text-slate-500 dark:text-slate-400">{t('New compa-ratio {value}', { value: f.number(l.newCompaRatio, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) })}</div>}
+                        {l.blockingMessages.map((m) => <p key={m} className="mt-1 max-w-[16rem] text-caption text-rose-700 dark:text-rose-300">{m}</p>)}
+                        {l.applyBlockedReason && <p className="mt-1 max-w-[16rem] text-caption text-rose-700 dark:text-rose-300">{l.applyBlockedReason}</p>}
                       </td>
                       <td className="px-3 py-2">
                         <Badge tone={l.benchmark.state === 'current' ? 'emerald' : l.benchmark.state === 'missing' ? 'slate' : 'amber'} title={l.benchmark.detail ?? undefined}>
@@ -315,11 +315,11 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
                         </Badge>
                         {l.benchmark.isSynthetic && <div className="mt-1"><SyntheticChip t={t} /></div>}
                         {l.benchmark.p50Cycle != null && (
-                          <div className="mt-1 text-[11px] tabular-nums text-slate-600 dark:text-slate-300">
+                          <div className="mt-1 text-caption tabular-nums text-slate-600 dark:text-slate-300">
                             {t('P50 {amount} · at {position} of P50', { amount: f.money(l.benchmark.p50Cycle, sheet.currency), position: f.percent((l.benchmark.position ?? 0) * 100) })}
                           </div>
                         )}
-                        {l.benchmark.detail && <p className="mt-1 max-w-[12rem] text-[11px] text-slate-500 dark:text-slate-400">{l.benchmark.detail}</p>}
+                        {l.benchmark.detail && <p className="mt-1 max-w-[12rem] text-caption text-slate-500 dark:text-slate-400">{l.benchmark.detail}</p>}
                       </td>
                     </tr>
                   );
@@ -341,7 +341,7 @@ export function WorksheetEditor({ worksheetId, onChanged }: { worksheetId: strin
             <div className="space-y-3">
               <label className="block text-sm">
                 <span className="mb-1 block font-medium text-slate-700 dark:text-slate-300">{t('Overspend justification')}</span>
-                <span className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">{t('Needed only when this worksheet takes a department over its pool. Approvers see it with the request.')}</span>
+                <span className="mb-1 block text-caption text-slate-500 dark:text-slate-400">{t('Needed only when this worksheet takes a department over its pool. Approvers see it with the request.')}</span>
                 <textarea className="input min-h-[64px] w-full text-sm" maxLength={2000} value={overspend} onChange={(e) => setOverspend(e.target.value)} />
               </label>
               <div className="flex flex-wrap justify-end gap-2">

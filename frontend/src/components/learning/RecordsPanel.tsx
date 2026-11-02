@@ -47,7 +47,7 @@ export function RecordsPanel({ filter, canCorrect, canAssign }: { filter: Record
     <div className="space-y-5" data-testid="records-panel">
       <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="records-assignments">
         <div className="flex flex-wrap items-end justify-between gap-2">
-          <h2 id="records-assignments" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Assignments')}</h2>
+          <h2 id="records-assignments" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Assignments')}</h2>
           <div className="flex flex-wrap gap-2">
             <Field id="rec-path" label={t('Learning path')}>
               <select id="rec-path" className="input w-52 py-1 text-xs" value={pathId} onChange={(e) => setPathId(e.target.value)}>
@@ -278,7 +278,7 @@ function CredentialsSection({ canCorrect }: { canCorrect: boolean }) {
   return (
     <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="records-certs" data-testid="records-credentials">
       <div className="flex flex-wrap items-end justify-between gap-2">
-        <h2 id="records-certs" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Certificates')}</h2>
+        <h2 id="records-certs" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Certificates')}</h2>
         <Field id="cert-status" label={t('Status')}>
           <select id="cert-status" className="input w-40 py-1 text-xs" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">{t('Any status')}</option>
@@ -383,7 +383,7 @@ function VerifySection() {
   };
   return (
     <section className="wg-card space-y-3 rounded-2xl p-4" aria-labelledby="records-verify">
-      <h2 id="records-verify" className="text-sm font-bold text-slate-800 dark:text-slate-100">{t('Verify a certificate')}</h2>
+      <h2 id="records-verify" className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Verify a certificate')}</h2>
       <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); void verify(); }}>
         <Field id="ver-number" label={t('Certificate number')}><input id="ver-number" className="input w-48" dir="ltr" value={number} onChange={(e) => setNumber(e.target.value)} /></Field>
         <Field id="ver-code" label={t('Verification code')}><input id="ver-code" className="input w-40" dir="ltr" value={code} onChange={(e) => setCode(e.target.value)} /></Field>

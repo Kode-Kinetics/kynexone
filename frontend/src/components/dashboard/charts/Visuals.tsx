@@ -143,7 +143,7 @@ export function HeroTrend({
         ))}
       </svg>
       {hv != null && (
-        <div role="status" className="pointer-events-none absolute top-0 rounded-lg bg-white px-2.5 py-1 text-[12px] font-semibold text-blue-950 shadow-lg transition-transform duration-150"
+        <div role="status" className="pointer-events-none absolute top-0 rounded-lg bg-white px-2.5 py-1 text-meta font-semibold text-blue-950 shadow-lg transition-transform duration-150"
           ref={(n) => { if (n) { const left = x(hv); const flip = left > W * 0.7; n.style.left = `${left}px`; n.style.transform = flip ? 'translate(calc(-100% - 10px), 0)' : 'translate(10px, 0)'; } }}>
           {points[hv].label}: <span className="tabular-nums">{unit ? `${unit} ` : ''}{format(points[hv].value as number)}</span>
         </div>
@@ -168,17 +168,17 @@ export function GrossSplit({ net, deductions, employer, format }: { net: number;
   const share = (v: number) => f.percent((v / total) * 100);
   return (
     <div className="flex flex-col gap-3" role="img" aria-label={t('Where this run’s cost went: {values}', { values: parts.map((p) => `${p.label} ${format(p.value)}, ${share(p.value)}`).join('; ') })}>
-      <span className="text-[12px] font-medium text-white/90">{t('Where this run’s cost went')}</span>
+      <span className="text-meta font-medium text-white/90">{t('Where this run’s cost went')}</span>
       <span className="flex h-11 w-full gap-[3px] overflow-hidden rounded-xl bg-white/10 p-[3px]">
         {parts.map((p, i) => (
-          <span key={p.key} className={`wg-grow-x h-full rounded-[9px] ${p.cls}`} style={{ animationDelay: `${i * 120}ms` }}
+          <span key={p.key} className={`wg-grow-x h-full rounded-lg ${p.cls}`} style={{ animationDelay: `${i * 120}ms` }}
             ref={(n) => { if (n) n.style.flexBasis = `${(p.value / total) * 100}%`; }} />
         ))}
       </span>
-      <ul className="flex flex-wrap gap-x-6 gap-y-1.5 text-[13px]">
+      <ul className="flex flex-wrap gap-x-6 gap-y-1.5 text-body-sm">
         {parts.map((p) => (
           <li key={p.key} className="flex items-center gap-2">
-            <span aria-hidden className={`h-2.5 w-2.5 rounded-sm ${p.cls}`} />
+            <span aria-hidden className={`h-2.5 w-2.5 rounded ${p.cls}`} />
             <span className="text-white/90">{p.label}</span>
             <b className="font-semibold tabular-nums text-white">{format(p.value)}</b>
             <span className="text-white/80">{share(p.value)}</span>
@@ -219,10 +219,10 @@ export function Stepper({ steps, current }: { steps: string[]; current: number }
               <span aria-hidden className={`absolute top-[10px] h-0.5 rounded ${done ? 'bg-white' : 'bg-white/25'}`}
                 ref={(n) => { if (n) { n.style.insetInlineStart = 'calc(50% + 15px)'; n.style.insetInlineEnd = 'calc(-50% + 15px)'; } }} />
             )}
-            <span className={`relative grid h-[22px] w-[22px] place-items-center rounded-full text-[11px] font-bold ${
+            <span className={`relative grid h-[22px] w-[22px] place-items-center rounded-full text-caption font-semibold ${
               done ? 'bg-white text-blue-800' : cur ? 'bg-amber-200 text-amber-950 ring-4 ring-amber-200/30' : 'bg-white/15 text-white/85'
             }`}>{done ? '✓' : i + 1}</span>
-            <span className={`text-center text-[11px] leading-tight ${done || cur ? 'text-white' : 'text-white/80'} ${cur ? 'font-semibold' : 'font-medium'}`}>
+            <span className={`text-center text-caption leading-tight ${done || cur ? 'text-white' : 'text-white/80'} ${cur ? 'font-semibold' : 'font-medium'}`}>
               {/* Steps are dictionary keys. "Review" is short for finance review; say so to a screen reader. */}
               <span aria-hidden>{t(s)}</span>
               <span className="sr-only">{t(done ? '{step}, done' : cur ? '{step}, current step' : '{step}, to do', { step: s === 'Review' ? t('Finance review') : t(s) })}</span>
@@ -280,7 +280,7 @@ export function HeatLegend() {
     : h.min === 0 ? t('Below {rate}', { rate: f.percent(h.max + 1) })
     : t('{from} to {to}', { from: f.integer(h.min), to: f.percent(h.max) });
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-slate-700 dark:text-slate-300" aria-label={t('Heatmap scale')}>
+    <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-caption text-slate-700 dark:text-slate-300" aria-label={t('Heatmap scale')}>
       {[...HEAT].reverse().map((h) => (
         <li key={h.label} className="flex items-center gap-1.5">
           <span aria-hidden className="h-3.5 w-3.5 rounded" ref={(n) => { if (n) n.style.background = h.bg; }} />{label(h)}
@@ -322,8 +322,8 @@ export function Ring3D({ a, b, label, center, sub }: { a: number; b: number; lab
         {layer(0, true)}
       </svg>
       <span className="pointer-events-none absolute inset-x-0 top-[40px] flex flex-col items-center" aria-hidden>
-        <span className="text-[18px] font-bold leading-none tabular-nums text-slate-900 dark:text-white">{center}</span>
-        <span className="text-[10px] text-slate-600 dark:text-slate-400">{sub}</span>
+        <span className="text-h3 font-semibold leading-none tabular-nums text-slate-900 dark:text-white">{center}</span>
+        <span className="text-caption text-slate-600 dark:text-slate-400">{sub}</span>
       </span>
     </span>
   );

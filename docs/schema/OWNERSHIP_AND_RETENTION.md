@@ -392,6 +392,8 @@ filter).
 | Table | Class | Note |
 |---|---|---|
 | `mfa_trusted_devices` | T | `retention_policies` row: `rule_key = auth.mfa-trusted-device-expired`, `trigger_event = RecordDate` (the row's `expires_at_utc`, or `revoked_at_utc` when earlier), `minimum_retention_months = 0`, `disposition = HardDelete`. A credential, not a business record (like `refresh_tokens`): deleted by `MfaTrustedDeviceRetentionRule` **30 days** after it expired or was revoked, a forensic grace matching refresh tokens. It holds a browser User-Agent and an IP address, which have no purpose once the trust is over. The `auth.mfa.*` audit rows naming it are kept with the audit log. |
+| `payroll_rule_change_requests` | T | Kept with the audit log for the life of the company: a decided row is the evidence of who proposed and who approved a pay-lowering rule change. Owner: Payroll Engineering. RLS: target shape (a) (live bridge: the `ITenantOwned` query filter). |
+| `company_payroll_rules` | T | Kept for the life of the company. No deletion rule: dated rows are the company's payroll-rule history (a period is priced on the row in force on its first day), and one carrying `acknowledged_by`/`acknowledged_at_utc` is the evidence that a below-statutory value was confirmed, so it is cleared only when HR moves the value back above the minimum (the change is audited as `payroll.rules.changed` with the old and new value, and that audit row is kept with the audit log). Owner: Payroll Engineering. RLS: target shape (a) (live bridge: the `ITenantOwned` query filter). |
 
 **Owner:** HR (Admin, HR Manager) · **Approved by:** HR lead. RLS: shape (a) (live bridge: the `ITenantOwned` query filter; company scope through `ICompanyScoped`).
 

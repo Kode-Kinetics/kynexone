@@ -28,7 +28,7 @@ internal static class ApprovalCenterDriver
         for (var step = 0; step < 5; step++)
         {
             var decided = await service.DecideAsync(tenantId, approvalId, new ApprovalDecisionRequest("Approve", "Checked."),
-                new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), tenantId, ["Admin"], ["approvals.decide", "approvals.override"]),
+                new RequestContext("127.0.0.1", "xunit", Guid.NewGuid(), tenantId, ["Admin"], ["approvals.decide", "approvals.override", "payroll.approve"]),
                 CancellationToken.None);
             if (decided!.Status != "Pending") return decided;
         }

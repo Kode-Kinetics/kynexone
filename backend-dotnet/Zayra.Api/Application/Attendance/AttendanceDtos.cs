@@ -298,7 +298,22 @@ public record DeviceIngestPunch(
 
 public record DeviceIngestRequest(IReadOnlyList<DeviceIngestPunch> Punches, bool? AutoProcess);
 
-public record DeviceIngestResult(int Received, int Accepted, int Duplicates, int Unmatched, int Processed, Guid SyncLogId);
+/// <summary>One punch of a batch the server refused (stable <c>Reason</c> codes: timestamp_in_future, timestamp_too_old,
+/// employee_code_required, timestamp_missing). The rest of the batch is unaffected.</summary>
+public record DeviceIngestRejection(int Index, string Reason);
+
+public record DeviceIngestResult(int Received, int Accepted, int Duplicates, int Unmatched, int Processed, Guid SyncLogId,
+    int Rejected = 0, IReadOnlyList<DeviceIngestRejection>? Rejections = null);
+
+/// <summary>Bridge liveness report (<c>POST /api/attendance/heartbeat</c>).</summary>
+public record DeviceHeartbeatRequest(string? BridgeVersion, string? DeviceTimeZone, DateTime? HostTimeUtc, int? Backlog,
+    DateTime? LastPunchUtc, string? Error);
+
+public record DeviceHeartbeatResult(DateTime ServerTimeUtc, bool SignatureRequired, int? ClockSkewSeconds);
+
+public record DeviceSigningSecretResult(Guid DeviceId, string DeviceName, int Version, string Secret, bool SignatureRequired);
+
+public record DeviceSignaturePolicyRequest(bool Required);
 
 public record DeviceKeyResult(Guid DeviceId, string DeviceName, string ApiKey);
 

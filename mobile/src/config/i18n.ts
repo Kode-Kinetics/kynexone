@@ -24,6 +24,7 @@ import { homeStrings } from './strings/homeStrings';
 import { leavePayStrings } from './strings/leavePayStrings';
 import { managerStrings } from './strings/managerStrings';
 import { accountStrings } from './strings/accountStrings';
+import { safetyStrings } from './strings/safetyStrings';
 
 export type { AppLanguage };
 
@@ -93,6 +94,7 @@ export const en = {
   leavePay: leavePayStrings.en,
   manager: managerStrings.en,
   account: accountStrings.en,
+  safety: safetyStrings.en,
   nav: {
     home: 'Home',
     attendance: 'Attendance',
@@ -362,6 +364,7 @@ const ar: TranslationResources = {
   leavePay: leavePayStrings.ar,
   manager: managerStrings.ar,
   account: accountStrings.ar,
+  safety: safetyStrings.ar,
   nav: {
     home: 'الرئيسية',
     attendance: 'الحضور',

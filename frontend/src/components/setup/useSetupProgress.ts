@@ -64,7 +64,7 @@ const RECORD_CHECKS: Record<RecordCheckedSection, () => Promise<number | null>> 
   // Fiscal years and country rules have no active flag: every saved one counts.
   fiscalYears: () => fiscalYearsApi.list().then(rows => activeCount(rows, () => true)),
   notificationTemplates: () => notificationTemplatesApi.list().then(rows => activeCount(rows)),
-  gccSettings: () => gccSettingsApi.list().then(rows => activeCount(rows, () => true)),
+  gccSettings: () => gccSettingsApi.list().then(rows => activeCount(rows, (row: Row) => row.isActive !== false)),
 };
 
 /**

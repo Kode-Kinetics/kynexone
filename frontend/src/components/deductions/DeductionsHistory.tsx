@@ -22,7 +22,7 @@ export function DeductionsHistory({ data, audience, months }: { data: EmployeeDe
   return (
     <div className="space-y-4">
       <section aria-labelledby="deductions-balances" className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-white/[0.06] dark:bg-white/[0.03]">
-        <h2 id="deductions-balances" className="flex items-center gap-1.5 text-sm font-bold text-slate-800 dark:text-slate-100">
+        <h2 id="deductions-balances" className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
           <Landmark className="h-4 w-4 text-sapphire dark:text-cyanAccent" aria-hidden /> {t('Open loans and advances')}
         </h2>
         {debts.length === 0 ? (
@@ -88,10 +88,10 @@ function BalanceRow({ balance: b, advance, audience, money }: { balance: DebtBal
             { balance: money(b.outstanding), instalment: money(b.instalment), remaining: b.remaining })
           : t('{balance} still owed: {instalment} a month.', { balance: money(b.outstanding), instalment: money(b.instalment) })}
       </p>
-      {b.nextDueOn && <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('Next instalment due on {date}.', { date: fx.date(b.nextDueOn) })}</p>}
-      {!b.deductedFromPay && <p className="text-[11px] text-slate-500 dark:text-slate-400">{t('Repaid outside payroll, so it is not deducted from pay.')}</p>}
+      {b.nextDueOn && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Next instalment due on {date}.', { date: fx.date(b.nextDueOn) })}</p>}
+      {!b.deductedFromPay && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Repaid outside payroll, so it is not deducted from pay.')}</p>}
       {!advance && b.consentOnFile && (
-        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+        <p className="text-caption text-slate-500 dark:text-slate-400">
           {audience === 'employee' ? t('Your written consent is on file.') : t("The employee's written consent is on file.")}
         </p>
       )}

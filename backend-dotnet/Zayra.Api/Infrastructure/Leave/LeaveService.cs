@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Compliance;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.WorkWeek;
@@ -110,6 +111,35 @@ public class LeaveService : ILeaveService
 
     private async Task<decimal> KsaDecimalCoreAsync(string key, decimal fallback, DateOnly on, CancellationToken ct)
         => await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland, key, on, null, ct) ?? fallback;
+
+    /// <summary>
+    /// The per-event days an admin ACKNOWLEDGED below the Saudi minimum on this policy (owner decision 2026-10-25), or null when
+    /// the policy has no acknowledgement for its present value. Then the policy's value, not the statute's, is the span
+    /// requests are measured against, in the policy's own counting unit. A policy never acknowledged is unaffected.
+    /// </summary>
+    internal static decimal? AcknowledgedEventSpan(LeavePolicy? policy)
+    {
+        if (policy is null || policy.AnnualEntitlementDays <= 0m) return null;
+        var acks = FloorAckStore.Parse(policy.BelowMinimumAcksJson);
+        return acks.Any(a => (a.Code == KsaLeaveFloorChecks.SpecialEntitlement || a.Code == KsaLeaveFloorChecks.SpecialWorkingDays)
+                             && a.ConfiguredValue == policy.AnnualEntitlementDays)
+            ? policy.AnnualEntitlementDays : null;
+    }
+
+    /// <summary>True when the policy's per-request cap (or its working-day counting) was acknowledged below the minimum at its present value,
+    /// so the cap applies as configured instead of being overridden by the statute.</summary>
+    internal static bool AcknowledgedCap(LeavePolicy? policy)
+    {
+        if (policy is null) return false;
+        var acks = FloorAckStore.Parse(policy.BelowMinimumAcksJson);
+        return acks.Any(a => (a.Code == KsaLeaveFloorChecks.SpecialCap && a.ConfiguredValue == policy.MaximumDaysPerRequest)
+                             || (a.Code == KsaLeaveFloorChecks.SpecialWorkingDays && a.ConfiguredValue == policy.AnnualEntitlementDays));
+    }
+
+    /// <summary>The span a statutory special leave is granted: the acknowledged policy value when there is one, else the law's figure.</summary>
+    private async Task<decimal?> ResolveEventSpanAsync(
+        KsaStatutoryLeaveKind kind, DateOnly start, DateOnly end, LeavePolicy? policy, CancellationToken ct)
+        => AcknowledgedEventSpan(policy) ?? await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(_rules, kind, start, end, ct);
 
     /// <summary>
     /// KSA Art. 109(1) statutory annual-leave days for an employee at a point in time:
@@ -335,7 +365,12 @@ public class LeaveService : ILeaveService
                 // Non-KSA entities and non-annual leave types are completely unaffected.
                 var effectiveAnnualDays = policy.AnnualEntitlementDays;
                 var accrualReason = "Monthly accrual";
-                if (policyIsAnnualLeave)
+                if (policyIsAnnualLeave && KsaLeaveFloorChecks.IsAcknowledgedBelowMinimum(policy, KsaLeaveFloorChecks.Annual))
+                {
+                    // The company chose, and an admin acknowledged (audited), fewer days than Art. 109: honoured, never raised.
+                    accrualReason = $"Monthly accrual (configured {policy.AnnualEntitlementDays:0.##} days/yr, below the KSA Art.109 minimum; acknowledged)";
+                }
+                else if (policyIsAnnualLeave)
                 {
                     var statutoryDays = await ResolveKsaAnnualEntitlementAsync(
                         employeeCountryCode, emp.JoiningDate, serviceEnd < accrualOn ? serviceEnd : accrualOn, ct);
@@ -757,8 +792,7 @@ public class LeaveService : ILeaveService
         if (KsaStatutorySpecialLeave.Classify(leaveType.Code, leaveType.NameEn, leaveType.Category) is { } kind
             && IsKsaCountry(await ResolveEmployeeCountryAsync(tenantId, employee.Id, ct)))
         {
-            statutorySpan = await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(
-                _rules, kind, request.StartDate, request.EndDate, ct) ?? 0m;
+            statutorySpan = await ResolveEventSpanAsync(kind, request.StartDate, request.EndDate, effectivePolicy, ct) ?? 0m;
             if (statutorySpan > 0m)
             {
                 statutoryKind = kind;
@@ -800,7 +834,10 @@ public class LeaveService : ILeaveService
                             + $"marriage has to start within {maxLead} days of the event — give the date it happened, no earlier "
                             + $"than {request.StartDate.AddDays(-maxLead):dd MMM yyyy}.");
                 }
-                withinStatutory = (KsaStatutorySpecialLeave.IsCalendarSpan(kind) ? calendarDays : workingDays) <= statutorySpan;
+                // An acknowledged lower policy is measured in the policy's own unit (working days unless it counts weekends and holidays).
+                var calendarUnit = KsaStatutorySpecialLeave.IsCalendarSpan(kind)
+                    && (AcknowledgedEventSpan(effectivePolicy) is null || (effectivePolicy!.WeekendsIncluded && effectivePolicy.PublicHolidaysIncluded));
+                withinStatutory = (calendarUnit ? calendarDays : workingDays) <= statutorySpan;
                 withinPolicy = effectivePolicy is { AnnualEntitlementDays: > 0m } && workingDays <= effectivePolicy.AnnualEntitlementDays;
                 request.TotalDays = workingDays;
                 await EnforceKsaStatutoryEventLimitsAsync(
@@ -834,7 +871,7 @@ public class LeaveService : ILeaveService
         {
             if (workingDays < effectivePolicy.MinimumDaysPerRequest)
                 throw new InvalidOperationException($"This policy requires at least {effectivePolicy.MinimumDaysPerRequest} day(s) per request.");
-            if (!withinStatutory && effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
+            if ((!withinStatutory || AcknowledgedCap(effectivePolicy)) && effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
                 throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest:0.##} day(s) per request.");
             var noticeDays = request.StartDate.DayNumber - DateOnly.FromDateTime(DateTime.UtcNow).DayNumber;
             // A policy that requires NO notice must not refuse a backdated request. The guard used
@@ -1049,8 +1086,7 @@ public class LeaveService : ILeaveService
             var policy = request.PolicyId is { } pid
                 ? await _db.LeavePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == pid && x.TenantId == tenantId, ct)
                 : null;
-            var span = await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(
-                _rules, approvedKind, request.StartDate, request.EndDate, ct) ?? 0m;
+            var span = await ResolveEventSpanAsync(approvedKind, request.StartDate, request.EndDate, policy, ct) ?? 0m;
             if (span > 0m)
                 await EnforceKsaStatutoryEventLimitsAsync(tenantId, subject, request, approvedKind, span, policy, approvedOnly: true, ct);
         }
@@ -2313,7 +2349,7 @@ public class LeaveService : ILeaveService
             var policy = request.PolicyId is { } pid
                 ? await _db.LeavePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == pid && x.TenantId == tenantId, ct)
                 : null;
-            var span = await KsaStatutorySpecialLeave.ResolveFloorForSpanAsync(_rules, kind, request.StartDate, request.EndDate, ct) ?? 0m;
+            var span = await ResolveEventSpanAsync(kind, request.StartDate, request.EndDate, policy, ct) ?? 0m;
             var ev = await ResolveStatutoryEventAsync(tenantId, request, kind, span, policy, approvedOnly: false, wholeHistory: true, ct);
             result[request.Id] = new StatutoryLeaveContext(
                 kind.ToString(),

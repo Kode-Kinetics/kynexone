@@ -302,8 +302,14 @@ public class GlStatutoryHardeningTests
         var gl = Gl(db, tid);
 
         var file = (await gl.ExportAccounts(null, default)).Should().BeOfType<FileContentResult>().Subject;
-        var csv = Encoding.UTF8.GetString(file.FileContents);
+        // A person-downloaded CSV carries the UTF-8 BOM (Excel); the re-import must accept the file exactly as downloaded.
+        file.FileContents.Take(3).Should().Equal(0xEF, 0xBB, 0xBF);
+        var csv = Encoding.UTF8.GetString(file.FileContents).TrimStart('\uFEFF');
         csv.Should().StartWith("Code,Name,Type,IsActive").And.Contain("5001,Basic,Expense,true").And.Contain("2100,Salaries Payable,Liability,true");
+
+        // The export, BOM and all, round-trips through the importer untouched (dry run: 2 unchanged).
+        var roundTrip = new FormFile(new MemoryStream(file.FileContents), 0, file.FileContents.Length, "file", "coa.csv");
+        Prop((await gl.ImportAccounts(null, null, roundTrip, default)).Should().BeOfType<OkObjectResult>().Subject.Value!, "unchanged").Should().Be(2);
 
         // Dry run (the default): counts, no writes.
         var good = "Code,Name,Type,IsActive\n5001,Basic,Expense,true\n2100,Salaries Payable,Liability,false\n6100,Bonus,Expense,true\n";

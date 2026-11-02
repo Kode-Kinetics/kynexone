@@ -80,7 +80,7 @@ test('All setup areas destinations and Payroll accounting tabs are found with th
   expect(leave.entry.navId).toBe('leaveTypes');
   expect(leave.entry.href).toBe('/setup?tab=leaveTypes');
   // An operations destination still opens its module.
-  expect(matchSetupEntries(entries, 'workforce planning', en).find(hit => hit.entry.id === 'destination:recruitment:recruitment')?.entry.href).toBe('/recruitment');
+  expect(matchSetupEntries(entries, 'workforce planning', en).find(hit => hit.entry.id === 'destination:jobsHeadcount:recruitment')?.entry.href).toBe('/recruitment');
   const rates = matchSetupEntries(entries, 'company rates', en)[0];
   expect(rates.label).toBe('Company Rates');
   expect(rates.group).toBe('Payroll accounting');
@@ -120,9 +120,10 @@ test('a user never finds a section the navigation hides from them', () => {
   const scopedSections = scoped.filter(entry => entry.navId && !entry.id.startsWith('gl:')).map(entry => entry.id);
   // Modules' configuration follows each module's own rule, which company scope never narrowed (the Leave page, Payslip
   // templates and Tax policies opened for them before the move too).
-  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'companies', 'branches', 'costCenters', 'glMapping', 'adminAuditLogs',
-    'leaveTypes', 'leavePolicies', 'holidayCalendars', 'payslipTemplates', 'onboardingChecklists', 'taxPolicies']);
-  expect(ids(scoped, 'grades')).toEqual([]);
+  expect(scopedSections).toEqual(['guidedSetup', 'allSetupAreas', 'companies', 'branches', 'costCenters', 'departments', 'grades', 'designations',
+    'leaveTypes', 'leavePolicies', 'holidayCalendars', 'payslipTemplates', 'onboardingChecklists', 'glMapping', 'taxPolicies', 'adminAuditLogs']);
+  // Departments, designations and grades are per company, so a company super admin finds and manages their own.
+  expect(ids(scoped, 'grades')).toContain('grades');
   expect(ids(scoped, 'leave types')).toContain('leaveTypes');
   // Policy library only while policy intake is on; Payroll accounting tabs only with their permission.
   expect(ids(index(), 'policy library')).toEqual([]);
@@ -137,5 +138,5 @@ test('a destination whose feature or route is off is not offered', () => {
   const { nav, flags } = access();
   const entries = buildSetupSearchIndex({ model: setupNavigationModel(nav), access: { ...flags, verdictForPath: path => ({ allowed: path !== '/learning' }) } });
   expect(ids(entries, 'learning catalogue')).toEqual([]);
-  expect(ids(index(), 'learning catalogue')).toContain('destination:learning:learning');
+  expect(ids(index(), 'learning catalogue')).toContain('destination:talentServices:learning');
 });

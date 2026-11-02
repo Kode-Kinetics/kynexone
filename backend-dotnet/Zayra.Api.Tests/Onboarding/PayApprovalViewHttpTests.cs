@@ -287,7 +287,7 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
 
     // ── ghost-employee control ────────────────────────────────────────────────────────────────────
     [Fact]
-    public async Task SharedIban_ShowsACount_NeverTheOtherEmployee_AcrossCompanies()
+    public async Task SharedIban_CountsOnlyEmployeesInTheApproversCompanyScope()
     {
         var hr = await _fx.NewUserAsync("od4i", "employees.write", "employees.read");
         var scoped = await _fx.NewScopedUserAsync("od4if", _fx.CompanyId, "payroll.approve");
@@ -300,7 +300,8 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
         using var r = await DetailAsync(scoped, id);
         r.StatusCode.Should().Be(HttpStatusCode.OK);
         var raw = await r.Content.ReadAsStringAsync();
-        JsonDocument.Parse(raw).RootElement.GetProperty("sharedIbanCount").GetInt32().Should().Be(2, "spacing does not hide a shared account, and the count spans companies");
+        JsonDocument.Parse(raw).RootElement.GetProperty("sharedIbanCount").GetInt32().Should().Be(1,
+            "spacing does not hide a shared account, but a scoped approver cannot infer a sibling company's match");
         raw.Should().NotContain(farName).And.NotContain(farCode).And.NotContain("Near Person").And.NotContain("NEAR-");
     }
 

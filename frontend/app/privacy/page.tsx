@@ -57,7 +57,7 @@ function title(id: SectionId) {
 
 export default function PrivacyPolicyPage() {
   return (
-    <div className="min-h-screen bg-[#f8fafc] text-slate-700 dark:bg-slate-950 dark:text-slate-300" dir="ltr" lang="en">
+    <div className="min-h-screen bg-canvas text-slate-700 dark:bg-canvas dark:text-slate-300" dir="ltr" lang="en">
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/90 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90">
         <div className="mx-auto flex h-14 max-w-4xl items-center justify-between gap-4 px-4 sm:px-6">
           <Link href="/login" aria-label="KynexOne sign in">
@@ -74,13 +74,13 @@ export default function PrivacyPolicyPage() {
 
       <main className="mx-auto max-w-4xl px-4 py-10 sm:px-6 sm:py-14">
         <div className="mb-10">
-          <p className="mb-2 text-xs font-bold uppercase tracking-widest text-blue-600 dark:text-blue-400">Legal</p>
-          <h1 className="text-3xl font-black tracking-tight text-slate-900 sm:text-4xl dark:text-white">Privacy Policy</h1>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-600 dark:text-blue-400">Legal</p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl dark:text-white">Privacy Policy</h1>
           <p className="mt-3 text-base text-slate-500 dark:text-slate-400">
             Effective and last updated:{' '}
             <span className="font-medium text-slate-700 dark:text-slate-200">{EFFECTIVE_DATE}</span>
           </p>
-          <p className="mt-4 max-w-2xl text-[15px] leading-relaxed">
+          <p className="mt-4 max-w-2xl text-body leading-relaxed">
             This page describes what the KynexOne platform does with personal data as it operates on the date
             above, including where what it does is limited. It does not replace the data-processing terms in your
             organisation&apos;s agreement with Kode Kinetics.
@@ -103,7 +103,7 @@ export default function PrivacyPolicyPage() {
           </ol>
         </nav>
 
-        <div className="space-y-12 text-[15px] leading-relaxed">
+        <div className="space-y-12 text-body leading-relaxed">
           <Section id="who">
             <p>
               KynexOne is a workforce platform operated by <strong>Kode Kinetics</strong> (&ldquo;we&rdquo;,
@@ -473,7 +473,7 @@ export default function PrivacyPolicyPage() {
         </div>
       </main>
 
-      <footer className="border-t border-slate-200 bg-white py-8 text-center text-[13px] text-slate-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-500">
+      <footer className="border-t border-slate-200 bg-white py-8 text-center text-body-sm text-slate-400 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-500">
         &copy; {new Date().getFullYear()} Kode Kinetics
         &ensp;·&ensp;
         <Link href="/security" className="transition-colors hover:text-slate-600 dark:hover:text-slate-300">Security</Link>
@@ -489,7 +489,7 @@ export default function PrivacyPolicyPage() {
 function Section({ id, children }: { id: SectionId; children: React.ReactNode }) {
   return (
     <section id={id} aria-labelledby={`${id}-h`} className="scroll-mt-20">
-      <h2 id={`${id}-h`} className="mb-4 text-xl font-bold text-slate-900 dark:text-white">
+      <h2 id={`${id}-h`} className="mb-4 text-xl font-semibold text-slate-900 dark:text-white">
         {title(id)}
       </h2>
       {children}

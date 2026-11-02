@@ -150,7 +150,7 @@ public class Batch01FixTests
         await db.SaveChangesAsync();
 
         var ctrl = MakeCtrl(db, tenantId, packResolver);
-        var asOf = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc); // exactly 3 years
+        var asOf = new DateTime(2022, 12, 31, 0, 0, 0, DateTimeKind.Utc); // last day served: exactly 3 years
         var result = await ctrl.CalculateEosb(
             new EosbCalculationRequest(emp.Id, asOf, "Termination"),
             CancellationToken.None);
@@ -195,7 +195,7 @@ public class Batch01FixTests
         var input = new EndOfServiceInput(
             Guid.NewGuid(), Guid.NewGuid(),
             new SalaryBreakdown(10_000m, 0m, 0m, 0m),
-            new DateOnly(2020, 1, 1), new DateOnly(2023, 1, 1),
+            new DateOnly(2020, 1, 1), new DateOnly(2022, 12, 31),
             "Termination", "Unlimited", "SAU");
 
         var result = await calc.CalculateAsync(input);

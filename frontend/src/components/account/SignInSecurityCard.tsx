@@ -349,7 +349,7 @@ export function SignInSecurityCard() {
 /** The step's number. The <ol> already gives a screen reader the order, so this is for the eye only. */
 function StepNumber({ n }: { n: number }) {
   return (
-    <span aria-hidden className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-blue-50 text-xs font-bold text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
+    <span aria-hidden className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-blue-50 text-xs font-semibold text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">
       {n}
     </span>
   );
@@ -618,7 +618,7 @@ function DisablePanel({ onCancel, onDone, onRequired, onAlreadyOff }: {
       </button>
       <div className="flex items-start gap-2.5">
         <input id={`${id}-confirm`} type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)}
-          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-[#0d1225]" />
+          className="mt-1 h-4 w-4 shrink-0 cursor-pointer accent-rose-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-surface" />
         <label htmlFor={`${id}-confirm`} className="cursor-pointer text-sm leading-6 text-slate-700 dark:text-slate-300">
           {t('I understand that only my password will protect this account, and every browser I trusted will be forgotten.')}
         </label>
@@ -826,7 +826,7 @@ function TrustedBrowsers({ days }: { days: number }) {
                         <p className="flex min-w-0 flex-wrap items-center gap-2 pt-1.5 text-sm font-semibold text-slate-900 dark:text-white">
                           <bdi>{nameOf(d)}</bdi>
                           {d.current && (
-                            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700 rtl:text-[13px] dark:bg-blue-500/15 dark:text-blue-300" data-testid="this-browser-badge">
+                            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-caption font-semibold text-blue-700 rtl:text-body-sm dark:bg-blue-500/15 dark:text-blue-300" data-testid="this-browser-badge">
                               {t('This browser')}
                             </span>
                           )}
@@ -837,7 +837,7 @@ function TrustedBrowsers({ days }: { days: number }) {
                           {busyId === d.id ? t('Forgetting…') : t('Forget')}
                         </button>
                       </div>
-                      <dl className="mt-2 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px] leading-5 sm:grid-cols-[13rem_minmax(0,1fr)]">
+                      <dl className="mt-2 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-body-sm leading-5 sm:grid-cols-[13rem_minmax(0,1fr)]">
                         <dt className="text-slate-500 dark:text-slate-400">{t('Trusted since')}</dt>
                         <dd className="font-medium text-slate-800 dark:text-slate-200"><bdi>{fx.date(d.createdAtUtc)}</bdi></dd>
                         <dt className="text-slate-500 dark:text-slate-400">{t('Last used')}</dt>

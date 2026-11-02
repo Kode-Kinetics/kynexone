@@ -1,22 +1,18 @@
+@import "./tokens.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens (colour roles, control heights, elevation) live in tokens.css. */
 :root {
-  color-scheme: light;
   /* --font-plex-arabic (IBM Plex Sans Arabic) is a fallback, not a switch: Geist draws every
      Latin glyph; only Arabic codepoints, which Geist does not cover, fall through to it.
      It used to be named literally here and supplied by a <link> to fonts.googleapis.com; the
      face is vendored in app/fonts now and the root layout sets this variable on <html>. */
   font-family: var(--font-geist), var(--font-plex-arabic), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f0f4ff;
+  background: rgb(var(--kx-canvas));
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-}
-
-:root.dark {
-  color-scheme: dark;
-  background: #090e1c;
 }
 
 * {
@@ -25,24 +21,15 @@
 
 html {
   min-width: 320px;
-  background: #f0f4ff;
-}
-
-html.dark {
-  background: #090e1c;
+  background: rgb(var(--kx-canvas));
 }
 
 body {
   min-width: 320px;
   min-height: 100vh;
   margin: 0;
-  color: #111827;
-  background: #f0f4ff;
-}
-
-.dark body {
-  color: #f0f4ff;
-  background: #090e1c;
+  color: rgb(var(--kx-text));
+  background: rgb(var(--kx-canvas));
 }
 
 button,
@@ -57,7 +44,8 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid rgba(47, 107, 255, 0.45);
+  /* Solid, 3:1+ against every surface in both themes (see unit/designTokens.spec.ts). */
+  outline: 2px solid rgb(var(--kx-focus));
   outline-offset: 2px;
 }
 
@@ -84,116 +72,170 @@ textarea:focus-visible {
    * No backdrop-filter here — backdrop-filter creates a new containing block for
    * position:fixed children, which causes modals rendered inside cards to be
    * clipped to the card's bounds instead of covering the full viewport.
+   * One card: 12px radius, 1px line, elevation e1. Glass is for floating chrome only.
    */
   .surface {
-    @apply rounded-xl border border-slate-200/80 bg-white shadow-panel
-      dark:border-white/[0.07] dark:bg-[#0d1225];
+    @apply rounded-xl border border-line bg-surface shadow-e1;
   }
 
   .surface-raised {
-    @apply rounded-xl border border-slate-200/90 bg-white shadow-soft
-      dark:border-white/[0.09] dark:bg-[#111827];
+    @apply rounded-xl border border-line bg-surface shadow-e2;
   }
 
   .muted-text {
-    @apply text-slate-500 dark:text-slate-400;
+    @apply text-fg-subtle;
   }
 
   /* ─── Sidebar nav items ────────────────────────────────── */
   .nav-item {
     @apply relative flex w-full items-center gap-2 rounded-lg border border-transparent
-      px-2 py-1 text-start font-medium transition-all duration-150 ease-out;
+      px-2 py-1 text-start font-medium transition-colors duration-150 ease-out;
   }
 
-  /* Active — glass blue pill with left accent */
+  /* Active: solid soft-primary pill with a start-edge accent bar. No glow, no inset highlight. */
   .nav-item-active {
-    @apply border-sapphire/20 bg-sapphire/10 text-sapphire shadow-sm
-      dark:border-sapphire/25 dark:bg-sapphire/[0.14] dark:text-[#7AABFF];
-    box-shadow: 0 1px 4px rgba(47,107,255,0.10), inset 0 1px 0 rgba(255,255,255,0.15);
+    @apply bg-primary-soft text-primary-fg;
   }
 
   .nav-item-active::before {
     content: '';
-    @apply absolute start-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-e-full bg-sapphire dark:bg-[#7AABFF];
+    @apply absolute start-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-e-full bg-primary-fg;
   }
 
-  /* Idle — glass hover: faint grey-blue tint */
   .nav-item-idle {
-    @apply text-slate-500
-      hover:border-slate-200/80 hover:bg-white/70 hover:text-slate-700
-      dark:text-slate-500
-      dark:hover:border-white/[0.07] dark:hover:bg-white/[0.05] dark:hover:text-slate-200;
+    @apply text-fg-muted hover:bg-surface-sunken hover:text-fg;
   }
 
   /* ─── Buttons ──────────────────────────────────────────── */
+  /* Solid fills, colour-only hover, no blur / inset highlight / tinted shadow / lift.
+     Focus uses the global :focus-visible outline. Height is the control-height token:
+     md 36 (default), .btn-sm 28, .btn-lg 40; 44 on coarse pointers (tokens.css). */
   .btn-primary {
-    @apply inline-flex h-9 items-center gap-2 rounded-lg bg-sapphire px-4
-      text-sm font-semibold text-white
-      shadow-sm shadow-sapphire/30
-      transition-all duration-150
-      hover:-translate-y-px hover:bg-blue-600 hover:shadow-md hover:shadow-sapphire/25
-      active:translate-y-0 active:scale-[0.98]
-      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 focus-visible:ring-offset-2
-      dark:focus-visible:ring-blue-300 dark:focus-visible:ring-offset-[#0d1225];
-    /* Glass inner highlight */
-    box-shadow: 0 1px 0 rgba(255,255,255,0.15) inset, 0 2px 8px rgba(47,107,255,0.25);
+    @apply inline-flex h-control-md items-center justify-center gap-2 rounded-lg bg-primary px-4
+      text-body font-semibold text-on-primary
+      transition-colors duration-150
+      hover:bg-primary-hover
+      disabled:cursor-not-allowed;
   }
 
-  /* Hover text is blue-700, the light-theme sapphire used by the contrast overrides below:
-     raw sapphire (#2F6BFF) on the 4% sapphire hover tint is 4.27:1, under WCAG AA for 14px text. */
   .btn-secondary {
-    @apply inline-flex h-9 items-center gap-2 rounded-lg
-      border border-slate-200/90 bg-white/80 px-3
-      text-sm font-semibold text-slate-600
-      backdrop-blur-sm
-      transition-all duration-150
-      hover:border-sapphire/30 hover:bg-sapphire/[0.04] hover:text-blue-700
-      active:scale-[0.98]
-      dark:border-white/[0.09] dark:bg-white/[0.05] dark:text-slate-300
-      dark:hover:border-sapphire/30 dark:hover:bg-sapphire/[0.08] dark:hover:text-[#7AABFF];
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 1px 0 rgba(255,255,255,0.60) inset;
+    @apply inline-flex h-control-md items-center justify-center gap-2 rounded-lg
+      border border-line bg-surface px-3
+      text-body font-semibold text-fg
+      transition-colors duration-150
+      hover:border-line-strong hover:bg-surface-sunken
+      disabled:cursor-not-allowed;
   }
 
-  /* A destructive confirmation (turn off a protection, delete). Same shape as .btn-primary;
-     white on rose-700 is 6.2:1. Disabled is a real state, not a faded red: a grey surface, grey
-     text and no shadow, so "not yet" never reads as "pressable but dim". */
-  .btn-danger {
-    @apply inline-flex h-9 items-center gap-2 rounded-lg bg-rose-700 px-4
-      text-sm font-semibold text-white
-      shadow-sm transition-colors duration-150
-      hover:bg-rose-800 active:scale-[0.98]
-      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60 focus-visible:ring-offset-2
-      dark:bg-rose-600 dark:hover:bg-rose-500 dark:focus-visible:ring-offset-[#0d1225]
-      disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500 disabled:shadow-none disabled:active:scale-100
-      dark:disabled:bg-white/[0.06] dark:disabled:text-slate-500;
+  .btn-ghost {
+    @apply inline-flex h-control-md items-center justify-center gap-2 rounded-lg px-3
+      text-body font-semibold text-fg-muted
+      transition-colors duration-150
+      hover:bg-surface-sunken hover:text-fg
+      disabled:cursor-not-allowed;
   }
+
+  /* A destructive confirmation (turn off a protection, delete). White on danger is 6.3:1.
+     Disabled is a real state, not a faded red: a grey surface, grey text, no shadow. */
+  .btn-danger {
+    @apply inline-flex h-control-md items-center justify-center gap-2 rounded-lg bg-danger px-4
+      text-body font-semibold text-on-danger
+      transition-colors duration-150
+      hover:brightness-90
+      disabled:cursor-not-allowed disabled:bg-line disabled:text-fg-subtle disabled:hover:brightness-100;
+  }
+
+  .btn-sm { @apply h-control-sm gap-1.5 px-3 text-body-sm; }
+  .btn-lg { @apply h-control-lg px-5; }
+
   @media (forced-colors: active) {
     .btn-danger { border: 1px solid ButtonText; }
     .btn-danger:disabled { border-color: GrayText; color: GrayText; }
   }
 
-  /* ─── Inputs / Selects ─────────────────────────────────── */
-  .input {
-    @apply h-9 rounded-lg border border-slate-200/90 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900
-      backdrop-blur-sm
-      placeholder:text-slate-400
-      transition
-      focus:border-sapphire/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sapphire/15
-      dark:border-white/[0.09] dark:bg-white/[0.05] dark:text-white
-      dark:placeholder:text-slate-500 dark:focus:border-sapphire/50 dark:focus:bg-white/[0.08];
+  /* ─── Inputs / Selects / Textareas ─────────────────────── */
+  /* The 1px control boundary is border-strong (>= 3:1 on every surface, WCAG 1.4.11), the
+     placeholder is text-subtle (>= 4.5:1), and focus is a solid 2px ring plus a border change.
+     Input height equals button height. */
+  .input,
+  .select,
+  .textarea {
+    @apply rounded-lg border border-line-strong bg-surface px-3 text-body text-fg
+      transition-colors duration-150
+      focus:border-focus focus:outline-none focus:ring-2 focus:ring-focus
+      disabled:cursor-not-allowed disabled:bg-surface-sunken disabled:text-fg-subtle
+      read-only:bg-surface-sunken
+      aria-[invalid=true]:border-danger aria-[invalid=true]:focus:ring-danger;
   }
 
-  .select {
-    @apply h-9 rounded-lg border border-slate-200/90 bg-white/80 px-2.5 py-1.5 text-sm text-slate-900
-      backdrop-blur-sm
-      transition
-      focus:border-sapphire/60 focus:outline-none focus:ring-2 focus:ring-sapphire/15
-      dark:border-white/[0.09] dark:bg-white/[0.05] dark:text-white;
+  .input,
+  .select { @apply h-control-md py-1.5; }
+
+  .input::placeholder,
+  .textarea::placeholder { @apply text-fg-subtle; }
+
+  .textarea { @apply min-h-[5rem] py-2; }
+
+  .input-sm { @apply h-control-sm text-body-sm; }
+  .input-lg { @apply h-control-lg; }
+
+  /* ─── Badge / pill ─────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-caption font-medium;
+  }
+  .badge-neutral { @apply bg-surface-sunken text-fg-muted ring-1 ring-inset ring-line; }
+  .badge-primary { @apply bg-primary-soft text-primary-fg; }
+  .badge-success { @apply bg-success-soft text-success-fg; }
+  .badge-warning { @apply bg-warning-soft text-warning-fg; }
+  .badge-danger  { @apply bg-danger-soft text-danger-fg; }
+  .badge-info    { @apply bg-info-soft text-info-fg; }
+
+  /* ─── Table ────────────────────────────────────────────── */
+  /* Shared table (components/ui/Table.tsx). Row height by density: compact 32, default 40,
+     comfortable 48. Header is sticky inside .kx-table-scroll; numeric cells are end-aligned with
+     tabular figures; everything uses logical properties so RTL mirrors with no extra rules. */
+  .kx-table-scroll { @apply relative w-full overflow-auto rounded-xl border border-line bg-surface; }
+  .kx-table { @apply w-full border-separate border-spacing-0 text-body-sm text-fg; }
+  .kx-table thead th {
+    @apply sticky top-0 z-[1] border-b border-line bg-surface-sunken px-3 text-start text-meta font-semibold text-fg-muted;
+    height: 2.5rem;
+  }
+  .kx-table tbody td { @apply border-b border-line px-3 text-start; height: 2.5rem; }
+  .kx-table tbody tr:last-child td { border-bottom-width: 0; }
+  .kx-table tbody tr:hover td { @apply bg-surface-sunken; }
+  .kx-table[data-density='compact'] thead th,
+  .kx-table[data-density='compact'] tbody td { height: 2rem; }
+  .kx-table[data-density='comfortable'] thead th,
+  .kx-table[data-density='comfortable'] tbody td { height: 3rem; }
+  .kx-table .kx-num { @apply text-end tabular-nums; }
+  @media (pointer: coarse) {
+    .kx-table thead th,
+    .kx-table tbody td { height: 3rem; }
   }
 
-  /* ─── Card lift ─────────────────────────────────────────── */
+  /* ─── Tabs (RovingTabList) ─────────────────────────────── */
+  .kx-tabs-pill { @apply rounded-xl border border-line bg-surface-sunken p-1; }
+  .kx-tabs-underline { @apply border-b border-line; }
+
+  /* ─── Skeleton ─────────────────────────────────────────── */
+  .kx-skeleton { @apply rounded-lg bg-surface-sunken; position: relative; overflow: hidden; }
+  .kx-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(var(--kx-border) / 0.7), transparent);
+    animation: kx-shimmer 1.4s var(--wg-ease) infinite;
+  }
+  [dir='rtl'] .kx-skeleton::after { animation-name: kx-shimmer-rtl; transform: translateX(100%); }
+  @keyframes kx-shimmer { to { transform: translateX(100%); } }
+  @keyframes kx-shimmer-rtl { to { transform: translateX(-100%); } }
+  @media (prefers-reduced-motion: reduce) { .kx-skeleton::after { animation: none; display: none; } }
+
+  /* ─── Cards that respond ───────────────────────────────── */
+  /* Border and tint only, never a lift. */
   .lift {
-    @apply transition-all duration-200 ease-out hover:-translate-y-0.5 hover:shadow-soft;
+    @apply transition-colors duration-150 hover:border-line-strong hover:bg-surface-sunken;
   }
 }
 
@@ -209,9 +251,9 @@ textarea:focus-visible {
  * child in .wg-glass — backdrop-filter makes it the containing block.
  */
 :root {
-  --wg-wash-a: rgba(47, 107, 255, 0.10);
-  --wg-wash-b: rgba(14, 116, 144, 0.07);
-  --wg-wash-c: rgba(226, 234, 248, 0.55);
+  --wg-wash-a: rgba(47, 107, 255, 0.06);
+  --wg-wash-b: rgba(14, 116, 144, 0.04);
+  --wg-wash-c: rgba(226, 234, 248, 0.40);
   --wg-grain-opacity: 0.05;
   --wg-hero-base: #1C3FCF;
   --wg-hero-base2: #1734A8;
@@ -228,17 +270,17 @@ textarea:focus-visible {
   --viz-muted: #475569; --viz-ink: #0f172a; --viz-gap: rgba(100, 116, 139, 0.07); --viz-hover: rgba(15, 23, 42, 0.035);
   --viz-ord-1: #86b6ef; --viz-ord-2: #5598e7; --viz-ord-3: #256abf; --viz-ord-4: #184f95;
   --viz-critical: #d03b3b; --viz-warning: #eda100;
-  --wg-canvas: #f4f6fa;
-  --wg-surface: #ffffff;
-  --wg-surface-2: #f8fafc;
-  --wg-line: rgba(15, 23, 42, 0.08);
-  --wg-line-strong: rgba(15, 23, 42, 0.14);
+  --wg-canvas: rgb(var(--kx-canvas));
+  --wg-surface: rgb(var(--kx-surface));
+  --wg-surface-2: rgb(var(--kx-surface-sunken));
+  --wg-line: rgb(var(--kx-border));
+  --wg-line-strong: rgb(var(--kx-border-strong));
   --wg-glass-bg: rgba(255, 255, 255, 0.86);
-  --wg-glass-solid: #ffffff;
+  --wg-glass-solid: rgb(var(--kx-surface));
   --wg-glass-line: rgba(255, 255, 255, 0.65);
   --wg-glass-highlight: rgba(255, 255, 255, 0.55);
   --wg-glass-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 10px 30px -12px rgba(15, 23, 42, 0.14);
-  --wg-card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.02);
+  --wg-card-shadow: var(--kx-e1);
 
   /* Motion tokens. Motion acknowledges state or preserves continuity — nothing ambient. */
   --wg-dur-press: 110ms;
@@ -252,8 +294,8 @@ textarea:focus-visible {
 }
 
 :root.dark {
-  --wg-wash-a: rgba(59, 111, 255, 0.16);
-  --wg-wash-b: rgba(20, 184, 166, 0.07);
+  --wg-wash-a: rgba(59, 111, 255, 0.10);
+  --wg-wash-b: rgba(20, 184, 166, 0.04);
   --wg-wash-c: rgba(15, 25, 48, 0.6);
   --wg-grain-opacity: 0.07;
   --wg-hero-base: #1A36B0;
@@ -271,17 +313,10 @@ textarea:focus-visible {
   --viz-muted: #cbd5e1; --viz-ink: #f8fafc; --viz-gap: rgba(148, 163, 184, 0.08); --viz-hover: rgba(255, 255, 255, 0.04);
   --viz-ord-1: #86b6ef; --viz-ord-2: #5598e7; --viz-ord-3: #2a78d6; --viz-ord-4: #1c5cab;
   --viz-critical: #e66767; --viz-warning: #fab219;
-  --wg-canvas: #0a0f1a;
-  --wg-surface: #111827;
-  --wg-surface-2: #151e2e;
-  --wg-line: rgba(255, 255, 255, 0.07);
-  --wg-line-strong: rgba(255, 255, 255, 0.12);
   --wg-glass-bg: rgba(17, 24, 39, 0.86);
-  --wg-glass-solid: #111827;
   --wg-glass-line: rgba(255, 255, 255, 0.08);
   --wg-glass-highlight: rgba(255, 255, 255, 0.05);
   --wg-glass-shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
-  --wg-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 @layer components {
@@ -300,18 +335,8 @@ textarea:focus-visible {
   position: relative;
   isolation: isolate;
 }
-.wg-canvas::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  opacity: var(--wg-grain-opacity);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.35  0 0 0 0 0.4  0 0 0 0 0.5  0 0 0 0.55 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
-}
 @media (forced-colors: active), (prefers-reduced-transparency: reduce) {
   .wg-canvas { background-image: none; }
-  .wg-canvas::before { display: none; }
 }
 
 /* The payroll hero band: the one deliberately saturated surface on the page. */
@@ -334,7 +359,7 @@ textarea:focus-visible {
 .wg-card {
   background-color: var(--wg-surface);
   border: 1px solid var(--wg-line);
-  border-radius: 14px;
+  border-radius: var(--kx-radius-md);
   box-shadow: var(--wg-card-shadow);
 }
 
@@ -484,76 +509,24 @@ textarea:focus-visible {
   .nav-item-idle:hover, .btn-primary:hover { transform: none; }
 }
 
-/* ── WCAG AA light-theme palette guardrails ───────────────────────────────
- * slate-400 and several 500/600 status colors are useful decorative tokens,
- * but do not meet 4.5:1 when used for small text on our white/slate-50
- * surfaces. Keep the dark-theme palette intact and strengthen only text in
- * the light theme. These selectors intentionally sit after Tailwind utilities
- * so a future component cannot accidentally reintroduce unreadable metadata.
- */
-html:not(.dark) .tenant-app-shell .text-slate-400,
-html:not(.dark) .tenant-app-shell .placeholder\:text-slate-400::placeholder,
-html:not(.dark) .tenant-login-shell .text-slate-400,
-html:not(.dark) .tenant-login-shell .placeholder\:text-slate-400::placeholder {
-  color: #475569 !important; /* slate-600 */
-}
+/* ── Text contrast now lives in the tokens ────────────────────────────────
+ * The former block of `!important` selector overrides is gone. Text colours that are too faint
+ * at full strength (slate-400/500, sapphire, emerald-600, amber-600, rose-500/600) are remapped
+ * per theme in tailwind.config.ts (textColor / placeholderColor) from --kx-t-* in tokens.css, so
+ * they are AA in portals, dark mode and the platform shell with no selector gymnastics.
+ * What remains is the handful of "solid fill + white text" combinations, which a text token
+ * cannot reach. Plain specificity, no !important. */
+.bg-sapphire.text-white { background-color: rgb(var(--kx-primary)); }
+.bg-amber-500.text-white { background-color: rgb(var(--kx-warning)); }
+.bg-rose-500.text-white { background-color: rgb(var(--kx-danger)); }
+.bg-violet-500.text-white { background-color: rgb(var(--kx-violet-solid)); }
+.bg-slate-100.text-slate-500 { color: rgb(var(--kx-text-muted)); }
 
-html:not(.dark) .tenant-app-shell .text-sapphire {
-  color: #1d4ed8 !important; /* blue-700 */
-}
-
-html:not(.dark) .tenant-login-shell .text-sapphire {
-  color: #1d4ed8 !important;
-}
-
-html:not(.dark) .tenant-app-shell .text-emerald-600 {
-  color: #047857 !important; /* emerald-700 */
-}
-
-html:not(.dark) .tenant-app-shell .text-amber-600 {
-  color: #92400e !important; /* amber-800 */
-}
-
-html:not(.dark) .tenant-app-shell .text-rose-500 {
-  color: #be123c !important; /* rose-700 */
-}
-
-html:not(.dark) .tenant-app-shell .text-rose-600 {
-  color: #9f1239 !important; /* rose-800 */
-}
-
-html:not(.dark) .tenant-app-shell .bg-slate-100.text-slate-500 {
-  color: #334155 !important; /* slate-700 */
-}
-
-html:not(.dark) .tenant-app-shell .bg-amber-500.text-white {
-  background-color: #b45309 !important; /* amber-700 */
-}
-
-html:not(.dark) .tenant-app-shell .bg-sapphire.text-white {
-  background-color: #1d4ed8 !important; /* blue-700 */
-}
-
-html:not(.dark) .tenant-app-shell .btn-primary {
-  background-color: #1d4ed8 !important;
-}
-
-html:not(.dark) .tenant-app-shell .bg-violet-500.text-white {
-  background-color: #6d28d9 !important; /* violet-700 */
-}
-
-html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
-  background-color: #be123c !important; /* rose-700 */
-}
-
-/* The platform console intentionally uses a permanently dark shell, independent
- * of the tenant theme toggle. Its former slate-500/600 metadata was below AA on
- * #0a0e14; promote text tokens while leaving borders/backgrounds unchanged. */
-.platform-shell .text-slate-500,
+/* The platform console is permanently dark, independent of the tenant theme toggle. */
 .platform-shell .text-slate-600,
 .platform-shell .text-slate-700,
 .platform-shell .placeholder-slate-600::placeholder {
-  color: #94a3b8 !important; /* slate-400 */
+  color: rgb(var(--kx-t-slate-500));
 }
 
 /* ── Arabic / RTL ─────────────────────────────────────────────────────────
@@ -703,15 +676,13 @@ html:not(.dark) .tenant-app-shell .bg-rose-500.text-white {
   .setup-step-footer {
     margin-inline: calc(-1 * var(--setup-studio-pad-x));
     padding-inline-start: var(--setup-studio-pad-x);
-    background: #fff;
+    background: rgb(var(--kx-surface));
   }
-  .dark .setup-step-footer { background: #0d1225; }
   .setup-policy-guide-footer {
     margin-inline: -1rem;
     padding-inline-start: 1rem;
-    background: linear-gradient(rgb(47 107 255 / 0.05), rgb(47 107 255 / 0.05)), #fff;
+    background: linear-gradient(rgb(var(--kx-primary) / 0.05), rgb(var(--kx-primary) / 0.05)), rgb(var(--kx-surface));
   }
-  .dark .setup-policy-guide-footer { background: linear-gradient(rgb(47 107 255 / 0.05), rgb(47 107 255 / 0.05)), #0d1225; }
 }
 @media (min-width: 1024px) and (max-height: 900px) {
   .setup-studio-content { --setup-studio-pad-x: 0.75rem; }

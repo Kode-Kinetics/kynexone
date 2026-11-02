@@ -216,8 +216,8 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
         aria-modal="true"
         aria-labelledby={titleId}
         className={phone
-          ? 'wg-glass absolute inset-x-0 bottom-0 flex flex-col rounded-t-[20px] border-t'
-          : `wg-glass absolute inset-y-2 end-2 flex w-[min(420px,calc(100vw-16px))] flex-col rounded-[20px] border transition-[transform,opacity] ease-[cubic-bezier(0.32,0.72,0,1)] ${dur} ${
+          ? 'wg-glass absolute inset-x-0 bottom-0 flex flex-col rounded-t-2xl border-t'
+          : `wg-glass absolute inset-y-2 end-2 flex w-[min(420px,calc(100vw-16px))] flex-col rounded-2xl border transition-[transform,opacity] ease-[cubic-bezier(0.32,0.72,0,1)] ${dur} ${
               shown ? 'translate-x-0 opacity-100' : 'translate-x-8 opacity-0 rtl:-translate-x-8'
             }`}
       >
@@ -239,9 +239,9 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
         )}
 
         <header className="flex shrink-0 items-center gap-2 px-5 pb-3 pt-3 sm:pt-4">
-          <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-blue-700 text-base font-bold text-white dark:bg-blue-600">K</span>
+          <span aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-blue-700 text-base font-semibold text-white dark:bg-blue-600">K</span>
           <h2 id={titleId} className="min-w-0 flex-1 text-sm font-semibold text-slate-900 dark:text-white">{t('Kody the HR Assistant')}</h2>
-          <span className="shrink-0 rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <span className="shrink-0 rounded-full border border-amber-300/70 bg-amber-50 px-2 py-0.5 text-caption font-semibold text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
             {t('Advisory')}
           </span>
           <button
@@ -267,20 +267,20 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
               <section aria-labelledby={`${titleId}-rules`} className="mb-5">
                 <div className="mb-2 flex items-baseline justify-between gap-2">
                   <h3 id={`${titleId}-rules`} className="text-sm font-semibold text-slate-900 dark:text-white">{t('Rules check')}</h3>
-                  <span className="text-[11px] text-slate-600 dark:text-slate-300">{t('Deterministic · hourly · all companies')}</span>
+                  <span className="text-caption text-slate-600 dark:text-slate-300">{t('Deterministic · hourly · all companies')}</span>
                 </div>
                 {open_ === null && <div className="h-16 rounded-lg bg-slate-100 dark:bg-white/[0.05]" aria-hidden />}
                 {open_ !== null && findings.failed && (
-                  <p className="text-[13px] text-slate-700 dark:text-slate-300">{t('Findings could not be loaded, so none are shown rather than stale ones.')}</p>
+                  <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('Findings could not be loaded, so none are shown rather than stale ones.')}</p>
                 )}
                 {open_ !== null && !findings.failed && open_.length === 0 && (
-                  <p className="text-[13px] text-emerald-800 dark:text-emerald-300">{t('The last run flagged nothing.')}</p>
+                  <p className="text-body-sm text-emerald-800 dark:text-emerald-300">{t('The last run flagged nothing.')}</p>
                 )}
                 {open_ !== null && open_.length > 0 && (
                   <ul className="space-y-2">
                     {open_.slice(0, 6).map((f) => (
                       <li key={f.id} className="rounded-lg border border-[color:var(--wg-line)] p-3">
-                        <p className="flex items-start gap-2 text-[13px] font-semibold text-slate-900 dark:text-white">
+                        <p className="flex items-start gap-2 text-body-sm font-semibold text-slate-900 dark:text-white">
                           <span aria-hidden className={f.severity === 'Critical' ? 'text-rose-600' : f.severity === 'Warning' ? 'text-amber-600' : 'text-slate-400'}>
                             {f.severity === 'Critical' ? '■' : f.severity === 'Warning' ? '▲' : '●'}
                           </span>
@@ -289,7 +289,7 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
                         </p>
                         <p className="mt-1 text-xs leading-relaxed text-slate-700 dark:text-slate-300">{f.summary}</p>
                         <div className="mt-2 flex items-center justify-between">
-                          <span className="text-[11px] text-slate-600 dark:text-slate-300">{t(f.module)} · {fmt.relative(f.createdAtUtc)}</span>
+                          <span className="text-caption text-slate-600 dark:text-slate-300">{t(f.module)} · {fmt.relative(f.createdAtUtc)}</span>
                           <Link href={insightRoute(f.insightType)} onClick={onClose} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire hover:underline dark:text-blue-300">
                             {t('See records')} <ArrowRight className="h-3 w-3" aria-hidden />
                           </Link>
@@ -304,11 +304,11 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
             {!policyMode && <section aria-labelledby={`${titleId}-chat`}>
               <h3 id={`${titleId}-chat`} className="mb-2 text-sm font-semibold text-slate-900 dark:text-white">{t('Ask a question')}</h3>
               {!mayQuery && (
-                <p className="text-[13px] text-slate-700 dark:text-slate-300">{t('Your role does not include the conversational assistant.')}</p>
+                <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('Your role does not include the conversational assistant.')}</p>
               )}
               {mayQuery && provider === null && <div className="h-10 rounded-lg bg-slate-100 dark:bg-white/[0.05]" aria-hidden />}
               {mayQuery && provider && !provider.enabled && (
-                <p className="text-[13px] leading-relaxed text-slate-700 dark:text-slate-300">
+                <p className="text-body-sm leading-relaxed text-slate-700 dark:text-slate-300">
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{t('The conversational assistant is not enabled on this deployment.')}</span>{' '}
                   {t('The rules check above runs without a language model and is unaffected.')}
                 </p>
@@ -329,12 +329,12 @@ export function AssistantDrawer({ open, onClose }: { open: boolean; onClose: () 
                     {turns.map((m, i) => (
                       <li key={i} className={m.role === 'user' ? 'flex justify-end' : ''}>
                         {m.role === 'user' ? (
-                          <p className="max-w-[85%] rounded-2xl rounded-ee-md bg-sapphire px-3 py-2 dark:bg-blue-600 text-[13px] text-white">{m.text}</p>
+                          <p className="max-w-[85%] rounded-2xl rounded-ee-lg bg-sapphire px-3 py-2 dark:bg-blue-600 text-body-sm text-white">{m.text}</p>
                         ) : (
-                          <div className="max-w-[92%] rounded-2xl rounded-es-md border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] px-3 py-2">
-                            <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-800 dark:text-slate-200">{m.text}</p>
+                          <div className="max-w-[92%] rounded-2xl rounded-es-lg border border-[color:var(--wg-line)] bg-[color:var(--wg-surface-2)] px-3 py-2">
+                            <p className="whitespace-pre-wrap text-body-sm leading-relaxed text-slate-800 dark:text-slate-200">{m.text}</p>
                             {!m.blocked && (
-                              <p className="mt-2 flex items-center justify-between gap-2 border-t border-[color:var(--wg-line)] pt-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                              <p className="mt-2 flex items-center justify-between gap-2 border-t border-[color:var(--wg-line)] pt-1.5 text-caption text-slate-600 dark:text-slate-300">
                                 <span>{t('Advisory · model-generated')}</span>
                                 {m.to && (
                                   <Link href={m.to} onClick={onClose} className="inline-flex items-center gap-1 font-semibold text-sapphire hover:underline dark:text-blue-300">

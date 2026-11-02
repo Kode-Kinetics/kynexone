@@ -1,5 +1,6 @@
 'use client';
 
+import { useConfirm } from './ui/useConfirm';
 import { useEffect, useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { helpTextsApi, type FieldHelpText } from '../api/helpTexts';
@@ -12,6 +13,7 @@ import { useLocale } from '../contexts/LocaleContext';
  * "key:" at the bottom — enter that key here with custom text to override it.
  */
 export function HelpTextManager() {
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { refresh } = useHelpTexts();
   const { t } = useLocale();
   const [loadFailed, setLoadFailed] = useState(false);
@@ -58,15 +60,16 @@ export function HelpTextManager() {
   };
 
   const remove = async (key: string) => {
-    if (!confirm(`Remove the custom help text for "${key}"? The built-in default will be shown again.`)) return;
+    const ok = await confirm({ title: t('Remove help text'), message: t('Remove the custom help text for "{key}"? The built-in default will be shown again.', { key }), confirmLabel: t('Remove') });
+    if (!ok) return;
     try { await helpTextsApi.remove(key); await load(); await refresh(); } catch { /**/ }
   };
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Custom Field Help Text</h2>
-        <p className="text-sm text-gray-500 mb-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-6">
+        <h2 className="text-lg font-semibold text-slate-900 mb-1">Custom Field Help Text</h2>
+        <p className="text-sm text-slate-500 mb-4">
           Every ⓘ tooltip in the app has a built-in explanation. Override any of them with your company&apos;s own wording —
           hover a tooltip anywhere in the app and copy the <span className="font-mono text-xs">key:</span> shown at the bottom,
           then add it here with the text your staff should see (e.g. your own leave policy or payroll cut-off rule).
@@ -78,14 +81,14 @@ export function HelpTextManager() {
             onChange={e => setFieldKey(e.target.value)}
             disabled={editingKey !== null}
             placeholder="Field key, e.g. employees.joining_date"
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-indigo-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-500"
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:border-indigo-500 focus:outline-none disabled:bg-slate-50 disabled:text-slate-500"
           />
           <input
             value={text}
             onChange={e => setText(e.target.value)}
             maxLength={500}
             placeholder="The explanation your users should see (max 500 characters)"
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+            className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
           />
           <div className="flex gap-2">
             <button
@@ -97,7 +100,7 @@ export function HelpTextManager() {
               <Plus className="h-4 w-4" /> {saving ? 'Saving…' : editingKey ? 'Update' : 'Add'}
             </button>
             {editingKey && (
-              <button type="button" onClick={reset} className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50">
+              <button type="button" onClick={reset} className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">
                 Cancel
               </button>
             )}
@@ -106,37 +109,37 @@ export function HelpTextManager() {
         {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         {loading ? (
-          <p className="p-6 text-sm text-gray-500">Loading…</p>
+          <p className="p-6 text-sm text-slate-500">Loading…</p>
         ) : loadFailed ? (
           <div role="alert" className="p-6 text-sm text-red-600">
             <p>{t('The custom help texts could not be loaded.')}</p>
             <button type="button" onClick={() => void load()} className="btn-secondary mt-3 h-8 px-3 text-sm">{t('Retry')}</button>
           </div>
         ) : items.length === 0 ? (
-          <p className="p-6 text-sm text-gray-500">No custom help texts yet — all tooltips show the built-in defaults.</p>
+          <p className="p-6 text-sm text-slate-500">No custom help texts yet — all tooltips show the built-in defaults.</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-200 text-start text-xs text-gray-500">
+              <tr className="border-b border-slate-200 text-start text-xs text-slate-500">
                 <th className="px-4 py-2.5 font-medium">Field Key</th>
                 <th className="px-4 py-2.5 font-medium">Custom Text</th>
                 <th className="px-4 py-2.5 font-medium">Updated</th>
                 <th className="px-4 py-2.5" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {items.map(item => (
                 <tr key={item.fieldKey}>
-                  <td className="px-4 py-2.5 font-mono text-xs text-gray-700">{item.fieldKey}</td>
-                  <td className="px-4 py-2.5 text-gray-700">{item.text}</td>
-                  <td className="px-4 py-2.5 text-xs text-gray-400 whitespace-nowrap">{new Date(item.updatedAtUtc).toLocaleDateString()}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs text-slate-700">{item.fieldKey}</td>
+                  <td className="px-4 py-2.5 text-slate-700">{item.text}</td>
+                  <td className="px-4 py-2.5 text-xs text-slate-400 whitespace-nowrap">{new Date(item.updatedAtUtc).toLocaleDateString()}</td>
                   <td className="px-4 py-2.5 whitespace-nowrap text-end">
-                    <button type="button" onClick={() => startEdit(item)} aria-label={`Edit ${item.fieldKey}`} className="me-2 text-gray-400 hover:text-indigo-600">
+                    <button type="button" onClick={() => startEdit(item)} aria-label={`Edit ${item.fieldKey}`} className="me-2 text-slate-400 hover:text-indigo-600">
                       <Pencil className="h-4 w-4" />
                     </button>
-                    <button type="button" onClick={() => remove(item.fieldKey)} aria-label={`Delete ${item.fieldKey}`} className="text-gray-400 hover:text-red-600">
+                    <button type="button" onClick={() => remove(item.fieldKey)} aria-label={`Delete ${item.fieldKey}`} className="text-slate-400 hover:text-red-600">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </td>
@@ -146,6 +149,7 @@ export function HelpTextManager() {
           </table>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }

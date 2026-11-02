@@ -1,5 +1,10 @@
 'use client';
 
+import { BelowMinimumPanel } from '../components/BelowMinimumPanel';
+import {
+  acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
+  type FloorCheck,
+} from '../lib/belowMinimum';
 import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
@@ -33,6 +38,8 @@ import { calendarDaysBetween, formatCalendarDate } from '../lib/calendarDate';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
+import { useConfirm } from '../components/ui/useConfirm';
+import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
@@ -44,6 +51,7 @@ import { describeApiError } from '../lib/apiError';
 import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
 import { msg } from '../i18n/translations';
+import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 // ── Leave import/export helpers ───────────────────────────────────────────────
@@ -108,7 +116,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 function StatusBadge({ status, enumName = 'LeaveRequestStatus' }: { status: string; enumName?: EnumName }) {
   const cls = STATUS_COLORS[status] ?? 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400';
-  return <span className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
+  return <span className={`inline-flex rounded-lg px-2 py-0.5 text-xs font-medium ${cls}`}><EnumLabel enum={enumName} value={status} /></span>;
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -123,9 +131,9 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
         <Icon className="h-5 w-5" />
       </div>
       <div className="min-w-0">
-        <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">{value}</p>
+        <p className="text-2xl font-semibold tabular-nums text-slate-900 dark:text-white">{value}</p>
         <p className="mt-0.5 truncate text-xs text-slate-500 dark:text-slate-400">{label}</p>
-        {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500">{sub}</p>}
+        {sub && <p className="text-caption text-slate-400 dark:text-slate-500">{sub}</p>}
       </div>
     </div>
   );
@@ -239,7 +247,7 @@ function GroupContextBar({
           Clear
         </button>
       )}
-      <span className="ms-auto text-[11px] text-slate-400 dark:text-slate-500">
+      <span className="ms-auto text-caption text-slate-400 dark:text-slate-500">
         {companyId
           ? (branchId
             ? branches.find(b => b.id === branchId)?.nameEn ?? 'Branch'
@@ -470,8 +478,8 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                     { label: 'Encashed', val: b.encashed },
                   ].map(x => (
                     <div key={x.label} className="rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-white/5">
-                      <p className={`text-base font-bold tabular-nums ${x.label === 'Available' ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{x.val}</p>
-                      <p className="text-[10px] text-slate-400">{x.label}</p>
+                      <p className={`text-base font-semibold tabular-nums ${x.label === 'Available' ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{x.val}</p>
+                      <p className="text-caption text-slate-400">{x.label}</p>
                     </div>
                   ))}
                 </div>
@@ -639,7 +647,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Statutory entitlement')}</span>
-                <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{t('{days} days per event', { days: balance.statutoryEntitlementDays })}</span>
+                <span className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{t('{days} days per event', { days: balance.statutoryEntitlementDays })}</span>
               </div>
             </div>
           )}
@@ -647,7 +655,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             <div className={`rounded-lg border p-3 ${available !== null && available < requestedDays ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10' : 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10'}`}>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Available Balance</span>
-                <span className={`text-lg font-bold tabular-nums ${available !== null && available < requestedDays ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>{available?.toFixed(2)} days</span>
+                <span className={`text-lg font-semibold tabular-nums ${available !== null && available < requestedDays ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>{available?.toFixed(2)} days</span>
               </div>
               {selectedType && !selectedType.isPaid && (
                 <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">⚠ This is unpaid leave — payroll deduction will apply.</p>
@@ -778,7 +786,7 @@ function MyRequestsTab() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.leaveTypeName}</p>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
                   <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</p>
                   {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Rejected: {r.rejectionReason}</p>}
@@ -874,7 +882,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-slate-300">{r.leaveTypeName}</span>
                     <span className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</span>
                     <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</span>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
                   {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
                   <StatutoryLeaveHistory context={history[r.id]} />
@@ -972,9 +980,9 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     <span className={`text-xs font-medium ${isToday ? 'flex h-5 w-5 items-center justify-center rounded-full bg-sapphire text-white' : 'text-slate-600 dark:text-slate-400'}`}>{day}</span>
                     <div className="mt-1 space-y-0.5">
                       {dayEntries.slice(0, 3).map((e, j) => (
-                        <div key={j} className="truncate rounded px-1 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: e.colorCode || '#2F6BFF' }}>{e.employeeName.split(' ')[0]}</div>
+                        <div key={j} className="truncate rounded px-1 py-0.5 text-caption font-medium text-white" style={{ backgroundColor: e.colorCode || '#2F6BFF' }}>{e.employeeName.split(' ')[0]}</div>
                       ))}
-                      {dayEntries.length > 3 && <p className="text-[10px] text-slate-400">+{dayEntries.length - 3} more</p>}
+                      {dayEntries.length > 3 && <p className="text-caption text-slate-400">+{dayEntries.length - 3} more</p>}
                     </div>
                   </>
                 )}
@@ -1003,10 +1011,12 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
 // ── Leave Types Tab ───────────────────────────────────────────────────────────
 
-function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCompany = false }: { onClose: () => void; onSaved: () => void; defaultCompanyId?: string; lockCompany?: boolean }) {
+function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCompany = false, existing }: { onClose: () => void; onSaved: () => void; defaultCompanyId?: string; lockCompany?: boolean; existing?: LeaveType }) {
   const { t } = useLocale();
   const org = useOrgCompanies();
-  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', category: 'Annual', isPaid: true, isHalfDayAllowed: true, isHourlyAllowed: false, requiresAttachment: false, requiresReason: false, maxConsecutiveDays: 0, colorCode: '#2F6BFF', sortOrder: 0, companyId: defaultCompanyId });
+  const [form, setForm] = useState(existing
+    ? { code: existing.code, nameEn: existing.nameEn, nameAr: existing.nameAr ?? '', category: existing.category, isPaid: existing.isPaid, isHalfDayAllowed: existing.isHalfDayAllowed, isHourlyAllowed: existing.isHourlyAllowed, requiresAttachment: existing.requiresAttachment, requiresReason: existing.requiresReason, maxConsecutiveDays: existing.maxConsecutiveDays, colorCode: existing.colorCode || '#2F6BFF', sortOrder: existing.sortOrder, companyId: existing.companyId ?? '' }
+    : { code: '', nameEn: '', nameAr: '', category: 'Annual', isPaid: true, isHalfDayAllowed: true, isHourlyAllowed: false, requiresAttachment: false, requiresReason: false, maxConsecutiveDays: 0, colorCode: '#2F6BFF', sortOrder: 0, companyId: defaultCompanyId });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
@@ -1015,20 +1025,27 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
     if (!form.code || !form.nameEn) { setError('Code and English name are required.'); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
-    try { await leaveTypesApi.create({ ...form, companyId: form.companyId || undefined }); onSaved(); } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
+    try {
+      if (existing) { const rest = { ...form } as Partial<typeof form>; delete rest.code; delete rest.companyId; await leaveTypesApi.update(existing.id, rest as Omit<typeof form, 'code' | 'companyId'>); }
+      else await leaveTypesApi.create({ ...form, companyId: form.companyId || undefined });
+      onSaved();
+    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
   };
 
   return (
-    <Modal title="New Leave Type" onClose={onClose}>
+    <Modal title={existing ? t('Edit leave type') : 'New Leave Type'} onClose={onClose}>
       <div className="space-y-4">
-        {(org.options.length > 1 || lockCompany) && (
+        {!existing && (org.options.length > 1 || lockCompany) && (
           <Field label={t('Company')}>
             <CompanySelectField value={form.companyId} onChange={v => set('companyId', v)} options={org.options}
               locked={lockCompany && !!form.companyId} lockedName={org.nameOf(form.companyId)} />
           </Field>
         )}
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Code *"><input className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. ANNUAL" /></Field>
+          <Field label="Code *">
+            <input className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. ANNUAL" disabled={!!existing} />
+            {existing && <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">{t('The code is fixed once a leave type is created, because balances and requests refer to it.')}</p>}
+          </Field>
           <Field label="Category">
             <select className={sel} value={form.category} onChange={e => set('category', e.target.value)}>
               {['Annual', 'Sick', 'Emergency', 'Unpaid', 'Maternity', 'Paternity', 'Marriage', 'Bereavement', 'Hajj', 'Study', 'Compensatory', 'WFH', 'Custom'].map(c => <option key={c}>{c}</option>)}
@@ -1053,7 +1070,7 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Create Leave Type'}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : existing ? t('Save changes') : 'Create Leave Type'}</button>
         </div>
       </div>
     </Modal>
@@ -1106,21 +1123,34 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
   const [loadError, setLoadError] = useState<unknown>(null);
   const load = () => {
     setLoading(true);
-    leaveTypesApi.list(companyId ? { companyId, includeUnassigned: true } : undefined)
+    leaveTypesApi.list({ ...(companyId ? { companyId, includeUnassigned: true } : {}), includeInactive: true })
       .then(rows => { setTypes(rows); setLoadError(null); })
       .catch(e => { setTypes([]); setLoadError(e); })
       .finally(() => setLoading(false));
   };
   useEffect(load, [companyId]);
   const unassignedCount = types.filter(x => !x.companyId).length;
-  const shown = companyId ? types : filterByCompany(types, companyFilter);
+  const [showOff, setShowOff] = useState(false);
+  const shown = (companyId ? types : filterByCompany(types, companyFilter)).filter(x => showOff || x.isActive);
   const newRowCompany = companyId ?? (companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId);
   // An unassigned legacy type takes the company Setup names; it is fixed from then on.
   const assign = async (id: string, company: string) => {
     if (!company) return;
     try { await leaveTypesApi.update(id, { companyId: company }); onSaved?.('updated'); load(); } catch (e) { notifyApiError(e, 'The leave type could not be updated.'); }
   };
-  const del = async (id: string) => { if (!confirm('Deactivate this leave type?')) return; try { await leaveTypesApi.delete(id); onSaved?.('removed'); load(); } catch (e) { notifyApiError(e, 'The leave type could not be deactivated.'); } };
+  const [editing, setEditing] = useState<LeaveType | null>(null);
+  const mayWrite = useOrgWriteAccess(null);
+  const removal = useOrgRowRemoval({
+    api: leaveTypesApi.removal, noun: msg('leave type'),
+    warning: row => {
+      const lt = types.find(x => x.id === row.id);
+      return lt && isSaudiStatutoryLeave(lt.code, lt.nameEn, lt.category)
+        ? tr('This is a statutory leave type. Turning it off does not change what the law requires: statutory floors still apply to everyone who holds it.')
+        : null;
+    },
+    onDone: () => { onSaved?.('removed'); load(); },
+  });
+  const turnedOffCount = types.filter(x => !x.isActive).length;
 
   return (
     <div className="space-y-4">
@@ -1133,12 +1163,15 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
           onDownloadTemplate={leaveTypesImportExport.template}
           onImport={leaveTypesImportExport.import}
         />}
+        <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={turnedOffCount} />
         <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
       </div>
+      {removal.notice}
+      {removal.confirmDialog}
       {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">Loading…</p>) : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
         <div className={embedded ? 'grid gap-3' : 'grid gap-4 md:grid-cols-2 xl:grid-cols-3'}>
           {shown.map(t => (
-            <div key={t.id} className="surface p-4" data-testid="leave-type-card">
+            <div key={t.id} className={`surface p-4 ${t.isActive ? '' : 'opacity-70'}`} data-testid="leave-type-card">
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <LeaveColorDot color={t.colorCode} />
@@ -1147,14 +1180,17 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
                     {t.nameAr && <p className="text-xs text-slate-400" dir="rtl">{t.nameAr}</p>}
                   </div>
                 </div>
-                <button type="button" className={btn.sm} onClick={() => del(t.id)}>Remove</button>
+                <OrgRowActions name={t.nameEn} isActive={t.isActive} busy={removal.busyId === t.id}
+                  blockedReason={!mayWrite(t.companyId).allowed ? mayWrite(t.companyId).reason : undefined}
+                  onEdit={() => setEditing(t)} onRemove={() => removal.remove({ id: t.id, name: t.nameEn })} onRestore={() => removal.restore({ id: t.id, name: t.nameEn })} />
               </div>
+              {!t.isActive && <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400" data-testid="leave-type-off">{tr('Off')}</p>}
               <div className="flex flex-wrap gap-1.5">
-                <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-400">{t.category}</span>
-                <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${t.isPaid ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'}`}>{t.isPaid ? 'Paid' : 'Unpaid'}</span>
-                {t.isHalfDayAllowed && <span className="rounded bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">Half-Day</span>}
-                {t.isHourlyAllowed && <span className="rounded bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-600 dark:bg-purple-500/10 dark:text-purple-400">Hourly</span>}
-                {t.requiresAttachment && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Attachment Req.</span>}
+                <span className="rounded bg-slate-100 px-2 py-0.5 text-caption font-medium text-slate-600 dark:bg-white/10 dark:text-slate-400">{t.category}</span>
+                <span className={`rounded px-2 py-0.5 text-caption font-medium ${t.isPaid ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'}`}>{t.isPaid ? 'Paid' : 'Unpaid'}</span>
+                {t.isHalfDayAllowed && <span className="rounded bg-blue-50 px-2 py-0.5 text-caption font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">Half-Day</span>}
+                {t.isHourlyAllowed && <span className="rounded bg-purple-50 px-2 py-0.5 text-caption font-medium text-purple-600 dark:bg-purple-500/10 dark:text-purple-400">Hourly</span>}
+                {t.requiresAttachment && <span className="rounded bg-amber-50 px-2 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Attachment Req.</span>}
               </div>
               <p className="mt-2 text-xs text-slate-400">Code: {t.code}{t.maxConsecutiveDays > 0 ? ` · Max ${t.maxConsecutiveDays}d consecutive` : ''}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
@@ -1169,6 +1205,7 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
         </div>
       )}
       {showCreate && <CreateLeaveTypeModal defaultCompanyId={newRowCompany ?? ''} lockCompany={!!companyId} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); onSaved?.('added'); load(); }} />}
+      {editing && <CreateLeaveTypeModal existing={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onSaved?.('updated'); load(); }} />}
     </div>
   );
 }
@@ -1223,8 +1260,39 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   const [error, setError] = useState('');
   const errorRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
-  const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
+  const [daysTouched, setDaysTouched] = useState(false);
+  const set = (k: keyof typeof form, v: string | number | boolean) => {
+    if (k === 'annualEntitlementDays') setDaysTouched(true);
+    setForm(f => ({ ...f, [k]: v }));
+  };
   const { t, locale } = useLocale();
+  // Statutory minimums are defaults, not walls (owner decision 2026-10-25): the server says which legal minimums apply to
+  // what is typed; under one, the admin ticks the acknowledgement and gives a reason, and Save sends them.
+  const [floorChecks, setFloorChecks] = useState<FloorCheck[]>([]);
+  const [floorAck, setFloorAck] = useState(false);
+  const [floorReason, setFloorReason] = useState('');
+  const storedAcks = parseStoredAcks(existing?.belowMinimumAcksJson);
+  const stillOpen = openChecks(floorChecks, storedAcks);
+  useEffect(() => {
+    if (!form.leaveTypeId) { setFloorChecks([]); return; }
+    let live = true;
+    const timer = setTimeout(() => {
+      leavePoliciesApi.floorCheck({
+        leaveTypeId: form.leaveTypeId, countryCode: form.countryCode, companyId: form.companyId || undefined,
+        annualEntitlementDays: form.annualEntitlementDays, maximumDaysPerRequest: form.maximumDaysPerRequest, payrollImpact: form.payrollImpact,
+        weekendsIncluded: form.weekendsIncluded, publicHolidaysIncluded: form.publicHolidaysIncluded,
+        minimumServiceMonths: form.minimumServiceMonths, policyId: existing?.id, status: form.status,
+      }).then(checks => { if (live) setFloorChecks(Array.isArray(checks) ? checks : []); }).catch(() => { if (live) setFloorChecks([]); });
+    }, 250);
+    return () => { live = false; clearTimeout(timer); };
+  }, [form.leaveTypeId, form.countryCode, form.companyId, form.annualEntitlementDays, form.maximumDaysPerRequest, form.payrollImpact,
+    form.weekendsIncluded, form.publicHolidaysIncluded, form.minimumServiceMonths, form.status, existing?.id]);
+  // A new policy starts at the country's statutory figure ("Saudi default"); typing over it is the admin's choice.
+  useEffect(() => {
+    if (isEdit || daysTouched) return;
+    const days = floorChecks.find(c => c.field === 'annualEntitlementDays' && c.statutoryValue != null);
+    if (days && days.statutoryValue !== form.annualEntitlementDays) setForm(f => ({ ...f, annualEntitlementDays: days.statutoryValue as number }));
+  }, [floorChecks, isEdit, daysTouched, form.annualEntitlementDays]);
   // Employment Type is several ticks. The tenant's reference list is offered (code stored, label shown); a stored
   // value the list does not offer (retired, or typed before the list) stays ticked so an edit never drops it.
   const employmentTypes = splitEmploymentTypes(form.employmentType);
@@ -1250,15 +1318,24 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
     if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
     if (form.encashmentAllowed && !(form.encashmentMaxDays > 0)) { setError(t('Enter the maximum days per encashment, or untick Encashment Allowed.')); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
+    if (!readyToSave(stillOpen, floorAck, floorReason)) { setError(t('Tick the box and give a reason to save below the legal minimum.')); return; }
     setSaving(true); setError('');
     try {
-      if (isEdit) {
-        await leavePoliciesApi.update(existing!.id, { ...form, companyId: form.companyId || undefined });
-      } else {
-        await leavePoliciesApi.create({ ...form, companyId: form.companyId || undefined });
-      }
+      const body = {
+        ...form, companyId: form.companyId || undefined,
+        ...(stillOpen.length > 0 ? { acknowledgedWarnings: acknowledgementsFor(stillOpen, floorReason) } : {}),
+      };
+      if (isEdit) await leavePoliciesApi.update(existing!.id, body);
+      else await leavePoliciesApi.create(body);
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Save failed.')); setSaving(false); }
+    } catch (e) {
+      // The server may know a minimum the screen did not (a rule changed): show it and ask, nothing was saved.
+      const refused = parseFloorWarnings(e);
+      if (refused) { setFloorChecks(prev => [...prev.filter(c => !refused.some(w => w.code === c.code)), ...checksFromWarnings(refused)]); setError(t('Tick the box and give a reason to save below the legal minimum.')); }
+      else if (isReasonRequired(e)) setError(t('Tick the box and give a reason to save below the legal minimum.'));
+      else setError(apiErrorReason(e, 'Save failed.'));
+      setSaving(false);
+    }
   };
 
   return (
@@ -1385,6 +1462,8 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
           )}
         </div>
 
+        <BelowMinimumPanel checks={floorChecks} stored={storedAcks} acknowledged={floorAck} onAcknowledged={setFloorAck} reason={floorReason} onReason={setFloorReason} />
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Payroll Impact">
             <select className={sel} value={form.payrollImpact} onChange={e => set('payrollImpact', e.target.value)}>
@@ -1433,11 +1512,17 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
   const newRowCompany = companyId ?? (companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId);
 
   const typeName = (id: string) => leaveTypes.find(t => t.id === id)?.nameEn ?? id;
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { lists: referenceLists } = useEmployeeReferenceLists();
 
   const archive = async (id: string, name: string) => {
-    if (!confirm(`Archive "${name}"? It will no longer be applied to new requests.`)) return;
+    const ok = await confirm({
+      title: t('Archive policy'),
+      message: t('Archive "{name}"? It will no longer be applied to new requests.', { name }),
+      confirmLabel: t('Archive'),
+    });
+    if (!ok) return;
     try { await leavePoliciesApi.delete(id); onSaved?.('removed'); load(); } catch (e) { notifyApiError(e, 'Failed to archive policy.'); }
   };
 
@@ -1474,10 +1559,10 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
                 </p>
                 <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs"><CompanyCell name={org.nameOf(p.companyId)} /></p>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Encashment ✓</span>}
-                  {p.weekendsIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">Wknd incl.</span>}
-                  {p.publicHolidaysIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">PH incl.</span>}
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${p.payrollImpact === 'None' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'}`}>Payroll: {p.payrollImpact}</span>
+                  {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Encashment ✓</span>}
+                  {p.weekendsIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">Wknd incl.</span>}
+                  {p.publicHolidaysIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">PH incl.</span>}
+                  <span className={`rounded px-1.5 py-0.5 text-caption font-medium ${p.payrollImpact === 'None' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'}`}>Payroll: {p.payrollImpact}</span>
                   <StatusBadge status={p.status} />
                 </div>
               </div>
@@ -1497,6 +1582,7 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
       )}
       {showCreate && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} defaultCompanyId={newRowCompany ?? ''} lockCompany={!!companyId} onClose={() => setShowCreate(false)} onSaved={() => { setShowCreate(false); onSaved?.('added'); load(); }} />}
       {editPolicy && <PolicyModal leaveTypes={leaveTypes} employmentTypeValues={referenceLists.employmentType} existing={editPolicy} onClose={() => setEditPolicy(null)} onSaved={() => { setEditPolicy(null); onSaved?.('updated'); load(); }} />}
+      {confirmDialog}
     </div>
   );
 }
@@ -1511,6 +1597,8 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
   companyId?: string;
 } = {}) {
   const { t } = useLocale();
+  const toast = useAppToast();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
   const [selected, setSelected] = useState<PublicHolidayCalendar | null>(null);
   const [holidays, setHolidays] = useState<PublicHoliday[]>([]);
@@ -1566,7 +1654,7 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
         await reloadCalendars();
       }
       setCalModal('none');
-    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
+    } catch (err) { toast.error(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditCal = (c: PublicHolidayCalendar) => {
@@ -1575,13 +1663,18 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
   };
 
   const delCal = async (c: PublicHolidayCalendar) => {
-    if (!confirm(`Delete calendar "${c.name}"? All ${holidays.length} holidays will be removed.`)) return;
+    const ok = await confirm({
+      title: t('Delete calendar'),
+      message: t('Delete calendar "{name}"? All {count} holidays will be removed.', { name: c.name, count: holidays.length }),
+      confirmLabel: t('Delete'),
+    });
+    if (!ok) return;
     try {
       await holidayCalendarApi.deleteCalendar(c.id);
       onSaved?.('removed');
       if (selected?.id === c.id) { setSelected(null); setHolidays([]); }
       await reloadCalendars();
-    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
+    } catch (err) { toast.error(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   // Normalise date from API (DateOnly → "YYYY-MM-DD" for <input type=date>)
@@ -1615,7 +1708,7 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
       setHolidayModal('none');
       setEditingHoliday(null);
       await reloadHolidays(selected);
-    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
+    } catch (err) { toast.error(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openEditHoliday = (h: PublicHoliday) => {
@@ -1636,12 +1729,17 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
   };
 
   const delHoliday = async (h: PublicHoliday) => {
-    if (!confirm(`Remove "${h.nameEn}"?`)) return;
+    const ok = await confirm({
+      title: t('Remove holiday'),
+      message: t('Remove "{name}"?', { name: h.nameEn }),
+      confirmLabel: t('Remove'),
+    });
+    if (!ok) return;
     try {
       await holidayCalendarApi.deleteHoliday(h.id);
       onSaved?.('removed');
       setHolidays(prev => prev.filter(x => x.id !== h.id));
-    } catch (err) { alert(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
+    } catch (err) { toast.error(t('The change was not saved: {reason}', { reason: apiErr(err) })); }
   };
 
   const openAddHoliday = () => {
@@ -1705,8 +1803,8 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
                       <div className="mt-0.5 flex items-center gap-2">
                         <span className="text-xs text-slate-400">{fmtDate(h.date)}</span>
                         {h.hijriDate && <span className="text-xs text-slate-400">({h.hijriDate} Hijri)</span>}
-                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10">{h.holidayType}</span>
-                        {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Optional</span>}
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">{h.holidayType}</span>
+                        {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Optional</span>}
                         {/* The "Recurring" badge is gone with the checkbox: it was the visible half
                             of the promise. A holiday marked recurring on a legacy row still never
                             rolled forward, so showing the badge would keep asserting it. */}
@@ -1822,6 +1920,7 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
           </div>
         </Modal>
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -1906,7 +2005,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
                 <p className="text-xs text-slate-400">{r.leaveTypeName} · {r.year} · {r.daysToEncash} days</p>
-                <p className="mt-1 text-sm font-bold text-emerald-600 dark:text-emerald-400">{currencyCode} {fmtAmt(r.totalAmount)}</p>
+                <p className="mt-1 text-sm font-semibold text-emerald-600 dark:text-emerald-400">{currencyCode} {fmtAmt(r.totalAmount)}</p>
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={r.status} />
@@ -2238,13 +2337,13 @@ function AIInsightsTab() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="mb-1 flex items-center gap-2">
-                    <span className={`text-xs font-bold ${SEV_TEXT[ins.severity] ?? ''}`}>{ins.severity.toUpperCase()}</span>
-                    <span className="rounded bg-white/60 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-white/10 dark:text-slate-400">{ins.insightType}</span>
-                    {ins.affectedDepartment && <span className="text-[10px] text-slate-400">{ins.affectedDepartment}</span>}
+                    <span className={`text-xs font-semibold ${SEV_TEXT[ins.severity] ?? ''}`}>{ins.severity.toUpperCase()}</span>
+                    <span className="rounded bg-white/60 px-2 py-0.5 text-caption font-medium text-slate-600 dark:bg-white/10 dark:text-slate-400">{ins.insightType}</span>
+                    {ins.affectedDepartment && <span className="text-caption text-slate-400">{ins.affectedDepartment}</span>}
                   </div>
                   <p className={`text-sm font-semibold ${SEV_TEXT[ins.severity] ?? ''}`}>{ins.title}</p>
                   <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{ins.summary}</p>
-                  <p className="mt-1 text-[10px] text-slate-400">{fmtDate(ins.createdAtUtc)}</p>
+                  <p className="mt-1 text-caption text-slate-400">{fmtDate(ins.createdAtUtc)}</p>
                 </div>
                 {!ins.isAcknowledged && <button type="button" className={btn.sm} onClick={() => ack(ins.id)}>Acknowledge</button>}
               </div>
@@ -2344,7 +2443,7 @@ export function LeavePage() {
     <div className="space-y-5 p-4 sm:p-6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Leave & Absence Management')}</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Leave & Absence Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">

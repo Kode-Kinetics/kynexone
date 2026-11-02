@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-slate-100 pb-10 last:border-0">
-      <h2 className="mb-4 text-xl font-bold text-slate-900">{title}</h2>
+      <h2 className="mb-4 text-xl font-semibold text-slate-900">{title}</h2>
       {children}
     </section>
   );
@@ -28,7 +28,7 @@ function Claim({ label, detail, code }: { label: string; detail: string; code?: 
         <p className="font-semibold text-slate-900">{label}</p>
         <p className="mt-0.5 text-sm text-slate-500">{detail}</p>
         {code && (
-          <p className="mt-1 font-mono text-[11px] text-slate-400">{code}</p>
+          <p className="mt-1 font-mono text-caption text-slate-400">{code}</p>
         )}
       </div>
     </div>
@@ -56,8 +56,8 @@ export default function SecurityPage() {
       <main className="mx-auto max-w-4xl px-6 py-14">
         {/* Title block */}
         <div className="mb-12">
-          <p className="mb-2 text-xs font-bold uppercase tracking-widest text-blue-600">Security</p>
-          <h1 className="text-4xl font-black tracking-tight text-slate-900">How we protect your data</h1>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-blue-600">Security</p>
+          <h1 className="text-4xl font-semibold tracking-tight text-slate-900">How we protect your data</h1>
           <p className="mt-3 max-w-2xl text-base text-slate-500">
             This page describes controls evidenced in the current application repository and deployment
             configuration. It is not an independent assurance report, and provider or tenant configuration
@@ -65,7 +65,7 @@ export default function SecurityPage() {
           </p>
         </div>
 
-        <div className="space-y-10 text-[15px] leading-relaxed text-slate-700">
+        <div className="space-y-10 text-body leading-relaxed text-slate-700">
 
           <Section title="Data Protection">
             <Claim

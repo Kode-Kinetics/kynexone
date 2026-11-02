@@ -50,15 +50,15 @@ export function ModuleGate({ children }: { children: React.ReactNode }) {
       data-testid="module-disabled"
       data-module={verdict.moduleKey}
     >
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800">
-        <PackageX className="h-7 w-7 text-gray-400 dark:text-gray-500" aria-hidden="true" />
+      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
+        <PackageX className="h-7 w-7 text-slate-400 dark:text-slate-500" aria-hidden="true" />
       </div>
 
-      <h1 className="mt-5 text-lg font-semibold text-gray-900 dark:text-gray-100">
+      <h1 className="mt-5 text-lg font-semibold text-slate-900 dark:text-slate-100">
         {verdict.moduleLabel ?? 'This module'} is switched off
       </h1>
 
-      <p className="mt-2 max-w-md text-sm text-gray-500 dark:text-gray-400">
+      <p className="mt-2 max-w-md text-sm text-slate-500 dark:text-slate-400">
         Your organisation has turned this module off, so its pages and data are not available.
         An administrator can switch it back on at any time.
       </p>
@@ -72,7 +72,7 @@ export function ModuleGate({ children }: { children: React.ReactNode }) {
         </Link>
         {canManageModules && <Link
           href="/setup?tab=modules"
-          className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire focus-visible:ring-offset-2 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800 dark:ring-offset-midnight"
+          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sapphire focus-visible:ring-offset-2 dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800 dark:ring-offset-midnight"
         >
           Manage modules
         </Link>}

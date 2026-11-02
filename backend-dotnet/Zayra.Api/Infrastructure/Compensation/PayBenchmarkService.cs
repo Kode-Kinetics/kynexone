@@ -158,9 +158,9 @@ public sealed class PayBenchmarkService(ZayraDbContext db, IAuditService audit)
             { row.DesignationId = prior.DesignationId; row.GradeId = prior.GradeId; carried++; }
             db.PayBenchmarkRows.Add(row);
         }
+        audit.Stage("compensation.benchmark.imported", nameof(PayBenchmarkSet), set.Id.ToString(), caller.Context,
+            JsonSerializer.Serialize(new { set.Name, set.Provider, set.SurveyDate, set.Geography, set.Currency, set.PayBasis, set.IsSynthetic, set.SourceFileSha256, set.RowCount, carried }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("compensation.benchmark.imported", nameof(PayBenchmarkSet), set.Id.ToString(), caller.Context,
-            JsonSerializer.Serialize(new { set.Name, set.Provider, set.SurveyDate, set.Geography, set.Currency, set.PayBasis, set.IsSynthetic, set.SourceFileSha256, set.RowCount, carried }), ct);
         return new PayBenchmarkImportResultDto(true, Dto(set, carried), [], carried);
     }
 
@@ -172,9 +172,9 @@ public sealed class PayBenchmarkService(ZayraDbContext db, IAuditService audit)
         if (request.GradeId is Guid g && !await db.Grades.AnyAsync(x => x.TenantId == caller.TenantId && x.Id == g && !x.IsDeleted, ct)) throw new CompRuleException("unknown_grade", "Grade not found.");
         row.DesignationId = request.DesignationId;
         row.GradeId = request.GradeId;
+        audit.Stage("compensation.benchmark.mapped", nameof(PayBenchmarkRow), row.Id.ToString(), caller.Context,
+            JsonSerializer.Serialize(new { row.SetId, row.JobFamily, row.Level, row.DesignationId, row.GradeId }));
         await db.SaveChangesAsync(ct);
-        await audit.WriteAsync("compensation.benchmark.mapped", nameof(PayBenchmarkRow), row.Id.ToString(), caller.Context,
-            JsonSerializer.Serialize(new { row.SetId, row.JobFamily, row.Level, row.DesignationId, row.GradeId }), ct);
         return new PayBenchmarkRowDto(row.Id, row.JobFamily, row.Level, row.SampleSize, row.P25, row.P50, row.P75, row.P90, row.DesignationId, row.GradeId);
     }
 

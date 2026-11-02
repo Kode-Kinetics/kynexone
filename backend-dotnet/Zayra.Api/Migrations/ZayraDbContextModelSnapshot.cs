@@ -3213,6 +3213,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("branch_id");
 
+                    b.Property<string>("BridgeVersion")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("bridge_version");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
@@ -3277,6 +3286,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
+                    b.Property<int?>("LastClockSkewSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_clock_skew_seconds");
+
+                    b.Property<DateTime?>("LastHeartbeatAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_heartbeat_at_utc");
+
                     b.Property<DateTime?>("LastSyncAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_sync_at_utc");
@@ -3300,10 +3317,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("port");
 
+                    b.Property<bool>("RequireSignature")
+                        .HasColumnType("boolean")
+                        .HasColumnName("require_signature");
+
                     b.Property<string>("SerialNumber")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("serial_number");
+
+                    b.Property<int>("SigningKeyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("signing_key_version");
 
                     b.Property<string>("SyncFrequency")
                         .IsRequired()
@@ -3333,6 +3358,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("vendor");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
 
                     b.HasIndex("TenantId", "IsDeleted");
 
@@ -4023,6 +4050,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("created_by");
 
+                    b.Property<string>("DedupKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("dedup_key");
+
                     b.Property<Guid?>("DeviceId")
                         .HasColumnType("uuid")
                         .HasColumnName("device_id");
@@ -4101,6 +4133,11 @@ namespace Zayra.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "SyncBatchReference");
+
+                    b.HasIndex("TenantId", "DeviceId", "DedupKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_attendance_raw_events_device_dedup")
+                        .HasFilter("dedup_key IS NOT NULL");
 
                     b.HasIndex("TenantId", "IsProcessed", "PunchTimestampUtc");
 
@@ -5695,7 +5732,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.HasIndex("TenantId", "CompanyId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     b.ToTable("branches", (string)null);
                 });
@@ -6643,6 +6681,11 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeId", "Status");
 
+                    b.HasIndex("TenantId", "EmployeeId", "WorkedDate", "WorkType")
+                        .IsUnique()
+                        .HasDatabaseName("ux_comp_off_credits__rest_day_work")
+                        .HasFilter("\"work_type\" = 'RestDayWork'");
+
                     b.ToTable("comp_off_credits", (string)null);
                 });
 
@@ -7268,6 +7311,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("notes");
 
+                    b.Property<string>("PreRemovalStatus")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("pre_removal_status");
+
+                    b.Property<bool>("RemovalSetEffectiveTo")
+                        .HasColumnType("boolean")
+                        .HasColumnName("removal_set_effective_to");
+
                     b.Property<string>("RequiredFieldsJson")
                         .IsRequired()
                         .HasColumnType("text")
@@ -7358,6 +7410,72 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("company_cutovers", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.CompanyPayrollRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AcknowledgedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acknowledged_at_utc");
+
+                    b.Property<Guid?>("AcknowledgedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("acknowledged_by");
+
+                    b.Property<string>("AcknowledgementNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("acknowledgement_note");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("date")
+                        .HasDefaultValue(new DateOnly(1, 1, 1))
+                        .HasColumnName("effective_from");
+
+                    b.Property<string>("RuleKey")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("rule_key");
+
+                    b.Property<string>("RuleValue")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("rule_value");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId", "RuleKey", "EffectiveFrom")
+                        .IsUnique()
+                        .HasDatabaseName("ux_company_payroll_rules__company_rule_from");
+
+                    b.ToTable("company_payroll_rules", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_company_payroll_rules__ack_pair", "(acknowledged_by IS NULL) = (acknowledged_at_utc IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.CompanyRatePolicy", b =>
@@ -8658,7 +8776,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.HasIndex("TenantId", "CompanyId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
@@ -8843,7 +8962,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "ParentDepartmentId");
 
                     b.HasIndex("TenantId", "CompanyId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
@@ -9023,7 +9143,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "StaffingLevelId");
 
                     b.HasIndex("TenantId", "CompanyId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
@@ -9481,6 +9602,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("bank_iban");
 
+                    b.Property<byte[]>("BankIbanBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("bank_iban_bidx");
+
+                    b.Property<byte[]>("BankIbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("bank_iban_enc");
+
                     b.Property<string>("BankName")
                         .IsRequired()
                         .HasColumnType("text")
@@ -9490,6 +9619,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("border_number");
+
+                    b.Property<byte[]>("BorderNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("border_number_bidx");
+
+                    b.Property<byte[]>("BorderNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("border_number_enc");
 
                     b.Property<string>("Branch")
                         .IsRequired()
@@ -9504,6 +9641,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("civil_id");
+
+                    b.Property<byte[]>("CivilIdBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("civil_id_bidx");
+
+                    b.Property<byte[]>("CivilIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("civil_id_enc");
 
                     b.Property<DateOnly?>("CivilIdExpiryDate")
                         .HasColumnType("date")
@@ -9626,6 +9771,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("emirates_id");
 
+                    b.Property<byte[]>("EmiratesIdBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("emirates_id_bidx");
+
+                    b.Property<byte[]>("EmiratesIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("emirates_id_enc");
+
                     b.Property<DateOnly?>("EmiratesIdExpiryDate")
                         .HasColumnType("date")
                         .HasColumnName("emirates_id_expiry_date");
@@ -9689,6 +9842,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("id_number");
 
+                    b.Property<byte[]>("IdNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("id_number_bidx");
+
+                    b.Property<byte[]>("IdNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("id_number_enc");
+
                     b.Property<string>("IdType")
                         .IsRequired()
                         .HasColumnType("text")
@@ -9702,6 +9863,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("iqama_number");
+
+                    b.Property<byte[]>("IqamaNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iqama_number_bidx");
+
+                    b.Property<byte[]>("IqamaNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iqama_number_enc");
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
@@ -9789,6 +9958,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("passport_number");
 
+                    b.Property<byte[]>("PassportNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("passport_number_bidx");
+
+                    b.Property<byte[]>("PassportNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("passport_number_enc");
+
                     b.Property<string>("PayrollProfileCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -9850,6 +10027,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("qid");
+
+                    b.Property<byte[]>("QidBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("qid_bidx");
+
+                    b.Property<byte[]>("QidEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("qid_enc");
 
                     b.Property<DateOnly?>("QidExpiryDate")
                         .HasColumnType("date")
@@ -10005,7 +10190,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("wps_bank_details");
 
+                    b.Property<byte[]>("WpsBankDetailsEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("wps_bank_details_enc");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BankIbanBidx")
+                        .HasDatabaseName("ix_employees_bidx_bank_iban")
+                        .HasFilter("bank_iban_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId")
                         .HasDatabaseName("ix_employees_nationality_review")
@@ -10015,9 +10208,17 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ix_employees_dup_border_number")
                         .HasFilter("border_number <> ''");
 
+                    b.HasIndex("TenantId", "BorderNumberBidx")
+                        .HasDatabaseName("ix_employees_bidx_border_number")
+                        .HasFilter("border_number_bidx IS NOT NULL");
+
                     b.HasIndex("TenantId", "CivilId")
                         .HasDatabaseName("ix_employees_dup_civil_id")
                         .HasFilter("civil_id <> ''");
+
+                    b.HasIndex("TenantId", "CivilIdBidx")
+                        .HasDatabaseName("ix_employees_bidx_civil_id")
+                        .HasFilter("civil_id_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "CompanyId");
 
@@ -10039,6 +10240,10 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ix_employees_dup_emirates_id")
                         .HasFilter("emirates_id <> ''");
 
+                    b.HasIndex("TenantId", "EmiratesIdBidx")
+                        .HasDatabaseName("ix_employees_bidx_emirates_id")
+                        .HasFilter("emirates_id_bidx IS NOT NULL");
+
                     b.HasIndex("TenantId", "EmployeeCode")
                         .IsUnique();
 
@@ -10046,15 +10251,27 @@ namespace Zayra.Api.Migrations
                         .HasDatabaseName("ix_employees_dup_id_number")
                         .HasFilter("id_number <> ''");
 
+                    b.HasIndex("TenantId", "IdNumberBidx")
+                        .HasDatabaseName("ix_employees_bidx_id_number")
+                        .HasFilter("id_number_bidx IS NOT NULL");
+
                     b.HasIndex("TenantId", "IqamaNumber")
                         .HasDatabaseName("ix_employees_dup_iqama")
                         .HasFilter("iqama_number <> ''");
+
+                    b.HasIndex("TenantId", "IqamaNumberBidx")
+                        .HasDatabaseName("ix_employees_bidx_iqama_number")
+                        .HasFilter("iqama_number_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.HasIndex("TenantId", "PassportNumber")
                         .HasDatabaseName("ix_employees_dup_passport")
                         .HasFilter("passport_number <> ''");
+
+                    b.HasIndex("TenantId", "PassportNumberBidx")
+                        .HasDatabaseName("ix_employees_bidx_passport_number")
+                        .HasFilter("passport_number_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "PositionId");
 
@@ -10065,6 +10282,10 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "Qid")
                         .HasDatabaseName("ix_employees_dup_qid")
                         .HasFilter("qid <> ''");
+
+                    b.HasIndex("TenantId", "QidBidx")
+                        .HasDatabaseName("ix_employees_bidx_qid")
+                        .HasFilter("qid_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "ReadinessState");
 
@@ -10081,6 +10302,40 @@ namespace Zayra.Api.Migrations
                     b.ToTable("employees", null, t =>
                         {
                             t.HasCheckConstraint("ck_employees__nationality_mapping_state", "nationality_mapping_state IN ('Unset','Confirmed','ProposedAuto','Unresolved')");
+
+                            t.HasCheckConstraint("ck_employees_bank_iban_bidx_pair", "bank_iban_bidx IS NULL OR (bank_iban_enc IS NOT NULL AND octet_length(bank_iban_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_bank_iban_enc_shape", "bank_iban_enc IS NULL OR (octet_length(bank_iban_enc) BETWEEN 30 AND 1024 AND get_byte(bank_iban_enc, 0) IN (1, 2) AND get_byte(bank_iban_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_border_number_bidx_pair", "border_number_bidx IS NULL OR (border_number_enc IS NOT NULL AND octet_length(border_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_border_number_enc_shape", "border_number_enc IS NULL OR (octet_length(border_number_enc) BETWEEN 30 AND 1024 AND get_byte(border_number_enc, 0) IN (1, 2) AND get_byte(border_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_civil_id_bidx_pair", "civil_id_bidx IS NULL OR (civil_id_enc IS NOT NULL AND octet_length(civil_id_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_civil_id_enc_shape", "civil_id_enc IS NULL OR (octet_length(civil_id_enc) BETWEEN 30 AND 1024 AND get_byte(civil_id_enc, 0) IN (1, 2) AND get_byte(civil_id_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_emirates_id_bidx_pair", "emirates_id_bidx IS NULL OR (emirates_id_enc IS NOT NULL AND octet_length(emirates_id_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_emirates_id_enc_shape", "emirates_id_enc IS NULL OR (octet_length(emirates_id_enc) BETWEEN 30 AND 1024 AND get_byte(emirates_id_enc, 0) IN (1, 2) AND get_byte(emirates_id_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_id_number_bidx_pair", "id_number_bidx IS NULL OR (id_number_enc IS NOT NULL AND octet_length(id_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_id_number_enc_shape", "id_number_enc IS NULL OR (octet_length(id_number_enc) BETWEEN 30 AND 1024 AND get_byte(id_number_enc, 0) IN (1, 2) AND get_byte(id_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_iqama_number_bidx_pair", "iqama_number_bidx IS NULL OR (iqama_number_enc IS NOT NULL AND octet_length(iqama_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_iqama_number_enc_shape", "iqama_number_enc IS NULL OR (octet_length(iqama_number_enc) BETWEEN 30 AND 1024 AND get_byte(iqama_number_enc, 0) IN (1, 2) AND get_byte(iqama_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_passport_number_bidx_pair", "passport_number_bidx IS NULL OR (passport_number_enc IS NOT NULL AND octet_length(passport_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_passport_number_enc_shape", "passport_number_enc IS NULL OR (octet_length(passport_number_enc) BETWEEN 30 AND 1024 AND get_byte(passport_number_enc, 0) IN (1, 2) AND get_byte(passport_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_qid_bidx_pair", "qid_bidx IS NULL OR (qid_enc IS NOT NULL AND octet_length(qid_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employees_qid_enc_shape", "qid_enc IS NULL OR (octet_length(qid_enc) BETWEEN 30 AND 1024 AND get_byte(qid_enc, 0) IN (1, 2) AND get_byte(qid_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employees_wps_bank_details_enc_shape", "wps_bank_details_enc IS NULL OR (octet_length(wps_bank_details_enc) BETWEEN 30 AND 1024 AND get_byte(wps_bank_details_enc, 0) IN (1, 2) AND get_byte(wps_bank_details_enc, 1) > 0)");
                         });
                 });
 
@@ -10813,6 +11068,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("national_id");
 
+                    b.Property<byte[]>("NationalIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("national_id_enc");
+
                     b.Property<string>("Relationship")
                         .IsRequired()
                         .HasColumnType("text")
@@ -10830,7 +11089,10 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "EmployeeId");
 
-                    b.ToTable("employee_dependents", (string)null);
+                    b.ToTable("employee_dependents", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_dependents_national_id_enc_shape", "national_id_enc IS NULL OR (octet_length(national_id_enc) BETWEEN 30 AND 1024 AND get_byte(national_id_enc, 0) IN (1, 2) AND get_byte(national_id_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeDocument", b =>
@@ -11172,6 +11434,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("bank_iban");
 
+                    b.Property<byte[]>("BankIbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("bank_iban_enc");
+
                     b.Property<string>("BankName")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11182,6 +11448,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("border_number");
 
+                    b.Property<byte[]>("BorderNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("border_number_enc");
+
                     b.Property<string>("Branch")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11191,6 +11461,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("civil_id");
+
+                    b.Property<byte[]>("CivilIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("civil_id_enc");
 
                     b.Property<DateOnly?>("ContractEndDate")
                         .HasColumnType("date")
@@ -11257,6 +11531,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("emirates_id");
 
+                    b.Property<byte[]>("EmiratesIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("emirates_id_enc");
+
                     b.Property<string>("EnglishName")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11281,6 +11559,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("iqama_number");
+
+                    b.Property<byte[]>("IqamaNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iqama_number_enc");
 
                     b.Property<DateTime?>("JoiningDate")
                         .HasColumnType("timestamp with time zone")
@@ -11353,6 +11635,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("passport_number");
 
+                    b.Property<byte[]>("PassportNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("passport_number_enc");
+
                     b.Property<string>("PayrollProfileCode")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11381,6 +11667,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("qid");
+
+                    b.Property<byte[]>("QidEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("qid_enc");
 
                     b.Property<string>("QiwaContractNumber")
                         .IsRequired()
@@ -11466,6 +11756,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("wps_bank_details");
 
+                    b.Property<byte[]>("WpsBankDetailsEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("wps_bank_details_enc");
+
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "AcceptedOfferCompanyId");
@@ -11476,7 +11770,24 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "Status");
 
-                    b.ToTable("employee_drafts", (string)null);
+                    b.ToTable("employee_drafts", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_drafts_bank_iban_enc_shape", "bank_iban_enc IS NULL OR (octet_length(bank_iban_enc) BETWEEN 30 AND 1024 AND get_byte(bank_iban_enc, 0) IN (1, 2) AND get_byte(bank_iban_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_border_number_enc_shape", "border_number_enc IS NULL OR (octet_length(border_number_enc) BETWEEN 30 AND 1024 AND get_byte(border_number_enc, 0) IN (1, 2) AND get_byte(border_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_civil_id_enc_shape", "civil_id_enc IS NULL OR (octet_length(civil_id_enc) BETWEEN 30 AND 1024 AND get_byte(civil_id_enc, 0) IN (1, 2) AND get_byte(civil_id_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_emirates_id_enc_shape", "emirates_id_enc IS NULL OR (octet_length(emirates_id_enc) BETWEEN 30 AND 1024 AND get_byte(emirates_id_enc, 0) IN (1, 2) AND get_byte(emirates_id_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_iqama_number_enc_shape", "iqama_number_enc IS NULL OR (octet_length(iqama_number_enc) BETWEEN 30 AND 1024 AND get_byte(iqama_number_enc, 0) IN (1, 2) AND get_byte(iqama_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_passport_number_enc_shape", "passport_number_enc IS NULL OR (octet_length(passport_number_enc) BETWEEN 30 AND 1024 AND get_byte(passport_number_enc, 0) IN (1, 2) AND get_byte(passport_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_qid_enc_shape", "qid_enc IS NULL OR (octet_length(qid_enc) BETWEEN 30 AND 1024 AND get_byte(qid_enc, 0) IN (1, 2) AND get_byte(qid_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_wps_bank_details_enc_shape", "wps_bank_details_enc IS NULL OR (octet_length(wps_bank_details_enc) BETWEEN 30 AND 1024 AND get_byte(wps_bank_details_enc, 0) IN (1, 2) AND get_byte(wps_bank_details_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeEntitlement", b =>
@@ -13013,6 +13324,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("cancelled_by_user_id");
 
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
                     b.Property<DateTime?>("CompletedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at_utc");
@@ -13121,6 +13436,8 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TenantId", "CompanyId");
+
                     b.HasIndex("TenantId", "EmployeeId");
 
                     b.HasIndex("TenantId", "Status");
@@ -13143,6 +13460,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("account_number");
+
+                    b.Property<byte[]>("AccountNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("account_number_bidx");
+
+                    b.Property<byte[]>("AccountNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("account_number_enc");
 
                     b.Property<string>("BankName")
                         .IsRequired()
@@ -13183,6 +13508,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("iban");
 
+                    b.Property<byte[]>("IbanBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iban_bidx");
+
+                    b.Property<byte[]>("IbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iban_enc");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -13191,6 +13524,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("mol_id");
+
+                    b.Property<byte[]>("MolIdBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("mol_id_bidx");
+
+                    b.Property<byte[]>("MolIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("mol_id_enc");
 
                     b.Property<string>("PaymentMethod")
                         .IsRequired()
@@ -13238,7 +13579,20 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "EmployeeId")
                         .IsUnique();
 
-                    b.ToTable("employee_payroll_profiles", (string)null);
+                    b.ToTable("employee_payroll_profiles", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_account_number_bidx_pair", "account_number_bidx IS NULL OR (account_number_enc IS NOT NULL AND octet_length(account_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_account_number_enc_shape", "account_number_enc IS NULL OR (octet_length(account_number_enc) BETWEEN 30 AND 1024 AND get_byte(account_number_enc, 0) IN (1, 2) AND get_byte(account_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_iban_bidx_pair", "iban_bidx IS NULL OR (iban_enc IS NOT NULL AND octet_length(iban_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_iban_enc_shape", "iban_enc IS NULL OR (octet_length(iban_enc) BETWEEN 30 AND 1024 AND get_byte(iban_enc, 0) IN (1, 2) AND get_byte(iban_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_mol_id_bidx_pair", "mol_id_bidx IS NULL OR (mol_id_enc IS NOT NULL AND octet_length(mol_id_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_employee_payroll_profiles_mol_id_enc_shape", "mol_id_enc IS NULL OR (octet_length(mol_id_enc) BETWEEN 30 AND 1024 AND get_byte(mol_id_enc, 0) IN (1, 2) AND get_byte(mol_id_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeePayslipAccessLog", b =>
@@ -15065,6 +15419,116 @@ namespace Zayra.Api.Migrations
                     b.ToTable("feedback_360", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.FieldEncryptionKey", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("ActiveAtRevoke")
+                        .HasColumnType("boolean")
+                        .HasColumnName("active_at_revoke");
+
+                    b.Property<byte[]>("CanaryEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("canary_enc");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("KekVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("kek_version");
+
+                    b.Property<int>("KeyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("key_version");
+
+                    b.Property<DateTime?>("RecoveryExportedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recovery_exported_at_utc");
+
+                    b.Property<string>("RecoveryFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("recovery_fingerprint");
+
+                    b.Property<DateTime?>("RetiredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("retired_at_utc");
+
+                    b.Property<DateTime?>("RevokeEffectiveAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoke_effective_at_utc");
+
+                    b.Property<DateTime?>("RevokeRequestedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoke_requested_at_utc");
+
+                    b.Property<Guid?>("RevokeRequestedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoke_requested_by_user_id");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid?>("RevokedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("revoked_by_user_id");
+
+                    b.Property<byte[]>("RootCheck")
+                        .HasColumnType("bytea")
+                        .HasColumnName("root_check");
+
+                    b.Property<int>("RowVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("row_version");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<byte[]>("WrappedBlindIndexRoot")
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_blind_index_root");
+
+                    b.Property<byte[]>("WrappedDek")
+                        .HasColumnType("bytea")
+                        .HasColumnName("wrapped_dek");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_field_encryption_keys_one_active")
+                        .HasFilter("status = 'Active'");
+
+                    b.HasIndex("TenantId", "KeyVersion")
+                        .IsUnique()
+                        .HasDatabaseName("ux_field_encryption_keys_tenant_version");
+
+                    b.ToTable("field_encryption_keys", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_field_encryption_keys_material", "(status = 'Revoked' AND wrapped_dek IS NULL AND wrapped_blind_index_root IS NULL) OR (status <> 'Revoked' AND wrapped_dek IS NOT NULL AND wrapped_blind_index_root IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_field_encryption_keys_revoke_pending", "(revoke_requested_at_utc IS NULL) = (revoke_effective_at_utc IS NULL)");
+
+                            t.HasCheckConstraint("ck_field_encryption_keys_status", "status IN ('Active','Retired','Revoked')");
+
+                            t.HasCheckConstraint("ck_field_encryption_keys_version", "key_version BETWEEN 1 AND 250");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.FinalSettlementLine", b =>
                 {
                     b.Property<Guid>("Id")
@@ -15382,6 +15846,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("emirates_id_required");
 
+                    b.Property<string>("EosbBelowFloorAcksJson")
+                        .HasColumnType("text")
+                        .HasColumnName("eosb_below_floor_acks_json");
+
                     b.Property<bool>("EosbEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("eosb_enabled");
@@ -15408,6 +15876,12 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("iqama_required");
 
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
                     b.Property<bool>("RamadanHoursEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("ramadan_hours_enabled");
@@ -15423,6 +15897,14 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<DateTime?>("TurnedOffAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("turned_off_at_utc");
+
+                    b.Property<Guid?>("TurnedOffBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("turned_off_by");
 
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -16485,7 +16967,8 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "IsDeleted");
 
                     b.HasIndex("TenantId", "CompanyId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
@@ -19391,6 +19874,95 @@ namespace Zayra.Api.Migrations
                     b.ToTable("leave_audit_logs", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.LeaveBalanceAdjustmentRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(8, 2)
+                        .HasColumnType("numeric(8,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<string>("DecidedByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("decided_by_name");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<string>("DecisionNote")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_note");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<Guid>("LeaveTypeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("leave_type_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at_utc");
+
+                    b.Property<string>("RequestedByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("requested_by_name");
+
+                    b.Property<Guid?>("RequestedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("integer")
+                        .HasColumnName("year");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId");
+
+                    b.HasIndex("TenantId", "Status", "RequestedAtUtc");
+
+                    b.ToTable("leave_balance_adjustment_requests", (string)null);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.LeaveBalanceTransaction", b =>
                 {
                     b.Property<Guid>("Id")
@@ -19920,6 +20492,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("ApprovalWorkflowId")
                         .HasColumnType("uuid")
                         .HasColumnName("approval_workflow_id");
+
+                    b.Property<string>("BelowMinimumAcksJson")
+                        .HasColumnType("text")
+                        .HasColumnName("below_minimum_acks_json");
 
                     b.Property<Guid?>("BranchId")
                         .HasColumnType("uuid")
@@ -20798,6 +21374,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(34)")
                         .HasColumnName("iban");
 
+                    b.Property<byte[]>("IbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iban_enc");
+
                     b.Property<bool>("IsCancelled")
                         .HasColumnType("boolean")
                         .HasColumnName("is_cancelled");
@@ -20848,6 +21428,8 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("loan_disbursement_lines", null, t =>
                         {
+                            t.HasCheckConstraint("ck_loan_disbursement_lines_iban_enc_shape", "iban_enc IS NULL OR (octet_length(iban_enc) BETWEEN 30 AND 1024 AND get_byte(iban_enc, 0) IN (1, 2) AND get_byte(iban_enc, 1) > 0)");
+
                             t.HasCheckConstraint("ck_loan_payment_line_amount", "amount > 0");
 
                             t.HasCheckConstraint("ck_loan_payment_line_evidence", "status NOT IN ('Paid','Reversed') OR (paid_date IS NOT NULL AND paid_by IS NOT NULL AND payment_reference IS NOT NULL AND trim(payment_reference) <> '' AND payment_method IS NOT NULL AND payment_method IN ('BankTransfer','DirectDebit','Cash'))");
@@ -25063,6 +25645,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("passport_number");
 
+                    b.Property<byte[]>("PassportNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("passport_number_bidx");
+
+                    b.Property<byte[]>("PassportNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("passport_number_enc");
+
                     b.Property<string>("PlaceOfIssue")
                         .IsRequired()
                         .HasColumnType("text")
@@ -25099,7 +25689,12 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "ExpiryDate", "Status");
 
-                    b.ToTable("passport_records", (string)null);
+                    b.ToTable("passport_records", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_passport_records_passport_number_bidx_pair", "passport_number_bidx IS NULL OR (passport_number_enc IS NOT NULL AND octet_length(passport_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_passport_records_passport_number_enc_shape", "passport_number_enc IS NULL OR (octet_length(passport_number_enc) BETWEEN 30 AND 1024 AND get_byte(passport_number_enc, 0) IN (1, 2) AND get_byte(passport_number_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayBenchmarkRow", b =>
@@ -26418,6 +27013,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("iban");
 
+                    b.Property<byte[]>("IbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iban_enc");
+
                     b.Property<Guid>("PaymentBatchId")
                         .HasColumnType("uuid")
                         .HasColumnName("payment_batch_id");
@@ -26440,7 +27039,85 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "PaymentBatchId", "EmployeeId");
 
-                    b.ToTable("payroll_payment_records", (string)null);
+                    b.ToTable("payroll_payment_records", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_payment_records_iban_enc_shape", "iban_enc IS NULL OR (octet_length(iban_enc) BETWEEN 30 AND 1024 AND get_byte(iban_enc, 0) IN (1, 2) AND get_byte(iban_enc, 1) > 0)");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRuleChangeRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ChangesJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("changes_json");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<Guid?>("DecidedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by");
+
+                    b.Property<string>("DecisionNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("decision_note");
+
+                    b.Property<DateOnly>("EffectiveFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_from");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at_utc");
+
+                    b.Property<Guid?>("RequestedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requested_by");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .IsConcurrencyToken()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("WarningCodesJson")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("warning_codes_json");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "CompanyId", "Status")
+                        .HasDatabaseName("ix_payroll_rule_change_requests__company_status");
+
+                    b.ToTable("payroll_rule_change_requests", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_rule_change_requests__decider_not_maker", "decided_by IS NULL OR requested_by IS NULL OR decided_by <> requested_by");
+
+                            t.HasCheckConstraint("ck_payroll_rule_change_requests__status", "status IN ('Pending','Approved','Rejected')");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayrollRun", b =>
@@ -27270,6 +27947,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("ParentTemplateId")
                         .HasColumnType("uuid")
                         .HasColumnName("parent_template_id");
+
+                    b.Property<string>("PreRemovalStatus")
+                        .HasColumnType("text")
+                        .HasColumnName("pre_removal_status");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -29663,10 +30344,18 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("iban");
 
+                    b.Property<byte[]>("IbanEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iban_enc");
+
                     b.Property<string>("MolId")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("mol_id");
+
+                    b.Property<byte[]>("MolIdEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("mol_id_enc");
 
                     b.Property<decimal>("NetPay")
                         .HasPrecision(14, 2)
@@ -29690,7 +30379,12 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "WPSFileBatchId");
 
-                    b.ToTable("sif_file_records", (string)null);
+                    b.ToTable("sif_file_records", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_sif_file_records_iban_enc_shape", "iban_enc IS NULL OR (octet_length(iban_enc) BETWEEN 30 AND 1024 AND get_byte(iban_enc, 0) IN (1, 2) AND get_byte(iban_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_sif_file_records_mol_id_enc_shape", "mol_id_enc IS NULL OR (octet_length(mol_id_enc) BETWEEN 30 AND 1024 AND get_byte(mol_id_enc, 0) IN (1, 2) AND get_byte(mol_id_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.SalaryAdvance", b =>
@@ -29814,6 +30508,158 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "EmployeeIntId", "Status");
 
                     b.ToTable("salary_advances", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.SalaryChangeRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AppliedAssignmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("applied_assignment_id");
+
+                    b.Property<decimal>("BasicSalary")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("basic_salary");
+
+                    b.Property<Guid?>("BatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateTime?>("DecidedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at_utc");
+
+                    b.Property<string>("DecidedByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("decided_by_name");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<string>("DecisionNote")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_note");
+
+                    b.Property<DateOnly>("EffectiveDate")
+                        .HasColumnType("date")
+                        .HasColumnName("effective_date");
+
+                    b.Property<string>("EmployeeCode")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)")
+                        .HasColumnName("employee_code");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<string>("EmployeeName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("employee_name");
+
+                    b.Property<decimal>("FixedDeduction")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("fixed_deduction");
+
+                    b.Property<decimal>("FoodAllowance")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("food_allowance");
+
+                    b.Property<decimal>("HousingAllowance")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("housing_allowance");
+
+                    b.Property<decimal>("MobileAllowance")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("mobile_allowance");
+
+                    b.Property<decimal>("OtherAllowance")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("other_allowance");
+
+                    b.Property<decimal?>("PreviousBasicSalary")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("previous_basic_salary");
+
+                    b.Property<DateTime>("RequestedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at_utc");
+
+                    b.Property<string>("RequestedByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("requested_by_name");
+
+                    b.Property<Guid?>("RequestedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<Guid>("SalaryStructureId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("salary_structure_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("source");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<decimal>("TransportAllowance")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("transport_allowance");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "BatchId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "EmployeeId", "EffectiveDate");
+
+                    b.HasIndex("TenantId", "Status", "RequestedAtUtc");
+
+                    b.ToTable("salary_change_requests", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.SalaryComponent", b =>
@@ -32284,6 +33130,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("emirates_id_number");
 
+                    b.Property<byte[]>("EmiratesIdNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("emirates_id_number_bidx");
+
+                    b.Property<byte[]>("EmiratesIdNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("emirates_id_number_enc");
+
                     b.Property<Guid>("EmployeeId")
                         .HasColumnType("uuid")
                         .HasColumnName("employee_id");
@@ -32306,6 +33160,14 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("iqama_number");
+
+                    b.Property<byte[]>("IqamaNumberBidx")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iqama_number_bidx");
+
+                    b.Property<byte[]>("IqamaNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("iqama_number_enc");
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
@@ -32357,7 +33219,16 @@ namespace Zayra.Api.Migrations
 
                     b.HasIndex("TenantId", "ExpiryDate", "Status");
 
-                    b.ToTable("visa_records", (string)null);
+                    b.ToTable("visa_records", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_visa_records_emirates_id_number_bidx_pair", "emirates_id_number_bidx IS NULL OR (emirates_id_number_enc IS NOT NULL AND octet_length(emirates_id_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_visa_records_emirates_id_number_enc_shape", "emirates_id_number_enc IS NULL OR (octet_length(emirates_id_number_enc) BETWEEN 30 AND 1024 AND get_byte(emirates_id_number_enc, 0) IN (1, 2) AND get_byte(emirates_id_number_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_visa_records_iqama_number_bidx_pair", "iqama_number_bidx IS NULL OR (iqama_number_enc IS NOT NULL AND octet_length(iqama_number_bidx) = 32)");
+
+                            t.HasCheckConstraint("ck_visa_records_iqama_number_enc_shape", "iqama_number_enc IS NULL OR (octet_length(iqama_number_enc) BETWEEN 30 AND 1024 AND get_byte(iqama_number_enc, 0) IN (1, 2) AND get_byte(iqama_number_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.WPSFileBatch", b =>

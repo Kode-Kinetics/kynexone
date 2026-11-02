@@ -472,7 +472,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
             if (event.target === event.currentTarget) closeCommandPalette();
           }}
         >
-          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#0D1221]">
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface">
             <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-4 dark:border-white/[0.07]">
               <Search className="h-4 w-4 text-slate-400" />
               <input
@@ -486,7 +486,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 type="button"
                 aria-label={t('Close search')}
                 onClick={closeCommandPalette}
-                className="grid h-7 w-7 place-items-center rounded-md text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
+                className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
               >
                 <X className="h-4 w-4" />
               </button>
@@ -497,8 +497,8 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
               {!commandQuery.trim() && searchHistory.length > 0 && (
                 <div className="mb-2 p-2">
                   <div className="mb-1 flex items-center justify-between px-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Recent searches')}</p>
-                    <button type="button" onClick={clearHistory} className="text-[10px] text-slate-400 hover:text-rose-500 transition">{t('Clear all')}</button>
+                    <p className="text-caption font-semibold uppercase tracking-wide text-slate-400 rtl:text-body-sm rtl:normal-case rtl:tracking-normal">{t('Recent searches')}</p>
+                    <button type="button" onClick={clearHistory} className="text-caption text-slate-400 hover:text-rose-500 transition">{t('Clear all')}</button>
                   </div>
                   <div className="space-y-0.5">
                     {searchHistory.map((item) => (
@@ -519,7 +519,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                 <div className="space-y-3 p-2">
                   {employeeResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Employees')}</p>
+                      <p className="px-3 pb-1 text-caption font-semibold uppercase tracking-wide text-slate-400 rtl:text-body-sm rtl:normal-case rtl:tracking-normal">{t('Employees')}</p>
                       <div className="space-y-1">
                         {employeeResults.map((item) => (
                           (() => {
@@ -549,7 +549,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
                   {userResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Users')}</p>
+                      <p className="px-3 pb-1 text-caption font-semibold uppercase tracking-wide text-slate-400 rtl:text-body-sm rtl:normal-case rtl:tracking-normal">{t('Users')}</p>
                       <div className="space-y-1">
                         {userResults.map((item) => (
                           (() => {
@@ -579,7 +579,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
 
                   {reportResults.length > 0 && (
                     <div>
-                      <p className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Reports')}</p>
+                      <p className="px-3 pb-1 text-caption font-semibold uppercase tracking-wide text-slate-400 rtl:text-body-sm rtl:normal-case rtl:tracking-normal">{t('Reports')}</p>
                       <div className="space-y-1">
                         {reportResults.map((item) => (
                           (() => {
@@ -634,7 +634,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
                         <span className="block truncate text-sm font-semibold text-slate-900 dark:text-white">{item.label}</span>
                         <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{item.description}</span>
                       </span>
-                      <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-400 dark:border-white/10 dark:text-slate-500">
+                      <span className="rounded-full border border-slate-200 px-2 py-0.5 text-caption font-medium text-slate-400 dark:border-white/10 dark:text-slate-500">
                         {item.path}
                       </span>
                     </button>
@@ -643,7 +643,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
               )}
               {settingResults.length > 0 && (
                 <div className="p-2" data-testid="command-palette-settings">
-                  <p id="command-palette-settings-label" className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wide text-slate-400 rtl:text-[13px] rtl:normal-case rtl:tracking-normal">{t('Settings')}</p>
+                  <p id="command-palette-settings-label" className="px-3 pb-1 text-caption font-semibold uppercase tracking-wide text-slate-400 rtl:text-body-sm rtl:normal-case rtl:tracking-normal">{t('Settings')}</p>
                   <div role="group" aria-labelledby="command-palette-settings-label" className="space-y-1">
                     {settingResults.map((hit) => {
                       const index = paletteItems.findIndex((entry) => entry.id === `setting-${hit.entry.id}`);

@@ -81,7 +81,7 @@ export function BenefitsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-bold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{releaseA ? 'Employee enrolments and contributions' : 'Employee enrolments, exceptions and contributions'}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -147,7 +147,7 @@ function NoPlansYet() {
     <div data-testid="benefits-empty" className={`${CARD} p-8`}>
       <div className="mx-auto max-w-xl text-center">
         <HeartPulse className="mx-auto h-10 w-10 text-sapphire" />
-        <h2 className="mt-3 text-base font-bold text-slate-800 dark:text-slate-100">{t('No benefit plans yet')}</h2>
+        <h2 className="mt-3 text-base font-semibold text-slate-800 dark:text-slate-100">{t('No benefit plans yet')}</h2>
         <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('Plans are set up in Setup. Once one exists, employees can be enrolled here.')}</p>
         <ModuleSettingsLink sections={['benefitPlans']} label={msg('Set up benefit plans')} className="mt-4" />
       </div>
@@ -266,7 +266,7 @@ function EnrollModal({ plans, initialPlanId, canApplyException, onAdditional, on
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or employee code"
                 aria-label="Search employee" className={`${INPUT} mt-0 ps-9`} />
               {(results.length > 0 || searching) && (
-                <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-white/[0.08] dark:bg-[#0c1120]" role="listbox">
+                <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-white/[0.08] dark:bg-surface" role="listbox">
                   {searching && <li className="px-3 py-2 text-xs text-slate-400">Searching…</li>}
                   {results.map((r) => (
                     <li key={r.id}>
@@ -316,7 +316,7 @@ function EnrollModal({ plans, initialPlanId, canApplyException, onAdditional, on
               onChange={(e) => setRequestedAmount(e.target.value)}
               placeholder={check.maximumBenefitAmount === null ? 'Enter value if applicable' : `Up to ${money(check.maximumBenefitAmount)} ${check.currency}`}
             />
-            <span className="mt-1 block text-[11px] font-normal text-slate-500 dark:text-slate-400">
+            <span className="mt-1 block text-caption font-normal text-slate-500 dark:text-slate-400">
               Records the value approved for this employee without changing the client-configured grade limit.
             </span>
           </label>
@@ -349,11 +349,11 @@ function EligibilityPanel({ employeeChosen, checking, check, error }: {
       className={`rounded-xl border p-3 ${check.eligible
         ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/[0.06]'
         : 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/[0.06]'}`}>
-      <p className={`flex items-center gap-1.5 text-sm font-bold ${check.eligible ? 'text-emerald-800 dark:text-emerald-300' : 'text-rose-800 dark:text-rose-300'}`}>
+      <p className={`flex items-center gap-1.5 text-sm font-semibold ${check.eligible ? 'text-emerald-800 dark:text-emerald-300' : 'text-rose-800 dark:text-rose-300'}`}>
         {check.eligible ? <ShieldCheck className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
         {check.eligible ? 'Eligible for this plan' : 'Not eligible for this plan'}
       </p>
-      <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-300">
+      <p className="mt-0.5 text-caption text-slate-600 dark:text-slate-300">
         {check.employeeName} · {check.companyName ?? 'No company'} · {check.gradeName ?? 'No grade'} · from {check.effectiveFrom}
       </p>
       {check.eligible && (check.tierName || check.maximumBenefitAmount !== null) && (
@@ -410,7 +410,7 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
     );
   }
 
-  const sel = 'rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-[#0c1120] dark:text-slate-200';
+  const sel = 'rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:border-white/[0.08] dark:bg-surface dark:text-slate-200';
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -438,7 +438,7 @@ function EnrollmentList({ enrollments, plans, companies, companyName, canEnroll,
       <div className={`${CARD} overflow-x-auto`}>
         <table className="w-full min-w-[720px] text-start text-sm" data-testid="enrollments-table">
           <thead>
-            <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
+            <tr className="border-b border-slate-100 text-caption uppercase tracking-wide text-slate-500 dark:border-white/[0.06] dark:text-slate-400">
               <th className="px-4 py-2.5 font-semibold">Employee</th>
               <th className="px-4 py-2.5 font-semibold">Plan</th>
               <th className="px-4 py-2.5 font-semibold">Assignment</th>
