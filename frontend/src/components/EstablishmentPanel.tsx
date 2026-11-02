@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSetupEditorState } from './setup/SetupEditorState';
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Plus, ShieldCheck, TrendingUp, Trash2, Building2, Users } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Plus, ShieldCheck, TrendingUp, Building2, Users } from 'lucide-react';
 import { planningApi } from '../api/planning';
 import { establishmentApi, type MatrixLevelCell, type MatrixRow, type StaffingLevelDto } from '../api/establishment';
 import { tenantHrConfigApi, type EstablishmentEnforcementMode, type TenantHrConfigDto } from '../api/tenantHrConfig';
@@ -608,32 +608,32 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                   )}
                                   <div role="status" aria-live="polite" className="flex flex-wrap gap-1.5 text-xs">
                                     {!loading && !restricted && plan.flags.includes('overBudget') && plan.difference !== null && (
-                                      <span data-testid={`chip-over-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-rose-50 px-2 py-0.5 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+                                      <span data-testid={`chip-over-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-2 py-0.5 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
                                         <TrendingUp className="h-3 w-3" aria-hidden="true" />{fmt(t('Planned cost exceeds budget by {n}'), { n: num(Math.abs(plan.difference)) })}
                                       </span>
                                     )}
                                     {!loading && !restricted && plan.flags.includes('belowMinimum') && (
-                                      <span data-testid={`chip-below-min-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                      <span data-testid={`chip-below-min-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                         <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Budget per head is below the grade minimum')}
                                       </span>
                                     )}
                                     {!loading && e.approved > 0 && plan.unallocated > 0 && (
-                                      <span data-testid={`chip-unallocated-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                      <span data-testid={`chip-unallocated-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                         <Users className="h-3 w-3" aria-hidden="true" />{fmt(t('{n} heads not allocated to a level'), { n: plan.unallocated })}
                                       </span>
                                     )}
                                     {!loading && !restricted && noRangeLevels > 0 && (
-                                      <span data-testid={`chip-no-range-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                                      <span data-testid={`chip-no-range-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
                                         <CircleSlash className="h-3 w-3" aria-hidden="true" />{t('{n, plural, one {No pay range set for # level} other {No pay range set for # levels}}', { n: noRangeLevels })}
                                       </span>
                                     )}
                                     {!loading && !restricted && plan.flags.includes('currencyMismatch') && (
-                                      <span data-testid={`chip-currency-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                      <span data-testid={`chip-currency-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                         <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Pay bands use mixed or different currencies - cost not compared')}
                                       </span>
                                     )}
                                     {!loading && !restricted && plan.difference !== null && !plan.flags.includes('overBudget') && !plan.flags.includes('belowMinimum') && !plan.flags.includes('currencyMismatch') && (
-                                      <span data-testid={`chip-within-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                                      <span data-testid={`chip-within-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
                                         <Check className="h-3 w-3" aria-hidden="true" />{t('Within budget')}
                                       </span>
                                     )}
@@ -646,7 +646,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                   <div className="flex items-center gap-1.5">
                                     <input id={`dept-note-${r.departmentId}`} type="text" maxLength={NOTE_MAX_LENGTH} data-testid={`dept-note-${r.departmentId}`}
                                       className="input w-full max-w-xl text-xs" value={deptNoteValue(r)} onChange={ev => setDeptNote(r, ev.target.value)} />
-                                    <span data-testid={`dept-note-count-${r.departmentId}`} dir="ltr" className="text-[10px] tabular-nums text-slate-400">{noteCounter(deptNoteValue(r))}</span>
+                                    <span data-testid={`dept-note-count-${r.departmentId}`} dir="ltr" className="text-xs tabular-nums text-slate-400">{noteCounter(deptNoteValue(r))}</span>
                                   </div>
                                 ) : (
                                   <p id={`dept-note-${r.departmentId}`} data-testid={`dept-note-${r.departmentId}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{r.note || '—'}</p>
@@ -787,7 +787,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                                   title={levelNoteEditable(inEdit) ? undefined : t('Set a budgeted headcount (0 = frozen) to add a note to this level.')}
                                                   onChange={ev => setLevelNote(r, lvl.id, ev.target.value)}
                                                 />
-                                                <span data-testid={`level-note-count-${r.departmentId}-${lvl.id}`} dir="ltr" className="text-[10px] tabular-nums text-slate-400">{noteCounter(levelNoteValue(r, lvl.id))}</span>
+                                                <span data-testid={`level-note-count-${r.departmentId}-${lvl.id}`} dir="ltr" className="text-xs tabular-nums text-slate-400">{noteCounter(levelNoteValue(r, lvl.id))}</span>
                                               </div>
                                             ) : (
                                               <span data-testid={`level-note-${r.departmentId}-${lvl.id}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{cell.note || '—'}</span>
