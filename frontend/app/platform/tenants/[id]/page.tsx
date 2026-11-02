@@ -849,6 +849,7 @@ export default function TenantDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteErr, setDeleteErr] = useState('');
   const [deleteTyped, setDeleteTyped] = useState('');
+  const [exporting, setExporting] = useState(false);
   const [featureFlags, setFeatureFlags] = useState<FeatureFlagDef[]>([]);
 
   useEffect(() => {
@@ -940,6 +941,20 @@ export default function TenantDetailPage() {
               </div>
             </div>
             <p className="text-xs text-slate-400">This signs everyone out, closes the workspace and cancels the subscription. The data is kept until it is purged.</p>
+            <button type="button" disabled={exporting} onClick={async () => {
+              setExporting(true); setDeleteErr('');
+              try {
+                const { blob, filename } = await platformApi.exportTenantAccount(tenant.id);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+                URL.revokeObjectURL(url);
+              } catch { setDeleteErr('Export failed. Try again before deleting.'); }
+              finally { setExporting(false); }
+            }}
+              className="w-full border border-white/10 text-slate-300 hover:text-white rounded-lg py-2 text-xs transition-colors disabled:opacity-40">
+              {exporting ? 'Preparing…' : 'Download account export first'}
+            </button>
+            <p className="text-caption text-slate-600">Covers the account, sign-in users, plan, features and billing. Employee and payroll records are not included.</p>
             <label className="block space-y-1.5">
               <span className="text-xs text-slate-500">Type <span className="font-mono text-slate-300">{tenant.slug}</span> to confirm</span>
               <input value={deleteTyped} onChange={e => setDeleteTyped(e.target.value)} autoComplete="off" spellCheck={false}

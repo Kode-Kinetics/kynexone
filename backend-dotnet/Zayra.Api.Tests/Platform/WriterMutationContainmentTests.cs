@@ -139,11 +139,7 @@ public sealed class WriterMutationContainmentTests : PlatformTestBase
 
         (await controller.DeleteTenant(tenant.Id, tenant.Slug, CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
-        (await controller.RestoreTenant(tenant.Id, CancellationToken.None)).Should().BeOfType<ConflictObjectResult>();
         (await controller.ReactivateTenant(tenant.Id, new TenantActionRequest("bypass attempt"), CancellationToken.None))
-            .Should().BeOfType<ConflictObjectResult>();
-        (await controller.BulkRestoreTenants(
-            new BulkTenantActionRequest(new List<Guid> { tenant.Id }, "test"), CancellationToken.None))
             .Should().BeOfType<ConflictObjectResult>();
         // Deleting what is already deleted is skipped, never repeated.
         var bulk = await controller.BulkDeleteTenants(

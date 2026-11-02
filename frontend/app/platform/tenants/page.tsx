@@ -534,7 +534,15 @@ function TenantRow({ t, onAction, selected, onToggle }: {
       </td>
       {/* Expiry */}
       <td className="px-3 py-3 text-end tabular-nums">
-        <span className={`text-xs ${expiry.cls}`}>{expiry.text}</span>
+        {t.isDeleted ? (
+          <span className="text-xs text-amber-400" title={t.recoverableUntilUtc ? `Recoverable until ${new Date(t.recoverableUntilUtc).toLocaleDateString('en-GB')}` : 'Deletion date unknown'}>
+            {t.recoverableUntilUtc
+              ? (() => { const d = daysUntil(t.recoverableUntilUtc); return d !== null && d >= 0 ? `Restore within ${d}d` : 'Window closed'; })()
+              : 'Deleted'}
+          </span>
+        ) : (
+          <span className={`text-xs ${expiry.cls}`}>{expiry.text}</span>
+        )}
       </td>
       {/* Actions */}
       <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
@@ -890,7 +898,7 @@ export default function TenantsPage() {
           message={
             bulkConfirm === 'suspend'    ? 'This will disable all users across the selected tenants. Provide a reason for the record.' :
             bulkConfirm === 'reactivate' ? 'This will restore access for all users across the selected tenants.' :
-            bulkConfirm === 'restore'    ? 'This reactivates the selected tenants and restores their original slugs.' :
+            bulkConfirm === 'restore'    ? 'This restores the selected tenants and their original slugs. They come back suspended: reactivate each one when it is safe for people to sign in.' :
             bulkConfirm === 'purge'      ? '⚠ This PERMANENTLY erases the selected tenants and ALL their data (users, invoices, payments). This is irreversible and cannot be recovered.' :
                                            'This signs everyone out of the selected tenants, closes their workspaces and cancels their subscriptions. The data is kept until it is purged.'}
           onConfirm={doBulkAction}

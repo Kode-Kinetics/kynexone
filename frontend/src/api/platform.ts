@@ -145,6 +145,9 @@ export interface PlatformTenantSummary {
   activeUserCount: number;
   activeEmployeeCount: number;
   isDeleted?: boolean;
+  deletedAtUtc?: string | null;
+  /** End of the recovery window; after it the retention rule may erase the data. */
+  recoverableUntilUtc?: string | null;
 }
 
 export interface TenantBranding {
@@ -716,6 +719,14 @@ export const platformApi = {
 
   updateLocalization: (tenantId: string, body: Partial<TenantLocalization>) =>
     platform.put<TenantLocalization>(`/api/platform/tenants/${tenantId}/localization`, body).then(r => r.data),
+
+  /** Account export (JSON): account, structure, sign-in users, plan, features and billing. Not employee or payroll records. */
+  exportTenantAccount: (tenantId: string) =>
+    platform.get<Blob>(`/api/platform/tenants/${tenantId}/export`, { responseType: 'blob' }).then(r => {
+      const disposition = String(r.headers['content-disposition'] ?? '');
+      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+      return { blob: r.data, filename: match ? decodeURIComponent(match[1]) : `tenant-${tenantId}-account-export.json` };
+    }),
 
   /** Soft delete (Owner only). The server requires the tenant's slug as the typed confirmation. */
   deleteTenant: (tenantId: string, slug: string) =>
