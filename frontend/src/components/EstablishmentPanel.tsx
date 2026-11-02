@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSetupEditorState } from './setup/SetupEditorState';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Plus, ShieldCheck, Building2 } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleSlash, Plus, ShieldCheck, TrendingUp, Building2, Users } from 'lucide-react';
 import { planningApi } from '../api/planning';
 import { establishmentApi, type MatrixLevelCell, type MatrixRow, type StaffingLevelDto } from '../api/establishment';
 import { tenantHrConfigApi, type EstablishmentEnforcementMode, type TenantHrConfigDto } from '../api/tenantHrConfig';
@@ -12,7 +12,10 @@ import { notifyApiError } from '../api/client';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
+import { useFormat } from '../hooks/useFormat';
 import { Modal } from './Modal';
+import { computePayPlan, type PayPlanResult } from '../lib/payPlan';
+import { NOTE_MAX_LENGTH, levelNoteEditable, noteChange, noteCounter } from '../lib/establishmentNotes';
 import {
   SPEND_RESTRICTED_LABEL, SPEND_RESTRICTED_REASON, isSpendWithheld, spendUtilisation, totalSpend, type Utilisation,
 } from '../lib/establishmentSpend';
@@ -35,6 +38,8 @@ interface LevelChange {
   before: number | null;
   after: number | null;
   current: number;
+  /** Note to send: undefined = unchanged (omitted), '' = clear. */
+  noteChange?: string;
 }
 
 interface PendingSave {
@@ -43,6 +48,8 @@ interface PendingSave {
   envelopeDirty: boolean;
   costCenterDirty: boolean;
   levelChanges: LevelChange[];
+  /** Department note to send: undefined = unchanged (omitted), '' = clear. */
+  deptNote?: string;
 }
 
 export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusLevelId }: {
@@ -55,6 +62,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
   const { currencyCode } = useTenantSettings();
   const { hasPermission } = useAuth();
   const { t, locale } = useLocale();
+  const fx = useFormat();
   const [rows, setRows] = useState<MatrixRow[]>([]);
   const [levels, setLevels] = useState<StaffingLevelDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
@@ -62,6 +70,8 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
   const [edits, setEdits] = useState<Record<string, RowEdit>>({});
   // Raw level-budget input per department per level: '' = uncontrolled (no row), '0' = frozen.
   const [levelEdits, setLevelEdits] = useState<Record<string, Record<string, string>>>({});
+  // Raw note inputs. Only touched fields exist; an untouched note falls back to the saved one and is never sent.
+  const [noteEdits, setNoteEdits] = useState<Record<string, { dept?: string; levels: Record<string, string> }>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [savedId, setSavedId] = useState('');
   const [adding, setAdding] = useState(false);
@@ -181,12 +191,24 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     return Number.isFinite(n) ? Math.max(0, n) : null;
   };
 
+  const deptNoteValue = (r: MatrixRow): string => noteEdits[r.departmentId]?.dept ?? r.note ?? '';
+  const levelNoteValue = (r: MatrixRow, levelId: string): string => noteEdits[r.departmentId]?.levels[levelId] ?? cellFor(r, levelId).note ?? '';
+  const setDeptNote = (r: MatrixRow, value: string) =>
+    setNoteEdits(e => ({ ...e, [r.departmentId]: { ...e[r.departmentId], levels: e[r.departmentId]?.levels ?? {}, dept: value } }));
+  const setLevelNote = (r: MatrixRow, levelId: string, value: string) =>
+    setNoteEdits(e => ({ ...e, [r.departmentId]: { ...e[r.departmentId], levels: { ...(e[r.departmentId]?.levels ?? {}), [levelId]: value } } }));
+  const deptNoteChange = (r: MatrixRow): string | undefined => noteChange(r.note, noteEdits[r.departmentId]?.dept);
+  /** A level note is only sent while the level keeps a budgeted headcount (the server refuses one without). */
+  const levelNoteChange = (r: MatrixRow, levelId: string): string | undefined =>
+    levelNoteEditable(parseBudget(levelEditValue(r, levelId))) ? noteChange(cellFor(r, levelId).note, noteEdits[r.departmentId]?.levels[levelId]) : undefined;
+
   const levelChangesFor = (r: MatrixRow): LevelChange[] =>
     activeLevels.flatMap(lvl => {
       const cell = cellFor(r, lvl.id);
       const after = parseBudget(levelEditValue(r, lvl.id));
-      if (after === cell.budgeted) return [];
-      return [{ staffingLevelId: lvl.id, levelName: levelName(lvl), before: cell.budgeted, after, current: cell.current }];
+      const note = levelNoteChange(r, lvl.id);
+      if (after === cell.budgeted && note === undefined) return [];
+      return [{ staffingLevelId: lvl.id, levelName: levelName(lvl), before: cell.budgeted, after, current: cell.current, noteChange: note }];
     });
 
   /** Sum of in-edit level budgets (uncontrolled levels excluded — partial allocation is allowed). */
@@ -196,7 +218,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
   const isDirty = (r: MatrixRow): boolean => {
     const e = editFor(r);
     return e.approved !== r.approvedHeadcount || e.budget !== r.monthlyBudgetAmount
-      || (e.costCenterId ?? null) !== r.costCenterId || levelChangesFor(r).length > 0;
+      || (e.costCenterId ?? null) !== r.costCenterId || levelChangesFor(r).length > 0 || deptNoteChange(r) !== undefined;
   };
   useSetupEditorState(rows.some(isDirty) || !!newCc.code || !!newCc.name || !!pendingMode);
 
@@ -205,24 +227,26 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
     const envelopeDirty = e.approved !== r.approvedHeadcount || e.budget !== r.monthlyBudgetAmount;
     const costCenterDirty = (e.costCenterId ?? null) !== r.costCenterId;
     const levelChanges = levelChangesFor(r);
-    if (!envelopeDirty && levelChanges.length === 0) {
+    const deptNote = deptNoteChange(r);
+    if (!envelopeDirty && levelChanges.length === 0 && deptNote === undefined) {
       // Cost-centre-only change: no establishment mutation, no reason required.
       if (costCenterDirty) void commitSave({ row: r, edit: e, envelopeDirty, costCenterDirty, levelChanges }, '');
       return;
     }
     setSaveReason('');
-    setPendingSave({ row: r, edit: e, envelopeDirty, costCenterDirty, levelChanges });
+    setPendingSave({ row: r, edit: e, envelopeDirty, costCenterDirty, levelChanges, deptNote });
   };
 
   const commitSave = async (p: PendingSave, reason: string) => {
     setSavingBudget(true);
     setError('');
     try {
-      if (p.levelChanges.length > 0) {
+      if (p.levelChanges.length > 0 || p.deptNote !== undefined) {
         await establishmentApi.saveBudgets(
           p.row.departmentId,
-          p.levelChanges.map(c => ({ staffingLevelId: c.staffingLevelId, budgetedHeadcount: c.after })),
+          p.levelChanges.map(c => ({ staffingLevelId: c.staffingLevelId, budgetedHeadcount: c.after, ...(c.noteChange !== undefined ? { note: c.noteChange } : {}) })),
           reason,
+          p.deptNote,
         );
       }
       if (p.envelopeDirty || p.costCenterDirty) {
@@ -237,6 +261,7 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
       setSavedId(p.row.departmentId); setTimeout(() => setSavedId(''), 1500);
       setEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
       setLevelEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
+      setNoteEdits(prev => { const n = { ...prev }; delete n[p.row.departmentId]; return n; });
       load();
     } catch (err) {
       notifyApiError(err, t('Could not save the establishment change.'));
@@ -309,7 +334,50 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
 
   const colSpan = readOnly ? 9 : 11;
 
-  if (loading) return <div className="flex justify-center py-12"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
+  // ── Pay reconciliation (live from the in-edit budget, approved headcount and level headcounts) ──
+  // Whole numbers stay whole; fractions show up to 2 decimals (the server rounds money to 2).
+  const num = (n: number | null | undefined) => (n == null ? '—' : fx.number(n));
+  // Three different "nothing" states, never to be conflated:
+  //   payPlan === undefined          the server predates pay figures: the pay UI is hidden.
+  //   payPlan === null               WITHHELD (no salary permission): show Restricted, never 0.
+  //   payPlan set, level pay === null  UNPRICED: the viewer may see salaries but the level has no usable
+  //                                    range ('No range set'), or the server flagged currencyMismatch.
+  const payAvailable = (r: MatrixRow) => r.payPlan !== undefined;
+  const payRestricted = (r: MatrixRow) => r.payPlan === null;
+  const livePlan = (r: MatrixRow): PayPlanResult => {
+    const e = editFor(r);
+    const live = computePayPlan({
+      approved: e.approved,
+      budget: e.budget,
+      // No reference currency: the server already priced each band against the department company's currency
+      // (Company.DefaultCurrency), which is not the tenant display currency used for formatting here.
+      levels: activeLevels.map(lvl => ({ budgeted: parseBudget(levelEditValue(r, lvl.id)), pay: cellFor(r, lvl.id).pay ?? null })),
+    });
+    const server = r.payPlan;
+    if (!server) return live;
+    if (isDirty(r)) {
+      // Recomputed from the form. A mismatched level reaches us unpriced, so the server's verdict is kept.
+      return server.flags.includes('currencyMismatch') && !live.flags.includes('currencyMismatch')
+        ? { ...live, flags: [...live.flags, 'currencyMismatch'] } : live;
+    }
+    // Untouched: show exactly what the server computed, so the screen never disagrees with the saved plan.
+    const comparable = !server.flags.includes('notComparable');
+    return {
+      ...live,
+      avgPerHead: server.avgPerHead,
+      plannedMin: comparable ? server.plannedMin : null,
+      plannedMid: comparable ? server.plannedMid : null,
+      plannedMax: comparable ? server.plannedMax : null,
+      difference: comparable ? server.unallocatedBudget : null,
+      unallocatedBudget: comparable ? server.unallocatedBudget : null,
+      unpricedHeads: server.unpricedHeads,
+      uncontrolledLevels: server.uncontrolledLevels,
+      unallocated: r.unallocated,
+      flags: server.flags,
+    };
+  };
+
+  if (loading && rows.length === 0) return <div className="flex justify-center py-12"><div className="h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>;
 
   return (
     <div className="space-y-5">
@@ -428,6 +496,14 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                   const isExpanded = !!expanded[r.departmentId];
                   const allocated = allocatedInEdit(r);
                   const unallocated = e.approved - allocated;
+                  const showPay = payAvailable(r);
+                  const restricted = payRestricted(r);
+                  const plan = livePlan(r);
+                  // Budgeted levels the server says have no range (not currency clashes, which have their own chip).
+                  const hasPayStatus = activeLevels.some(l => cellFor(r, l.id).payStatus !== undefined);
+                  const noRangeLevels = hasPayStatus
+                    ? activeLevels.filter(l => parseBudget(levelEditValue(r, l.id)) !== null && cellFor(r, l.id).payStatus === 'noRange').length
+                    : plan.unpricedLevels;
                   return (
                     <FragmentRows key={r.departmentId}>
                       <tr
@@ -496,6 +572,87 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                         <tr className="bg-slate-50/40 dark:bg-white/[0.015]">
                           <td colSpan={colSpan} className="px-4 py-3 sm:px-10">
                             <div className="space-y-2.5">
+                              {showPay && (
+                                <div role="group" aria-label={fmt(t('Pay reconciliation — {dept}'), { dept: r.departmentName })} aria-busy={loading}
+                                  data-testid={`pay-summary-${r.departmentId}`} className="space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
+                                  {loading ? (
+                                    <div className="h-6 w-56 animate-pulse rounded-full bg-slate-200 dark:bg-white/10" role="status" aria-label={t('Updating pay figures')} />
+                                  ) : (
+                                    <>
+                                      <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
+                                        <div data-testid={`pay-avg-per-head-${r.departmentId}`}>
+                                          <dt className="text-slate-400">{t('Average per head')}</dt>
+                                          <dd className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">{plan.avgPerHead === null ? '—' : <span dir="ltr">{num(plan.avgPerHead)}</span>}</dd>
+                                        </div>
+                                        <div data-testid={`pay-planned-vs-budget-${r.departmentId}`}>
+                                          <dt className="text-slate-400">{t('Planned cost vs budget')}</dt>
+                                          <dd className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-200">
+                                            {restricted ? (
+                                              <span data-testid={`pay-restricted-${r.departmentId}`} className="font-normal text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                            ) : plan.plannedMid === null ? '—' : (
+                                              <>
+                                                <span dir="ltr">{fmt(t('{planned} vs {budget}'), { planned: num(plan.plannedMid), budget: num(e.budget) })}</span>
+                                                {plan.difference !== null && plan.difference !== 0 && (
+                                                  <span className={`ms-2 text-xs font-medium ${plan.difference < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                                                    {plan.difference < 0
+                                                      ? fmt(t('Over by {n}'), { n: num(Math.abs(plan.difference)) })
+                                                      : fmt(t('Under by {n}'), { n: num(Math.abs(plan.difference)) })}
+                                                  </span>
+                                                )}
+                                              </>
+                                            )}
+                                          </dd>
+                                        </div>
+                                      </dl>
+                                      {restricted && <p role="note" className="text-xs text-slate-500 dark:text-slate-400">{t(SPEND_RESTRICTED_REASON)}</p>}
+                                    </>
+                                  )}
+                                  <div role="status" aria-live="polite" className="flex flex-wrap gap-1.5 text-xs">
+                                    {!loading && !restricted && plan.flags.includes('overBudget') && plan.difference !== null && (
+                                      <span data-testid={`chip-over-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-2 py-0.5 font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+                                        <TrendingUp className="h-3 w-3" aria-hidden="true" />{fmt(t('Planned cost exceeds budget by {n}'), { n: num(Math.abs(plan.difference)) })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.flags.includes('belowMinimum') && (
+                                      <span data-testid={`chip-below-min-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Budget per head is below the grade minimum')}
+                                      </span>
+                                    )}
+                                    {!loading && e.approved > 0 && plan.unallocated > 0 && (
+                                      <span data-testid={`chip-unallocated-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <Users className="h-3 w-3" aria-hidden="true" />{fmt(t('{n} heads not allocated to a level'), { n: plan.unallocated })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && noRangeLevels > 0 && (
+                                      <span data-testid={`chip-no-range-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-0.5 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+                                        <CircleSlash className="h-3 w-3" aria-hidden="true" />{t('{n, plural, one {No pay range set for # level} other {No pay range set for # levels}}', { n: noRangeLevels })}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.flags.includes('currencyMismatch') && (
+                                      <span data-testid={`chip-currency-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                                        <AlertTriangle className="h-3 w-3" aria-hidden="true" />{t('Pay bands use mixed or different currencies - cost not compared')}
+                                      </span>
+                                    )}
+                                    {!loading && !restricted && plan.difference !== null && !plan.flags.includes('overBudget') && !plan.flags.includes('belowMinimum') && !plan.flags.includes('currencyMismatch') && (
+                                      <span data-testid={`chip-within-budget-${r.departmentId}`} className="inline-flex items-center gap-1 rounded-lg bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                                        <Check className="h-3 w-3" aria-hidden="true" />{t('Within budget')}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              <div className="text-xs">
+                                <label className="mb-1 block text-slate-500 dark:text-slate-400" htmlFor={`dept-note-${r.departmentId}`}>{t('Department note')}</label>
+                                {canEdit ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <input id={`dept-note-${r.departmentId}`} type="text" maxLength={NOTE_MAX_LENGTH} data-testid={`dept-note-${r.departmentId}`}
+                                      className="input w-full max-w-xl text-xs" value={deptNoteValue(r)} onChange={ev => setDeptNote(r, ev.target.value)} />
+                                    <span data-testid={`dept-note-count-${r.departmentId}`} dir="ltr" className="text-xs tabular-nums text-slate-400">{noteCounter(deptNoteValue(r))}</span>
+                                  </div>
+                                ) : (
+                                  <p id={`dept-note-${r.departmentId}`} data-testid={`dept-note-${r.departmentId}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{r.note || '—'}</p>
+                                )}
+                              </div>
                               <div className="flex flex-wrap items-center gap-2 text-xs">
                                 <span className={`font-semibold ${allocated > e.approved && e.approved > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-600 dark:text-slate-300'}`}>
                                   {fmt(t('Allocated {allocated} of {approved} (unallocated: {unallocated})'), {
@@ -534,7 +691,10 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                       <th className="px-3 py-2 font-medium text-center">{t('Budgeted')}</th>
                                       <th className="px-3 py-2 font-medium text-center">{t('Current')}</th>
                                       <th className="px-3 py-2 font-medium text-center">{t('Gap')}</th>
-                                      <th className="px-3 py-2 font-medium">{t('Notes')}</th>
+                                      {showPay && <th scope="col" className="px-3 py-2 text-start font-medium">{t('Pay band')}</th>}
+                                      {showPay && <th scope="col" className="px-3 py-2 text-center font-medium">{t('Planned cost')}</th>}
+                                      <th scope="col" className="px-3 py-2 text-start font-medium">{t('Status')}</th>
+                                      <th scope="col" className="px-3 py-2 text-start font-medium">{t('Note')}</th>
                                     </tr>
                                   </thead>
                                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -544,6 +704,9 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                       const inEdit = parseBudget(raw);
                                       // Live gap while typing — client-side from current vs the in-edit value.
                                       const liveGap = inEdit === null ? null : inEdit - cell.current;
+                                      const heads = inEdit !== null && inEdit > 0 ? inEdit : 0;
+                                      // payStatus null (or a withheld payPlan) = no salary permission; never read it as unpriced.
+                                      const payWithheld = restricted || cell.payStatus === null;
                                       return (
                                         <tr key={lvl.id}>
                                           <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">
@@ -574,8 +737,32 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                                 ? <span className="font-semibold text-rose-600 dark:text-rose-400">{fmt(t('over-establishment: {n}'), { n: Math.abs(liveGap) })}</span>
                                                 : <span className={`font-semibold ${liveGap === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>{liveGap > 0 ? `+${liveGap}` : liveGap}</span>}
                                           </td>
-                                          <td className="px-3 py-2">
+                                          {showPay && (
+                                            <td className="px-3 py-2" data-testid={`level-pay-band-${r.departmentId}-${lvl.id}`}>
+                                              {payWithheld
+                                                ? <span className="text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                                : cell.payStatus === 'currencyMismatch'
+                                                  ? <span className="text-slate-400">{t('Currency differs')}</span>
+                                                  : cell.pay && cell.payStatus !== 'noRange'
+                                                    ? <span dir="ltr" className="inline-block tabular-nums text-slate-700 dark:text-slate-200">{num(cell.pay.min)}–{num(cell.pay.max)}</span>
+                                                    : <span className="text-slate-400">{t('No range set')}</span>}
+                                            </td>
+                                          )}
+                                          {showPay && (
+                                            <td className="px-3 py-2 text-center tabular-nums" data-testid={`level-planned-cost-${r.departmentId}-${lvl.id}`}
+                                              aria-label={payWithheld || !heads || !cell.pay || cell.payStatus === 'noRange' || cell.payStatus === 'currencyMismatch' ? undefined : fmt(t('Planned cost {cost} for {level} level'), { cost: num(heads * cell.pay.mid), level: levelName(lvl) })}>
+                                              {payWithheld
+                                                ? <span className="text-slate-400" title={t(SPEND_RESTRICTED_REASON)}>{t(SPEND_RESTRICTED_LABEL)}</span>
+                                                : heads && cell.pay && (cell.payStatus === undefined || cell.payStatus === 'priced')
+                                                  ? <span dir="ltr" className="text-slate-700 dark:text-slate-200">{heads} × {num(cell.pay.mid)} = {num(heads * cell.pay.mid)}</span>
+                                                  : <span className="text-slate-400">—</span>}
+                                            </td>
+                                          )}
+                                          <td className="px-3 py-2" data-testid={`level-status-${r.departmentId}-${lvl.id}`}>
                                             <div className="flex flex-wrap gap-1.5">
+                                              {cell.exitingIncumbents <= 0 && !cell.positionsExceedBudget && (
+                                                <span className="inline-flex items-center gap-1 text-slate-400"><Check className="h-3 w-3" aria-hidden="true" />{t('OK')}</span>
+                                              )}
                                               {cell.exitingIncumbents > 0 && (
                                                 <span className="rounded-lg bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                                                   {fmt(t('{n} serving notice'), { n: cell.exitingIncumbents })}
@@ -588,13 +775,50 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                                               )}
                                             </div>
                                           </td>
+                                          <td className="px-3 py-2">
+                                            {canEdit ? (
+                                              <div className="flex items-center gap-1.5">
+                                                <input
+                                                  type="text" maxLength={NOTE_MAX_LENGTH}
+                                                  data-testid={`level-note-${r.departmentId}-${lvl.id}`}
+                                                  aria-label={`${t('Note')} ${levelName(lvl)} — ${r.departmentName}`}
+                                                  className="input w-44 text-xs disabled:opacity-60"
+                                                  value={levelNoteValue(r, lvl.id)}
+                                                  disabled={!levelNoteEditable(inEdit)}
+                                                  title={levelNoteEditable(inEdit) ? undefined : t('Set a budgeted headcount (0 = frozen) to add a note to this level.')}
+                                                  onChange={ev => setLevelNote(r, lvl.id, ev.target.value)}
+                                                />
+                                                <span data-testid={`level-note-count-${r.departmentId}-${lvl.id}`} dir="ltr" className="text-xs tabular-nums text-slate-400">{noteCounter(levelNoteValue(r, lvl.id))}</span>
+                                              </div>
+                                            ) : (
+                                              <span data-testid={`level-note-${r.departmentId}-${lvl.id}`} className="whitespace-pre-wrap break-words text-slate-600 dark:text-slate-300">{cell.note || '—'}</span>
+                                            )}
+                                          </td>
                                         </tr>
                                       );
                                     })}
                                     {activeLevels.length === 0 && (
-                                      <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400">{t('No staffing levels configured yet.')}</td></tr>
+                                      <tr><td colSpan={showPay ? 8 : 6} className="px-3 py-4 text-center text-slate-400">{t('No staffing levels configured yet.')}</td></tr>
                                     )}
                                   </tbody>
+                                  {activeLevels.length > 0 && (
+                                    <tfoot className="border-t border-slate-200 bg-slate-50/60 text-slate-700 dark:border-white/10 dark:bg-white/[0.02] dark:text-slate-200">
+                                      <tr data-testid={`level-total-${r.departmentId}`}>
+                                        <th scope="row" className="px-3 py-2 text-start font-semibold">{t('Total')}</th>
+                                        <td className="px-3 py-2 text-center font-semibold tabular-nums">{plan.allocated}</td>
+                                        <td className="px-3 py-2 text-center font-semibold tabular-nums">{activeLevels.reduce((sum, lvl) => sum + cellFor(r, lvl.id).current, 0)}</td>
+                                        <td className="px-3 py-2" />
+                                        {showPay && <td className="px-3 py-2" />}
+                                        {showPay && (
+                                          <td className="px-3 py-2 text-center font-semibold tabular-nums">
+                                            {restricted ? <span className="font-normal text-slate-400">{t(SPEND_RESTRICTED_LABEL)}</span> : <span dir="ltr">{num(plan.plannedMid)}</span>}
+                                          </td>
+                                        )}
+                                        <td className="px-3 py-2" />
+                                        <td className="px-3 py-2" />
+                                      </tr>
+                                    </tfoot>
+                                  )}
                                 </table>
                               </div>
                             </div>
@@ -644,13 +868,16 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                     <span className="text-slate-500 dark:text-slate-400">
                       {c.before === null ? `— (${t('uncontrolled')})` : c.before} → {c.after === null ? `— (${t('uncontrolled')})` : c.after}
                     </span>
+                    {c.noteChange !== undefined && (
+                      <span className="text-slate-500 dark:text-slate-400">{c.noteChange === '' ? t('Note cleared') : `${t('Note')}: ${c.noteChange}`}</span>
+                    )}
                     {c.after === null && c.before !== null && (
                       <span className="rounded bg-slate-100 px-1.5 py-0.5 font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{t('Clearing a budget returns that level to unlimited.')}</span>
                     )}
                     {c.after === 0 && (
                       <span className="rounded bg-sky-100 px-1.5 py-0.5 font-semibold text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">{t('0 freezes the level — no additions will be sanctioned.')}</span>
                     )}
-                    {c.after !== null && c.after < c.current && (
+                    {c.after !== null && c.after !== c.before && c.after < c.current && (
                       <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
                         <AlertTriangle className="h-3 w-3" />
                         {fmt(t('Below current occupancy ({current}) — existing staff are never affected; the level will show as over-establishment.'), { current: c.current })}
@@ -659,6 +886,12 @@ export function EstablishmentPanel({ readOnly = false, focusDepartmentId, focusL
                   </li>
                 ))}
               </ul>
+            )}
+
+            {pendingSave.deptNote !== undefined && (
+              <p className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-white/10 dark:text-slate-400">
+                {pendingSave.deptNote === '' ? t('Department note cleared') : `${t('Department note')}: ${pendingSave.deptNote}`}
+              </p>
             )}
 
             {pendingSave.envelopeDirty && (

@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Establishment;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Organization;
@@ -190,12 +191,17 @@ public class EstablishmentController : ControllerBase
         var levels = await _db.StaffingLevels.AsNoTracking()
             .Where(l => l.TenantId == tenantId && !l.IsDeleted && l.IsActive)
             .OrderBy(l => l.Rank).ToListAsync(ct);
-        var levelByDesignation = await _db.Designations.AsNoTracking()
+        var mappedDesignations = await _db.Designations.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.StaffingLevelId != null)
-            .ToDictionaryAsync(d => d.Id, d => d.StaffingLevelId!.Value, ct);
-        var budgets = await _db.DepartmentStaffingBudgets.AsNoTracking()
+            .Select(d => new { d.Id, d.StaffingLevelId, d.GradeId, d.CompanyId })
+            .ToListAsync(ct);
+        // Plain column projection above; shaping (null-forgiving, records) happens in memory so it cannot hit SQL translation.
+        var levelByDesignation = mappedDesignations.ToDictionary(d => d.Id, d => d.StaffingLevelId!.Value);
+        var budgetRows = await _db.DepartmentStaffingBudgets.AsNoTracking()
             .Where(b => b.TenantId == tenantId && !b.IsDeleted)
-            .ToDictionaryAsync(b => (b.DepartmentId, b.StaffingLevelId), b => b.BudgetedHeadcount, ct);
+            .Select(b => new { b.DepartmentId, b.StaffingLevelId, b.BudgetedHeadcount, b.Note })
+            .ToListAsync(ct);
+        var budgetByCell = budgetRows.ToDictionary(b => (b.DepartmentId, b.StaffingLevelId), b => (Heads: b.BudgetedHeadcount, b.Note));
         var emps = await EstablishmentOccupancy.Occupying(_db.Employees.AsNoTracking(), tenantId)
             .Select(e => new { e.DepartmentId, e.Department, e.DesignationId, e.Status, e.Salary })
             .ToListAsync(ct);
@@ -213,6 +219,26 @@ public class EstablishmentController : ControllerBase
             .ToListAsync(ct);
 
         var showSpend = PlanningController.CanSeeSalarySpend(User);
+        // Pay-range reconciliation inputs are salary data: only loaded for permitted callers (and once, no N+1).
+        var payDesignations = new List<PayDesignation>();
+        var payGrades = new List<PayGrade>();
+        var companyCurrency = new Dictionary<Guid, string>();
+        if (showSpend)
+        {
+            payDesignations = mappedDesignations.Select(d => new PayDesignation(d.StaffingLevelId, d.GradeId, d.CompanyId)).ToList();
+            var gradeRows = await _db.Grades.AsNoTracking()
+                .Where(g => g.TenantId == tenantId && !g.IsDeleted)
+                .Select(g => new { g.Id, g.CompanyId, g.IsDeleted, g.IsActive, g.MinSalary, g.MidSalary, g.MaxSalary, g.Currency })
+                .ToListAsync(ct);
+            payGrades = gradeRows.Select(g => new PayGrade(g.Id, g.CompanyId, g.IsDeleted, g.IsActive, g.MinSalary, g.MidSalary, g.MaxSalary, g.Currency)).ToList();
+            // Only the companies of the departments actually returned (caller-scoped), not every company in the tenant.
+            var deptCompanyIds = depts.Where(d => d.CompanyId != null).Select(d => d.CompanyId!.Value).Distinct().ToList();
+            var currencyRows = await _db.Companies.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && deptCompanyIds.Contains(c.Id))
+                .Select(c => new { c.Id, c.DefaultCurrency })
+                .ToListAsync(ct);
+            companyCurrency = currencyRows.ToDictionary(c => c.Id, c => c.DefaultCurrency);
+        }
         var deptNames = depts.Select(d => d.NameEn).ToHashSet();
         var unresolvedDepartmentCount = emps.Count(e => e.DepartmentId == null
             && (string.IsNullOrWhiteSpace(e.Department) || !deptNames.Contains(e.Department)));
@@ -227,13 +253,19 @@ public class EstablishmentController : ControllerBase
             decimal? spend = showSpend ? deptEmps.Sum(e => e.Salary ?? 0m) : null;
             var unclassified = deptEmps.Count(e => e.DesignationId == null || !levelByDesignation.ContainsKey(e.DesignationId.Value));
 
+            string? deptCurrency = d.CompanyId is { } dco && companyCurrency.TryGetValue(dco, out var cc2) ? cc2 : null;
             var levelRows = levels.Select(l =>
             {
                 var cellEmps = deptEmps.Where(e => e.DesignationId != null
                     && levelByDesignation.TryGetValue(e.DesignationId.Value, out var lv) && lv == l.Id).ToList();
-                int? budgeted = budgets.TryGetValue((d.Id, l.Id), out var b) ? b : null;
+                int? budgeted = budgetByCell.TryGetValue((d.Id, l.Id), out var b) ? b.Heads : null;
+                var cellNote = budgetByCell.TryGetValue((d.Id, l.Id), out var bn) ? bn.Note : null;
                 var positionsAtLevel = positions.Count(p => p.DepartmentId == d.Id
                     && levelByDesignation.TryGetValue(p.DesignationId!.Value, out var plv) && plv == l.Id);
+                var levelPay = showSpend
+                    ? EstablishmentPayPlan.ComputeBand(l.Id, d.CompanyId, deptCurrency, payDesignations, payGrades)
+                    : null;
+                var band = levelPay?.Band;
                 return new
                 {
                     staffingLevelId = l.Id,
@@ -248,11 +280,22 @@ public class EstablishmentController : ControllerBase
                     positionsAtLevel,
                     // Reconciliation WARNING only (never a block): the fine-grained Position layer
                     // promises more seats at this level than the coarse budget sanctions.
-                    positionsExceedBudget = budgeted is not null && positionsAtLevel > budgeted.Value
+                    positionsExceedBudget = budgeted is not null && positionsAtLevel > budgeted.Value,
+                    // Grade-derived pay band for this level in this department's company; null = unpriced
+                    // OR withheld (no payroll.read / employees.sensitive).
+                    pay = band is null ? null : new { min = band.Min, mid = band.Mid, max = band.Max, currency = band.Currency },
+                    // priced | noRange | currencyMismatch; null only when withheld.
+                    payStatus = levelPay?.Status,
+                    // Plain-text planning note on this department-level cell (not salary data: never withheld).
+                    note = cellNote
                 };
             }).ToList();
 
             var allocated = levelRows.Where(r => r.budgeted is not null).Sum(r => r.budgeted!.Value);
+            var plan = showSpend
+                ? EstablishmentPayPlan.Plan(d.MonthlyBudgetAmount, d.ApprovedHeadcount, d.CompanyId, deptCurrency,
+                    levelRows.Select(r => new PayLevelInput(r.staffingLevelId, r.budgeted)).ToList(), payDesignations, payGrades)
+                : null;
             return new
             {
                 departmentId = d.Id,
@@ -269,8 +312,20 @@ public class EstablishmentController : ControllerBase
                 unallocated = Math.Max(0, d.ApprovedHeadcount - allocated),
                 allocationExceedsEnvelope = d.ApprovedHeadcount > 0 && allocated > d.ApprovedHeadcount,
                 managerEmployeeId = d.ManagerEmployeeId,
+                note = d.EstablishmentNote,
                 levels = levelRows,
-                unclassifiedCount = unclassified
+                unclassifiedCount = unclassified,
+                payPlan = plan is null ? null : new
+                {
+                    avgPerHead = plan.AvgPerHead,
+                    plannedMin = plan.PlannedMin,
+                    plannedMid = plan.PlannedMid,
+                    plannedMax = plan.PlannedMax,
+                    unallocatedBudget = plan.UnallocatedBudget,
+                    unpricedHeads = plan.UnpricedHeads,
+                    uncontrolledLevels = plan.UncontrolledLevels,
+                    flags = plan.Flags.ToArray()
+                }
             };
         }).ToList();
 
@@ -281,8 +336,34 @@ public class EstablishmentController : ControllerBase
             departments = rows,
             withheld = showSpend
                 ? Array.Empty<object>()
-                : new[] { PlanningController.SpendWithheldNote("departments[].currentMonthlySpend") },
+                : new[]
+                {
+                    PlanningController.SpendWithheldNote("departments[].currentMonthlySpend"),
+                    PayRangeWithheldNote("departments[].payPlan", "departments[].levels[].pay"),
+                },
         });
+    }
+
+    private static object PayRangeWithheldNote(params string[] fields) => new
+    {
+        fields,
+        reason = "Pay ranges and the planned-pay reconciliation are derived from salary grades and are shown to holders of the payroll.read or employees.sensitive permission.",
+        requiredPermissions = new[] { "payroll.read", "employees.sensitive" },
+    };
+
+    private const int MaxNoteLength = 500;
+
+    /// <summary>Plain-text note normalisation: trim, empty -> null. Never interpreted as markup.</summary>
+    private static string? NormalizeNote(string? raw)
+    {
+        var t = raw?.Trim();
+        return string.IsNullOrEmpty(t) ? null : t;
+    }
+
+    private static bool TryNormalizeNote(string? raw, out string? note)
+    {
+        note = NormalizeNote(raw);
+        return note is null || note.Length <= MaxNoteLength;
     }
 
     private static readonly string[] PlanningOpenReqStatuses = { "Draft", "Submitted", "PendingApproval", "Approved" };
@@ -300,10 +381,18 @@ public class EstablishmentController : ControllerBase
         var tenantId = this.GetTenantId()!.Value;
         if (string.IsNullOrWhiteSpace(body.Reason))
             return BadRequest(new { message = "A reason is required for every staffing-budget change." });
-        if (body.Rows is null || body.Rows.Count == 0)
+        var rows = body.Rows ?? new List<DepartmentBudgetRow>();
+        // A department-note-only edit needs no budget rows; anything else needs at least one.
+        if (rows.Count == 0 && body.Note is null)
             return BadRequest(new { message = "At least one budget row is required." });
-        if (body.Rows.Any(r => r.BudgetedHeadcount is < 0))
+        if (rows.Any(r => r.BudgetedHeadcount is < 0))
             return BadRequest(new { message = "Budgeted headcount cannot be negative (empty = uncontrolled, 0 = frozen)." });
+        // Notes: plain text, trimmed, empty -> null, max 500 after trimming. null = omitted = unchanged.
+        if (!TryNormalizeNote(body.Note, out var deptNote)
+            || rows.Any(r => !TryNormalizeNote(r.Note, out _)))
+            return BadRequest(new { message = $"A note can be at most {MaxNoteLength} characters." });
+        if (rows.Any(r => r.BudgetedHeadcount is null && NormalizeNote(r.Note) is not null))
+            return BadRequest(new { message = "A level note lives on the budget cell: set a budgeted headcount (0 = frozen) to attach one." });
 
         var dept = await _db.Departments.FirstOrDefaultAsync(d => d.TenantId == tenantId && d.Id == departmentId && !d.IsDeleted, ct);
         if (dept is null) return NotFound(new { message = "Department not found." });
@@ -324,8 +413,8 @@ public class EstablishmentController : ControllerBase
             if (companyId is null || !this.GetEntityScope().CanAccessCompany(companyId)) return Forbid();
         }
 
-        var levelIds = body.Rows.Select(r => r.StaffingLevelId).Distinct().ToList();
-        if (levelIds.Count != body.Rows.Count)
+        var levelIds = rows.Select(r => r.StaffingLevelId).Distinct().ToList();
+        if (levelIds.Count != rows.Count)
             return BadRequest(new { message = "Duplicate staffing level in request." });
         var levels = await _db.StaffingLevels.AsNoTracking()
             .Where(l => l.TenantId == tenantId && !l.IsDeleted && levelIds.Contains(l.Id))
@@ -341,12 +430,24 @@ public class EstablishmentController : ControllerBase
         var changes = new List<object>();
         var warnings = new List<string>();
 
+        object? departmentNoteChange = null;
+
         async Task<int> ApplyAsync()
         {
-            foreach (var row in body.Rows)
+            if (body.Note is not null && deptNote != dept.EstablishmentNote)
+            {
+                departmentNoteChange = new { beforeLength = dept.EstablishmentNote?.Length ?? 0, afterLength = deptNote?.Length ?? 0 };
+                dept.EstablishmentNote = deptNote;
+                dept.UpdatedAtUtc = DateTime.UtcNow;
+                dept.UpdatedBy = userId;
+            }
+            foreach (var row in rows)
             {
                 var current = existing.FirstOrDefault(b => b.StaffingLevelId == row.StaffingLevelId);
                 var before = current?.BudgetedHeadcount;
+                var noteProvided = row.Note is not null;
+                var newNote = NormalizeNote(row.Note);
+                int? noteBeforeLength = null, noteAfterLength = null;
                 if (row.BudgetedHeadcount is null)
                 {
                     if (current is null) continue; // nothing to clear
@@ -362,13 +463,22 @@ public class EstablishmentController : ControllerBase
                         DepartmentId = departmentId,
                         StaffingLevelId = row.StaffingLevelId,
                         BudgetedHeadcount = row.BudgetedHeadcount.Value,
+                        Note = noteProvided ? newNote : null,
                         CreatedBy = userId
                     });
+                    if (noteProvided && newNote is not null) { noteBeforeLength = 0; noteAfterLength = newNote.Length; }
                 }
                 else
                 {
-                    if (current.BudgetedHeadcount == row.BudgetedHeadcount.Value) continue;
+                    var noteChanged = noteProvided && newNote != current.Note;
+                    if (current.BudgetedHeadcount == row.BudgetedHeadcount.Value && !noteChanged) continue;
                     current.BudgetedHeadcount = row.BudgetedHeadcount.Value;
+                    if (noteChanged)
+                    {
+                        noteBeforeLength = current.Note?.Length ?? 0;
+                        noteAfterLength = newNote?.Length ?? 0;
+                        current.Note = newNote;
+                    }
                     current.UpdatedAtUtc = DateTime.UtcNow;
                     current.UpdatedBy = userId;
                 }
@@ -380,7 +490,9 @@ public class EstablishmentController : ControllerBase
                     levelNameEn = level.NameEn,
                     levelNameAr = level.NameAr,
                     before,
-                    after = row.BudgetedHeadcount
+                    after = row.BudgetedHeadcount,
+                    noteBeforeLength,
+                    noteAfterLength
                 });
             }
             return await _db.SaveChangesAsync(ct);
@@ -415,7 +527,7 @@ public class EstablishmentController : ControllerBase
             .Where(e => e.DepartmentId == departmentId || (e.DepartmentId == null && e.Department == dept.NameEn))
             .Select(e => new { e.DesignationId })
             .ToListAsync(ct);
-        foreach (var row in body.Rows.Where(r => r.BudgetedHeadcount is not null))
+        foreach (var row in rows.Where(r => r.BudgetedHeadcount is not null))
         {
             var occ = occupants.Count(e => e.DesignationId != null
                 && levelByDesignation.TryGetValue(e.DesignationId.Value, out var lv) && lv == row.StaffingLevelId);
@@ -428,7 +540,7 @@ public class EstablishmentController : ControllerBase
         if (dept.ApprovedHeadcount > 0 && allBudgets > dept.ApprovedHeadcount)
             warnings.Add($"Allocated {allBudgets} exceeds the department's approved headcount envelope of {dept.ApprovedHeadcount}.");
 
-        if (changes.Count > 0)
+        if (changes.Count > 0 || departmentNoteChange is not null)
             await _audit.WriteAsync("establishment.budget_updated", "Department", departmentId.ToString(), Context(),
                 JsonSerializer.Serialize(new
                 {
@@ -437,6 +549,7 @@ public class EstablishmentController : ControllerBase
                     departmentCode = dept.Code,
                     departmentName = dept.NameEn,
                     reason = body.Reason,
+                    departmentNote = departmentNoteChange,
                     levels = changes
                 }), ct);
 
@@ -692,7 +805,7 @@ public class EstablishmentController : ControllerBase
 
 public record StaffingLevelDto(Guid Id, string Code, string NameEn, string NameAr, int Rank, bool IsActive);
 public record StaffingLevelRequest(string? Code, string? NameEn, string? NameAr, int Rank, bool? IsActive);
-public record DepartmentBudgetRow(Guid StaffingLevelId, int? BudgetedHeadcount);
-public record DepartmentBudgetsRequest(List<DepartmentBudgetRow> Rows, string? Reason);
+public record DepartmentBudgetRow(Guid StaffingLevelId, int? BudgetedHeadcount, string? Note = null);
+public record DepartmentBudgetsRequest(List<DepartmentBudgetRow> Rows, string? Reason, string? Note = null);
 public record LevelMappingPair(Guid DesignationId, Guid? StaffingLevelId);
 public record LevelMappingApplyRequest(List<LevelMappingPair> Mappings, string? Reason);

@@ -207,6 +207,7 @@ schema names a column but not its type, the type is inferred from `CONVENTIONS.m
 - **Keys** — `code` with `UNIQUE (tenant_id, company_id, code) NULLS NOT DISTINCT`, `name`, `parent_id`, `cost_center_id` (**optional**)
 - **Rel** — `company_id → companies` (N:1, RESTRICT; NULL only for a legacy row the per-company backfill could not attribute — Setup lists it as "Unassigned — choose the company"), `parent_id → departments` (self, N:1, RESTRICT, same company), `cost_center_id → cost_centers` (N:1, SET NULL — optional, same company)
 - **Scope** — owned by one company (Addendum B, 2026-10-23). Never shared across a group; a sister company gets a copy by value.
+- **Establishment note** — `establishment_note`, nullable plain text, at most 500 characters (`varchar(500)`), trimmed, empty stored as NULL. One planning note per department, edited on the Headcount & budget screen. Its per-level counterpart is `department_staffing_budgets.note` (same rules), on the department-level budget cell. Not salary data. Added by migration `20261101210000_AddEstablishmentNotes` (expand only: nullable, no default, no backfill); both writes are audited as lengths, not text.
 - **Lifecycle** — created in setup; restructured by editing `parent_id`; historical placement lives in `employee_assignments`, not here.
 - **Retention** `C`
 
