@@ -270,6 +270,17 @@ public class CompanySetupUnitTests
     }
 
     [Fact]
+    public void The_address_is_part_of_the_location_baseline_and_a_blank_address_equals_none()
+    {
+        var row = new Zayra.Api.Models.Location { Code = "L1", NameEn = "Site", AddressLine1 = " Olaya Street, Riyadh " };
+        CompanySetupBaseline.Location(row)["address"].Should().Be("Olaya Street, Riyadh");
+        CompanySetupBaseline.Location(new Zayra.Api.Application.CompanySetup.CompanySetupLocation("L1", "Site", null, null, null, null, Address: "Olaya Street, Riyadh"))
+            .Should().BeEquivalentTo(CompanySetupBaseline.Location(row));
+        CompanySetupBaseline.Location(new Zayra.Api.Models.Location { Code = "L2", NameEn = "S" }).Should()
+            .BeEquivalentTo(CompanySetupBaseline.Location(new Zayra.Api.Application.CompanySetup.CompanySetupLocation("L2", "S", null, null, null, null, Address: "  ")));
+    }
+
+    [Fact]
     public void A_baseline_round_trips_through_the_draft_json_unchanged()
     {
         var baseline = new Dictionary<string, string?> { ["nameEn"] = "Dammam", ["nameAr"] = null, ["isHeadOffice"] = "false" };

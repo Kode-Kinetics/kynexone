@@ -460,6 +460,16 @@ builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Geo.MapLinkResolver.Http
     .ConfigurePrimaryHttpMessageHandler(Zayra.Api.Infrastructure.Geo.MapLinkResolver.CreateHandler)
     .RemoveAllLoggers();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Geo.MapLinkResolver>();
+// Setup → Locations: address search (OpenStreetMap Nominatim, fixed https host). Nominatim requires an identifying
+// User-Agent; the contact is configurable (Geo:UserAgent).
+builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Geo.AddressSearcher.HttpClientName, c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(10);
+        c.DefaultRequestHeaders.UserAgent.ParseAdd(builder.Configuration["Geo:UserAgent"] ?? "KynexOne-Setup/1.0 (support@kynexone.com)");
+    })
+    .ConfigurePrimaryHttpMessageHandler(Zayra.Api.Infrastructure.Geo.AddressSearcher.CreateHandler)
+    .RemoveAllLoggers();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Geo.AddressSearcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, EmailChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, SmsChannelDispatcher>();
 builder.Services.AddScoped<INotificationChannelDispatcher, WhatsAppChannelDispatcher>();

@@ -230,7 +230,9 @@ public sealed record CompanySetupLocation(
     /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
     /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Dictionary<string, string?>? Baseline = null);
+    Dictionary<string, string?>? Baseline = null,
+    /// <summary>The site's street address (Location.AddressLine1), as typed or as chosen from an address search. Optional.</summary>
+    string? Address = null);
 
 public sealed record CompanySetupCostCentre(string Code, string NameEn, string? NameAr,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

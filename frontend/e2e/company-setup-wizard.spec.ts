@@ -1714,7 +1714,7 @@ for (const locale of ['en', 'ar'] as const) {
     const panel = location.getByTestId('location-pin');
     const status = panel.getByTestId('pin-status');
     const paste = panel.getByTestId('pin-paste');
-    const placePin = panel.getByRole('button', { name: t('Place pin'), exact: true });
+    const placePin = panel.getByRole('button', { name: t('Find place'), exact: true });
     await expect(status).toHaveText(t('Not pinned yet.'));
     await expect(panel.getByTestId('location-map')).toHaveAttribute('data-ready', 'true');
     // Nothing is pinned on load: no marker until the person places one.
@@ -1732,8 +1732,8 @@ for (const locale of ['en', 'ar'] as const) {
     await expect(status).toContainText('26.223500, 50.587600');
     await placeFrom(`21°32'35.9"N 39°10'22.1"E`);
     await expect(status).toContainText('21.543306, 39.172806');
-    await placeFrom('Riyadh');
-    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('This is not a map link or coordinates we can read. Paste a Google Maps link, or coordinates such as 24.7136, 46.6753.'));
+    await placeFrom('https://example.com/not-a-map');
+    await expect(panel.getByTestId('pin-feedback')).toHaveText(t('This is not a map link, coordinates or address we can read. Type an address, paste a Google Maps link, or enter coordinates such as 24.7136, 46.6753.'));
     await expect(status).toContainText('21.543306, 39.172806');
 
     // A real paste (clipboard) places the pin without pressing anything.
@@ -2031,7 +2031,7 @@ for (const locale of ['en', 'ar'] as const) {
     await panel.getByLabel(t('Radius (m)')).fill('');
     await expect(panel.getByTestId('pin-no-radius')).toBeVisible();
     await panel.getByTestId('pin-paste').fill('24.7136, 46.6753');
-    await panel.getByRole('button', { name: t('Place pin'), exact: true }).click();
+    await panel.getByRole('button', { name: t('Find place'), exact: true }).click();
     await expect(panel.getByTestId('pin-status')).toContainText(t('{meters} m', { meters: 150 }));
     await expect(panel.getByRole('radio', { name: t('{meters} m', { meters: 150 }) })).toBeChecked();
     await expect.poll(() => server.puts.at(-1)?.body.branches[0].locations[0], { timeout: 15_000 })

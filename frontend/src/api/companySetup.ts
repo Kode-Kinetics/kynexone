@@ -92,6 +92,8 @@ export interface ExistingRow { existingId?: string | null }
 export interface CompanySetupLocation extends ExistingRow, WithBaseline {
   code: string; nameEn: string; nameAr?: string;
   latitude?: number | null; longitude?: number | null; radiusMeters?: number | null;
+  /** Street address (Location.AddressLine1): typed, or chosen from an address search. */
+  address?: string | null;
 }
 
 export interface CompanySetupBranch extends ExistingRow, WithBaseline {

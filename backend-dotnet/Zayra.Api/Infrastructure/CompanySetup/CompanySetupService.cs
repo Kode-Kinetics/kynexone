@@ -316,7 +316,7 @@ public sealed class CompanySetupService
         List<CompanySetupBranch> branches = branchRows.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, B(b.NameAr), b.City,
             string.IsNullOrWhiteSpace(b.TimeZoneId) ? packTz : b.TimeZoneId.Trim(), b.IsHeadOffice,
             locationRows.Where(l => l.BranchId == b.Id).Select(l => new CompanySetupLocation(OrgCodes.Normalize(l.Code), l.NameEn, B(l.NameAr),
-                l.Latitude, l.Longitude, l.GeofenceRadiusMeters, l.Id, CompanySetupBaseline.Location(l))).ToList(), b.Id,
+                l.Latitude, l.Longitude, l.GeofenceRadiusMeters, l.Id, CompanySetupBaseline.Location(l), B(l.AddressLine1))).ToList(), b.Id,
             CompanySetupBaseline.Branch(b, packTz))).ToList();
         if (branches.Count == 0)
             branches = template.Branches.Select(b => new CompanySetupBranch(OrgCodes.Normalize(b.Code), b.NameEn, null, b.City, packTz, b.IsHeadOffice, [])).ToList();
@@ -1265,6 +1265,7 @@ public sealed class CompanySetupService
                     tracked.Latitude = l.Latitude;
                     tracked.Longitude = l.Longitude;
                     tracked.GeofenceRadiusMeters = l.RadiusMeters;
+                    tracked.AddressLine1 = l.Address?.Trim() ?? string.Empty;
                     tracked.UpdatedAtUtc = at;
                     tracked.UpdatedBy = caller.UserId;
                     Audit("organization.location_updated", nameof(Location), tracked.Id, companyId, new { l.Code, branch = b.Code });
@@ -1274,7 +1275,7 @@ public sealed class CompanySetupService
                 {
                     TenantId = tenantId, BranchId = branchId, Code = l.Code, NameEn = l.NameEn.Trim(), NameAr = l.NameAr?.Trim() ?? string.Empty,
                     City = b.City.Trim(), CountryCode = m.Country, Latitude = l.Latitude, Longitude = l.Longitude,
-                    GeofenceRadiusMeters = l.RadiusMeters, IsActive = true, CreatedBy = caller.UserId,
+                    GeofenceRadiusMeters = l.RadiusMeters, AddressLine1 = l.Address?.Trim() ?? string.Empty, IsActive = true, CreatedBy = caller.UserId,
                 };
                 _db.Locations.Add(location);
                 Audit("organization.location_created", nameof(Location), location.Id, companyId, new { l.Code, branch = b.Code });
