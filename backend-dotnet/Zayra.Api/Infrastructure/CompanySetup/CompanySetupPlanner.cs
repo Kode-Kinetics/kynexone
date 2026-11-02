@@ -583,7 +583,8 @@ public sealed class CompanySetupPlanner
                 }
                 if (l.Latitude is < -90 or > 90) c.Problem(3, $"{lf}.latitude", "latitude_invalid", "Latitude must be between -90 and 90.");
                 if (l.Longitude is < -180 or > 180) c.Problem(3, $"{lf}.longitude", "longitude_invalid", "Longitude must be between -180 and 180.");
-                if (l.Address is { Length: > 200 }) c.Problem(3, $"{lf}.address", "address_too_long", "The address must be 200 characters or fewer.");
+                // The cap applies to an address being set or changed; one already stored (the location APIs never capped it) is preserved untouched.
+                if (l.Address is { Length: > 200 } && (lrow is null || Differs(l.Address, lrow.AddressLine1))) c.Problem(3, $"{lf}.address", "address_too_long", "The address must be 200 characters or fewer.");
                 if (l.RadiusMeters is <= 0 or > 100_000) c.Problem(3, $"{lf}.radiusMeters", "radius_invalid", "The geofence radius must be between 1 and 100,000 metres.");
                 if ((l.Latitude is null) != (l.Longitude is null)) c.Problem(3, $"{lf}.latitude", "coordinates_incomplete", "Enter both latitude and longitude, or neither.");
                 var lname = (l.NameEn ?? string.Empty).Trim();
