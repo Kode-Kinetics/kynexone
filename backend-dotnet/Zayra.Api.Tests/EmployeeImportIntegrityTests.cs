@@ -213,6 +213,80 @@ public class EmployeeImportIntegrityTests
         Assert.Equal(7, rule.NextSequence);
     }
 
+    // ── (a2) PEO-05 — a row the database cannot hold is named, never a bare 500/misleading 422 ──────
+    // InMemory ignores MaxLength, so the limits are enforced in code and these tests mean something here.
+    private static System.Text.Json.JsonElement Refusal(IActionResult result)
+    {
+        var refused = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        return System.Text.Json.JsonSerializer.SerializeToElement(refused.Value);
+    }
+
+    [Fact]
+    public async Task Import_CodeOfASoftDeletedEmployee_IsRefusedWithTheRowNamed()
+    {
+        await using var db = CreateInMemoryDb();
+        var tenantId = await SeedTenant(db);
+        db.Employees.Add(new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "EMP-0009", FullName = "Deleted Once", EnglishName = "Deleted Once",
+            CountryCode = ImportCountry, Status = "Inactive", IsDeleted = true, JoiningDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\nEMP-0009,Alice,{ImportCountry},2024-01-01\n";
+        var body = Refusal(await Import(Controller(db, tenantId), csv));
+
+        Assert.Equal("import_rows_invalid", body.GetProperty("error").GetString());
+        Assert.Equal(2, body.GetProperty("failedRows")[0].GetProperty("row").GetInt32());
+        Assert.Contains("EMP-0009", body.GetProperty("failedRows")[0].GetProperty("problem").GetString());
+        Assert.Equal(1, await db.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
+    }
+
+    [Fact]
+    public async Task Import_NameLongerThan150_IsRefusedWithTheRowNamed_NotSaved()
+    {
+        await using var db = CreateInMemoryDb();
+        var tenantId = await SeedTenant(db);
+        var longName = new string('A', 151);
+
+        var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\nEMP-1,Fine Person,{ImportCountry},2024-01-01\nEMP-2,{longName},{ImportCountry},2024-01-01\n";
+        var body = Refusal(await Import(Controller(db, tenantId), csv));
+
+        Assert.Equal("import_row_invalid", body.GetProperty("error").GetString());
+        var failed = body.GetProperty("failedRows");
+        Assert.Equal(1, failed.GetArrayLength());
+        Assert.Equal(3, failed[0].GetProperty("row").GetInt32());
+        Assert.Contains("150", failed[0].GetProperty("problem").GetString());
+        Assert.Equal(0, await db.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
+    }
+
+    [Fact]
+    public async Task Import_CodeLongerThan50_IsRefusedWithTheRowNamed_NotSaved()
+    {
+        await using var db = CreateInMemoryDb();
+        var tenantId = await SeedTenant(db);
+        var longCode = new string('C', 51);
+
+        var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\n{longCode},Person,{ImportCountry},2024-01-01\n";
+        var body = Refusal(await Import(Controller(db, tenantId), csv));
+
+        Assert.Equal("import_row_invalid", body.GetProperty("error").GetString());
+        Assert.Equal(2, body.GetProperty("failedRows")[0].GetProperty("row").GetInt32());
+        Assert.Contains("50", body.GetProperty("failedRows")[0].GetProperty("problem").GetString());
+        Assert.Equal(0, await db.Employees.IgnoreQueryFilters().CountAsync(e => e.TenantId == tenantId));
+    }
+
+    [Fact]
+    public async Task Import_NameAndCodeAtTheLimit_AreAccepted()
+    {
+        await using var db = CreateInMemoryDb();
+        var tenantId = await SeedTenant(db);
+
+        var csv = $"EmployeeCode,FullName,CountryCode,JoiningDate\n{new string('C', 50)},{new string('A', 150)},{ImportCountry},2024-01-01\n";
+        Assert.IsType<OkObjectResult>(await Import(Controller(db, tenantId), csv));
+    }
+
     // ── (b) AN UNREADABLE JOINING DATE IS FLAGGED, NOT GUESSED ──────────────────────────────────────
     [Fact]
     public async Task Import_UnreadableJoiningDate_IsNotTodayAndRecordsAGap()

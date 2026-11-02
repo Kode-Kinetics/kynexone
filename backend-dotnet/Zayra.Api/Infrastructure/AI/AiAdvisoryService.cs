@@ -338,7 +338,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
             {
                 var statuses = new[] { "Submitted", "PendingManagerApproval", "PendingHRApproval" };
                 var leaveQ = _db.LeaveRequests.Where(r => r.TenantId == tenantId && statuses.Contains(r.Status));
-                var otQ = _db.OvertimeRequests.Where(r => r.TenantId == tenantId && r.Status == "PendingApproval");
+                var otQ = _db.OvertimeRequests.Where(r => r.TenantId == tenantId && r.Status.StartsWith("Pending"));
                 if (scopeIds != null)
                 {
                     leaveQ = leaveQ.Where(r => scopeIds.Contains(r.EmployeeId));

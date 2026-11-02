@@ -94,6 +94,43 @@ public class GosiTests
         Assert.Equal(GosiClassifications.Saudi, GosiCalculationService.DeriveClassification("saudi arabia")); // case-insensitive
     }
 
+    // PAY-08 (alias half): every recognised Saudi spelling is Saudi, whatever its case or padding. Unknown /
+    // blank nationality is deliberately NOT changed here (owner decision pending).
+    [Theory]
+    [InlineData("KSA")]
+    [InlineData("ksa")]
+    [InlineData("Saudi Arabian")]
+    [InlineData("Saudi Arabia")]
+    [InlineData("SA")]
+    [InlineData("SAU")]
+    [InlineData("sau")]
+    [InlineData("سعودي")]
+    [InlineData("سعودية")]
+    [InlineData(" سعودي ")]
+    public void DeriveClassification_SaudiAliases_AreSaudi(string nationality)
+    {
+        Assert.Equal(GosiClassifications.Saudi, GosiCalculationService.DeriveClassification(nationality));
+    }
+
+    [Fact]
+    public void SelectActiveRules_MissingGlobalDefault_ThrowsAHelpfulError_NotSequenceContainsNoMatch()
+    {
+        var tenantA = Guid.NewGuid();
+        var rules = new List<GosiContributionRule>
+        {
+            // Only ANOTHER tenant's override exists for this branch/payer: there is no global default to fall back on.
+            Rule(GosiClassifications.Saudi, GosiBranches.Annuities, GosiPayers.Employee, 0.075m,
+                new DateOnly(2025, 1, 1), tenantId: Guid.NewGuid()),
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            GosiCalculationService.SelectActiveRules(GosiClassifications.Saudi, rules, Period, tenantA));
+
+        Assert.Contains("default", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(GosiBranches.Annuities, ex.Message);
+        Assert.Contains(GosiClassifications.Saudi, ex.Message);
+    }
+
     [Fact]
     public void DeriveClassification_GCC_Countries()
     {
