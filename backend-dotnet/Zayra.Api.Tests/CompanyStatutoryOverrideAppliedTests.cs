@@ -45,7 +45,13 @@ public class CompanyStatutoryOverrideAppliedTests
         var f = await SeedAsync(db);
         var workDate = new DateOnly(2026, 6, day);
         if (key == "ot.holiday_multiplier")
-            db.PublicHolidays.Add(new PublicHoliday { TenantId = f.TenantId, CalendarId = Guid.NewGuid(), NameEn = "Holiday", Date = workDate });
+        {
+            // A holiday only counts when it belongs to an ACTIVE calendar (company-wide or the employing company's):
+            // payroll and attendance read holidays through CompanyPayrollRules.HolidayDatesAsync, which joins the calendar.
+            var calendar = new PublicHolidayCalendar { TenantId = f.TenantId, Name = "Test calendar", CountryCode = "SA", CalendarYear = 2026, IsActive = true };
+            db.PublicHolidayCalendars.Add(calendar);
+            db.PublicHolidays.Add(new PublicHoliday { TenantId = f.TenantId, CalendarId = calendar.Id, NameEn = "Holiday", Date = workDate });
+        }
         await SeedOvertime(db, f.TenantId, f.EmpA, f.CompanyA, workDate, 10m);
         await SeedOvertime(db, f.TenantId, f.EmpB, f.CompanyB, workDate, 10m);
         await db.SaveChangesAsync();

@@ -287,7 +287,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                     <td className="px-3 py-2 text-xs">{item.functionalClass ? classLabel(item.functionalClass) : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
                     <td className="px-3 py-2 text-xs">
                       {item.companyId ? org.nameOf(item.companyId) : (
-                        <span data-testid={`cc-master-nocompany-chip-${item.code}`} className="inline-block max-w-full rounded-md bg-rose-50 px-2 py-1 text-start text-xs font-semibold leading-snug text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('No company: cannot be used for posting. Assign a company.')}</span>
+                        <span data-testid={`cc-master-nocompany-chip-${item.code}`} className="inline-block max-w-full rounded-lg bg-rose-50 px-2 py-1 text-start text-xs font-semibold leading-snug text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('No company: cannot be used for posting. Assign a company.')}</span>
                       )}
                     </td>
                     <td data-testid={`cc-master-inuse-${item.code}`} className="px-3 py-2 text-xs">
@@ -469,7 +469,7 @@ function Labelled({ label, required, hint, error, children }: {
     <div>
       <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{label}{required && <span aria-hidden className="text-rose-500"> *</span>}</label>
       {children(id, describedBy)}
-      {hint && <p id={hintId} className="mt-1 text-[11px] leading-snug text-slate-500 dark:text-slate-400">{hint}</p>}
+      {hint && <p id={hintId} className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">{hint}</p>}
       {error && <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-rose-700 dark:text-rose-300">{error}</p>}
     </div>
   );
@@ -526,8 +526,8 @@ function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
         else if (e.key === 'Tab') onClose(false);
       }}
     >
-      <button ref={(el) => { refs.current[0] = el; }} role="menuitem" type="button" onClick={onDeactivate} className="block w-full rounded-md px-3 py-2 text-start text-sm text-slate-800 hover:bg-slate-50 focus-visible:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/5">{labels.deactivate}</button>
-      <button ref={(el) => { refs.current[1] = el; }} role="menuitem" type="button" onClick={onDelete} className="block w-full rounded-md px-3 py-2 text-start text-sm text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{labels.delete}</button>
+      <button ref={(el) => { refs.current[0] = el; }} role="menuitem" type="button" onClick={onDeactivate} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-slate-800 hover:bg-slate-50 focus-visible:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/5">{labels.deactivate}</button>
+      <button ref={(el) => { refs.current[1] = el; }} role="menuitem" type="button" onClick={onDelete} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{labels.delete}</button>
     </div>,
     document.body,
   );

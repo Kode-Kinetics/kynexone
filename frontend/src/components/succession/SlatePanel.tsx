@@ -27,21 +27,21 @@ export function SnapshotView({ snapshot }: { snapshot: SlateSnapshot }) {
           incumbent: snapshot.incumbent ? name(snapshot.incumbent) : t('suc.position.vacant'), built: fx.dateTime(snapshot.builtAtUtc),
         })}
       </p>
-      <p className="text-[11px] text-slate-500">{t('suc.snapshot.manualOrder')}</p>
+      <p className="text-caption text-slate-500">{t('suc.snapshot.manualOrder')}</p>
       {snapshot.candidates.length === 0 && <p className="text-xs text-slate-500">{t('suc.snapshot.noCandidates')}</p>}
       <ol className="space-y-2">
         {[...snapshot.candidates].sort((a, b) => a.order - b.order).map((c) => (
           <li key={c.nominationId} className="space-y-2 rounded-xl border border-slate-200 p-3 dark:border-white/10" data-testid="suc-snapshot-candidate" data-nomination-id={c.nominationId}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm">
-                <span className="me-2 inline-grid h-6 w-6 place-items-center rounded-full bg-sapphire/10 text-xs font-bold text-sapphire tabular-nums">{c.order}</span>
+                <span className="me-2 inline-grid h-6 w-6 place-items-center rounded-full bg-sapphire/10 text-xs font-semibold text-sapphire tabular-nums">{c.order}</span>
                 <span className="font-semibold text-slate-900 dark:text-white">{name(c)}</span>
                 <span className="ms-1 text-xs text-slate-400" dir="ltr">{c.employeeCode}</span>
               </p>
               <StatusChip label={t(readinessLabel[c.readiness])} tone={readinessTone(c.readiness)} />
             </div>
             <p className="text-xs text-slate-700 dark:text-slate-200">{t('suc.snapshot.rationale', { text: c.rationale })}</p>
-            <dl className="grid gap-x-4 gap-y-1 text-[11px] sm:grid-cols-3">
+            <dl className="grid gap-x-4 gap-y-1 text-caption sm:grid-cols-3">
               <Pair k={t('suc.inputs.cell')} v={c.nineBoxCell ? t(nineBoxCellLabel[c.nineBoxCell] ?? c.nineBoxCell) : t('suc.ninebox.insufficient')} />
               <Pair k={t('suc.inputs.period')} v={c.reviewPeriod ?? '—'} />
               <Pair k={t('suc.inputs.score')} v={c.performanceScore == null ? '—' : fx.number(c.performanceScore)} />
@@ -55,7 +55,7 @@ export function SnapshotView({ snapshot }: { snapshot: SlateSnapshot }) {
           </li>
         ))}
       </ol>
-      <p className="text-[10px] text-slate-400" dir="ltr">{`${snapshot.rules.nineBox} · ${snapshot.rules.readinessScale} · ${snapshot.rules.ordering}`}</p>
+      <p className="text-caption text-slate-400" dir="ltr">{`${snapshot.rules.nineBox} · ${snapshot.rules.readinessScale} · ${snapshot.rules.ordering}`}</p>
     </div>
   );
 }
@@ -74,7 +74,7 @@ export function HashBadge({ slate }: { slate: Pick<SlateVersion, 'hashVerified' 
   const { t } = useLocale();
   if (!slate.snapshotSha256) return null;
   return (
-    <span className="inline-flex items-center gap-1 text-[11px]" title={slate.snapshotSha256} data-testid="suc-slate-hash" data-integrity={slate.integrity ?? (slate.hashVerified ? 'Verified' : 'Tampered')}>
+    <span className="inline-flex items-center gap-1 text-caption" title={slate.snapshotSha256} data-testid="suc-slate-hash" data-integrity={slate.integrity ?? (slate.hashVerified ? 'Verified' : 'Tampered')}>
       {slate.hashVerified && slate.integrity === 'Anonymised'
         ? <><CheckCircle2 className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" /><span className="font-semibold text-slate-600 dark:text-slate-300">{t('suc.slate.hashAnonymised')}</span></>
         : slate.hashVerified
@@ -168,7 +168,7 @@ export function SlatePanel({ position, canManage }: { position: CriticalPosition
                   )}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-caption text-slate-500">
                 {[
                   v.submittedAtUtc ? t('suc.slate.submittedOn', { date: fx.dateTime(v.submittedAtUtc) }) : null,
                   v.approvedAtUtc ? t('suc.slate.approvedOn', { date: fx.dateTime(v.approvedAtUtc) }) : null,
@@ -287,19 +287,19 @@ function SlateEditor({ position, draft, onSaved, onCancelNew, onDiscard }: {
                   <input type="checkbox" className="mt-1" data-testid={`suc-slate-pick-${n.id}`} checked={e.pick} onChange={(ev) => set(n.id, { pick: ev.target.checked })} />
                   <span>
                     <span className="font-semibold text-slate-900 dark:text-white">{name}</span>
-                    <span className="block text-[11px] text-slate-500">
+                    <span className="block text-caption text-slate-500">
                       {n.readiness ? t(readinessLabel[n.readiness]) : t('suc.readiness.notSet')}
                       {n.currentAssessment?.nineBoxCell ? ` · ${t(nineBoxCellLabel[n.currentAssessment.nineBoxCell] ?? n.currentAssessment.nineBoxCell)}` : ` · ${t('suc.ninebox.insufficient')}`}
                     </span>
                   </span>
                 </label>
                 <div>
-                  <label htmlFor={`suc-slate-order-${n.id}`} className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">{t('suc.slate.place')}</label>
+                  <label htmlFor={`suc-slate-order-${n.id}`} className="block text-caption font-semibold text-slate-600 dark:text-slate-300">{t('suc.slate.place')}</label>
                   <input id={`suc-slate-order-${n.id}`} data-testid={`suc-slate-order-${n.id}`} type="number" min={1} inputMode="numeric" className="input w-full" disabled={!e.pick}
                     value={e.order} onChange={(ev) => set(n.id, { order: ev.target.value })} />
                 </div>
                 <div>
-                  <label htmlFor={`suc-slate-rationale-${n.id}`} className="block text-[11px] font-semibold text-slate-600 dark:text-slate-300">{t('suc.slate.rationale')}</label>
+                  <label htmlFor={`suc-slate-rationale-${n.id}`} className="block text-caption font-semibold text-slate-600 dark:text-slate-300">{t('suc.slate.rationale')}</label>
                   <textarea id={`suc-slate-rationale-${n.id}`} data-testid={`suc-slate-rationale-${n.id}`} className="input min-h-[52px] w-full" disabled={!e.pick}
                     value={e.rationale} onChange={(ev) => set(n.id, { rationale: ev.target.value })} />
                 </div>

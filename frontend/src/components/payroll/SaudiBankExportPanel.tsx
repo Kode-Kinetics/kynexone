@@ -19,22 +19,41 @@ import {
   AlertTriangle, CheckCircle2, Download, ExternalLink, FileText, Landmark, Loader2, RefreshCw, Save, ShieldCheck,
 } from 'lucide-react';
 import {
-  saudiBankExportsApi, saveBlob, isAbortError, extractApiError,
-  SAUDI_BANK_BATCH_TYPES,
+  saudiBankExportsApi, customBankTemplatesApi, saveBlob, isAbortError, extractApiError,
+  SAUDI_BANK_BATCH_TYPES, isCustomFormatId,
   type SaudiBankExportContext, type SaudiBankExportFormat, type SaudiBankExportSettings,
   type SaudiBankExportRequest, type SaudiBankExportValidation, type SaudiBankExistingExport,
-  type SaudiBankExportIssue,
+  type SaudiBankExportIssue, type CustomBankTemplate,
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
+import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
+
+// Copy for the custom-template format only (the ANB copy above is unchanged).
+export const CUSTOM_COPY = {
+  en: {
+    suffix: 'custom template',
+    debitAccount: 'Salary (debit) account IBAN',
+    debitHelp: 'Your company\'s salary account as a Saudi IBAN. Written only where the template uses it.',
+    debitInvalid: 'Enter a Saudi IBAN: SA followed by 22 characters, upper case, no spaces.',
+    notice: 'This file is the BANK upload for your bank\'s payroll channel. It is not the Mudad file: the bank pays, then returns a bank-signed WPS file that goes to Mudad. The layout is one you configured and is not certified by any bank.',
+  },
+  ar: {
+    suffix: 'قالب مخصص',
+    debitAccount: 'آيبان حساب الرواتب (الخصم)',
+    debitHelp: 'حساب الرواتب لشركتك بصيغة آيبان سعودي. يُكتب فقط حيث يستخدمه القالب.',
+    debitInvalid: 'أدخل آيباناً سعودياً: SA يتبعه 22 حرفاً، بأحرف كبيرة ودون مسافات.',
+    notice: 'هذا الملف هو ملف الرفع إلى البنك عبر قناة الرواتب لدى بنكك، وليس ملف مدد: البنك ينفّذ الدفع ثم يعيد ملف حماية أجور موقّعاً منه يُرسل إلى مدد. التنسيق من إعدادك ولا يعتمده أي بنك.',
+  },
+} as const;
 
 // ── Styles (mirrors PayrollPage primitives; no new design language) ─────────────
 
-const inp = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
-const inpErr = 'border-rose-400 dark:border-rose-500/60';
-const sel = `${inp} appearance-none`;
-const btn = {
+export const inp = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
+export const inpErr = 'border-rose-400 dark:border-rose-500/60';
+export const sel = `${inp} appearance-none`;
+export const btn = {
   primary: 'inline-flex items-center gap-1.5 rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90 disabled:cursor-not-allowed disabled:opacity-50',
   ghost: 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5',
   link: 'text-xs font-medium text-sapphire underline-offset-2 hover:underline',
@@ -42,7 +61,7 @@ const btn = {
 
 // ── Copy (EN / AR). Kept local: PayrollPage itself is not yet in the i18n dicts. ─
 
-type Copy = {
+export type Copy = {
   title: string; subtitle: string; loading: string; loadFailed: string; retry: string;
   notSaudi: (cc: string) => string; noFormats: string; unsupportedFormat: (id: string) => string;
   company: string; runStatus: string; format: string; bank: string; channel: string; source: string;
@@ -68,7 +87,7 @@ type Copy = {
   dateRequired: string; fixFields: string; genericError: string; conflict: string;
 };
 
-const EN: Copy = {
+export const EN: Copy = {
   title: 'Bank instruction file — ANB Connect CSV',
   subtitle: 'Prepares the two ANB Connect payroll-payment CSV files (header.csv + body.csv) for this payment batch.',
   loading: 'Loading bank export details…',
@@ -162,7 +181,7 @@ const EN: Copy = {
   conflict: 'The server refused this because it conflicts with an existing export or batch number.',
 };
 
-const AR: Copy = {
+export const AR: Copy = {
   title: 'ملف تعليمات البنك — ANB Connect CSV',
   subtitle: 'يجهّز ملفي CSV الخاصين بدفع الرواتب عبر ANB Connect ‏(header.csv و body.csv) لدفعة الدفع هذه.',
   loading: 'جارٍ تحميل تفاصيل التصدير البنكي…',
@@ -258,19 +277,19 @@ const AR: Copy = {
 
 // ── Client-side checks (mirror the contract; the server remains authoritative) ─
 
-type SettingsKey = Exclude<keyof SaudiBankExportSettings, 'formatId' | 'autoWpsUpload'>;
+export type SettingsKey = Exclude<keyof SaudiBankExportSettings, 'formatId' | 'autoWpsUpload'>;
 type BatchKey = keyof SaudiBankExportRequest;
 
-const EMPTY_SETTINGS: SaudiBankExportSettings = {
+export const EMPTY_SETTINGS: SaudiBankExportSettings = {
   formatId: '', molEstablishmentId: '', mainAccountNumber: '', organizationName: '',
   organizationAddress1: '', organizationAddress2: '', organizationAddress3: '',
-  companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '',
+  companyName: '', narrative: '', batchType: '', autoWpsUpload: false, nationalUnifiedNo: '', debitAccountIban: '',
 };
 const SETTINGS_KEYS = Object.keys(EMPTY_SETTINGS) as (keyof SaudiBankExportSettings)[];
 const FREE_TEXT_35: SettingsKey[] = [
   'organizationName', 'organizationAddress1', 'organizationAddress2', 'organizationAddress3', 'companyName', 'narrative',
 ];
-const SAUDI_CODES = new Set(['SA', 'SAU', 'KSA']);
+export const SAUDI_CODES = new Set(['SA', 'SAU', 'KSA']);
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\u0000-\u001F\u007F]/;
 const FORMULA_RE = /^[=+\-@]/;
@@ -285,9 +304,20 @@ function checkFreeText(v: string, min: number, max: number, c: Copy): string | n
   return null;
 }
 
-function checkSettings(s: SaudiBankExportSettings, c: Copy): Partial<Record<keyof SaudiBankExportSettings, string>> {
+export function checkSettings(s: SaudiBankExportSettings, c: Copy, debitInvalid = ''): Partial<Record<keyof SaudiBankExportSettings, string>> {
   const out: Partial<Record<keyof SaudiBankExportSettings, string>> = {};
   if (!s.formatId) out.formatId = c.required;
+  if (isCustomFormatId(s.formatId)) {
+    // A custom template needs only the establishment id (and, if given, a well-formed debit IBAN).
+    // The ANB employer fields do not apply. The server stays authoritative (mod-97 etc.).
+    const molErr = checkFreeText(s.molEstablishmentId, 2, 15, c)
+      ?? (!/^[0-9]+(-[0-9]+)?$/.test(s.molEstablishmentId) ? c.molDigits
+        : /^[0-]+$/.test(s.molEstablishmentId) ? c.molPlaceholder : null);
+    if (molErr) out.molEstablishmentId = molErr;
+    if (s.debitAccountIban && !/^SA[0-9A-Z]{22}$/.test(s.debitAccountIban)) out.debitAccountIban = debitInvalid;
+    if (s.narrative) { const e = checkFreeText(s.narrative, 1, 35, c); if (e) out.narrative = e; }
+    return out;
+  }
   // [MOL-ESTBID] 2–15 chars: digits, optionally one hyphen; never a placeholder. Server is authoritative.
   const mol = checkFreeText(s.molEstablishmentId, 2, 15, c)
     ?? (!/^[0-9]+(-[0-9]+)?$/.test(s.molEstablishmentId) ? c.molDigits
@@ -313,12 +343,12 @@ function checkBatch(b: SaudiBankExportRequest, c: Copy): Partial<Record<BatchKey
   return out;
 }
 
-function sameSettings(a: SaudiBankExportSettings | null, b: SaudiBankExportSettings): boolean {
+export function sameSettings(a: SaudiBankExportSettings | null, b: SaudiBankExportSettings): boolean {
   if (!a) return false;
   return SETTINGS_KEYS.every((k) => (a[k] ?? '') === (b[k] ?? ''));
 }
 
-function normaliseSettings(raw: Partial<SaudiBankExportSettings> | null | undefined): SaudiBankExportSettings {
+export function normaliseSettings(raw: Partial<SaudiBankExportSettings> | null | undefined): SaudiBankExportSettings {
   const out = { ...EMPTY_SETTINGS };
   for (const k of SETTINGS_KEYS) {
     if (k === 'autoWpsUpload') continue;
@@ -329,6 +359,13 @@ function normaliseSettings(raw: Partial<SaudiBankExportSettings> | null | undefi
   return out;
 }
 
+/** Templates with an approved version become selectable formats (id `custom:<templateId>`). */
+export function customFormatsOf(list: CustomBankTemplate[]): SaudiBankExportFormat[] {
+  return list.filter((t) => t.activeVersion != null).map((t) => ({
+    id: t.formatId, name: t.name, bank: '', channel: '', sourceUrl: '', reviewedOn: '', acceptanceStatus: t.acceptanceStatus,
+  }));
+}
+
 function fmtMoney(n: number, currency: string) {
   // Up to 6 fraction digits so an out-of-spec value is visible rather than rounded away.
   return `${currency ? `${currency} ` : ''}${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
@@ -336,7 +373,7 @@ function fmtMoney(n: number, currency: string) {
 
 // ── Small presentational helpers ────────────────────────────────────────────────
 
-function FieldShell({ id, label, help, error, children }: {
+export function FieldShell({ id, label, help, error, children }: {
   id: string; label: string; help?: string; error?: string | null; children: React.ReactNode;
 }) {
   return (
@@ -349,7 +386,7 @@ function FieldShell({ id, label, help, error, children }: {
   );
 }
 
-function Alert({ tone, children, icon = true }: { tone: 'error' | 'warn' | 'info' | 'ok'; children: React.ReactNode; icon?: boolean }) {
+export function Alert({ tone, children, icon = true }: { tone: 'error' | 'warn' | 'info' | 'ok'; children: React.ReactNode; icon?: boolean }) {
   const cls = {
     error: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
     warn: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
@@ -362,6 +399,105 @@ function Alert({ tone, children, icon = true }: { tone: 'error' | 'warn' | 'info
       {icon && <Icon className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />}
       <div className="min-w-0 flex-1">{children}</div>
     </div>
+  );
+}
+
+export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, formats, canManage, saving, otherBusy, dirty, onSubmit }: {
+  c: Copy;
+  idPrefix: string;
+  draft: SaudiBankExportSettings;
+  setField: (k: keyof SaudiBankExportSettings, v: string | boolean) => void;
+  /** Only the errors to show: the caller decides when a field has been "touched". */
+  errors: Partial<Record<keyof SaudiBankExportSettings, string>>;
+  formats: SaudiBankExportFormat[];
+  canManage: boolean;
+  saving: boolean;
+  otherBusy: boolean;
+  dirty: boolean;
+  onSubmit: (e?: React.FormEvent) => void;
+}) {
+  const { locale } = useLocale();
+  const cc = CUSTOM_COPY[locale === 'ar' ? 'ar' : 'en'];
+  // A custom template needs only the establishment id and (optionally) a debit IBAN; the ANB employer fields do not apply.
+  const draftIsCustom = isCustomFormatId(draft.formatId);
+  const fid = (k: string) => `${idPrefix}-${k}`;
+  const sErr = (k: keyof SaudiBankExportSettings) => errors[k] ?? null;
+  const describedBy = (k: string, err: string | null, hasHelp: boolean) =>
+    err ? `${fid(k)}-err` : hasHelp ? `${fid(k)}-help` : undefined;
+  const textInput = (k: SettingsKey, label: string, opts: { help?: string; ltr?: boolean; numeric?: boolean } = {}) => {
+    const err = sErr(k);
+    const len = draft[k].length;
+    return (
+      <FieldShell key={k} id={fid(k)} label={label} help={opts.help} error={err}>
+        <input
+          id={fid(k)}
+          name={k}
+          className={`${inp} ${err ? inpErr : ''}`}
+          value={draft[k]}
+          onChange={(e) => setField(k, e.target.value)}
+          aria-invalid={err ? true : undefined}
+          aria-describedby={describedBy(k, err, !!opts.help)}
+          autoComplete="off"
+          spellCheck={false}
+          dir={opts.ltr ? 'ltr' : undefined}
+          inputMode={opts.numeric ? 'numeric' : undefined}
+        />
+        {FREE_TEXT_35.includes(k) && (
+          <p className={`mt-0.5 text-end text-[10px] tabular-nums ${len > 35 ? 'text-rose-500' : 'text-slate-400'}`} aria-hidden="true">{len}/35</p>
+        )}
+      </FieldShell>
+    );
+  };
+  return (
+    <form onSubmit={onSubmit} noValidate className="rounded-xl border border-slate-100 p-4 dark:border-white/10" aria-labelledby={fid('setup-title')}>
+      <h4 id={fid('setup-title')} className="text-sm font-semibold text-slate-800 dark:text-white">{c.setupTitle}</h4>
+      <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{c.setupHelp}</p>
+      {!canManage && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{c.noManagePerm}</p>}
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <FieldShell id={fid('formatId')} label={c.format} error={sErr('formatId')}>
+          <select id={fid('formatId')} className={`${sel} ${sErr('formatId') ? inpErr : ''}`} value={draft.formatId}
+            onChange={(e) => setField('formatId', e.target.value)} aria-invalid={sErr('formatId') ? true : undefined}
+            aria-describedby={describedBy('formatId', sErr('formatId'), false)}>
+            <option value="">—</option>
+            {formats.map((f) => <option key={f.id} value={f.id}>{isCustomFormatId(f.id) ? `${f.name} (${cc.suffix})` : f.name}</option>)}
+          </select>
+        </FieldShell>
+        {!draftIsCustom && <FieldShell id={fid('batchType')} label={c.batchType} error={sErr('batchType')}>
+          <select id={fid('batchType')} className={`${sel} ${sErr('batchType') ? inpErr : ''}`} value={draft.batchType}
+            onChange={(e) => setField('batchType', e.target.value)} aria-invalid={sErr('batchType') ? true : undefined}
+            aria-describedby={describedBy('batchType', sErr('batchType'), false)}>
+            <option value="">{c.selectBatchType}</option>
+            {SAUDI_BANK_BATCH_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </FieldShell>}
+        {textInput('molEstablishmentId', c.molEstablishmentId, { help: c.molHelp, ltr: true })}
+        {draftIsCustom && textInput('debitAccountIban', cc.debitAccount, { help: cc.debitHelp, ltr: true })}
+        {!draftIsCustom && textInput('mainAccountNumber', c.mainAccountNumber, { help: c.mainAccountHelp, ltr: true, numeric: true })}
+        {!draftIsCustom && textInput('organizationName', c.organizationName)}
+        {!draftIsCustom && textInput('companyName', c.companyName)}
+        {!draftIsCustom && textInput('organizationAddress1', c.organizationAddress(1))}
+        {!draftIsCustom && textInput('organizationAddress2', c.organizationAddress(2))}
+        {!draftIsCustom && textInput('organizationAddress3', c.organizationAddress(3))}
+        {textInput('narrative', c.narrative)}
+        {!draftIsCustom && <div className="sm:col-span-2">
+          <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300" htmlFor={fid('autoWpsUpload')}>
+            <input id={fid('autoWpsUpload')} type="checkbox" className="mt-0.5" checked={draft.autoWpsUpload}
+              onChange={(e) => setField('autoWpsUpload', e.target.checked)} aria-describedby={`${fid('autoWpsUpload')}-help`} />
+            <span className="font-medium">{c.autoWpsUpload}</span>
+          </label>
+          <p id={`${fid('autoWpsUpload')}-help`} className="mt-1 text-[11px] text-slate-400">{c.autoWpsHelp}</p>
+        </div>}
+        {!draftIsCustom && draft.autoWpsUpload && textInput('nationalUnifiedNo', c.nationalUnifiedNo, { help: c.nationalUnifiedNoHelp, ltr: true, numeric: true })}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button type="submit" className={btn.primary} disabled={saving || otherBusy} aria-describedby={otherBusy ? fid('save-reason') : undefined}>
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
+          {saving ? c.saving : c.saveSetup}
+        </button>
+        {otherBusy && <span id={fid('save-reason')} className="text-xs text-slate-400">{c.busy}</span>}
+        {dirty && <span className="text-xs text-amber-700 dark:text-amber-400">{c.unsaved}</span>}
+      </div>
+    </form>
   );
 }
 
@@ -441,7 +577,10 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
         ]);
         if (ac.signal.aborted) return;
         const norm = normaliseSettings(settings);
-        setFormats(Array.isArray(fmts) ? fmts : []);
+        // Approved custom templates join the format list; a failure here must never hide the built-in format.
+        const custom = await customBankTemplatesApi.list(context.companyId, { signal: ac.signal }).catch(() => []);
+        if (ac.signal.aborted) return;
+        setFormats([...(Array.isArray(fmts) ? fmts : []), ...customFormatsOf(custom)]);
         setSavedSettings(norm);
         setDraft(norm);
         setLoad({ status: 'ready' });
@@ -462,10 +601,12 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
 
   // ── Derived state
   const isSaudi = !!ctx && SAUDI_CODES.has((ctx.countryCode ?? '').toUpperCase());
-  const settingsErrors = useMemo(() => checkSettings(draft, c), [draft, c]);
+  const cc = CUSTOM_COPY[locale === 'ar' ? 'ar' : 'en'];
+  const settingsErrors = useMemo(() => checkSettings(draft, c, cc.debitInvalid), [draft, c, cc.debitInvalid]);
+  const draftIsCustom = isCustomFormatId(draft.formatId);
   const batchErrors = useMemo(() => checkBatch(batchInput, c), [batchInput, c]);
   const settingsDirty = !sameSettings(savedSettings, draft);
-  const savedSettingsValid = !!savedSettings && Object.keys(checkSettings(savedSettings, c)).length === 0;
+  const savedSettingsValid = !!savedSettings && Object.keys(checkSettings(savedSettings, c, cc.debitInvalid)).length === 0;
   const selectedFormat = formats.find((f) => f.id === draft.formatId) ?? null;
   const savedFormatUnsupported = !!savedSettings?.formatId && formats.length > 0 && !formats.some((f) => f.id === savedSettings.formatId);
   const inputsKey = JSON.stringify({ s: savedSettings, b: batchInput });
@@ -631,35 +772,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
     );
   }
 
-  const sErr = (k: keyof SaudiBankExportSettings) => (showSettingsErrors ? settingsErrors[k] ?? null : null);
   const bErr = (k: BatchKey) => (showBatchErrors ? batchErrors[k] ?? null : null);
   const describedBy = (k: string, err: string | null, hasHelp: boolean) =>
     err ? `${fid(k)}-err` : hasHelp ? `${fid(k)}-help` : undefined;
-
-  const textInput = (k: SettingsKey, label: string, opts: { help?: string; ltr?: boolean; numeric?: boolean } = {}) => {
-    const err = sErr(k);
-    const len = draft[k].length;
-    return (
-      <FieldShell key={k} id={fid(k)} label={label} help={opts.help} error={err}>
-        <input
-          id={fid(k)}
-          name={k}
-          className={`${inp} ${err ? inpErr : ''}`}
-          value={draft[k]}
-          onChange={(e) => setField(k, e.target.value)}
-          aria-invalid={err ? true : undefined}
-          aria-describedby={describedBy(k, err, !!opts.help)}
-          autoComplete="off"
-          spellCheck={false}
-          dir={opts.ltr ? 'ltr' : undefined}
-          inputMode={opts.numeric ? 'numeric' : undefined}
-        />
-        {FREE_TEXT_35.includes(k) && (
-          <p className={`mt-0.5 text-end text-[10px] tabular-nums ${len > 35 ? 'text-rose-500' : 'text-slate-400'}`} aria-hidden="true">{len}/35</p>
-        )}
-      </FieldShell>
-    );
-  };
 
   // Reason text for any disabled action button — never disabled silently.
   const validateReason = busy ? c.busy : settingsDirty ? c.needSave : !savedSettingsValid ? c.needSave : savedFormatUnsupported ? c.unsupportedFormat(savedSettings?.formatId ?? '') : null;
@@ -682,16 +797,16 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.runStatus}</dd></div>
           {selectedFormat && (
             <>
-              <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{selectedFormat.bank} · {selectedFormat.channel}</dd></div>
+              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{selectedFormat.bank} · {selectedFormat.channel}</dd></div>}
               <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{selectedFormat.acceptanceStatus}</dd></div>
-              <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>
-              <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
+              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>}
+              {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
                 <dd className="truncate">
                   <a href={selectedFormat.sourceUrl} target="_blank" rel="noopener noreferrer" className={`${btn.link} inline-flex items-center gap-1`} dir="ltr" title={selectedFormat.sourceUrl}>
                     {selectedFormat.sourceUrl} <ExternalLink className="h-3 w-3 shrink-0" aria-hidden="true" />
                   </a>
                 </dd>
-              </div>
+              </div>}
             </>
           )}
         </dl>
@@ -702,59 +817,33 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           <p className="mt-1 text-xs">{c.legacyNote}</p>
         </Alert>
 
+        {draftIsCustom && <Alert tone="info">{cc.notice}</Alert>}
         {formats.length === 0 && <Alert tone="error">{c.noFormats}</Alert>}
         {savedFormatUnsupported && <Alert tone="error">{c.unsupportedFormat(savedSettings?.formatId ?? '')}</Alert>}
         {!hasPermission('payroll.export') && <Alert tone="info">{c.noExportPerm}</Alert>}
 
         {/* Employer setup */}
-        <form onSubmit={onSave} noValidate className="rounded-xl border border-slate-100 p-4 dark:border-white/10" aria-labelledby={fid('setup-title')}>
-          <h4 id={fid('setup-title')} className="text-sm font-semibold text-slate-800 dark:text-white">{c.setupTitle}</h4>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{c.setupHelp}</p>
-          {!hasPermission('payroll.structure_manage') && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{c.noManagePerm}</p>}
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <FieldShell id={fid('formatId')} label={c.format} error={sErr('formatId')}>
-              <select id={fid('formatId')} className={`${sel} ${sErr('formatId') ? inpErr : ''}`} value={draft.formatId}
-                onChange={(e) => setField('formatId', e.target.value)} aria-invalid={sErr('formatId') ? true : undefined}
-                aria-describedby={describedBy('formatId', sErr('formatId'), false)}>
-                <option value="">—</option>
-                {formats.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-              </select>
-            </FieldShell>
-            <FieldShell id={fid('batchType')} label={c.batchType} error={sErr('batchType')}>
-              <select id={fid('batchType')} className={`${sel} ${sErr('batchType') ? inpErr : ''}`} value={draft.batchType}
-                onChange={(e) => setField('batchType', e.target.value)} aria-invalid={sErr('batchType') ? true : undefined}
-                aria-describedby={describedBy('batchType', sErr('batchType'), false)}>
-                <option value="">{c.selectBatchType}</option>
-                {SAUDI_BANK_BATCH_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </FieldShell>
-            {textInput('molEstablishmentId', c.molEstablishmentId, { help: c.molHelp, ltr: true })}
-            {textInput('mainAccountNumber', c.mainAccountNumber, { help: c.mainAccountHelp, ltr: true, numeric: true })}
-            {textInput('organizationName', c.organizationName)}
-            {textInput('companyName', c.companyName)}
-            {textInput('organizationAddress1', c.organizationAddress(1))}
-            {textInput('organizationAddress2', c.organizationAddress(2))}
-            {textInput('organizationAddress3', c.organizationAddress(3))}
-            {textInput('narrative', c.narrative)}
-            <div className="sm:col-span-2">
-              <label className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300" htmlFor={fid('autoWpsUpload')}>
-                <input id={fid('autoWpsUpload')} type="checkbox" className="mt-0.5" checked={draft.autoWpsUpload}
-                  onChange={(e) => setField('autoWpsUpload', e.target.checked)} aria-describedby={`${fid('autoWpsUpload')}-help`} />
-                <span className="font-medium">{c.autoWpsUpload}</span>
-              </label>
-              <p id={`${fid('autoWpsUpload')}-help`} className="mt-1 text-[11px] text-slate-400">{c.autoWpsHelp}</p>
-            </div>
-            {draft.autoWpsUpload && textInput('nationalUnifiedNo', c.nationalUnifiedNo, { help: c.nationalUnifiedNoHelp, ltr: true, numeric: true })}
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <button type="submit" className={btn.primary} disabled={busy !== null} aria-describedby={busy ? fid('save-reason') : undefined}>
-              {busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Save className="h-4 w-4" aria-hidden="true" />}
-              {busy === 'save' ? c.saving : c.saveSetup}
-            </button>
-            {busy && busy !== 'save' && <span id={fid('save-reason')} className="text-xs text-slate-400">{c.busy}</span>}
-            {settingsDirty && <span className="text-xs text-amber-700 dark:text-amber-400">{c.unsaved}</span>}
-          </div>
-        </form>
+        <SaudiBankSettingsForm c={c} idPrefix={uid} draft={draft} setField={setField}
+          errors={showSettingsErrors ? settingsErrors : {}} formats={formats}
+          canManage={hasPermission('payroll.structure_manage')} saving={busy === 'save'} otherBusy={busy !== null && busy !== 'save'}
+          dirty={settingsDirty} onSubmit={onSave} />
+
+        {/* Custom bank templates: layout configured by the customer, approved by a second person */}
+        {ctx && (
+          <CustomBankTemplateEditor
+            companyId={ctx.companyId}
+            batchId={batchId}
+            batchReference={batchInput.batchReference}
+            paymentDate={batchInput.paymentDate}
+            canManage={hasPermission('payroll.structure_manage')}
+            canDecide={hasPermission('payroll.approve')}
+            onChanged={() => {
+              void customBankTemplatesApi.list(ctx.companyId).then((list) => {
+                setFormats((prev) => [...prev.filter((f) => !isCustomFormatId(f.id)), ...customFormatsOf(list)]);
+              }).catch(() => undefined);
+            }}
+          />
+        )}
 
         {/* Per-batch inputs + actions */}
         <div className="rounded-xl border border-slate-100 p-4 dark:border-white/10">

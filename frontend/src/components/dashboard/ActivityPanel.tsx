@@ -43,28 +43,28 @@ export function ActivityPanel({ feed }: { feed: ActivityFeedItem[] }) {
             className="wg-press wg-tile3d wg-rise group flex flex-col items-start gap-2 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface)] p-3 outline-none focus-visible:ring-2 focus-visible:ring-sapphire"
             style={{ animationDelay: `${i * 60}ms` }}>
             <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${tone}`}><Icon className="h-4 w-4" aria-hidden /></span>
-            <span className="text-[13px] font-semibold text-slate-900 group-hover:text-sapphire dark:text-white dark:group-hover:text-blue-300">{t(label)}</span>
+            <span className="text-body-sm font-semibold text-slate-900 group-hover:text-sapphire dark:text-white dark:group-hover:text-blue-300">{t(label)}</span>
           </Link>
         ))}
       </nav>
 
       <div className="flex min-w-0 flex-col gap-3 border-t border-[color:var(--wg-line)] pt-3 xl:col-span-7 xl:border-s xl:border-t-0 xl:ps-6 xl:pt-0">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-[14px] font-semibold text-slate-900 dark:text-white">{t('Recent activity')}</span>
+        <span className="text-body font-semibold text-slate-900 dark:text-white">{t('Recent activity')}</span>
         <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
           <span aria-hidden className="relative flex h-2 w-2"><span className="wg-ping-twice absolute inset-0 rounded-full bg-emerald-500" /><span className="relative h-2 w-2 rounded-full bg-emerald-600" /></span>
           {t('From the audit log')}
         </span>
       </div>
       {items.length === 0 ? (
-        <p className="text-[13px] text-slate-700 dark:text-slate-300">{t('No recent activity recorded.')}</p>
+        <p className="text-body-sm text-slate-700 dark:text-slate-300">{t('No recent activity recorded.')}</p>
       ) : (
         <ol className="grid grid-cols-1 gap-x-6 gap-y-2.5 2xl:grid-cols-2">
           {items.map((it, i) => (
             <li key={`${it.occurredAt}-${i}`} className="wg-rise flex min-w-0 items-start gap-3" style={{ animationDelay: `${120 + i * 70}ms` }}>
               <span aria-hidden className={`relative mt-1.5 h-[9px] w-[9px] shrink-0 rounded-full ring-2 ring-[color:var(--wg-surface)] ${DOT[it.module] ?? 'bg-slate-500'}`} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-[13px] font-medium text-slate-900 dark:text-white">{humanise(it.action)}</span>
+                <span className="truncate text-body-sm font-medium text-slate-900 dark:text-white">{humanise(it.action)}</span>
                 <span className="text-xs text-slate-600 dark:text-slate-400">{t(it.module)} · {it.actor} · <time dateTime={it.occurredAt}>{f.relative(it.occurredAt, now)}</time></span>
               </span>
             </li>

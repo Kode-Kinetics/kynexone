@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
@@ -132,6 +132,7 @@ public class ContractsController : ControllerBase
         var items = await q.OrderByDescending(x => x.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
 
+        foreach (var item in items) MaskSalaryUnlessSensitive(item);
         return Ok(new { total, page, pageSize, items });
     }
 
@@ -142,7 +143,16 @@ public class ContractsController : ControllerBase
         var contract = await _db.EmployeeContracts
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (contract == null) return NotFound();
+        MaskSalaryUnlessSensitive(contract);
         return Ok(contract);
+    }
+
+    /// <summary>The contract's pay is as sensitive as the employee's salary: without employees.sensitive it is withheld (zeroed on the response copy).</summary>
+    private void MaskSalaryUnlessSensitive(EmployeeContract c)
+    {
+        if (Zayra.Api.Infrastructure.Authorization.ClaimsPrincipalPermissionExtensions.HasPermission(User, "employees.sensitive")) return;
+        _db.Entry(c).State = EntityState.Detached;
+        c.BasicSalary = 0m;
     }
 
     [HttpPost]
@@ -248,6 +258,7 @@ public class ContractsController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
+        MaskSalaryUnlessSensitive(contract);
         return CreatedAtAction(nameof(Get), new { id = contract.Id }, contract);
     }
 
@@ -343,6 +354,7 @@ public class ContractsController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
+        MaskSalaryUnlessSensitive(contract);
         return Ok(contract);
     }
 
@@ -449,6 +461,7 @@ public class ContractsController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
+        MaskSalaryUnlessSensitive(newContract);
         return Ok(newContract);
     }
 }

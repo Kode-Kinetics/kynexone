@@ -70,6 +70,11 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
             using var doc = JsonDocument.Parse(body);
             return doc.RootElement.TryGetProperty("access_token", out var t) ? t.GetString() : null;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller (shutdown, lease loss) cancelled: not a Qiwa failure, so do not record one.
+            throw;
+        }
         catch (Exception ex)
         {
             _log.LogError(ex, "Qiwa token acquisition threw.");
@@ -130,6 +135,11 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
 
             return new QiwaApiResult(false, $"HTTP_{(int)resp.StatusCode}", $"Qiwa rejected employee push: {(int)resp.StatusCode}", body);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller (shutdown, lease loss) cancelled: not a Qiwa failure, so do not record one.
+            throw;
+        }
         catch (Exception ex)
         {
             _log.LogError(ex, "Qiwa employee push threw.");
@@ -151,6 +161,11 @@ public sealed class LiveQiwaApiAdapter : IQiwaApiAdapter
             return resp.IsSuccessStatusCode
                 ? new QiwaApiResult(true, null, null, body)
                 : new QiwaApiResult(false, $"HTTP_{(int)resp.StatusCode}", "Qiwa status lookup failed.", body);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller (shutdown, lease loss) cancelled: not a Qiwa failure, so do not record one.
+            throw;
         }
         catch (Exception ex)
         {

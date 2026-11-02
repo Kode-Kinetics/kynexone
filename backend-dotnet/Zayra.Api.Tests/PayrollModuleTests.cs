@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -46,12 +46,14 @@ public class PayrollModuleTests
     // ── Controller factory ───────────────────────────────────────────────────
 
     private static PayrollController MakeCtrl(ZayraDbContext db, Guid tenantId, Zayra.Api.Application.CountryPack.ICountryPackResolver? packResolver = null, string[]? permissions = null,
-        Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null)
+        Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null, Guid? userId = null)
     {
+        // Salary changes need someone besides the proposer who could approve them (the up-front second-approver check).
+        SalaryApprovalKit.EnsureApprover(db, tenantId);
         var claims = new List<Claim>
         {
             new("tenant_id", tenantId.ToString()),
-            new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new(ClaimTypes.NameIdentifier, (userId ?? Guid.NewGuid()).ToString()),
         };
         if (permissions != null)
             claims.AddRange(permissions.Select(p => new Claim("permission", p)));
@@ -73,6 +75,212 @@ public class PayrollModuleTests
         return ctrl;
     }
 
+    /// <summary>Finance's side of a salary change: a DIFFERENT user (MakeCtrl gives every controller its own login) approves
+    /// every pending change. Salary changes are proposed by HR and only reach the schedule once this has run.</summary>
+    private static async Task ApprovePendingSalaryChangesAsync(ZayraDbContext db, Guid tenantId)
+    {
+        var finance = MakeCtrl(db, tenantId);
+        foreach (var id in await db.SalaryChangeRequests.AsNoTracking()
+                     .Where(x => x.TenantId == tenantId && x.Status == SalaryChangeRequest.Pending).Select(x => x.Id).ToListAsync())
+            Assert.IsType<OkObjectResult>(await finance.ApproveSalaryChange(id, null, CancellationToken.None));
+    }
+
+
+    // ── Salary changes: HR proposes, a different Finance approver decides ─────────────────
+
+    private sealed record SalaryChangeWorld(ZayraDbContext Db, SqliteConnection Conn, Guid Tenant, Employee Alice, Employee Bob, SalaryStructure Structure, Guid AliceLogin, Guid BobLogin);
+
+    private static async Task<SalaryChangeWorld> SeedSalaryChangeWorldAsync()
+    {
+        var (db, conn) = CreateSqliteDb();
+        var tenantId = Guid.NewGuid();
+        var aliceLogin = Guid.NewGuid(); var bobLogin = Guid.NewGuid();
+        var alice = new Employee { TenantId = tenantId, EmployeeCode = "SC-001", FullName = "Alice", Status = "Active", JoiningDate = new DateTime(2025, 1, 1), UserAccountId = aliceLogin };
+        var bob = new Employee { TenantId = tenantId, EmployeeCode = "SC-002", FullName = "Bob", Status = "Active", JoiningDate = new DateTime(2025, 1, 1), UserAccountId = bobLogin };
+        var structure = new SalaryStructure { TenantId = tenantId, Code = "STD", Name = "Standard", Currency = "SAR", EffectiveDate = new DateOnly(2025, 1, 1) };
+        db.Employees.AddRange(alice, bob);
+        db.SalaryStructures.Add(structure);
+        await db.SaveChangesAsync();
+        return new SalaryChangeWorld(db, conn, tenantId, alice, bob, structure, aliceLogin, bobLogin);
+    }
+
+    private static EmployeeSalaryStructureRequest Package(SalaryChangeWorld w, Employee e, decimal basic, string date = "2026-01-01") =>
+        new(e.Id, w.Structure.Id, basic, 0m, 0m, 0m, 0m, 0m, 0m, DateOnly.Parse(date), "SAR");
+
+    private static async Task<Guid> ProposeAsync(SalaryChangeWorld w, Guid maker, Employee e, decimal basic, string date = "2026-01-01")
+    {
+        var result = await MakeCtrl(w.Db, w.Tenant, userId: maker).AssignEmployeeSalary(Package(w, e, basic, date), CancellationToken.None);
+        Assert.IsType<AcceptedResult>(result);
+        return (await w.Db.SalaryChangeRequests.AsNoTracking().OrderByDescending(x => x.RequestedAtUtc).FirstAsync(x => x.EmployeeId == e.Id)).Id;
+    }
+
+    [Fact]
+    public async Task SalaryChange_IsPending_UntilADifferentApproverApproves_ThenItAppliesOnce()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var hr = Guid.NewGuid(); var finance = Guid.NewGuid();
+        var id = await ProposeAsync(w, hr, w.Alice, 9_000m);
+
+        (await w.Db.EmployeeSalaryStructures.AnyAsync(x => x.EmployeeId == w.Alice.Id)).Should().BeFalse("payroll must not see an unapproved figure");
+        var pending = await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id);
+        pending.Status.Should().Be(SalaryChangeRequest.Pending);
+        pending.RequestedByUserId.Should().Be(hr);
+
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: finance).ApproveSalaryChange(id, new(null), CancellationToken.None));
+
+        var decided = await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id);
+        decided.Status.Should().Be(SalaryChangeRequest.Approved);
+        decided.DecidedByUserId.Should().Be(finance);
+        var assignment = await w.Db.EmployeeSalaryStructures.SingleAsync(x => x.EmployeeId == w.Alice.Id);
+        assignment.BasicSalary.Should().Be(9_000m);
+        decided.AppliedAssignmentId.Should().Be(assignment.Id);
+
+        // A second approval of the same request is refused and changes nothing.
+        Assert.IsType<ConflictObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: Guid.NewGuid()).ApproveSalaryChange(id, null, CancellationToken.None));
+        (await w.Db.EmployeeSalaryStructures.CountAsync(x => x.EmployeeId == w.Alice.Id)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SalaryChange_TheProposerCannotApproveTheirOwnProposal()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var hr = Guid.NewGuid();
+        var id = await ProposeAsync(w, hr, w.Alice, 9_000m);
+
+        var refusal = Assert.IsType<BadRequestObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: hr).ApproveSalaryChange(id, null, CancellationToken.None));
+        System.Text.Json.JsonSerializer.Serialize(refusal.Value).Should().Contain("maker_cannot_approve");
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be(SalaryChangeRequest.Pending);
+        (await w.Db.EmployeeSalaryStructures.AnyAsync(x => x.EmployeeId == w.Alice.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SalaryChange_TheEmployeeItIsAbout_CannotProposeOrApproveIt()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+
+        // Alice cannot propose a change to her own pay, whatever her role.
+        var own = Assert.IsType<BadRequestObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: w.AliceLogin)
+            .AssignEmployeeSalary(Package(w, w.Alice, 50_000m), CancellationToken.None));
+        System.Text.Json.JsonSerializer.Serialize(own.Value).Should().Contain("own salary");
+        (await w.Db.SalaryChangeRequests.AnyAsync()).Should().BeFalse();
+
+        // Nor can she approve (or reject) a change about her that someone else proposed.
+        var id = await ProposeAsync(w, Guid.NewGuid(), w.Alice, 9_000m);
+        Assert.IsType<BadRequestObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: w.AliceLogin).ApproveSalaryChange(id, null, CancellationToken.None));
+        Assert.IsType<BadRequestObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: w.AliceLogin).RejectSalaryChange(id, null, CancellationToken.None));
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be(SalaryChangeRequest.Pending);
+    }
+
+    [Fact]
+    public async Task SalaryChange_Rejected_AppliesNothing_AndCannotBeApprovedLater()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var id = await ProposeAsync(w, Guid.NewGuid(), w.Alice, 9_000m);
+
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant).RejectSalaryChange(id, new("Not budgeted"), CancellationToken.None));
+
+        var row = await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id);
+        row.Status.Should().Be(SalaryChangeRequest.Rejected);
+        row.DecisionNote.Should().Be("Not budgeted");
+        Assert.IsType<ConflictObjectResult>(await MakeCtrl(w.Db, w.Tenant).ApproveSalaryChange(id, null, CancellationToken.None));
+        (await w.Db.EmployeeSalaryStructures.AnyAsync(x => x.EmployeeId == w.Alice.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SalaryChange_OnlyTheProposerCancels_AndACancelledChangeCannotBeApproved()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var hr = Guid.NewGuid();
+        var id = await ProposeAsync(w, hr, w.Alice, 9_000m);
+
+        Assert.IsType<ForbidResult>(await MakeCtrl(w.Db, w.Tenant, userId: Guid.NewGuid()).CancelSalaryChange(id, CancellationToken.None));
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be(SalaryChangeRequest.Pending);
+
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: hr).CancelSalaryChange(id, CancellationToken.None));
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be(SalaryChangeRequest.Cancelled);
+        Assert.IsType<ConflictObjectResult>(await MakeCtrl(w.Db, w.Tenant).ApproveSalaryChange(id, null, CancellationToken.None));
+        (await w.Db.EmployeeSalaryStructures.AnyAsync(x => x.EmployeeId == w.Alice.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SalaryChange_ANewerProposalForTheSameDate_SupersedesTheOlderPending()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var hr = Guid.NewGuid();
+        var first = await ProposeAsync(w, hr, w.Alice, 9_000m);
+        var second = await ProposeAsync(w, hr, w.Alice, 9_500m);
+
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == first)).Status.Should().Be(SalaryChangeRequest.Cancelled);
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == second)).Status.Should().Be(SalaryChangeRequest.Pending);
+    }
+
+    [Fact]
+    public async Task SalaryImport_OnlyStagesRows_RefusesTheCallersOwnPay_AndABatchApprovalHoldsTheApproversOwnRow()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        var csv = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance,FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate\n" +
+                  "SC-001,STD,9000,0,0,0,0,0,0,SAR,2026-01-01\nSC-002,STD,8000,0,0,0,0,0,0,SAR,2026-01-01\n";
+
+        // Alice (the importer) is also a row in the file: her own row is refused, Bob's is staged.
+        var import = Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: w.AliceLogin)
+            .ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv), CancellationToken.None));
+        var body = System.Text.Json.JsonSerializer.SerializeToElement(import.Value);
+        body.GetProperty("pendingApproval").GetInt32().Should().Be(1);
+        body.GetProperty("skipped").GetInt32().Should().Be(1);
+        body.GetProperty("created").GetInt32().Should().Be(0);
+        (await w.Db.EmployeeSalaryStructures.AnyAsync()).Should().BeFalse("an import applies nothing");
+        var staged = await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync();
+        staged.EmployeeId.Should().Be(w.Bob.Id);
+        staged.Source.Should().Be("Import");
+        var batchId = staged.BatchId!.Value;
+
+        // A second import by HR (a later date, so it supersedes nothing) stages Alice's row too, into its own batch.
+        var hr = Guid.NewGuid();
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: hr).ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv.Replace("2026-01-01", "2026-02-01")), CancellationToken.None));
+        var batchTwo = (await w.Db.SalaryChangeRequests.AsNoTracking().Where(x => x.RequestedByUserId == hr).Select(x => x.BatchId).Distinct().ToListAsync()).Should().ContainSingle().Subject!.Value;
+        (await w.Db.SalaryChangeRequests.CountAsync(x => x.BatchId == batchTwo)).Should().Be(2);
+
+        // Bob approves HR's batch: his own row is held, Alice's is applied. The maker (HR) cannot approve any of it.
+        var asHr = Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: hr).ApproveSalaryChangeBatch(batchTwo, null, CancellationToken.None));
+        System.Text.Json.JsonSerializer.SerializeToElement(asHr.Value).GetProperty("approved").GetInt32().Should().Be(0);
+
+        var asBob = Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: w.BobLogin).ApproveSalaryChangeBatch(batchTwo, null, CancellationToken.None));
+        var result = System.Text.Json.JsonSerializer.SerializeToElement(asBob.Value);
+        result.GetProperty("approved").GetInt32().Should().Be(1);
+        result.GetProperty("held").GetArrayLength().Should().Be(1);
+        (await w.Db.EmployeeSalaryStructures.SingleAsync()).EmployeeId.Should().Be(w.Alice.Id);
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.BatchId == batchTwo && x.EmployeeId == w.Bob.Id)).Status.Should().Be(SalaryChangeRequest.Pending);
+
+        // Finance (neither maker nor subject) decides the earlier batch and the held row.
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant).ApproveSalaryChangeBatch(batchId, null, CancellationToken.None));
+        (await w.Db.EmployeeSalaryStructures.CountAsync(x => x.EmployeeId == w.Bob.Id)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SalaryChange_CannotReplaceARowCarryingPercentOrQiwaTerms_AndCancelAndSupersedeAreAudited()
+    {
+        var w = await SeedSalaryChangeWorldAsync(); await using var _ = w.Conn; await using var __ = w.Db;
+        w.Db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = w.Tenant, EmployeeId = w.Alice.Id, SalaryStructureId = w.Structure.Id, BasicSalary = 8_000m, Currency = "SAR",
+            EffectiveDate = new DateOnly(2026, 1, 1), IsActive = true, QiwaConfirmedOn = new DateOnly(2026, 1, 1),
+        });
+        await w.Db.SaveChangesAsync();
+        var hr = Guid.NewGuid();
+        var id = await ProposeAsync(w, hr, w.Alice, 9_000m);
+
+        var refused = Assert.IsType<ConflictObjectResult>(await MakeCtrl(w.Db, w.Tenant).ApproveSalaryChange(id, null, CancellationToken.None));
+        System.Text.Json.JsonSerializer.Serialize(refused.Value).Should().Contain("salary_change_stale");
+        (await w.Db.EmployeeSalaryStructures.AsNoTracking().SingleAsync(x => x.EmployeeId == w.Alice.Id)).IsActive.Should().BeTrue("the contract-linked row stands");
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == id)).Status.Should().Be(SalaryChangeRequest.Pending);
+
+        // A newer proposal for the same date supersedes the first (audited), and the proposer can cancel it (audited).
+        var second = await ProposeAsync(w, hr, w.Alice, 9_500m);
+        Assert.IsType<OkObjectResult>(await MakeCtrl(w.Db, w.Tenant, userId: hr).CancelSalaryChange(second, CancellationToken.None));
+        var actions = await w.Db.PayrollAuditLogs.AsNoTracking().Select(a => a.Action).ToListAsync();
+        actions.Should().Contain("payroll.employee_salary.change_superseded").And.Contain("payroll.employee_salary.change_cancelled");
+    }
+
     // ── Section 1: Template download — both route aliases ────────────────────
 
     [Fact]
@@ -85,13 +293,12 @@ public class PayrollModuleTests
 
         var result = ctrl.StructuresImportTemplate();
 
-        var content = Assert.IsType<ContentResult>(result);
-        content.ContentType.Should().Be("text/csv");
+        var content = CsvTestHelpers.Body(result);
         foreach (var col in new[] { "CompanyLegalName", "Code", "Name", "Currency", "EffectiveDate", "IsActive",
             "MinGrossSalary", "MaxGrossSalary", "MinBasicSalary", "MaxBasicSalary",
             "EligibleGradeIds", "EligibleDesignationIds",
             "ComponentCode", "ComponentName", "ComponentType", "CalculationType", "Amount", "Percentage", "IsTaxable", "ComponentIsActive" })
-            content.Content.Should().Contain(col, because: $"column {col} must appear in template");
+            content.Should().Contain(col, because: $"column {col} must appear in template");
     }
 
     [Fact]
@@ -102,13 +309,12 @@ public class PayrollModuleTests
 
         var result = ctrl.EmployeeSalariesImportTemplate();
 
-        var content = Assert.IsType<ContentResult>(result);
-        content.ContentType.Should().Be("text/csv");
+        var content = CsvTestHelpers.Body(result);
         foreach (var col in new[] { "EmployeeCode", "SalaryStructureCode", "BasicSalary",
             "HousingAllowance", "TransportAllowance", "FoodAllowance",
             "MobileAllowance", "OtherAllowance", "FixedDeduction", "Currency", "EffectiveDate" })
         {
-            content.Content.Should().Contain(col, because: $"column {col} must appear in template");
+            content.Should().Contain(col, because: $"column {col} must appear in template");
         }
     }
 
@@ -142,7 +348,10 @@ public class PayrollModuleTests
             new EmployeeSalaryStructureRequest(employee.Id, structure.Id, 12_000m, 0m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2099, 1, 1), "SAR"),
             CancellationToken.None);
 
-        result.Should().BeOfType<CreatedResult>();
+        result.Should().BeOfType<AcceptedResult>("a salary change waits for a different Finance approver");
+        (await db.EmployeeSalaryStructures.CountAsync(x => x.TenantId == tenantId && x.EmployeeId == employee.Id))
+            .Should().Be(1, "nothing reaches the salary schedule before approval");
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
         var assignments = await db.EmployeeSalaryStructures
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id)
             .OrderBy(x => x.EffectiveDate)
@@ -403,10 +612,9 @@ public class PayrollModuleTests
 
         var result = await ctrl.ExportStructures(CancellationToken.None);
 
-        var content = Assert.IsType<ContentResult>(result);
-        content.ContentType.Should().Be("text/csv");
-        content.Content.Should().Contain("STR-001");
-        content.Content.Should().Contain("Staff Grade A");
+        var content = CsvTestHelpers.Body(result);
+        content.Should().Contain("STR-001");
+        content.Should().Contain("Staff Grade A");
     }
 
     // ── Section 3: Tenant isolation — overview only returns own companies ─────
@@ -666,8 +874,10 @@ public class PayrollModuleTests
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var body = ok.Value!;
-        var created = (int)body.GetType().GetProperty("created")!.GetValue(body)!;
-        created.Should().Be(1);
+        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(0, "an import only stages changes");
+        ((int)body.GetType().GetProperty("pendingApproval")!.GetValue(body)!).Should().Be(1);
+        (await db.EmployeeSalaryStructures.AnyAsync(s => s.EmployeeId == emp.Id)).Should().BeFalse("nothing is applied before Finance decides");
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
 
         var savedAssignment = await db.EmployeeSalaryStructures
             .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.EmployeeId == emp.Id);
@@ -707,20 +917,24 @@ public class PayrollModuleTests
                    "E001,STR-BASIC,8000,2200,500,300,200,0,0,AED,2025-01-01\n";
 
         await ctrl.ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv1), CancellationToken.None);
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
         var result = await ctrl.ImportEmployeeSalaries(new ImportSalaryStructuresRequest(csv2), CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var body = ok.Value!;
-        ((int)body.GetType().GetProperty("created")!.GetValue(body)!).Should().Be(0);
-        ((int)body.GetType().GetProperty("updated")!.GetValue(body)!).Should().Be(1);
+        ((int)body.GetType().GetProperty("pendingApproval")!.GetValue(body)!).Should().Be(1);
+        (await db.EmployeeSalaryStructures.SingleAsync(s => s.EmployeeId == emp.Id)).BasicSalary
+            .Should().Be(7500, "the re-import is still pending, so the approved figure stands");
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
 
         var assignments = await db.EmployeeSalaryStructures
             .Where(s => s.TenantId == tenantId && s.EmployeeId == emp.Id && s.EffectiveDate == new DateOnly(2025, 1, 1))
             .ToListAsync();
-        assignments.Should().ContainSingle();
-        assignments.Single().BasicSalary.Should().Be(8000);
-        assignments.Single().HousingAllowance.Should().Be(2200);
-        assignments.Single().IsActive.Should().BeTrue();
+        // The approved replacement is the one active row for the date; the superseded figure stays as inactive history.
+        var active = assignments.Should().ContainSingle(x => x.IsActive).Subject;
+        active.BasicSalary.Should().Be(8000);
+        active.HousingAllowance.Should().Be(2200);
+        assignments.Where(x => !x.IsActive).Should().ContainSingle().Which.BasicSalary.Should().Be(7500);
     }
 
     [Fact]
@@ -881,14 +1095,17 @@ public class PayrollModuleTests
 
         var result = await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
             employee.Id, null, 9_000m, 1_000m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2026, 1, 1), "SAR"), CancellationToken.None);
-        Assert.IsType<CreatedResult>(result);
+        Assert.IsType<AcceptedResult>(result);
+        (await db.EmployeeSalaryStructures.AnyAsync(a => a.EmployeeId == employee.Id)).Should().BeFalse("pending until Finance approves");
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
         var structure = await db.SalaryStructures.SingleAsync(s => s.Code == "GRADE-G3");
         structure.CompanyId.Should().Be(company.Id);
         (await db.SalaryComponents.SingleAsync(c => c.SalaryStructureId == structure.Id)).Code.Should().Be("BASIC");
         (await db.EmployeeSalaryStructures.SingleAsync(a => a.EmployeeId == employee.Id)).SalaryStructureId.Should().Be(structure.Id);
 
-        Assert.IsType<CreatedResult>(await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
+        Assert.IsType<AcceptedResult>(await ctrl.AssignEmployeeSalary(new EmployeeSalaryStructureRequest(
             gradeless.Id, null, 6_000m, 0m, 0m, 0m, 0m, 0m, 0m, new DateOnly(2026, 1, 1), "SAR"), CancellationToken.None));
+        await ApprovePendingSalaryChangesAsync(db, tenantId);
         var direct = await db.SalaryStructures.SingleAsync(s => s.Code == "DIRECT");
         (await db.EmployeeSalaryStructures.SingleAsync(a => a.EmployeeId == gradeless.Id)).SalaryStructureId.Should().Be(direct.Id);
 
@@ -913,7 +1130,7 @@ public class PayrollModuleTests
 
         var result = await ctrl.ExportEmployeeSalaries(null, CancellationToken.None);
 
-        Assert.IsType<ContentResult>(result);
+        Assert.IsType<FileContentResult>(result);
         var auditLog = await db.PayrollAuditLogs.FirstOrDefaultAsync(
             l => l.TenantId == tenantId && l.Action == "payroll.employee_salary.exported");
         auditLog.Should().NotBeNull("export must always produce an audit log");

@@ -1,13 +1,14 @@
 {
   "name": "kynexbridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "KynexOne local attendance bridge — polls on-prem devices and forwards punches to the KynexOne ingest API.",
   "type": "module",
   "engines": { "node": ">=18" },
   "bin": { "kynexbridge": "src/index.js" },
   "scripts": {
     "start": "node src/index.js",
-    "once": "node src/index.js --once"
+    "once": "node src/index.js --once",
+    "test": "node --test test/"
   },
   "optionalDependencies": {
     "node-zklib": "^1.4.0"

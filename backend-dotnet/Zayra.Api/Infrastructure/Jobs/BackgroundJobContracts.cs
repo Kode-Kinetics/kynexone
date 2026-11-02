@@ -16,13 +16,17 @@ namespace Zayra.Api.Infrastructure.Jobs;
 /// <param name="KeyRetention"><see cref="BackgroundJobKeyRetention"/>.</param>
 /// <param name="MaxAttempts">Attempts (claims) before the job is failed. A lease that expires because a
 /// process died counts as an attempt, so a job that kills its worker cannot loop forever.</param>
+/// <param name="ErrorRedactor">Turns the stored <c>last_error</c> into text that may be shown to a user. The runner and
+/// store record raw exception text (type, message, sometimes host and port), so by default NO error text leaves the
+/// server: a job type opts in only by supplying a redactor that returns text it wrote itself. Raw text stays in logs.</param>
 public sealed record BackgroundJobTypeDescriptor(
     string JobType,
     Type HandlerType,
     IReadOnlyList<string> ViewPermissions,
     IReadOnlyList<string> CancelPermissions,
     string KeyRetention = BackgroundJobKeyRetention.WhileActive,
-    int MaxAttempts = 5);
+    int MaxAttempts = 5,
+    Func<string?, string?>? ErrorRedactor = null);
 
 public sealed class BackgroundJobTypeRegistry
 {

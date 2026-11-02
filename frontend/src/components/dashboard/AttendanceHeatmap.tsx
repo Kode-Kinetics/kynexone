@@ -41,7 +41,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
     <section aria-labelledby="heat-heading" className="wg-card flex min-w-0 flex-col gap-3 p-5">
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 id="heat-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">{t('Attendance by department')}</h2>
+          <h2 id="heat-heading" className="text-body font-semibold text-slate-900 dark:text-white">{t('Attendance by department')}</h2>
           <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
             {t('Share of rostered staff present each day over the last {days}.', { days: t('{count} days', { count: days.length || 15 }) })}
             {worst && worst.c.rate != null && worst.c.rate < 90 && <> {t('Lowest: {department} on {date} ({rate}).', { department: worst.d, date: dayLabel(worst.c.date, f).full, rate: f.percent(worst.c.rate) })}</>}
@@ -54,7 +54,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
       </header>
 
       {!anyData ? (
-        <p className="rounded-xl border border-dashed border-[color:var(--wg-line-strong)] px-4 py-8 text-center text-[13px] text-slate-700 dark:text-slate-300">
+        <p className="rounded-xl border border-dashed border-[color:var(--wg-line-strong)] px-4 py-8 text-center text-body-sm text-slate-700 dark:text-slate-300">
           {t('No attendance has been captured for any department in the last {days}. Once punches arrive from devices or the app, each department fills in here day by day.', { days: t('{count} days', { count: days.length }) })}
         </p>
       ) : asTable ? (
@@ -77,11 +77,11 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
             <span />
             {days.map((d) => {
               const l = dayLabel(d, f);
-              return <span key={d} className="text-center text-[10px] leading-tight text-slate-600 dark:text-slate-400">{d === today ? t('Today') : l.dow}<br /><b className="font-semibold text-slate-800 dark:text-slate-200">{l.day}</b></span>;
+              return <span key={d} className="text-center text-caption leading-tight text-slate-600 dark:text-slate-400">{d === today ? t('Today') : l.dow}<br /><b className="font-semibold text-slate-800 dark:text-slate-200">{l.day}</b></span>;
             })}
             {depts.map((d) => (
               <div key={d.name} className="contents">
-                <span className="flex min-w-0 items-center truncate pe-2 text-[13px] text-slate-800 dark:text-slate-200" title={`${d.name}, ${d.headcount}`}>{d.name}</span>
+                <span className="flex min-w-0 items-center truncate pe-2 text-body-sm text-slate-800 dark:text-slate-200" title={`${d.name}, ${d.headcount}`}>{d.name}</span>
                 {d.cells.map((c) => {
                   const h = heatStyle(c.rate);
                   const l = dayLabel(c.date, f);
@@ -93,7 +93,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
                     <span key={c.date} role="img"
                       aria-label={cellLabel}
                       title={cellLabel}
-                      className={`grid h-[25px] place-items-center rounded-[5px] text-[11px] font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
+                      className={`grid h-[25px] place-items-center rounded text-caption font-semibold tabular-nums ${c.date === today ? 'wg-heat-today bg-transparent text-slate-800 outline-dashed outline-1 outline-slate-400 dark:text-slate-200' : h ? '' : 'bg-slate-100 dark:bg-white/[0.05]'}`}
                       ref={(n) => { if (n && h && c.date !== today) { n.style.background = h.bg; n.style.color = h.fg; } }}>
                       {c.rate == null ? '' : Math.round(c.rate)}
                     </span>
@@ -107,7 +107,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
       {anyData && !asTable && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <HeatLegend />
-          <span className="flex items-center gap-1.5 text-[11px] text-slate-700 dark:text-slate-300" title={t('Today fills in as people punch in, so it is not comparable with full days yet.')}>
+          <span className="flex items-center gap-1.5 text-caption text-slate-700 dark:text-slate-300" title={t('Today fills in as people punch in, so it is not comparable with full days yet.')}>
             <span aria-hidden className="h-3.5 w-3.5 rounded outline-dashed outline-1 outline-slate-400" />{t('Today, so far')}
           </span>
         </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, type ReactNode } from 'react';
-import type { CompanySetupContext, CompanySetupDraftBody } from '../../api/companySetup';
+import type { CompanySetupContext, CompanySetupDraftBody, CompanySetupRowState, OrgSection } from '../../api/companySetup';
 import { useT } from '../../hooks/useT';
 
 /**
@@ -18,6 +18,10 @@ export interface WizardFormValue {
   readOnly?: boolean;
   /** Existing mode: what the company had when the wizard opened (the prefill), so edited rows can say "Changed". */
   baseline?: CompanySetupDraftBody | null;
+  /** Existing mode: per existing Organisation row (by existingId), on or off and in use or not, as the server read it. */
+  rowStates?: Record<string, CompanySetupRowState>;
+  /** Turns a turned-off Organisation row back on now (same endpoint as Setup) and updates its state. */
+  restoreRow?: (section: OrgSection, id: string) => Promise<void>;
 }
 
 const Ctx = createContext<WizardFormValue | null>(null);
@@ -77,7 +81,7 @@ export function WizardField({ field, label, required, help, className = '', chil
  */
 export function TagPill({ tag, label }: { tag: 'new' | 'existing' | 'changed' | 'saved'; label?: string }) {
   const t = useT();
-  const base = 'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[11px] font-semibold leading-none rtl:text-xs';
+  const base = 'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-caption font-semibold leading-none rtl:text-xs';
   if (tag === 'saved') return <span className={`${base} bg-emerald-50 text-emerald-800 ring-1 ring-inset ring-emerald-600/20 dark:bg-emerald-500/15 dark:text-emerald-200`}>{label ?? t('Saved')}</span>;
   if (tag === 'existing') return <span className={`${base} bg-slate-100 text-slate-700 ring-1 ring-inset ring-slate-300 dark:bg-white/10 dark:text-slate-200 dark:ring-white/20`}>{t('Existing')}</span>;
   if (tag === 'changed') return <span className={`${base} bg-sky-50 text-sky-800 dark:bg-sky-500/15 dark:text-sky-200`}>{t('Changed')}</span>;

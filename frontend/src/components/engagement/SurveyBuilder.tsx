@@ -158,7 +158,7 @@ export function SurveyBuilder({
         </div>
 
         <fieldset>
-          <legend className="text-sm font-bold text-slate-900 dark:text-white">{t('Privacy')}</legend>
+          <legend className="text-sm font-semibold text-slate-900 dark:text-white">{t('Privacy')}</legend>
           <div className="mt-2 grid gap-2 md:grid-cols-3">
             {(['Anonymous', 'Confidential', 'Identified'] as SurveyMode[]).map((m) => (
               <label key={m} className={`flex cursor-pointer items-center gap-2 rounded-lg border p-3 text-sm ${mode === m ? 'border-sapphire bg-sapphire/5' : 'border-slate-200 dark:border-white/10'}`}>
@@ -176,7 +176,7 @@ export function SurveyBuilder({
         </fieldset>
 
         <fieldset className="space-y-3">
-          <legend className="text-sm font-bold text-slate-900 dark:text-white">{t('Audience')}</legend>
+          <legend className="text-sm font-semibold text-slate-900 dark:text-white">{t('Audience')}</legend>
           <p className="text-xs text-slate-500">{t('Leave a list empty to include everyone. Only active employees are invited.')}</p>
           <ChoiceList label={t('Departments')} items={options?.departments ?? []} selected={departmentIds} onToggle={(v) => toggle(departmentIds, setDepartmentIds, v)} testId="survey-departments" />
           <ChoiceList label={t('Designations')} items={options?.designations ?? []} selected={designationIds} onToggle={(v) => toggle(designationIds, setDesignationIds, v)} />

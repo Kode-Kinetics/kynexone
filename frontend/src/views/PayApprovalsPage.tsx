@@ -8,11 +8,13 @@ import { payApprovalsApi, type PayApprovalList } from '../api/payApprovals';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { maskedAccount } from '../lib/payApprovals';
+import { useAuth } from '../contexts/AuthContext';
 
 /** Pay approvals: the new-hire pay packages the signed-in approver may decide, narrowest view of each (OD4). */
 export function PayApprovalsPage() {
   const { t } = useLocale();
   const fmt = useFormat();
+  const { hasPermission } = useAuth();
   const [data, setData] = useState<PayApprovalList | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -38,6 +40,10 @@ export function PayApprovalsPage() {
       </header>
 
       <div aria-live="polite">
+        {data && !loading && (data.requiresOtherReviewerCount ?? 0) > 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          {t('{count} packages need another reviewer because you are not independent of them.', { count: data.requiresOtherReviewerCount ?? 0 })}
+          {hasPermission('security.manage') && <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>}
+        </p>}
         {loading && <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />{t('Loading…')}</p>}
         {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200">{t('Could not load the pay approvals.')}</p>}
         {data && !loading && data.items.length === 0 && <p data-testid="pay-approvals-empty" className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600 dark:border-white/10 dark:text-slate-300">{t('No pay packages are waiting for you.')}</p>}

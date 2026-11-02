@@ -35,7 +35,7 @@ export function InfoTip({ text, fieldKey, className = '' }: { text: string; fiel
       >
         {shown}
         {fieldKey && (
-          <span className="mt-1 block font-mono text-[10px] text-slate-400">key: {fieldKey}</span>
+          <span className="mt-1 block font-mono text-caption text-slate-400">key: {fieldKey}</span>
         )}
         <span className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-900 dark:border-t-slate-800" />
       </span>

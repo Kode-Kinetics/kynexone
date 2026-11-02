@@ -31,7 +31,7 @@ public enum SaudiBankExportOutcome { Ok, NotFound, Invalid, Conflict }
 public sealed record SaudiBankExportResult<T>(SaudiBankExportOutcome Outcome, T? Value, string? Error = null, string? Message = null,
     SaudiBankExportValidationDto? Validation = null);
 
-public sealed record SaudiBankExportDownload(byte[] ZipBytes, string FileName);
+public sealed record SaudiBankExportDownload(byte[] ZipBytes, string FileName, string ContentType = "application/zip");
 
 /// <summary>
 /// Saudi bank-instruction export: validation, immutable artifact persistence and frozen download.
@@ -43,8 +43,9 @@ public sealed record SaudiBankExportDownload(byte[] ZipBytes, string FileName);
 /// <para>Authorization (tenant, permission, batch→run→company scope) is the CALLER's job and must run
 /// before any method here; this class additionally re-applies the tenant on every query.</para>
 /// </summary>
-public sealed class SaudiBankExportService
+public sealed partial class SaudiBankExportService
 {
+    private const int MaxIssues = 500;
     public const string SettingsCategory = "PayrollSaudiBankExport";
     public const string ArtifactPrefix = "saudi-bank-export/";
     private const string EnvelopeSchema = "kynexone.saudi-bank-export.envelope.v1";
@@ -82,8 +83,12 @@ public sealed class SaudiBankExportService
     public static List<SaudiBankExportIssueDto> ValidateSettings(SaudiBankExportSettingsDto s)
     {
         var errors = new List<SaudiBankExportIssueDto>();
-        if (SaudiBankExportFormats.Find(s.FormatId) is null)
+        // A custom id is only SYNTAX-checked here; that the template exists in this company and has an approved
+        // version is checked where the database is available (SaveSettingsAsync). Anything else fails closed.
+        if (!CustomBankTemplates.TryParseFormatId(s.FormatId, out _) && SaudiBankExportFormats.Find(s.FormatId) is null)
             errors.Add(new("format_unsupported", "This bank/channel format is not supported. No fallback format is used.", null, "formatId"));
+        if (!string.IsNullOrEmpty(s.DebitAccountIban) && !IbanValidator.IsSaudiIban(s.DebitAccountIban))
+            errors.Add(new("debit_account_invalid", "The debit account must be a valid Saudi IBAN (SA + 22 characters, upper case, check digits correct).", null, "debitAccountIban"));
         foreach (var field in AnbConnectCsvGenerator.EmployerFields)
             AnbConnectCsvGenerator.ValidateEmployerField(field, FieldValue(s, field), errors, allowBlank: true);
         // Auto-WPS needs the national unified number; a value that is present must be well-formed.
@@ -98,6 +103,18 @@ public sealed class SaudiBankExportService
         if (errors.Count > 0)
             return new(SaudiBankExportOutcome.Invalid, null, "settings_invalid", "Settings failed validation.",
                 new SaudiBankExportValidationDto(false, errors, Array.Empty<SaudiBankExportWarningDto>(), 0, 0m, string.Empty, input.FormatId));
+
+        if (CustomBankTemplates.TryParseFormatId(input.FormatId, out var customId))
+        {
+            var template = await new CustomBankTemplateService(_db).LoadForExportAsync(tenantId, companyId, customId, ct);
+            var problem = template is null ? ("format_unsupported", "This custom template does not exist for this company.")
+                : template.ActiveVersion == 0 ? ("template_not_approved", "This template has no approved version yet. A second person must approve it before it can be selected.")
+                : default;
+            if (problem != default)
+                return new(SaudiBankExportOutcome.Invalid, null, "settings_invalid", "Settings failed validation.",
+                    new SaudiBankExportValidationDto(false, new[] { new SaudiBankExportIssueDto(problem.Item1, problem.Item2, null, "formatId") },
+                        Array.Empty<SaudiBankExportWarningDto>(), 0, 0m, string.Empty, input.FormatId));
+        }
 
         var saved = Copy(input);
         return await InLockedTransactionAsync<SaudiBankExportResult<SaudiBankExportSettingsDto>>(tenantId, companyId, async () =>
@@ -122,7 +139,7 @@ public sealed class SaudiBankExportService
             row.UpdatedBy = actorId;
 
             // Field NAMES only — the audit never carries account numbers or establishment values.
-            var changed = new[] { "formatId" }.Concat(AnbConnectCsvGenerator.EmployerFields).Concat(new[] { "autoWpsUpload", "nationalUnifiedNo" })
+            var changed = new[] { "formatId" }.Concat(AnbConnectCsvGenerator.EmployerFields).Concat(new[] { "autoWpsUpload", "nationalUnifiedNo", "debitAccountIban" })
                 .Where(f => !string.Equals(FieldValue(before, f), FieldValue(saved, f), StringComparison.Ordinal)).ToArray();
             Audit(tenantId, actorId, "payroll.bank_export.settings_saved", "Company", companyId.ToString(),
                 new { companyId, formatId = saved.FormatId, changedFields = changed });
@@ -144,9 +161,10 @@ public sealed class SaudiBankExportService
             .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
         if (company is null) return new(SaudiBankExportOutcome.NotFound, null);
         var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
+        var existingDto = existing is null ? await FindCustomExistingAsync(tenantId, batchId, ct) : ToExisting(existing.Value.Row, existing.Value.Envelope);
         return new(SaudiBankExportOutcome.Ok, new SaudiBankExportContextDto(
             company.Id, string.IsNullOrWhiteSpace(company.TradeName) ? company.LegalNameEn : company.TradeName,
-            company.CountryCode, run.Status, existing is null ? null : ToExisting(existing.Value.Row, existing.Value.Envelope)));
+            company.CountryCode, run.Status, existingDto));
     }
 
     public async Task<SaudiBankExportResult<SaudiBankExportValidationDto>> ValidateAsync(
@@ -156,7 +174,7 @@ public sealed class SaudiBankExportService
         if (prepared is null) return new(SaudiBankExportOutcome.NotFound, null);
         var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
         var validation = prepared.Validation;
-        if (existing is not null)
+        if (existing is not null || await FindCustomExportAsync(tenantId, batchId, ct) is not null)
             validation = validation with
             {
                 Warnings = validation.Warnings.Append(new SaudiBankExportWarningDto("export_exists",
@@ -188,6 +206,12 @@ public sealed class SaudiBankExportService
                 return new(SaudiBankExportOutcome.Conflict, null, "batch_company_changed", "The batch's legal entity changed during the request.");
 
             var existing = await FindEnvelopeAsync(tenantId, batchId, ct);
+            var existingCustom = await FindCustomExportAsync(tenantId, batchId, ct);
+            if (prepared.Custom is not null)
+                return await GenerateCustomAsync(tenantId, actorId, batchId, companyId, request, prepared, existing is not null, existingCustom, ct);
+            if (existingCustom is not null)
+                return new(SaudiBankExportOutcome.Conflict, null, "batch_already_exported",
+                    "This batch already has an immutable export with a different reference, date or format.", prepared.Validation);
             if (existing is { } ex)
             {
                 var env = ex.Envelope;
@@ -248,6 +272,8 @@ public sealed class SaudiBankExportService
         if (run.Status != "Locked" || batch.Status is "Cancelled" or "Voided")
             return new(SaudiBankExportOutcome.Conflict, null, "instruction_no_longer_eligible", "This run or batch is no longer eligible for a bank instruction download.");
         var found = await FindEnvelopeAsync(tenantId, batchId, ct);
+        if (found is null && await FindCustomExportAsync(tenantId, batchId, ct) is { } custom)
+            return await DownloadCustomAsync(tenantId, actorId, batchId, run, custom, ct);
         if (found is not { } ex) return new(SaudiBankExportOutcome.NotFound, null, "export_not_found", "No export has been generated for this batch.");
         var env = ex.Envelope;
         if (env.Schema != EnvelopeSchema || SaudiBankExportFormats.Find(env.FormatId) is null
@@ -323,9 +349,11 @@ public sealed class SaudiBankExportService
     // ── Preparation: the ONE place every rule is evaluated (validate + generate share it) ─────────
 
     private sealed record Prepared(Guid CompanyId, Guid RunId, SaudiBankExportValidationDto Validation, IReadOnlyList<AnbGeneratedFile>? Files, string AccountNumber,
-        string MolEstablishmentId, IReadOnlyList<PaymentBatchExclusion> Exclusions);
+        string MolEstablishmentId, IReadOnlyList<PaymentBatchExclusion> Exclusions,
+        CustomSelection? Custom = null, IReadOnlyList<string>? PreviewLines = null, string? PreviewEncoding = null, string? PreviewLineEnding = null);
 
-    private async Task<Prepared?> PrepareAsync(Guid tenantId, Guid batchId, SaudiBankExportBatchRequest request, CancellationToken ct)
+    private async Task<Prepared?> PrepareAsync(Guid tenantId, Guid batchId, SaudiBankExportBatchRequest request, CancellationToken ct,
+        CustomSelection? preview = null)
     {
         var (batch, run) = await LoadBatchAndRunAsync(tenantId, batchId, ct);
         if (batch is null || run is null) return null;
@@ -335,6 +363,24 @@ public sealed class SaudiBankExportService
         var companyId = run.CompanyId ?? Guid.Empty;
         var settings = run.CompanyId is null ? new SaudiBankExportSettingsDto() : await GetSettingsAsync(tenantId, companyId, ct);
         var formatId = settings.FormatId;
+        // Custom template: the company's active custom id, or (preview only) the template/draft being previewed.
+        // A custom template changes LAYOUT only; every Saudi rule below still runs on the same rows.
+        CustomSelection? custom = preview;
+        var isCustom = preview is not null || CustomBankTemplates.TryParseFormatId(formatId, out _);
+        var customProblems = new List<SaudiBankExportIssueDto>();
+        if (preview is not null) formatId = preview.TemplateId == Guid.Empty ? "custom:draft" : CustomBankTemplates.FormatId(preview.TemplateId);
+        else if (CustomBankTemplates.TryParseFormatId(formatId, out var customTemplateId))
+        {
+            var rec = run.CompanyId is null ? null : await new CustomBankTemplateService(_db).LoadForExportAsync(tenantId, companyId, customTemplateId, ct);
+            if (rec is null)
+                customProblems.Add(new("template_not_found", "The selected custom template does not exist for this company.", null, "formatId"));
+            else if (rec.Active is not { } active)
+                customProblems.Add(new("template_not_approved", "This custom template has no approved version. A second person must approve it before a file can be generated.", null, "formatId"));
+            else if (!string.Equals(CustomBankTemplates.Hash(active.Definition), active.DefinitionHash, StringComparison.Ordinal))
+                customProblems.Add(new("template_integrity_failed", "The stored template no longer matches the hash that was approved. No file is generated.", null, "formatId"));
+            // The name comes from the ACTIVE version's definition, never from a later proposal's name.
+            else custom = new CustomSelection(rec.Id, active.Definition.Name, active.Version, true, active.Definition, active.DefinitionHash);
+        }
 
         var exclusionList = new List<PaymentBatchExclusion>(await PaymentBatchExclusions.LoadAsync(_db, tenantId, batch.Id, ct));
         SaudiBankExportValidationDto Result(int count, decimal total, IReadOnlyList<SaudiBankExportIssueDto> errs) =>
@@ -347,15 +393,16 @@ public sealed class SaudiBankExportService
 
         if (run.CompanyId is null)
             errors.Add(new("batch_company_unresolved", "The payroll run has no legal entity."));
-        if (SaudiBankExportFormats.Find(formatId) is null)
+        if (!isCustom && SaudiBankExportFormats.Find(formatId) is null)
             errors.Add(new("format_unsupported", "The configured bank/channel format is not supported. No fallback format is used.", null, "formatId"));
+        errors.AddRange(customProblems);
 
-        // Request
-        if (!AnbConnectCsvGenerator.IsAsciiDigits(request.BatchReference, 1, 20))
+        // Request (a custom file's reference is held to the Saudi file-reference rule below instead of ANB's digits-only one)
+        if (!isCustom && !AnbConnectCsvGenerator.IsAsciiDigits(request.BatchReference, 1, 20))
             errors.Add(new("batch_reference_invalid", "Batch reference must be 1 to 20 digits.", null, "batchReference"));
         var dateOk = DateOnly.TryParseExact(request.PaymentDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var paymentDate);
         if (!dateOk) errors.Add(new("payment_date_invalid", "Payment date must be YYYY-MM-DD.", null, "paymentDate"));
-        else if (paymentDate.Year is < 2000 or > 2099)
+        else if (!isCustom && paymentDate.Year is < 2000 or > 2099)
             errors.Add(new("payment_date_unsupported", "This YYMMDD exporter supports payment dates in 2000–2099 only.", null, "paymentDate"));
         else if (paymentDate < DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, "Asia/Riyadh")))
             warnings.Add(new("payment_date_in_past", "The credit value date is in the past; the bank may reject or re-date it."));
@@ -462,6 +509,8 @@ public sealed class SaudiBankExportService
 
         var rows = new List<AnbPaymentInput>();
         var ksaRows = new List<KsaWageFileRow>();
+        var customRows = new List<CustomBankRow>();
+        var zeroSkipped = 0;
         // KSA: border-number employees inside the company's window (measured at the period END) with no Iqama yet.
         var borderIds = await BorderNumberRule.ResolveWageFileIdsAsync(
             _db, tenantId, employees, BorderNumberRule.PeriodEnd(run.Year, run.Month), ct);
@@ -474,6 +523,7 @@ public sealed class SaudiBankExportService
                 var code0 = employees.FirstOrDefault(e => e.Id == rec.EmployeeId)?.EmployeeCode ?? $"Employee #{rec.EmployeeId}";
                 exclusionList.Add(new PaymentBatchExclusion(rec.EmployeeId, code0, 0m, PaymentBatchExclusions.ZeroNetCode,
                     "Net pay is zero, so there is nothing to send to the bank."));
+                zeroSkipped++;
                 continue;
             }
             var emp = employees.FirstOrDefault(e => e.Id == rec.EmployeeId);
@@ -538,13 +588,15 @@ public sealed class SaudiBankExportService
                         "no Iqama yet, and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates.", "employeeId");
             }
 
-            ksaRows.Add(new KsaWageFileRow(
+            var ksaRow = new KsaWageFileRow(
                 rec.EmployeeId, label, emp.Nationality, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
                 SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions,
                 debtByEmployee.GetValueOrDefault(rec.EmployeeId), debtCapOverridden.Contains(rec.EmployeeId),
-                wageDueByEmployee.TryGetValue(rec.EmployeeId, out var due) ? due : null));
+                wageDueByEmployee.TryGetValue(rec.EmployeeId, out var due) ? due : null);
+            ksaRows.Add(ksaRow);
+            customRows.Add(new CustomBankRow(ksaRow, label, NullIfEmpty(emp.ArabicName)));
 
             addresses.TryGetValue(rec.EmployeeId, out var addr);
             var hasAddr = addresses.ContainsKey(rec.EmployeeId);
@@ -569,11 +621,33 @@ public sealed class SaudiBankExportService
         // employee, the user sees one message, not two wordings of one problem.
         var ksa = KsaWageFileRules.ValidateAll(
             new KsaWageFileHeader(settings.MolEstablishmentId, batch.Currency, request.BatchReference,
-                settings.AutoWpsUpload, settings.NationalUnifiedNo),
+                !isCustom && settings.AutoWpsUpload, settings.NationalUnifiedNo),
             ksaRows, usedReferences);
         foreach (var e in ksa.Errors) AddUnlessCovered(errors, e);
         warnings.AddRange(ksa.Warnings);
-        var generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount);
+        AnbGenerationResult generated;
+        IReadOnlyList<string>? previewLines = null;
+        if (custom is null && !isCustom) generated = AnbConnectCsvGenerator.Generate(header, rows, batch.TotalAmount);
+        else if (custom is null) generated = new AnbGenerationResult(Array.Empty<SaudiBankExportIssueDto>(), null, 0, 0m);   // the template problem is already an error
+        else
+        {
+            var riyadhFileDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeBySystemTimeZoneId(
+                DateTime.SpecifyKind(batch.CreatedAtUtc, DateTimeKind.Utc), "Asia/Riyadh"));
+            var ctx = new CustomBankFileContext(settings.MolEstablishmentId, batch.Currency, request.BatchReference ?? string.Empty,
+                riyadhFileDate, dateOk ? paymentDate : default, NullIfEmpty(settings.DebitAccountIban), NullIfEmpty(settings.Narrative),
+                batch.TotalAmount, records.Count - zeroSkipped, usedReferences);
+            var made = CustomBankFileGenerator.Generate(custom.Definition, ctx, customRows, previewOnly: preview is not null);
+            generated = new AnbGenerationResult(made.Errors, made.File is null ? null : new[] { made.File }, made.RecordCount, made.TotalAmount);
+            if (preview is not null)
+            {
+                var masked = customRows.Select(r => r with { Ksa = r.Ksa with
+                    { Iban = CustomBankFileGenerator.Redact(r.Ksa.Iban, 6), MolId = CustomBankFileGenerator.Redact(r.Ksa.MolId, 0) } }).ToList();
+                var shown = CustomBankFileGenerator.Preview(custom.Definition, ctx with { DebitAccountIban = CustomBankFileGenerator.Redact(ctx.DebitAccountIban, 6) },
+                    masked, 5, customRows.Count, customRows.Sum(r => r.Ksa.Net));
+                previewLines = shown.Lines;
+                foreach (var e in shown.Errors) AddUnlessCovered(errors, e);
+            }
+        }
         foreach (var e in generated.Errors) AddUnlessCovered(errors, e);
         if (exclusionList.Count > 0)
             warnings.Add(new SaudiBankExportWarningDto("employees_excluded_from_bank_file",
@@ -581,7 +655,7 @@ public sealed class SaudiBankExportService
 
         var files = errors.Count == 0 ? generated.Files : null;
         return new Prepared(companyId, run.Id, Result(rows.Count, recordTotal, errors), files, settings.MainAccountNumber,
-            settings.MolEstablishmentId, exclusionList);
+            settings.MolEstablishmentId, exclusionList, custom, previewLines, custom?.Definition.Encoding, custom?.Definition.LineEnding);
     }
 
     // ── Plumbing ───────────────────────────────────────────────────────────────────────────────
@@ -600,6 +674,7 @@ public sealed class SaudiBankExportService
     /// Saudi rule it restates was already reported for that employee.</summary>
     private static void AddUnlessCovered(List<SaudiBankExportIssueDto> errors, SaudiBankExportIssueDto e)
     {
+        if (errors.Count >= MaxIssues) return;   // bounded: never an O(rows x errors) scan
         if (errors.Any(x => x.Code == e.Code && x.EmployeeId == e.EmployeeId && x.Field == e.Field)) return;
         if (CoveredByKsaRule.TryGetValue(e.Code, out var ksaCode)
             && errors.Any(x => x.Code == ksaCode && x.EmployeeId == e.EmployeeId)) return;
@@ -618,7 +693,8 @@ public sealed class SaudiBankExportService
     private async Task<(BankTransferFile Row, StoredEnvelope Envelope)?> FindEnvelopeAsync(Guid tenantId, Guid batchId, CancellationToken ct)
     {
         var row = await _db.BankTransferFiles.AsNoTracking()
-            .Where(f => f.TenantId == tenantId && f.PaymentBatchId == batchId && f.FileName.StartsWith(ArtifactPrefix))
+            .Where(f => f.TenantId == tenantId && f.PaymentBatchId == batchId && f.FileName.StartsWith(ArtifactPrefix)
+                        && !f.FileName.Contains(CustomLedgerSegment))   // a custom export's tiny reference-ledger row is not a two-file ANB envelope
             .OrderBy(f => f.CreatedAtUtc).ThenBy(f => f.Id).FirstOrDefaultAsync(ct);
         if (row is null) return null;
         StoredEnvelope? env;
@@ -689,6 +765,7 @@ public sealed class SaudiBankExportService
         OrganizationAddress3 = s.OrganizationAddress3 ?? string.Empty, CompanyName = s.CompanyName ?? string.Empty,
         Narrative = s.Narrative ?? string.Empty, BatchType = s.BatchType ?? string.Empty,
         AutoWpsUpload = s.AutoWpsUpload, NationalUnifiedNo = s.NationalUnifiedNo ?? string.Empty,
+        DebitAccountIban = s.DebitAccountIban ?? string.Empty,
     };
 
     private static string? FieldValue(SaudiBankExportSettingsDto s, string field) => field switch
@@ -705,6 +782,7 @@ public sealed class SaudiBankExportService
         "batchType" => s.BatchType,
         "autoWpsUpload" => s.AutoWpsUpload ? "true" : "false",
         "nationalUnifiedNo" => s.NationalUnifiedNo,
+        "debitAccountIban" => s.DebitAccountIban,
         _ => null,
     };
 

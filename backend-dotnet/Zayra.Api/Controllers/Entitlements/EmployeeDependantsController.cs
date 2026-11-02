@@ -26,11 +26,13 @@ public sealed class EmployeeDependantsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ITenantClock _clock;
+    private readonly Zayra.Api.Application.Common.IDataScopeService? _dataScope;
 
-    public EmployeeDependantsController(ZayraDbContext db, ITenantClock clock)
+    public EmployeeDependantsController(ZayraDbContext db, ITenantClock clock, Zayra.Api.Application.Common.IDataScopeService? dataScope = null)
     {
         _db = db;
         _clock = clock;
+        _dataScope = dataScope;
     }
 
     [HttpGet]
@@ -154,7 +156,10 @@ public sealed class EmployeeDependantsController : ControllerBase
     private async Task<Employee?> VisibleEmployeeAsync(Guid tid, int employeeId, CancellationToken ct)
     {
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tid && x.Id == employeeId && !x.IsDeleted, ct);
-        return employee is not null && this.GetRequestScope().CanAccessCompany(employee.CompanyId) ? employee : null;
+        if (employee is null || !this.GetRequestScope().CanAccessCompany(employee.CompanyId)) return null;
+        // Company access is not enough: a line manager or recruiter may only see the families of people in their own data scope.
+        if (_dataScope is not null && !(await _dataScope.ResolveAsync(User, tid, ct)).CanAccessEmployee(employeeId)) return null;
+        return employee;
     }
 }
 

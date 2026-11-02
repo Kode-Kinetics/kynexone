@@ -1,4 +1,5 @@
 import client from './client';
+import { setupRowApi } from './orgRows';
 import { requireList, requirePage } from '../lib/listResponse';
 
 // ── Loan Types ────────────────────────────────────────────────────────────────
@@ -259,9 +260,16 @@ export interface AuditLogEntry {
 
 // ── API clients ───────────────────────────────────────────────────────────────
 
+export type LoanTypeBody = { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; minInstallments?: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean };
+
 export const loanTypesApi = {
-  list: () =>
-    client.get<LoanType[]>('/api/finance/loans/types').then(r => requireList<LoanType>(r.data, 'loan types')),
+  /** `includeInactive` (Setup) also returns turned-off types; pickers never pass it. */
+  list: (opts?: { includeInactive?: boolean }) =>
+    client.get<LoanType[]>('/api/finance/loans/types', opts?.includeInactive ? { params: { includeInactive: true } } : undefined).then(r => requireList<LoanType>(r.data, 'loan types')),
+  update: (id: string, body: LoanTypeBody) =>
+    client.put<LoanType>(`/api/finance/loans/types/${id}`, body).then(r => r.data),
+  /** Setup's Remove / Restore: unused = deleted, used = turned off. */
+  removal: setupRowApi('/api/finance/loans/types'),
   create: (body: { code: string; nameEn: string; nameAr?: string; maxAmount: number; maxInstallments: number; minInstallments?: number; repaymentFrequency: string; isInterestFree: boolean; interestRate: number; minServiceMonths: number; requiresApproval: boolean }) =>
     client.post<LoanType>('/api/finance/loans/types', body).then(r => r.data),
 };
@@ -364,8 +372,8 @@ export const bonusTypesApi = {
     client.post<BonusType>('/api/finance/bonuses/types', body).then(r => r.data),
   update: (id: string, body: BonusTypeRequest) =>
     client.put<BonusType>(`/api/finance/bonuses/types/${id}`, body).then(r => r.data),
-  delete: (id: string) =>
-    client.delete<{ deleted: boolean }>(`/api/finance/bonuses/types/${id}`).then(r => r.data),
+  /** Setup's Remove / Restore: unused = deleted, used = turned off. */
+  removal: setupRowApi('/api/finance/bonuses/types'),
 };
 
 export const bonusBatchesApi = {

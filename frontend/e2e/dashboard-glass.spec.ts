@@ -102,6 +102,7 @@ async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'lig
     if (p === '/api/tenant-admin/localization') return json({ defaultTimezone: opts.tenantTz ?? 'Asia/Riyadh', calendarSystem: 'Gregorian', hijriDatesEnabled: true });
     if (p === '/api/dashboard/full') return json(dataset(!!opts.rich, now));
     if (p === '/api/payroll/companies') return json([COMPANY]);
+    if (p === '/api/payroll/overview') return json({ totalValidationErrors: 3 });
     if (p === '/api/ai/status') return json({ enabled: true, provider: 'fixture' });
     return json({ items: [], total: 0 });
   });
@@ -183,6 +184,24 @@ test.describe('HR Command Center: data trust', () => {
     await expect(page.getByText('leave requests waiting for a decision.')).toBeVisible();
     await expect(page.getByText(/analytics service/)).toHaveCount(0);
     await expect(page.locator('canvas')).toHaveCount(0);
+  });
+});
+
+test.describe('HR Command Center: needs your attention', () => {
+  test('a task list sits above the monitoring figures, ordered critical first, each row one link', async ({ page }) => {
+    test.skip(formOf(page) === 'phone', 'the phone shows it inside the Today view; covered by the compact tab test');
+    await open(page);
+    const tasks = page.getByTestId('your-tasks');
+    await expect(tasks.getByRole('heading', { name: 'Needs your attention' })).toBeVisible();
+    await expect(tasks.getByRole('link')).toHaveText([
+      /3 payroll validation errors/,
+      /3 approvals waiting for you/,
+    ]);
+    await expect(tasks.locator('[data-task="payroll-validation"]')).toHaveAttribute('href', '/payroll');
+    await expect(tasks.locator('[data-task="approvals"]')).toHaveAttribute('href', '/approvals');
+    const tasksBox = await tasks.boundingBox();
+    const heroBox = await page.locator('#hero-heading').boundingBox();
+    expect(tasksBox!.y).toBeLessThan(heroBox!.y);
   });
 });
 

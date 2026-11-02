@@ -1,10 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Compliance;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
@@ -143,11 +146,12 @@ public class LeavePoliciesController : ControllerBase
             Status = req.Status ?? "Draft"
         };
 
-        if (await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
-            return floorRefusal;
+        var gate = await GateBelowMinimumAsync(tenantId.Value, leaveType, policy, req.AcknowledgedWarnings, ct);
+        if (gate.Refusal is not null) return gate.Refusal;
 
         _db.LeavePolicies.Add(policy);
         await _db.SaveChangesAsync(ct);
+        await AuditBelowMinimumAsync(tenantId.Value, policy, gate.Consumed, ct);
 
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Created", string.Empty, policy.Name, "Leave policy created",
@@ -213,35 +217,73 @@ public class LeavePoliciesController : ControllerBase
             "Calendar-day proration for monthly joining/leaving periods; applies to unposted accruals only. Posted accruals require an adjustment.",
             User.Identity?.Name ?? "Admin", ct);
 
+    private sealed record BelowMinimumGate(IActionResult? Refusal, IReadOnlyList<(FloorWarning Warning, FloorAcknowledgement Ack)> Consumed);
+
     /// <summary>
-    /// KSA statutory special leave (maternity, marriage, bereavement, birth, Hajj, iddah) cannot be
-    /// configured below the Labour Law's figure, as unpaid, or — for maternity and iddah — counted in
-    /// working days, for a policy that reaches Saudi employees. Refused with the citation rather than stored: a policy saved at 70 maternity days
-    /// would read back as the tenant's policy and be applied as if it were lawful.
+    /// Saudi statutory leave floors (Arts. 109, 113, 114, 117, 151, 160) are WARNINGS, not refusals (owner decision
+    /// 2026-10-25). A policy below a floor is saved only when the request acknowledges those exact warning codes with
+    /// a reason; otherwise nothing is saved and 409 <c>warnings_require_acknowledgement</c> lists them. A warning that
+    /// the stored policy already acknowledged at the same value is not asked again. The acknowledgements ride on the
+    /// policy so the compliance list and the accrual engine can see them.
     /// </summary>
-    private async Task<IActionResult?> RefuseBelowStatutoryFloorAsync(
-        Guid tenantId, LeaveType leaveType, LeavePolicy policy, CancellationToken ct)
+    private async Task<BelowMinimumGate> GateBelowMinimumAsync(
+        Guid tenantId, LeaveType leaveType, LeavePolicy policy, IReadOnlyCollection<FloorAcknowledgement>? acks, CancellationToken ct)
     {
-        if (policy.MinimumServiceMonths > 0 && LeaveService.IsSickLeaveType(leaveType.Category, leaveType.NameEn)
-            && await KsaStatutoryLeavePolicyGuard.ReachAsync(_db, tenantId, policy.CountryCode, policy.CompanyId, ct) != KsaPolicyReach.None)
-            return BadRequest(new
+        var warnings = KsaLeaveFloorChecks.Warnings(await KsaLeaveFloorChecks.ChecksAsync(_db, tenantId, leaveType, policy, ct));
+        var stored = FloorAckStore.Parse(policy.BelowMinimumAcksJson);
+        var gate = FloorWarningGate.Evaluate(warnings, acks, w => FloorAckStore.Covering(stored, w) is not null);
+        if (gate.Unacknowledged.Count > 0) return new(FloorWarningGate.AckRequired(gate.Unacknowledged, HttpContext?.TraceIdentifier), []);
+        if (gate.ReasonInvalid) return new(FloorWarningGate.ReasonRequired(HttpContext?.TraceIdentifier), []);
+        policy.BelowMinimumAcksJson = FloorAckStore.Serialize(FloorAckStore.Merge(
+            stored, warnings, gate.Consumed, User.Identity?.Name ?? "Admin", UserGuid(), DateTime.UtcNow));
+        return new(null, gate.Consumed);
+    }
+
+    private async Task AuditBelowMinimumAsync(Guid tenantId, LeavePolicy policy,
+        IReadOnlyList<(FloorWarning Warning, FloorAcknowledgement Ack)> consumed, CancellationToken ct)
+    {
+        foreach (var c in consumed)
+            await _leaveService.LogAuditAsync(tenantId, "LeavePolicy", policy.Id.ToString(),
+                "BelowStatutoryMinimumAcknowledged",
+                $"statutory_value={c.Warning.StatutoryValue:0.##}; code={c.Warning.Code}",
+                $"configured_value={c.Warning.ConfiguredValue:0.##}",
+                $"{c.Warning.Citation}. Acknowledged: employees may claim the difference. Note: {c.Ack.Reason!.Trim()}",
+                User.Identity?.Name ?? "Admin", ct);
+    }
+
+    private Guid? UserGuid()
+        => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
+
+    /// <summary>Dry run for the policy screen: every Saudi floor that applies to the policy as typed, below or not, so
+    /// the screen can show the Saudi default beside the value and the amber warning when it is under. Saves nothing.</summary>
+    [HttpPost("floor-check")]
+    [HasPermission("leave.policy_manage")]
+    public async Task<IActionResult> FloorCheck([FromBody] LeaveFloorCheckRequest req, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var leaveType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
+        if (leaveType is null) return BadRequest(new { message = "Leave type not found." });
+        var policy = new LeavePolicy
+        {
+            TenantId = tenantId.Value, LeaveTypeId = leaveType.Id, CountryCode = req.CountryCode ?? string.Empty,
+            CompanyId = req.CompanyId, Status = req.Status ?? "Active", AnnualEntitlementDays = req.AnnualEntitlementDays,
+            MaximumDaysPerRequest = req.MaximumDaysPerRequest, PayrollImpact = req.PayrollImpact ?? "Full",
+            WeekendsIncluded = req.WeekendsIncluded, PublicHolidaysIncluded = req.PublicHolidaysIncluded,
+            MinimumServiceMonths = req.MinimumServiceMonths,
+        };
+        if (req.PolicyId is Guid pid) policy.Id = pid;
+        var checks = await KsaLeaveFloorChecks.ChecksAsync(_db, tenantId.Value, leaveType, policy, ct);
+        return Ok(new
+        {
+            checks = checks.Select(c => new
             {
-                error = "statutory_leave_service_requirement",
-                message = "Sick leave for employees in Saudi Arabia applies from the first day of service (Labour Law Art. 117). Set the service requirement to 0.",
-            });
-        var violations = await KsaStatutoryLeavePolicyGuard.CheckAsync(
-            _db, tenantId, policy.Id, leaveType.Id, leaveType.Code, leaveType.NameEn, leaveType.Category,
-            policy.CountryCode, policy.CompanyId, policy.Status,
-            policy.AnnualEntitlementDays, policy.MaximumDaysPerRequest, policy.PayrollImpact,
-            policy.WeekendsIncluded, policy.PublicHolidaysIncluded, ct);
-        return violations.Count == 0
-            ? null
-            : BadRequest(new
-            {
-                error = "statutory_leave_floor",
-                message = string.Join(" ", violations) + " An employer may grant more than the law; it may not grant less.",
-                violations,
-            });
+                c.Warning.Code, c.Warning.Field, c.Label, c.LabelAr, c.Below,
+                c.Warning.StatutoryValue, c.Warning.ConfiguredValue, c.Warning.Citation,
+                c.Warning.Message, c.Warning.MessageAr, c.Warning.CitationAr,
+            }),
+        });
     }
 
     /// <summary>
@@ -371,11 +413,15 @@ public class LeavePoliciesController : ControllerBase
         // country, the company, the pay treatment or the status — is judged against the others.
         var leaveType = await _db.LeaveTypes.AsNoTracking()
             .FirstOrDefaultAsync(t => t.Id == policy.LeaveTypeId && t.TenantId == tenantId, ct);
-        if (leaveType is not null
-            && await RefuseBelowStatutoryFloorAsync(tenantId.Value, leaveType, policy, ct) is { } floorRefusal)
-            return floorRefusal;
+        var gate = new BelowMinimumGate(null, []);
+        if (leaveType is not null)
+        {
+            gate = await GateBelowMinimumAsync(tenantId.Value, leaveType, policy, req.AcknowledgedWarnings, ct);
+            if (gate.Refusal is not null) return gate.Refusal;
+        }
 
         await _db.SaveChangesAsync(ct);
+        await AuditBelowMinimumAsync(tenantId.Value, policy, gate.Consumed, ct);
 
         await _leaveService.LogAuditAsync(tenantId.Value, "LeavePolicy", policy.Id.ToString(),
             "Updated", string.Empty, policy.Name, "Leave policy updated",
@@ -458,7 +504,8 @@ public record CreateLeavePolicyRequest(
     bool AllowsHajjBeyondStatutoryEligibility = false,
     bool? ProratePartialMonths = null,
     int MinimumServiceMonths = 0,
-    string? NationalityScope = null);
+    string? NationalityScope = null,
+    IReadOnlyCollection<FloorAcknowledgement>? AcknowledgedWarnings = null);
 
 public record UpdateLeavePolicyRequest(
     string? Name,
@@ -488,4 +535,10 @@ public record UpdateLeavePolicyRequest(
     bool? AllowsHajjBeyondStatutoryEligibility = null,
     bool? ProratePartialMonths = null,
     int? MinimumServiceMonths = null,
-    string? NationalityScope = null);
+    string? NationalityScope = null,
+    IReadOnlyCollection<FloorAcknowledgement>? AcknowledgedWarnings = null);
+
+public record LeaveFloorCheckRequest(
+    Guid LeaveTypeId, string? CountryCode, Guid? CompanyId, decimal AnnualEntitlementDays, decimal MaximumDaysPerRequest,
+    string? PayrollImpact, bool WeekendsIncluded, bool PublicHolidaysIncluded, int MinimumServiceMonths = 0,
+    Guid? PolicyId = null, string? Status = null);

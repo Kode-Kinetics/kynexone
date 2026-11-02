@@ -135,7 +135,7 @@ public class MoneyFigureDefectTests
     //   Art. 87 and Art. 81 are express exceptions: the FULL SAR 20,000 is due.
 
     private static readonly DateOnly ServiceStart = new(2021, 1, 1);
-    private static readonly DateOnly ServiceEnd = new(2025, 1, 1);
+    private static readonly DateOnly ServiceEnd = new(2024, 12, 31);
     private const decimal FullArt84Award = 20_000m;
 
     private static EndOfServiceInput Eosb(string reason) => new(

@@ -27,7 +27,7 @@ export function Panel({ title, action, children }: { title: string; action?: str
   return (
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-        <h2 className="text-sm font-bold text-slate-900 dark:text-white">{title}</h2>
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
         {action && <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">{action}</span>}
       </div>
       <div className="p-4">{children}</div>

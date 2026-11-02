@@ -33,9 +33,9 @@ test('the_moved_screens_and_their_groups_are_exactly_these', () => {
   expect(byGroup).toEqual({
     getStarted: ['openingBalances'],
     timeLeave: ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'],
-    payBenefits: ['benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates'],
+    payBenefits: ['benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payrollRules', 'payslipTemplates', 'bankWps'],
     talentServices: ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy'],
-    payrollCompliance: ['taxPolicies', 'complianceProfiles', 'saudiCompliance', 'countryPayrollKeys'],
+    payrollCompliance: ['taxPolicies', 'complianceProfiles', 'saudiCompliance'],
     accessSecurity: ['users', 'roles', 'permissionMatrix', 'permissions', 'permissionGrantors', 'approvalAuthorities', 'approvalDelegations', 'signInSecurity', 'accessLog'],
     workspace: ['localization', 'branding', 'helpText', 'modules', 'planBilling'],
   });
@@ -162,7 +162,7 @@ test('old_addresses_lead_to_their_setup_section', () => {
     ['/tenant-admin', 'tab=localization', '/setup?tab=localization'],
     ['/tenant-admin', 'tab=branding', '/setup?tab=branding'],
     ['/tenant-admin', 'tab=security', '/setup?tab=signInSecurity'],
-    ['/tenant-admin', 'tab=country-rules', '/setup?tab=countryPayrollKeys'],
+    ['/tenant-admin', 'tab=country-rules', '/setup?tab=gccSettings&view=payrollKeys'],
     ['/tenant-admin', 'tab=statutory-rules', '/setup?tab=statutoryRules'],
     ['/tenant-admin', 'tab=help-text', '/setup?tab=helpText'],
     ['/user-management', '', '/setup?tab=users'],
@@ -238,4 +238,11 @@ test('setup_is_offered_only_to_someone_with_a_section_to_open', () => {
   expect(setupHasEntries(hrManager)).toBe(true);
   // The menu entry asks the same question, not only "holds one of the permissions".
   expect(navigationItems.find(item => item.path === '/setup')?.requiresSetupSection).toBe(true);
+});
+
+test('every_section_label_and_description_has_an_arabic_translation', async () => {
+  const { translate } = await import('../src/i18n/translations');
+  const missing = SETUP_MODULE_SECTIONS.flatMap(section => [section.label, section.description])
+    .filter(text => translate('ar', text) === text);
+  expect(missing, 'Setup sections shown in English to an Arabic user').toEqual([]);
 });

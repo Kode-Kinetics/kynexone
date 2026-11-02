@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Payroll;
@@ -48,16 +49,18 @@ public class PayslipTemplatesController : ControllerBase
 
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,Payroll Manager,Payroll Officer")]
-    public async Task<IActionResult> List(CancellationToken ct)
+    public async Task<IActionResult> List([FromQuery] bool includeTurnedOff, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var templates = await _db.PayslipTemplates.AsNoTracking()
-            .Where(t => t.TenantId == tenantId)
+        // "Show turned-off" (Setup) adds templates that were turned off, or removed while nothing used them; both read as Status "off".
+        IQueryable<PayslipTemplate> source = includeTurnedOff ? ScopedBypass.TenantWide(_db.PayslipTemplates, tenantId, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.") : _db.PayslipTemplates;
+        var templates = await source.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && (includeTurnedOff || t.Status != TurnedOffStatus))
             .OrderByDescending(t => t.IsDefault)
             .ThenBy(t => t.Name)
             .ThenByDescending(t => t.Version)
             .Select(t => new TemplateListItem(
-                t.Id, t.Name, t.IsDefault, t.Version, t.Status, t.CreatedAtUtc, t.UpdatedAtUtc, t.ParentTemplateId))
+                t.Id, t.Name, t.IsDefault, t.Version, t.IsDeleted ? TurnedOffStatus : t.Status, t.CreatedAtUtc, t.UpdatedAtUtc, t.ParentTemplateId))
             .ToListAsync(ct);
         return Ok(templates);
     }
@@ -191,7 +194,10 @@ public class PayslipTemplatesController : ControllerBase
         return Ok(new { id });
     }
 
-    // ── Soft delete ───────────────────────────────────────────────────────────
+    // ── Remove / Restore (Setup's one removal rule) ───────────────────────────
+
+    /// <summary>Status of a template that was turned off: it stays on every payslip that used it, leaves new choices, and can be restored.</summary>
+    internal const string TurnedOffStatus = "off";
 
     [HttpDelete("{id:guid}")]
     [HasPermission("payroll.write")]
@@ -202,13 +208,51 @@ public class PayslipTemplatesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (template is null) return NotFound();
         if (template.IsDefault)
-            return Conflict(new { message = "Cannot delete the default template. Set another template as default first." });
+            return SetupRemoval.Blocked(this, "PAYSLIP_TEMPLATE_DEFAULT", "This is the default template. Set another template as default first.");
+        if (template.Status == TurnedOffStatus) return SetupRemoval.TurnedOff(this, []);
 
+        // Issued payslips keep the template version they were produced with; any version of this name that a payslip
+        // names, or that a later version was copied from, is history and must stay.
+        var used = await SetupRemoval.MeasureAsync(this, new[]
+        {
+            SetupRemoval.Of<Payslip>(_db, tenantId, "payslip", "issued payslips", p => p.PayslipTemplateId == id),
+            SetupRemoval.Of<PayslipTemplate>(_db, tenantId, "templateVersion", "later versions", x => x.ParentTemplateId == id),
+        }, ct);
+
+        if (used.InUse)
+        {
+            template.PreRemovalStatus = template.Status;
+            template.Status = TurnedOffStatus;
+            template.UpdatedAtUtc = DateTime.UtcNow;
+            await AuditAsync("payslip_template.turned_off", id.ToString(), tenantId, ct);
+            await _db.SaveChangesAsync(ct);
+            return SetupRemoval.TurnedOff(this, used);
+        }
         template.IsDeleted = true;
         template.UpdatedAtUtc = DateTime.UtcNow;
         await AuditAsync("payslip_template.deleted", id.ToString(), tenantId, ct);
         await _db.SaveChangesAsync(ct);
-        return NoContent();
+        return SetupRemoval.Deleted(this);
+    }
+
+    [HttpPost("{id:guid}/restore")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> Restore(Guid id, CancellationToken ct)
+    {
+        var tenantId = GetTenantId();
+        var template = await ScopedBypass.TenantWide(_db.PayslipTemplates, tenantId, "Setup lists and restores removed rows; the tenant is pinned here and the caller's company scope is checked by the action.")
+            .FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (template is null) return NotFound();
+        if (template.IsDeleted || template.Status == TurnedOffStatus)
+        {
+            template.IsDeleted = false;
+            if (template.Status == TurnedOffStatus) template.Status = template.PreRemovalStatus ?? "active";
+            template.PreRemovalStatus = null;
+            template.UpdatedAtUtc = DateTime.UtcNow;
+            await AuditAsync("payslip_template.restored", id.ToString(), tenantId, ct);
+            await _db.SaveChangesAsync(ct);
+        }
+        return SetupRemoval.Restored(this);
     }
 
     // ── Logo upload ───────────────────────────────────────────────────────────

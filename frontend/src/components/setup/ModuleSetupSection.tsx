@@ -9,7 +9,7 @@ import {
   ComplianceProfiles, EngagementPrivacy, LetterTemplates, PerformanceScorecards, SaudiCompliance, TaxPolicies,
 } from './talentComplianceSetupPanels';
 import {
-  AccessLog, ApprovalAuthorities, ApprovalDelegations, Branding, CountryPayrollKeys, HelpText, Localization, Modules, OpeningBalances,
+  AccessLog, ApprovalAuthorities, ApprovalDelegations, Branding, HelpText, Localization, Modules, OpeningBalances,
   PermissionGrantors, PermissionMatrix, Permissions, PlanBilling, Roles, SignInSecurity, Users,
 } from './accessWorkspaceSetupPanels';
 
@@ -48,6 +48,10 @@ const ShiftDefinitions = dynamic(() => import('../../views/ShiftsPage').then(mod
 }));
 const ShiftPolicy = dynamic(() => import('../../views/ShiftsPage').then(module => {
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="policy" onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
+const PayrollRules = dynamic(() => import('../payroll/PayrollRulesPanel').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PayrollRulesPanel onDirtyChange={onDirtyChange} />;
   return Panel;
 }));
 const AttendanceRules = dynamic(() => import('../attendance/AttendanceRulesPanel').then(module => {
@@ -101,6 +105,11 @@ const PayslipTemplates = dynamic(() => import('../../views/PayslipTemplatesPage'
   return Panel;
 }));
 
+const BankWps = dynamic(() => import('../payroll/SaudiBankSettingsPanel').then(module => {
+  const Panel = ({ onDirtyChange, companyId, companies }: ModuleSetupPanelProps) => <module.SaudiBankSettingsPanel onDirtyChange={onDirtyChange} companyId={companyId} companies={companies} />;
+  return Panel;
+}));
+
 /** Not moved yet: the section exists, its module's editor is still to be brought here. */
 function pending(id: SetupModuleSectionId): Panel {
   const Pending = () => <p data-testid="module-section-pending" className="surface p-6 text-sm text-slate-600">{id}</p>;
@@ -115,6 +124,7 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   shiftDefinitions: ShiftDefinitions,
   shiftPolicy: ShiftPolicy,
   attendanceRules: AttendanceRules,
+  payrollRules: PayrollRules,
   overtimePolicies: OvertimePolicies,
   attendanceDevices: AttendanceDevices,
   benefitPlans: BenefitPlans,
@@ -123,6 +133,7 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   advancePolicy: AdvancePolicy,
   bonusTypes: BonusTypes,
   payslipTemplates: PayslipTemplates,
+  bankWps: BankWps,
   onboardingChecklists: OnboardingChecklists,
   onboardingChecklistTemplates: OnboardingChecklistTemplates,
   hireTemplates: HireTemplates,
@@ -132,7 +143,6 @@ const PANELS: Record<SetupModuleSectionId, Panel> = {
   taxPolicies: TaxPolicies,
   complianceProfiles: ComplianceProfiles,
   saudiCompliance: SaudiCompliance,
-  countryPayrollKeys: CountryPayrollKeys,
   users: Users,
   roles: Roles,
   permissionMatrix: PermissionMatrix,

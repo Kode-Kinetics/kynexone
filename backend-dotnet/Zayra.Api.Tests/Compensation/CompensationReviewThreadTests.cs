@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Security.Claims;
 using System.Text.Json;
 using FluentAssertions;
@@ -65,18 +65,24 @@ public sealed class CompensationReviewThreadTests(PostgresFixture fx)
             b5 = await db.Employees.AsNoTracking().Where(e => e.Id == w.E["B5"]).Select(e => e.EmployeeCode).SingleAsync();
             b6 = await db.Employees.AsNoTracking().Where(e => e.Id == w.E["B6"]).Select(e => e.EmployeeCode).SingleAsync();
         }
+        const string header = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance,FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate";
+        Guid batchId;
+        await using (var db = fx.CreateDb())
+        {
+            var staging = await Payroll(db, w.Tenant).ImportEmployeeSalaries(new ImportSalaryStructuresRequest(
+                $"{header}\n{b6},GRADE-G1,7300,1800,500,0,0,0,0,SAR,2027-03-01\n{b5},GRADE-G1,7100,1700,500,0,0,0,0,SAR,2027-03-01\n"), default);
+            batchId = System.Text.Json.JsonSerializer.SerializeToElement(((OkObjectResult)staging).Value).GetProperty("batchId").GetGuid();
+        }
         var race = new RaceOnFirstInsert(fx.ConnectionString, w.Tenant, w.E["B6"], date);
         await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>()
                          .UseNpgsql(fx.ConnectionString, PostgresFixture.ProductionProviderOptions)
                          .AddInterceptors(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.Instance, Zayra.Api.Infrastructure.Data.AdvisoryXactLockGuardInterceptor.Instance, race)
                          .Options))
         {
-            const string header = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance,FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate";
-            var result = await Payroll(db, w.Tenant).ImportEmployeeSalaries(new ImportSalaryStructuresRequest(
-                $"{header}\n{b6},GRADE-G1,7300,1800,500,0,0,0,0,SAR,2027-03-01\n{b5},GRADE-G1,7100,1700,500,0,0,0,0,SAR,2027-03-01\n"), default);
+            var result = await Payroll(db, w.Tenant).ApproveSalaryChangeBatch(batchId, null, default);
             race.Fired.Should().Be(1, "the race happened on the first attempt");
-            result.Should().BeOfType<UnprocessableEntityObjectResult>("a retry that finds another writer's row must not overwrite it");
-            JsonSerializer.Serialize(((ObjectResult)result).Value).Should().Contain("salary_row_conflict").And.Contain("Row 2");
+            result.Should().BeOfType<ConflictObjectResult>("a retry that finds another writer's row must not overwrite it");
+            JsonSerializer.Serialize(((ObjectResult)result).Value).Should().Contain("salary_row_conflict");
         }
         await using var verify = fx.CreateDb();
         var rows = await verify.EmployeeSalaryStructures.AsNoTracking().Where(s => s.EmployeeId == w.E["B6"] && s.EffectiveDate == date).ToListAsync();

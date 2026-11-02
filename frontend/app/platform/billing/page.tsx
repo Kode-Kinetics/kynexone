@@ -29,11 +29,11 @@ function MetricCard({ label, value, sub, accent = 'default', icon: Icon }: {
       <div className={`absolute start-0 top-3 bottom-3 w-0.5 rounded-e ${bar[accent]}`} />
       <div className="ps-2">
         <div className="flex items-start justify-between gap-2 mb-2">
-          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-widest">{label}</p>
+          <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">{label}</p>
           {Icon && <Icon className={`h-3.5 w-3.5 shrink-0 mt-0.5 ${icn[accent]}`} />}
         </div>
-        <p className={`text-2xl font-bold leading-none ${val[accent]}`}>{value}</p>
-        {sub && <p className="text-[11px] text-slate-600 mt-1.5">{sub}</p>}
+        <p className={`text-2xl font-semibold leading-none ${val[accent]}`}>{value}</p>
+        {sub && <p className="text-caption text-slate-600 mt-1.5">{sub}</p>}
       </div>
     </div>
   );
@@ -81,7 +81,7 @@ export default function PlatformBillingPage() {
       {pickTenant && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setPickTenant(false)} />
-          <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-2xl overflow-hidden">
+          <div className="relative w-full max-w-sm bg-[#0d1117] border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.07]">
               <h2 className="text-sm font-semibold text-white">Select Tenant</h2>
               <button type="button" onClick={() => setPickTenant(false)} className="text-slate-500 hover:text-white transition-colors text-xl leading-none">&times;</button>
@@ -97,11 +97,11 @@ export default function PlatformBillingPage() {
                   className="flex items-center gap-3 px-5 py-3 hover:bg-white/[0.04] transition-colors"
                 >
                   <div className="h-8 w-8 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center shrink-0">
-                    <span className="text-[10px] font-bold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
+                    <span className="text-caption font-semibold text-slate-400">{t.name.slice(0, 2).toUpperCase()}</span>
                   </div>
                   <div className="min-w-0">
                     <p className="text-sm text-white font-medium truncate">{t.name}</p>
-                    <p className="text-[11px] text-slate-600 font-mono">/{t.slug} · {t.subscription?.plan ?? 'No plan'}</p>
+                    <p className="text-caption text-slate-600 font-mono">/{t.slug} · {t.subscription?.plan ?? 'No plan'}</p>
                   </div>
                 </Link>
               ))}
@@ -112,7 +112,7 @@ export default function PlatformBillingPage() {
 
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-white">Billing & Revenue</h1>
+          <h1 className="text-lg font-semibold text-white">Billing & Revenue</h1>
           <p className="text-xs text-slate-500 mt-0.5">Aggregate billing across all tenants</p>
         </div>
         <div className="flex items-center gap-2">
@@ -142,7 +142,7 @@ export default function PlatformBillingPage() {
       {/* Invoice table */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">All Invoices</p>
+          <p className="text-caption font-semibold text-slate-600 uppercase tracking-widest">All Invoices</p>
           <select aria-label="Filter by status" value={statusFilter} onChange={e => { setStatus(e.target.value); setPage(1); }}
             className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-sapphire/60">
             <option value="">All statuses</option>
@@ -165,7 +165,7 @@ export default function PlatformBillingPage() {
                 <thead>
                   <tr className="border-b border-white/[0.06]">
                     {['Tenant', 'Invoice', 'Amount', 'Status', 'Date', 'Due'].map(h => (
-                      <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                      <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -176,21 +176,21 @@ export default function PlatformBillingPage() {
                         <Link href={`/platform/tenants/${inv.tenantId}/billing`} className="text-sm text-white hover:text-blue-300 font-medium">
                           {inv.tenantName}
                         </Link>
-                        <p className="text-[11px] text-slate-600 font-mono">/{inv.tenantSlug}</p>
+                        <p className="text-caption text-slate-600 font-mono">/{inv.tenantSlug}</p>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-400 font-mono">{inv.invoiceNumber}</td>
                       <td className="px-3 py-3 text-xs text-slate-300 tabular-nums">
                         {inv.currencyCode} {(inv.amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                       </td>
                       <td className="px-3 py-3">
-                        <span className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_CLS[inv.status] ?? ''}`}>
+                        <span className={`text-caption font-semibold uppercase px-1.5 py-0.5 rounded border ${STATUS_CLS[inv.status] ?? ''}`}>
                           {inv.status}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-[11px] text-slate-500">
+                      <td className="px-3 py-3 text-caption text-slate-500">
                         {new Date(inv.invoiceDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </td>
-                      <td className="px-3 py-3 text-[11px] text-slate-500">
+                      <td className="px-3 py-3 text-caption text-slate-500">
                         {new Date(inv.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                       </td>
                     </tr>

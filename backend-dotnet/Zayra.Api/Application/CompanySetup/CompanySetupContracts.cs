@@ -1,3 +1,4 @@
+using Zayra.Api.Application.Organization;
 namespace Zayra.Api.Application.CompanySetup;
 
 // The create-company wizard's wire contract — docs/design/company-setup-wizard.md, section "API".
@@ -22,6 +23,9 @@ public static class CompanySetupVocabulary
     public const string ActionUpdate = "update";
     /// <summary>Existing-company mode (Addendum A3): an existing row the commit leaves exactly as it is.</summary>
     public const string ActionUnchanged = "unchanged";
+    /// <summary>Existing-company mode: an existing row the save removes. The server decides whether that deletes it (never used)
+    /// or turns it off (in use); the plan's <c>reason</c> says which one it will be.</summary>
+    public const string ActionRemove = "remove";
 
     public const string ReadinessDone = "done";
     public const string ReadinessTodo = "todo";
@@ -127,7 +131,43 @@ public sealed record CompanySetupDraftBody(
     CompanySetupCompanyAdmin CompanyAdmin,
     /// <summary>Addendum A1: null = create a new company; set = complete this existing company. Fixed for the draft's life.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Guid? ExistingCompanyId = null);
+    Guid? ExistingCompanyId = null,
+    /// <summary>Existing-company mode: existing organisation rows the user removed in the wizard. Applied by the next section
+    /// save or the commit, through the same Remove rule as Setup (never used = deleted, in use = turned off). Null = none.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    CompanySetupRemovals? Removals = null);
+
+/// <summary>The ids of existing rows the draft removes, per organisation section.</summary>
+public sealed record CompanySetupRemovals(
+    List<Guid>? CostCentres = null,
+    List<Guid>? Departments = null,
+    List<Guid>? Designations = null,
+    List<Guid>? Grades = null)
+{
+    public IReadOnlyCollection<Guid> For(string section) => (section switch
+    {
+        CompanySetupVocabulary.Sections.CostCentres => CostCentres,
+        CompanySetupVocabulary.Sections.Departments => Departments,
+        CompanySetupVocabulary.Sections.Designations => Designations,
+        CompanySetupVocabulary.Sections.Grades => Grades,
+        _ => null,
+    }) ?? [];
+
+    public CompanySetupRemovals Without(string section) => section switch
+    {
+        CompanySetupVocabulary.Sections.CostCentres => this with { CostCentres = null },
+        CompanySetupVocabulary.Sections.Departments => this with { Departments = null },
+        CompanySetupVocabulary.Sections.Designations => this with { Designations = null },
+        CompanySetupVocabulary.Sections.Grades => this with { Grades = null },
+        _ => this,
+    };
+
+    public bool IsEmpty => CostCentres is not { Count: > 0 } && Departments is not { Count: > 0 }
+        && Designations is not { Count: > 0 } && Grades is not { Count: > 0 };
+}
+
+/// <summary>What the wizard needs to draw an existing organisation row honestly: whether it is on, and what holds it in place.</summary>
+public sealed record CompanySetupRowState(bool IsActive, bool InUse, string? UsageSummary, IReadOnlyList<OrgRowUsageItem>? Usage = null);
 
 public sealed record CompanySetupCompany(
     string LegalNameEn,
@@ -286,7 +326,11 @@ public sealed record CompanySetupDraft(
     string CreatedByName,
     DateTime CreatedAtUtc,
     DateTime UpdatedAtUtc,
-    Guid? ResultCompanyId);
+    Guid? ResultCompanyId,
+    /// <summary>Existing-company mode: per existing organisation row (by its existingId), whether it is on and whether it is in
+    /// use — computed on every read, never stored in the draft.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    Dictionary<Guid, CompanySetupRowState>? RowStates = null);
 
 public sealed record CompanySetupDraftSummary(
     Guid Id,
@@ -306,7 +350,7 @@ public sealed record CompanySetupSectionApplyRequest(int Version);
 
 /// <summary>Addendum B2: a live section save. <see cref="Draft"/> is the rebased draft (version + 1, step 4): the section's
 /// rows now carry their <c>existingId</c> and a fresh baseline. The counts are the section's body rows by action.</summary>
-public sealed record SectionApplyResult(CompanySetupDraft Draft, string Section, int Created, int Updated, int Unchanged, bool Replayed);
+public sealed record SectionApplyResult(CompanySetupDraft Draft, string Section, int Created, int Updated, int Unchanged, bool Replayed, int Removed = 0, int TurnedOff = 0);
 
 /// <summary>Addendum B3: one section's active rows of a sister company, shaped as NEW draft rows (no existingId, no
 /// baseline). Only the list of <see cref="Section"/> is set; the others are omitted.</summary>

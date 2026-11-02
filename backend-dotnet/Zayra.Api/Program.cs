@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Net;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
@@ -235,7 +235,45 @@ if (string.IsNullOrWhiteSpace(connectionString))
         throw new InvalidOperationException("Missing required env var: ConnectionStrings__Default");
     connectionString = "Host=localhost;Port=5432;Database=zayra;Username=postgres;Password=password";
 }
-builder.Services.AddDbContextPool<ZayraDbContext>(options => options
+// Field-level encryption (Infrastructure/FieldEncryption). Mode defaults to Off; Load() throws on a half-configured setup.
+var fieldEncryptionOptions = Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionOptions.Load(
+    builder.Configuration, builder.Environment.IsProduction());
+builder.Services.AddSingleton(fieldEncryptionOptions);
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.IKeyEncryptionKeyProvider,
+    Zayra.Api.Infrastructure.FieldEncryption.ConfigKeyEncryptionKeyProvider>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.IFieldKeyStore, Zayra.Api.Infrastructure.FieldEncryption.EfFieldKeyStore>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.IFieldKeyStoreReader>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.IFieldKeyStore>());
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.FieldKeyService>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.IDataProtectionRingReader, Zayra.Api.Infrastructure.FieldEncryption.EfDataProtectionRingReader>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.DataProtectionRingJob>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionAdminService>(sp => new(
+    sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.IFieldKeyStoreReader>(),
+    sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.FieldKeyService>(),
+    sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionOptions>(),
+    sp.GetRequiredService<Zayra.Api.Application.Auth.IAuditService>(),
+    sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.IStepUpVerifier>(),
+    sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.ICustodyNotifier>(),
+    TimeProvider.System,
+    sp.GetRequiredService<ILogger<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionAdminService>>()));
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.IStepUpVerifier, Zayra.Api.Infrastructure.FieldEncryption.TotpStepUpVerifier>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.ICustodyNotifier, Zayra.Api.Infrastructure.FieldEncryption.TenantAdminCustodyNotifier>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionMaintenanceService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionBackfill>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionSaveInterceptor>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionQueryGuard>();
+builder.Services.AddHostedService<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionStartupGuard>();
+builder.Services.Configure<Zayra.Api.Infrastructure.Auth.SessionVerdictCacheOptions>(builder.Configuration.GetSection(Zayra.Api.Infrastructure.Auth.SessionVerdictCacheOptions.SectionName));
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.ISessionVerdictCache>(sp =>
+    Zayra.Api.Infrastructure.Auth.MemorySessionVerdictCache.Create(
+        sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<Zayra.Api.Infrastructure.Auth.SessionVerdictCacheOptions>>()));
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.SessionVerdictInvalidationInterceptor>();
+builder.Services.AddSingleton<Zayra.Api.Infrastructure.Auth.SessionVerdictInvalidationInterceptor.CommitHook>();
+builder.Services.AddDbContextPool<ZayraDbContext>((sp, options) => options
+    .AddInterceptors(
+        sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionSaveInterceptor>(),
+        sp.GetRequiredService<Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionQueryGuard>(),
+        sp.GetRequiredService<Zayra.Api.Infrastructure.Auth.SessionVerdictInvalidationInterceptor>(),
+        sp.GetRequiredService<Zayra.Api.Infrastructure.Auth.SessionVerdictInvalidationInterceptor.CommitHook>())
     .UseNpgsql(connectionString,
         npgsqlOptions => npgsqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
     // F3: turns a query tagged ForUpdateSkipLockedTag into SELECT … FOR UPDATE SKIP LOCKED (job claiming).
@@ -246,6 +284,8 @@ builder.Services.AddDbContextPool<ZayraDbContext>(options => options
     .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.PossibleIncorrectRequiredNavigationWithQueryFilterInteractionWarning)));
 
 builder.Services.AddMemoryCache();
+// JSON responses are compressed (Brotli preferred, gzip fallback), except /api/auth and /api/platform/auth (tokens, MFA secrets).
+Zayra.Api.Infrastructure.Http.KynexResponseCompressionExtensions.AddKynexResponseCompression(builder.Services);
 
 // Distributed cache: Redis when REDIS_URL is set, in-memory fallback for local dev without Redis.
 var redisUrl = builder.Configuration["REDIS_URL"] ?? Environment.GetEnvironmentVariable("REDIS_URL");
@@ -279,18 +319,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnTokenValidated = async context =>
             {
                 var db = context.HttpContext.RequestServices.GetRequiredService<ZayraDbContext>();
-                if (!await PlatformSessionSecurity.IsCurrentAsync(
-                        context.Principal!, db, context.HttpContext.RequestAborted))
-                {
-                    context.Fail("Platform session is revoked or its authorization is stale.");
-                }
-                else if (!await TenantSessionSecurity.IsCurrentAsync(
-                             context.Principal!, db, context.HttpContext.RequestAborted,
-                             Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(
-                                 context.HttpContext.RequestServices.GetRequiredService<IConfiguration>())))
-                {
-                    context.Fail("Tenant session is revoked or its authorization is stale.");
-                }
+                var (current, failure) = await Zayra.Api.Infrastructure.Auth.CurrentSessionValidator.ValidateAsync(
+                    context.Principal!, db,
+                    context.HttpContext.RequestServices.GetRequiredService<Zayra.Api.Infrastructure.Auth.ISessionVerdictCache>(),
+                    context.HttpContext.RequestAborted,
+                    Zayra.Api.Infrastructure.Auth.PrivilegedMfaPolicy.IsDisabledForTesting(
+                        context.HttpContext.RequestServices.GetRequiredService<IConfiguration>()));
+                if (!current) context.Fail(failure!);
             }
         };
     })
@@ -339,6 +374,7 @@ builder.Services.AddSingleton(sp => Zayra.Api.Infrastructure.Auth.LoginAbuseGuar
     sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>()));
 builder.Services.AddScoped<ITokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuditService, AuditService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ICompanyPayrollRulesService, Zayra.Api.Infrastructure.Payroll.CompanyPayrollRulesService>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Auth.TotpService>();
 builder.Services.AddScoped<IMfaService, Zayra.Api.Infrastructure.Auth.MfaService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -369,6 +405,8 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Governance.ICompanyTaxPolicy
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessPolicyResolver, Zayra.Api.Infrastructure.Employees.EmployeeReadinessPolicyResolver>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeReadinessEvaluator, Zayra.Api.Infrastructure.Employees.EmployeeReadinessEvaluator>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard, Zayra.Api.Infrastructure.Employees.EmployeeActivationGuard>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Compliance.BelowMinimumReportService>();
 // Duplicate-person detection — the ONE authoritative, server-side detector shared by the pre-create
 // check, the create commit backstop, and (via the preloaded-dictionary matcher) the bulk importer.
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.IEmployeeDuplicateDetector, Zayra.Api.Infrastructure.Employees.EmployeeDuplicateDetector>();
@@ -515,6 +553,19 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Finance.IJournalExportSepara
 builder.Services.AddDataProtection()
     .SetApplicationName("Zayra.Api")
     .PersistKeysToDbContext<ZayraDbContext>();
+// The ring is NEVER changed implicitly. Only with FieldEncryption:EncryptDataProtectionRing=true (and a KEK) are newly created
+// DataProtection keys encrypted at rest (KekXmlEncryptor); existing plaintext rows are rewritten only by the explicit
+// platform job (DataProtectionRingJob), never at boot. Reading an already-encrypted ring needs only the KEK(s), and the
+// startup guard refuses to start when one is missing. See docs/runbooks/field-encryption.md before turning the flag on.
+builder.Services.AddOptions<Microsoft.AspNetCore.DataProtection.KeyManagement.KeyManagementOptions>()
+    .Configure<Zayra.Api.Infrastructure.FieldEncryption.IKeyEncryptionKeyProvider, Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionOptions>((o, kek, fe) =>
+    {
+        if (fe.EncryptDataProtectionRing && kek.IsConfigured) o.XmlEncryptor = new Zayra.Api.Infrastructure.FieldEncryption.KekXmlEncryptor(kek);
+    });
+builder.Services.AddScoped<Zayra.Api.Infrastructure.FieldEncryption.DataProtectionSecretReprotector>(sp =>
+    new(sp.GetRequiredService<ZayraDbContext>(),
+        sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(),
+        sp.GetRequiredService<Microsoft.AspNetCore.DataProtection.KeyManagement.IKeyManager>()));
 
 // Qiwa API adapter. HARD-DISABLED unless QIWA_USE_LIVE_ADAPTER=true AND a Qiwa partner agreement is
 // recorded (Qiwa:PartnerAgreementReference). The switch alone registers the refusing adapter: no
@@ -522,7 +573,7 @@ builder.Services.AddDataProtection()
 builder.Services.AddSingleton<QiwaOAuthTokenCache>();
 // RemoveAllLoggers: the status lookup puts the employee's national ID / iqama number in the URL path, and
 // IHttpClientFactory's default handler logs every request URI at Information. Failures are logged by the adapter.
-builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).RemoveAllLoggers();
+builder.Services.AddHttpClient("qiwa", c => c.BaseAddress = new Uri("https://api.qiwa.tech")).ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30)).RemoveAllLoggers();
 switch (QiwaLiveAdapterPolicy.Decide(builder.Configuration))
 {
     case QiwaLiveAdapterPolicy.Mode.Live:
@@ -570,6 +621,10 @@ builder.Services.AddScoped<Zayra.Api.Infrastructure.Jobs.BackgroundJobStore>();
 builder.Services.AddSingleton<Zayra.Api.Infrastructure.Jobs.BackgroundJobRunner>();
 builder.Services.AddSingleton(Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler.Descriptor);
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Retention.DataRetentionSweepJobHandler>();
+builder.Services.AddSingleton(Zayra.Api.Infrastructure.Payroll.PayrollRunProcessJobHandler.Descriptor);
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessJobHandler>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessor>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessingService>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
 
 // D3 — data retention. EVERY SWITCH IS OFF BY DEFAULT and the defaults are the safe ones:
@@ -754,11 +809,30 @@ var rl = builder.Configuration.GetSection("RateLimit");
 var clientIpSecret = builder.Configuration[Zayra.Api.Infrastructure.Http.ClientIpResolver.SecretConfigKey];
 string RateLimitPartitionKey(HttpContext ctx) =>
     Zayra.Api.Infrastructure.Http.ClientIpResolver.Resolve(ctx, clientIpSecret);
+var deviceIngestOptions = Zayra.Api.Infrastructure.Attendance.DeviceIngestOptions.From(builder.Configuration);
+builder.Services.AddSingleton(deviceIngestOptions);
 builder.Services.AddRateLimiter(o =>
 {
     o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     // Same 429 shape as sign-in refusals: JSON { error, message } and a Retry-After.
     o.OnRejected = Zayra.Api.Infrastructure.Http.RateLimitRejection.WriteAsync;
+
+    // H2 - chained in front of the per-key policy below: a per-ADDRESS budget on the anonymous device endpoints only, so a
+    // sprayer sending a fresh random X-Device-Key each time (a new per-key bucket every request) still hits one wall.
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(ctx =>
+    {
+        var path = ctx.Request.Path.Value ?? string.Empty;
+        if (!path.StartsWith("/api/attendance/ingest", StringComparison.OrdinalIgnoreCase)
+            && !path.StartsWith("/api/attendance/heartbeat", StringComparison.OrdinalIgnoreCase))
+            return RateLimitPartition.GetNoLimiter("none");
+        return RateLimitPartition.GetFixedWindowLimiter("deviceip:" + RateLimitPartitionKey(ctx), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit          = deviceIngestOptions.RequestsPerMinutePerIp,
+            Window               = TimeSpan.FromSeconds(60),
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit           = 0,
+        });
+    });
 
     // Map short-link resolving makes an outbound request per call: 20 per minute per client address.
     o.AddPolicy(Zayra.Api.Controllers.Geo.GeoController.RateLimitPolicy, ctx =>
@@ -771,6 +845,23 @@ builder.Services.AddRateLimiter(o =>
                 QueueProcessingOrder     = QueueProcessingOrder.OldestFirst,
                 QueueLimit               = 0,
             }));
+
+    // F2 - the anonymous device webhook and heartbeat: per DEVICE KEY (a hash of the header, never the key itself), falling
+    // back to the client address when no key is presented. One bridge polling every few seconds is fine; a flood is not.
+    o.AddPolicy(Zayra.Api.Controllers.AttendanceController.DeviceRateLimitPolicy, ctx =>
+    {
+        var presented = ctx.Request.Headers["X-Device-Key"].ToString();
+        var partition = string.IsNullOrWhiteSpace(presented)
+            ? "ip:" + RateLimitPartitionKey(ctx)
+            : "key:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(presented)))[..16];
+        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit          = deviceIngestOptions.RequestsPerMinute,
+            Window               = TimeSpan.FromSeconds(60),
+            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+            QueueLimit           = 0,
+        });
+    });
 
     o.AddPolicy("auth_login", ctx =>
         RateLimitPartition.GetFixedWindowLimiter(
@@ -915,6 +1006,11 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 var app = builder.Build();
+if (Zayra.Api.Infrastructure.Auth.SessionVerdictCacheTopology.WarningFor(
+        app.Configuration,
+        app.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Zayra.Api.Infrastructure.Auth.SessionVerdictCacheOptions>>().Value) is { } sessionCacheWarning)
+    app.Logger.LogWarning("{SessionVerdictCache}", sessionCacheWarning);
+
 if (selfieDemoException.ConfigError is { } selfieDemoConfigError)
     app.Logger.LogWarning("Selfie demo exception is OFF because its configuration is malformed: {Error}", selfieDemoConfigError);
 
@@ -935,15 +1031,8 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     var traceId = ctx.TraceIdentifier;
     log.LogError(ex, "Unhandled exception. TraceId={TraceId} Path={Path}", traceId, ctx.Request.Path);
 
-    var (statusCode, code, message) = ex switch
-    {
-        // POD-B1 — a GL post into a closed period (via the Loans/Advances/Bonus posting paths) surfaces
-        // as a typed 422 gl_period_closed, matching the inline guards on the payroll Lock/settle/remit paths.
-        Zayra.Api.Infrastructure.Payroll.PeriodClosedException closed => (StatusCodes.Status422UnprocessableEntity, "gl_period_closed", closed.Message),
-        UnauthorizedAccessException unauthorized => (StatusCodes.Status403Forbidden, "forbidden", unauthorized.Message),
-        InvalidOperationException invalid => (StatusCodes.Status400BadRequest, "bad_request", invalid.Message),
-        _ => (StatusCodes.Status500InternalServerError, "internal_error", "An unexpected error occurred. Quote your traceId when contacting support.")
-    };
+    // The mapping (and the company write guard's stable 409 codes) lives in ExceptionResponseMapper so it is unit-tested.
+    var (statusCode, code, message) = Zayra.Api.Infrastructure.Http.ExceptionResponseMapper.Map(ex);
 
     ctx.Response.ContentType = "application/json";
     ctx.Response.StatusCode = statusCode;
@@ -963,6 +1052,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
+app.UseResponseCompression();
 app.UseCors("kynexone");
 // Lock 1 for ERP API keys (and the per-call audit row): a key presented anywhere but an allow-listed
 // action is refused here, before rate limiting, authentication or the action.

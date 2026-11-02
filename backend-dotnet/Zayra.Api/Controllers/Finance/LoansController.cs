@@ -39,10 +39,12 @@ public partial class LoansController : ControllerBase
     // ── Loan Types ────────────────────────────────────────────────────────────
 
     [HttpGet("types")]
-    public async Task<IActionResult> ListLoanTypes(CancellationToken ct)
+    public async Task<IActionResult> ListLoanTypes([FromQuery] bool includeInactive, CancellationToken ct)
     {
         var tid = GetTenantId();
-        return Ok(await _db.LoanTypes.Where(x => x.TenantId == tid && !x.IsDeleted && x.IsActive)
+        // Turned-off types are for Setup (loans.write) only; everyone else, and every picker, sees the active ones.
+        var withOff = includeInactive && User.HasPermission("loans.write");
+        return Ok(await _db.LoanTypes.Where(x => x.TenantId == tid && !x.IsDeleted && (withOff || x.IsActive))
             .OrderBy(x => x.NameEn).ToListAsync(ct));
     }
 
@@ -51,16 +53,7 @@ public partial class LoansController : ControllerBase
     public async Task<IActionResult> CreateLoanType([FromBody] LoanTypeRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
-        if (req.RepaymentFrequency is not ("Monthly" or "Weekly" or "BiWeekly" or "Quarterly"))
-            return BadRequest("Repayment frequency must be Monthly, Weekly, BiWeekly, or Quarterly.");
-        if (!req.IsInterestFree || req.InterestRate != 0)
-            return BadRequest(new { error = LoanEligibilityCodes.InterestNotPermitted, message = LoanEligibilityCodes.InterestNotPermittedText });
-        if (req.MaxInstallments is < 1 or > 600 || req.MinServiceMonths is < 0 or > 600 || req.MaxAmount < 0 || decimal.Round(req.MaxAmount, 2) != req.MaxAmount || req.MaxAmount > 999999999999.99m)
-            return BadRequest("Set 1–600 maximum installments and a nonnegative two-decimal maximum amount.");
-        if (req.MinInstallments < 1 || req.MinInstallments > req.MaxInstallments)
-            return BadRequest(new { error = "invalid_min_installments", message = $"Set the shortest repayment between 1 and the longest repayment ({req.MaxInstallments} instalments)." });
-        if (string.IsNullOrWhiteSpace(req.Code) || req.Code.Trim().Length > 50)
-            return BadRequest(new { error = "invalid_code", message = "Enter a loan type code of up to 50 characters." });
+        if (ValidateLoanType(req) is { } invalid) return invalid;
         if (await _db.LoanTypes.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
             return Conflict("Loan type code already exists.");
         // Codes that differ only in case or punctuation ("Personal", "PERSONAL", "per-sonal") would share one

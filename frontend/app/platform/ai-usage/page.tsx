@@ -12,7 +12,7 @@ function UsageBar({ pct }: { pct: number }) {
         <div className={`h-full rounded-full ${pct >= 90 ? 'bg-rose-500' : pct >= 70 ? 'bg-amber-500' : 'bg-purple-500'}`}
           style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
-      <span className="text-[11px] text-slate-500 tabular-nums w-8 text-end">{pct}%</span>
+      <span className="text-caption text-slate-500 tabular-nums w-8 text-end">{pct}%</span>
     </div>
   );
 }
@@ -103,7 +103,7 @@ export default function AiUsagePage() {
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-lg font-bold text-white">
+          <h1 className="text-lg font-semibold text-white">
             AI Usage &amp; Cost — {formatMonthLabel(yearMonth)}
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">Token consumption per tenant for the selected month</p>
@@ -143,7 +143,7 @@ export default function AiUsagePage() {
               <thead>
                 <tr className="border-b border-white/[0.06]">
                   {['Tenant', 'Plan', 'Tokens Used', 'Requests', 'Blocked', 'Usage'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-start text-[10px] font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
+                    <th key={h} className="px-4 py-2.5 text-start text-caption font-semibold text-slate-600 uppercase tracking-widest">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -154,7 +154,7 @@ export default function AiUsagePage() {
                     <tr key={t.id} className="border-b border-white/[0.04] hover:bg-white/[0.02] transition-colors">
                       <td className="px-4 py-3">
                         <p className="text-sm text-white font-medium">{t.name}</p>
-                        <p className="text-[11px] text-slate-600 font-mono">/{t.slug}</p>
+                        <p className="text-caption text-slate-600 font-mono">/{t.slug}</p>
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-400">{t.subscription?.plan}</td>
                       <td className="px-3 py-3 text-xs text-slate-300 tabular-nums">
@@ -169,9 +169,9 @@ export default function AiUsagePage() {
                       <td className="px-3 py-3 w-36">
                         {u ? (
                           u.isUnlimited
-                            ? <span className="text-[11px] text-slate-600">Unlimited</span>
+                            ? <span className="text-caption text-slate-600">Unlimited</span>
                             : <UsageBar pct={u.usagePct} />
-                        ) : <span className="text-[11px] text-slate-700">—</span>}
+                        ) : <span className="text-caption text-slate-700">—</span>}
                       </td>
                     </tr>
                   );

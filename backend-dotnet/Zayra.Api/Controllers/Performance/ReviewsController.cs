@@ -1,8 +1,9 @@
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Zayra.Api.Infrastructure.Approvals;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
@@ -272,6 +273,8 @@ public class ReviewsController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         if (!scope.CanAccessEmployee(review.EmployeeId))
             return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot review your own appraisal. Ask another reviewer."));
         var resolvedApprovers = await _hierarchyService.ResolveWorkflowApproversAsync(tenantId, review.EmployeeId, "APPRAISAL", ct);
         var callerIsResolvedApprover = scope.CallerEmployeeId.HasValue
             && resolvedApprovers.Approvers.Any(a => a.EmployeeId == scope.CallerEmployeeId.Value);
@@ -354,6 +357,8 @@ public class ReviewsController : ControllerBase
         var review = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (review is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot change the score of your own appraisal. Ask another HR administrator."));
         if (string.IsNullOrWhiteSpace(req.Reason))
             return BadRequest(new { message = "A reason is required for any score override." });
 
@@ -390,6 +395,8 @@ public class ReviewsController : ControllerBase
         var review = await _scopeService.FindInScopeAsync(User, tenantId,
             _db.AppraisalReviews.Where(r => r.Id == id && r.TenantId == tenantId), r => r.EmployeeId, ct);
         if (review is null) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, review.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot publish your own appraisal. Ask another HR administrator."));
         if (review.Status != "FinalApproval")
             return Conflict(new { error = "review_not_final_approval", message = $"Only a review in FinalApproval can be published (current: {review.Status})." });
         // ── RE-ISSUE AFTER AN UPHELD APPEAL ──────────────────────────────────────────────────────────
@@ -565,6 +572,8 @@ public class ReviewsController : ControllerBase
             .FirstOrDefaultAsync(a => a.Id == appealId && a.TenantId == tenantId, ct);
         if (appeal is null) return NotFound();
         if (!await _scopeService.InScopeAsync(User, tenantId, appeal.EmployeeId, ct)) return NotFound();
+        if (await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, userId, appeal.EmployeeId, ct))
+            return BadRequest(SubjectDecisionBar.Refusal("You cannot decide your own appeal. Ask another HR administrator."));
         if (appeal.Status is not ("Submitted" or "UnderReview"))
             return Conflict(new { error = "appeal_already_decided", message = $"Appeal is already in '{appeal.Status}' status." });
 

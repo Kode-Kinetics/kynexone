@@ -119,8 +119,9 @@ export const employeeDraftsApi = {
   get: (id: string) =>
     client.get<EmployeeDraftReview>(`/api/employees/drafts/${id}`).then((r) => r.data),
 
-  submit: (id: string) =>
-    client.post<void>(`/api/employees/drafts/${id}/submit`).then(() => undefined),
+  submit: (id: string, acknowledgeProbationOverLimit = false) =>
+    client.post<void>(`/api/employees/drafts/${id}/submit`, null,
+      acknowledgeProbationOverLimit ? { params: { acknowledgeProbationOverLimit: true } } : undefined).then(() => undefined),
 
   approve: (id: string) =>
     client.post<EmployeeDetail>(`/api/employees/drafts/${id}/approve`).then((r) => r.data),

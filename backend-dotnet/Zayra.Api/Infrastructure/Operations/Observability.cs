@@ -35,6 +35,14 @@ public static class Observability
     /// <summary>Npgsql 8 publishes both under this name; it is what Npgsql.OpenTelemetry's AddNpgsql subscribes to.</summary>
     public const string NpgsqlSource = "Npgsql";
 
+    /// <summary>Error tracking (Sentry) is OFF unless this holds a DSN. Unset = nothing registered, nothing sent.</summary>
+    public const string SentryDsnKey = "SENTRY_DSN";
+    public const string SentryEnvironmentKey = "SENTRY_ENVIRONMENT";
+    public const string SentryTracesSampleRateKey = "SENTRY_TRACES_SAMPLE_RATE";
+
+    public static bool IsSentryConfigured(IConfiguration configuration) =>
+        !string.IsNullOrWhiteSpace(configuration[SentryDsnKey]);
+
     public static bool IsOtlpConfigured(IConfiguration configuration) =>
         !string.IsNullOrWhiteSpace(configuration[OtlpEndpointKey]);
 
@@ -42,11 +50,17 @@ public static class Observability
     {
         ConfigureConsoleLogging(builder);
 
-        if (!IsOtlpConfigured(builder.Configuration)) return builder;
-
-        RegisterOpenTelemetry(builder.Services);
+        if (IsOtlpConfigured(builder.Configuration)) RegisterOpenTelemetry(builder.Services);
+        if (IsSentryConfigured(builder.Configuration)) RegisterSentry(builder);
         return builder;
     }
+
+    /// <summary>Same isolation as <see cref="RegisterOpenTelemetry"/>: no Sentry assembly loads while the DSN is unset.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void RegisterSentry(WebApplicationBuilder builder) => SentryRegistration.Register(builder);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void TagSentryTenant(string tenantId) => SentryRegistration.TagTenant(tenantId);
 
     /// <summary>
     /// The only path into the OpenTelemetry assemblies. Kept out of line, and its body in a separate
@@ -87,6 +101,7 @@ public static class Observability
     public static IApplicationBuilder UseTenantLogScope(this IApplicationBuilder app)
     {
         var logger = app.ApplicationServices.GetRequiredService<ILoggerFactory>().CreateLogger("Zayra.Api.Request");
+        var sentryOn = IsSentryConfigured(app.ApplicationServices.GetRequiredService<IConfiguration>());
         return app.Use(async (context, next) =>
         {
             var tenantId = context.User.FindFirstValue("tenant_id");
@@ -97,6 +112,7 @@ public static class Observability
             }
 
             Activity.Current?.SetTag(TenantTag, tenantId);
+            if (sentryOn) TagSentryTenant(tenantId); // opaque GUID only, validated above
             using (logger.BeginScope(new Dictionary<string, object> { ["TenantId"] = tenantId }))
                 await next();
         });

@@ -47,7 +47,12 @@ export async function boot(page: Page, options: { persona?: Persona; url: string
     const path = url.pathname;
     if (request.method() !== 'GET') writes.push(`${request.method()} ${path}`);
     const mock = options.mocks?.[path];
-    if (mock !== undefined) return route.fulfill({ json: typeof mock === 'function' ? (mock as (u: URL, m: string) => unknown)(url, request.method()) : mock });
+    if (mock !== undefined) {
+      const reply = typeof mock === 'function' ? (mock as (u: URL, m: string) => unknown)(url, request.method()) : mock;
+      // `{ status, body }` answers with that HTTP status (a refusal), anything else is a 200 body.
+      if (reply && typeof reply === 'object' && 'status' in reply && 'body' in reply) return route.fulfill({ status: (reply as { status: number }).status, json: (reply as { body: unknown }).body });
+      return route.fulfill({ json: reply });
+    }
     if (path === '/api/auth/me') return route.fulfill({ json: {
       id: 'reviewer', tenantId: 'tenant', tenantSlug: 'fixture', fullName: 'Reviewer', roles: persona.roles, permissions: persona.permissions,
       accountType: 'Single', isGroupScope: true,

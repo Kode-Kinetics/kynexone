@@ -67,5 +67,7 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.19.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.19.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.19.0" />
+    <!-- Error tracking; dormant unless SENTRY_DSN is set (Infrastructure/Operations/SentryRegistration.cs). -->
+    <PackageReference Include="Sentry.AspNetCore" Version="6.12.1" />
   </ItemGroup>
 </Project>

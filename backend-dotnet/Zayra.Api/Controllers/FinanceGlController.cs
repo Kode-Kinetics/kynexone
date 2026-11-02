@@ -211,7 +211,7 @@ public partial class FinanceGlController : ControllerBase
         var rows = await ScopeAccounts(tid.Value, companyId).AsNoTracking().OrderBy(a => a.Code).ToListAsync(ct);
         var csv = Csv.Build(ExportHeaders, rows.Select(a => (IReadOnlyList<object?>)new object?[] { a.Code, a.Name, a.AccountType, a.IsActive ? "true" : "false", a.ExternalCode ?? "" }));
         var suffix = companyId is null ? "group" : companyId.Value.ToString("N")[..8];
-        return File(Encoding.UTF8.GetBytes(csv), "text/csv", $"chart_of_accounts_{suffix}_{DateTime.UtcNow:yyyyMMdd}.csv");
+        return CsvDownload.Result(csv, $"chart_of_accounts_{suffix}_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     /// <summary>

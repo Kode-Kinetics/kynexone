@@ -16,7 +16,7 @@ export function CreateCompanyPage() {
         <Link href={GUIDED_SETUP_HREF} className="inline-flex items-center gap-1 text-sm font-medium text-sapphire hover:underline dark:text-cyanAccent">
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />{t('Guided setup')}
         </Link>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-950 dark:text-white">{t('Create company')}</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-950 dark:text-white">{t('Create company')}</h1>
       </header>
       <CreateCompanyWizard />
     </div>

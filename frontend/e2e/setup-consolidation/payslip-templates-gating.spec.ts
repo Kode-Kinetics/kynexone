@@ -12,7 +12,8 @@ const url = '/setup?tab=payslipTemplates';
 
 test('a payroll reader is not offered New Template', async ({ page }) => {
   await boot(page, { persona: READER, url, mocks: mocks([TEMPLATE]) });
-  await expect(page.getByText('Standard payslip')).toBeVisible({ timeout: 30_000 });
+  // The template's row (its Edit and Remove buttons repeat the name for screen readers, so a bare text match finds three).
+  await expect(page.getByRole('row', { name: /Standard payslip/ })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole('button', { name: /New Template/i })).toHaveCount(0);
 });
 

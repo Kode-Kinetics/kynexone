@@ -38,7 +38,7 @@ export function CertificateView({ credential: c }: { credential: Credential }) {
         <Award className="mx-auto h-10 w-10 text-amber-500" aria-hidden="true" />
         <p className="mt-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{t('Certificate of completion')}</p>
         <p className="mt-4 text-sm text-slate-500">{t('This certifies that')}</p>
-        <p className="mt-1 text-2xl font-bold" data-testid="certificate-person">{person}</p>
+        <p className="mt-1 text-2xl font-semibold" data-testid="certificate-person">{person}</p>
         <p className="mt-3 text-sm text-slate-500">{t('Successfully completed')}</p>
         <p className="mt-1 text-xl font-semibold" data-testid="certificate-course">{course}</p>
         <p className="mt-1 text-xs text-slate-500">{t('{path} · version {version}', { path: locale === 'ar' && c.pathNameAr ? c.pathNameAr : c.pathName, version: c.courseVersion })}</p>
@@ -54,7 +54,7 @@ export function CertificateView({ credential: c }: { credential: Credential }) {
         <div className="mt-5 flex justify-center">
           <StatusChip label={t(credentialStatusLabel[c.status])} tone={credentialTone(c.status)} dot />
         </div>
-        <p className="mt-4 text-[11px] text-slate-500">{t('To verify, HR quotes the certificate number and the verification code together.')}</p>
+        <p className="mt-4 text-caption text-slate-500">{t('To verify, HR quotes the certificate number and the verification code together.')}</p>
       </article>
     </div>
   );

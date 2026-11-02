@@ -5,6 +5,7 @@ import { authApi, isMfaChallenge, isMfaEnrollment, isPasswordChangeRequired } fr
 import type { AuthResponse, AuthUser, MfaChallengeCode } from '../api/auth';
 import { afterMeFailure, afterMeSuccess, type AuthLoadError } from '../lib/authLoadState';
 import { clearSessionKeepingLocale } from '../api/clearSession';
+import { tagErrorTrackingTenant } from '../lib/errorTracking';
 
 // Returned when the backend requires a TOTP code before issuing full tokens.
 export interface MfaPendingState {
@@ -130,6 +131,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthError(next.authError);
     setAuthorizationRefreshStatus('idle');
   }, []);
+
+  // Error tracking carries only the opaque tenant GUID; a no-op unless a DSN is configured.
+  const trackedTenantId = user?.tenantId;
+  useEffect(() => {
+    tagErrorTrackingTenant(trackedTenantId);
+  }, [trackedTenantId]);
 
   const loadUser = useCallback(() => checkUser(false), [checkUser]);
   const refreshAuthorization = useCallback(() => checkUser(true), [checkUser]);

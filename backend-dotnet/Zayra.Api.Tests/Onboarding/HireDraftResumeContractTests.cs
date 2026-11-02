@@ -103,6 +103,8 @@ public class HireDraftResumeContractTests : IClassFixture<HireIntegrityHttpFixtu
     public async Task GetDraft_ExposesNationalityCodeAndState_AndTheFrontendFixtureIsTheLiveShape()
     {
         var token = await _fx.NewUserAsync("rs1", "employees.write", "employees.read", "employees.sensitive");
+        // The draft carries a salary, so a second person who could approve it must exist (strict separation of duties).
+        await _fx.NewUserAsync("rs1f", "payroll.approve");
         var (id, _) = await CreateDraftAsync(token, DraftBody("Alex Morgan", b =>
         {
             b["nationalityCode"] = "EG"; b["dateOfBirth"] = "1990-06-01"; b["mobileNumber"] = "+966512345678"; b["workEmail"] = "alex.morgan@example.com";

@@ -94,13 +94,13 @@ export function EstablishmentBlockedModal({ block, employeeName, onClose, onChoo
         </div>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+          <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
             {block.departmentName}
           </span>
-          <span className="rounded-md bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
+          <span className="rounded-lg bg-slate-100 px-2 py-1 font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">
             {levelName}
           </span>
-          <span className="rounded-md bg-rose-100 px-2 py-1 font-semibold text-rose-600 dark:bg-rose-500/15 dark:text-rose-400">
+          <span className="rounded-lg bg-rose-100 px-2 py-1 font-semibold text-rose-600 dark:bg-rose-500/15 dark:text-rose-400">
             {block.current} / {block.budgeted}
           </span>
         </div>

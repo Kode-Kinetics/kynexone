@@ -168,7 +168,9 @@ public static class KsaStatutorySpecialLeave
     {
         var cc = (countryCode ?? string.Empty).Trim();
         return cc.Equals("SA", StringComparison.OrdinalIgnoreCase)
-            || cc.Equals("SAU", StringComparison.OrdinalIgnoreCase);
+            || cc.Equals("SAU", StringComparison.OrdinalIgnoreCase)
+            // The policy screen's country list says KSA; a policy saved with it is a Saudi policy.
+            || cc.Equals("KSA", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -205,6 +207,23 @@ public static class KsaStatutorySpecialLeave
             return Name("SIBLING", "BROTHER", "SISTER")
                 ? KsaStatutoryLeaveKind.BereavementSibling
                 : KsaStatutoryLeaveKind.Bereavement;
+        return null;
+    }
+
+    /// <summary>
+    /// Whether turning off or deleting this leave type touches leave the law protects: any special leave
+    /// <see cref="Classify"/> recognises, plus annual and sick leave (Labour Law Arts. 109 and 117), which carry statutory
+    /// entitlements but no special-leave floor. The server decides this from the stored code, name and category, never from
+    /// what the client says. Returns a short stable key for the audit trail, or null.
+    /// </summary>
+    public static string? ProtectedKind(string? code, string? nameEn, string? category)
+    {
+        var kind = Classify(code, nameEn, category);
+        if (kind is not null) return kind.Value.ToString();
+        var c = Norm(code); var n = Norm(nameEn); var cat = Norm(category);
+        if (n.Contains("UNPAID") || n.Contains("EXTENSION")) return null;
+        if (c is "ANNUAL" or "AL" or "VACATION" || n.Contains("ANNUAL") || n.Contains("VACATION") || cat is "ANNUAL" or "VACATION") return "Annual";
+        if (c is "SICK" or "SL" || n.Contains("SICK") || cat is "SICK") return "Sick";
         return null;
     }
 

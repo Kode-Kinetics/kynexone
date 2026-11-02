@@ -95,7 +95,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
     <section aria-labelledby="approvals-heading" className="wg-card flex min-w-0 flex-col gap-2 p-5">
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h2 id="approvals-heading" className="text-[15px] font-semibold text-slate-900 dark:text-white">
+          <h2 id="approvals-heading" className="text-body font-semibold text-slate-900 dark:text-white">
             {t('Approvals')}
             {pending > 0 && <span className="ms-2 rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold tabular-nums text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-200">{pending}</span>}
           </h2>
@@ -108,14 +108,14 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
             </p>
           )}
         </div>
-        <Link href="/approvals" className="inline-flex shrink-0 items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
+        <Link href="/approvals" className="inline-flex shrink-0 items-center gap-1 text-body-sm font-semibold text-sapphire hover:underline dark:text-blue-300">
           {t('Open approvals')} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
         </Link>
       </header>
 
       {loading && <div className="space-y-2" aria-hidden>{[0, 1, 2].map((i) => <div key={i} className="h-12 rounded-lg bg-slate-100 dark:bg-white/[0.05]" />)}</div>}
       {!loading && rows.length === 0 && (
-        <p className="flex items-center gap-2 text-[13px] text-slate-700 dark:text-slate-300"><CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />{t('Nothing is waiting for a decision.')}</p>
+        <p className="flex items-center gap-2 text-body-sm text-slate-700 dark:text-slate-300"><CheckCircle2 className="h-4 w-4 text-emerald-600" aria-hidden />{t('Nothing is waiting for a decision.')}</p>
       )}
 
       {!loading && rows.length > 0 && (compact ? (
@@ -140,7 +140,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
           <table className="w-full table-fixed border-collapse text-start">
             <colgroup><col className="w-[33%]" /><col className="w-[24%] 2xl:w-[18%]" /><col className="hidden 2xl:table-column 2xl:w-[18%]" /><col className="w-[25%] 2xl:w-[18%]" /><col className="w-[18%] 2xl:w-[12%]" /></colgroup>
             <thead>
-              <tr className="text-[11px] text-slate-600 dark:text-slate-400">
+              <tr className="text-caption text-slate-600 dark:text-slate-400">
                 <th scope="col" className="pb-2 text-start font-medium">{t('Employee')}</th>
                 <th scope="col" className="pb-2 text-start font-medium">{t('Request')}</th>
                 <th scope="col" className="hidden pb-2 text-start font-medium 2xl:table-cell">{t('Detail')}</th>
@@ -155,7 +155,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                     <span className="flex items-center gap-2.5">
                       <Avatar name={r.name} size={dense ? 'sm' : 'md'} />
                       <span className="flex min-w-0 flex-col">
-                        <span className="truncate text-[13px] font-semibold text-slate-900 dark:text-white">{r.name}</span>
+                        <span className="truncate text-body-sm font-semibold text-slate-900 dark:text-white">{r.name}</span>
                         <span className="truncate text-xs text-slate-600 dark:text-slate-400">{r.dept ?? r.code ?? ''}</span>
                       </span>
                     </span>
@@ -166,7 +166,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
                       {r.detail && <span className="text-xs text-slate-700 dark:text-slate-300 2xl:hidden">{r.detail}</span>}
                     </span>
                   </td>
-                  <td className="hidden pe-3 text-[13px] text-slate-700 dark:text-slate-300 2xl:table-cell">{r.detail ?? ''}</td>
+                  <td className="hidden pe-3 text-body-sm text-slate-700 dark:text-slate-300 2xl:table-cell">{r.detail ?? ''}</td>
                   <td className="pe-3"><Wait r={r} /></td>
                   <td className="text-end">
                     <Link href="/approvals" className="wg-press inline-flex h-8 items-center rounded-lg border border-indigo-200 px-2.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 dark:border-indigo-400/30 dark:text-indigo-200 dark:hover:bg-indigo-500/10">
@@ -178,7 +178,7 @@ export function ApprovalsTable({ queue, pending, loading, compact, dense = false
             </tbody>
           </table>
           {pending > Math.min(rows.length, dense ? 4 : 6) && (
-            <Link href="/approvals" className="mt-2 inline-flex items-center gap-1 text-[13px] font-semibold text-sapphire hover:underline dark:text-blue-300">
+            <Link href="/approvals" className="mt-2 inline-flex items-center gap-1 text-body-sm font-semibold text-sapphire hover:underline dark:text-blue-300">
               {t('View all {count}', { count: pending })} <ArrowRight className="h-3.5 w-3.5" aria-hidden />
             </Link>
           )}

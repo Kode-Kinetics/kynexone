@@ -135,6 +135,9 @@ export interface CompanySetupDraftBody {
   departments: CompanySetupDepartment[];
   designations: CompanySetupDesignation[];
   grades: CompanySetupGrade[];
+  /** Existing mode: ids of existing rows the user removed here, per Organisation section. The server deletes an unused row and
+   *  turns a used one off when the section is saved (or at the final save). */
+  removals?: Partial<Record<OrgSection, string[]>> | null;
   rules: CompanySetupRules;
   companyAdmin: CompanySetupAdmin;
 }
@@ -153,7 +156,11 @@ export interface CompanySetupDraft {
   createdAtUtc: string;
   updatedAtUtc: string;
   resultCompanyId?: string | null;
+  /** Existing mode: per existing Organisation row (by existingId) whether it is on and whether anything uses it. */
+  rowStates?: Record<string, CompanySetupRowState> | null;
 }
+
+export interface CompanySetupRowState { isActive: boolean; inUse: boolean; usageSummary?: string | null; usage?: { kind: string; label: string; count: number }[] | null }
 
 export interface CompanySetupDraftSummary {
   id: string; legalNameEn: string; step: number; updatedAtUtc: string; createdByName: string;
@@ -165,7 +172,7 @@ export type PlanArea =
   | 'company' | 'branch' | 'location' | 'costCentre' | 'department' | 'designation' | 'grade'
   | 'employeeIdRule' | 'cutover' | 'holidayCalendar' | 'leavePolicy' | 'gccSetting' | 'workWeek' | 'companyAdmin';
 /** A3: `update` = an existing row with changed fields; `unchanged` = an existing row left as it is. There are no deletes. */
-export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict';
+export type PlanAction = 'create' | 'update' | 'unchanged' | 'reuse' | 'conflict' | 'remove';
 
 export interface PlanItem {
   area: PlanArea; code: string; label: string; labelAr?: string | null; action: PlanAction; reason?: string | null;
@@ -222,6 +229,9 @@ export interface SectionApplyResult {
   updated: number;
   unchanged: number;
   replayed: boolean;
+  /** Rows deleted because nothing used them, and rows turned off because something did. */
+  removed?: number;
+  turnedOff?: number;
 }
 
 /** Rows of one section of a sister company, shaped as new draft rows; links are by code within that section set. */
