@@ -200,19 +200,23 @@ function TwoStepPanel({ tenantId, policy, onSaved }: {
         </fieldset>
 
         {relaxing && (
-          <div className="space-y-1.5 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2.5">
-            <label htmlFor="two-step-reason" className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</label>
-            <textarea id="two-step-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
-              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2.5">
+            <label htmlFor="two-step-reason" className="block space-y-1.5">
+              <span className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</span>
+              <textarea id="two-step-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+            </label>
           </div>
         )}
 
         <div className="max-w-xs">
-          <label htmlFor="two-step-trust-days" className="mb-1 block text-sm text-slate-300">Trusted browsers</label>
-          <select id="two-step-trust-days" value={days} onChange={e => setDays(Number(e.target.value))}
-            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
-            {choices.map(d => <option key={d} value={d} className="bg-[#0d1117]">{trustLabel(d)}</option>)}
-          </select>
+          <label htmlFor="two-step-trust-days" className="block">
+            <span className="mb-1 block text-sm text-slate-300">Trusted browsers</span>
+            <select id="two-step-trust-days" value={days} onChange={e => setDays(Number(e.target.value))}
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
+              {choices.map(d => <option key={d} value={d} className="bg-[#0d1117]">{trustLabel(d)}</option>)}
+            </select>
+          </label>
           <p className="mt-1 text-xs text-slate-500">How long a browser can skip the code after the person ticks &ldquo;Trust this browser&rdquo;. Shortening it also shortens browsers already trusted.</p>
         </div>
 
