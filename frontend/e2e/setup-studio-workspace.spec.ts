@@ -226,7 +226,10 @@ test('manual_leave_edit_uses_existing_put', async ({ page }, info) => {
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   const dialog = page.locator('div.fixed').filter({ has: page.getByRole('heading', { name: 'Edit Leave Policy', exact: true }) });
   await expect(dialog.locator('input[type=number]').first()).toHaveValue('28');
+  // The form checks the statutory floor 250 ms after a change; saving first would close the dialog and cancel that check.
+  const floorCheck = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/leave/policies/floor-check');
   await dialog.locator('input[type=number]').first().fill('30');
+  await floorCheck;
   await page.screenshot({ path: `/tmp/setup-canonical-leave-${info.project.name}.png`, fullPage: true });
   const request = page.waitForRequest(request => request.method() === 'PUT' && new URL(request.url()).pathname === '/api/leave/policies/existing-policy');
   await dialog.getByRole('button', { name: 'Save Changes' }).click();

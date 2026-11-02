@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { CheckCircle2, Mail, Printer, ShieldCheck } from 'lucide-react';
 import { employeesApi, type EmployeeDetail, type EmployeeReadiness } from '../../api/employees';
 import { employeeAccessApi } from '../../api/employeeAccess';
@@ -31,6 +31,9 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
   const [activating, setActivating] = useState(false);
   const [activationError, setActivationError] = useState('');
   const [confirming, setConfirming] = useState(false);
+  // A refused activation can mean the readiness changed under us; it is reloaded when the dialog closes, not while the
+  // refusal is still being read (a reload remounts this section and would take the dialog, and its message, away).
+  const readinessStale = useRef(false);
   const [form, setForm] = useState({ effectiveDate: '', reason: '' });
   const [activated, setActivated] = useState<{ emailDelivery: boolean } | null>(null);
   const welcome = useWelcomeCodes(useCallback(() => {
@@ -42,6 +45,10 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
     setActivationError('');
     setForm({ effectiveDate: todayCalendarDay(), reason: t('Activated from the employee workspace') });
     setConfirming(true);
+  };
+  const closeConfirm = () => {
+    setConfirming(false);
+    if (readinessStale.current) { readinessStale.current = false; onEmployeeChanged?.(); }
   };
   const activate = async () => {
     const invalid = activationFormError(form);
@@ -61,8 +68,7 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       setActivationError(Array.isArray(blockers) && blockers.length
         ? employeeActivationFailure(e, t)
         : describeApiError(e, t) || t('The employee could not be activated. Review the readiness items and try again.'));
-      // The readiness may have changed under us (a reviewer approved, a blocker appeared): reload it.
-      onEmployeeChanged?.();
+      readinessStale.current = true;
     } finally {
       setActivating(false);
     }
@@ -115,9 +121,9 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
       size="md"
       closeLabel={t('Close')}
       closeDisabled={activating}
-      onClose={() => { if (!activating) setConfirming(false); }}
+      onClose={() => { if (!activating) closeConfirm(); }}
       footer={<>
-        <button type="button" onClick={() => setConfirming(false)} disabled={activating} className="btn-secondary">{t('Cancel')}</button>
+        <button type="button" onClick={closeConfirm} disabled={activating} className="btn-secondary">{t('Cancel')}</button>
         <button type="button" onClick={() => void activate()} disabled={activating} className="btn-primary">{activating ? t('Activating…') : t('Activate')}</button>
       </>}
     >
