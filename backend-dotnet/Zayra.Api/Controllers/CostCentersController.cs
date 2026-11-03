@@ -20,6 +20,7 @@ public class CostCentersController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
     private readonly ZayraDbContext _db;
+    private readonly IAuditService? _audit;
 
     /// <summary>Reason is read only on a row that deactivates an existing cost centre (the form asks for one too); it is recorded in the audit row.</summary>
     private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "DepartmentCode", "IsActive", "Reason" };
@@ -30,7 +31,7 @@ public class CostCentersController : ControllerBase
     private static readonly string[] CsvExampleRow =
         { "CC-OPS", "Operations", "", "", "true", "" };
 
-    public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db) { _organization = organization; _db = db; }
+    public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db, IAuditService? audit = null) { _organization = organization; _db = db; _audit = audit; }
 
     [HttpGet]
     [HasPermission("organization.read", "finance.gl.read")]
@@ -74,6 +75,7 @@ public class CostCentersController : ControllerBase
         => CostCenterEndpoints.RestoreAsync(this, _organization, _db, id, Context(), cancellationToken);
 
     [HttpGet("export")]
+    [HasPermission("organization.read", "finance.gl.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
@@ -81,13 +83,27 @@ public class CostCentersController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var items = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId.Value && !c.IsDeleted).OrderBy(c => c.Code).ToListAsync(ct);
         var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, c.NameAr ?? string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
+        await RecordDownloadAsync("organization.cost_center_exported", items.Count, ct);
         return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     [HttpGet("import-template")]
+    [HasPermission("organization.read", "finance.gl.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate() =>
-        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "cost_centers_import_template.csv");
+    public async Task<IActionResult> ImportTemplate(CancellationToken ct = default)
+    {
+        await RecordDownloadAsync("organization.cost_center_import_template_downloaded", 0, ct);
+        return CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "cost_centers_import_template.csv");
+    }
+
+    /// <summary>Who downloaded the cost-centre file, how many rows, and under which company scope. No row values.</summary>
+    private Task RecordDownloadAsync(string action, int rowCount, CancellationToken ct)
+    {
+        if (_audit is null) return Task.CompletedTask;
+        var scope = this.GetEntityScope();
+        return _audit.RecordEventAsync(action, nameof(CostCenter), "csv", Context(),
+            System.Text.Json.JsonSerializer.Serialize(new { rowCount, groupScope = scope.IsGroupLevel, companyIds = scope.IsGroupLevel ? null : scope.AccessibleCompanyIds }), ct);
+    }
 
     [HttpPost("import-preview")]
     [Authorize(Roles = "Admin,HR Manager")]

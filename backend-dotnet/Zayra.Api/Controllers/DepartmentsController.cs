@@ -20,6 +20,7 @@ public class DepartmentsController : ControllerBase
 {
     private readonly IOrganizationSetupService _organization;
     private readonly ZayraDbContext _db;
+    private readonly IAuditService? _audit;
 
     private static readonly string[] CsvHeaders =
         { "Code", "NameEn", "NameAr", "ParentDepartmentCode", "ManagerEmployeeCode", "CostCenterCode", "IsActive" };
@@ -30,10 +31,11 @@ public class DepartmentsController : ControllerBase
     private static readonly string[] CsvExampleRow =
         { "OPS", "Operations", "", "", "", "", "true" };
 
-    public DepartmentsController(IOrganizationSetupService organization, ZayraDbContext db)
+    public DepartmentsController(IOrganizationSetupService organization, ZayraDbContext db, IAuditService? audit = null)
     {
         _organization = organization;
         _db = db;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -105,6 +107,7 @@ public class DepartmentsController : ControllerBase
     // ── Export ────────────────────────────────────────────────────────────────
 
     [HttpGet("export")]
+    [HasPermission("organization.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
@@ -141,15 +144,29 @@ public class DepartmentsController : ControllerBase
         });
 
         var csv = Csv.Build(CsvHeaders, rows);
+        await RecordDownloadAsync("organization.department_exported", depts.Count, ct);
         return CsvDownload.Result(csv, $"departments_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
     // ── Import Template ───────────────────────────────────────────────────────
 
     [HttpGet("import-template")]
+    [HasPermission("organization.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    public IActionResult ImportTemplate() =>
-        CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "departments_import_template.csv");
+    public async Task<IActionResult> ImportTemplate(CancellationToken ct = default)
+    {
+        await RecordDownloadAsync("organization.department_import_template_downloaded", 0, ct);
+        return CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "departments_import_template.csv");
+    }
+
+    /// <summary>Who downloaded the department file, how many rows, and under which company scope. No row values.</summary>
+    private Task RecordDownloadAsync(string action, int rowCount, CancellationToken ct)
+    {
+        if (_audit is null) return Task.CompletedTask;
+        var scope = this.GetEntityScope();
+        return _audit.RecordEventAsync(action, nameof(Department), "csv", Context(),
+            System.Text.Json.JsonSerializer.Serialize(new { rowCount, groupScope = scope.IsGroupLevel, companyIds = scope.IsGroupLevel ? null : scope.AccessibleCompanyIds }), ct);
+    }
 
     /// <summary>A department file that names a cost centre or a parent department on any row re-points cost: it needs the cost-centre permission.</summary>
     private static bool CsvSetsCostAttribution(string csv) => Csv.Parse(csv).Any(r =>
