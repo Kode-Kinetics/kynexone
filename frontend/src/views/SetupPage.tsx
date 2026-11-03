@@ -178,7 +178,7 @@ function CompaniesTab() {
   // tab via the /companies redirect and get the same read-only list they had before,
   // with no inert (always-403) action controls.
   // The API also requires the Admin or HR Manager role (CompaniesController), so the permission alone does not show write controls.
-  const { canWrite } = useOrgStructureAccess(['organization.write', 'organization.establishment.write']);
+  const { canWrite, writeBlockedReason } = useOrgStructureAccess(['organization.write', 'organization.establishment.write']);
   // Suspend / reactivate is Admin-only on the server.
   const canSetStatus = hasRole('Admin');
   // The ERP company code decides whose ledger the ERP books a company's journals into: only the general-ledger
@@ -367,17 +367,19 @@ function CompaniesTab() {
         columns={[msg('Legal Name'), msg('Trade Name'), msg('Country'), msg('Currency'), msg('Status')]}
         onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openCreate : undefined}
         addLabel={msg('Create company')}
+        writeBlockedReason={isGroupScope && (accountType === 'Group' || items.length === 0) ? writeBlockedReason : undefined}
         loading={loading} loadError={loadError} onRetry={load}
         empty={items.length === 0}
         emptyLabel={msg('No companies yet')} emptyHint={msg('Add your first company, or import a CSV.')}
-        actions={canWrite ? (
+        actions={(
           <ImportExportToolbar
+            blockedReason={writeBlockedReason}
             entityName="Companies"
             onExport={async () => { const csv = await companiesApi.export(); downloadCsv(csv, 'companies.csv'); }}
             onDownloadTemplate={async () => { const csv = await companiesApi.importTemplate(); downloadCsv(csv, 'companies-template.csv'); }}
             onImport={async (csv) => { const r = await companiesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        ) : undefined}
+        )}
       >
         {items.map((c) => (
           <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -404,11 +406,11 @@ function CompaniesTab() {
               )}
             </td>
             <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
-              {canWrite && <CompanyRowActions companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
+              <CompanyRowActions blockedReason={writeBlockedReason} companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
                 { label: msg('View statutory profile'), onSelect: () => { void loadStatutorySummary(c.id); } },
                 ...(c.approvalStatus !== 'Draft' && canSetStatus ? [{ label: c.isActive ? msg('Suspend') : msg('Reactivate'), disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
                 { label: msg('Delete company'), destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
-              ]} />}
+              ]} />
             </td>
           </tr>
         ))}
@@ -645,7 +647,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
       {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
-        onAdd={access.canWrite ? openNew : undefined}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Branch')}
         loading={loading} loadError={loadError} onRetry={load}
         empty={items.filter((x) => showOff || x.isActive).length === 0}
@@ -661,14 +663,15 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />
           </>
         }
-        actions={access.canWrite ? (
+        actions={(
           <ImportExportToolbar
+            blockedReason={access.writeBlockedReason}
             entityName="Branches"
             onExport={async () => { const csv = await branchesApi.export(); downloadCsv(csv, 'branches.csv'); }}
             onDownloadTemplate={async () => { const csv = await branchesApi.importTemplate(); downloadCsv(csv, 'branches-template.csv'); }}
             onImport={async (csv) => { const r = await branchesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        ) : undefined}
+        )}
       >
         {items.filter((b) => showOff || b.isActive).map((b) => (
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -679,10 +682,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
             <td className="px-4 py-3">
-              {access.canWrite && (
-                <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={writeAccess(b.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+              <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={access.writeBlockedReason ?? writeAccess(b.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                     onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
-              )}
             </td>
           </tr>
         ))}
@@ -811,14 +812,15 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('Cost Center'), msg('Status')]}
-        onAdd={access.canWrite ? openNew : undefined}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Department')}
         loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
-        actions={access.canWrite ? (
+        actions={(
           <ImportExportToolbar
+            blockedReason={access.writeBlockedReason}
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
@@ -826,7 +828,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader, locale); }}
             onImport={async (csv, _key, options) => { const r = await departmentsApi.import(csv, importCompanyId, options); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        ) : undefined}
+        )}
       >
         {shown.map((d) => (
           <tr key={d.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -836,10 +838,8 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{costCenters.find((c) => c.id === d.costCenterId)?.name ?? '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              {access.canWrite && (
-                <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+              <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={access.writeBlockedReason ?? writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                     onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
-              )}
             </td>
           </tr>
         ))}
@@ -1950,17 +1950,18 @@ function LocationsTab() {
   return (
     <>
       {removal.notice}
-      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={access.canWrite ? openNew : undefined} addLabel={msg('Add Location')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Location')}
         loading={loading} loadError={loadError} onRetry={load} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
-        actions={access.canWrite ? (
+        actions={(
           <ImportExportToolbar
+            blockedReason={access.writeBlockedReason}
             entityName="Locations"
             onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
             onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}
             onImport={async (csv) => { const r = await locationsApi.import(csv); load(); return r; }}
           />
-        ) : undefined}
+        )}
       >
         {items.filter((l) => showOff || l.isActive).map((l) => (
           <tr key={l.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -1971,10 +1972,8 @@ function LocationsTab() {
             <td className="px-4 py-3 text-slate-500 text-xs">{l.geofenceRadiusMeters ? `${l.geofenceRadiusMeters}m` : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={l.isActive} /></td>
             <td className="px-4 py-3">
-              {access.canWrite && (
-                <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={writeAccess(undefined).reason} deleteBlockedReason={access.deleteBlockedReason}
+              <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={access.writeBlockedReason ?? writeAccess(undefined).reason} deleteBlockedReason={access.deleteBlockedReason}
                     onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
-              )}
             </td>
           </tr>
         ))}
@@ -2342,7 +2341,7 @@ function EmailConfigTab() {
 const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 function TableShell({
-  columns, onAdd, addLabel, loading, loadError, onRetry, empty, emptyLabel, emptyHint, filter, actions, children,
+  columns, onAdd, addLabel, writeBlockedReason, loading, loadError, onRetry, empty, emptyLabel, emptyHint, filter, actions, children,
 }: {
   columns: string[];
   // Optional so read-only surfaces (e.g. organization.read viewers on the Companies
@@ -2350,6 +2349,8 @@ function TableShell({
   // still pass onAdd, so their behaviour is unchanged.
   onAdd?: () => void;
   addLabel?: string;
+  /** The person may not add or change rows: Add stays visible but disabled, and this says what is missing. */
+  writeBlockedReason?: string;
   loading: boolean;
   /** A failed load: shown with Retry instead of the empty state, so a failure never looks like an empty tenant. */
   loadError?: string;
@@ -2370,14 +2371,15 @@ function TableShell({
         <div className="flex min-w-0 flex-wrap items-center gap-2">{filter}</div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {actions}
-          {onAdd && (
-            <button type="button" onClick={onAdd} className="btn-primary">
+          {(onAdd || writeBlockedReason) && (
+            <button type="button" onClick={onAdd} disabled={!onAdd} title={onAdd ? undefined : writeBlockedReason} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
               <Plus className="h-4 w-4" aria-hidden="true" />
               {addLabel ? t(addLabel) : null}
             </button>
           )}
         </div>
       </div>
+      {writeBlockedReason && <p data-testid="write-blocked-reason" className="text-xs text-slate-500 dark:text-slate-400">{writeBlockedReason}</p>}
       <div className="surface overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">

@@ -51,6 +51,7 @@ const ar: Record<string, string> = {
   'Longitude must be between -180 and 180.': 'يجب أن يكون خط الطول بين -180 و180.',
   'Latitude and longitude must be given together, or both left blank.': 'يجب إدخال خط العرض وخط الطول معاً، أو تركهما فارغين.',
   'Geofence radius must be greater than zero.': 'يجب أن يكون نطاق السياج الجغرافي أكبر من صفر.',
+  'Changing this needs the Admin or HR Manager role and the organization.write permission.': 'يتطلب التعديل دور مسؤول النظام أو مدير الموارد البشرية وصلاحية organization.write.',
 };
 
 export const companyStructure = {

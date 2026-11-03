@@ -58,6 +58,8 @@ export function useOrgStructureAccess(permissions: readonly string[] = ['organiz
     canWrite,
     canDelete,
     deleteBlockedReason: canDelete ? undefined : t('You do not have permission to remove or restore this.'),
+    /** Why every write control is disabled, naming what is missing; undefined for a person who may write. */
+    writeBlockedReason: canWrite ? undefined : t('Changing this needs the Admin or HR Manager role and the organization.write permission.'),
   };
 }
 

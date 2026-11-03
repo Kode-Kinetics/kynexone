@@ -117,13 +117,14 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('Add your first location, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role sees no Add, Import, Edit, Remove or Restore', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role sees Add, Import, Edit and Remove disabled and the reason shown', async ({ page }) => {
   await boot(page, 'locations', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Riyadh Tower', exact: true })).toBeVisible();
-  await expect(add(page)).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Import/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
-  await expect(page.getByTestId('org-row-remove')).toHaveCount(0);
+  await expect(add(page)).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });
 
 test('without organization.delete, Remove and Restore are disabled with the reason', async ({ page }) => {

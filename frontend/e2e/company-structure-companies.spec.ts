@@ -61,19 +61,26 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('No companies yet')).toBeVisible();
 });
 
-test('a read-only user sees no Create, Import, Edit or More actions', async ({ page }) => {
+test('a read-only user sees Create, Import, Edit and More actions disabled with the reason', async ({ page }) => {
   await boot(page, 'companies', READ_ONLY);
   await expect(page.getByRole('cell', { name: companySa.legalNameEn })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Import/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /More actions/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByRole('button', { name: /More actions/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });
 
-test('a user without the Admin or HR Manager role gets no write controls even holding organization.write', async ({ page }) => {
+test('a user without the Admin or HR Manager role gets disabled write controls even holding organization.write', async ({ page }) => {
   await boot(page, 'companies', { roles: ['HR Officer'], permissions: ['organization.read', 'organization.write', 'dashboard.read'] });
   await expect(page.getByRole('cell', { name: companySa.legalNameEn })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Edit/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+});
+
+test('Arabic: the blocked reason is translated', async ({ page }) => {
+  await boot(page, 'companies', { locale: 'ar', roles: ['HR Officer'], permissions: ['organization.read', 'dashboard.read'] });
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('مدير الموارد البشرية');
 });
 
 test('suspending the only active company explains itself in the page, not a browser alert', async ({ page }) => {
