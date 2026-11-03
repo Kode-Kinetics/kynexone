@@ -1705,6 +1705,12 @@ public partial class PayrollController : ControllerBase
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);
+        // OVT-04: same pending-overtime query Process runs (/validate replaces the stored results wholesale).
+        var valPendingOvertimeByEmp = await _db.OvertimeRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null))
+                && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd && r.Status.StartsWith("Pending") && employeeIdsForValidation.Contains(r.EmployeeId))
+            .GroupBy(r => r.EmployeeId).Select(g => new { EmployeeId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x.Count, cancellationToken);
         var valOtImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && employeeIdsForValidation.Contains(x.EmployeeId) && valOtRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
@@ -1773,6 +1779,7 @@ public partial class PayrollController : ControllerBase
             YtdPreCutoverExcludedEmployeeIds        = valYtdSources.PreCutoverSlipsExcludedEmployeeIds,
             YtdSuggestedCutover                     = valYtdSources.SuggestedCutover,
             Exclusions                              = validationPopulation.Exclusions,
+            PendingOvertimeRequestsByEmployee       = valPendingOvertimeByEmp,
             NotEligibleSelections                   = validationPopulation.NotEligible,
             SiblingRunCount                         = valSiblingRuns.Count,
             // Matches Process: the stored statutory amounts WERE netted incrementally whenever a sibling

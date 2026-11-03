@@ -716,6 +716,12 @@ public sealed class PayrollRunProcessor
             .Select(r => new { r.Id, r.WorkDate, r.OvertimePolicyId })
             .ToListAsync(cancellationToken);
         var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        // OVT-04: overtime worked in this period that is still awaiting approval - surfaced as a warning (same query in /validate).
+        var pendingOvertimeByEmp = await Op(_db.OvertimeRequests).AsNoTracking()
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null))
+                && r.WorkDate >= periodStart && r.WorkDate <= periodEnd && r.Status.StartsWith("Pending") && employeeIdsForRun.Contains(r.EmployeeId))
+            .GroupBy(r => r.EmployeeId).Select(g => new { EmployeeId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x.Count, cancellationToken);
         var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
         // The company's own holidays (active calendars, company-wide or this company's), read by the same function attendance uses.
         var periodPublicHolidays = await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, company.Id, periodStart, periodEnd, cancellationToken);
@@ -2100,6 +2106,7 @@ public sealed class PayrollRunProcessor
             YtdPreCutoverExcludedEmployeeIds        = ytdSources.PreCutoverSlipsExcludedEmployeeIds,
             YtdSuggestedCutover                     = ytdSources.SuggestedCutover,
             Exclusions                              = runPopulation.Exclusions,
+            PendingOvertimeRequestsByEmployee       = pendingOvertimeByEmp,
             NotEligibleSelections                   = runPopulation.NotEligible,
             SiblingRunCount                         = siblingRuns.Count,
             StatutoryComputedIncrementally          = statutoryComputedIncrementally,

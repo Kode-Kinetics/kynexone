@@ -619,6 +619,8 @@ public class PayrollAdjustment : ITenantOwned
 public static class PayrollAdjustmentSources
 {
     public const string LeaveEncashment = "LeaveEncashment";
+    /// <summary>OVT-04: overtime approved after its own period closed, carried into the next open run.</summary>
+    public const string OvertimeBackPay = "OvertimeBackPay";
 }
 
 public class PayrollApproval : ITenantOwned

@@ -74,6 +74,12 @@ public static class PayrollValidationEngine
     /// says out loud what it is not deducting, and HR can correct the punches before it is approved.
     /// </summary>
     public const string NoHolidayCalendar = "WARN_NO_HOLIDAY_CALENDAR";
+
+    /// <summary>
+    /// Warning, never blocks: overtime for this period is still awaiting approval. Once the period closes it can only
+    /// be settled late (per <c>overtime.late_approval_mode</c>), so HR is told before the run is approved.
+    /// </summary>
+    public const string OvertimePendingApproval = "WARN_OVERTIME_PENDING_APPROVAL";
     public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
@@ -609,6 +615,13 @@ public static class PayrollValidationEngine
                     emp.Id);
         }
 
+        // ── Rule 10c: overtime still pending approval for this period ────────────
+        foreach (var pending in ctx.PendingOvertimeRequestsByEmployee.Where(kv => kv.Value > 0).OrderBy(kv => kv.Key))
+            Warn(OvertimePendingApproval,
+                $"{CodeFor(pending.Key)}: {pending.Value} overtime request(s) worked in {ctx.Run.Year}-{ctx.Run.Month:D2} are still " +
+                "awaiting approval. Approve or reject them before this period is closed; after that they can only be settled late, " +
+                "as the company's late-approval setting allows.", pending.Key);
+
         // ── Rule 10a: no public holiday entered for the period ───────────────────
         // WARN only, never a block: holidays are entered per the company's own policy (Eid dates move with the
         // moon and are announced late), so a month with none may be right. It is raised so it is never silent:
@@ -825,6 +838,12 @@ public sealed record PayrollValidationContext(
     /// populated identically by Process and by /validate (which replaces the stored results wholesale).
     /// </summary>
     public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
+
+    /// <summary>
+    /// Overtime requests still awaiting approval per employee, for work dates in this pay period. Process and
+    /// /validate must populate it identically. Empty (the default) raises nothing.
+    /// </summary>
+    public IReadOnlyDictionary<int, int> PendingOvertimeRequestsByEmployee { get; init; } = new Dictionary<int, int>();
 
     /// <summary>Total approved OT hours per employee in this pay period.</summary>
     public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =
