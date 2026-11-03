@@ -71,7 +71,7 @@ public class CostCentersController : ControllerBase
     [HttpPost("{id:guid}/restore")]
     [HasPermission("organization.delete")]
     public Task<IActionResult> Restore(Guid id, CancellationToken cancellationToken)
-        => CostCenterEndpoints.RestoreAsync(this, _organization, id, Context(), cancellationToken);
+        => CostCenterEndpoints.RestoreAsync(this, _organization, _db, id, Context(), cancellationToken);
 
     [HttpGet("export")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
@@ -80,7 +80,7 @@ public class CostCentersController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var items = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId.Value && !c.IsDeleted).OrderBy(c => c.Code).ToListAsync(ct);
-        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
+        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, c.NameAr ?? string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
         return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
 
@@ -185,6 +185,8 @@ public class CostCentersController : ControllerBase
                     CompanyId: existing is null ? companyId : existing.CompanyId,
                     Code: code,
                     Name: name,
+                    // A blank or missing NameAr cell is "unchanged" (null), like Parent, Class and ERP code; the form clears it with an empty string.
+                    NameAr: row.TryGetValue("NameAr", out var nameArCell) && !string.IsNullOrWhiteSpace(nameArCell) ? nameArCell.Trim() : null,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
                     Reason: string.IsNullOrWhiteSpace(rowReason) ? null : rowReason);
 

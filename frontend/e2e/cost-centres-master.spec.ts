@@ -291,8 +291,23 @@ test('Edit: an untouched parent, class and ERP code are not sent; clearing the p
   await tid(page, 'cc-form-parent').selectOption('');
   await tid(page, 'cc-form-erp-code').fill('');
   await tid(page, 'cc-form-save').click();
+  await expect(dialog).toContainText('Enter a reason for this change.'); // clearing the ERP code is recorded with a reason
+  await tid(page, 'cc-form-reason').fill('ERP code retired');
+  await tid(page, 'cc-form-save').click();
   await expect(dialog).toHaveCount(0);
-  expect(lastWrite(writes, 'PUT').body).toMatchObject({ parentId: ZERO, glSegment: '' });
+  expect(lastWrite(writes, 'PUT').body).toMatchObject({ parentId: ZERO, glSegment: '', reason: 'ERP code retired' });
+});
+
+test('the ERP code of an existing cost centre is finance\'s to change; without finance.gl.manage the field is read-only and says why', async ({ page }) => {
+  await boot(page, { finance: false });
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES-RY').getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(tid(page, 'cc-form-erp-code')).toBeDisabled();
+  await expect(page.getByRole('dialog')).toContainText('Only finance can change the ERP code.');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  // A new cost centre may still be given an ERP code by whoever creates it.
+  await page.getByRole('button', { name: /New cost centre/ }).click();
+  await expect(tid(page, 'cc-form-erp-code')).toBeEnabled();
 });
 
 test('changing the functional class asks for a reason; without finance.gl.manage the class is read-only with the reason in text', async ({ page }) => {

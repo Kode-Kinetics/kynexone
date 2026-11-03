@@ -118,9 +118,11 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   // M-9: the server says when a posted line carries the code; the 409 handler below stays for an older server.
   const codeLockedByServer = !!editing && isCodeLocked(editing);
   const classChanged = editing ? form.functionalClass !== (editing.functionalClass ?? '') : !!form.functionalClass;
+  // The ERP code decides where journal exports land: finance's to change on an existing cost centre, and recorded with a reason.
+  const segmentChanged = !!editing && form.glSegment.trim().toLowerCase() !== (editing.glSegment ?? '').toLowerCase();
   const deactivating = !!editing && editing.isActive && !form.isActive;
   const movingCompany = !!editing && !!editing.companyId && form.companyId !== editing.companyId;
-  const needsReason = classChanged || deactivating || movingCompany;
+  const needsReason = classChanged || segmentChanged || deactivating || movingCompany;
   const parents = parentOptions(items, { id: editing?.id, companyId: form.companyId, parentId: editing?.parentId ?? null });
 
   const showServerError = (err: unknown) => pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? describeApiError(err, t);
@@ -380,8 +382,8 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
               </select>
             )}
           </Labelled>
-          <Labelled label={t('ERP code')} hint={t('The cost-centre value in your ERP, if it differs from the code. Journal exports use it.')}>
-            {(id, describedBy) => <input id={id} aria-describedby={describedBy} data-testid="cc-form-erp-code" dir="ltr" value={form.glSegment} maxLength={30} onChange={(e) => set('glSegment', e.target.value)} className="input w-full" />}
+          <Labelled label={t('ERP code')} hint={editing && !canSetClass ? t('Only finance can change the ERP code.') : t('The cost-centre value in your ERP, if it differs from the code. Journal exports use it.')}>
+            {(id, describedBy) => <input id={id} aria-describedby={describedBy} data-testid="cc-form-erp-code" dir="ltr" value={form.glSegment} maxLength={30} disabled={!!editing && !canSetClass} onChange={(e) => set('glSegment', e.target.value)} className="input w-full" />}
           </Labelled>
           <Labelled label={t('Status')}>
             {(id) => (
@@ -393,7 +395,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           </Labelled>
           {needsReason && (
             <div className="sm:col-span-2">
-              <Labelled label={t('Reason')} required error={errors.reason} hint={t('Required to change the functional class, deactivate, or move to another company. Recorded in the audit log.')}>
+              <Labelled label={t('Reason')} required error={errors.reason} hint={t('Required to change the functional class or ERP code, deactivate, or move to another company. Recorded in the audit log.')}>
                 {(id, describedBy) => <input id={id} aria-describedby={describedBy} aria-invalid={!!errors.reason} data-testid="cc-form-reason" value={form.reason} maxLength={500} onChange={(e) => set('reason', e.target.value)} className="input w-full" />}
               </Labelled>
             </div>
