@@ -131,12 +131,20 @@
       "increases": [
         "app/platform/tenants/[id]/security/page.tsx  hardcoded: 36 → 40"
       ]
+    },
+    {
+      "pinnedAt": "2026-11-03",
+      "reason": "Platform console (English-only operator surface): new mandatory-two-step start-date panel on the tenant Security page; copy and date formatting match the existing untranslated panels there.",
+      "increases": [
+        "app/platform/tenants/[id]/security/page.tsx  hardcoded: 40 → 47",
+        "app/platform/tenants/[id]/security/page.tsx  locale: 2 → 3"
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 3965,
+    "hardcoded": 3972,
     "rawStatus": 51,
-    "locale": 184,
+    "locale": 185,
     "icons": 0,
     "files": 120
   },
@@ -300,8 +308,8 @@
       "locale": 2
     },
     "app/platform/tenants/[id]/security/page.tsx": {
-      "hardcoded": 40,
-      "locale": 2
+      "hardcoded": 47,
+      "locale": 3
     },
     "app/platform/tenants/[id]/users/page.tsx": {
       "hardcoded": 60,
