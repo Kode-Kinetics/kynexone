@@ -240,8 +240,8 @@ function CompaniesTab() {
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof CompanyRequest, string>>>({});
   useEffect(() => { if (modalOpen) setFieldErrors({}); }, [modalOpen, editing]);
   const companyFieldLabels: Partial<Record<keyof CompanyRequest, string>> = {
-    legalNameEn: 'Legal name (English)', countryCode: 'Country', registrationNumber: 'Registration number',
-    defaultCurrency: 'Default currency', emailDomain: 'Email domain', erpCompanyCode: 'ERP company code',
+    legalNameEn: msg('Legal name (English)'), countryCode: msg('Country'), registrationNumber: msg('Registration number'),
+    defaultCurrency: msg('Default currency'), emailDomain: msg('Email domain'), erpCompanyCode: msg('ERP company code'),
   };
   // Fields that render their own inline error; anything else the server names goes to the banner.
   const inlineCompanyFields: ReadonlySet<keyof CompanyRequest> = new Set<keyof CompanyRequest>(['registrationNumber']);
@@ -254,7 +254,7 @@ function CompaniesTab() {
       const key = (segment.charAt(0).toLowerCase() + segment.slice(1)) as keyof CompanyRequest;
       const serverMessage = String(Array.isArray(raw) ? raw[0] ?? '' : raw ?? '').trim();
       const label = companyFieldLabels[key];
-      const message = label && /required/i.test(serverMessage) ? `${label} is required.` : serverMessage || `${label ?? segment} is invalid.`;
+      const message = label && /required/i.test(serverMessage) ? t('{label} is required.', { label: t(label) }) : serverMessage || t('{label} is invalid.', { label: label ? t(label) : segment });
       if (inlineCompanyFields.has(key)) fields[key] = message;
       else banner.push(message);
     }
@@ -263,23 +263,23 @@ function CompaniesTab() {
 
   const handleSave = async () => {
     setFieldErrors({});
-    if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
+    if (!form.legalNameEn.trim()) { setError(t('Legal name (English) is required')); return; }
     // The field has always been marked required; it was never enforced, which is part of how a
     // tenant's first company reached production with an empty country.
     if (!(form.countryCode ?? '').trim()) {
-      setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
+      setError(t('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.'));
       return;
     }
     if (!(form.registrationNumber ?? '').trim()) {
       setError('');
-      setFieldErrors({ registrationNumber: 'Registration number is required — it identifies this legal entity on statutory filings.' });
+      setFieldErrors({ registrationNumber: t('Registration number is required — it identifies this legal entity on statutory filings.') });
       return;
     }
-    if (!(form.defaultCurrency ?? '').trim()) { setError('Default currency is required'); return; }
+    if (!(form.defaultCurrency ?? '').trim()) { setError(t('Default currency is required')); return; }
     // Advisory client-side domain-format check mirroring the server regex (server stays authoritative).
     // Blank is allowed — employees then fall back to manual work-email entry.
     if (!isValidEmailDomain(form.emailDomain ?? '')) {
-      setError('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.');
+      setError(t('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.'));
       return;
     }
     if (!editing) return;
@@ -291,11 +291,11 @@ function CompaniesTab() {
     } catch (err: unknown) {
       const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
       if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
-        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
+        setFieldErrors({ registrationNumber: resp.message ?? t('Another company in this workspace already uses this registration number.') });
       else if (resp?.errors && typeof resp.errors === 'object') {
         const mapped = mapCompanyValidationErrors(resp.errors);
         setFieldErrors(mapped.fields);
-        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
+        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : t('Failed to save. Please try again.')));
       }
       else setError(describeApiError(err, t));
     }
@@ -315,6 +315,7 @@ function CompaniesTab() {
 
   // Suspend / reactivate — merged from the standalone /companies page so no capability
   // is lost when that route folds into Setup. Reproduces the last-active-company guard.
+  const [notice, setNotice] = useState('');
   const toggleStatus = async (c: CompanyDto) => {
     const name = c.tradeName || c.legalNameEn;
     if (!(await confirm({
@@ -328,29 +329,34 @@ function CompaniesTab() {
     catch (e: unknown) {
       const err = (e as { response?: { data?: { error?: string } } })?.response?.data;
       if (err?.error === 'last_active_company')
-        alert('Cannot deactivate the only active company — activate another company first.');
+        setNotice(t('Cannot deactivate the only active company — activate another company first.'));
       else notifyApiError(e);
     } finally { setToggling(null); }
   };
 
   return (
     <>
+      {notice && (
+        <div role="alert" data-testid="company-notice" className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+          <span>{notice}</span>
+          <button type="button" className="shrink-0 font-semibold underline" onClick={() => setNotice('')}>{t('Dismiss')}</button>
+        </div>
+      )}
       {canWrite && isGroupScope && <CompanyDraftsCard />}
       {missingCountry.length > 0 && (
         <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
           <p className="font-semibold">
             {missingCountry.length === 1
-              ? `${missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn} has no country set — set it in Setup → Companies before adding employees.`
-              : `${missingCountry.length} companies have no country set — set each one here before adding employees.`}
+              ? t('{name} has no country set — set it in Setup → Companies before adding employees.', { name: missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn })
+              : t('{count} companies have no country set — set each one here before adding employees.', { count: missingCountry.length })}
           </p>
           <p className="mt-1 text-xs">
-            A company’s country decides its statutory rules, leave entitlements and the identity documents its
-            employees must hold. Until it is set, employees of that entity cannot be added.
-            {missingCountry.length > 1 && ` Missing: ${missingCountry.map((c) => c.tradeName?.trim() || c.legalNameEn).join(', ')}.`}
+            {t('A company’s country decides its statutory rules, leave entitlements and the identity documents its employees must hold. Until it is set, employees of that entity cannot be added.')}
+            {missingCountry.length > 1 && ` ${t('Missing: {names}.', { names: missingCountry.map((c) => c.tradeName?.trim() || c.legalNameEn).join(', ') })}`}
           </p>
           {canWrite && (
             <button type="button" onClick={() => openEdit(missingCountry[0])} className="btn-secondary mt-2 h-7 px-2 text-xs">
-              <Pencil className="h-3 w-3" /> Set country for {missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn}
+              <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Set country for {name}', { name: missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn })}
             </button>
           )}
         </div>
@@ -379,7 +385,7 @@ function CompaniesTab() {
               {/* "—" read as "nothing to show". It is not: a blank country blocks every employee of
                   this entity, so it is labelled as the problem it is. */}
               {c.countryCode?.trim() || (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">Not set</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">{t('Not set')}</span>
               )}
               {c.jurisdiction && <span className="ms-1 text-xs text-slate-400">({c.jurisdiction})</span>}
             </td>
@@ -388,18 +394,18 @@ function CompaniesTab() {
               {/* Preserve the standalone page's Draft-awareness and "Suspended" wording,
                   which the plain ActiveBadge (Active/Inactive) did not convey. */}
               {c.approvalStatus === 'Draft' ? (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">Draft — awaiting platform approval</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">{t('Draft — awaiting platform approval')}</span>
               ) : c.isActive ? (
                 <ActiveBadge active />
               ) : (
-                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">{t('Suspended')}</span>
               )}
             </td>
             <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
               {canWrite && <CompanyRowActions companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
-                { label: 'View statutory profile', onSelect: () => { void loadStatutorySummary(c.id); } },
-                ...(c.approvalStatus !== 'Draft' && canSetStatus ? [{ label: c.isActive ? 'Suspend' : 'Reactivate', disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
-                { label: 'Delete company', destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
+                { label: msg('View statutory profile'), onSelect: () => { void loadStatutorySummary(c.id); } },
+                ...(c.approvalStatus !== 'Draft' && canSetStatus ? [{ label: c.isActive ? msg('Suspend') : msg('Reactivate'), disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
+                { label: msg('Delete company'), destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
               ]} />}
             </td>
           </tr>
@@ -409,26 +415,26 @@ function CompaniesTab() {
       {/* Statutory Pack Profile panel — shown when a company's globe icon is clicked */}
       {(summaryLoading || statutorySummary) && (
         <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-5 dark:border-indigo-800/40 dark:bg-indigo-900/20">
-          {summaryLoading && <p className="text-sm text-slate-500">Loading statutory profile…</p>}
+          {summaryLoading && <p className="text-sm text-slate-500">{t('Loading statutory profile…')}</p>}
           {statutorySummary && (
             <>
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  Statutory Pack Profile — {statutorySummary.countryNameEn}
+                  {t('Statutory Pack Profile')} — {statutorySummary.countryNameEn}
                   {statutorySummary.jurisdiction && <span className="ms-1 text-xs font-normal text-slate-500">({statutorySummary.jurisdiction})</span>}
                 </h3>
-                <button type="button" onClick={() => setStatutorySummary(null)} className="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+                <button type="button" onClick={() => setStatutorySummary(null)} className="text-xs text-slate-400 hover:text-slate-600">{t('Dismiss')}</button>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <InfoRow label="Social Insurance" value={statutorySummary.socialInsuranceScheme} detail={statutorySummary.socialInsuranceDescription} />
-                <InfoRow label="EOSB Formula" value={statutorySummary.eosbFormula} />
-                <InfoRow label="WPS Format" value={statutorySummary.wpsFormatLabel} />
-                <InfoRow label="Nationalization Scheme" value={statutorySummary.nationalizationScheme} />
-                <InfoRow label="Locale / Currency" value={`${statutorySummary.localeCode} · ${statutorySummary.currencyCode} ${statutorySummary.currencySymbol}`} />
-                <InfoRow label="Calendar / RTL" value={`${statutorySummary.calendarSystem} · ${statutorySummary.isRtl ? 'RTL' : 'LTR'}`} />
+                <InfoRow label={t('Social Insurance')} value={statutorySummary.socialInsuranceScheme} detail={statutorySummary.socialInsuranceDescription} />
+                <InfoRow label={t('EOSB Formula')} value={statutorySummary.eosbFormula} />
+                <InfoRow label={t('WPS Format')} value={statutorySummary.wpsFormatLabel} />
+                <InfoRow label={t('Nationalization Scheme')} value={statutorySummary.nationalizationScheme} />
+                <InfoRow label={t('Locale / Currency')} value={`${statutorySummary.localeCode} · ${statutorySummary.currencyCode} ${statutorySummary.currencySymbol}`} />
+                <InfoRow label={t('Calendar / RTL')} value={`${statutorySummary.calendarSystem} · ${statutorySummary.isRtl ? 'RTL' : 'LTR'}`} />
               </div>
               <p className="mt-3 border-t border-indigo-200 pt-3 text-xs text-amber-700 dark:border-indigo-700/40 dark:text-amber-300">
-                Review the tenant-wide rule history in <Link href="/setup?tab=statutoryRules" className="font-semibold underline">Statutory Rules</Link>. Configure company-specific values under GL &amp; rates.
+                {t('The statutory rule history is tenant-wide. Configure company-specific values under GL & rates.')} <Link href="/setup?tab=statutoryRules" className="font-semibold underline">{t('Statutory Rules')}</Link>
               </p>
             </>
           )}
@@ -437,23 +443,23 @@ function CompaniesTab() {
 
       <Modal
         isOpen={modalOpen}
-        title={editing ? 'Edit Company' : 'Add Company'}
+        title={editing ? t('Edit Company') : t('Add Company')}
         onClose={() => setModalOpen(false)}
         closeDisabled={saving}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">Cancel</button>
-            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
+            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
       >
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Legal Name (EN)" required>
+          <FormField label={t('Legal Name (EN)')} required>
             <input type="text" value={form.legalNameEn} onChange={(e) => f('legalNameEn', e.target.value)} className="input w-full" placeholder="Acme Corp LLC" />
           </FormField>
-          <FormField label="Legal Name (AR)">
+          <FormField label={t('Legal Name (AR)')}>
             {(id) => (
               <div className="flex items-stretch gap-1.5">
                 <input id={id} type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
@@ -461,10 +467,10 @@ function CompaniesTab() {
               </div>
             )}
           </FormField>
-          <FormField label="Trade Name">
+          <FormField label={t('Trade Name')}>
             <input type="text" value={form.tradeName ?? ''} onChange={(e) => f('tradeName', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="Country" required>
+          <FormField label={t('Country')} required>
             {(id) => (
               <>
                 <CountrySelect
@@ -505,24 +511,24 @@ function CompaniesTab() {
               aria-describedby={fieldErrors.registrationNumber ? 'company-registration-number-error' : undefined}
             />
           </FormField>
-          <FormField label="Tax Number">
+          <FormField label={t('Tax Number')}>
             <input type="text" value={form.taxNumber ?? ''} onChange={(e) => f('taxNumber', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="Default Currency" required>
+          <FormField label={t('Default Currency')} required>
             <select value={form.defaultCurrency || currencyCode} onChange={(e) => f('defaultCurrency', e.target.value)} className="select w-full">
               {['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'].map((c) => <option key={c}>{c}</option>)}
             </select>
           </FormField>
-          <FormField label="Status">
+          <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
+              <option value="true">{t('Active')}</option>
+              <option value="false">{t('Inactive')}</option>
             </select>
           </FormField>
-          <FormField label="WPS Employer ID">
+          <FormField label={t('WPS Employer ID')}>
             <input type="text" value={form.wpsEmployerId ?? ''} onChange={(e) => f('wpsEmployerId', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="GOSI Employer ID">
+          <FormField label={t('GOSI Employer ID')}>
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
           </FormField>
           <FormField label={t('ERP company code')}>
@@ -548,7 +554,7 @@ function CompaniesTab() {
             </div>
             <p className={`mt-1 text-xs ${form.emailDomain && !isValidEmailDomain(form.emailDomain) ? 'text-rose-500' : 'text-slate-400'}`}>
               {form.emailDomain && !isValidEmailDomain(form.emailDomain)
-                ? 'Enter a bare domain like "acme.sa" — no "@", scheme, or path.'
+                ? t('Enter a bare domain like "acme.sa" — no "@", scheme, or path.')
                 : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}
             </p>
           </FormField>
