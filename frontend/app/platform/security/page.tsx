@@ -12,6 +12,66 @@ const RISK_CLS: Record<string, { dot: string; text: string; row: string }> = {
   High:   { dot: 'bg-rose-500',    text: 'text-rose-400',    row: 'bg-rose-950/15 border-s-2 border-s-rose-700' },
 };
 
+function PlatformMfaDatePanel() {
+  const [current, setCurrent] = useState<string | null>(null);
+  const [date, setDate]       = useState('');
+  const [reason, setReason]   = useState('');
+  const [saving, setSaving]   = useState(false);
+  const [msg, setMsg]         = useState<{ text: string; ok: boolean } | null>(null);
+
+  const load = useCallback(async () => {
+    try { setCurrent((await platformApi.getPlatformPrivilegedMfaEnforcement()).platformPrivilegedMfaEnforceFromUtc); }
+    catch { /* panel stays on "not set" */ }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function save() {
+    if (!date) { setMsg({ text: 'Pick the date mandatory two-step should start.', ok: false }); return; }
+    if (reason.trim().length < 10) { setMsg({ text: 'Give a reason of at least 10 characters.', ok: false }); return; }
+    setSaving(true); setMsg(null);
+    try {
+      await platformApi.setPlatformPrivilegedMfaEnforcement({ enforceFromUtc: `${date}T00:00:00Z`, reason: reason.trim() });
+      setDate(''); setReason(''); setMsg({ text: 'Saved.', ok: true }); await load();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setMsg({ text: detail ?? 'Save failed. Only a platform Owner can change this date.', ok: false });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-wide-privileged-mfa">
+      <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Shield className="h-3.5 w-3.5 text-slate-500" />
+        <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Mandatory two-step: platform-wide start date</p>
+      </div>
+      <div className="px-5 py-4 space-y-4">
+        <p className="text-xs text-slate-500">
+          Platform operators and every tenant's payroll, banking and access roles must use two-step sign-in from this date.
+          Moving it out postpones the requirement for the whole app, up to 90 days ahead. People who already set it up keep it. Platform Owner only; recorded in the audit log.
+        </p>
+        <p className="text-sm text-slate-200">Starts: <span data-testid="platform-mfa-date">{current ? new Date(current).toLocaleDateString() : 'not set'}</span></p>
+        <label htmlFor="platform-mfa-date-input" className="block space-y-1.5">
+          <span className="block text-xs font-medium text-slate-400">New start date</span>
+          <input id="platform-mfa-date-input" type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
+        </label>
+        <label htmlFor="platform-mfa-reason" className="block space-y-1.5">
+          <span className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</span>
+          <textarea id="platform-mfa-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+        </label>
+        {msg && <p className={`text-sm ${msg.ok ? 'text-emerald-400' : 'text-rose-400'}`} role="status">{msg.text}</p>}
+        <div className="flex justify-end">
+          <button type="button" onClick={save} disabled={saving || !date}
+            className="bg-sapphire hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save start date'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SecurityCenterPage() {
   const router = useRouter();
   const [postures, setPostures] = useState<TenantSecurityPosture[]>([]);
@@ -48,6 +108,8 @@ export default function SecurityCenterPage() {
           <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
+
+      <PlatformMfaDatePanel />
 
       {err ? (
         <div className="px-5 py-4 bg-amber-500/5 border border-amber-500/20 rounded-xl">

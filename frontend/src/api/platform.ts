@@ -882,6 +882,10 @@ export const platformApi = {
   /** Who must use two-step sign-in and how long a trusted browser lasts. A reason is required to move to 'Optional'. */
   updateTenantInvitationHandover: (tenantId: string, body: { enabled: boolean; reason?: string }) =>
     platform.put<{ allowAdminInvitationHandover: boolean }>(`/api/platform/tenants/${tenantId}/invitation-handover`, body).then(r => r.data),
+  getPlatformPrivilegedMfaEnforcement: () =>
+    platform.get<{ platformPrivilegedMfaEnforceFromUtc: string | null }>('/api/platform/security/privileged-mfa-enforcement').then(r => r.data),
+  setPlatformPrivilegedMfaEnforcement: (body: { enforceFromUtc: string; reason: string }) =>
+    platform.put<{ platformPrivilegedMfaEnforceFromUtc: string | null }>('/api/platform/security/privileged-mfa-enforcement', body).then(r => r.data),
   setTenantPrivilegedMfaEnforcement: (tenantId: string, body: { enforceFromUtc: string | null; reason: string }) =>
     platform.put<{ privilegedMfaEnforceFromUtc: string | null; platformPrivilegedMfaEnforceFromUtc: string | null }>(
       `/api/platform/tenants/${tenantId}/privileged-mfa-enforcement`, body).then(r => r.data),

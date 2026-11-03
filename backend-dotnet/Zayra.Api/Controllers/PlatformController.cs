@@ -5240,6 +5240,12 @@ public class PlatformController : ControllerBase
         });
     }
 
+    /// <summary>The platform-wide enforcement date shown on the Security Center.</summary>
+    [HttpGet("security/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> GetPlatformPrivilegedMfaEnforcement(CancellationToken ct) =>
+        Ok(new { platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct) });
+
     /// <summary>Moves the platform-wide enforcement date (operators, and every tenant without its own date).</summary>
     [HttpPut("security/privileged-mfa-enforcement")]
     [RequirePlatformRole(PlatformRoles.Owner)]
