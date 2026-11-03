@@ -2952,6 +2952,9 @@ public sealed class PayrollRunProcessor
             "TRANSPORT"        => "EARN:TRANSPORT",
             "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
             "OVERTIME"         => "EARN:OVERTIME",
+            // Overtime approved after its period closed is carried forward as an adjustment (code
+            // ADJ_ + "Overtime Back Pay"); it is still overtime expense, not "other earnings".
+            "ADJ_OVERTIME_BACK_PAY" => "EARN:OVERTIME",
             // POD-C3 — arrears are the SAME expense as the component they settle, just paid late. Routing
             // them to EARN:OTHER (5099) would move a retro basic-salary increase out of Basic Salary
             // Expense and quietly distort every payroll cost report. The GL stays balanced either way —

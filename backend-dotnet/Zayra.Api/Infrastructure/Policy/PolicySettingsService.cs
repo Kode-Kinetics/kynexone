@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Policy;
@@ -58,10 +59,8 @@ public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmi
     /// <summary>Stored value for the tenant, or null when the tenant has no override row.</summary>
     private async Task<string?> StoredAsync(Guid tenantId, string key, CancellationToken ct)
     {
-        // IgnoreQueryFilters is intentional: the ambient tenant filter hides everything outside an HTTP
-        // request (jobs), so the tenant is constrained explicitly here instead.
-        return await _db.SystemSettings.IgnoreQueryFilters().AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.Category == PolicyRegistry.StorageCategory && s.SettingKey == key)
+        return await ScopedBypass.TenantWide(_db.SystemSettings, tenantId, "Policy settings are read outside an HTTP request (jobs) where the ambient tenant filter hides rows; the tenant is pinned by ScopedBypass.").AsNoTracking()
+            .Where(s => s.Category == PolicyRegistry.StorageCategory && s.SettingKey == key)
             .Select(s => s.SettingValue)
             .FirstOrDefaultAsync(ct);
     }
@@ -115,9 +114,8 @@ public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmi
 
     public async Task<IReadOnlyList<PolicySettingView>> ListAsync(Guid tenantId, CancellationToken ct = default)
     {
-        // IgnoreQueryFilters is intentional: the tenant is constrained explicitly below.
-        var rows = await _db.SystemSettings.IgnoreQueryFilters().AsNoTracking()
-            .Where(s => s.TenantId == tenantId && s.Category == PolicyRegistry.StorageCategory)
+        var rows = await ScopedBypass.TenantWide(_db.SystemSettings, tenantId, "Policy settings are read outside an HTTP request (jobs) where the ambient tenant filter hides rows; the tenant is pinned by ScopedBypass.").AsNoTracking()
+            .Where(s => s.Category == PolicyRegistry.StorageCategory)
             .ToDictionaryAsync(s => s.SettingKey, s => s.SettingValue, ct);
         return PolicyRegistry.All.Select(def =>
         {
@@ -136,9 +134,8 @@ public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmi
         if (!PolicyRegistry.TryNormalise(def, value, out var normalised, out var error))
             return new PolicySetResult(PolicySetStatus.Invalid, error, null);
 
-        // IgnoreQueryFilters is intentional: the tenant is constrained explicitly below.
-        var row = await _db.SystemSettings.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Category == PolicyRegistry.StorageCategory && s.SettingKey == key, ct);
+        var row = await ScopedBypass.TenantWide(_db.SystemSettings, tenantId, "Policy settings are read outside an HTTP request (jobs) where the ambient tenant filter hides rows; the tenant is pinned by ScopedBypass.")
+            .FirstOrDefaultAsync(s => s.Category == PolicyRegistry.StorageCategory && s.SettingKey == key, ct);
         var old = row is null ? def.Default
             : def.Type == PolicyValueType.Csv ? string.Join(',', PolicyRegistry.ParseCsv(row.SettingValue))
             : PolicyRegistry.TryNormalise(def, row.SettingValue, out var o, out _) ? o : def.Default;
