@@ -188,13 +188,11 @@ function TwoStepPanel({ tenantId, policy, onSaved }: {
           <legend className="sr-only">Who must use two-step sign-in</legend>
           {TWO_STEP_OPTIONS.map(o => (
             <label key={o.value} htmlFor={`two-step-${o.value}`}
-              className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 ${mode === o.value ? 'border-sapphire/50 bg-sapphire/[0.07]' : 'border-white/[0.08]'}`}>
+              className={`grid cursor-pointer grid-cols-[auto_1fr] items-start gap-x-3 rounded-lg border px-3 py-2.5 ${mode === o.value ? 'border-sapphire/50 bg-sapphire/[0.07]' : 'border-white/[0.08]'}`}>
               <input id={`two-step-${o.value}`} type="radio" name="two-step-policy" value={o.value} checked={mode === o.value}
-                onChange={() => setMode(o.value)} className="mt-1 h-4 w-4 shrink-0 accent-sapphire" />
-              <span className="min-w-0">
-                <span className="block text-sm text-slate-200">{o.title}</span>
-                <span className="block text-xs text-slate-500">{o.hint}</span>
-              </span>
+                onChange={() => setMode(o.value)} className="row-span-2 mt-1 h-4 w-4 shrink-0 accent-sapphire" />
+              <span className="block text-sm text-slate-200">{o.title}</span>
+              <span className="block text-xs text-slate-500">{o.hint}</span>
             </label>
           ))}
         </fieldset>

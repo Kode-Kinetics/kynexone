@@ -434,7 +434,7 @@ test.describe('Setup → Sign-in security: the two-step sign-in group', () => {
     await expect(group.getByRole('radio')).toHaveCount(3);
     await expect(group.getByRole('radio', { name: /كل شخص يختار بنفسه/ })).toBeVisible();
     await expect(group.getByRole('radio', { name: /مطلوب من الجميع/ })).toBeVisible();
-    await expect(group.getByLabel('المتصفحات الموثوقة').locator('option')).toHaveText(['متوقف', '7 أيام', '14 يومًا', '30 يومًا (الافتراضي)', '90 يومًا']);
+    await expect(group.getByLabel('المتصفحات الموثوقة').locator('option')).toHaveText(['متوقف', '7 أيام', '14 يومًا', '30 يومًا (الافتراضي)', '60 يومًا', '90 يومًا']);
     await expect(group.getByText('المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.')).toBeVisible();
     await expect(group).not.toContainText('الثنائي');
     await expect(group.getByRole('heading', { name: 'التحقق بخطوتين' })).toHaveCSS('text-transform', 'none');
