@@ -508,7 +508,12 @@ public class EmployeeSelfServiceController : ControllerBase
         // A rejection is a decision too: it is audited exactly as an approval is (who, when, which request),
         // saved in the same SaveChanges as the status change.
         await EssAudit(tenantId, change.EmployeeId, "ess.profile_change.rejected", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
-        return Ok(change);
+        // Same decision-only shape as approve: the proposed values and step-up fields stay server-side.
+        return Ok(new
+        {
+            change.Id, change.EmployeeId, change.Status, change.Section,
+            change.DecidedAtUtc, change.DecidedBy, change.ReviewNote,
+        });
     }
 
     /// <summary>

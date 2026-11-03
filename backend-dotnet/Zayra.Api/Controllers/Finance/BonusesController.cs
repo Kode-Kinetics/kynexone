@@ -187,6 +187,23 @@ public class BonusesController : ControllerBase
         return SetupRemoval.Restored(this);
     }
 
+    private bool IsHrActor() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Director");
+    private bool IsFinanceActor() => User.IsInRole("Admin") || User.IsInRole("Finance");
+
+    /// <summary>
+    /// The batch, only when it is in the caller's company scope. A batch has no company of its own: it belongs
+    /// to the companies of its lines, and the line query already applies the caller's company scope. Visible
+    /// when at least one line is in scope, or when it has no lines at all (nothing to protect yet). Null reads
+    /// as "not found" so a batch of another entity is not even confirmed to exist.
+    /// </summary>
+    private async Task<BonusBatch?> ScopedBatchAsync(Guid batchId, Guid tid, CancellationToken ct)
+    {
+        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == batchId && x.TenantId == tid && !x.IsDeleted, ct);
+        if (batch is null || batch.EmployeeCount == 0) return batch;
+        var anyVisible = await _db.EmployeeBonuses.AnyAsync(x => x.BonusBatchId == batchId && !x.IsDeleted, ct);
+        return anyVisible ? batch : null;
+    }
+
     // ── Bonus Batches ─────────────────────────────────────────────────────────
 
     /// <summary>
@@ -213,11 +230,24 @@ public class BonusesController : ControllerBase
         pageSize = Math.Clamp(pageSize, 1, 100);
         if (BonusReadDenial() is { } denied) return denied;
         var tid = GetTenantId();
-        var q = _db.BonusBatches.Where(x => x.TenantId == tid && !x.IsDeleted);
+        // A batch belongs to the companies of its lines (the lines carry the company scope): a caller sees a
+        // batch only when at least one line is in their scope, or when it has no lines yet (nothing to protect).
+        var q = _db.BonusBatches.AsNoTracking().Where(x => x.TenantId == tid && !x.IsDeleted
+            && (x.EmployeeCount == 0 || _db.EmployeeBonuses.Any(l => l.BonusBatchId == x.Id && !l.IsDeleted)));
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
         var total = await q.CountAsync(ct);
         var items = await q.OrderByDescending(x => x.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        // Totals show only the lines the caller may see (the line query is company-scoped), never the other entities' pay.
+        var ids = items.Select(b => b.Id).ToList();
+        var visible = await _db.EmployeeBonuses.AsNoTracking()
+            .Where(l => ids.Contains(l.BonusBatchId) && !l.IsDeleted)
+            .GroupBy(l => l.BonusBatchId)
+            .Select(g => new { BatchId = g.Key, Count = g.Count(), Net = g.Sum(l => l.BonusAmount) })
+            .ToDictionaryAsync(g => g.BatchId, ct);
+        foreach (var b in items)
+            if (visible.TryGetValue(b.Id, out var v) && v.Count < b.EmployeeCount)
+            { b.EmployeeCount = v.Count; b.TotalAmount = v.Net; }
         return Ok(new { total, items });
     }
 
@@ -227,7 +257,7 @@ public class BonusesController : ControllerBase
     {
         if (BonusReadDenial() is { } denied) return denied;
         var tid = GetTenantId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
 
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
@@ -243,8 +273,25 @@ public class BonusesController : ControllerBase
 
         var bonuses = await bonusQuery.ToListAsync(ct);
         var approvals = await _db.BonusApprovals.Where(x => x.BonusBatchId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
-        var auditLogs = await _db.BonusAuditLogs.Where(x => x.BonusBatchId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var glEntries = await _db.FinanceGlEntries.Where(x => x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct);
+        var auditLogs = await _db.BonusAuditLogs.AsNoTracking().Where(x => x.TenantId == tid && x.BonusBatchId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        if (!IsHrActor() && !IsFinanceActor())
+        {
+            // As AdvancesController.Get: amount-bearing audit snapshots are an HR / Finance view. Redact a
+            // detached copy (AsNoTracking), never the stored evidence.
+            foreach (var log in auditLogs) { log.OldValuesJson = string.Empty; log.NewValuesJson = string.Empty; }
+        }
+        // The journal carries the whole batch's amounts: a Finance view, tenant-bound like every other read.
+        var glEntries = IsFinanceActor()
+            ? await _db.FinanceGlEntries.Where(x => x.TenantId == tid && x.SourceEntityId == id).OrderByDescending(x => x.EntryDate).ToListAsync(ct)
+            : new List<FinanceGlEntry>();
+        // A caller who sees only some of the batch's lines sees the totals of those lines, not the other entities' pay.
+        var visibleLines = await _db.EmployeeBonuses.AsNoTracking().Where(x => x.BonusBatchId == id && !x.IsDeleted).Select(x => x.BonusAmount).ToListAsync(ct);
+        if (visibleLines.Count < batch.EmployeeCount)
+        {
+            batch = (BonusBatch)_db.Entry(batch).CurrentValues.ToObject();   // detached copy; the stored batch is untouched
+            batch.EmployeeCount = visibleLines.Count;
+            batch.TotalAmount = visibleLines.Sum();
+        }
         // SAFE-SERIALIZATION: batch is BonusBatch (aggregate totals, no per-employee PII).
         return Ok(new { batch, bonuses = bonuses.Select(b => EmployeeBonusDto.Project(b, scope.IsUnrestricted)).ToList(), approvals, auditLogs, glEntries });
     }
@@ -281,7 +328,7 @@ public class BonusesController : ControllerBase
     public async Task<IActionResult> UpdateBatch(Guid id, [FromBody] UpdateBatchRequest req, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
         if (batch.Status != "Draft") return BadRequest("Only Draft batches can be edited.");
         batch.BatchName = req.BatchName ?? batch.BatchName;
@@ -299,7 +346,7 @@ public class BonusesController : ControllerBase
     public async Task<IActionResult> DeleteBatch(Guid id, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
         if (batch.Status is not ("Draft" or "Cancelled"))
             return BadRequest("Only Draft or Cancelled batches can be deleted. Reject the batch first.");
@@ -339,7 +386,7 @@ public class BonusesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == batchId && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(batchId, tid, ct);
         if (batch == null) return NotFound("Batch not found.");
         if (batch.Status != "Draft") return BadRequest("Can only add employees to a Draft batch.");
 
@@ -399,7 +446,7 @@ public class BonusesController : ControllerBase
     public async Task<IActionResult> BulkAddEmployees(Guid batchId, [FromBody] BulkAddRequest req, CancellationToken ct)
     {
         var tid = GetTenantId(); var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == batchId && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(batchId, tid, ct);
         if (batch == null) return NotFound("Batch not found.");
         if (batch.Status != "Draft") return BadRequest("Can only add employees to a Draft batch.");
 
@@ -553,7 +600,7 @@ public class BonusesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
         if (batch.Status != "Draft") return BadRequest("Only Draft batches can be submitted.");
         if (batch.EmployeeCount == 0) return BadRequest("Batch has no employees.");
@@ -579,6 +626,7 @@ public class BonusesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        // Not scope-gated here: a partial view is refused below with company_scope_partial, which names the cause.
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();
         if (batch.Status != "PendingApproval") return BadRequest("Batch is not pending approval.");
@@ -720,6 +768,7 @@ public class BonusesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
+        // Not scope-gated here: a partial view is refused below with company_scope_partial, which names the cause.
         var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
         if (batch == null) return NotFound();
 
@@ -866,7 +915,7 @@ public class BonusesController : ControllerBase
     {
         var tid = GetTenantId();
         var uid = GetUserId();
-        var batch = await _db.BonusBatches.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
         // Double-pay guard must run before the status check: Process() sets IsLockedByPayroll=true
         // and Status="Paid" simultaneously, so without this order the 409 is swallowed by the 400.

@@ -761,6 +761,7 @@ public static class EmployeeDocumentSensitivity
 {
     public const string Identity = "Identity";
     public const string Payroll = "Payroll";
+    public const string Contract = "Contract";
 
     private static readonly HashSet<string> IdentityCategories = new(StringComparer.Ordinal)
     {
@@ -770,6 +771,12 @@ public static class EmployeeDocumentSensitivity
     private static readonly HashSet<string> PayrollCategories = new(StringComparer.Ordinal)
     {
         "payroll", "payrolldocument", "payrolldocuments", "payrollandbank", "salaryandpayroll",
+    };
+
+    // Contracts carry the pay terms, so they are protected like identity and payroll documents.
+    private static readonly HashSet<string> ContractCategories = new(StringComparer.Ordinal)
+    {
+        "contract", "contracts", "employmentcontract", "employmentcontracts", "contractdocument", "contractdocuments",
     };
 
     // Exact server-owned registry. Values include the current remote/fallback field-catalog labels,
@@ -812,6 +819,10 @@ public static class EmployeeDocumentSensitivity
         "Fixed deduction", "FixedDeduction",
         "MOL personal ID", "MolId");
 
+    private static readonly HashSet<string> ContractDocumentTypes = ExactRegistry(
+        "Contract", "Employment Contract", "Signed Contract", "Signed employment contract", "Labour Contract", "Labor Contract",
+        "Qiwa Contract", "عقد", "عقد العمل", "عقد عمل");
+
     public static bool IsSensitive(string? documentType, string? category) =>
         CanonicalSensitiveCategory(documentType, category) is not null;
 
@@ -824,10 +835,12 @@ public static class EmployeeDocumentSensitivity
         var typeKey = Normalize(documentType);
         if (IdentityDocumentTypes.Contains(typeKey)) return Identity;
         if (PayrollDocumentTypes.Contains(typeKey)) return Payroll;
+        if (ContractDocumentTypes.Contains(typeKey)) return Contract;
 
         var categoryKey = Normalize(category);
         if (IdentityCategories.Contains(categoryKey)) return Identity;
         if (PayrollCategories.Contains(categoryKey)) return Payroll;
+        if (ContractCategories.Contains(categoryKey)) return Contract;
         return null;
     }
 
