@@ -113,4 +113,30 @@ public class TenantTwoStepPolicyTests : PlatformTestBase
         (await controller.UpdateTenantTwoStepPolicy(Guid.NewGuid(), new UpdateTenantTwoStepPolicyRequest(null, 30, null), default))
             .Should().BeOfType<NotFoundObjectResult>();
     }
+
+    [Fact]
+    public async Task InvitationHandover_IsOffByDefault_AndSwitchingItOnNeedsAReason_AndIsAudited()
+    {
+        await using var db = CreateDb();
+        var t = await SeedTenant(db);
+        var controller = CreateController(db);
+
+        JsonSerializer.Serialize(((OkObjectResult)await controller.GetTenantSecurityPolicy(t.Id, default)).Value)
+            .Should().Contain("\"allowAdminInvitationHandover\":false");
+
+        (await controller.UpdateTenantInvitationHandover(t.Id, new UpdateTenantInvitationHandoverRequest(true, " "), default))
+            .Should().BeOfType<BadRequestObjectResult>();
+        (await db.SecuritySettings.CountAsync(s => s.TenantId == t.Id)).Should().Be(0);
+
+        (await controller.UpdateTenantInvitationHandover(t.Id, new UpdateTenantInvitationHandoverRequest(true, "Demo tenant, invite emails are not deliverable"), default))
+            .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.SecuritySettings.SingleAsync(s => s.TenantId == t.Id)).AllowAdminInvitationHandover.Should().BeTrue();
+        (await db.AdminAuditLogs.CountAsync(l => l.TenantId == t.Id && l.Action == "InvitationHandoverUpdated")).Should().Be(1);
+
+        (await controller.UpdateTenantInvitationHandover(t.Id, new UpdateTenantInvitationHandoverRequest(false, null), default))
+            .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.SecuritySettings.SingleAsync(s => s.TenantId == t.Id)).AllowAdminInvitationHandover.Should().BeFalse();
+    }
 }

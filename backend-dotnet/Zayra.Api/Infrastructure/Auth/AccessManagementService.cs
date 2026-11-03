@@ -2103,7 +2103,9 @@ public class AccessManagementService : IAccessManagementService
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == userId && !x.IsDeleted, cancellationToken)
             ?? throw new InvalidOperationException("User not found.");
-        AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user);
+        var handoverAllowed = await _db.SecuritySettings.AsNoTracking()
+            .Where(x => x.TenantId == tenantId).Select(x => x.AllowAdminInvitationHandover).FirstOrDefaultAsync(cancellationToken);
+        AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user, handoverAllowed);
         if (string.Equals(AuthCurrentEligibility.PrimaryAccess(user)?.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal))
             throw new InvalidOperationException(
                 "This person has no portal login, so there is no password to set. Invite them to the portal first.");
@@ -2146,6 +2148,9 @@ public class AccessManagementService : IAccessManagementService
         // link is redeemed. Refusing here means an administrator is never handed a link that is
         // guaranteed to fail in the user's hands — the alternative is a silent dead end, which is
         // the class of defect this endpoint exists to remove.
+        if (user.Status is "Invited" or "PendingPasswordSetup")
+            throw new InvalidOperationException(
+                "This person has been invited but has not accepted yet, so there is no password to reset. Invite them again to get a fresh link, then hand it over.");
         if (string.Equals(user.AccessMode, AccessModes.NoLogin, StringComparison.Ordinal))
             throw new InvalidOperationException(
                 "This person has no portal login, so there is no password to reset. Invite them to the portal first.");

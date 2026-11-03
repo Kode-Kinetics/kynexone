@@ -57,6 +57,77 @@ public sealed class AdminSetTemporaryPasswordTests
     }
 
     [Fact]
+    public async Task ATemporaryPassword_CompletesAPendingInvitation_AndTheAdminVouchesForTheEmail()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        (await db.SecuritySettings.SingleAsync()).AllowAdminInvitationHandover = true;
+        var target = await db.Users.SingleAsync(x => x.Id == w.TargetId);
+        target.Status = "Invited"; target.IsActive = false; target.IsEmailConfirmed = false; target.AccessMode = AccessModes.NoLogin;
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+        {
+            TenantId = w.TenantId, EmployeeId = 7, UserId = w.TargetId, AccessMode = AccessModes.EssOnly,
+            Status = "Invited", RequiresPasswordSetup = true, InvitationTokenHash = "pending-hash",
+        });
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, w, w.AdminId).AdminResetPassword(w.TargetId, new AdminResetPasswordRequest(Temporary, Reason), default);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var user = await db.Users.AsNoTracking().SingleAsync(x => x.Id == w.TargetId);
+        user.Status.Should().Be("Active");
+        user.IsActive.Should().BeTrue();
+        user.IsEmailConfirmed.Should().BeTrue();
+        user.AccessMode.Should().Be(AccessModes.EssOnly);
+        user.MustChangePassword.Should().BeTrue("the administrator knows this password, so it is only good for choosing a new one");
+        var link = await db.EmployeeUserAccounts.AsNoTracking().SingleAsync();
+        link.Status.Should().Be("Active");
+        link.RequiresPasswordSetup.Should().BeFalse();
+        link.InvitationTokenHash.Should().BeEmpty("the invitation link is spent");
+        link.InvitationAcceptedAtUtc.Should().NotBeNull();
+        (await db.AuditLogs.AsNoTracking().SingleAsync(x => x.Action == "access.admin_password_reset"))
+            .Metadata.Should().Contain("emailConfirmedByAdmin\":true");
+    }
+
+    [Fact]
+    public async Task ATemporaryPassword_ForAnInvitedLogin_IsRefusedUnlessThePlatformSwitchedItOn()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        var target = await db.Users.SingleAsync(x => x.Id == w.TargetId);
+        target.Status = "Invited"; target.IsActive = false; target.IsEmailConfirmed = false; target.AccessMode = AccessModes.NoLogin;
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+        {
+            TenantId = w.TenantId, EmployeeId = 7, UserId = w.TargetId, AccessMode = AccessModes.EssOnly,
+            Status = "Invited", RequiresPasswordSetup = true, InvitationTokenHash = "pending-hash",
+        });
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, w, w.AdminId).AdminResetPassword(w.TargetId, new AdminResetPasswordRequest(Temporary, Reason), default);
+
+        Body(result.Should().BeOfType<BadRequestObjectResult>().Subject).GetRawText().Should().Contain("platform administrator");
+        (await db.Users.AsNoTracking().SingleAsync(x => x.Id == w.TargetId)).IsActive.Should().BeFalse();
+        (await db.EmployeeUserAccounts.AsNoTracking().SingleAsync()).Status.Should().Be("Invited");
+    }
+
+    [Fact]
+    public async Task AnInvitedLogin_WithNoPendingInvitation_IsStillRefused_WithAnAccurateMessage()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        var target = await db.Users.SingleAsync(x => x.Id == w.TargetId);
+        target.Status = "Invited"; target.IsActive = false; target.AccessMode = AccessModes.NoLogin;
+        (await db.SecuritySettings.SingleAsync()).AllowAdminInvitationHandover = true;
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, w, w.AdminId).AdminResetPassword(w.TargetId, new AdminResetPasswordRequest(Temporary, Reason), default);
+
+        Body(result.Should().BeOfType<BadRequestObjectResult>().Subject).GetRawText()
+            .Should().Contain("no pending invitation").And.NotContain("no portal login");
+        (await db.Users.AsNoTracking().SingleAsync(x => x.Id == w.TargetId)).IsActive.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task SigningInWithTheTemporaryPassword_OpensNoSession_AndOnlyLetsTheUserChooseTheirOwn()
     {
         await using var db = CreateDb();

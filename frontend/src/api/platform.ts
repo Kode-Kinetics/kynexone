@@ -513,6 +513,8 @@ export interface TenantSecurityPolicy {
   mfaPolicy: TwoStepPolicy;
   /** How long a trusted browser skips the code step: 0 (off) to 90 days. */
   mfaTrustedDeviceDays: number;
+  /** Platform-controlled: a workspace administrator may hand a temporary password to someone whose invitation is pending. */
+  allowAdminInvitationHandover: boolean;
   isCustomPolicy: boolean;
   updatedAtUtc?: string;
 }
@@ -875,6 +877,8 @@ export const platformApi = {
     platform.put(`/api/platform/tenants/${tenantId}/security-policy`, body),
 
   /** Who must use two-step sign-in and how long a trusted browser lasts. A reason is required to move to 'Optional'. */
+  updateTenantInvitationHandover: (tenantId: string, body: { enabled: boolean; reason?: string }) =>
+    platform.put<{ allowAdminInvitationHandover: boolean }>(`/api/platform/tenants/${tenantId}/invitation-handover`, body).then(r => r.data),
   updateTenantTwoStepPolicy: (tenantId: string, body: { mfaPolicy?: TwoStepPolicy; mfaTrustedDeviceDays?: number; reason?: string }) =>
     platform.put<{ mfaPolicy: TwoStepPolicy; mfaTrustedDeviceDays: number }>(`/api/platform/tenants/${tenantId}/two-step-policy`, body).then(r => r.data),
 

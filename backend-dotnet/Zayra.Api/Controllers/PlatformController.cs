@@ -5171,6 +5171,7 @@ public class PlatformController : ControllerBase
             allowMultipleSessions      = sec?.AllowMultipleSessions ?? true,
             mfaPolicy                  = sec?.EffectiveMfaPolicy ?? MfaPolicies.PrivilegedRoles,
             mfaTrustedDeviceDays       = sec?.MfaTrustedDeviceDays ?? SecuritySetting.DefaultMfaTrustedDeviceDays,
+            allowAdminInvitationHandover = sec?.AllowAdminInvitationHandover ?? false,
             privilegedMfaEnforceFromUtc = sec?.PrivilegedMfaEnforceFromUtc,
             platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
             isCustomPolicy             = sec is not null,
@@ -5277,6 +5278,34 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
         return Ok(new { platformPrivilegedMfaEnforceFromUtc = PrivilegedMfaPolicy.ParseDate(entry.Value) });
+    }
+
+    /// <summary>
+    /// Lets a workspace administrator hand a temporary password to someone whose invitation is still pending (their
+    /// email never arrived). It skips the invitee's proof of email ownership, so only the platform can switch it on.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/invitation-handover")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> UpdateTenantInvitationHandover(Guid tenantId, [FromBody] UpdateTenantInvitationHandoverRequest body, CancellationToken ct)
+    {
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound(new { message = "Tenant not found." });
+        var reason = body.Reason?.Trim() ?? string.Empty;
+        if (body.Enabled && reason.Length < 3)
+            return BadRequest(new { message = "Give a reason for switching this on. It is kept in the audit log." });
+
+        var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenantId };
+            _db.SecuritySettings.Add(sec);
+        }
+        var before = sec.AllowAdminInvitationHandover;
+        sec.AllowAdminInvitationHandover = body.Enabled;
+        sec.UpdatedAtUtc = DateTime.UtcNow;
+        AuditPlatformAction(tenantId, "InvitationHandoverUpdated", "SecuritySetting", tenantId.ToString(),
+            new { before, after = body.Enabled, reason });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { allowAdminInvitationHandover = sec.AllowAdminInvitationHandover });
     }
 
     /// <summary>
@@ -6058,6 +6087,7 @@ public record BulkTenantActionRequest(List<Guid> TenantIds, string? Reason);
 public record BulkDeleteTenantsRequest(List<Guid> TenantIds, string Confirm);
 
 /// <summary>MfaPolicy: Optional | PrivilegedRoles | Everyone. Reason is required when moving to Optional.</summary>
+public record UpdateTenantInvitationHandoverRequest(bool Enabled, string? Reason);
 public record UpdateTenantTwoStepPolicyRequest(string? MfaPolicy, int? MfaTrustedDeviceDays, string? Reason);
 public record BulkFeatureFlagRequest(
     List<Guid>? TenantIds,
