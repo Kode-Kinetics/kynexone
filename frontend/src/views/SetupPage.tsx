@@ -103,7 +103,7 @@ import { msg } from '../i18n/translations';
 import { LoadError, useConfirm } from '../components/gl/glUi';
 import { describeApiError } from '../lib/apiError';
 import { CountryPayrollKeys } from '../components/setup/accessWorkspaceSetupPanels';
-import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
+import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgStructureAccess, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { useReleaseA } from '../lib/releaseA';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
@@ -168,14 +168,17 @@ function CompaniesTab() {
   const t = useT();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
   const { accountType, isGroupScope } = useCompany();
   const router = useRouter();
   // Company mutations require organization write access. organization.read-only viewers
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
   // tab via the /companies redirect and get the same read-only list they had before,
   // with no inert (always-403) action controls.
-  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  // The API also requires the Admin or HR Manager role (CompaniesController), so the permission alone does not show write controls.
+  const { canWrite } = useOrgStructureAccess(['organization.write', 'organization.establishment.write']);
+  // Suspend / reactivate is Admin-only on the server.
+  const canSetStatus = hasRole('Admin');
   // The ERP company code decides whose ledger the ERP books a company's journals into: only the general-ledger
   // manager may set or change it (the server enforces this and explains a refusal; the form only reflects it).
   const canSetErpCode = hasPermission('finance.gl.manage');
@@ -395,7 +398,7 @@ function CompaniesTab() {
             <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
               {canWrite && <CompanyRowActions companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
                 { label: 'View statutory profile', onSelect: () => { void loadStatutorySummary(c.id); } },
-                ...(c.approvalStatus !== 'Draft' ? [{ label: c.isActive ? 'Suspend' : 'Reactivate', disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
+                ...(c.approvalStatus !== 'Draft' && canSetStatus ? [{ label: c.isActive ? 'Suspend' : 'Reactivate', disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
                 { label: 'Delete company', destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
               ]} />}
             </td>
@@ -577,6 +580,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'branch', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<BranchDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -626,7 +630,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
       {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined}
         addLabel={msg('Add Branch')}
         loading={loading} loadError={loadError} onRetry={load}
         empty={items.filter((x) => showOff || x.isActive).length === 0}
@@ -642,14 +646,14 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />
           </>
         }
-        actions={
+        actions={access.canWrite ? (
           <ImportExportToolbar
             entityName="Branches"
             onExport={async () => { const csv = await branchesApi.export(); downloadCsv(csv, 'branches.csv'); }}
             onDownloadTemplate={async () => { const csv = await branchesApi.importTemplate(); downloadCsv(csv, 'branches-template.csv'); }}
             onImport={async (csv) => { const r = await branchesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        }
+        ) : undefined}
       >
         {items.filter((b) => showOff || b.isActive).map((b) => (
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -660,8 +664,10 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={writeAccess(b.companyId).reason}
-                  onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
+              {access.canWrite && (
+                <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={writeAccess(b.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
+              )}
             </td>
           </tr>
         ))}
@@ -730,6 +736,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const { locale } = useLocale();
   const removal = useOrgRowRemoval({ kind: 'department', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -782,13 +789,13 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('Cost Center'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined}
         addLabel={msg('Add Department')}
         loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
-        actions={
+        actions={access.canWrite ? (
           <ImportExportToolbar
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
@@ -797,7 +804,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader, locale); }}
             onImport={async (csv, _key, options) => { const r = await departmentsApi.import(csv, importCompanyId, options); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        }
+        ) : undefined}
       >
         {shown.map((d) => (
           <tr key={d.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -807,8 +814,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{costCenters.find((c) => c.id === d.costCenterId)?.name ?? '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
-                  onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
+              {access.canWrite && (
+                <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
+              )}
             </td>
           </tr>
         ))}
@@ -1867,6 +1876,7 @@ function LocationsTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'location', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1908,17 +1918,17 @@ function LocationsTab() {
   return (
     <>
       {removal.notice}
-      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={access.canWrite ? openNew : undefined} addLabel={msg('Add Location')}
         loading={loading} loadError={loadError} onRetry={load} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
-        actions={
+        actions={access.canWrite ? (
           <ImportExportToolbar
             entityName="Locations"
             onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
             onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}
             onImport={async (csv) => { const r = await locationsApi.import(csv); load(); return r; }}
           />
-        }
+        ) : undefined}
       >
         {items.filter((l) => showOff || l.isActive).map((l) => (
           <tr key={l.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -1929,8 +1939,10 @@ function LocationsTab() {
             <td className="px-4 py-3 text-slate-500 text-xs">{l.geofenceRadiusMeters ? `${l.geofenceRadiusMeters}m` : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={l.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={writeAccess(undefined).reason}
-                  onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
+              {access.canWrite && (
+                <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={writeAccess(undefined).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
+              )}
             </td>
           </tr>
         ))}

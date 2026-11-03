@@ -39,6 +39,28 @@ export function useOrgWriteAccess(permission: string | null = 'organization.writ
   }, [mayWrite, isGroupScope, companies, t]);
 }
 
+/** Roles the API requires to write a branch, department, location or company (BranchesController, DepartmentsController,
+ *  LocationsController, CompaniesController: Admin or HR Manager). Holding organization.write alone is not enough. */
+export const ORG_STRUCTURE_WRITE_ROLES = ['Admin', 'HR Manager'] as const;
+
+/**
+ * What the signed-in person may do on the Company structure tabs, by the rules the server applies: writing needs one of the
+ * roles above AND a write permission; Remove and Restore additionally need organization.delete. A person who cannot write
+ * sees the list and nothing to press (the server would refuse every write); a writer without organization.delete sees Remove
+ * and Restore disabled with the reason. `permissions` is any-of (Companies also accepts the establishment grant).
+ */
+export function useOrgStructureAccess(permissions: readonly string[] = ['organization.write']) {
+  const t = useT();
+  const { hasPermission, hasRole } = useAuth();
+  const canWrite = ORG_STRUCTURE_WRITE_ROLES.some(role => hasRole(role)) && permissions.some(permission => hasPermission(permission));
+  const canDelete = canWrite && hasPermission('organization.delete');
+  return {
+    canWrite,
+    canDelete,
+    deleteBlockedReason: canDelete ? undefined : t('You do not have permission to remove or restore this.'),
+  };
+}
+
 /** The two calls a Setup list needs. Organisation rows use `orgRowsApi`; any other Setup row passes its own pair, which
  *  must return the same body (`outcome`, `message`, `usage`). `acknowledge` is sent when the person confirmed a warning. */
 export interface RemovalApi {
@@ -122,7 +144,7 @@ export function useOrgRowRemoval({ kind, api, noun, warning, onDone }: {
 const REMOVE_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-slate-200 disabled:hover:bg-transparent disabled:hover:text-slate-600 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 /** Edit | Remove (| Restore) for one row. `blockedReason` disables all three and says why, visibly. */
-export function OrgRowActions({ name, isActive, busy, onEdit, onRemove, onRestore, blockedReason, removeBlockedReason, extra, editable = true }: {
+export function OrgRowActions({ name, isActive, busy, onEdit, onRemove, onRestore, blockedReason, removeBlockedReason, deleteBlockedReason, extra, editable = true }: {
   name: string;
   isActive: boolean;
   busy?: boolean;
@@ -132,12 +154,16 @@ export function OrgRowActions({ name, isActive, busy, onEdit, onRemove, onRestor
   blockedReason?: string;
   /** Blocks only Remove (Edit and Restore stay available), e.g. "This is the default template". Shown as text beside the row. */
   removeBlockedReason?: string;
+  /** Blocks Remove and Restore (the organization.delete permission) while Edit stays available. Shown as text beside the row. */
+  deleteBlockedReason?: string;
   extra?: ReactNode;
   /** False where editing happens elsewhere (the Establishment panel): the Edit button is left out. */
   editable?: boolean;
 }) {
   const t = useT();
   const blocked = !!blockedReason;
+  const deleteBlocked = blocked || !!deleteBlockedReason;
+  const shownReason = blockedReason ?? deleteBlockedReason ?? removeBlockedReason;
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-1">
@@ -147,16 +173,16 @@ export function OrgRowActions({ name, isActive, busy, onEdit, onRemove, onRestor
           </button>
         )}
         {!isActive && (
-          <button type="button" onClick={onRestore} disabled={blocked || busy} title={blockedReason} className={REMOVE_BUTTON} data-testid="org-row-restore">
+          <button type="button" onClick={onRestore} disabled={deleteBlocked || busy} title={blockedReason ?? deleteBlockedReason} className={REMOVE_BUTTON} data-testid="org-row-restore">
             <RotateCcw className="h-3 w-3" aria-hidden="true" /> {t('Restore')}<span className="sr-only"> {name}</span>
           </button>
         )}
-        <button type="button" onClick={onRemove} disabled={blocked || busy || !!removeBlockedReason} title={blockedReason ?? removeBlockedReason} className={REMOVE_BUTTON} data-testid="org-row-remove">
+        <button type="button" onClick={onRemove} disabled={deleteBlocked || busy || !!removeBlockedReason} title={shownReason} className={REMOVE_BUTTON} data-testid="org-row-remove">
           <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> {t('Remove')}<span className="sr-only"> {name}</span>
         </button>
         {extra}
       </div>
-      {(blockedReason || removeBlockedReason) && <p className="max-w-[16rem] text-caption leading-4 text-slate-500 dark:text-slate-400" data-testid="org-row-blocked-reason">{blockedReason ?? removeBlockedReason}</p>}
+      {shownReason && <p className="max-w-[16rem] text-caption leading-4 text-slate-500 dark:text-slate-400" data-testid="org-row-blocked-reason">{shownReason}</p>}
     </div>
   );
 }

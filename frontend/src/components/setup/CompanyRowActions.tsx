@@ -63,7 +63,7 @@ export function CompanyRowActions({ companyName, onEdit, actions }: {
 
   return <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center">
     <button type="button" onClick={onEdit} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs">
-      <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}
+      <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}<span className="sr-only"> {companyName}</span>
     </button>
     <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       aria-label={`${t('More actions')}: ${companyName}`} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs"

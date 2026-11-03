@@ -51,6 +51,7 @@ import { payrollRules } from './payrollRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
 import { removalSafety } from './removalSafety';
+import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
 import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
@@ -75,6 +76,7 @@ type Dict = Record<string, string>;
 const en: Dict = {
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
+  ...companyStructure.en,
   ...appChrome.en,
   ...dailyA.en,
   ...dailyB.en,
@@ -1591,6 +1593,7 @@ const en: Dict = {
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
   ...removalSafety.ar,
+  ...companyStructure.ar,
   ...appChrome.ar,
   ...dailyA.ar,
   ...dailyB.ar,
