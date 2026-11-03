@@ -124,10 +124,17 @@
         "app/platform/tenants/page.tsx  hardcoded: 77 → 80",
         "app/platform/tenants/page.tsx  locale: 1 → 2"
       ]
+    },
+    {
+      "pinnedAt": "2026-11-03",
+      "reason": "Platform console (English-only operator surface): new invitation hand-over panel on the tenant Security page; copy matches the existing untranslated panels there.",
+      "increases": [
+        "app/platform/tenants/[id]/security/page.tsx  hardcoded: 36 → 40"
+      ]
     }
   ],
   "totals": {
-    "hardcoded": 3961,
+    "hardcoded": 3965,
     "rawStatus": 51,
     "locale": 184,
     "icons": 0,
@@ -293,7 +300,7 @@
       "locale": 2
     },
     "app/platform/tenants/[id]/security/page.tsx": {
-      "hardcoded": 36,
+      "hardcoded": 40,
       "locale": 2
     },
     "app/platform/tenants/[id]/users/page.tsx": {
