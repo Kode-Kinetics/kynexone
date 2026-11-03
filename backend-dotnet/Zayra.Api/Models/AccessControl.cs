@@ -79,6 +79,10 @@ public class SecuritySetting : ITenantOwned
     // How many days a browser stays trusted after a two-step code (mfa_trusted_devices). 0 = the tenant does not
     // offer "Trust this browser" at all. Changing it never extends a browser already trusted.
     public int MfaTrustedDeviceDays { get; set; } = DefaultMfaTrustedDeviceDays;
+    /// <summary>Platform-controlled (Owner/Admin only, never the tenant's own settings): a workspace administrator may set a
+    /// temporary password for someone whose invitation is still pending, which completes it without the invitee's
+    /// email. Off by default; it skips proof of email ownership, so each tenant is switched on deliberately.</summary>
+    public bool AllowAdminInvitationHandover { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? UpdatedBy { get; set; }
 }

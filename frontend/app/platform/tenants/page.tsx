@@ -297,18 +297,23 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
 
 // ── Confirm Modal ─────────────────────────────────────────────────────────────
 
-function ConfirmModal({ title, message, onConfirm, onClose, danger = false, requireReason = false }: {
+function ConfirmModal({ title, message, onConfirm, onClose, danger = false, requireReason = false, requireTyped }: {
   title: string; message: string;
   onConfirm: (reason: string) => void;
   onClose: () => void;
   danger?: boolean;
   requireReason?: boolean;
+  /** The exact text the operator must type before Confirm is enabled (deletes). */
+  requireTyped?: string;
 }) {
   const [reason, setReason] = useState('');
+  const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
+  const typedOk = requireTyped === undefined || typed === requireTyped;
 
   async function confirm() {
     if (requireReason && !reason.trim()) return;
+    if (!typedOk) return;
     setBusy(true);
     try { await onConfirm(reason); } finally { setBusy(false); }
   }
@@ -324,12 +329,20 @@ function ConfirmModal({ title, message, onConfirm, onClose, danger = false, requ
             placeholder="Reason (required)"
             className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-sapphire/60 resize-none" />
         )}
+        {requireTyped !== undefined && (
+          <label className="block space-y-1.5">
+            <span className="text-xs text-slate-500">Type <span className="font-mono text-slate-300">{requireTyped}</span> to confirm</span>
+            <input value={typed} onChange={e => setTyped(e.target.value)} autoComplete="off" spellCheck={false}
+              aria-label={`Type ${requireTyped} to confirm`}
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-600 focus:outline-none focus:border-rose-500/60" />
+          </label>
+        )}
         <div className="flex gap-3">
           <button type="button" onClick={onClose}
             className="flex-1 border border-white/10 text-slate-400 hover:text-white rounded-lg py-2 text-sm transition-colors">
             Cancel
           </button>
-          <button type="button" onClick={confirm} disabled={busy || (requireReason && !reason.trim())}
+          <button type="button" onClick={confirm} disabled={busy || (requireReason && !reason.trim()) || !typedOk}
             className={`flex-1 text-white rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40 ${
               danger ? 'bg-rose-600 hover:bg-rose-500' : 'bg-sapphire hover:bg-blue-500'
             }`}>
@@ -443,7 +456,7 @@ function BulkFeatureModal({ selectedCount, totalCount, onClose, onApply }: {
 
 function TenantRow({ t, onAction, selected, onToggle }: {
   t: PlatformTenantSummary;
-  onAction: (action: 'suspend' | 'reactivate', t: PlatformTenantSummary) => void;
+  onAction: (action: 'suspend' | 'reactivate' | 'delete', t: PlatformTenantSummary) => void;
   selected: boolean;
   onToggle: (id: string) => void;
 }) {
@@ -521,7 +534,15 @@ function TenantRow({ t, onAction, selected, onToggle }: {
       </td>
       {/* Expiry */}
       <td className="px-3 py-3 text-end tabular-nums">
-        <span className={`text-xs ${expiry.cls}`}>{expiry.text}</span>
+        {t.isDeleted ? (
+          <span className="text-xs text-amber-400" title={t.recoverableUntilUtc ? `Recoverable until ${new Date(t.recoverableUntilUtc).toLocaleDateString('en-GB')}` : 'Deletion date unknown'}>
+            {t.recoverableUntilUtc
+              ? (() => { const d = daysUntil(t.recoverableUntilUtc); return d !== null && d >= 0 ? `Restore within ${d}d` : 'Window closed'; })()
+              : 'Deleted'}
+          </span>
+        ) : (
+          <span className={`text-xs ${expiry.cls}`}>{expiry.text}</span>
+        )}
       </td>
       {/* Actions */}
       <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
@@ -539,6 +560,13 @@ function TenantRow({ t, onAction, selected, onToggle }: {
               Suspend
             </button>
           ) : null}
+          {!t.isDeleted && (
+            <button type="button" aria-label={`Delete ${t.name}`} title="Delete tenant (Owner only)"
+              onClick={() => onAction('delete', t)}
+              className="h-6 w-6 flex items-center justify-center text-slate-600 hover:text-rose-400 hover:bg-rose-500/10 rounded transition-colors">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
           <Link href={`/platform/tenants/${t.id}`}
             className="h-6 w-6 flex items-center justify-center text-slate-600 hover:text-white hover:bg-white/[0.06] rounded transition-colors">
             <MoreHorizontal className="h-3.5 w-3.5" />
@@ -560,7 +588,7 @@ export default function TenantsPage() {
   const [search, setSearch]       = useState('');
   const [statusFilter, setStatus] = useState('All');
   const [showNew, setShowNew]     = useState(false);
-  const [confirm, setConfirm]     = useState<{ action: 'suspend' | 'reactivate'; tenant: PlatformTenantSummary } | null>(null);
+  const [confirm, setConfirm]     = useState<{ action: 'suspend' | 'reactivate' | 'delete'; tenant: PlatformTenantSummary } | null>(null);
   const [opMsg, setOpMsg]         = useState<{ text: string; ok: boolean } | null>(null);
   const [selected, setSelected]   = useState<Set<string>>(new Set());
   const [bulkConfirm, setBulkConfirm] = useState<'suspend' | 'reactivate' | 'delete' | 'restore' | 'purge' | null>(null);
@@ -584,12 +612,14 @@ export default function TenantsPage() {
     const { action, tenant } = confirm;
     try {
       if (action === 'suspend')     await platformApi.suspendTenant(tenant.id, reason);
+      else if (action === 'delete') await platformApi.deleteTenant(tenant.id, tenant.slug);
       else                          await platformApi.reactivateTenant(tenant.id, reason);
-      setOpMsg({ text: `${tenant.name} ${action === 'suspend' ? 'suspended' : 'reactivated'}.`, ok: true });
+      setOpMsg({ text: `${tenant.name} ${action === 'suspend' ? 'suspended' : action === 'delete' ? 'deleted' : 'reactivated'}.`, ok: true });
       setConfirm(null);
       await load();
-    } catch {
-      setOpMsg({ text: `Failed to ${action} tenant.`, ok: false });
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setOpMsg({ text: detail ?? `Failed to ${action} tenant.`, ok: false });
       setConfirm(null);
     }
   }
@@ -656,8 +686,9 @@ export default function TenantsPage() {
       setBulkConfirm(null);
       clearSelection();
       await load();
-    } catch {
-      setOpMsg({ text: `Bulk ${bulkConfirm} failed.`, ok: false });
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setOpMsg({ text: detail ?? `Bulk ${bulkConfirm} failed.`, ok: false });
       setBulkConfirm(null);
     }
   }
@@ -841,14 +872,19 @@ export default function TenantsPage() {
       {showNew && <NewTenantModal onClose={() => setShowNew(false)} onCreated={load} />}
       {confirm && (
         <ConfirmModal
-          title={confirm.action === 'suspend' ? `Suspend ${confirm.tenant.name}?` : `Reactivate ${confirm.tenant.name}?`}
+          title={confirm.action === 'suspend' ? `Suspend ${confirm.tenant.name}?`
+            : confirm.action === 'delete' ? `Delete ${confirm.tenant.name}?`
+            : `Reactivate ${confirm.tenant.name}?`}
           message={confirm.action === 'suspend'
             ? 'This will immediately disable all tenant users. Provide a reason for the record.'
-            : 'This will restore access for all tenant users.'}
+            : confirm.action === 'delete'
+              ? 'This signs everyone out, closes the workspace and cancels the subscription. The data is kept until it is purged.'
+              : 'This will restore access for all tenant users.'}
           onConfirm={doAction}
           onClose={() => setConfirm(null)}
-          danger={confirm.action === 'suspend'}
+          danger={confirm.action !== 'reactivate'}
           requireReason={confirm.action === 'suspend'}
+          requireTyped={confirm.action === 'delete' ? confirm.tenant.slug : undefined}
         />
       )}
       {bulkConfirm && (
@@ -862,13 +898,14 @@ export default function TenantsPage() {
           message={
             bulkConfirm === 'suspend'    ? 'This will disable all users across the selected tenants. Provide a reason for the record.' :
             bulkConfirm === 'reactivate' ? 'This will restore access for all users across the selected tenants.' :
-            bulkConfirm === 'restore'    ? 'This reactivates the selected tenants and restores their original slugs.' :
+            bulkConfirm === 'restore'    ? 'This restores the selected tenants and their original slugs. They come back suspended: reactivate each one when it is safe for people to sign in.' :
             bulkConfirm === 'purge'      ? '⚠ This PERMANENTLY erases the selected tenants and ALL their data (users, invoices, payments). This is irreversible and cannot be recovered.' :
-                                           'This permanently deactivates the selected tenants, revokes all their sessions, and frees their slugs. This cannot be undone from here.'}
+                                           'This signs everyone out of the selected tenants, closes their workspaces and cancels their subscriptions. The data is kept until it is purged.'}
           onConfirm={doBulkAction}
           onClose={() => setBulkConfirm(null)}
           danger={bulkConfirm !== 'reactivate' && bulkConfirm !== 'restore'}
           requireReason={bulkConfirm === 'suspend'}
+          requireTyped={bulkConfirm === 'delete' || bulkConfirm === 'purge' ? 'DELETE' : undefined}
         />
       )}
       {showBulkFeature && (
