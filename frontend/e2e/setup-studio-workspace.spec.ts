@@ -906,7 +906,13 @@ test('canonical_save_clears_dirty_navigation_state', async ({ page }) => {
   await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
   await page.getByPlaceholder('DXB-01', { exact: true }).fill('SAVED');
   await page.getByPlaceholder('Dubai Head Office', { exact: true }).fill('Saved branch');
-  await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
+  // A branch is saved only with its company, country, city and time zone (checked before the request).
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('combobox', { name: 'Company', exact: true }).selectOption({ index: 1 });
+  await dialog.getByRole('combobox', { name: 'Country', exact: true }).selectOption('SA');
+  await page.getByPlaceholder('Dubai', { exact: true }).fill('Riyadh');
+  await dialog.getByRole('combobox', { name: 'Time Zone', exact: true }).selectOption('Asia/Riyadh');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const guard = trackLeaveGuard(page);
   await selectArea(page, 'Payroll & compliance');
