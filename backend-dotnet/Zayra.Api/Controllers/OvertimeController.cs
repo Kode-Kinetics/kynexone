@@ -15,6 +15,7 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Policy;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -31,10 +32,13 @@ public class OvertimeController : ControllerBase
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _ruleReader;
     private readonly IConfiguration? _configuration;
+    private readonly IPolicySettings _policy;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null, IPolicySettings? policySettings = null)
     {
         _configuration = configuration;
+        // Optional like the others so existing callers/tests keep working; DI supplies the registered one.
+        _policy = policySettings ?? new PolicySettingsService(db);
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
@@ -823,7 +827,10 @@ public class OvertimeController : ControllerBase
         if (req.CompOffDays <= 0) return BadRequest(new { message = "Comp-off days must be positive." });
         // OVT-01: the days are bounded by the hours actually approved, over the working day. Unbounded days
         // let one hour of overtime mint any amount of paid leave.
-        var maxDays = MaxCompOffDays(request.ApprovedMinutes);
+        var capMode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeCompoffCapMode, ct);
+        var maxDays = string.Equals(capMode, "Fractional", StringComparison.Ordinal)
+            ? MaxCompOffDaysFractional(request.ApprovedMinutes)
+            : MaxCompOffDays(request.ApprovedMinutes);
         if (req.CompOffDays > maxDays)
             return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
@@ -873,6 +880,10 @@ public class OvertimeController : ControllerBase
     /// </summary>
     internal static decimal MaxCompOffDays(int approvedMinutes) =>
         Math.Max(1m, Math.Ceiling(approvedMinutes / 60m / CompOffHoursPerWorkingDay));
+
+    /// <summary>overtime.compoff_cap_mode = Fractional: exactly the approved hours over the working day, no whole-day rounding.</summary>
+    internal static decimal MaxCompOffDaysFractional(int approvedMinutes) =>
+        Math.Round(approvedMinutes / 60m / CompOffHoursPerWorkingDay, 4);
 
     [HttpGet("reports/summary")]
     public async Task<ActionResult<object>> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
