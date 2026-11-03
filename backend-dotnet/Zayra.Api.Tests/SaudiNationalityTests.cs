@@ -23,6 +23,8 @@ public class SaudiNationalityTests
     [InlineData("Kingdom of Saudi Arabia")]
     [InlineData("سعودى")]
     [InlineData(" المملكة العربية السعودية ")]
+    [InlineData("Saudi National")]
+    [InlineData(" saudi national ")]
     public void Every_saudi_spelling_classifies_as_saudi_for_gosi(string nationality)
     {
         GosiCalculationService.DeriveClassification(nationality).Should().Be(GosiClassifications.Saudi);
