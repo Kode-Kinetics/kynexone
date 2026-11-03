@@ -2985,6 +2985,12 @@ public class EmployeesController : ControllerBase
             // CanViewSensitive() — the write response is a read of the record and obeys the same mask
             // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
             var employee = await employeeManagement.CreateAsync(tenantId, request, Context(), cancellationToken, CanViewSensitive());
+            // Advisory only (PAY-08): an ID prefix that contradicts the nationality never blocks the create.
+            var saved = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == employee.Id)
+                .Select(x => new { x.Nationality, x.IdNumber, x.IqamaNumber }).FirstOrDefaultAsync(cancellationToken);
+            if (saved is not null
+                && Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(saved.Nationality, saved.IdNumber, saved.IqamaNumber) is { Count: > 0 } idWarnings)
+                employee = employee with { IdentityWarnings = idWarnings };
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
@@ -4037,9 +4043,14 @@ public class EmployeesController : ControllerBase
         // employees.profile_change_approval_fields policy (PEO-03). Unlisted fields apply directly and are history-logged.
         if (request.Changes.Keys.Any(SensitiveFields.Contains) && !CanEditSensitive()) return Forbid();
         var approvalFields = await ProfileChangeApprovalFieldsAsync(tenantId, cancellationToken);
-        var gatedKeys = request.Changes.Keys.Where(k => Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApproval(k, approvalFields))
+        var gatedKeys = request.Changes.Keys.Where(k => Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApprovalForHrEdit(k, approvalFields))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var sensitive = gatedKeys.ToList();
+        string? Proposed(string key, string? current) =>
+            request.Changes.TryGetValue(key, out var v) ? (v.ValueKind == JsonValueKind.String ? v.GetString() : null) : current;
+        // Advisory only (PAY-08): what the saved record would look like, for a change that waits for approval.
+        var proposedIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(
+            Proposed("nationality", employee.Nationality), Proposed("idNumber", employee.IdNumber), Proposed("iqamaNumber", employee.IqamaNumber));
         // Rich payroll edits use the same approval route, but malformed values must never become
         // unapplyable approvals. Validate the complete package before any immediate field is written.
         try
@@ -4112,6 +4123,7 @@ public class EmployeesController : ControllerBase
                         requiresApproval = true,
                         alreadyPending = true,
                         sensitiveFields = sensitive,
+                        identityWarnings = proposedIdWarnings,
                         appliedFields = new List<string>()
                     });
                 }
@@ -4240,6 +4252,7 @@ public class EmployeesController : ControllerBase
                     approvalRequestId = approval.Id,
                     requiresApproval = true,
                     sensitiveFields = sensitive,
+                        identityWarnings = proposedIdWarnings,
                     appliedFields = immediateChanges.Keys.ToList(),
                     loginUsernameDiffers
                 });
@@ -4272,7 +4285,9 @@ public class EmployeesController : ControllerBase
                 await _db.SaveChangesAsync(cancellationToken);
             }
             await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers });
+            // Advisory only (PAY-08): applied values that contradict each other are reported, never refused.
+            var updateIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(employee.Nationality, employee.IdNumber, employee.IqamaNumber);
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers, IdentityWarnings = updateIdWarnings.Count > 0 ? updateIdWarnings : null });
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }

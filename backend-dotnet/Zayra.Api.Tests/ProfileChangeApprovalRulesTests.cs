@@ -28,12 +28,22 @@ public class ProfileChangeApprovalRulesTests
     [Theory]
     [InlineData("phone")]
     [InlineData("preferredName")]
+    [InlineData("emergencyContactPhone")]
+    public void The_self_service_personal_details_stay_gated_by_default_for_self_service_only(string field)
+    {
+        ProfileChangeApprovalRules.RequiresApproval(field, Default).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApprovalForHrEdit(field, Default).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("workLocation")]
+    [InlineData("jobTitle")]
     public void Fields_outside_the_list_apply_directly(string field)
         => ProfileChangeApprovalRules.RequiresApproval(field, Default).Should().BeFalse();
 
     [Fact]
     public void A_field_added_to_the_list_is_gated()
-        => ProfileChangeApprovalRules.RequiresApproval("phone", new[] { "phone" }).Should().BeTrue();
+        => ProfileChangeApprovalRules.RequiresApprovalForHrEdit("workLocation", new[] { "work_location" }).Should().BeTrue();
 
     [Fact]
     public void A_snake_case_name_matches_the_camel_case_field()

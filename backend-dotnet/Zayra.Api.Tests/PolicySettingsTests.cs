@@ -41,7 +41,8 @@ public class PolicySettingsTests : IDisposable
         (await _svc.GetBoolAsync(A, "payroll.allow_skip_review")).Should().BeFalse();
         (await _svc.GetBoolAsync(A, "payroll.allow_same_approver_multiple_levels")).Should().BeFalse();
         (await _svc.GetCsvAsync(A, "employees.profile_change_approval_fields")).Should()
-            .Equal("bank_iban", "national_id", "passport_number", "salary", "iqama_number", "sponsor_name", "nationality");
+            .Equal("bank_iban", "national_id", "passport_number", "salary", "iqama_number", "sponsor_name", "nationality",
+                "preferred_name", "personal_email", "phone", "marital_status", "emergency_contact_name", "emergency_contact_phone");
         PolicyRegistry.All.Select(d => d.Key).Should().BeEquivalentTo(new[]
         {
             "overtime.late_approval_mode", "overtime.compoff_cap_mode", "payroll.allow_skip_review",

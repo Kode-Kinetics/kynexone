@@ -48,8 +48,8 @@ public static class PolicyRegistry
             "Allow one person to approve more than one level of the same approval chain.",
             "Payroll"),
         new(EmployeesProfileChangeApprovalFields, PolicyValueType.Csv,
-            "bank_iban,national_id,passport_number,salary,iqama_number,sponsor_name,nationality", [],
-            "Employee profile fields whose changes need approval (comma-separated, lowercase field names).",
+            "bank_iban,national_id,passport_number,salary,iqama_number,sponsor_name,nationality,preferred_name,personal_email,phone,marital_status,emergency_contact_name,emergency_contact_phone", [],
+            "Employee profile fields whose changes need approval (comma-separated, lowercase field names). The personal-detail fields (preferred_name, personal_email, phone, marital_status, emergency_contact_*) govern employee self-service requests only.",
             "Employees"),
     ];
 

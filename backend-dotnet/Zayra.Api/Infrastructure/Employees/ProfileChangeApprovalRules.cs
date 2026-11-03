@@ -55,6 +55,19 @@ public static class ProfileChangeApprovalRules
         return Aliases.TryGetValue(n, out var a) ? a : n;
     }
 
+    /// <summary>The personal details an employee can request to change about themselves. They are in the default list
+    /// so self-service stays approval-gated as it always was, but the list governs only that door: an authorised HR user
+    /// editing the same field on the employee record was never put through approval and still is not.</summary>
+    private static readonly HashSet<string> SelfServiceOnly = new(StringComparer.Ordinal)
+    {
+        "preferredname", "personalemail", "phone", "maritalstatus", "emergencycontactname", "emergencycontactphone",
+    };
+
+    /// <summary>The HR-edit door (PATCH on the employee record).</summary>
+    public static bool RequiresApprovalForHrEdit(string field, IReadOnlyList<string> policyFields) =>
+        !SelfServiceOnly.Contains(Norm(field)) && RequiresApproval(field, policyFields);
+
+    /// <summary>The self-service door, and the policy itself.</summary>
     public static bool RequiresApproval(string field, IReadOnlyList<string> policyFields)
     {
         var key = Norm(field);
