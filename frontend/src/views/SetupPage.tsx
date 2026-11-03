@@ -99,6 +99,8 @@ import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionI
 import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
+import { TIME_ZONES } from '../lib/companySetupWizard';
+import { TIME_ZONE_CITY, timeZoneOffset } from '../lib/companySetupFields';
 import { msg } from '../i18n/translations';
 import { LoadError, useConfirm } from '../components/gl/glUi';
 import { describeApiError } from '../lib/apiError';
@@ -594,7 +596,9 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<BranchDto | null>(null);
   useSetupEditorState(modalOpen);
-  const [form, setForm] = useState<BranchRequest>(emptyBranch(companies[0]?.id ?? ''));
+  // A new branch starts with the company the switcher selected, or the only company: never a silent guess among several.
+  const org = useOrgCompanies(companies);
+  const [form, setForm] = useState<BranchRequest>(emptyBranch(''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -607,7 +611,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyBranch(companies[0]?.id ?? '')); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm(emptyBranch(org.defaultCompanyId)); setError(''); setModalOpen(true); };
   const openEdit = (b: BranchDto) => {
     setEditing(b);
     setForm({ companyId: b.companyId, code: b.code, nameEn: b.nameEn, nameAr: b.nameAr, countryCode: b.countryCode, city: b.city, addressLine1: b.addressLine1, addressLine2: b.addressLine2, timeZoneId: b.timeZoneId, laborOfficeCode: b.laborOfficeCode, isHeadOffice: b.isHeadOffice, isActive: b.isActive });
@@ -616,6 +620,11 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
   const handleSave = async () => {
     if (!form.nameEn.trim() || !form.code.trim()) { setError(t('Name and code are required')); return; }
+    // The form marks these required; they are checked here so a missing one never costs a round trip (or a guessed value).
+    if (!form.companyId) { setError(t('Choose the company this belongs to.')); return; }
+    if (!form.countryCode.trim()) { setError(t('Country is required.')); return; }
+    if (!form.city.trim()) { setError(t('City is required.')); return; }
+    if (!form.timeZoneId.trim()) { setError(t('Time zone is required.')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await branchesApi.update(editing.id, form);
@@ -721,7 +730,14 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
           </FormField>
           <FormField label={t('Time Zone')} required>
-            <input type="text" value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="input w-full" placeholder="America/New_York" />
+            <select value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="select w-full">
+              <option value="">{t('Select time zone')}</option>
+              {/* A zone saved before this list existed stays selectable until it is changed. */}
+              {[...(form.timeZoneId && !TIME_ZONES.includes(form.timeZoneId) ? [form.timeZoneId] : []), ...TIME_ZONES].map((zone) => {
+                const offset = timeZoneOffset(zone);
+                return <option key={zone} value={zone}>{`${TIME_ZONE_CITY[zone] ? t(TIME_ZONE_CITY[zone]) : zone}${offset ? ` (${offset})` : ''}`}</option>;
+              })}
+            </select>
           </FormField>
           <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
           <div className="col-span-2 flex items-center gap-2">
@@ -1889,7 +1905,7 @@ function LocationsTab() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<AdminLocation | null>(null);
   useSetupEditorState(modalOpen);
-  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
+  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: '', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -1901,7 +1917,7 @@ function LocationsTab() {
   }, [t]);
   useEffect(() => { load(); }, [load]);
 
-  const emptyForm = () => ({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
+  const emptyForm = () => ({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: '', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const openNew = () => { setEditing(null); setForm(emptyForm()); setError(''); setModalOpen(true); };
   const openEdit = (l: AdminLocation) => {
     setEditing(l);
@@ -1910,8 +1926,18 @@ function LocationsTab() {
   };
   const save = async () => {
     if (!form.code.trim() || !form.nameEn.trim()) { setError(t('Code and name are required')); return; }
+    if (!form.countryCode.trim()) { setError(t('Country is required.')); return; }
+    // The attendance geofence is a circle: a point on the earth and a radius. Reject what no map can hold, before the request.
+    const hasLat = form.latitude.trim() !== '';
+    const hasLng = form.longitude.trim() !== '';
+    const lat = Number(form.latitude);
+    const lng = Number(form.longitude);
+    if (hasLat && !(Number.isFinite(lat) && lat >= -90 && lat <= 90)) { setError(t('Latitude must be between -90 and 90.')); return; }
+    if (hasLng && !(Number.isFinite(lng) && lng >= -180 && lng <= 180)) { setError(t('Longitude must be between -180 and 180.')); return; }
+    if (hasLat !== hasLng) { setError(t('Latitude and longitude must be given together, or both left blank.')); return; }
+    if (form.geofenceRadiusMeters.trim() !== '' && !(Number(form.geofenceRadiusMeters) > 0)) { setError(t('Geofence radius must be greater than zero.')); return; }
     setSaving(true); setError('');
-    const body = { ...form, latitude: form.latitude ? Number(form.latitude) : undefined, longitude: form.longitude ? Number(form.longitude) : undefined, geofenceRadiusMeters: form.geofenceRadiusMeters ? Number(form.geofenceRadiusMeters) : undefined };
+    const body = { ...form, latitude: hasLat ? lat : undefined, longitude: hasLng ? lng : undefined, geofenceRadiusMeters: form.geofenceRadiusMeters.trim() !== '' ? Number(form.geofenceRadiusMeters) : undefined };
     try {
       if (editing) await locationsApi.update(editing.id, body);
       else await locationsApi.create(body);

@@ -42,6 +42,15 @@ const ar: Record<string, string> = {
   'Legal Name (AR)': 'الاسم القانوني (بالعربية)',
   'Tax Number': 'الرقم الضريبي',
   'Default Currency': 'العملة الافتراضية',
+  // Branch and location checks
+  'Country is required.': 'الدولة مطلوبة.',
+  'City is required.': 'المدينة مطلوبة.',
+  'Time zone is required.': 'المنطقة الزمنية مطلوبة.',
+  'Select time zone': 'اختر المنطقة الزمنية',
+  'Latitude must be between -90 and 90.': 'يجب أن يكون خط العرض بين -90 و90.',
+  'Longitude must be between -180 and 180.': 'يجب أن يكون خط الطول بين -180 و180.',
+  'Latitude and longitude must be given together, or both left blank.': 'يجب إدخال خط العرض وخط الطول معاً، أو تركهما فارغين.',
+  'Geofence radius must be greater than zero.': 'يجب أن يكون نطاق السياج الجغرافي أكبر من صفر.',
 };
 
 export const companyStructure = {
