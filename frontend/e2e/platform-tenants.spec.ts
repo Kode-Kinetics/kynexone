@@ -61,15 +61,15 @@ test.describe('Platform tenants', () => {
     await expect(featuresTab).toBeVisible({ timeout: 10_000 });
     await featuresTab.click();
 
-    // The feature-flag section renders one aria switch per flag.
-    const flagSwitches = page.getByRole('switch');
+    // The feature-flag section renders one checkbox per flag (changes are saved together).
+    const flagSwitches = page.getByRole('checkbox');
     await expect(flagSwitches.first()).toBeVisible({ timeout: 10_000 });
     expect(await flagSwitches.count(), 'tenant detail must list the tenant feature flags').toBeGreaterThan(0);
 
     // IntelliFlow is the all-features-enabled Enterprise tenant: at least one
     // flag must read as enabled, which also proves the tenant's own state is
     // rendered rather than a static catalogue.
-    const enabled = page.locator('[role="switch"][aria-checked="true"]');
+    const enabled = page.getByRole('checkbox', { checked: true });
     expect(await enabled.count(), 'IntelliFlow (Enterprise) must show enabled feature flags').toBeGreaterThan(0);
   });
 

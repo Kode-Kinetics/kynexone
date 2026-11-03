@@ -999,7 +999,10 @@ public class PlatformController : ControllerBase
                 activeEmployeeCount = emps,
                 // Soft-deleted tenants are deactivated with a "__deleted_" slug suffix so the
                 // console can filter/restore them instead of showing them as plain "Cancelled".
-                isDeleted = !t.IsActive && t.Slug.Contains("__deleted_")
+                isDeleted = !t.IsActive && t.Slug.Contains("__deleted_"),
+                deletedAtUtc = t.SoftDeletedAtUtc,
+                // The recovery window the retention rule honours; after it the data may be erased.
+                recoverableUntilUtc = t.SoftDeletedAtUtc == null ? (DateTime?)null : t.SoftDeletedAtUtc.Value.AddDays(RetentionWindowDays())
             };
         });
 
@@ -1318,51 +1321,220 @@ public class PlatformController : ControllerBase
         return Ok(loc);
     }
 
+    /// <summary>
+    /// Account export: the tenant's account, structure, people-with-logins, plan, features and billing history as one JSON
+    /// file, so a customer who is leaving (or about to be deleted) can be handed their account. Deliberately NOT the
+    /// employee, payroll or attendance records: those carry national IDs and bank details and need a streamed, encrypted
+    /// export with a named recipient, which is a separate decision. The payload says so in <c>scope</c>. Credentials,
+    /// tokens and MFA secrets are never selected. Owner/Admin; recorded in the audit log.
+    /// </summary>
+    [HttpGet("tenants/{tenantId:guid}/export")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> ExportTenantAccount(Guid tenantId, CancellationToken ct)
+    {
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+        if (tenant.PurgedAtUtc.HasValue) return Conflict(new { error = "tenant_purged", message = "This tenant was purged; there is nothing left to export." });
+
+        const string why = "platform account export: read by tenant id with no request company";
+        var subscription = await ScopedBypass.TenantWide(_db.TenantSubscriptions, tenantId, why).AsNoTracking().FirstOrDefaultAsync(ct);
+        var flags = await ScopedBypass.TenantWide(_db.TenantFeatureFlags, tenantId, why).AsNoTracking()
+            .OrderBy(f => f.FeatureKey).Select(f => new { f.FeatureKey, f.IsEnabled, f.UpdatedAtUtc }).ToListAsync(ct);
+        var companies = await ScopedBypass.TenantWide(_db.Companies, tenantId, why).AsNoTracking()
+            .OrderBy(c => c.LegalNameEn).Select(c => new { c.Id, c.LegalNameEn, c.RegistrationNumber, c.IsActive, c.ApprovalStatus }).ToListAsync(ct);
+        var users = await ScopedBypass.TenantWide(_db.Users, tenantId, why).AsNoTracking()
+            .OrderBy(u => u.Email).Select(u => new { u.Id, u.Email, u.FullName, u.Status, u.IsActive, twoStepEnabled = u.MFAEnabled }).ToListAsync(ct);
+        var invoices = await ScopedBypass.TenantWide(_db.TenantInvoices, tenantId, why).AsNoTracking()
+            .OrderBy(i => i.InvoiceDate)
+            .Select(i => new { i.InvoiceNumber, i.Amount, i.CurrencyCode, i.Status, i.PeriodDescription, i.InvoiceDate, i.DueDate, i.PaidDate }).ToListAsync(ct);
+        var payments = await ScopedBypass.TenantWide(_db.TenantPayments, tenantId, why).AsNoTracking()
+            .OrderBy(p => p.PaidAt)
+            .Select(p => new { p.Amount, p.CurrencyCode, p.Method, p.Reference, p.Status, p.PaidAt }).ToListAsync(ct);
+
+        AuditPlatformAction(tenantId, "TenantAccountExported", "Tenant", tenantId.ToString(),
+            new { users = users.Count, companies = companies.Count, invoices = invoices.Count });
+        await _db.SaveChangesAsync(ct);
+
+        var file = new
+        {
+            format = "kynexone.account-export.v1",
+            exportedAtUtc = DateTime.UtcNow,
+            scope = "Account, structure, sign-in users, plan, features and billing history. Employee, payroll and attendance records are NOT included.",
+            tenant = new { tenant.Id, tenant.Name, slug = tenant.Slug, tenant.IsActive, tenant.CreatedAtUtc, tenant.SoftDeletedAtUtc },
+            subscription = subscription is null ? null : new
+            {
+                subscription.Plan, subscription.Status, subscription.MaxUsers, subscription.MaxEmployees,
+                subscription.ExpiresAtUtc, subscription.MonthlyAmount, subscription.CurrencyCode, subscription.BillingCycle
+            },
+            features = flags,
+            companies,
+            users,
+            invoices,
+            payments
+        };
+        var name = $"{tenant.Slug}-account-export-{DateTime.UtcNow:yyyyMMdd}.json";
+        return File(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(file,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true }),
+            "application/json", name);
+    }
+
+    /// <summary>
+    /// Soft-deletes a tenant: signs everyone out, closes the workspace and starts the retention clock. Nothing is
+    /// erased (that is <see cref="PurgeTenant"/>). Owner-only, and the caller must type the tenant's slug as
+    /// <c>?confirm=</c> so a stray request cannot close a live workspace. One transaction: either the credentials are
+    /// all revoked and the tenant is closed, or nothing changed.
+    /// </summary>
     [HttpDelete("tenants/{tenantId:guid}")]
     [RequirePlatformRole(PlatformRoles.Owner)]
     public async Task<IActionResult> DeleteTenant(Guid tenantId, [FromQuery] string? confirm, CancellationToken ct)
     {
-        _ = tenantId;
-        _ = confirm;
-        _ = ct;
-        await Task.CompletedTask;
-        return Conflict(new
+        var slug = await _db.Tenants.AsNoTracking().Where(t => t.Id == tenantId).Select(t => t.Slug).FirstOrDefaultAsync(ct);
+        if (slug is null) return NotFound(new { message = "Tenant not found." });
+        if (!string.Equals(confirm, slug, StringComparison.Ordinal))
+            return BadRequest(new
+            {
+                error = "tenant_delete_confirm_required",
+                message = $"Pass ?confirm={slug} (the tenant's slug) to delete this tenant."
+            });
+
+        var outcome = await SoftDeleteTenantAsync(tenantId, ct);
+        if (!outcome.TenantFound) return NotFound(new { message = "Tenant not found." });
+        if (!outcome.Allowed) return Conflict(new { error = "deleted_tenant_lifecycle_blocked", message = outcome.BlockReason });
+        return Ok(new
         {
-            error = "tenant_delete_disabled",
-            message = "Tenant deletion is temporarily disabled pending an atomic credential-revocation and recovery workflow."
+            tenantId,
+            deleted = true,
+            usersSignedOut = outcome.UsersInvalidated,
+            sessionsRevoked = outcome.SessionsRevoked,
+            message = $"Tenant '{outcome.TenantName}' was deleted. Everyone was signed out; the data is kept until it is purged."
         });
     }
 
     // ── Soft-delete lifecycle: restore + permanent purge ──────────────────────
 
-    /// <summary>Reverses a soft-delete: reactivates the tenant, restores its original slug,
-    /// and reactivates the subscription. Idempotent-ish (no-op message if not deleted).</summary>
+    /// <summary>
+    /// Reverses a soft delete. The slug comes back and the deletion mark is cleared, but the tenant returns SUSPENDED, not
+    /// live: its credentials are revoked again (covering tenants deleted before deletion revoked them) and an operator
+    /// brings it back deliberately with Reactivate. Refused once purged, or when the slug has since been taken.
+    /// </summary>
     [HttpPost("tenants/{tenantId:guid}/restore")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> RestoreTenant(Guid tenantId, CancellationToken ct)
     {
-        _ = tenantId;
-        _ = ct;
-        await Task.CompletedTask;
-        return Conflict(new
-        {
-            error = "tenant_restore_disabled",
-            message = "Deleted-tenant restoration is temporarily disabled pending credential re-provisioning controls."
-        });
+        var outcome = await RestoreTenantCoreAsync(tenantId, ct);
+        if (!outcome.TenantFound) return NotFound(new { message = "Tenant not found." });
+        if (!outcome.Allowed) return Conflict(new { error = "tenant_restore_refused", message = outcome.BlockReason });
+        return Ok(new { tenantId, status = "Suspended", message = $"Tenant '{outcome.TenantName}' was restored and is suspended. Reactivate it when it is safe for people to sign in." });
     }
 
     [HttpPost("tenants/bulk/restore")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> BulkRestoreTenants([FromBody] BulkTenantActionRequest req, CancellationToken ct)
     {
-        _ = req;
-        _ = ct;
-        await Task.CompletedTask;
-        return Conflict(new
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
         {
-            error = "bulk_tenant_restore_disabled",
-            message = "Bulk deleted-tenant restoration is temporarily disabled pending credential re-provisioning controls."
-        });
+            var outcome = await RestoreTenantCoreAsync(id, ct);
+            if (!outcome.TenantFound) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            if (!outcome.Allowed) { results.Add(BulkOpItem.Skip(id, outcome.BlockReason ?? "Cannot be restored.")); continue; }
+            results.Add(BulkOpItem.Ok(id, outcome.TenantName));
+        }
+        return Ok(BulkSummary("restore", results));
+    }
+
+    private int RetentionWindowDays() =>
+        HttpContext?.RequestServices.GetService<Zayra.Api.Infrastructure.Retention.DataRetentionOptions>()?.SoftDeletedTenantRetentionDays
+        ?? new Zayra.Api.Infrastructure.Retention.DataRetentionOptions().SoftDeletedTenantRetentionDays;
+
+    private async Task<TenantDeleteOutcome> RestoreTenantCoreAsync(Guid tenantId, CancellationToken ct)
+    {
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var actor = PlatformActorEmail();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        var context = PlatformTenantMutationContext(tenantId);
+        var outcome = new TenantDeleteOutcome(false, false, null, string.Empty, 0, 0);
+
+        async Task<bool> ApplyOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+            if (tenant is null) { outcome = new(false, false, null, string.Empty, 0, 0); return true; }
+
+            var marker = tenant.Slug.IndexOf("__deleted_", StringComparison.Ordinal);
+            if (tenant.PurgedAtUtc.HasValue)
+            {
+                outcome = new(true, false, "This tenant was purged; its data is gone and it cannot be restored.", tenant.Name, 0, 0);
+                return true;
+            }
+            if (marker < 0)
+            {
+                outcome = new(true, false, "This tenant is not deleted.", tenant.Name, 0, 0);
+                return true;
+            }
+            var originalSlug = tenant.Slug[..marker];
+            if (originalSlug.Length == 0 || await _db.Tenants.AnyAsync(x => x.Id != tenantId && x.Slug == originalSlug, cancellationToken))
+            {
+                outcome = new(true, false, $"The slug '{originalSlug}' is now used by another tenant, so this one cannot be restored under it.", tenant.Name, 0, 0);
+                return true;
+            }
+
+            var (users, revoked) = await RevokeTenantCredentialsAsync(tenantId, changedAtUtc, ip, cancellationToken);
+            await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, users.Select(x => x.Id).ToList(),
+                MfaTrustRevokeReasons.UserDeactivated, changedAtUtc, context, cancellationToken);
+
+            var subscription = await ScopedBypass.TenantWide(_db.TenantSubscriptions, tenantId,
+                    "platform tenant restore: the subscription is read by tenant id with no request company")
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(cancellationToken);
+            var deletedSlug = tenant.Slug;
+            tenant.Slug = originalSlug;
+            tenant.SoftDeletedAtUtc = null;
+            tenant.IsActive = false; // restored SUSPENDED: reactivation is a separate, deliberate step
+            if (subscription is not null)
+            {
+                subscription.Status = "Suspended";
+                subscription.UpdatedAtUtc = changedAtUtc;
+            }
+
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                Id = auditId,
+                TenantId = tenantId,
+                EntityType = "Tenant",
+                EntityId = tenantId.ToString(),
+                Action = "TenantRestored",
+                OldValuesJson = JsonSerializer.Serialize(new { slug = deletedSlug }),
+                NewValuesJson = JsonSerializer.Serialize(new { slug = originalSlug, status = "Suspended", sessionsRevoked = revoked }),
+                PerformedByName = actor,
+                IpAddress = ip,
+                CreatedAtUtc = changedAtUtc
+            });
+            outcome = new(true, true, null, tenant.Name, users.Count, revoked);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ApplyOnceAsync,
+                async cancellationToken => await ScopedBypass.TenantWide(_db.AdminAuditLogs, tenantId,
+                        "commit verification of this command's own audit marker by its server-generated id; no tenant data is read")
+                    .AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId && x.Action == "TenantRestored", cancellationToken),
+                IsolationLevel.ReadCommitted,
+                ct);
+        }
+        else
+        {
+            await ApplyOnceAsync(ct);
+        }
+        return outcome;
     }
 
     /// <summary>GDPR "right to erasure": PERMANENTLY deletes a soft-deleted tenant and all its
@@ -2350,14 +2522,20 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner)]
     public async Task<IActionResult> BulkDeleteTenants([FromBody] BulkDeleteTenantsRequest req, CancellationToken ct)
     {
-        _ = req;
-        _ = ct;
-        await Task.CompletedTask;
-        return Conflict(new
+        if (!string.Equals(req.Confirm, "DELETE", StringComparison.Ordinal))
+            return BadRequest(new { error = "bulk_tenant_delete_confirm_required", message = "Send confirm=DELETE to delete the selected tenants." });
+        var ids = NormalizeTenantIds(req.TenantIds);
+        if (ids.Count == 0) return BadRequest(new { message = "No tenants selected." });
+
+        var results = new List<BulkOpItem>();
+        foreach (var id in ids)
         {
-            error = "bulk_tenant_delete_disabled",
-            message = "Bulk tenant deletion is temporarily disabled. Use the reviewed single-tenant lifecycle workflow."
-        });
+            var outcome = await SoftDeleteTenantAsync(id, ct);
+            if (!outcome.TenantFound) { results.Add(BulkOpItem.Skip(id, "Tenant not found.")); continue; }
+            if (!outcome.Allowed) { results.Add(BulkOpItem.Skip(id, outcome.BlockReason ?? "Already deleted.")); continue; }
+            results.Add(BulkOpItem.Ok(id, outcome.TenantName));
+        }
+        return Ok(BulkSummary("delete", results));
     }
 
     /// <summary>Enable/disable a single feature across many tenants at once, or platform-wide.
@@ -2443,6 +2621,167 @@ public class PlatformController : ControllerBase
         string? BlockReason,
         bool AlreadyInTargetState = false);
 
+    /// <summary>
+    /// Ends every credential a tenant's people hold, under row locks: rotates each user's session stamp, expires open
+    /// two-step challenges and revokes refresh tokens. Shared by suspend and delete so the two cannot drift apart.
+    /// Returns the tenant's users and how many refresh tokens were revoked; the caller commits.
+    /// </summary>
+    private async Task<(List<User> Users, int SessionsRevoked)> RevokeTenantCredentialsAsync(
+        Guid tenantId, DateTime changedAtUtc, string ip, CancellationToken cancellationToken)
+    {
+        // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
+        var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.TenantId == tenantId)
+            .OrderBy(x => x.Id)
+            .ToListAsync(cancellationToken);
+        var userIds = users.Select(x => x.Id).ToList();
+
+        await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
+            .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+            .OrderBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        foreach (var user in users)
+            TenantSessionSecurity.RotateStamp(user, changedAtUtc);
+
+        var revoked = 0;
+        if (_db.Database.IsRelational())
+        {
+            // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+            await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
+            revoked = await _db.RefreshTokens
+                .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
+                    .SetProperty(x => x.RevokedByIp, ip), cancellationToken);
+        }
+        else
+        {
+            // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
+            foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
+                .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
+                .ToListAsync(cancellationToken))
+                challenge.UsedAtUtc = changedAtUtc;
+            foreach (var token in await _db.RefreshTokens
+                .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
+                .ToListAsync(cancellationToken))
+            {
+                token.RevokedAtUtc = changedAtUtc;
+                token.RevokedByIp = ip;
+                revoked++;
+            }
+        }
+
+        return (users, revoked);
+    }
+
+    private sealed record TenantDeleteOutcome(
+        bool TenantFound, bool Allowed, string? BlockReason, string TenantName, int UsersInvalidated, int SessionsRevoked);
+
+    /// <summary>
+    /// The atomic soft delete. Under row locks (same discipline as <see cref="ApplyTenantLifecycleAsync"/>) it rotates
+    /// every user's session stamp, revokes refresh tokens, trusted browsers and open two-step challenges, then closes the
+    /// tenant: inactive, subscription Cancelled, slug renamed to <c>{slug}__deleted_{id8}</c> (the marker the retention
+    /// rule and the purge require) and <see cref="Tenant.SoftDeletedAtUtc"/> stamped so the recovery window has a start.
+    /// </summary>
+    private async Task<TenantDeleteOutcome> SoftDeleteTenantAsync(Guid tenantId, CancellationToken ct)
+    {
+        var changedAtUtc = DateTime.UtcNow;
+        var auditId = Guid.NewGuid();
+        var actor = PlatformActorEmail();
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty;
+        var context = PlatformTenantMutationContext(tenantId);
+        var outcome = new TenantDeleteOutcome(false, false, null, string.Empty, 0, 0);
+
+        async Task<bool> ApplyOnceAsync(CancellationToken cancellationToken)
+        {
+            _db.ChangeTracker.Clear();
+            var tenant = await _db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(x => x.Id == tenantId, cancellationToken);
+            if (tenant is null)
+            {
+                outcome = new(false, false, null, string.Empty, 0, 0);
+                return true;
+            }
+            if (tenant.PurgedAtUtc.HasValue
+                || tenant.SoftDeletedAtUtc.HasValue
+                || tenant.Slug.Contains("__deleted_", StringComparison.Ordinal))
+            {
+                outcome = new(true, false, "This tenant is already deleted.", tenant.Name, 0, 0);
+                return true;
+            }
+
+            var (users, revoked) = await RevokeTenantCredentialsAsync(tenantId, changedAtUtc, ip, cancellationToken);
+            var userIds = users.Select(x => x.Id).ToList();
+
+            // A trusted browser would otherwise skip the code step if the tenant were ever restored.
+            await MfaTrustedDevices.StageRevokeAllAsync(_db, tenantId, userIds, MfaTrustRevokeReasons.UserDeactivated, changedAtUtc, context, cancellationToken);
+
+            var subscription = await ScopedBypass.TenantWide(_db.TenantSubscriptions, tenantId,
+                    "platform tenant delete: the subscription is read by tenant id with no request company")
+                .TagWith(RowLockingInterceptor.ForUpdateTag)
+                .SingleOrDefaultAsync(cancellationToken);
+            var previousSlug = tenant.Slug;
+            var previousStatus = subscription?.Status;
+            tenant.IsActive = false;
+            tenant.Slug = $"{previousSlug}__deleted_{tenantId.ToString("N")[..8]}";
+            tenant.SoftDeletedAtUtc = changedAtUtc;
+            if (subscription is not null)
+            {
+                subscription.Status = "Cancelled";
+                subscription.UpdatedAtUtc = changedAtUtc;
+            }
+
+            _db.AdminAuditLogs.Add(new AdminAuditLog
+            {
+                Id = auditId,
+                TenantId = tenantId,
+                EntityType = "Tenant",
+                EntityId = tenantId.ToString(),
+                Action = "TenantDeleted",
+                OldValuesJson = JsonSerializer.Serialize(new { slug = previousSlug, status = previousStatus }),
+                NewValuesJson = JsonSerializer.Serialize(new
+                {
+                    deletedAtUtc = changedAtUtc,
+                    usersInvalidated = users.Count,
+                    sessionsRevoked = revoked
+                }),
+                PerformedByName = actor,
+                IpAddress = ip,
+                CreatedAtUtc = changedAtUtc
+            });
+            outcome = new(true, true, null, tenant.Name, users.Count, revoked);
+            await _db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        if (_db.Database.IsRelational())
+        {
+            var strategy = _db.Database.CreateExecutionStrategy();
+            await strategy.ExecuteInTransactionAsync(
+                ApplyOnceAsync,
+                async cancellationToken => await ScopedBypass.TenantWide(_db.AdminAuditLogs, tenantId,
+                        "commit verification of this command's own audit marker by its server-generated id; no tenant data is read")
+                    .AsNoTracking()
+                    .AnyAsync(x => x.Id == auditId && x.Action == "TenantDeleted", cancellationToken),
+                IsolationLevel.ReadCommitted,
+                ct);
+        }
+        else
+        {
+            await ApplyOnceAsync(ct);
+        }
+        return outcome;
+    }
+
     private async Task<TenantLifecycleOutcome> ApplyTenantLifecycleAsync(
         Guid tenantId,
         bool activate,
@@ -2502,56 +2841,7 @@ public class PlatformController : ControllerBase
                 return true;
             }
 
-            // IgnoreQueryFilters is intentional: locked auth/lifecycle graph read; the company filter is dropped and TenantId is re-applied explicitly in this predicate (register §6).
-            var users = await _db.Users.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
-                .Where(x => x.TenantId == tenantId)
-                .OrderBy(x => x.Id)
-                .ToListAsync(cancellationToken);
-            var userIds = users.Select(x => x.Id).ToList();
-
-            await _db.MfaChallengeTokens.IgnoreQueryFilters().TagWith(RowLockingInterceptor.ForUpdateTag)
-                .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
-                .OrderBy(x => x.Id)
-                .Select(x => x.Id)
-                .ToListAsync(cancellationToken);
-            await _db.RefreshTokens.TagWith(RowLockingInterceptor.ForUpdateTag)
-                .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
-                .OrderBy(x => x.Id)
-                .Select(x => x.Id)
-                .ToListAsync(cancellationToken);
-
-            foreach (var user in users)
-                TenantSessionSecurity.RotateStamp(user, changedAtUtc);
-
-            var revoked = 0;
-            if (_db.Database.IsRelational())
-            {
-                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
-                await _db.MfaChallengeTokens.IgnoreQueryFilters()
-                    .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s.SetProperty(x => x.UsedAtUtc, changedAtUtc), cancellationToken);
-                revoked = await _db.RefreshTokens
-                    .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
-                    .ExecuteUpdateAsync(s => s
-                        .SetProperty(x => x.RevokedAtUtc, changedAtUtc)
-                        .SetProperty(x => x.RevokedByIp, ip), cancellationToken);
-            }
-            else
-            {
-                // IgnoreQueryFilters is intentional: challenge rows are pinned to user ids taken from the tenant-locked graph above (register §6).
-                foreach (var challenge in await _db.MfaChallengeTokens.IgnoreQueryFilters()
-                    .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.UsedAtUtc == null)
-                    .ToListAsync(cancellationToken))
-                    challenge.UsedAtUtc = changedAtUtc;
-                foreach (var token in await _db.RefreshTokens
-                    .Where(x => userIds.Contains(x.UserId) && x.RevokedAtUtc == null)
-                    .ToListAsync(cancellationToken))
-                {
-                    token.RevokedAtUtc = changedAtUtc;
-                    token.RevokedByIp = ip;
-                    revoked++;
-                }
-            }
+            var (users, revoked) = await RevokeTenantCredentialsAsync(tenantId, changedAtUtc, ip, cancellationToken);
 
             var previousStatus = subscription.Status;
             tenant.IsActive = activate;
@@ -4380,6 +4670,11 @@ public class PlatformController : ControllerBase
         new("overtime",                  "Overtime",                  "Time"),
         new("ai_assistant",              "AI Assistant",              "Intelligence"),
         new("qiwa_integration",          "Qiwa Integration",          "Compliance"),
+        new(FeatureKeys.Gosi,            "GOSI",                      "Compliance"),
+        new(FeatureKeys.Timesheets,      "Timesheets",                "Time"),
+        new(FeatureKeys.Benefits,        "Benefits",                  "Finance"),
+        new(FeatureKeys.HrLetters,       "HR Letters",                "Core"),
+        new(FeatureKeys.PayslipTemplateDesigner, "Payslip Template Designer", "Core"),
         new("mobile_app",                "Mobile App",                "Access"),
         // Opt-in features: OFF for a tenant until switched on here (an absent row means off).
         new(FeatureKeys.Learning,                      "Learning",                              "Rollout (opt-in)"),
@@ -4874,6 +5169,9 @@ public class PlatformController : ControllerBase
             sessionTimeoutMinutes      = sec?.SessionTimeoutMinutes ?? 480,
             refreshTokenExpiryDays     = sec?.RefreshTokenExpiryDays ?? 30,
             allowMultipleSessions      = sec?.AllowMultipleSessions ?? true,
+            mfaPolicy                  = sec?.EffectiveMfaPolicy ?? MfaPolicies.PrivilegedRoles,
+            mfaTrustedDeviceDays       = sec?.MfaTrustedDeviceDays ?? SecuritySetting.DefaultMfaTrustedDeviceDays,
+            allowAdminInvitationHandover = sec?.AllowAdminInvitationHandover ?? false,
             privilegedMfaEnforceFromUtc = sec?.PrivilegedMfaEnforceFromUtc,
             platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct),
             isCustomPolicy             = sec is not null,
@@ -4980,6 +5278,70 @@ public class PlatformController : ControllerBase
         });
         await _db.SaveChangesAsync(ct);
         return Ok(new { platformPrivilegedMfaEnforceFromUtc = PrivilegedMfaPolicy.ParseDate(entry.Value) });
+    }
+
+    /// <summary>
+    /// Lets a workspace administrator hand a temporary password to someone whose invitation is still pending (their
+    /// email never arrived). It skips the invitee's proof of email ownership, so only the platform can switch it on.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/invitation-handover")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> UpdateTenantInvitationHandover(Guid tenantId, [FromBody] UpdateTenantInvitationHandoverRequest body, CancellationToken ct)
+    {
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound(new { message = "Tenant not found." });
+        var reason = body.Reason?.Trim() ?? string.Empty;
+        if (body.Enabled && reason.Length < 3)
+            return BadRequest(new { message = "Give a reason for switching this on. It is kept in the audit log." });
+
+        var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
+        if (sec is null)
+        {
+            sec = new SecuritySetting { Id = Guid.NewGuid(), TenantId = tenantId };
+            _db.SecuritySettings.Add(sec);
+        }
+        var before = sec.AllowAdminInvitationHandover;
+        sec.AllowAdminInvitationHandover = body.Enabled;
+        sec.UpdatedAtUtc = DateTime.UtcNow;
+        AuditPlatformAction(tenantId, "InvitationHandoverUpdated", "SecuritySetting", tenantId.ToString(),
+            new { before, after = body.Enabled, reason });
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { allowAdminInvitationHandover = sec.AllowAdminInvitationHandover });
+    }
+
+    /// <summary>
+    /// Who must use two-step sign-in in a tenant, and how long a trusted browser skips the code. Same rules and side
+    /// effects as the tenant's own security settings (it runs the same command): requiring it for everyone signs out
+    /// people with no factor, letting each person choose needs a reason, shortening trust ends browsers already trusted.
+    /// </summary>
+    [HttpPut("tenants/{tenantId:guid}/two-step-policy")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> UpdateTenantTwoStepPolicy(Guid tenantId, [FromBody] UpdateTenantTwoStepPolicyRequest body, CancellationToken ct)
+    {
+        if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound(new { message = "Tenant not found." });
+        if (body.MfaPolicy is null && body.MfaTrustedDeviceDays is null)
+            return BadRequest(new { message = "Nothing to change." });
+        if (body.MfaTrustedDeviceDays is < 0 or > SecuritySetting.MaxMfaTrustedDeviceDays)
+            return BadRequest(new { code = MfaErrorCodes.TrustDaysRange, message = "Trusted browser days must be between 0 (off) and 90." });
+
+        try
+        {
+            var result = await _accessManagement.UpdateSecuritySettingsAsync(
+                tenantId,
+                new UpdateSecuritySettingRequest(
+                    null, null, null, null, null, null, null, null, null, null, null, null,
+                    MfaTrustedDeviceDays: body.MfaTrustedDeviceDays,
+                    MfaPolicy: body.MfaPolicy,
+                    MfaPolicyReason: body.Reason),
+                PlatformTenantMutationContext(tenantId), ct);
+            AuditPlatformAction(tenantId, "TwoStepPolicyUpdated", "SecuritySetting", tenantId.ToString(),
+                new { mfaPolicy = result.MfaPolicy, mfaTrustedDeviceDays = result.MfaTrustedDeviceDays, reason = body.Reason });
+            await _db.SaveChangesAsync(ct);
+            return Ok(new { mfaPolicy = result.MfaPolicy, mfaTrustedDeviceDays = result.MfaTrustedDeviceDays });
+        }
+        catch (MfaPolicyException ex)
+        {
+            return BadRequest(new { code = ex.Code, message = ex.Message });
+        }
     }
 
     [HttpPut("tenants/{tenantId:guid}/security-policy")]
@@ -5723,6 +6085,10 @@ public record TenantActionRequest(string? Reason);
 // ── Bulk tenant operation DTOs ──────────────────────────────────────────────
 public record BulkTenantActionRequest(List<Guid> TenantIds, string? Reason);
 public record BulkDeleteTenantsRequest(List<Guid> TenantIds, string Confirm);
+
+/// <summary>MfaPolicy: Optional | PrivilegedRoles | Everyone. Reason is required when moving to Optional.</summary>
+public record UpdateTenantInvitationHandoverRequest(bool Enabled, string? Reason);
+public record UpdateTenantTwoStepPolicyRequest(string? MfaPolicy, int? MfaTrustedDeviceDays, string? Reason);
 public record BulkFeatureFlagRequest(
     List<Guid>? TenantIds,
     bool ApplyToAll,

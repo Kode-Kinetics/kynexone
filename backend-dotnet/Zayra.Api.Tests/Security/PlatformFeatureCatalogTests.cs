@@ -38,6 +38,27 @@ public class PlatformFeatureCatalogTests
     public void TheTalentModules_HaveAConsoleSwitch(string key) =>
         PlatformController.FeatureFlagCatalog.Should().Contain(f => f.Key == key && f.Category == "Rollout (opt-in)");
 
+    [Theory]
+    [InlineData(FeatureKeys.QiwaIntegration)]
+    [InlineData(FeatureKeys.Gosi)]
+    [InlineData(FeatureKeys.Timesheets)]
+    [InlineData(FeatureKeys.Benefits)]
+    [InlineData(FeatureKeys.HrLetters)]
+    [InlineData(FeatureKeys.PayslipTemplateDesigner)]
+    public void EveryEnforcedModuleATenantMayLose_HasAConsoleSwitch(string key) =>
+        PlatformController.FeatureFlagCatalog.Should().Contain(f => f.Key == key && f.DefaultEnabled);
+
+    [Fact]
+    public void EveryOptionalOrStatutoryModule_IsOnTheConsole_SoNothingEnforcedIsHidden()
+    {
+        var offered = PlatformController.FeatureFlagCatalog.Select(f => f.Key).ToHashSet(StringComparer.Ordinal);
+        var hidden = ModuleCatalog.All
+            .Where(m => m.Lock != ModuleLock.Core && !offered.Contains(m.Key))
+            .Select(m => m.Key)
+            .ToList();
+        hidden.Should().BeEmpty("a module the platform can really switch off belongs on the Features tab");
+    }
+
     [Fact]
     public void TheConsoleShowsEachSwitchsRealDefault_ModulesOn_OptInsOff()
     {

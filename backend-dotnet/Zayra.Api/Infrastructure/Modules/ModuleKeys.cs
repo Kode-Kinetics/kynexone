@@ -57,9 +57,9 @@ public static class ModuleKeys
     /// tenant switching off Qiwa also switched off social-insurance filing — a statutory
     /// obligation disabled as a side effect of an unrelated preference.
     /// </summary>
-    public const string Gosi = "gosi";
+    public const string Gosi = FeatureKeys.Gosi;
 
-    public const string Timesheets = "timesheets";
-    public const string Benefits   = "benefits";
-    public const string HrLetters  = "hr_letters";
+    public const string Timesheets = FeatureKeys.Timesheets;
+    public const string Benefits   = FeatureKeys.Benefits;
+    public const string HrLetters  = FeatureKeys.HrLetters;
 }
