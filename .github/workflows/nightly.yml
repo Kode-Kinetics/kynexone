@@ -32,6 +32,7 @@ jobs:
               playwright.setup-progress-search.config.ts
               playwright.company-setup-rules.config.ts
               playwright.company-setup-wizard.config.ts
+              playwright.company-structure.config.ts
               playwright.policy-form-prefill.config.ts
               playwright.policy-intake-kill-switch.config.ts
               playwright.statutory-rules.config.ts
