@@ -435,10 +435,12 @@ public class AuthService : IAuthService
                 .SingleOrDefaultAsync(x => x.Id == tenantId, ct);
             var user = await _db.Users
                 .TagWith(RowLockingInterceptor.ForUpdateTag)
-                .Include(x => x.EmployeeUserAccounts)
                 .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
             if (tenant?.IsActive != true || user is null || user.IsDeleted)
                 throw new InvalidOperationException("User not found.");
+            // Separate query: FOR UPDATE cannot be applied to the nullable side of the outer join an Include would add.
+            // The user row lock above already serialises this account; the links are fixed up onto the tracked user.
+            await _db.EmployeeUserAccounts.Where(x => x.UserId == user.Id && !x.IsDeleted).LoadAsync(ct);
             var passwordPolicy = await _db.SecuritySettings
                 .TagWith(RowLockingInterceptor.ForShareTag)
                 .AsNoTracking()

@@ -489,7 +489,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
                 <button type="button" onClick={() => setMany(keys, false)} className="text-slate-500 hover:text-white transition-colors">Clear</button>
               </div>
             </div>
-            <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
+            <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden divide-y divide-white/[0.04]">
               {inCat.map(f => {
                 const description = FLAG_DESCRIPTIONS[f.key];
                 const dirty = draft[f.key] !== saved[f.key];
@@ -517,7 +517,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
       })}
 
       {changed.length > 0 && (
-        <div className="fixed bottom-4 start-1/2 -translate-x-1/2 z-40 flex items-center gap-4 bg-[#0d1117] border border-white/10 rounded-xl shadow-e3 px-5 py-3" role="region" aria-label="Unsaved feature changes">
+        <div className="fixed bottom-4 start-1/2 -translate-x-1/2 z-40 flex items-center gap-4 bg-slate-950 border border-white/10 rounded-xl shadow-e3 px-5 py-3" role="region" aria-label="Unsaved feature changes">
           <span className="text-sm text-slate-300">{changed.length} unsaved change{changed.length === 1 ? '' : 's'}</span>
           <button type="button" onClick={() => setDraft(saved)} disabled={saving}
             className="text-sm text-slate-400 hover:text-white border border-white/10 rounded-lg px-4 py-1.5 transition-colors disabled:opacity-40">Discard</button>

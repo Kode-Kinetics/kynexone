@@ -178,7 +178,7 @@ function TwoStepPanel({ tenantId, policy, onSaved }: {
   }
 
   return (
-    <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-two-step">
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-two-step">
       <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
         <Shield className="h-3.5 w-3.5 text-slate-500" />
         <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Two-step sign-in (authenticator)</p>
@@ -212,7 +212,7 @@ function TwoStepPanel({ tenantId, policy, onSaved }: {
             <span className="mb-1 block text-sm text-slate-300">Trusted browsers</span>
             <select id="two-step-trust-days" value={days} onChange={e => setDays(Number(e.target.value))}
               className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
-              {choices.map(d => <option key={d} value={d} className="bg-[#0d1117]">{trustLabel(d)}</option>)}
+              {choices.map(d => <option key={d} value={d} className="bg-slate-950">{trustLabel(d)}</option>)}
             </select>
           </label>
           <p className="mt-1 text-xs text-slate-500">How long a browser can skip the code after the person ticks &ldquo;Trust this browser&rdquo;. Shortening it also shortens browsers already trusted.</p>
@@ -261,7 +261,7 @@ function InvitationHandoverPanel({ tenantId, policy, onSaved }: {
   }
 
   return (
-    <div className="bg-[#161b22] border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-invitation-handover">
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-invitation-handover">
       <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
         <Shield className="h-3.5 w-3.5 text-slate-500" />
         <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Hand-over of pending invitations</p>
