@@ -338,7 +338,7 @@ test.describe('Setup → Sign-in security: the two-step sign-in group', () => {
     await expect(group.getByTestId('two-step-optional-note')).toHaveCount(0);
     const days = group.getByLabel('Trusted browsers');
     await expect(days).toHaveValue('30');
-    await expect(days.locator('option')).toHaveText(['Off', '7 days', '14 days', '30 days (default)', '90 days']);
+    await expect(days.locator('option')).toHaveText(['Off', '7 days', '14 days', '30 days (default)', '60 days', '90 days']);
     await shot(page, 'tenant-admin-two-step-en', info.outputPath.bind(info));
 
     await everyone.check();
@@ -434,7 +434,7 @@ test.describe('Setup → Sign-in security: the two-step sign-in group', () => {
     await expect(group.getByRole('radio')).toHaveCount(3);
     await expect(group.getByRole('radio', { name: /كل شخص يختار بنفسه/ })).toBeVisible();
     await expect(group.getByRole('radio', { name: /مطلوب من الجميع/ })).toBeVisible();
-    await expect(group.getByLabel('المتصفحات الموثوقة').locator('option')).toHaveText(['متوقف', '7 أيام', '14 يومًا', '30 يومًا (الافتراضي)', '90 يومًا']);
+    await expect(group.getByLabel('المتصفحات الموثوقة').locator('option')).toHaveText(['متوقف', '7 أيام', '14 يومًا', '30 يومًا (الافتراضي)', '60 يومًا', '90 يومًا']);
     await expect(group.getByText('المدة الأقصر أكثر أمانًا. وتقصيرها يُقصّر أيضًا مدة المتصفحات الموثوقة حاليًا.')).toBeVisible();
     await expect(group).not.toContainText('الثنائي');
     await expect(group.getByRole('heading', { name: 'التحقق بخطوتين' })).toHaveCSS('text-transform', 'none');

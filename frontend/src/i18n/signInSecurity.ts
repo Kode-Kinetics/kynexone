@@ -187,6 +187,7 @@ Object.assign(ar, {
   "7 days": "7 أيام",
   "14 days": "14 يومًا",
   "30 days (default)": "30 يومًا (الافتراضي)",
+  "60 days": "60 يومًا",
   "90 days": "90 يومًا",
   "{days, plural, one {# day (current)} other {# days (current)}}":
     "{days, plural, one {يوم واحد (الحالي)} two {يومان (الحالي)} few {# أيام (الحالي)} many {# يومًا (الحالي)} other {# يوم (الحالي)}}",

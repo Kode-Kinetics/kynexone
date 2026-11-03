@@ -2237,7 +2237,7 @@ export function AuthoritiesTab() {
 // remembered sign-in and concurrent sessions, and the two-step policy with trusted browsers.
 
 /** The trusted-browser lifetimes offered; 0 = off. A stored value outside these is shown as well. */
-const TRUST_DAY_CHOICES = [0, 7, 14, 30, 90] as const;
+const TRUST_DAY_CHOICES = [0, 7, 14, 30, 60, 90] as const;
 const DEFAULT_TRUST_DAYS = 30;
 
 /** The maximum session lengths offered, in hours. A stored value outside these is shown as well. */
@@ -2388,6 +2388,7 @@ function TwoStepPolicyGroup({ security, savedPolicy, onChange }: { security: Sec
     if (d === 7) return t('7 days');
     if (d === 14) return t('14 days');
     if (d === DEFAULT_TRUST_DAYS) return t('30 days (default)');
+    if (d === 60) return t('60 days');
     if (d === 90) return t('90 days');
     return t('{days, plural, one {# day (current)} other {# days (current)}}', { days: d });
   };

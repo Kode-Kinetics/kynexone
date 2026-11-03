@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, RefreshCw, X, Shield, CheckCircle, Activity } from 'lucide-react';
-import { platformApi, type TenantSecurityPolicy, type LoginActivity } from '@/src/api/platform';
+import { platformApi, type TenantSecurityPolicy, type LoginActivity, type TwoStepPolicy } from '@/src/api/platform';
 
 // ── Login Activity Feed ───────────────────────────────────────────────────────
 
@@ -128,6 +128,165 @@ function LoginActivityPanel({ tenantId }: { tenantId: string }) {
             className="text-xs text-slate-400 hover:text-white disabled:opacity-30 transition-colors">Next →</button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Two-step sign-in ──────────────────────────────────────────────────────────
+
+const TWO_STEP_OPTIONS: { value: TwoStepPolicy; title: string; hint: string }[] = [
+  { value: 'Optional', title: 'Each person chooses (two-step off for now)', hint: 'Two-step sign-in is available but nobody is forced to use it. Recommended only while testing or for a demo.' },
+  { value: 'PrivilegedRoles', title: 'Required for payroll, banking and access roles', hint: 'Everyone else chooses for themselves.' },
+  { value: 'Everyone', title: 'Required for everyone', hint: 'People who have not set it up are signed out and set it up at their next sign-in.' },
+];
+const TRUST_CHOICES = [0, 7, 14, 30, 60, 90];
+const trustLabel = (d: number) => (d === 0 ? 'Off (always ask for the code)' : `${d} days`);
+
+function TwoStepPanel({ tenantId, policy, onSaved }: {
+  tenantId: string;
+  policy: TenantSecurityPolicy;
+  onSaved: () => Promise<void>;
+}) {
+  const [mode, setMode]     = useState<TwoStepPolicy>(policy.mfaPolicy);
+  const [days, setDays]     = useState(policy.mfaTrustedDeviceDays);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg]       = useState<{ text: string; ok: boolean } | null>(null);
+
+  useEffect(() => { setMode(policy.mfaPolicy); setDays(policy.mfaTrustedDeviceDays); }, [policy.mfaPolicy, policy.mfaTrustedDeviceDays]);
+
+  const relaxing = mode === 'Optional' && policy.mfaPolicy !== 'Optional';
+  const dirty = mode !== policy.mfaPolicy || days !== policy.mfaTrustedDeviceDays;
+  const choices = TRUST_CHOICES.includes(days) ? TRUST_CHOICES : [...TRUST_CHOICES, days].sort((a, b) => a - b);
+
+  async function save() {
+    if (relaxing && reason.trim().length === 0) { setMsg({ text: 'Give a reason for letting each person choose.', ok: false }); return; }
+    setSaving(true); setMsg(null);
+    try {
+      await platformApi.updateTenantTwoStepPolicy(tenantId, {
+        mfaPolicy: mode !== policy.mfaPolicy ? mode : undefined,
+        mfaTrustedDeviceDays: days !== policy.mfaTrustedDeviceDays ? days : undefined,
+        reason: relaxing ? reason.trim() : undefined,
+      });
+      setReason('');
+      setMsg({ text: 'Two-step sign-in saved.', ok: true });
+      await onSaved();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setMsg({ text: detail ?? 'Save failed. Please try again.', ok: false });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-two-step">
+      <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Shield className="h-3.5 w-3.5 text-slate-500" />
+        <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Two-step sign-in (authenticator)</p>
+      </div>
+      <div className="px-5 py-4 space-y-4">
+        <fieldset className="space-y-2">
+          <legend className="sr-only">Who must use two-step sign-in</legend>
+          {TWO_STEP_OPTIONS.map(o => (
+            <label key={o.value} htmlFor={`two-step-${o.value}`}
+              className={`grid cursor-pointer grid-cols-[auto_1fr] items-start gap-x-3 rounded-lg border px-3 py-2.5 ${mode === o.value ? 'border-sapphire/50 bg-sapphire/[0.07]' : 'border-white/[0.08]'}`}>
+              <input id={`two-step-${o.value}`} type="radio" name="two-step-policy" value={o.value} checked={mode === o.value}
+                onChange={() => setMode(o.value)} className="row-span-2 mt-1 h-4 w-4 shrink-0 accent-sapphire" />
+              <span className="block text-sm text-slate-200">{o.title}</span>
+              <span className="block text-xs text-slate-500">{o.hint}</span>
+            </label>
+          ))}
+        </fieldset>
+
+        {relaxing && (
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2.5">
+            <label htmlFor="two-step-reason" className="block space-y-1.5">
+              <span className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</span>
+              <textarea id="two-step-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+            </label>
+          </div>
+        )}
+
+        <div className="max-w-xs">
+          <label htmlFor="two-step-trust-days" className="block">
+            <span className="mb-1 block text-sm text-slate-300">Trusted browsers</span>
+            <select id="two-step-trust-days" value={days} onChange={e => setDays(Number(e.target.value))}
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60">
+              {choices.map(d => <option key={d} value={d} className="bg-slate-950">{trustLabel(d)}</option>)}
+            </select>
+          </label>
+          <p className="mt-1 text-xs text-slate-500">How long a browser can skip the code after the person ticks &ldquo;Trust this browser&rdquo;. Shortening it also shortens browsers already trusted.</p>
+        </div>
+
+        {msg && (
+          <p className={`text-sm ${msg.ok ? 'text-emerald-400' : 'text-rose-400'}`} role="status">{msg.text}</p>
+        )}
+        <div className="flex justify-end">
+          <button type="button" onClick={save} disabled={saving || !dirty}
+            className="bg-sapphire hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save two-step sign-in'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InvitationHandoverPanel({ tenantId, policy, onSaved }: {
+  tenantId: string;
+  policy: TenantSecurityPolicy;
+  onSaved: () => Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(policy.allowAdminInvitationHandover);
+  const [reason, setReason]   = useState('');
+  const [saving, setSaving]   = useState(false);
+  const [msg, setMsg]         = useState<{ text: string; ok: boolean } | null>(null);
+
+  useEffect(() => { setEnabled(policy.allowAdminInvitationHandover); }, [policy.allowAdminInvitationHandover]);
+
+  const dirty = enabled !== policy.allowAdminInvitationHandover;
+
+  async function save() {
+    if (enabled && reason.trim().length < 3) { setMsg({ text: 'Give a reason for switching this on.', ok: false }); return; }
+    setSaving(true); setMsg(null);
+    try {
+      await platformApi.updateTenantInvitationHandover(tenantId, { enabled, reason: reason.trim() || undefined });
+      setReason('');
+      setMsg({ text: 'Saved.', ok: true });
+      await onSaved();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setMsg({ text: detail ?? 'Save failed. Please try again.', ok: false });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-invitation-handover">
+      <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Shield className="h-3.5 w-3.5 text-slate-500" />
+        <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Hand-over of pending invitations</p>
+      </div>
+      <div className="px-5 py-4 space-y-4">
+        <Toggle checked={enabled} onChange={setEnabled} label="Let workspace administrators set a temporary password for someone whose invitation is still pending" />
+        <p className="text-xs text-slate-500">
+          For people whose invitation email never arrives. The administrator hands the temporary password over in person, the login becomes active, and the person must choose their own password at first sign-in.
+          This skips the person&apos;s proof of email ownership, so it is off by default. Each use is recorded in the workspace audit log.
+        </p>
+        {enabled && !policy.allowAdminInvitationHandover && (
+          <label htmlFor="handover-reason" className="block space-y-1.5">
+            <span className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</span>
+            <textarea id="handover-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+              className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+          </label>
+        )}
+        {msg && <p className={`text-sm ${msg.ok ? 'text-emerald-400' : 'text-rose-400'}`} role="status">{msg.text}</p>}
+        <div className="flex justify-end">
+          <button type="button" onClick={save} disabled={saving || !dirty}
+            className="bg-sapphire hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -275,6 +434,9 @@ export default function TenantSecurityPage() {
           </button>
         </div>
       )}
+
+      {policy && <TwoStepPanel tenantId={id} policy={policy} onSaved={load} />}
+      {policy && <InvitationHandoverPanel tenantId={id} policy={policy} onSaved={load} />}
 
       <form onSubmit={save} className="space-y-5">
         {/* Password Policy */}

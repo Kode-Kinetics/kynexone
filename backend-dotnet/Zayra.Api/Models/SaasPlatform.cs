@@ -119,6 +119,10 @@ public static class FeatureKeys
     public const string RiskScores              = "risk_scores";
     public const string HijriCalendar           = "hijri_calendar";
     public const string PayslipTemplateDesigner = "payslip_template_designer";
+    public const string Gosi       = "gosi";
+    public const string Timesheets = "timesheets";
+    public const string Benefits   = "benefits";
+    public const string HrLetters  = "hr_letters";
     /// <summary>
     /// Release A (grade entitlements, contract-year package, contract renewals, deductions statement). OPT-IN:
     /// unlike every module key, an absent row means OFF. Switched on per tenant by the platform team

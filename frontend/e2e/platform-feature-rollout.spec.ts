@@ -28,20 +28,26 @@ async function mock(page: import('@playwright/test').Page, puts: unknown[]) {
     return route.fulfill({ json: path.endsWith('s') ? [] : {} });
   });
 }
-test('rollout switches: real defaults, confirmation, and declined confirm changes nothing', async ({ page }) => {
+test('rollout checkboxes: real defaults, one confirmation for the whole save, and a declined confirm changes nothing', async ({ page }) => {
   const puts: unknown[] = []; await mock(page, puts);
   await page.goto('/platform/tenants/t1?tab=features');
   await expect(page.getByText('Rollout (opt-in)', { exact: true })).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole('switch', { name: 'Disable Recruitment' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#feature-recruitment')).toBeChecked();
+  await expect(page.locator('#feature-release_a')).not.toBeChecked();
   const messages: string[] = [];
   page.once('dialog', d => { messages.push(d.message()); void d.dismiss(); });
-  await page.getByRole('switch', { name: 'Enable Release A: entitlements & renewals' }).click();
+  await page.locator('#feature-release_a').check();
+  await page.getByRole('button', { name: 'Save changes' }).click();
   await expect.poll(() => messages.length).toBe(1);
-  expect(messages[0]).toContain('Benefits by grade');
+  expect(messages[0]).toContain('Release A: entitlements & renewals');
+  expect(messages[0]).toContain('Rollout features change what this live tenant');
   expect(puts).toEqual([]);
+  await page.getByRole('button', { name: 'Discard' }).click();
+  await expect(page.locator('#feature-release_a')).not.toBeChecked();
   page.once('dialog', d => { messages.push(d.message()); void d.accept(); });
-  await page.getByRole('switch', { name: 'Enable Learning' }).click();
-  await expect(page.getByRole('switch', { name: 'Disable Learning' })).toHaveAttribute('aria-checked', 'true');
+  await page.locator('#feature-learning').check();
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.locator('#feature-learning')).toBeChecked();
   expect(puts).toEqual([{ key: 'learning', body: { isEnabled: true } }]);
 });
 test('bulk feature modal offers modules only', async ({ page }) => {

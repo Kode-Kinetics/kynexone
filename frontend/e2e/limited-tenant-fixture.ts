@@ -67,26 +67,24 @@ async function findActiveFixture(request: APIRequestContext, headers: Record<str
 }
 
 /**
- * `DELETE /api/platform/tenants/{id}` is currently a deliberate stub: PlatformController.DeleteTenant
- * answers 409 `tenant_delete_disabled` — "temporarily disabled pending an atomic
- * credential-revocation and recovery workflow" — and the purge endpoint is reached through it.
+ * `DELETE /api/platform/tenants/{id}?confirm={slug}` soft-deletes the tenant (signs everyone out, closes the workspace,
+ * renames the slug with the `__deleted_` marker); the purge that follows needs that marker and hard-erases it.
  *
- * That is a product decision, and the fixture must not pretend it is a test failure. But it must not
- * hide it either: the fixture tenant then SURVIVES the run, which is only acceptable because this
- * helper refuses to run anywhere but a disposable stack. So the one documented refusal is reported
- * and tolerated; anything else still fails.
+ * Older builds answered 409 `tenant_delete_disabled` instead. That is still tolerated and reported — the fixture tenant
+ * then SURVIVES the run, which is only acceptable because this helper refuses to run anywhere but a disposable stack.
+ * Anything else still fails.
  */
 async function deleteAndPurge(
-  request: APIRequestContext, headers: Record<string, string>, tenantId: string,
+  request: APIRequestContext, headers: Record<string, string>, tenantId: string, slug: string,
 ): Promise<'purged' | 'delete_disabled'> {
-  const deleted = await request.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`, { headers });
+  const deleted = await request.delete(`/api/platform/tenants/${tenantId}?confirm=${encodeURIComponent(slug)}`, { headers });
   if (!deleted.ok()) {
     const body = await deleted.text();
     if (deleted.status() === 409 && body.includes('tenant_delete_disabled')) {
       console.log(
         `[fixture] Tenant deletion is disabled in this build, so fixture tenant ${tenantId} is left `
         + 'in place. It lives in a disposable database that dies with the run — this helper refuses '
-        + 'to run against anything else. Re-enable PlatformController.DeleteTenant to restore cleanup.',
+        + 'to run against anything else. Use a build with PlatformController.DeleteTenant enabled to restore cleanup.',
       );
       return 'delete_disabled';
     }
@@ -115,7 +113,7 @@ export async function purgeLimitedTenantFixture(request: APIRequestContext, toke
     );
   }
 
-  if (await deleteAndPurge(request, headers, tenant.id) === 'purged') clearOwnership();
+  if (await deleteAndPurge(request, headers, tenant.id, tenant.slug) === 'purged') clearOwnership();
 }
 
 export async function provisionLimitedTenantFixture(request: APIRequestContext, token: string): Promise<void> {
@@ -126,7 +124,7 @@ export async function provisionLimitedTenantFixture(request: APIRequestContext, 
   const headers = platformHeaders(token);
   const existing = await findActiveFixture(request, headers);
   if (existing) {
-    if (await deleteAndPurge(request, headers, existing.id) === 'delete_disabled') {
+    if (await deleteAndPurge(request, headers, existing.id, existing.slug) === 'delete_disabled') {
       // The slug is occupied and cannot be freed. Re-apply the subscription and feature state this
       // fixture is FOR, so the lane runs against the shape it expects, and record that this run does
       // NOT own the tenant so teardown will not try to erase someone else's.
