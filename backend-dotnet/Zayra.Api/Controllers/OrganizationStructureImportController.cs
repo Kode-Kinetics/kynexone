@@ -86,11 +86,14 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<MigrationImportBatchDto>> CreateDryRunBatch([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var payloadJson = StableJson(req);
         var checksum = Checksum(payloadJson);
 
+        // A repeat of the same package resumes the caller's own batch. Another caller's batch (another scope) is never reused or overwritten.
+        var userId = GetUserId();
         var batch = await _db.MigrationImportBatches
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CreatedBy == userId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
 
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
@@ -135,17 +138,71 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<MigrationImportBatchDto>> GetBatch(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var batch = await _db.MigrationImportBatches.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        var batch = await ReadableBatches(tenantId).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (batch is null) return NotFound();
         return Ok(ToDto(batch));
+    }
+
+    /// <summary>
+    /// The stored batches this caller may read, commit or resume. A batch keeps the package as the creator's scope validated it, so
+    /// only a group-scope caller (who holds every company) reads another person's batch; a company-scoped caller reads their own.
+    /// Anything else reads as not found.
+    /// </summary>
+    private IQueryable<MigrationImportBatch> ReadableBatches(Guid tenantId)
+    {
+        var all = _db.MigrationImportBatches.Where(x => x.TenantId == tenantId);
+        if (this.HasGroupEntityScope()) return all;
+        var userId = GetUserId();
+        return userId is null ? all.Where(_ => false) : all.Where(x => x.CreatedBy == userId);
+    }
+
+    private const int MaxPackageRows = 20_000;
+    private const int MaxPackageChars = 5_000_000;
+
+    /// <summary>A package over the byte cap is 413; one over the row cap is 422. Judged before anything is parsed, stored or validated.</summary>
+    private ObjectResult? RefuseOversize(OrganizationStructureImportRequest req)
+    {
+        long chars = 0, rows = 0;
+        foreach (var section in new[] { req.CompaniesCsv, req.BranchesCsv, req.CostCentersCsv, req.DepartmentsCsv, req.GradesCsv, req.GradePayComponentsCsv, req.DesignationsCsv, req.PositionsCsv })
+        {
+            if (string.IsNullOrEmpty(section)) continue;
+            chars += section.Length;
+            var lines = 1L;
+            foreach (var ch in section) if (ch == '\n') lines++;
+            rows += Math.Max(0, lines - 1);   // the first line is the header
+        }
+        if (chars > MaxPackageChars)
+            return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "import_too_large", message = $"This import is too large ({chars:N0} characters). Split it into files under {MaxPackageChars:N0} characters and import them one after the other." });
+        if (rows > MaxPackageRows)
+            return StatusCode(StatusCodes.Status422UnprocessableEntity, new { error = "import_too_many_rows", message = $"This import has {rows:N0} rows. At most {MaxPackageRows:N0} rows can be imported at a time; split the file and import the parts one after the other." });
+        return null;
+    }
+
+    /// <summary>Takes the batch for one committer: DryRunPassed to Committing in a single conditional update, so of any number of callers pressing Commit at once exactly one wins.</summary>
+    private async Task<bool> TryClaimAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        if (_db.Database.IsRelational())
+        {
+            var now = DateTime.UtcNow;
+            return await _db.MigrationImportBatches.Where(x => x.TenantId == tenantId && x.Id == id && x.Status == "DryRunPassed")
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, "Committing").SetProperty(x => x.CurrentSection, "organization_structure")
+                    .SetProperty(x => x.UpdatedAtUtc, now), ct) == 1;
+        }
+        // The in-memory provider the fast unit tests use has no set-based update, and runs one caller at a time.
+        var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.Status == "DryRunPassed", ct);
+        if (batch is null) return false;
+        batch.Status = "Committing";
+        batch.CurrentSection = "organization_structure";
+        batch.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return true;
     }
 
     [HttpPost("batches/{id:guid}/commit")]
     public async Task<ActionResult<MigrationImportBatchDto>> CommitBatch(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        var batch = await ReadableBatches(tenantId).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (batch is null) return NotFound();
         if (batch.Status == "Committed") return Ok(ToDto(batch));
         if (batch.Status != "DryRunPassed")
@@ -162,12 +219,30 @@ public class OrganizationStructureImportController : ControllerBase
             return UnprocessableEntity(ToDto(batch));
         }
 
-        batch.Status = "Committing";
-        batch.CurrentSection = "organization_structure";
-        batch.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        if (!await TryClaimAsync(tenantId, id, ct))
+        {
+            await _db.Entry(batch).ReloadAsync(ct);
+            return Conflict(ToDto(batch, errors: [$"Batch is {batch.Status}; it is already being committed or no longer ready."]));
+        }
+        await _db.Entry(batch).ReloadAsync(ct);
 
-        var commit = await Commit(req, ct);
+        ActionResult<OrganizationStructureImportResult> commit;
+        try { commit = await Commit(req, ct); }
+        catch
+        {
+            // The apply runs in one transaction, so a failure leaves no new rows; the batch must not stay claimed forever.
+            _db.ChangeTracker.Clear();
+            var stuck = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, CancellationToken.None);
+            if (stuck is not null)
+            {
+                stuck.Status = "Failed";
+                stuck.CurrentSection = "commit_failed";
+                stuck.ErrorJson = StableJson(new[] { "The commit failed and was rolled back; nothing was applied. Run a new dry run to try again." });
+                stuck.UpdatedAtUtc = DateTime.UtcNow;
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            throw;
+        }
         // Commit() now runs its unit through the execution strategy, and a retry inside that
         // strategy clears the change tracker. Re-attach the batch from persisted state so the
         // status updates below are actually written instead of being applied to a detached
@@ -211,6 +286,7 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<OrganizationStructureImportResult>> Preview([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         return Ok(await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct));
@@ -220,6 +296,7 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<OrganizationStructureImportResult>> Commit([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
