@@ -16,7 +16,9 @@ public static class SaudiNationality
         // Country, demonym, ISO-2/ISO-3 and the common abbreviation.
         "KSA", "Saudi", "Saudi Arabia", "Saudi Arabian", "Kingdom of Saudi Arabia", "SA", "SAU",
         // Free-text form HR users commonly type ("Saudi National"); owner-approved alias.
-        "Saudi National",
+        "Saudi National", "Saudi Citizen", "KSA National",
+        // Arabic free-text forms: "Saudi by nationality" (m./f.), ta marbuta typed as ha, and the definite article.
+        "سعودي الجنسية", "سعودية الجنسية", "سعوديه", "السعودي",
         // Arabic: Saudi (m.), the same with a dotless final ya (سعودى, common in Egyptian-style input),
         // Saudi (f.), Saudi Arabia, and the Kingdom of Saudi Arabia.
         "سعودي", "سعودى", "سعودية", "السعودية", "المملكة العربية السعودية",
@@ -26,5 +28,24 @@ public static class SaudiNationality
 
     /// <summary>True when <paramref name="nationality"/> is a recognised spelling of Saudi.</summary>
     public static bool IsSaudi(string? nationality) =>
-        !string.IsNullOrWhiteSpace(nationality) && Spellings.Contains(nationality.Trim());
+        !string.IsNullOrWhiteSpace(nationality) && Spellings.Contains(Fold(nationality));
+
+    /// <summary>
+    /// Trim, collapse runs of whitespace to one space, and drop Arabic tatweel and diacritics so that
+    /// typing variants of an accepted spelling match. Still an EXACT match on the folded text.
+    /// </summary>
+    private static string Fold(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var ch in value.Trim())
+        {
+            if (ch == '\u0640' || (ch >= '\u064B' && ch <= '\u065F') || ch == '\u0670') continue; // tatweel, tashkeel
+            if (char.IsWhiteSpace(ch)) { pendingSpace = true; continue; }
+            if (pendingSpace && sb.Length > 0) sb.Append(' ');
+            pendingSpace = false;
+            sb.Append(ch);
+        }
+        return sb.ToString();
+    }
 }
