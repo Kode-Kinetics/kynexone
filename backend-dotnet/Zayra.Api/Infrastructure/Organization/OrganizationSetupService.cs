@@ -309,7 +309,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(branch, request);
         _db.Branches.Add(branch);
         _audit.Stage("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Branch", request.Code, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -331,7 +331,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         branch.UpdatedAtUtc = DateTime.UtcNow;
         branch.UpdatedBy = context.UserId;
         _audit.Stage("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Branch", request.Code, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -363,7 +363,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         _db.Departments.Add(department);
         _audit.Stage("organization.department_created", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
             DepartmentAuditJson(null, department, request.Reason), department.CompanyId);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Department", request.Code, cancellationToken);
         return department.ToDto();
     }
 
@@ -391,7 +391,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(Department), department.Id, department.CompanyId,
                 new { costCenterId = before.CostCenterId, parentDepartmentId = before.ParentDepartmentId },
                 new { costCenterId = department.CostCenterId, parentDepartmentId = department.ParentDepartmentId }, request.Reason);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Department", request.Code, cancellationToken);
         return department.ToDto();
     }
 
@@ -422,7 +422,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(designation, request);
         _db.Designations.Add(designation);
         _audit.Stage("organization.designation_created", nameof(Designation), designation.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
         return designation.ToDto();
     }
 
@@ -442,7 +442,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         designation.UpdatedAtUtc = DateTime.UtcNow;
         designation.UpdatedBy = context.UserId;
         _audit.Stage("organization.designation_updated", nameof(Designation), designation.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
         return designation.ToDto();
     }
 
@@ -472,7 +472,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = await CompanyCurrencyAsync(tenantId, companyId, cancellationToken) ?? grade.Currency;
         _db.Grades.Add(grade);
         _audit.Stage("organization.grade_created", nameof(Grade), grade.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Grade", request.Code, cancellationToken);
         return grade.ToDto();
     }
 
@@ -498,7 +498,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             .Where(c => c.TenantId == tenantId && c.GradeId == grade.Id && c.IsActive).ToListAsync(cancellationToken);
         await GradeSalaryStructureSync.StageAsync(_db, grade, packageLines, context.UserId, createIfMissing: false, cancellationToken);
         _audit.Stage("organization.grade_updated", nameof(Grade), grade.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Grade", request.Code, cancellationToken);
         return grade.ToDto();
     }
 
@@ -1196,6 +1196,17 @@ public class OrganizationSetupService : IOrganizationSetupService
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(cancellationToken);
         if (holder is not null) throw new CompanyRegistrationNumberTakenException(holder.Value);
+    }
+
+    /// <summary>Saves a branch, department, designation or grade. Two writers can both pass the duplicate pre-check; the unique
+    /// index then refuses the loser, and that refusal is a 409 the caller can read, not an unhandled database error.</summary>
+    private async Task SaveCodedRowAsync(string entity, string code, CancellationToken ct)
+    {
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            throw new OrgCodeConflictException(entity, OrgCodes.Normalize(code));
+        }
     }
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)

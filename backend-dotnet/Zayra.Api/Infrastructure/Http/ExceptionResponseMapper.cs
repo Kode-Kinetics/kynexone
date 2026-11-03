@@ -17,6 +17,8 @@ public static class ExceptionResponseMapper
         Zayra.Api.Infrastructure.Payroll.PeriodClosedException closed => (StatusCodes.Status422UnprocessableEntity, "gl_period_closed", closed.Message),
         // Field encryption: the tenant's keys are revoked (423) or temporarily unavailable (503) - never a 500, never key detail.
         Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionUnavailableException fe => (fe.StatusCode, fe.Code, fe.SafeMessage),
+        // Another writer saved the same organisation code first (the unique index refused this save): a conflict, not a fault.
+        Zayra.Api.Application.Organization.OrgCodeConflictException taken => (StatusCodes.Status409Conflict, Zayra.Api.Application.Organization.OrgCodeConflictException.ErrorCode, taken.Message),
         UnauthorizedAccessException unauthorized => (StatusCodes.Status403Forbidden, "forbidden", unauthorized.Message),
         InvalidOperationException guard when CompanyGuardCodes.Any(c => guard.Message.StartsWith(c + ":", StringComparison.Ordinal))
             => (StatusCodes.Status409Conflict, guard.Message[..guard.Message.IndexOf(':')], guard.Message),
