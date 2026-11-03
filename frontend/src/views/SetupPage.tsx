@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
@@ -448,23 +448,30 @@ function CompaniesTab() {
             <input type="text" value={form.legalNameEn} onChange={(e) => f('legalNameEn', e.target.value)} className="input w-full" placeholder="Acme Corp LLC" />
           </FormField>
           <FormField label="Legal Name (AR)">
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.legalNameEn} onSuggest={(s) => f('legalNameAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.legalNameEn} onSuggest={(s) => f('legalNameAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label="Trade Name">
             <input type="text" value={form.tradeName ?? ''} onChange={(e) => f('tradeName', e.target.value)} className="input w-full" />
           </FormField>
           <FormField label="Country" required>
-            <CountrySelect
-              value={setupCountryCode(form.countryCode)}
-              onChange={(cc) => {
-                const pack = availablePacks.find(p => setupCountryCode(p.countryCode) === cc);
-                setForm(current => ({ ...current, countryCode: cc, jurisdiction: pack?.jurisdictions[0]?.code ?? '' }));
-              }}
-            />
-            <p className="mt-1 text-xs text-slate-500">{t('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')}</p>
+            {(id) => (
+              <>
+                <CountrySelect
+                  id={id}
+                  value={setupCountryCode(form.countryCode)}
+                  onChange={(cc) => {
+                    const pack = availablePacks.find(p => setupCountryCode(p.countryCode) === cc);
+                    setForm(current => ({ ...current, countryCode: cc, jurisdiction: pack?.jurisdictions[0]?.code ?? '' }));
+                  }}
+                />
+                <p className="mt-1 text-xs text-slate-500">{t('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')}</p>
+              </>
+            )}
           </FormField>
           <FormField label={t('Jurisdiction (optional)')} info={t('A special legal regime within the selected country, such as a free zone. Choose only when applicable.')}>
             <select
@@ -683,13 +690,15 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Dubai Head Office" />
           </FormField>
           <FormField label={t('Name (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Country')} required>
-            <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
+            {(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} />}
           </FormField>
           <FormField label={t('City')} required>
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
@@ -813,8 +822,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, costCenterId: undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, costCenterId: undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="ENG" />
@@ -823,10 +834,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Engineering" />
           </FormField>
           <FormField label={t('Name (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Cost Center')}>
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
@@ -1921,7 +1934,7 @@ function LocationsTab() {
           <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
           <FormField label={t('Name (EN)')} required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Name (AR)')}><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
-          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
+          <FormField label={t('Country')} required>{(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} />}</FormField>
           <FormField label={t('City')}><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Postal Code')}><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
@@ -2358,18 +2371,31 @@ function ActiveBadge({ active }: { active: boolean }) {
   );
 }
 
+/**
+ * A labelled control. `children` is the control itself (a plain input, select or textarea gets the id automatically) or
+ * a function receiving the id for a custom control, so the label is always tied to what it names: a screen reader
+ * announces "Code, edit text", and a click on the label focuses the field.
+ */
 function FormField({ label, required, children, info, error, errorId }: {
-  label: string; required?: boolean; children: React.ReactNode; info?: string;
+  label: string; required?: boolean; children: React.ReactNode | ((id: string) => React.ReactNode); info?: string;
   /** Shown under the control. Give the control aria-invalid and aria-describedby={errorId}. */
   error?: string; errorId?: string;
 }) {
+  const id = useId();
+  const control = typeof children === 'function' ? children(id) : Children.map(children, (child) => {
+    if (isValidElement(child) && typeof child.type === 'string' && ['input', 'select', 'textarea'].includes(child.type)) {
+      const props = (child as ReactElement<{ id?: string }>).props;
+      return props.id ? child : cloneElement(child as ReactElement<{ id?: string; 'aria-required'?: boolean }>, required ? { id, 'aria-required': true } : { id });
+    }
+    return child;
+  });
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label} {required && <span className="text-red-500">*</span>}
+      <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+        {label} {required && <span className="text-red-500" aria-hidden="true">*</span>}
         {info && <InfoTip text={info} className="ms-1" />}
       </label>
-      {children}
+      {control}
       {error && (
         <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
           {error}
@@ -2382,7 +2408,7 @@ function FormField({ label, required, children, info, error, errorId }: {
 function FormError({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <p className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
+    <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
       {error}
     </p>
   );

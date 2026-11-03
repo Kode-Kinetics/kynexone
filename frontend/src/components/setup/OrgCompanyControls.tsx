@@ -74,14 +74,14 @@ export function CompanyCell({ name }: { name: string | null }) {
  * The form's Company field. A new row (or an unassigned legacy row) picks a company; a row that already has one
  * shows it locked, because a company's departments, designations and grades are its own.
  */
-export function CompanySelectField({ value, onChange, options, locked, lockedName }: {
-  value: string; onChange: (v: string) => void; options: OrgCompanyOption[]; locked: boolean; lockedName?: string | null;
+export function CompanySelectField({ value, onChange, options, locked, lockedName, id }: {
+  value: string; onChange: (v: string) => void; options: OrgCompanyOption[]; locked: boolean; lockedName?: string | null; id?: string;
 }) {
   const t = useT();
   if (locked) {
     return (
       <div>
-        <select value={value} disabled className="select w-full" aria-label={t('Company')}>
+        <select id={id} value={value} disabled className="select w-full" aria-label={id ? undefined : t('Company')}>
           <option value={value}>{lockedName ?? value}</option>
         </select>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{t("The company can't be changed after it is set.")}</p>
@@ -89,7 +89,7 @@ export function CompanySelectField({ value, onChange, options, locked, lockedNam
     );
   }
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className="select w-full" aria-label={t('Company')} required>
+    <select id={id} value={value} onChange={(e) => onChange(e.target.value)} className="select w-full" aria-label={id ? undefined : t('Company')} required>
       <option value="">{t('Choose the company')}</option>
       {options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
     </select>
