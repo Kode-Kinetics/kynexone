@@ -291,6 +291,81 @@ function InvitationHandoverPanel({ tenantId, policy, onSaved }: {
   );
 }
 
+function fmtDate(iso?: string | null) {
+  return iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'not set';
+}
+
+function PrivilegedMfaPanel({ tenantId, policy, onSaved }: {
+  tenantId: string;
+  policy: TenantSecurityPolicy;
+  onSaved: () => Promise<void>;
+}) {
+  const [date, setDate]     = useState('');
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg]       = useState<{ text: string; ok: boolean } | null>(null);
+
+  async function save(clear: boolean) {
+    if (reason.trim().length < 10) { setMsg({ text: 'Give a reason of at least 10 characters.', ok: false }); return; }
+    if (!clear && !date) { setMsg({ text: 'Pick the date mandatory two-step should start.', ok: false }); return; }
+    setSaving(true); setMsg(null);
+    try {
+      await platformApi.setTenantPrivilegedMfaEnforcement(tenantId, {
+        enforceFromUtc: clear ? null : `${date}T00:00:00Z`,
+        reason: reason.trim(),
+      });
+      setReason(''); setDate('');
+      setMsg({ text: clear ? 'Now following the platform date.' : 'Saved.', ok: true });
+      await onSaved();
+    } catch (e: unknown) {
+      const detail = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setMsg({ text: detail ?? 'Save failed. Please try again.', ok: false });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden" data-testid="platform-privileged-mfa">
+      <div className="px-5 py-3 border-b border-white/[0.06] flex items-center gap-2">
+        <Shield className="h-3.5 w-3.5 text-slate-500" />
+        <p className="text-caption font-semibold text-slate-500 uppercase tracking-widest">Mandatory two-step for payroll, banking and access roles</p>
+      </div>
+      <div className="px-5 py-4 space-y-4">
+        <p className="text-xs text-slate-500">
+          People who can see or move payroll, banking or access control must use two-step sign-in from a start date, whatever the policy above says.
+          Postponing the start date lets this workspace sign in without it until then (for example during a demo). It never switches two-step off for people who have already set it up.
+        </p>
+        <dl className="grid grid-cols-2 gap-3 text-sm">
+          <div><dt className="text-xs text-slate-500">This workspace starts</dt><dd className="text-slate-200" data-testid="privileged-mfa-tenant-date">{policy.privilegedMfaEnforceFromUtc ? fmtDate(policy.privilegedMfaEnforceFromUtc) : 'follows the platform date'}</dd></div>
+          <div><dt className="text-xs text-slate-500">Platform date</dt><dd className="text-slate-200">{fmtDate(policy.platformPrivilegedMfaEnforceFromUtc)}</dd></div>
+        </dl>
+        <label htmlFor="privileged-mfa-date" className="block space-y-1.5">
+          <span className="block text-xs font-medium text-slate-400">New start date</span>
+          <input id="privileged-mfa-date" type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
+        </label>
+        <label htmlFor="privileged-mfa-reason" className="block space-y-1.5">
+          <span className="block text-xs font-medium text-amber-300">Reason (required, recorded in the audit log)</span>
+          <textarea id="privileged-mfa-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+            className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+        </label>
+        {msg && <p className={`text-sm ${msg.ok ? 'text-emerald-400' : 'text-rose-400'}`} role="status">{msg.text}</p>}
+        <div className="flex justify-end gap-3">
+          {policy.privilegedMfaEnforceFromUtc && (
+            <button type="button" onClick={() => save(true)} disabled={saving}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-slate-300 border border-white/10 hover:bg-white/[0.04] disabled:opacity-40">
+              Follow the platform date
+            </button>
+          )}
+          <button type="button" onClick={() => save(false)} disabled={saving || !date}
+            className="bg-sapphire hover:bg-blue-500 text-white px-6 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save start date'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <label className="flex items-center justify-between cursor-pointer py-1">
@@ -437,6 +512,7 @@ export default function TenantSecurityPage() {
 
       {policy && <TwoStepPanel tenantId={id} policy={policy} onSaved={load} />}
       {policy && <InvitationHandoverPanel tenantId={id} policy={policy} onSaved={load} />}
+      {policy && <PrivilegedMfaPanel tenantId={id} policy={policy} onSaved={load} />}
 
       <form onSubmit={save} className="space-y-5">
         {/* Password Policy */}
