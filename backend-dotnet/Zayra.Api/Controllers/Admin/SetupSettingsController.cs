@@ -125,6 +125,9 @@ public class SetupSettingsController : ControllerBase
         if (string.Equals(req.Category, Zayra.Api.Infrastructure.Payroll.SaudiBankExports.SaudiBankExportService.SettingsCategory, StringComparison.OrdinalIgnoreCase)
             || req.SettingKey.StartsWith("saudi-bank-export.company.", StringComparison.OrdinalIgnoreCase))
             return Forbid();
+        // Policy settings are validated and audited; they are written only through PolicySettingsController.
+        if (string.Equals(req.Category, Zayra.Api.Infrastructure.Policy.PolicyRegistry.StorageCategory, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
 
         // POD-D5: notification-provider credentials are encrypted at rest with IDataProtection —
         // the same prior art QiwaIntegrationService uses. SystemSetting.IsEncrypted is decorative

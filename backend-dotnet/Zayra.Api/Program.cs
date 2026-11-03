@@ -442,6 +442,9 @@ builder.Services.AddScoped<IEmailService, SmtpEmailService>();
 // is the provider port below. NO vendor credential lives in code or in a config default: the Null*
 // providers report "not_configured" (a visible delivery row), and a real Twilio / Unifonic / Meta
 // WhatsApp / FCM / APNs adapter drops in by replacing exactly one of these three lines.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Policy.PolicySettingsService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Policy.IPolicySettings>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Policy.PolicySettingsService>());
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Policy.IPolicySettingsAdmin>(sp => sp.GetRequiredService<Zayra.Api.Infrastructure.Policy.PolicySettingsService>());
 builder.Services.AddScoped<INotificationRecipientResolver, NotificationRecipientResolver>();
 builder.Services.AddScoped<INotificationProviderConfigReader, NotificationProviderConfigReader>();
 builder.Services.AddScoped<ISmsProvider, NullSmsProvider>();
