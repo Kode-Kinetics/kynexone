@@ -117,6 +117,7 @@ public static class PrivilegedMfaPolicy
         "users.manage", "roles.manage", "security.manage",
         // Payroll, banking and statutory money.
         "payroll.read", // every employee's pay and bank lines, read-only but sensitive
+        "payroll.slips.read", // the register and payslips: every employee's pay, read-only but sensitive (no export)
         "payroll.write", "payroll.approve", "payroll.lock", "payroll.run_delete", "payroll.export",
         "payroll.structure_manage", "payroll.rules.manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields

@@ -60,14 +60,16 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly IHrLetterIssuer _letterIssuer;
     private readonly IDocumentStorage? _documentStorage;
     private readonly TimeProvider _clock;
+    private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
 
     // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
     {
+        _policySettings = policySettings;
         // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
         _clock = clock ?? TimeProvider.System;
         _letters = letters;
@@ -310,8 +312,32 @@ public class EmployeeSelfServiceController : ControllerBase
         if (unsupported.Count > 0)
             return BadRequest(new { message = $"Unsupported self-service profile field(s): {string.Join(", ", unsupported)}." });
         if (request.Changes.Count == 0) return BadRequest(new { message = "At least one profile change is required." });
-        var changesJson = JsonSerializer.Serialize(request.Changes);
-        var containsSensitive = request.Changes.Keys.Any(SensitiveProfileFields.Contains);
+        // PEO-03: only the fields in employees.profile_change_approval_fields wait for HR; the rest apply now.
+        var approvalFields = _policySettings is null
+            ? Zayra.Api.Infrastructure.Policy.PolicyRegistry.ParseCsv(Zayra.Api.Infrastructure.Policy.PolicyRegistry.Get(Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields).Default)
+            : await _policySettings.GetCsvAsync(tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields, cancellationToken);
+        var direct = request.Changes.Where(x => !Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApproval(x.Key, approvalFields))
+            .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        var gated = request.Changes.Where(x => !direct.ContainsKey(x.Key)).ToDictionary(x => x.Key, x => x.Value);
+        // Validate both halves BEFORE either is saved: a bad value leaves the record and the queue untouched.
+        var directValues = direct.ToDictionary(x => x.Key, x => ToJsonElement(x.Value), StringComparer.OrdinalIgnoreCase);
+        var (directProposed, directError) = ValidateProfileValues(directValues);
+        if (directError is not null) return BadRequest(new { message = directError });
+        var (_, gatedError) = ValidateProfileValues(gated.ToDictionary(x => x.Key, x => ToJsonElement(x.Value)));
+        if (gatedError is not null) return BadRequest(new { message = gatedError });
+        if (directProposed.Count > 0)
+        {
+            var self = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
+            if (self is null) return NotFound();
+            ApplyProfileValues(self, tenantId, directProposed, "Employee profile updated by the employee (not an approval-listed field)", approvedByDecider: false);
+            if (gated.Count == 0)
+            {
+                await EssAudit(tenantId, employeeId, "ess.profile_change.applied_directly", "Employee", employeeId.ToString(), cancellationToken);
+                return Ok(new { appliedDirectly = directProposed.Select(x => x.Field).ToList(), pendingApproval = Array.Empty<string>() });
+            }
+        }
+        var changesJson = JsonSerializer.Serialize(gated);
+        var containsSensitive = gated.Keys.Any(SensitiveProfileFields.Contains);
         var change = new EmployeeProfileChangeRequest
         {
             TenantId = tenantId,
@@ -325,6 +351,59 @@ public class EmployeeSelfServiceController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.profile_change.requested", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
         return Created($"/api/ess/profile-change-request/{change.Id}", change);
+    }
+
+    private static JsonElement ToJsonElement(object? value) =>
+        value is JsonElement je ? je : JsonSerializer.SerializeToElement(value);
+
+    /// <summary>Checks every requested value before any is applied; the error is a 400 message, null when all are fine.</summary>
+    private static (List<(string Field, string Text)> Proposed, string? Error) ValidateProfileValues(IReadOnlyDictionary<string, JsonElement> values)
+    {
+        var proposed = new List<(string Field, string Text)>();
+        foreach (var (field, value) in values)
+        {
+            var text = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ToString().Trim();
+            if (!ProfileFieldLimits.TryGetValue(field, out var limit))
+                return (proposed, $"Unsupported profile field '{field}'.");
+            if (text.Length > limit)
+                return (proposed, $"'{field}' is too long (at most {limit} characters).");
+            if (field.Equals("personalEmail", StringComparison.OrdinalIgnoreCase) && text.Length > 0 && !IsPlausibleEmail(text))
+                return (proposed, "Personal email is not a valid email address.");
+            proposed.Add((field, text));
+        }
+        return (proposed, null);
+    }
+
+    /// <summary>Writes the validated values to the employee and stages one history row per changed field (saved by the caller's next SaveChanges).</summary>
+    private void ApplyProfileValues(Employee employee, Guid tenantId, List<(string Field, string Text)> proposed, string reason, bool approvedByDecider)
+    {
+        var decisionDate = DateOnly.FromDateTime(DateTime.UtcNow);
+        foreach (var (field, text) in proposed)
+        {
+            string label, previous;
+            switch (field.ToLowerInvariant())
+            {
+                case "preferredname": label = "PreferredName"; previous = employee.PreferredName; employee.PreferredName = text; break;
+                case "personalemail": label = "PersonalEmail"; previous = employee.PersonalEmail; employee.PersonalEmail = text; break;
+                case "phone": label = "Phone"; previous = employee.Phone; employee.Phone = text; break;
+                case "maritalstatus": label = "MaritalStatus"; previous = employee.MaritalStatus; employee.MaritalStatus = text; break;
+                case "emergencycontactname": label = "EmergencyContactName"; previous = employee.EmergencyContactName; employee.EmergencyContactName = text; break;
+                case "emergencycontactphone": label = "EmergencyContactPhone"; previous = employee.EmergencyContactPhone; employee.EmergencyContactPhone = text; break;
+                default: throw new InvalidOperationException($"Unsupported profile field '{field}'.");   // unreachable: validated above
+            }
+            if (previous == text) continue;
+            // Who changed which personal detail and what it was before; values pass through the same
+            // field-aware sanitiser as the rest of the employee history.
+            _db.EmployeeHistories.Add(new EmployeeHistory
+            {
+                TenantId = tenantId, EmployeeId = employee.Id, EventType = label + "Change", FieldName = label,
+                OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, previous),
+                NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, text),
+                EffectiveDate = decisionDate, Reason = reason,
+                ApprovedByUserId = approvedByDecider ? GetUserId() : null, CreatedByUserId = GetUserId(),
+                SnapshotJson = EmployeeSafeSnapshot.Serialize(employee),
+            });
+        }
     }
 
     // The HR queue of every employee's requested personal-detail changes, and the decisions on it.
@@ -368,45 +447,9 @@ public class EmployeeSelfServiceController : ControllerBase
         var values = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.RequestedChangesJson) ?? new();
         // Validate every requested value BEFORE any is applied: a bad one is a 400 that leaves the record and
         // the request untouched, never a half-applied change or a database error.
-        var proposed = new List<(string Field, string Text)>();
-        foreach (var (field, value) in values)
-        {
-            var text = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ToString().Trim();
-            if (!ProfileFieldLimits.TryGetValue(field, out var limit))
-                return BadRequest(new { message = $"Unsupported profile field '{field}'." });
-            if (text.Length > limit)
-                return BadRequest(new { message = $"'{field}' is too long (at most {limit} characters)." });
-            if (field.Equals("personalEmail", StringComparison.OrdinalIgnoreCase) && text.Length > 0 && !IsPlausibleEmail(text))
-                return BadRequest(new { message = "Personal email is not a valid email address." });
-            proposed.Add((field, text));
-        }
-        var decisionDate = DateOnly.FromDateTime(DateTime.UtcNow);
-        foreach (var (field, text) in proposed)
-        {
-            string label, previous;
-            switch (field.ToLowerInvariant())
-            {
-                case "preferredname": label = "PreferredName"; previous = employee.PreferredName; employee.PreferredName = text; break;
-                case "personalemail": label = "PersonalEmail"; previous = employee.PersonalEmail; employee.PersonalEmail = text; break;
-                case "phone": label = "Phone"; previous = employee.Phone; employee.Phone = text; break;
-                case "maritalstatus": label = "MaritalStatus"; previous = employee.MaritalStatus; employee.MaritalStatus = text; break;
-                case "emergencycontactname": label = "EmergencyContactName"; previous = employee.EmergencyContactName; employee.EmergencyContactName = text; break;
-                case "emergencycontactphone": label = "EmergencyContactPhone"; previous = employee.EmergencyContactPhone; employee.EmergencyContactPhone = text; break;
-                default: return BadRequest(new { message = $"Unsupported profile field '{field}'." });
-            }
-            if (previous == text) continue;
-            // Who approved which personal-detail change and what it was before; values pass through the same
-            // field-aware sanitiser as the rest of the employee history.
-            _db.EmployeeHistories.Add(new EmployeeHistory
-            {
-                TenantId = tenantId, EmployeeId = employee.Id, EventType = label + "Change", FieldName = label,
-                OldValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, previous),
-                NewValue = EmployeeSafeSnapshot.SanitizeFieldValue(label, text),
-                EffectiveDate = decisionDate, Reason = "Employee profile change request approved",
-                ApprovedByUserId = GetUserId(), CreatedByUserId = GetUserId(),
-                SnapshotJson = EmployeeSafeSnapshot.Serialize(employee),
-            });
-        }
+        var (proposed, validationError) = ValidateProfileValues(values);
+        if (validationError is not null) return BadRequest(new { message = validationError });
+        ApplyProfileValues(employee, tenantId, proposed, "Employee profile change request approved", approvedByDecider: true);
         change.Status = "Approved";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();

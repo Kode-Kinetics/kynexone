@@ -28,6 +28,9 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollValidationEngine
 {
+    /// <summary>PAY-08 — nationality text that is neither Saudi, GCC nor a known country.</summary>
+    public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
+
     /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
     /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
@@ -287,6 +290,17 @@ public static class PayrollValidationEngine
                 Warn("MISSING_NATIONALITY",
                     $"Employee {slip.EmployeeCode} has no nationality recorded. " +
                     "Nationality drives GOSI classification (Saudi vs GCC vs expat) and must be set before processing.",
+                    slip.EmployeeId);
+
+            // PAY-08: free text that is not Saudi, GCC or a known country is NEVER guessed. DeriveClassification would read
+            // it as an expatriate (no GOSI), so a typo for "Saudi" would silently drop the contribution. An Error, because
+            // the figure on the slip may be wrong; overridable with a reason (a real but unlisted nationality is a judgement).
+            if (isKsa && emp is not null && !string.IsNullOrWhiteSpace(emp.Nationality)
+                && Zayra.Api.Application.Onboarding.NationalityClasses.Of(emp.Nationality) == Zayra.Api.Application.Onboarding.NationalityClasses.Unknown)
+                Err(NationalityUnrecognised,
+                    $"Employee {slip.EmployeeCode} has the nationality \"{emp.Nationality.Trim()}\", which is not recognised as Saudi, GCC or a known country, " +
+                    "so GOSI cannot be classified and it was NOT assumed to be an expatriate. Correct the nationality on the employee record " +
+                    "(pick it from the list) and reprocess the run, or confirm the classification with a reason.",
                     slip.EmployeeId);
 
             // Rule 2: GOSI rate check — KSA runs only

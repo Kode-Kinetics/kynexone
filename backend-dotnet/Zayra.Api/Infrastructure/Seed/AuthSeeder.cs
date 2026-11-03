@@ -220,7 +220,7 @@ public class AuthSeeder : IAuthSeeder
             x.Key.StartsWith("approvals.") || x.Key.StartsWith("notifications.") || x.Key.StartsWith("localization.") ||
             x.Key.StartsWith("performance.") ||
             x.Key is "onboarding.templates.manage" or "audit.read" or "manager.read" or "manager.approve" or "reports.read" or "qiwa.read" or
-            "payroll.read" or "payroll.write" or "payroll.approve" or "payroll.rules.manage" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
+            "payroll.read" or "payroll.slips.read" or "payroll.write" or "payroll.approve" or "payroll.rules.manage" or "loans.read" or "loans.write" or "loans.approve" or "loans.policy_manage" ||
             x.Key.StartsWith("entitlements.") || x.Key.StartsWith("contracts.renewal.") ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
             x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
@@ -237,7 +237,7 @@ public class AuthSeeder : IAuthSeeder
         // Level 4 — Payroll Manager: payroll + finance + employees
         await EnsureRole(tenantId, "Payroll Manager", "Manages payroll processing and WPS submissions", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read", "leave.read",
-            "overtime.read", "payroll.read", "payroll.write", "payroll.approve", "loans.read", "loans.approve",
+            "overtime.read", "payroll.read", "payroll.slips.read", "payroll.write", "payroll.approve", "loans.read", "loans.approve",
             // payroll.run_delete reconciles the method-level [Authorize(Roles="Admin,Payroll Manager")] on
             // DELETE /payroll/runs/{id} into the effective-permission model (its current effective reach).
             "payroll.run_delete",
@@ -265,7 +265,7 @@ public class AuthSeeder : IAuthSeeder
         // Level 6 — Payroll Officer: payroll processing
         await EnsureRole(tenantId, "Payroll Officer", "Payroll and WPS specialist", Ps(new[] {
             "dashboard.read", "employees.read", "employees.sensitive", "attendance.read",
-            "payroll.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
+            "payroll.read", "payroll.slips.read", "payroll.write", "loans.read", "approvals.read", "notifications.read", "reports.read"
         }), 6, true, cancellationToken);
 
         // Level 7 — standalone loan operator. Assigning the role remains an administrator decision.
@@ -439,6 +439,7 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.write", "Payroll", "Create and process payroll runs"),
             ("payroll.approve", "Payroll", "Approve payroll runs"),
             ("payroll.export", "Payroll", "Export payroll and WPS files"),
+            ("payroll.slips.read", "Payroll", "Read the payroll register and payslips (does not allow exporting payroll or WPS files)"),
             ("payroll.structure_manage", "Payroll", "Manage salary structures and components"),
             ("payroll.rules.manage", "Payroll", "Propose changes to a company's payroll rules (rest-day pay, leave payout, probation, absence base); a change that lowers pay is approved by a different payroll approver"),
             // Payroll run state-machine (financial-controller tier) — added for the [HasPermission]
