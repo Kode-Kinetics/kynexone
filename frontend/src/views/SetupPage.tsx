@@ -2398,7 +2398,7 @@ function TableShell({
 function ActiveBadge({ active }: { active: boolean }) {
   const t = useT();
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20' : 'bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-slate-500'}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emerald-50 text-emerald-800 dark:bg-emeraldZ/20 dark:text-emeraldZ' : 'bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-slate-500'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emeraldZ' : 'bg-slate-400'}`} />
       {active ? t('Active') : t('Inactive')}
     </span>

@@ -204,7 +204,7 @@ export function ReadOnlyStatus({ active }: { active: boolean }) {
   const t = useT();
   return (
     <div className="space-y-1" data-testid="read-only-status">
-      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'}`}>
+      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emerald-50 text-emerald-800 dark:bg-emeraldZ/20 dark:text-emeraldZ' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-400'}`}>
         {active ? t('Active') : t('Off')}
       </span>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('Use Remove / Restore to turn it off or on.')}</p>
