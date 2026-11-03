@@ -165,7 +165,7 @@ public sealed class SoftDeletedTenantRule : IRetentionRule
     {
         // FOR UPDATE: the same tenant row lock the platform restore takes, so a restore and an erasure are mutually
         // exclusive. Whichever commits second re-reads the other's outcome in the checks below.
-        var tenant = await ctx.Db.Tenants.TagWith(Zayra.Api.Infrastructure.Data.RowLockingInterceptor.ForUpdateTag)
+        var tenant = await ctx.Db.Tenants.TagWith(RowLockingInterceptor.ForUpdateTag)
             .FirstOrDefaultAsync(t => t.Id == ctx.TenantId, ct);
         if (tenant is null || tenant.PurgedAtUtc is not null) return new { alreadyPurged = true };
 
