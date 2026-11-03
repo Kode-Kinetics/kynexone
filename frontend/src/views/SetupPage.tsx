@@ -100,7 +100,8 @@ import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/M
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { msg } from '../i18n/translations';
-import { useConfirm } from '../components/gl/glUi';
+import { LoadError, useConfirm } from '../components/gl/glUi';
+import { describeApiError } from '../lib/apiError';
 import { CountryPayrollKeys } from '../components/setup/accessWorkspaceSetupPanels';
 import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { useReleaseA } from '../lib/releaseA';
@@ -189,14 +190,15 @@ function CompaniesTab() {
   const [statutorySummary, setStatutorySummary] = useState<StatutorySummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await companiesApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await companiesApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -292,7 +294,7 @@ function CompaniesTab() {
         setFieldErrors(mapped.fields);
         setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
       }
-      else setError(resp?.message ?? 'Failed to save. Please try again.');
+      else setError(describeApiError(err, t));
     }
     finally { setSaving(false); }
   };
@@ -354,7 +356,7 @@ function CompaniesTab() {
         columns={[msg('Legal Name'), msg('Trade Name'), msg('Country'), msg('Currency'), msg('Status')]}
         onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openCreate : undefined}
         addLabel={msg('Create company')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={items.length === 0}
         emptyLabel={msg('No companies yet')} emptyHint={msg('Add your first company, or import a CSV.')}
         actions={canWrite ? (
@@ -434,10 +436,11 @@ function CompaniesTab() {
         isOpen={modalOpen}
         title={editing ? 'Edit Company' : 'Add Company'}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">Cancel</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
           </>
         }
@@ -584,12 +587,13 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const [form, setForm] = useState<BranchRequest>(emptyBranch(companies[0]?.id ?? ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await branchesApi.listAll(filterCompany || undefined)); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await branchesApi.listAll(filterCompany || undefined)); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, [filterCompany]);
+  }, [filterCompany, t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -607,7 +611,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
       if (editing) await branchesApi.update(editing.id, form);
       else await branchesApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -624,7 +628,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Branch')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={items.filter((x) => showOff || x.isActive).length === 0}
         emptyLabel={msg('No branches yet')} emptyHint={msg('Add your first branch, or import a CSV.')}
         filter={
@@ -667,10 +671,11 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Branch') : t('Add Branch')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -740,12 +745,13 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await departmentsApi.listAll()); } catch (e) { notifyApiError(e); }
+    setLoading(true); setLoadError('');
+    try { setItems(await departmentsApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -764,7 +770,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       if (editing) await departmentsApi.update(editing.id, form);
       else await departmentsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -778,7 +784,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('Cost Center'), msg('Status')]}
         onAdd={openNew}
         addLabel={msg('Add Department')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
@@ -812,9 +818,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Department') : t('Add Department')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -1225,7 +1232,7 @@ function MasterDataTab() {
       else await masterDataApi.createType({ code: typeForm.code, nameEn: typeForm.nameEn, nameAr: typeForm.nameAr, description: typeForm.description, allowCustomValues: typeForm.allowCustomValues });
       setTypeModal(false); loadTypes();
       if (editingType && selectedType?.id === editingType.id) setSelectedType({ ...selectedType, ...typeForm });
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -1869,12 +1876,13 @@ function LocationsTab() {
   const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await locationsApi.list()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await locationsApi.list()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
   useEffect(() => { load(); }, [load]);
 
   const emptyForm = () => ({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
@@ -1901,7 +1909,7 @@ function LocationsTab() {
     <>
       {removal.notice}
       <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
-        loading={loading} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
+        loading={loading} loadError={loadError} onRetry={load} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
         actions={
           <ImportExportToolbar
@@ -1927,8 +1935,8 @@ function LocationsTab() {
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? t('Edit Location') : t('Add Location')} onClose={() => setModalOpen(false)} size="lg"
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Location') : t('Add Location')} onClose={() => setModalOpen(false)} closeDisabled={saving} size="lg"
+        footer={<><button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
           <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
@@ -2290,7 +2298,7 @@ function EmailConfigTab() {
 const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 function TableShell({
-  columns, onAdd, addLabel, loading, empty, emptyLabel, emptyHint, filter, actions, children,
+  columns, onAdd, addLabel, loading, loadError, onRetry, empty, emptyLabel, emptyHint, filter, actions, children,
 }: {
   columns: string[];
   // Optional so read-only surfaces (e.g. organization.read viewers on the Companies
@@ -2299,6 +2307,9 @@ function TableShell({
   onAdd?: () => void;
   addLabel?: string;
   loading: boolean;
+  /** A failed load: shown with Retry instead of the empty state, so a failure never looks like an empty tenant. */
+  loadError?: string;
+  onRetry?: () => void;
   empty: boolean;
   emptyLabel: string;
   /** A second line for the empty table, naming the first step (e.g. "Add your first branch, or import a CSV."). Shown to writers only. */
@@ -2344,7 +2355,12 @@ function TableShell({
                   </td>
                 </tr>
               )}
-              {!loading && empty && (
+              {!loading && loadError && (
+                <tr>
+                  <td colSpan={columns.length + 1} className="px-4 py-6"><LoadError message={loadError} onRetry={() => onRetry?.()} /></td>
+                </tr>
+              )}
+              {!loading && !loadError && empty && (
                 <tr>
                   <td colSpan={columns.length + 1} className="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
                     <p className="font-medium text-slate-600 dark:text-slate-300">{t(emptyLabel)}</p>
@@ -2352,7 +2368,7 @@ function TableShell({
                   </td>
                 </tr>
               )}
-              {!loading && children}
+              {!loading && !loadError && children}
             </tbody>
           </table>
         </div>
