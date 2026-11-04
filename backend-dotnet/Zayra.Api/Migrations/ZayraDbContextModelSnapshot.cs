@@ -21557,6 +21557,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("allowed_repayment_methods_json");
 
+                    b.Property<string>("BatchApproverMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("SeparateApprover")
+                        .HasColumnName("batch_approver_mode");
+
                     b.Property<bool>("BlockDuringNotice")
                         .HasColumnType("boolean")
                         .HasColumnName("block_during_notice");
@@ -21651,6 +21659,13 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("require_probation_completed");
 
+                    b.Property<decimal>("SelfApprovalMaxAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("self_approval_max_amount");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -21677,6 +21692,8 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("loan_policies", null, t =>
                         {
+                            t.HasCheckConstraint("ck_loan_policies__batch_approver", "batch_approver_mode IN ('SeparateApprover','SingleOperator') AND self_approval_max_amount >= 0 AND (batch_approver_mode = 'SingleOperator' OR self_approval_max_amount = 0)");
+
                             t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
 
                             t.HasCheckConstraint("ck_loan_policies__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");

@@ -5018,9 +5018,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // Same rule as loan_types. max_installments has a database default of 0 and was backfilled from
                 // loan_types, so a legacy row may hold 0: min 1 (no minimum) stays valid on it.
                 t.HasCheckConstraint("ck_loan_policies__min_installments", LoanTypeSql.MinInstallmentsCheck);
+                t.HasCheckConstraint("ck_loan_policies__batch_approver", LoanPolicySql.BatchApproverCheck);
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.MinInstallments).HasDefaultValue(1);
+            entity.Property(x => x.BatchApproverMode).HasMaxLength(20).HasDefaultValue(LoanBatchApproverModes.SeparateApprover);
+            entity.Property(x => x.SelfApprovalMaxAmount).HasPrecision(18, 2).HasDefaultValue(0m);
             entity.HasAlternateKey(x => new { x.TenantId, x.Id });
             entity.HasOne<LoanPolicy>().WithMany().HasForeignKey(x => new { x.TenantId, x.CopiedFromPolicyId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);

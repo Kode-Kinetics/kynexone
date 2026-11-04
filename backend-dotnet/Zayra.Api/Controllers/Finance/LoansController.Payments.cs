@@ -66,6 +66,8 @@ public partial class LoansController
             RemainingAmount = lines.Where(x => x.Status is "Pending" or "Failed").Sum(x => x.Amount),
             CancelledAmount = lines.Where(x => x.Status == "Cancelled").Sum(x => x.Amount),
             ReversedAmount = lines.Where(x => x.Status == "Reversed").Sum(x => x.Amount),
+            // Only the creator can act on it, so only the creator pays for the policy lookup.
+            SelfApprovalAllowed = batch.Status == "Draft" && batch.CreatedBy == GetUserId() && await SelfApprovalPolicyRefusalAsync(batch, ct) is null,
             batch.Status, batch.CreatedBy, batch.CreatedAtUtc, batch.ApprovedBy, batch.ApprovedAtUtc,
             batch.PaidBy, batch.PaidAtUtc, batch.PaymentReference, batch.PaidDate, batch.PaymentMethod, lines };
     }
@@ -165,7 +167,7 @@ public partial class LoansController
 
     [HttpPatch("payment-batches/{batchId:guid}/approve")]
     [Authorize(Roles = "Admin,Finance,Finance Approver")]
-    public Task<IActionResult> ApprovePaymentBatch(Guid batchId, CancellationToken ct) => SerializeBatchAsync(async () =>
+    public Task<IActionResult> ApprovePaymentBatch(Guid batchId, CancellationToken ct = default, [FromBody] ApproveLoanBatchRequest? req = null) => SerializeBatchAsync(async () =>
     {
         if (!CanApproveFinance()) return Forbid();
         if (GetUserId() == null) return Unauthorized();
@@ -173,7 +175,12 @@ public partial class LoansController
         if (batch == null) return NotFound();
         if (!await CanAccessBatchAsync(batchId, ct)) return Forbid();
         if (batch.Status != "Draft") return Conflict("Only draft batches can be approved.");
-        if (batch.CreatedBy == GetUserId()) return BadRequest("Maker-checker control: the batch creator cannot approve their own batch.");
+        var selfApproving = batch.CreatedBy == GetUserId();
+        // Hold the company's policy lock while the policy decides, so an Admin tightening it cannot commit between
+        // this read and the approval. Order: batch reservation, then policy, then loans; policy writers take only the policy lock.
+        if (selfApproving && batch.CompanyId is Guid policyCompany)
+            await FinanceDecisionSerializer.AcquireAsync(_db, LoanPolicyLockScope, GetTenantId(), policyCompany, ct);
+        if (selfApproving && (await SelfApprovalPolicyRefusalAsync(batch, ct) ?? SelfApprovalReasonRefusal(req?.Reason)) is { } refusal) return BadRequest(refusal);
         var lines = await _db.LoanDisbursementLines.Where(x => x.TenantId == GetTenantId() && x.BatchId == batchId).ToListAsync(ct);
         await LockLoansAsync(lines.Select(x => x.LoanId), ct);
         foreach (var line in lines)
@@ -184,9 +191,43 @@ public partial class LoansController
         }
         batch.Status = "Approved"; batch.ApprovedBy = GetUserId(); batch.ApprovedAtUtc = DateTime.UtcNow;
         await AuditBatchAsync(batchId, "PaymentBatchApproved", new { batch.Id, batch.BatchNumber }, ct);
+        if (selfApproving)
+            await AuditBatchAsync(batchId, "PaymentBatchSelfApproved", new { batch.Id, batch.BatchNumber, batch.TotalAmount, Reason = req!.Reason!.Trim() }, ct);
         await _db.SaveChangesAsync(ct);
         return Ok(await ProjectBatchAsync(batch, ct));
     }, ct);
+
+    private const int SelfApprovalReasonMinLength = 10;
+
+    /// <summary>Why the company's policy does not let the batch creator approve it alone, or null when it does.
+    /// Every loan type in the batch must have an active policy of this company in SingleOperator mode, and the total must be within
+    /// the smallest cap set. Anything else (no policy, another company's, a retired version) keeps the strict rule.</summary>
+    private async Task<string?> SelfApprovalPolicyRefusalAsync(LoanDisbursementBatch batch, CancellationToken ct)
+    {
+        const string strict = "Maker-checker control: the batch creator cannot approve their own batch. A different Finance user must approve it.";
+        // A batch without a company could only match a group-wide policy, which never relaxes a company's control.
+        if (batch.CompanyId is null) return strict;
+        var tid = GetTenantId();
+        var typeIds = await (from line in _db.LoanDisbursementLines
+                             join loan in _db.EmployeeLoans on line.LoanId equals loan.Id
+                             where line.TenantId == tid && loan.TenantId == tid && line.BatchId == batch.Id
+                             select loan.LoanTypeId).Distinct().ToListAsync(ct);
+        var policies = await _db.Set<LoanPolicy>().AsNoTracking()
+            .Where(x => x.TenantId == tid && x.CompanyId == batch.CompanyId && x.IsActive && typeIds.Contains(x.LoanTypeId)).ToListAsync(ct);
+        if (typeIds.Count == 0 || policies.Count != typeIds.Count || policies.Any(x => x.BatchApproverMode != LoanBatchApproverModes.SingleOperator)) return strict;
+        var caps = policies.Select(x => x.SelfApprovalMaxAmount).Where(x => x > 0).ToList();
+        // The cap is set in the company's currency, so it can only be compared with a batch paid in that currency.
+        if (caps.Count > 0 && !string.Equals(batch.Currency, await GlAccountResolver.ResolveCurrencyAsync(_db, tid, batch.CompanyId, ct), StringComparison.OrdinalIgnoreCase))
+            return "This batch is not in the company currency, so the self-approval limit cannot be applied. A different Finance user must approve it.";
+        if (caps.Count > 0 && batch.TotalAmount > caps.Min())
+            return $"This batch is above the {caps.Min():0.00} your company allows one person to approve alone. A different Finance user must approve it.";
+        return null;
+    }
+
+    private static string? SelfApprovalReasonRefusal(string? reason) =>
+        reason is null || reason.Trim().Length < SelfApprovalReasonMinLength || reason.Trim().Length > 500
+            ? $"Your company allows one person to approve their own batch. Give the reason ({SelfApprovalReasonMinLength}–500 characters); it is recorded in the audit trail."
+            : null;
 
     [HttpPatch("payment-batches/{batchId:guid}/cancel")]
     [Authorize(Roles = "Admin,Finance")]
