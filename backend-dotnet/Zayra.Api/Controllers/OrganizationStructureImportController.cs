@@ -412,6 +412,9 @@ public class OrganizationStructureImportController : ControllerBase
         {
             // A rival writer saved the same code between this import's validation and its insert: the unique index refused the
             // whole unit (the transaction rolled back, so nothing of this import remains). A conflict the caller can read, not a 500.
+            // The rolled-back inserts are still tracked as Added: drop them, or the caller's next SaveChanges (a stored batch's Failed
+            // status) would retry them and hit the same unique violation. CommitBatch re-attaches the batch from persisted state.
+            _db.ChangeTracker.Clear();
             return Conflict(new { error = Zayra.Api.Application.Organization.OrgCodeConflictException.ErrorCode, message = "A code in this import was just taken by someone else, so nothing was imported. Run the import again to see the current state." });
         }
 

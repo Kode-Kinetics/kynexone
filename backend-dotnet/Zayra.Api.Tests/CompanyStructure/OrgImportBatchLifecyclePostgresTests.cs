@@ -107,4 +107,44 @@ public sealed class OrgImportBatchLifecyclePostgresTests(PostgresFixture fixture
         await using var verify = fixture.CreateDb();
         (await verify.Grades.CountAsync(g => g.TenantId == tenant && g.Code == "STALE3")).Should().Be(1);
     }
+
+    [Fact]
+    public async Task AStoredBatchThatLosesACodeRace_IsA409_AndTheBatchIsRecordedFailed()
+    {
+        Guid tenant; string legal;
+        await using (var seed = fixture.CreateDb())
+        {
+            tenant = await PostgresFixture.SeedMinimalTenant(seed);
+            legal = "Race Legal " + Guid.NewGuid().ToString("N")[..6];
+            seed.Companies.Add(new Zayra.Api.Models.Company { TenantId = tenant, LegalNameEn = legal, CountryCode = "SA", DefaultCurrency = "SAR", IsActive = true });
+            await seed.SaveChangesAsync();
+        }
+        var user = Admin(tenant, Guid.NewGuid());
+        var pkg = new OrganizationStructureImportRequest(CompaniesCsv: null, BranchesCsv: null, CostCentersCsv: null,
+            DepartmentsCsv: $"CompanyLegalName,BranchCode,Code,NameEn,ParentDepartmentCode,CostCenterCode,ApprovedHeadcount,MonthlyBudgetAmount,IsActive\n{legal},,RACEB,Race B,,,10,1000,true\n",
+            GradesCsv: null, GradePayComponentsCsv: null, DesignationsCsv: null, PositionsCsv: null);
+        Guid batchId;
+        await using (var run = fixture.CreateRetryingDb())
+            batchId = ((MigrationImportBatchDto)((OkObjectResult)(await Controller(run, user).CreateDryRunBatch(pkg, default)).Result!).Value!).Id;
+
+        var trigger = $"trg_race_{tenant:N}";
+        await using (var ddl = fixture.CreateDb())
+            await ddl.Database.ExecuteSqlRawAsync(
+                $"CREATE FUNCTION {trigger}() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'duplicate key value violates unique constraint' USING ERRCODE = '23505'; RETURN NEW; END $$ LANGUAGE plpgsql; " +
+                $"CREATE TRIGGER {trigger} BEFORE INSERT ON departments FOR EACH ROW WHEN (NEW.tenant_id = '{tenant}') EXECUTE FUNCTION {trigger}();");
+        ActionResult<MigrationImportBatchDto> outcome;
+        try
+        {
+            await using var db = fixture.CreateRetryingDb();
+            outcome = await Controller(db, user).CommitBatch(batchId, default);
+        }
+        finally
+        {
+            await using var ddl = fixture.CreateDb();
+            await ddl.Database.ExecuteSqlRawAsync($"DROP TRIGGER IF EXISTS {trigger} ON departments; DROP FUNCTION IF EXISTS {trigger}();");
+        }
+
+        outcome.Result.Should().BeOfType<ConflictObjectResult>("the lost race is the intended 409, not a second unique violation from the failed inserts being retried");
+        (await StatusAsync(batchId)).Should().Be("Failed");
+    }
 }

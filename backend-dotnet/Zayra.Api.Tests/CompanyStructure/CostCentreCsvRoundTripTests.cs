@@ -247,4 +247,67 @@ public class CostCentreCsvRoundTripTests
             rows.Single().Errors.Single().Should().Be(CostCentreRuleException.LockedIntoApprovedRun().Message);
         (await Row(w, "OPS")).FunctionalClass.Should().Be("OPERATIONS");
     }
+
+    // ── a parent the file itself creates inactive ────────────────────────────────────────────────
+    [Fact]
+    public async Task AnInactiveParentCreatedByTheFile_IsRefusedInPreview_AndLeavesNoHalfAppliedChildBehind()
+    {
+        var w = await Seed();
+        await Make(w, w.A.Id, "KID");
+        await Make(w, w.A.Id, "SIB");
+        // NEWP is created inactive; KID is then pointed at it (and renamed); SIB is a clean row that saves after KID.
+        var csv = Csv("NEWP,New parent,,,,,false,", "GOODP,Good parent,,,,,true,", "KID,Kid renamed,,NEWP,,,true,", "SIB,Sib renamed,,GOODP,,,true,");
+
+        var preview = await Preview(HrUser(w), csv, w.A.Id);
+        preview.Rows[2].Status.Should().Be(ImportRowStatus.Error, "an inactive parent cannot be assigned, even one the file creates");
+        preview.Rows[3].Status.Should().NotBe(ImportRowStatus.Error);
+
+        var result = await Import(HrUser(w), csv, w.A.Id);
+        result.Rows[2].Status.Should().Be(ImportRowStatus.Error);
+        (await Row(w, "KID")).Name.Should().Be("KID name", "the rejected row's rename must not ride along on a later row's save");
+        (await Row(w, "SIB")).Name.Should().Be("Sib renamed");
+        var kidId = (await Row(w, "KID")).Id.ToString();
+        w.Db.AuditLogs.Count(a => a.EntityId == kidId && a.Action == "organization.cost_center_updated").Should().Be(0, "a skipped row writes no update audit");
+    }
+
+    private class FailingUpdateProxy : System.Reflection.DispatchProxy
+    {
+        public IOrganizationSetupService Inner = null!;
+        public ZayraDbContext Db = null!;
+        protected override object? Invoke(System.Reflection.MethodInfo? m, object?[]? args)
+        {
+            if (m!.Name == nameof(IOrganizationSetupService.UpdateCostCenterAsync) && args![2] is CostCenterRequest { Code: "KID" })
+            {
+                return Task.Run<CostCenterDto?>(async () =>
+                {
+                    // What the service does before it refuses: apply the changes to the tracked entity, then throw.
+                    var row = await Db.CostCenters.SingleAsync(c => c.Code == "KID");
+                    row.Name = "LEAKED";
+                    throw new InvalidOperationException("refused after mutating");
+                });
+            }
+            return m.Invoke(Inner, args);
+        }
+    }
+
+    [Fact]
+    public async Task ARowTheServiceRefusesAfterTouchingIt_DoesNotLeakItsChangesIntoALaterRowsSave()
+    {
+        var w = await Seed();
+        await Make(w, w.A.Id, "KID");
+        await Make(w, w.A.Id, "SIB");
+        var proxy = System.Reflection.DispatchProxy.Create<IOrganizationSetupService, FailingUpdateProxy>();
+        ((FailingUpdateProxy)(object)proxy).Inner = w.Svc;
+        ((FailingUpdateProxy)(object)proxy).Db = w.Db;
+        var ctl = new CostCentersController(proxy, w.Db)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = EstablishmentApiTests.User(w.Tenant, "organization.read", "organization.write", Manage) } }
+        };
+
+        var result = (ImportCommitResult)((OkObjectResult)await ctl.Import(new CostCenterImportRequest(Csv("KID,Kid renamed,,,,,true,", "SIB,Sib renamed,,,,,true,"), w.A.Id), default)).Value!;
+
+        result.Rows[0].Status.Should().Be(ImportRowStatus.Error);
+        (await Row(w, "KID")).Name.Should().Be("KID name", "the refused row's tracked change is reverted, not saved by the next row");
+        (await Row(w, "SIB")).Name.Should().Be("Sib renamed");
+    }
 }

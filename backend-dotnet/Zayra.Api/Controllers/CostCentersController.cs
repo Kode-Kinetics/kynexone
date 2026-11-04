@@ -184,6 +184,7 @@ public class CostCentersController : ControllerBase
             erpOwner[c.GlSegment!.Trim()] = OrgCodes.Normalize(c.Code);
         // Rows this file creates (code -> id; a would-be id in a preview). A parent may be one of them.
         var createdIds = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+        var createdInactive = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Duplicates are judged in file order; rows are applied parents first, so a child listed before its parent (an export is sorted
         // by code) still finds it.
@@ -256,7 +257,12 @@ public class CostCentersController : ControllerBase
                     // The service re-checks all of this when it writes; the same rules run here so a preview says what a commit will.
                     var refusal = CostCentreHierarchy.Check(selfId, parentId, parentOf);
                     if (refusal is not null) errors.Add(CostCentreRuleException.ParentMessage(refusal));
-                    else if (!parentInFile)
+                    else if (parentInFile)
+                    {
+                        // A parent this file creates has no stored row to validate, but the rule is the same: an inactive cost centre cannot be assigned.
+                        if (createdInactive.Contains(parentKey)) errors.Add("The cost centre is inactive and cannot be assigned.");
+                    }
+                    else
                     {
                         var check = await new CostCentreRefValidator(_db).ValidateAsync(tenantId, companyId, parentId.Value, forNewAssignment: true, ct);
                         if (!check.IsValid) errors.Add(check.Message!);
@@ -330,6 +336,7 @@ public class CostCentersController : ControllerBase
                         if (commit) appliedId = (await _organization.CreateCostCenterAsync(tenantId, request, context, ct)).Id;
                         created++;
                         createdIds[OrgCodes.Normalize(code)] = appliedId;
+                        if (!request.IsActive) createdInactive.Add(OrgCodes.Normalize(code));
                     }
                     parentOf[appliedId] = parentId ?? (existing is null ? null : parentOf.GetValueOrDefault(appliedId));
                     if (erpToApply is not null)
@@ -338,7 +345,13 @@ public class CostCentersController : ControllerBase
                         erpOwner[erpToApply] = OrgCodes.Normalize(code);
                     }
                 }
-                catch (InvalidOperationException ex) { errors.Add(ex.Message); }
+                catch (InvalidOperationException ex)
+                {
+                    errors.Add(ex.Message);
+                    // The service may have applied some of this row's changes to the tracked entity before refusing. Each accepted row is saved
+                    // before the next starts, so whatever is pending now is this row's: revert it, or a later row's save would persist it.
+                    RevertPendingChanges();
+                }
             }
 
             if (errors.Count > 0) skipped++;
@@ -351,6 +364,22 @@ public class CostCentersController : ControllerBase
         return commit
             ? Ok(new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>()))
             : Ok(new ImportPreviewResult(rows.Count, created, updated, skipped, rowResults));
+    }
+
+    private void RevertPendingChanges()
+    {
+        foreach (var entry in _db.ChangeTracker.Entries().Where(e => e.State != EntityState.Unchanged && e.State != EntityState.Detached).ToList())
+        {
+            switch (entry.State)
+            {
+                case EntityState.Added: entry.State = EntityState.Detached; break;
+                case EntityState.Modified:
+                case EntityState.Deleted:
+                    entry.CurrentValues.SetValues(entry.OriginalValues);
+                    entry.State = EntityState.Unchanged;
+                    break;
+            }
+        }
     }
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
