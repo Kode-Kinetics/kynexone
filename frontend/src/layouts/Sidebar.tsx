@@ -12,6 +12,7 @@ import { useCanOpenSetup } from '../hooks/useCanOpenSetup';
 import { useCompany } from '../contexts/CompanyContext';
 import { useLocale } from '../contexts/LocaleContext';
 import { useNavigationGuard } from '../contexts/NavigationGuardContext';
+import { primaryRole } from '../lib/primaryRole';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -372,7 +373,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
                     {user?.fullName ?? 'User'}
                   </p>
                   <p className="truncate text-caption text-slate-400 dark:text-slate-500">
-                    {user?.roles[0] ?? 'Member'}
+                    {primaryRole(user?.roles) ?? 'Member'}
                   </p>
                 </div>
                 <button
