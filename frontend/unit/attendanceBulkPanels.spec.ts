@@ -14,5 +14,8 @@ test('no bulk panel (or the multi-select) renders a <form>: Enter can never subm
 });
 
 test('Enter in the multi-select search box is swallowed as well', () => {
-  expect(read('EmployeeMultiSelect.tsx')).toMatch(/onKeyDown=\{\(e\) => \{ if \(e\.key === 'Enter'\) e\.preventDefault\(\); \}\}/);
+  // Formatting-tolerant: an onKeyDown handler that checks for Enter and calls preventDefault. The real
+  // behaviour (Enter sends no request) is proven in the browser by e2e/attendance-bulk-ui.spec.ts.
+  const src = read('EmployeeMultiSelect.tsx').replace(/\s+/g, ' ');
+  expect(src).toMatch(/onKeyDown=\{[^}]*['"]Enter['"][^}]*preventDefault\(\)/);
 });

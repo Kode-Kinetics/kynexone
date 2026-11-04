@@ -83,7 +83,7 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
 
   if (!open) {
     return (
-      <section className="surface p-4">
+      <section className="surface p-4" aria-label={t('Mass entry')}>
         <SectionTitle icon={Users} title={t('Mass entry')} subtitle={t('Record the same attendance for many employees at once. A reason is required and is kept in the audit trail.')} />
         <button type="button" className="btn-secondary mt-4 w-full justify-center" onClick={() => setOpen(true)} aria-expanded={false}>{t('Open mass entry')}</button>
       </section>
@@ -92,7 +92,7 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
 
   return (
     // Deliberately not a form element: Enter in the search box or on a checkbox must never record punches.
-    <section className="surface p-4" aria-busy={busy}>
+    <section className="surface p-4" aria-busy={busy} aria-label={t('Mass entry')}>
       <SectionTitle icon={Users} title={t('Mass entry')} subtitle={t('Record the same attendance for many employees at once. A reason is required and is kept in the audit trail.')} />
       <div className="mt-4 space-y-3">
         <EmployeeMultiSelect id={`${ids}-mass`} label={t('Employees to include')} selection={selection} onChange={setSelection} max={MASS_ENTRY_MAX_EMPLOYEES} disabled={busy} />

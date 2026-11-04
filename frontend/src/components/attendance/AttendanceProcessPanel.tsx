@@ -105,7 +105,7 @@ export function AttendanceProcessPanel({ blocked, onProcessed }: Props) {
 
   return (
     // Deliberately not a form element: Enter in the search box or on a checkbox must never start a job.
-    <section className="surface p-4" aria-busy={busy}>
+    <section className="surface p-4" aria-busy={busy} aria-label={t('Process Attendance')}>
       <SectionTitle icon={RefreshCw} title={t('Process Attendance')} subtitle={t('Transforms raw punches into daily attendance, exceptions, and payroll impacts.')} />
       <div className="mt-4 space-y-3">
         <input type="date" className="input w-full" value={fromDate} onChange={(e) => setFromDate(e.target.value)} aria-label={t('From date')} disabled={busy} />
