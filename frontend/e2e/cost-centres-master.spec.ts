@@ -468,6 +468,24 @@ test('Delete asks for a reason, then a 409 in use shows the same counts; a delet
   expect(new URLSearchParams(del.query).get('reason')).toBe('Created by mistake');
 });
 
+test('Delete says which happened: a cost centre nothing uses is deleted, one that is used is turned off and can be restored', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Created by mistake');
+  await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-ORPHAN')).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Deleted ORPHAN.' })).toBeVisible();
+  await openMenu(page, 'SALES');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Merged elsewhere');
+  await page.getByRole('dialog', { name: 'Delete SALES?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-SALES')).toContainText('Inactive');
+  await expect(page.getByRole('status').filter({ hasText: 'Turned off SALES. Used by 18 employees. Restore anytime.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Deleted ORPHAN.' })).toHaveCount(0);
+});
+
 // ═════════════════════════════ Screen 1: restore ═════════════════════════════
 
 test('Restore: a turned-off cost centre offers Restore (not Deactivate) in its menu, calls the restore route and turns the row back on', async ({ page }) => {

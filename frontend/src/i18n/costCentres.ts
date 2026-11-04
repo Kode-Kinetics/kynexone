@@ -206,6 +206,7 @@ const ar: Record<string, string> = {
   'Required to change the functional class or ERP code, deactivate, or move to another company. Recorded in the audit log.': 'مطلوب عند تغيير التصنيف الوظيفي للتكلفة أو رمز ERP أو الإيقاف أو النقل إلى شركة أخرى. يُسجَّل في سجل التدقيق.',
   'Only finance can change the ERP code.': 'يمكن للإدارة المالية فقط تغيير رمز ERP.',
   'Cost centre saved.': 'تم حفظ مركز التكلفة.',
+  'Deleted {name}.': 'تم حذف {name}.',
   'Deactivate {code}?': 'إيقاف {code}؟',
   'Posted journal lines keep it. It can no longer be assigned.': 'تحتفظ قيود اليومية المرحَّلة به، ولن يمكن تعيينه بعد الآن.',
   'Delete {code}?': 'حذف {code}؟',

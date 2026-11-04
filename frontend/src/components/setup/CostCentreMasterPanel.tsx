@@ -13,6 +13,7 @@ import {
   type InUseKey, type MasterForm,
 } from '../../lib/costCentreMaster';
 import { FUNCTIONAL_CLASSES, pickServerMessage, COST_ACCOUNTING_SETUP_HREF } from '../../lib/glCostAccounting';
+import { usageSentence } from '../../lib/orgUsage';
 import { Modal } from '../Modal';
 import { downloadCsv, ImportExportToolbar } from '../ImportExportToolbar';
 import { Badge, FieldError, LoadError, Spinner, WarningNote } from '../gl/glUi';
@@ -160,16 +161,23 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   };
 
   // ── Deactivate and delete ──
-  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setActionReason(''); setActionError(''); setAction({ kind, item }); };
+  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setRowError(''); setSavedNote(''); setActionReason(''); setActionError(''); setAction({ kind, item }); };
   const runAction = async () => {
     if (!action) return;
     const { kind, item } = action;
     if (!actionReason.trim()) { setActionError(t('Enter a reason for this change.')); return; }
     setSaving(true); setActionError('');
     try {
-      if (kind === 'deactivate') await costCentersApi.update(item.id, saveBody(item, { ...formOf(item), isActive: false, reason: actionReason }));
-      else await costCentersApi.remove(item.id, actionReason);
+      let note = '';
+      if (kind === 'delete') {
+        // The server decides: nothing uses it = deleted; something does = turned off (it can be restored). Say which.
+        const result = await costCentersApi.remove(item.id, actionReason);
+        note = result?.outcome === 'turnedOff'
+          ? t('Turned off {name}. {reason}', { name: item.code, reason: result.usage?.summary ? `${usageSentence(result.usage.items, t, result.usage.summary)}. ${t('Restore anytime.')}` : t('Restore anytime.') })
+          : t('Deleted {name}.', { name: item.code });
+      } else await costCentersApi.update(item.id, saveBody(item, { ...formOf(item), isActive: false, reason: actionReason }));
       setAction(null);
+      if (note) setSavedNote(note);
       await load();
     } catch (err) {
       const refusal = inUseFromError(err);
