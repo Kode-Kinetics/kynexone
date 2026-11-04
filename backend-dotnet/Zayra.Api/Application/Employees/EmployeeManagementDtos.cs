@@ -60,7 +60,9 @@ public record EmployeeCreateRequest(
     // cost_centre_reason_required) whenever the request changes the override; recorded in the employee.cost_centre_override.changed audit row.
     string? CostCenterReason = null,
     // P3: the hire template the wizard applied; used only to raise the hire's onboarding checklist (the form already carries the defaults).
-    Guid? HireTemplateId = null);
+    Guid? HireTemplateId = null,
+    // Exception: this hire has no probation. No probation dates are stored and the employee is confirmed from the joining date.
+    bool ProbationWaived = false);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
@@ -219,6 +221,7 @@ public record EmployeeDetailDto
     public DateTime JoiningDate { get; init; }
     public DateOnly? ConfirmationDate { get; init; }
     public DateOnly? ProbationStartDate { get; init; }
+    public bool ProbationWaived { get; init; }
     public DateOnly? ContractStartDate { get; init; }
     public DateOnly? ContractEndDate { get; init; }
     public DateOnly? ProbationEndDate { get; init; }
@@ -364,6 +367,7 @@ public record EmployeeDetailDto
             JoiningDate                   = e.JoiningDate,
             ConfirmationDate              = e.ConfirmationDate,
             ProbationStartDate            = e.ProbationStartDate,
+            ProbationWaived               = e.ProbationWaived,
             ContractStartDate             = e.ContractStartDate,
             ContractEndDate               = e.ContractEndDate,
             ProbationEndDate              = e.ProbationEndDate,
@@ -470,6 +474,7 @@ public record EssEmployeeProfileDto
     public DateOnly? ContractStartDate { get; init; }
     public DateOnly? ContractEndDate { get; init; }
     public DateOnly? ProbationEndDate { get; init; }
+    public bool ProbationWaived { get; init; }
     public int? ManagerEmployeeId { get; init; }
     // Own financial data — employee can see their own salary and bank details
     public decimal? Salary { get; init; }
@@ -524,6 +529,7 @@ public record EssEmployeeProfileDto
         ContractStartDate        = e.ContractStartDate,
         ContractEndDate          = e.ContractEndDate,
         ProbationEndDate         = e.ProbationEndDate,
+        ProbationWaived          = e.ProbationWaived,
         ManagerEmployeeId        = e.ManagerEmployeeId,
         Salary                   = e.Salary,
         BankName                 = e.BankName,
@@ -583,6 +589,7 @@ public record EmployeeDraftDto
     public DateOnly? ContractStartDate { get; init; }
     public DateOnly? ContractEndDate { get; init; }
     public DateOnly? ProbationEndDate { get; init; }
+    public bool ProbationWaived { get; init; }
     public string PayrollProfileCode { get; init; } = string.Empty;
     public string ShiftPolicyCode { get; init; } = string.Empty;
     public string LeavePolicyCode { get; init; } = string.Empty;
@@ -647,6 +654,7 @@ public record EmployeeDraftDto
         ContractStartDate        = d.ContractStartDate,
         ContractEndDate          = d.ContractEndDate,
         ProbationEndDate         = d.ProbationEndDate,
+        ProbationWaived          = d.ProbationWaived,
         PayrollProfileCode       = d.PayrollProfileCode,
         ShiftPolicyCode          = d.ShiftPolicyCode,
         LeavePolicyCode          = d.LeavePolicyCode,

@@ -24,6 +24,12 @@ test.describe('CD26 draft resume', () => {
       idType: 'iqama', idNumber: '2000000006', idExpiry: '2027-01-01', passportNumber: 'AB1234567', passportExpiry: '2030-05-05',
     });
   });
+  test('a "No probation" draft resumes with the box ticked and no probation date', () => {
+    const f = formFromEmployee({ ...(detail as object), probationWaived: true, probationEndDate: undefined } as never, { emailDomain: 'example.test', companyCountry: 'SA' });
+    expect(f.probationWaived).toBe(true);
+    expect(f.probationEndDate).toBe('');
+    expect(formFromEmployee(detail, { emailDomain: 'example.test', companyCountry: 'SA' }).probationWaived).toBe(false);
+  });
   test('a work email on another domain is kept whole', () => {
     const f = formFromEmployee({ ...(detail as object), workEmail: 'alex@other.test' } as never, { emailDomain: 'example.test', companyCountry: 'SA' });
     expect(f.workEmail).toBe('alex@other.test');

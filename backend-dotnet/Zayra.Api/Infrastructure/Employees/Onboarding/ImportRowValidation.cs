@@ -20,7 +20,7 @@ public static class ImportRowValidation
         EmployeeFieldErrors.JoiningOutOfRange, EmployeeFieldErrors.NegativeAmount, EmployeeFieldErrors.AmountOverflow,
         // A class/nationality disagreement lands as a warning in an import (messy nationality cells are common); the form refuses it.
         EmployeeFieldErrors.IdFormatInvalid, EmployeeFieldErrors.IdChecksumInvalid,
-        EmployeeFieldErrors.Required, EmployeeFieldErrors.ProbationOrder,
+        EmployeeFieldErrors.Required, EmployeeFieldErrors.ProbationOrder, EmployeeFieldErrors.ConfirmationBeforeJoining, EmployeeFieldErrors.ProbationWaivedWithDates,
         EmployeeFieldErrors.ContractEndBeforeStart, EmployeeFieldErrors.ContractEndWithoutFixedTerm,   // CD17 / CD26
     };
 
@@ -125,6 +125,8 @@ public static class ImportRowValidation
         EmployeeFieldErrors.IdPrefixNationalityMismatch => "identity number class does not match the nationality",
         EmployeeFieldErrors.Required => "value is required",
         EmployeeFieldErrors.ProbationOrder => "dates are out of order",
+        EmployeeFieldErrors.ConfirmationBeforeJoining => "confirmation date cannot be before the joining date",
+        EmployeeFieldErrors.ProbationWaivedWithDates => "probation dates cannot be set when there is no probation",
         EmployeeFieldErrors.ContractEndBeforeStart => "contract end date must be after the start",
         EmployeeFieldErrors.ContractEndWithoutFixedTerm => "an end date needs a fixed-term contract",
         EmployeeFieldErrors.PhoneInvalid => "phone number is not a valid number",

@@ -14,7 +14,7 @@ export function reviewWarnings(form: HireForm, ctx: { today: string; designation
     if (start < addDays(ctx.today, -30)) out.push('joining_backdated_over_30d');
     if (start > addDays(ctx.today, 180)) out.push('joining_over_180d_future');
   }
-  if (start && isRealDate(form.probationEndDate) && form.probationEndDate > addDays(start, 180)) out.push('probation_over_limit');
+  if (start && !form.probationWaived && isRealDate(form.probationEndDate) && form.probationEndDate > addDays(start, 180)) out.push('probation_over_limit');
   if (isRealDate(form.dob)) {
     const age = ageOn(form.dob, start || ctx.today);
     if (age >= 0 && age < 15) out.push('under_minimum_age');

@@ -123,6 +123,8 @@ public static class EmployeeInputValidator
             else if (age < 18) Warn(EmployeeWarningCodes.Juvenile15To17, "dateOfBirth", "The employee is under 18 at the joining date.");
             else if (age > 70) Warn(EmployeeWarningCodes.AgeOver70, "dateOfBirth", "The employee is over 70 at the joining date.");
         }
+        if (request.ProbationWaived && (request.ProbationStartDate is not null || request.ProbationEndDate is not null))
+            Err("probationEndDate", EmployeeFieldErrors.ProbationWaivedWithDates);
         if (request.ProbationEndDate is { } pe)
         {
             // CD31: the limit runs from the probation start, else from the joining date.
@@ -138,7 +140,7 @@ public static class EmployeeInputValidator
             DateOnly? contractStart = joining;
             foreach (var e in ContractRules.Check(request.ContractType, contractStart, request.ContractEndDate)) Err("contractEndDate", e);
         }
-        if (request.ConfirmationDate is { } cd && joining is { } jj && cd < jj) Err("confirmationDate", EmployeeFieldErrors.ProbationOrder);
+        if (request.ConfirmationDate is { } cd && joining is { } jj && cd < jj) Err("confirmationDate", EmployeeFieldErrors.ConfirmationBeforeJoining);
         if (request.NoticePeriodDays is { } np && (np < 0 || np > 365)) Err("noticePeriodDays", EmployeeFieldErrors.InvalidFormat);
 
         // ── contact ───────────────────────────────────────────────────────────────────────────────────

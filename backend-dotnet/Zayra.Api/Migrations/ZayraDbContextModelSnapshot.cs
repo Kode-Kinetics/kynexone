@@ -10014,6 +10014,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("probation_start_date");
 
+                    b.Property<bool>("ProbationWaived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("probation_waived");
+
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)")
@@ -11667,6 +11671,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateOnly?>("ProbationEndDate")
                         .HasColumnType("date")
                         .HasColumnName("probation_end_date");
+
+                    b.Property<bool>("ProbationWaived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("probation_waived");
 
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
