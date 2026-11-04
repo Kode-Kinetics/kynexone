@@ -134,11 +134,14 @@ public sealed class LocationService(ZayraDbContext db, IAuditService audit)
         if (taken) throw Taken(code);
     }
 
-    /// <summary>Saves; a lost race on the unique index is the same 409 the pre-check gives.</summary>
+    /// <summary>The unique index on a tenant's live location codes. Only a violation of this one means the code was taken; any other unique violation is rethrown as itself.</summary>
+    private const string CodeIndexName = "IX_locations_tenant_id_code";
+
+    /// <summary>Saves; a lost race on the code index is the same 409 the pre-check gives.</summary>
     private async Task SaveAsync(string? code, CancellationToken ct)
     {
         try { await db.SaveChangesAsync(ct); }
-        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation, ConstraintName: CodeIndexName })
         {
             throw code is null
                 ? new LocationRuleException(409, LocationRuleException.CodeTaken, "A location code in this batch was just taken by someone else. Reload and try again.")

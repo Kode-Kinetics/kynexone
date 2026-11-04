@@ -60,4 +60,33 @@ public sealed class LocationUniquenessPostgresTests(PostgresFixture fixture)
         results.Count(r => r is null).Should().Be(1);
         results.Where(r => r is not null).Should().OnlyContain(r => r is LocationRuleException && ((LocationRuleException)r).Status == 409);
     }
+
+    // Only a violation of the CODE index means "code taken". Any other unique violation is a different problem and must surface as itself.
+    [Theory]
+    [InlineData("IX_locations_tenant_id_code", true)]
+    [InlineData("some_other_unique_constraint", false)]
+    public async Task OnlyAViolationOfTheCodeIndex_IsAnsweredAsCodeTaken(string constraint, bool isCodeTaken)
+    {
+        var tenant = Guid.NewGuid();
+        var trigger = $"trg_loc_{tenant:N}";
+        await using (var ddl = fixture.CreateDb())
+            await ddl.Database.ExecuteSqlRawAsync(
+                $"CREATE FUNCTION {trigger}() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'duplicate key' USING ERRCODE = '23505', CONSTRAINT = '{constraint}'; END $$ LANGUAGE plpgsql; " +
+                $"CREATE TRIGGER {trigger} BEFORE INSERT ON locations FOR EACH ROW WHEN (NEW.tenant_id = '{tenant}') EXECUTE FUNCTION {trigger}();");
+        Exception? thrown;
+        try
+        {
+            await using var db = fixture.CreateDb();
+            thrown = await Record.ExceptionAsync(() => new LocationService(db, new AuditService(db)).CreateAsync(tenant,
+                new LocationInput(null, "ONE", "One", null, null, null, null, null, null, null, null),
+                new RequestContext("127.0.0.1", "test", Guid.NewGuid(), tenant), _ => true, default));
+        }
+        finally
+        {
+            await using var ddl = fixture.CreateDb();
+            await ddl.Database.ExecuteSqlRawAsync($"DROP TRIGGER IF EXISTS {trigger} ON locations; DROP FUNCTION IF EXISTS {trigger}();");
+        }
+        if (isCodeTaken) thrown.Should().BeOfType<LocationRuleException>().Which.Status.Should().Be(409);
+        else thrown.Should().BeOfType<DbUpdateException>("a unique violation of anything but the code index is not 'code taken'");
+    }
 }
