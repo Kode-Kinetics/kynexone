@@ -346,11 +346,8 @@ public sealed class IntegrationDeliveryHonestyTests
     public async Task Permitted_test_delivery_captures_everyone_off_the_list_without_touching_the_relay()
     {
         await using var db = InMemory();
-        db.PlatformConfigEntries.AddRange(
-            new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyHost, Value = "127.0.0.1" },
-            new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyPort, Value = "1" },
-            new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyFromAddress, Value = "noreply@example.test" });
-        await db.SaveChangesAsync();
+        var tenant = Guid.NewGuid();
+        OfferSmtpOutcomeTests.SeedTenantRelay(db, tenant, from: "noreply@example.test", host: "127.0.0.1");
         var config = Config(new Dictionary<string, string?>
         {
             [EmailTransportPolicy.AllowedRecipientsKey] = "@qa.example.test, owner@example.test",
@@ -358,7 +355,7 @@ public sealed class IntegrationDeliveryHonestyTests
         var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"), config, NullLogger<SmtpEmailService>.Instance);
         var realEmployee = $"real-{Guid.NewGuid():N}@customer.example";
 
-        var result = await smtp.DeliverAsync(Guid.NewGuid(), realEmployee, "Real Employee", "Payslip", "<p>x</p>");
+        var result = await smtp.DeliverAsync(tenant, realEmployee, "Real Employee", "Payslip", "<p>x</p>");
 
         result.Status.Should().Be(EmailDeliveryStatus.Captured);
         EmailCaptureSink.To(realEmployee).Should().ContainSingle();
@@ -630,13 +627,11 @@ public sealed class IntegrationDeliveryHonestyTests
         }
         await using (var db = InMemory())
         {
-            db.PlatformConfigEntries.AddRange(
-                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyHost, Value = "127.0.0.1" },
-                new PlatformConfigEntry { Key = PlatformSmtpConfig.KeyFromAddress, Value = "noreply@example.test" });
-            await db.SaveChangesAsync();
+            var tenant = Guid.NewGuid();
+            OfferSmtpOutcomeTests.SeedTenantRelay(db, tenant, from: "noreply@example.test", host: "127.0.0.1");
             var smtp = new SmtpEmailService(db, DataProtectionProvider.Create("f09"),
                 Config(new Dictionary<string, string?> { [EmailTransportPolicy.AllowedRecipientsKey] = "@qa.example.test" }), logger);
-            await smtp.DeliverAsync(Guid.NewGuid(), to, "Private Person", "Payslip for Private Person", "<p>x</p>");
+            await smtp.DeliverAsync(tenant, to, "Private Person", "Payslip for Private Person", "<p>x</p>");
         }
 
         logger.Lines.Should().HaveCountGreaterThanOrEqualTo(3);

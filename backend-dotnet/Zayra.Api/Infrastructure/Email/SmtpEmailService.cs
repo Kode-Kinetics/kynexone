@@ -247,9 +247,8 @@ public class SmtpEmailService : IEmailService
     /// Two guards remain: an explicit predicate when the caller knows its tenant (the worker always
     /// does), and a fail-closed multi-tenant check for the legacy ambient path.
     ///
-    /// NEW: when no tenant relay resolves, the platform relay configured in Platform Settings is
-    /// used instead. That fallback is safe precisely because it belongs to no tenant — it can never
-    /// be "some other tenant's server", which is the hazard the guards above exist to prevent.
+    /// Tenant and platform relays are STRICTLY SEPARATE: a tenant with no relay of its own is "not
+    /// configured" and never borrows the platform relay. Platform mail uses the Platform scope only.
     /// </summary>
     private async Task<SmtpConfig?> LoadConfigAsync(Scope scope, CancellationToken ct)
     {
@@ -269,27 +268,26 @@ public class SmtpEmailService : IEmailService
         {
             // The ambient filter was bypassed (no HTTP principal) and rows from several tenants came
             // back. Using any of them would pick an arbitrary tenant's relay, so they are all
-            // discarded — but the tenant-agnostic platform relay is still a legitimate answer.
+            // discarded. Tenant and platform relays are strictly separate, so there is no fallback.
             _log.LogWarning("SMTP config load returned rows for multiple tenants without an explicit tenant. " +
-                            "Ignoring tenant relays and falling back to the platform relay.");
-            return await LoadPlatformConfigAsync(ct);
+                            "Ignoring them; use the tenant-explicit overload.");
+            return null;
         }
 
         string? Get(string key) => settings.FirstOrDefault(x => x.SettingKey == key)?.SettingValue;
 
         var host = Get("Smtp.Host");
         if (string.IsNullOrWhiteSpace(host))
-            return await LoadPlatformConfigAsync(ct);
+            return null;
 
         if (!int.TryParse(Get("Smtp.Port") ?? "587", out var port)) port = 587;
 
         var fromAddress = Get("Smtp.FromAddress") ?? string.Empty;
         if (string.IsNullOrWhiteSpace(fromAddress))
         {
-            // MimeKit throws on an empty From. A half-filled tenant row is a misconfiguration, not
-            // a reason to drop the mail — the platform relay is the safe, complete alternative.
-            _log.LogWarning("Tenant SMTP host is set but the From address is blank. Falling back to the platform relay.");
-            return await LoadPlatformConfigAsync(ct);
+            // MimeKit throws on an empty From, so a half-filled tenant row counts as not configured.
+            _log.LogWarning("Tenant SMTP host is set but the From address is blank. Treating the tenant relay as not configured.");
+            return null;
         }
 
         return new SmtpConfig(

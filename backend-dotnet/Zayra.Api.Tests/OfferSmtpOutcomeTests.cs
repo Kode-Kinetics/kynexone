@@ -14,6 +14,18 @@ public sealed class OfferSmtpOutcomeTests
 {
     internal static IConfiguration Config(string mode = "smtp") => new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
     { ["Email:DeliveryMode"] = mode, ["Smtp:Host"] = "relay.example.invalid", ["Smtp:FromEmail"] = "hr@example.invalid", ["Smtp:FromName"] = "People" }).Build();
+    /// <summary>Tenant and platform relays are strictly separate, so offer mail needs the tenant's own relay.</summary>
+    internal static void SeedTenantRelay(ZayraDbContext db, Guid tenant, string from = "hr@example.invalid", string host = "relay.example.invalid")
+    {
+        foreach (var (key, value) in new Dictionary<string, string> { ["Smtp.Host"] = host, ["Smtp.FromAddress"] = from, ["Smtp.FromName"] = "People" })
+            db.SystemSettings.Add(new() { TenantId = tenant, Category = "Email", SettingKey = key, SettingValue = value });
+        db.SaveChanges();
+    }
+    internal static void SetTenantSetting(ZayraDbContext db, Guid tenant, string key, string value)
+    {
+        db.SystemSettings.First(x => x.TenantId == tenant && x.Category == "Email" && x.SettingKey == key).SettingValue = value;
+        db.SaveChanges();
+    }
     internal static ZayraDbContext Db() => new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
     internal static SmtpEmailService Service(ZayraDbContext db, IConfiguration config, FakeSmtp session) =>
         new(db, new EphemeralDataProtectionProvider(), config, NullLogger<SmtpEmailService>.Instance, () => session);
@@ -24,8 +36,8 @@ public sealed class OfferSmtpOutcomeTests
     public async Task SuccessfulSubmissionSurvivesDisconnectFailure(string failureStage)
     {
         await using var db = Db(); var transport = new FakeSmtp { FailureStage = failureStage };
-        var service = Service(db, Config(), transport);
-        var outcome = await service.DeliverAsync(Guid.NewGuid(), "candidate@example.invalid", "Candidate", "Offer", "Reviewed");
+        var service = Service(db, Config(), transport); var tenant = Guid.NewGuid(); SeedTenantRelay(db, tenant);
+        var outcome = await service.DeliverAsync(tenant, "candidate@example.invalid", "Candidate", "Offer", "Reviewed");
         outcome.Status.Should().Be(EmailDeliveryStatus.AcceptedByRelay); transport.Submissions.Should().Be(1);
     }
 
@@ -35,7 +47,7 @@ public sealed class OfferSmtpOutcomeTests
     public async Task SubmissionBoundarySeparatesKnownFailureFromAmbiguity(string stage, bool possible)
     {
         await using var db = Db(); var service = Service(db, Config(), new() { FailureStage = stage });
-        var tenant = Guid.NewGuid(); var sender = await service.GetEffectiveSenderAsync(tenant);
+        var tenant = Guid.NewGuid(); SeedTenantRelay(db, tenant); var sender = await service.GetEffectiveSenderAsync(tenant);
         var failure = await FluentActions.Awaiting(() => service.DeliverAsync(tenant, sender.ConfigurationFingerprint, "candidate@example.invalid", "Candidate", "Offer", "Reviewed"))
             .Should().ThrowAsync<EmailTransportException>();
         failure.Which.SubmissionMayHaveStarted.Should().Be(possible);
@@ -44,9 +56,9 @@ public sealed class OfferSmtpOutcomeTests
     [Fact]
     public async Task ReviewedSenderChangeStopsBeforeConnect()
     {
-        await using var db = Db(); var config = Config(); var transport = new FakeSmtp(); var service = Service(db, config, transport); var tenant = Guid.NewGuid();
+        await using var db = Db(); var config = Config(); var transport = new FakeSmtp(); var service = Service(db, config, transport); var tenant = Guid.NewGuid(); SeedTenantRelay(db, tenant);
         var reviewed = await service.GetEffectiveSenderAsync(tenant);
-        config["Smtp:FromEmail"] = "changed@example.invalid";
+        SetTenantSetting(db, tenant, "Smtp.FromAddress", "changed@example.invalid");
         var failure = await FluentActions.Awaiting(() => service.DeliverAsync(tenant, reviewed.ConfigurationFingerprint,
             "candidate@example.invalid", "Candidate", "Offer", "Reviewed")).Should().ThrowAsync<EmailTransportException>();
         failure.Which.Code.Should().Be("offer_sender_changed"); transport.Connections.Should().Be(0);
@@ -55,8 +67,9 @@ public sealed class OfferSmtpOutcomeTests
     [Fact]
     public async Task ResolutionIsBoundBeforeConnectEvenIfSettingsChangeDuringConnect()
     {
-        await using var db = Db(); var config = Config(); var transport = new FakeSmtp { OnConnect = () => config["Smtp:FromEmail"] = "changed@example.invalid" };
-        var service = Service(db, config, transport); var tenant = Guid.NewGuid(); var reviewed = await service.GetEffectiveSenderAsync(tenant);
+        await using var db = Db(); var config = Config(); var tenant = Guid.NewGuid(); SeedTenantRelay(db, tenant);
+        var transport = new FakeSmtp { OnConnect = () => SetTenantSetting(db, tenant, "Smtp.FromAddress", "changed@example.invalid") };
+        var service = Service(db, config, transport); var reviewed = await service.GetEffectiveSenderAsync(tenant);
         (await service.DeliverAsync(tenant, reviewed.ConfigurationFingerprint, "candidate@example.invalid", "Candidate", "Offer", "Reviewed")).Status.Should().Be(EmailDeliveryStatus.AcceptedByRelay);
         transport.From.Should().Be("hr@example.invalid");
     }
@@ -64,8 +77,8 @@ public sealed class OfferSmtpOutcomeTests
     [Fact]
     public async Task MalformedReviewedSenderIsKnownPreSubmissionFailure()
     {
-        await using var db=Db();var config=Config();config["Smtp:FromEmail"]="bad@@example.invalid";
-        var transport=new FakeSmtp();var service=Service(db,config,transport);var tenant=Guid.NewGuid();var sender=await service.GetEffectiveSenderAsync(tenant);
+        await using var db=Db();var config=Config();var tenant=Guid.NewGuid();SeedTenantRelay(db,tenant,from:"bad@@example.invalid");
+        var transport=new FakeSmtp();var service=Service(db,config,transport);var sender=await service.GetEffectiveSenderAsync(tenant);
         var failure=await FluentActions.Awaiting(()=>service.DeliverAsync(tenant,sender.ConfigurationFingerprint,"candidate@example.invalid","Candidate","Offer","Reviewed")).Should().ThrowAsync<EmailTransportException>();
         failure.Which.SubmissionMayHaveStarted.Should().BeFalse();transport.Submissions.Should().Be(0);
     }
