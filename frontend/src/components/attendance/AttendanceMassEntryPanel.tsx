@@ -11,6 +11,8 @@ import { describeBulkError } from '../../lib/attendanceBulkError';
 import {
   MASS_ENTRY_MAX_DAYS,
   MASS_ENTRY_MAX_EMPLOYEES,
+  MASS_ENTRY_MAX_PUNCHES,
+  MASS_ENTRY_PUNCH_MATHS_KEY,
   MASS_ENTRY_MAX_REASON,
   MASS_ENTRY_SUBMIT_KEY,
   MASS_ENTRY_SUMMARY_KEY,
@@ -54,6 +56,7 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
     switch (plan.problem) {
       case 'too-many-employees': return t('Mass entry is limited to {max} employees at a time.', { max: MASS_ENTRY_MAX_EMPLOYEES });
       case 'too-many-days': return t('Mass entry is limited to {max} days at a time.', { max: MASS_ENTRY_MAX_DAYS });
+      case 'too-many-punches': return t(MASS_ENTRY_PUNCH_MATHS_KEY, { employees: plan.employees, days: plan.days, perDay: plan.punches / Math.max(1, plan.employees * plan.days), punches: fx.integer(plan.punches), max: fx.integer(MASS_ENTRY_MAX_PUNCHES) });
       case 'bad-range': return t('Choose a valid date range: the end date cannot be before the start date.');
       default: return null;
     }

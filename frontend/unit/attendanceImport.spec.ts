@@ -87,3 +87,22 @@ test('gate: zero valid rows or a request in flight block Import', () => {
   expect(importGate({ content: 'x', validatedContent: 'x', preview: preview({ validRows: 0 }), busy: false }).canImport).toBe(false);
   expect(importGate({ content: 'x', validatedContent: 'x', preview: preview(), busy: true })).toMatchObject({ canImport: false, canValidate: false });
 });
+
+test('formula triggers after leading spaces are neutralised too (Excel evaluates " =cmd")', () => {
+  expect(neutraliseCsvCell(' =cmd')).toBe("' =cmd");
+  expect(neutraliseCsvCell('   @SUM(A1)')).toBe("'   @SUM(A1)");
+  expect(neutraliseCsvCell('  +1+1')).toBe("'  +1+1");
+  expect(neutraliseCsvCell(' plain text')).toBe(' plain text');
+});
+
+test('same rule as the server: a plain signed number is data, not a formula', () => {
+  expect(neutraliseCsvCell('-125.50')).toBe('-125.50');
+  expect(neutraliseCsvCell('+966501234567')).toBe('+966501234567');
+  expect(neutraliseCsvCell(' -5')).toBe("' -5"); // the server only exempts a cell that is a number from its first character
+  expect(neutraliseCsvCell('-5+3')).toBe("'-5+3");
+});
+
+test('direction-control characters are stripped from a cell, as the server does', () => {
+  expect(neutraliseCsvCell('a\u202Eb\u200Fc')).toBe('abc');
+  expect(neutraliseCsvCell('\u202E=cmd')).toBe("'=cmd");
+});

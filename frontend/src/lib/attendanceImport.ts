@@ -33,12 +33,17 @@ export interface ImportPreview {
 export const IMPORT_MAX_ROWS = 5000;
 
 /**
- * Spreadsheet-formula injection: a cell that starts with = + - @ (or a tab / carriage return that Excel
- * trims before evaluating) is run as a formula when the report is opened. A leading apostrophe makes the
+ * Spreadsheet-formula injection: a cell whose first non-space character is = + - @ (or a tab / carriage return that
+ * Excel trims before evaluating) is run as a formula when the report is opened. A leading apostrophe makes the
  * spreadsheet treat it as text. The values here come from an uploaded file, so they are hostile by default.
  */
 export function neutraliseCsvCell(value: string): string {
-  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  // Same rule as the server's Csv.Guard: direction controls are dropped; the first character after any leading
+  // spaces decides (Excel evaluates " =cmd" as readily as "=cmd"); a plain signed number is data, not a formula.
+  const v = value.replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
+  const first = v.replace(/^ +/, '')[0];
+  if (first === undefined || !'=+-@\t\r'.includes(first)) return v;
+  return /^[+-]?(\d+\.?\d*|\.\d+)$/.test(v) ? v : `'${v}`;
 }
 
 function csvCell(value: string | number | null | undefined): string {

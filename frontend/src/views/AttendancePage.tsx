@@ -41,6 +41,7 @@ import { enumLabel } from '../components/EnumLabel';
 import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
 import { useAuth } from '../contexts/AuthContext';
+import { massEntryAllowed } from '../lib/attendanceBulkEntry';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { DomainUnavailable, Empty, Panel as BasePanel, SectionTitle, statusTone } from '../components/attendance/attendanceUi';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
@@ -429,7 +430,7 @@ export function AttendancePage() {
             </form>
 )}
             {canManageSources && <AttendanceCsvImportPanel onImported={load} />}
-            <AttendanceMassEntryPanel canWrite={canProcess} onRecorded={load} />
+            <AttendanceMassEntryPanel canWrite={massEntryAllowed(hasPermission)} onRecorded={load} />
           </div>
           <Panel title={t('Raw Punch Logs')} action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
             {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}

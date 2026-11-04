@@ -5,6 +5,9 @@ import {
   MASS_ENTRY_SUBMIT_KEY,
   MASS_ENTRY_SUMMARY_KEY,
   MASS_ENTRY_MAX_EMPLOYEES,
+  MASS_ENTRY_MAX_PUNCHES,
+  MASS_ENTRY_PUNCH_MATHS_KEY,
+  massEntryAllowed,
   inclusiveDays,
   massEntryPlan,
   massEntryState,
@@ -76,4 +79,38 @@ test('an out time not after the in time is an overnight shift and is announced, 
   expect(massEntryState({ ...ok, outTime: '17:00' }).overnight).toBe(false);
   expect(massEntryState({ ...ok, outTime: '' }).overnight).toBe(false);
   expect(massEntryState({ ...ok, outTime: '06:00' }).canSubmit).toBe(true);
+});
+
+test('the server caps one mass entry at 5,000 punches in total', () => {
+  expect(MASS_ENTRY_MAX_PUNCHES).toBe(5000);
+  // 100 x 31 x 2 = 6,200
+  const over = massEntryPlan({ employees: 100, fromDate: '2026-05-01', toDate: '2026-05-31', hasOutTime: true });
+  expect(over).toMatchObject({ punches: 6200, problem: 'too-many-punches' });
+  // the same people and days with no out time: 3,100
+  expect(massEntryPlan({ employees: 100, fromDate: '2026-05-01', toDate: '2026-05-31', hasOutTime: false })).toMatchObject({ punches: 3100, problem: null });
+  // exactly at the limit is allowed: 250 x 10 x 2 = 5,000
+  expect(massEntryPlan({ employees: 250, fromDate: '2026-05-01', toDate: '2026-05-10', hasOutTime: true })).toMatchObject({ punches: 5000, problem: null });
+  expect(massEntryPlan({ employees: 251, fromDate: '2026-05-01', toDate: '2026-05-10', hasOutTime: true }).problem).toBe('too-many-punches');
+});
+
+test('the per-employee and per-day caps are reported before the punch total', () => {
+  expect(massEntryPlan({ employees: 501, fromDate: '2026-05-01', toDate: '2026-05-31', hasOutTime: true }).problem).toBe('too-many-employees');
+  expect(massEntryPlan({ employees: 400, fromDate: '2026-05-01', toDate: '2026-07-01', hasOutTime: true }).problem).toBe('too-many-days');
+});
+
+test('an over-limit submit is blocked, and the maths sentence shows the numbers', () => {
+  const state = massEntryState({ employees: 100, fromDate: '2026-05-01', toDate: '2026-05-31', inTime: '09:00', outTime: '17:00', reason: 'x', busy: false, canWrite: true });
+  expect(state.canSubmit).toBe(false);
+  expect(translate('en', MASS_ENTRY_PUNCH_MATHS_KEY, { employees: 100, days: 31, perDay: 2, punches: 6200, max: 5000 }))
+    .toBe('100 employees × 31 days × 2 punches = 6,200; the limit is 5,000.');
+  expect(translate('en', MASS_ENTRY_PUNCH_MATHS_KEY, { employees: 100, days: 31, perDay: 1, punches: 3100, max: 5000 }))
+    .toBe('100 employees × 31 days × 1 punch = 3,100; the limit is 5,000.');
+});
+
+test('mass entry needs BOTH attendance.write and attendance.bulk_import', () => {
+  const has = (...keys: string[]) => (p: string) => keys.includes(p);
+  expect(massEntryAllowed(has('attendance.write', 'attendance.bulk_import'))).toBe(true);
+  expect(massEntryAllowed(has('attendance.write'))).toBe(false);
+  expect(massEntryAllowed(has('attendance.bulk_import'))).toBe(false);
+  expect(massEntryAllowed(has())).toBe(false);
 });

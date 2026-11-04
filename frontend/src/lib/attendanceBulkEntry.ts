@@ -7,6 +7,15 @@
 export const MASS_ENTRY_MAX_EMPLOYEES = 500;
 export const MASS_ENTRY_MAX_DAYS = 31;
 export const MASS_ENTRY_MAX_REASON = 500;
+/** Employees x days x (1 or 2 punches a day) in one request. */
+export const MASS_ENTRY_MAX_PUNCHES = 5000;
+
+/** The limit explained with the arithmetic, so the person can see which number to reduce. */
+export const MASS_ENTRY_PUNCH_MATHS_KEY = '{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}} × {perDay, plural, one {# punch} other {# punches}} = {punches}; the limit is {max}.';
+
+/** Mass entry is a write across employees AND a punch-file style bulk action: the server asks for both keys. */
+export const massEntryAllowed = (has: (permission: string) => boolean): boolean =>
+  has('attendance.write') && has('attendance.bulk_import');
 
 /** Message keys of the confirmation line and the submit button (ICU plurals; Arabic in i18n/attendanceBulk.ts). */
 export const MASS_ENTRY_SUMMARY_KEY = '{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}}';
@@ -33,7 +42,7 @@ export function inclusiveDays(from: string, to: string): number | null {
   return b - a + 1;
 }
 
-export type MassEntryProblem = 'no-employees' | 'bad-range' | 'too-many-employees' | 'too-many-days' | null;
+export type MassEntryProblem = 'no-employees' | 'bad-range' | 'too-many-employees' | 'too-many-days' | 'too-many-punches' | null;
 
 export interface MassEntryPlan {
   employees: number;
@@ -50,6 +59,7 @@ export function massEntryPlan(input: { employees: number; fromDate: string; toDa
   if (days === null) return { ...base, problem: 'bad-range' };
   if (input.employees > MASS_ENTRY_MAX_EMPLOYEES) return { ...base, problem: 'too-many-employees' };
   if (days > MASS_ENTRY_MAX_DAYS) return { ...base, problem: 'too-many-days' };
+  if (base.punches > MASS_ENTRY_MAX_PUNCHES) return { ...base, problem: 'too-many-punches' };
   return { ...base, problem: null };
 }
 

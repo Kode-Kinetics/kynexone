@@ -42,6 +42,10 @@ export const attendanceBulk = {
     'Download error report (first {shown} of {total})': 'Download error report (first {shown} of {total})',
     'Open mass entry': 'Open mass entry',
 
+    'Another bulk attendance operation is already running for this company. Wait for it to finish, then try again.': 'Another bulk attendance operation is already running for this company. Wait for it to finish, then try again.',
+    'Too many processing jobs are already running. Try again in a few minutes.': 'Too many processing jobs are already running. Try again in a few minutes.',
+    '{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}} × {perDay, plural, one {# punch} other {# punches}} = {punches}; the limit is {max}.': '{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}} × {perDay, plural, one {# punch} other {# punches}} = {punches}; the limit is {max}.',
+
     // CSV import
     'Download the template, fill it in, check it, then import the valid rows.': 'Download the template, fill it in, check it, then import the valid rows.',
     'CSV content': 'CSV content',
@@ -121,6 +125,10 @@ export const attendanceBulk = {
     'Processed {processed}, expected {expected}. Check the daily records.': 'تمت معالجة {processed} والمتوقع {expected}. راجع السجلات اليومية.',
     'Download error report (first {shown} of {total})': 'تنزيل تقرير الأخطاء (أول {shown} من {total})',
     'Open mass entry': 'فتح الإدخال الجماعي',
+
+    'Another bulk attendance operation is already running for this company. Wait for it to finish, then try again.': 'هناك عملية حضور جماعية أخرى قيد التنفيذ لهذه الشركة. انتظر حتى تنتهي ثم حاول مرة أخرى.',
+    'Too many processing jobs are already running. Try again in a few minutes.': 'هناك عدد كبير من مهام المعالجة قيد التنفيذ حاليًا. حاول مرة أخرى بعد بضع دقائق.',
+    '{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}} × {perDay, plural, one {# punch} other {# punches}} = {punches}; the limit is {max}.': '{employees, plural, zero {صفر موظف} one {موظف واحد} two {موظفان} few {# موظفين} many {# موظفًا} other {# موظف}} × {days, plural, zero {صفر يوم} one {يوم واحد} two {يومان} few {# أيام} many {# يومًا} other {# يوم}} × {perDay, plural, zero {صفر بصمة} one {بصمة واحدة} two {بصمتان} few {# بصمات} many {# بصمة} other {# بصمة}} = {punches}؛ الحد الأقصى {max}.',
 
     // CSV import
     'Download the template, fill it in, check it, then import the valid rows.': 'نزّل القالب واملأه ثم تحقّق منه، وبعدها استورد الصفوف الصالحة.',

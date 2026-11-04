@@ -94,7 +94,7 @@ export function AttendanceProcessPanel({ blocked, onProcessed }: Props) {
     } catch (err) {
       dispatch({
         type: 'enqueueFailed',
-        error: describeBulkError(err, t, t('You don\'t have permission to process attendance for this selection.')),
+        error: describeBulkError(err, t, t('You don\'t have permission to process attendance for this selection.'), t('Too many processing jobs are already running. Try again in a few minutes.')),
       });
     }
   };

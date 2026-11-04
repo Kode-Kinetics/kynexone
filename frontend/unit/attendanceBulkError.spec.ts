@@ -25,3 +25,13 @@ test('an unreadable failure never prints raw JSON', () => {
   const text = describeBulkError(axiosError(500, { stack: 'at Foo.bar' }), en);
   expect(text).not.toContain('stack');
 });
+
+test('a 409 says another bulk attendance operation is running (server message wins when present)', () => {
+  expect(describeBulkError(axiosError(409), en)).toBe('Another bulk attendance operation is already running for this company. Wait for it to finish, then try again.');
+  expect(describeBulkError(axiosError(409, { message: 'Import batch 7 is still running.' }), en)).toBe('Import batch 7 is still running.');
+});
+
+test('a 429 says too many processing jobs are running (server message wins when present)', () => {
+  expect(describeBulkError(axiosError(429), en, undefined, 'TOO_MANY')).toBe('TOO_MANY');
+  expect(describeBulkError(axiosError(429, { message: 'Try again in 2 minutes.' }), en, undefined, 'TOO_MANY')).toBe('Try again in 2 minutes.');
+});
