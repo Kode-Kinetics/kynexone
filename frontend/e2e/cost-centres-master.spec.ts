@@ -468,6 +468,72 @@ test('Delete asks for a reason, then a 409 in use shows the same counts; a delet
   expect(new URLSearchParams(del.query).get('reason')).toBe('Created by mistake');
 });
 
+// ═════════════════════════════ Screen 1: unsaved changes ═════════════════════════════
+
+const leavePrompt = (page: Page) => page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; });
+
+test('an open cost-centre form reports itself to Setup, so leaving the page asks first; closed, it does not', async ({ page }) => {
+  await boot(page);
+  expect(await leavePrompt(page)).toBe(false);
+  await tid(page, 'cc-master-new').click();
+  expect(await leavePrompt(page)).toBe(true);
+  await page.getByRole('dialog', { name: 'New cost centre' }).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'New cost centre' })).toHaveCount(0);
+  expect(await leavePrompt(page)).toBe(false);
+});
+
+test('Escape, the backdrop and Cancel on a form with typed input ask before discarding; Keep editing keeps what was typed; a clean form closes at once', async ({ page }) => {
+  await boot(page);
+  const form = page.getByRole('dialog', { name: 'New cost centre' });
+  const ask = page.getByRole('dialog', { name: 'Discard changes?' });
+  await tid(page, 'cc-master-new').click();
+  await page.keyboard.press('Escape');
+  await expect(form).toHaveCount(0); // nothing typed: no question
+  await tid(page, 'cc-master-new').click();
+  await tid(page, 'cc-form-name').fill('Marketing');
+  await page.keyboard.press('Escape');
+  await expect(ask).toBeVisible();
+  await expect(ask).toContainText('What you typed has not been saved.');
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(ask).toHaveCount(0);
+  await expect(tid(page, 'cc-form-name')).toHaveValue('Marketing');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await page.mouse.click(5, 5); // the backdrop
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(ask).toHaveCount(0);
+  // Editing and changing nothing is clean too.
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Edit cost centre SALES' })).toHaveCount(0);
+});
+
+test('the Delete reason dialog asks before discarding a typed reason', async ({ page }) => {
+  const { writes } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delete ORPHAN?' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0); // no reason typed: closes at once
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Created by mistake');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('dialog', { name: 'Discard changes?' });
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(tid(page, 'cc-form-reason')).toHaveValue('Created by mistake');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await ask.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(0);
+});
+
 test('Delete says which happened: a cost centre nothing uses is deleted, one that is used is turned off and can be restored', async ({ page }) => {
   await boot(page);
   await tid(page, 'cc-master-view-flat').click();

@@ -207,6 +207,8 @@ const ar: Record<string, string> = {
   'Only finance can change the ERP code.': 'يمكن للإدارة المالية فقط تغيير رمز ERP.',
   'Cost centre saved.': 'تم حفظ مركز التكلفة.',
   'Deleted {name}.': 'تم حذف {name}.',
+  'Discard changes?': 'هل تريد تجاهل التغييرات؟',
+  'What you typed has not been saved.': 'ما أدخلته لم يُحفظ بعد.',
   'Deactivate {code}?': 'إيقاف {code}؟',
   'Posted journal lines keep it. It can no longer be assigned.': 'تحتفظ قيود اليومية المرحَّلة به، ولن يمكن تعيينه بعد الآن.',
   'Delete {code}?': 'حذف {code}؟',

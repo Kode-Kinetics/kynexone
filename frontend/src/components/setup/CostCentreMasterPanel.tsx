@@ -15,6 +15,8 @@ import {
 import { FUNCTIONAL_CLASSES, pickServerMessage, COST_ACCOUNTING_SETUP_HREF } from '../../lib/glCostAccounting';
 import { usageSentence } from '../../lib/orgUsage';
 import { Modal } from '../Modal';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { useSetupEditorState } from './SetupEditorState';
 import { downloadCsv, ImportExportToolbar } from '../ImportExportToolbar';
 import { Badge, FieldError, LoadError, Spinner, WarningNote } from '../gl/glUi';
 import { useOrgCompanies } from './OrgCompanyControls';
@@ -67,8 +69,13 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const [actionError, setActionError] = useState('');
   const [inUse, setInUse] = useState<{ item: CostCenterDto; counts: Record<string, number> } | null>(null);
   const [rowError, setRowError] = useState('');
+  const [discarding, setDiscarding] = useState<null | 'form' | 'action'>(null);
+  const initialForm = useRef<MasterForm>(emptyForm(''));
   const [menu, setMenu] = useState<{ id: string; top: number; above: number; start: number; viaKeyboard: boolean } | null>(null);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  // Setup asks before leaving the page while a form or a reason dialog is open (like the other Setup tabs).
+  useSetupEditorState(formOpen || !!action);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,16 +112,22 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   // ── Form ──
   const openNew = () => {
     setEditing(null);
-    setForm(emptyForm(org.defaultCompanyId || ''));
+    initialForm.current = emptyForm(org.defaultCompanyId || '');
+    setForm(initialForm.current);
     setErrors({}); setFormError(''); setLockedNote('');
     setFormOpen(true);
   };
   const openEdit = (c: CostCenterDto) => {
     setEditing(c);
-    setForm(formOf(c));
+    initialForm.current = formOf(c);
+    setForm(initialForm.current);
     setErrors({}); setFormError(''); setLockedNote('');
     setFormOpen(true);
   };
+  const formDirty = formOpen && (Object.keys(form) as Array<keyof MasterForm>).some((k) => form[k] !== initialForm.current[k]);
+  // Typed input is not thrown away by Esc, a click outside or Cancel without asking; a pristine form closes at once.
+  const closeForm = () => { if (saving) return; if (formDirty) setDiscarding('form'); else setFormOpen(false); };
+  const closeAction = () => { if (saving) return; if (actionReason.trim()) setDiscarding('action'); else setAction(null); };
   const set = <K extends keyof MasterForm>(key: K, value: MasterForm[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   // M-9: the server says when a posted line carries the code; the 409 handler below stays for an older server.
@@ -356,10 +369,10 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
       <Modal
         isOpen={formOpen}
         title={editing ? t('Edit cost centre {code}', { code: editing.code }) : t('New cost centre')}
-        onClose={() => { if (!saving) setFormOpen(false); }}
+        onClose={closeForm}
         size="lg"
         footer={<>
-          <button type="button" onClick={() => setFormOpen(false)} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
+          <button type="button" onClick={closeForm} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
           <button type="button" data-testid="cc-form-save" onClick={() => void save()} disabled={saving} className="btn-primary !bg-blue-700 hover:!bg-blue-800">{saving ? t('Saving…') : t('Save')}</button>
         </>}
       >
@@ -434,10 +447,10 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
       <Modal
         isOpen={!!action}
         title={action?.kind === 'delete' ? t('Delete {code}?', { code: action.item.code }) : t('Deactivate {code}?', { code: action?.item.code ?? '' })}
-        onClose={() => { if (!saving) setAction(null); }}
+        onClose={closeAction}
         size="md"
         footer={<>
-          <button type="button" onClick={() => setAction(null)} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
+          <button type="button" onClick={closeAction} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
           <button type="button" onClick={() => void runAction()} disabled={saving} className={action?.kind === 'delete' ? 'btn-primary !bg-rose-700 hover:!bg-rose-800' : 'btn-primary !bg-blue-700 hover:!bg-blue-800'}>{saving ? t('Saving…') : action?.kind === 'delete' ? t('Delete') : t('Deactivate')}</button>
         </>}
       >
@@ -452,6 +465,18 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           <FieldError error={actionError} />
         </div>
       </Modal>
+
+      <ConfirmDialog
+        state={discarding ? {
+          title: t('Discard changes?'),
+          message: t('What you typed has not been saved.'),
+          tone: 'primary',
+          confirmLabel: t('Discard changes'),
+          cancelLabel: t('Keep editing'),
+          onConfirm: () => { if (discarding === 'form') setFormOpen(false); else setAction(null); setDiscarding(null); },
+        } : null}
+        onCancel={() => setDiscarding(null)}
+      />
 
       {/* M-8: what uses it */}
       <Modal isOpen={!!inUse} title={t('Cost centre {code} is in use', { code: inUse?.item.code ?? '' })} onClose={() => setInUse(null)} size="md"
