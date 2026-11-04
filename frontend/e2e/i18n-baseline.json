@@ -142,7 +142,7 @@
     }
   ],
   "totals": {
-    "hardcoded": 3972,
+    "hardcoded": 3955,
     "rawStatus": 51,
     "locale": 185,
     "icons": 0,
@@ -400,7 +400,7 @@
       "locale": 1
     },
     "src/components/benefits/BenefitPlansPanel.tsx": {
-      "hardcoded": 65
+      "hardcoded": 48
     },
     "src/components/benefits/benefitUi.tsx": {
       "locale": 1

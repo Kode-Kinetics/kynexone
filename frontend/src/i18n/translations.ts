@@ -32,6 +32,7 @@ import { policyBinder } from './policyBinder';
 import { policyForms } from './policyForms';
 import { gradeBenefitDefaults } from './gradeBenefitDefaults';
 import { educationClaims } from './educationClaims';
+import { benefitPlanForm } from './benefitPlanForm';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
@@ -73,6 +74,8 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
+  // First, so any key another module already translates keeps its existing wording.
+  ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
   ...appChrome.en,
@@ -1590,6 +1593,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...benefitPlanForm.ar,
   ...removalSafety.ar,
   ...appChrome.ar,
   ...dailyA.ar,

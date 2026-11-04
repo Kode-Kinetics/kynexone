@@ -44,6 +44,7 @@ export function BenefitPaymentPolicyEditor({ value, onChange, currency, editing,
   const [taxable, setTaxable] = useState(false);
   const [components, setComponents] = useState<PaymentComponent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const paid = value.delivery !== 'Coverage';
   const salary = value.delivery === 'SalaryAllowance' || value.delivery === 'PayrollDeduction';
@@ -58,11 +59,20 @@ export function BenefitPaymentPolicyEditor({ value, onChange, currency, editing,
   const set = <K extends keyof Policy>(key: K, next: Policy[K]) => onChange({ ...value, [key]: next });
   const createComponent = async () => {
     if (!lineCode.trim() || !lineName.trim()) { setError(t('Enter a payslip line name and code.')); return; }
-    setSavingComponent(true); setError(null);
+    setSavingComponent(true); setError(null); setNotice(null);
     try {
       const response = await client.post<PaymentComponent>('/api/compensation/benefits/payment-components', { code: lineCode.trim().toUpperCase(), name: lineName.trim(), componentType: kind, isTaxable: kind === 'Earning' && taxable });
       setComponents(current => [...current, response.data]); set('salaryComponentId', response.data.id); setCreating(false);
-    } catch (err) { setError(benefitsErrorMessage(err, t('Could not create the payslip line.'))); }
+    } catch (err) {
+      // A line with this code already exists and fits this benefit: select it rather than dead-ending.
+      const existing = (err as { response?: { status?: number; data?: { existing?: PaymentComponent } } })?.response;
+      if (existing?.status === 409 && existing.data?.existing) {
+        const line = existing.data.existing;
+        setComponents(current => current.some(item => item.id === line.id) ? current : [...current, line]);
+        set('salaryComponentId', line.id); setCreating(false);
+        setNotice(t('A payslip line with the code {code} already exists, so it has been selected.', { code: line.code }));
+      } else setError(benefitsErrorMessage(err, t('Could not create the payslip line.')));
+    }
     finally { setSavingComponent(false); }
   };
   const available = components.filter(item => item.isActive && !item.salaryStructureId && item.componentType === kind);
@@ -83,6 +93,7 @@ export function BenefitPaymentPolicyEditor({ value, onChange, currency, editing,
       {salary && value.frequency === 'Monthly' && <label className="flex gap-2 text-xs text-slate-600 dark:text-slate-300"><input type="checkbox" checked={value.prorate} onChange={event => set('prorate', event.target.checked)} />{t('Prorate for covered days')}</label>}
       <FormError message={error} />
       <label className={LABEL}>{t('Payslip line')}<select aria-label={t('Payslip line')} aria-describedby="benefit-payslip-line-help" className={INPUT} required value={value.salaryComponentId ?? ''} onChange={event => set('salaryComponentId', event.target.value || null)} disabled={loading}><option value="">{loading ? t('Loading…') : t('Select payslip line')}</option>{available.map(item => <option key={item.id} value={item.id}>{item.name} ({item.code}) · {t(item.isTaxable ? 'Taxable' : 'Non-taxable')}</option>)}</select><span id="benefit-payslip-line-help" className="mt-1 block font-normal text-slate-500">{t('The line this benefit appears as on the payslip.')}</span></label>
+      {notice && <p role="status" className="text-xs text-slate-600 dark:text-slate-300" data-testid="benefit-payslip-line-notice">{notice}</p>}
       {hasPermission('payroll.write') && <div className="text-xs">
         {!creating ? <button type="button" className="font-semibold text-sapphire" onClick={() => setCreating(true)}>{t('Add payslip line')}</button> : <div className="space-y-3 rounded-lg bg-slate-50 p-3 dark:bg-white/5">
           <div className="grid gap-3 sm:grid-cols-2"><label className={LABEL}>{t('Payslip line name')}<input className={INPUT} maxLength={180} value={lineName} onChange={event => setComponentName(event.target.value)} /></label><label className={LABEL}>{t('Payslip line code')}<input className={`${INPUT} font-mono`} maxLength={40} value={lineCode} onChange={event => setComponentCode(sanitizePayslipCodeInput(event.target.value))} /></label></div>
