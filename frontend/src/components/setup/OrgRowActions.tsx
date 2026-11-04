@@ -39,8 +39,9 @@ export function useOrgWriteAccess(permission: string | null = 'organization.writ
   }, [mayWrite, isGroupScope, companies, t]);
 }
 
-/** Roles the API requires to write a branch, department, location or company (BranchesController, DepartmentsController,
- *  LocationsController, CompaniesController: Admin or HR Manager). Holding organization.write alone is not enough. */
+/** Roles the API requires to write a branch, department, designation, grade or company (BranchesController, DepartmentsController,
+ *  DesignationsController, GradesController, CompaniesController: Admin or HR Manager), and to import or export a location
+ *  (LocationsController, same roles). Holding organization.write alone is not enough. */
 export const ORG_STRUCTURE_WRITE_ROLES = ['Admin', 'HR Manager'] as const;
 
 /**
@@ -48,18 +49,25 @@ export const ORG_STRUCTURE_WRITE_ROLES = ['Admin', 'HR Manager'] as const;
  * roles above AND a write permission; Remove and Restore additionally need organization.delete. A person who cannot write
  * sees the list and nothing to press (the server would refuse every write); a writer without organization.delete sees Remove
  * and Restore disabled with the reason. `permissions` is any-of (Companies also accepts the establishment grant).
+ *
+ * `roleRequired: false` is for a write the server gates by permission alone: Locations Add, Edit, Remove and Restore go
+ * through /api/admin/locations (SetupSettingsController: organization.write, organization.delete, no role). Their import
+ * and export go through /api/locations/* (LocationsController: Admin or HR Manager), so the toolbar there uses the default.
  */
-export function useOrgStructureAccess(permissions: readonly string[] = ['organization.write']) {
+export function useOrgStructureAccess(permissions: readonly string[] = ['organization.write'], { roleRequired = true }: { roleRequired?: boolean } = {}) {
   const t = useT();
   const { hasPermission, hasRole } = useAuth();
-  const canWrite = ORG_STRUCTURE_WRITE_ROLES.some(role => hasRole(role)) && permissions.some(permission => hasPermission(permission));
+  const hasRoleGate = !roleRequired || ORG_STRUCTURE_WRITE_ROLES.some(role => hasRole(role));
+  const canWrite = hasRoleGate && permissions.some(permission => hasPermission(permission));
   const canDelete = canWrite && hasPermission('organization.delete');
   return {
     canWrite,
     canDelete,
     deleteBlockedReason: canDelete ? undefined : t('You do not have permission to remove or restore this.'),
     /** Why every write control is disabled, naming what is missing; undefined for a person who may write. */
-    writeBlockedReason: canWrite ? undefined : t('Changing this needs the Admin or HR Manager role and the organization.write permission.'),
+    writeBlockedReason: canWrite ? undefined : roleRequired
+      ? t('Changing this needs the Admin or HR Manager role and the organization.write permission.')
+      : t('Changing this needs the organization.write permission.'),
   };
 }
 

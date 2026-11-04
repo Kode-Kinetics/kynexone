@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Locations against a mocked API. */
 
@@ -117,14 +117,13 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('Add your first location, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role sees Add, Import, Edit and Remove disabled and the reason shown', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role may change locations but not import or export them', async ({ page }) => {
   await boot(page, 'locations', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Riyadh Tower', exact: true })).toBeVisible();
-  await expect(add(page)).toBeDisabled();
+  await expect(add(page)).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
 test('without organization.delete, Remove and Restore are disabled with the reason', async ({ page }) => {
@@ -151,4 +150,18 @@ test('Arabic: right-to-left and translated', async ({ page }) => {
   await expect(field(dialog, 'خط العرض')).toBeVisible();
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+// Locations Add, Edit, Remove and Restore go through /api/admin/locations, which the server gates by permission alone.
+// Import, Export and the template go through /api/locations/*, which needs the Admin or HR Manager role.
+test('a custom role holding organization.write and organization.delete may add, edit and remove locations; import and export need the role', async ({ page }) => {
+  await boot(page, 'locations', CUSTOM_ROLE_WITH_PERMISSIONS);
+  await page.getByLabel(/Show turned-off/).check();
+  await expect(add(page)).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Edit Riyadh Tower/ })).toBeEnabled();
+  await expect(page.getByTestId('org-row-remove').first()).toBeEnabled();
+  await expect(page.getByTestId('org-row-restore')).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Export' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toHaveAttribute('title', /Admin or HR Manager role/);
 });

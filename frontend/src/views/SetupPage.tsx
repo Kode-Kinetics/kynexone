@@ -1898,7 +1898,9 @@ function LocationsTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'location', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
-  const access = useOrgStructureAccess();
+  // Add, Edit, Remove and Restore mirror SetupSettingsController (permission only); import and export mirror LocationsController (role and permission).
+  const access = useOrgStructureAccess(['organization.write'], { roleRequired: false });
+  const transferAccess = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1955,7 +1957,7 @@ function LocationsTab() {
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
         actions={(
           <ImportExportToolbar
-            blockedReason={access.writeBlockedReason}
+            blockedReason={transferAccess.writeBlockedReason}
             entityName="Locations"
             onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
             onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}

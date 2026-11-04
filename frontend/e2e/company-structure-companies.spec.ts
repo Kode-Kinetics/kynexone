@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, companySa, READ_ONLY } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, companySa, READ_ONLY, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Companies against a mocked API. New companies are created by the guided wizard, not a dialog. */
 
@@ -122,4 +122,12 @@ test('a company with no country shows an Arabic warning, not English', async ({ 
   const alert = page.getByRole('alert').filter({ hasText: /الدولة/ });
   await expect(alert).toBeVisible();
   await expect(alert).not.toContainText('has no country set');
+});
+
+test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (companies)', async ({ page }) => {
+  await boot(page, 'companies', CUSTOM_ROLE_WITH_PERMISSIONS);
+  await expect(page.getByRole('cell', { name: 'Masar Trading KSA', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });

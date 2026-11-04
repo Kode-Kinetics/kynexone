@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Departments against a mocked API. */
 
@@ -113,4 +113,12 @@ test('Arabic: right-to-left and translated', async ({ page }) => {
   await expect(field(dialog, 'الشركة')).toBeVisible();
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (departments)', async ({ page }) => {
+  await boot(page, 'departments', CUSTOM_ROLE_WITH_PERMISSIONS);
+  await expect(page.getByRole('cell', { name: 'Finance', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add Department', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });

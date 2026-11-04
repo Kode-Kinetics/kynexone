@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Branches against a mocked API. npx next dev -p 5198 &  npx playwright test -c e2e/playwright.company-structure.config.ts */
 
@@ -153,4 +153,12 @@ test('Arabic: the page is right-to-left and the dialog is translated', async ({ 
   await expect(field(dialog, 'الشركة')).toBeVisible();
   expect(await axeSeriousOrWorse(page, '[role="dialog"]')).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (branches)', async ({ page }) => {
+  await boot(page, 'branches', CUSTOM_ROLE_WITH_PERMISSIONS);
+  await expect(page.getByRole('cell', { name: 'Riyadh HQ', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add Branch', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });

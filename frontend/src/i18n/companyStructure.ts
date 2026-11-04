@@ -5,6 +5,7 @@
  * الدولة (country), المدينة (city), نطاق السياج الجغرافي (geofence).
  */
 const ar: Record<string, string> = {
+  'Changing this needs the organization.write permission.': 'يتطلب التعديل صلاحية organization.write.',
   'You do not have permission to remove or restore this.': 'ليست لديك صلاحية حذف هذا العنصر أو استعادته.',
   // Companies tab: validation and save messages
   'Registration number': 'رقم التسجيل',
