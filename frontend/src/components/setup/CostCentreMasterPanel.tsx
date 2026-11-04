@@ -20,6 +20,7 @@ import { useSetupEditorState } from './SetupEditorState';
 import { downloadCsv, ImportExportToolbar } from '../ImportExportToolbar';
 import { Badge, FieldError, LoadError, Spinner, WarningNote } from '../gl/glUi';
 import { useOrgCompanies } from './OrgCompanyControls';
+import { useOrgWriteAccess } from './OrgRowActions';
 
 /**
  * Setup → Company structure → Cost centres (screen 1). A parent tree with the functional class, the ERP code and the
@@ -42,8 +43,20 @@ const IN_USE_LINKS: Partial<Record<InUseKey, string>> = {
 
 export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }) {
   const { t, locale } = useLocale();
-  const { hasPermission } = useAuth();
-  const canManage = hasPermission('organization.costcenter.manage');
+  const { hasPermission, hasRole } = useAuth();
+  // The API's rules, so a control the server would refuse is shown disabled with the reason, never hidden:
+  // create, edit, import and delete need the Admin or HR Manager role AND organization.costcenter.manage; delete and
+  // restore also need organization.delete (restore carries no role rule); the company must be within the person's grant.
+  const hasManage = hasPermission('organization.costcenter.manage');
+  const hasWriteRole = hasRole('Admin') || hasRole('HR Manager');
+  const canManage = hasManage && hasWriteRole;
+  const hasDelete = hasPermission('organization.delete');
+  const writeBlockedReason = !hasManage
+    ? t('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.')
+    : !hasWriteRole ? t('You can view cost centres but not change them. Changing them needs the Admin or HR Manager role.') : undefined;
+  const deleteBlockedReason = hasDelete ? undefined : t('Deleting or restoring a cost centre needs the organization.delete permission.');
+  const writeAccess = useOrgWriteAccess(null);
+  const blockedNoteId = useId();
   const canSetClass = hasPermission('finance.gl.manage');
   const org = useOrgCompanies(companies);
   const headingId = useId();
@@ -248,14 +261,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
               onImport={async () => ({ received: 0, created: 0, skipped: 0, errors: [] })}
             />
           )}
-          {canManage && (
-            <button type="button" data-testid="cc-master-new" onClick={openNew} className="btn-primary !bg-blue-700 hover:!bg-blue-800"><Plus className="h-4 w-4" aria-hidden />{t('New cost centre')}</button>
-          )}
+          <button type="button" data-testid="cc-master-new" onClick={openNew} disabled={!canManage} title={writeBlockedReason} aria-describedby={writeBlockedReason ? blockedNoteId : undefined} className="btn-primary !bg-blue-700 hover:!bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"><Plus className="h-4 w-4" aria-hidden />{t('New cost centre')}</button>
         </div>
       </div>
 
-      {!canManage && (
-        <div data-testid="cc-master-readonly-note"><WarningNote>{t('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.')}</WarningNote></div>
+      {writeBlockedReason && (
+        <div id={blockedNoteId} data-testid="cc-master-readonly-note"><WarningNote>{writeBlockedReason}</WarningNote></div>
       )}
       {savedNote && <p role="status" className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{savedNote}</p>}
       {rowError && <FieldError error={rowError} testId="cc-master-action-error" />}
@@ -332,20 +343,29 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                     </td>
                     <td className="px-3 py-2"><Badge tone={item.isActive ? 'emerald' : 'slate'}>{item.isActive ? t('Active') : t('Inactive')}</Badge></td>
                     <td className="px-3 py-2">
-                      {canManage && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          <button type="button" onClick={() => openEdit(item)} className="btn-secondary h-8 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden /> {t('Edit')}</button>
-                          <button
-                            type="button"
-                            ref={(el) => { if (el) triggerRefs.current.set(item.id, el); else triggerRefs.current.delete(item.id); }}
-                            aria-haspopup="menu" aria-expanded={menu?.id === item.id}
-                            aria-label={t('More actions for {code}', { code: item.code })}
-                            onClick={() => (menu?.id === item.id ? closeMenu() : openMenu(item, false))}
-                            onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMenu(item, true); } }}
-                            className="btn-secondary h-8 w-8 justify-center px-0"
-                          ><MoreHorizontal className="h-4 w-4" aria-hidden /></button>
-                        </div>
-                      )}
+                      {(() => {
+                        const scope = writeAccess(item.companyId);
+                        const editBlocked = writeBlockedReason ?? (scope.allowed ? undefined : scope.reason);
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <button type="button" onClick={() => openEdit(item)} disabled={!!editBlocked} title={editBlocked} aria-describedby={writeBlockedReason ? blockedNoteId : undefined} className="btn-secondary h-8 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"><Pencil className="h-3 w-3" aria-hidden /> {t('Edit')}</button>
+                              <button
+                                type="button"
+                                ref={(el) => { if (el) triggerRefs.current.set(item.id, el); else triggerRefs.current.delete(item.id); }}
+                                aria-haspopup="menu" aria-expanded={menu?.id === item.id}
+                                aria-label={t('More actions for {code}', { code: item.code })}
+                                disabled={!hasManage || !scope.allowed}
+                                title={!hasManage ? writeBlockedReason : scope.reason}
+                                onClick={() => (menu?.id === item.id ? closeMenu() : openMenu(item, false))}
+                                onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMenu(item, true); } }}
+                                className="btn-secondary h-8 w-8 justify-center px-0 disabled:cursor-not-allowed disabled:opacity-50"
+                              ><MoreHorizontal className="h-4 w-4" aria-hidden /></button>
+                            </div>
+                            {!writeBlockedReason && scope.reason && <p className="text-caption leading-snug text-slate-600 dark:text-slate-300">{scope.reason}</p>}
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -359,9 +379,9 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
         if (!it) return null;
         return <RowMenu menu={menu} onClose={closeMenu} items={[
           it.isActive
-            ? { key: 'deactivate', label: t('Deactivate'), onSelect: () => openAction('deactivate', it) }
-            : { key: 'restore', label: t('Restore'), onSelect: () => void restoreRow(it) },
-          { key: 'delete', label: t('Delete'), tone: 'danger', onSelect: () => openAction('delete', it) },
+            ? { key: 'deactivate', label: t('Deactivate'), disabledReason: writeBlockedReason, onSelect: () => openAction('deactivate', it) }
+            : { key: 'restore', label: t('Restore'), disabledReason: deleteBlockedReason, onSelect: () => void restoreRow(it) },
+          { key: 'delete', label: t('Delete'), tone: 'danger', disabledReason: writeBlockedReason ?? deleteBlockedReason, onSelect: () => openAction('delete', it) },
         ]} />;
       })()}
 

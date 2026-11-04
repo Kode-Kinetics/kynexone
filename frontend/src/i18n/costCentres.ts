@@ -207,6 +207,8 @@ const ar: Record<string, string> = {
   'Only finance can change the ERP code.': 'يمكن للإدارة المالية فقط تغيير رمز ERP.',
   'Cost centre saved.': 'تم حفظ مركز التكلفة.',
   'Deleted {name}.': 'تم حذف {name}.',
+  'You can view cost centres but not change them. Changing them needs the Admin or HR Manager role.': 'يمكنك عرض مراكز التكلفة دون تعديلها. يتطلب التعديل دور مسؤول النظام أو مدير الموارد البشرية.',
+  'Deleting or restoring a cost centre needs the organization.delete permission.': 'يتطلب حذف مركز التكلفة أو استعادته صلاحية organization.delete.',
   'Discard changes?': 'هل تريد تجاهل التغييرات؟',
   'What you typed has not been saved.': 'ما أدخلته لم يُحفظ بعد.',
   'Deactivate {code}?': 'إيقاف {code}؟',
