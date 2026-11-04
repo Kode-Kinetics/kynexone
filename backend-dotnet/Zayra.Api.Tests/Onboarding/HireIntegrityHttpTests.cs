@@ -466,6 +466,8 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
     public Task<string> NewOtherTenantUserAsync(string name, params string[] permissions) => MintAsync(OtherTenantId, name, null, permissions);
     /// <summary>A tenant-wide user holding the named built-in role (instead of HR Officer) plus the given permission overrides.</summary>
     public Task<string> NewUserInRoleAsync(string roleName, string name, params string[] permissions) => MintAsync(TenantId, name, null, permissions, roleName);
+    /// <summary>A user scoped to one company, holding the named built-in role plus the given permission overrides.</summary>
+    public Task<string> NewScopedUserInRoleAsync(string roleName, string name, Guid companyId, params string[] permissions) => MintAsync(TenantId, name, companyId, permissions, roleName);
 
     private async Task<string> MintAsync(Guid tenantId, string name, Guid? scopedCompany, string[] permissions, string roleName = "HR Officer")
     {
