@@ -237,6 +237,16 @@ public sealed class LocationService(ZayraDbContext db, IAuditService audit)
 
     private static string Text(string? sent, string current, bool replace) => sent is not null ? sent.Trim() : replace ? string.Empty : current;
 
+    private static bool TryParseFlag(string cell, out bool value)
+    {
+        switch (cell.Trim().ToLowerInvariant())
+        {
+            case "true": case "1": case "yes": case "active": value = true; return true;
+            case "false": case "0": case "no": case "inactive": value = false; return true;
+            default: value = false; return false;
+        }
+    }
+
     // ── CSV import (preview and commit walk the same loop) ──────────────────────────────────────────────
 
     public async Task<LocationImportOutcome> ImportAsync(Guid tenantId, IReadOnlyList<Dictionary<string, string>> rows, bool commit,
@@ -265,8 +275,15 @@ public sealed class LocationService(ZayraDbContext db, IAuditService audit)
             if (nameEn.Length == 0) errors.Add("NameEn is required");
             if (code.Length > 0 && !seen.Add(code)) errors.Add($"Duplicate Code '{rawCode}' within this batch");
             var existing = code.Length > 0 && byCode.TryGetValue(code, out var found) ? found : null;
+            // A blank cell is "unchanged" (a new row starts on); an unknown word is a row error, never a silent "on".
+            bool? isActive = null;
+            if (Sent("IsActive") is { Length: > 0 } activeCell)
+            {
+                if (TryParseFlag(activeCell, out var flag)) isActive = flag;
+                else errors.Add($"IsActive '{activeCell}' is not recognised. Use true or false (also 1/0, yes/no, active/inactive).");
+            }
             var input = new LocationInput(null, existing is null ? rawCode : null, nameEn.Length == 0 ? null : nameEn, Sent("NameAr"), null, Sent("City"),
-                Sent("CountryCode"), null, null, null, null, Sent("IsActive") is { } a ? !string.Equals(a, "false", StringComparison.OrdinalIgnoreCase) : null);
+                Sent("CountryCode"), null, null, null, null, isActive);
             if (errors.Count == 0 && Problem(input, creating: existing is null, checkCode: existing is null) is { } problem) errors.Add(problem);
             // The same words for a code that is outside the grant and one that is not there to add, so the import does not confirm which exist.
             if (errors.Count == 0 && !mayWrite(existing is null ? null : CompanyOf(existing, branches)))

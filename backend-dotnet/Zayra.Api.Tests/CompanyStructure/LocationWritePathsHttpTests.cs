@@ -239,4 +239,55 @@ public sealed class LocationWritePathsHttpTests : IClassFixture<HireIntegrityHtt
         row.TryGetProperty("tenantId", out _).Should().BeFalse();
         row.GetProperty("geofenceRadiusMeters").GetDecimal().Should().Be(150m);
     }
+
+    // ── the IsActive cell of a location file ─────────────────────────────────────────────────────
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("TRUE", true)]
+    [InlineData("1", true)]
+    [InlineData("yes", true)]
+    [InlineData("Active", true)]
+    [InlineData("false", false)]
+    [InlineData("False", false)]
+    [InlineData("0", false)]
+    [InlineData("No", false)]
+    [InlineData("inactive", false)]
+    public async Task Import_ReadsEveryRecognisedIsActiveSpelling_OnCreateAndOnUpdate(string cell, bool expected)
+    {
+        var group = await GroupAsync();
+        var existing = await SeedAsync(Code("E"), "Existing", null);
+        var fresh = Code("F");
+        using var r = await Import(group, $"Code,NameEn,IsActive\n{existing.Code},Existing,{cell}\n{fresh},Fresh,{cell}");
+        r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
+        (await Json(r)).GetProperty("skipped").GetInt32().Should().Be(0);
+        (await ReadAsync(existing.Id))!.IsActive.Should().Be(expected);
+        using var s = _fx.Host.Services.CreateScope();
+        (await s.ServiceProvider.GetRequiredService<ZayraDbContext>().Locations.IgnoreQueryFilters().SingleAsync(l => l.TenantId == _fx.TenantId && l.Code == fresh)).IsActive.Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task Import_RefusesAnUnknownIsActiveValue_AndKeepsTheStoredState_AndABlankCellMeansUnchanged()
+    {
+        var group = await GroupAsync();
+        var live = await SeedAsync(Code("L"), "Live", null);
+        var off = await SeedAsync(Code("O"), "Off", null);
+        using (var s = _fx.Host.Services.CreateScope())
+        {
+            var db = s.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            (await db.Locations.IgnoreQueryFilters().SingleAsync(l => l.Id == off.Id)).IsActive = false;
+            await db.SaveChangesAsync();
+        }
+        var junk = Code("J");
+
+        using var r = await Import(group, $"Code,NameEn,IsActive\n{live.Code},Live,banana\n{junk},Junk,tru\n{off.Code},Off,");
+        r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
+        var body = await Json(r);
+        body.GetProperty("skipped").GetInt32().Should().Be(2);
+        var rows = body.GetProperty("rows").EnumerateArray().ToList();
+        rows[0].GetProperty("errors")[0].GetString().Should().Contain("IsActive").And.Contain("banana");
+        rows[1].GetProperty("errors")[0].GetString().Should().Contain("IsActive");
+        (await ReadAsync(live.Id))!.IsActive.Should().BeTrue("a refused row changes nothing");
+        (await CountByCodeAsync(junk)).Should().Be(0);
+        (await ReadAsync(off.Id))!.IsActive.Should().BeFalse("a blank IsActive cell is 'unchanged', not 'switch it on'");
+    }
 }
