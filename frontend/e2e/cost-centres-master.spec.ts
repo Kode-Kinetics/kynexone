@@ -468,6 +468,35 @@ test('Delete asks for a reason, then a 409 in use shows the same counts; a delet
   expect(new URLSearchParams(del.query).get('reason')).toBe('Created by mistake');
 });
 
+// ═════════════════════════════ Screen 1: restore ═════════════════════════════
+
+test('Restore: a turned-off cost centre offers Restore (not Deactivate) in its menu, calls the restore route and turns the row back on', async ({ page }) => {
+  const { writes } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'SALES');
+  await expect(page.getByRole('menuitem', { name: 'Restore', exact: true })).toHaveCount(0); // active rows deactivate
+  await page.keyboard.press('Escape');
+  await openMenu(page, 'OPS');
+  await expect(page.getByRole('menuitem', { name: 'Deactivate', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-OPS')).toContainText('Active');
+  await expect(tid(page, 'cc-master-row-OPS')).not.toContainText('Inactive');
+  await expect(page.getByRole('status').filter({ hasText: 'Turned OPS back on.' })).toBeVisible();
+  expect(lastWrite(writes, 'POST')).toMatchObject({ method: 'POST', path: '/api/cost-centers/cc-ops/restore' });
+});
+
+test('Restore: a 409 locked_into_approved_run shows the server sentence, the row stays off, and Edit still offers its Status field', async ({ page }) => {
+  const { ctl } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  ctl.refuse = { status: 409, body: { error: 'locked_into_approved_run', message: 'A payroll run for this company is awaiting finance review or lock; reopen it first.', messageAr: 'x' } };
+  await openMenu(page, 'OPS');
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-action-error')).toHaveText('A payroll run for this company is awaiting finance review or lock; reopen it first.');
+  await expect(tid(page, 'cc-master-row-OPS')).toContainText('Inactive');
+  await tid(page, 'cc-master-row-OPS').getByRole('button', { name: 'Edit' }).click();
+  await expect(tid(page, 'cc-form-status')).toHaveValue('false');
+});
+
 test('the In use column shows the server count, "Not in use" for zero and a dash when the server did not say', async ({ page }) => {
   await boot(page);
   await tid(page, 'cc-master-view-flat').click();

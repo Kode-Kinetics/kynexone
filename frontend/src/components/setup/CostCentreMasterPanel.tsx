@@ -65,6 +65,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const [actionReason, setActionReason] = useState('');
   const [actionError, setActionError] = useState('');
   const [inUse, setInUse] = useState<{ item: CostCenterDto; counts: Record<string, number> } | null>(null);
+  const [rowError, setRowError] = useState('');
   const [menu, setMenu] = useState<{ id: string; top: number; above: number; start: number; viaKeyboard: boolean } | null>(null);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -177,6 +178,16 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
     } finally { setSaving(false); }
   };
 
+  // ── Restore: no reason is asked; the server's guard may refuse (a payroll run is awaiting review or lock). ──
+  const restoreRow = async (item: CostCenterDto) => {
+    setMenu(null); setRowError(''); setSavedNote('');
+    try {
+      await costCentersApi.restore(item.id);
+      setSavedNote(t('Turned {name} back on.', { name: item.code }));
+      await load();
+    } catch (err) { setRowError(showServerError(err)); }
+  };
+
   // ── Row menu ──
   const openMenu = (item: CostCenterDto, viaKeyboard: boolean) => {
     const el = triggerRefs.current.get(item.id);
@@ -226,6 +237,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
         <div data-testid="cc-master-readonly-note"><WarningNote>{t('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.')}</WarningNote></div>
       )}
       {savedNote && <p role="status" className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{savedNote}</p>}
+      {rowError && <FieldError error={rowError} testId="cc-master-action-error" />}
 
       <div className="flex flex-wrap items-center gap-2">
         {(org.options.length > 1 || hasNoCompanyOption) && (
@@ -321,9 +333,16 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           </div>
         )}
 
-      {menu && <RowMenu menu={menu} onClose={closeMenu} labels={{ deactivate: t('Deactivate'), delete: t('Delete') }}
-        onDeactivate={() => { const it = items.find((i) => i.id === menu.id); if (it) openAction('deactivate', it); }}
-        onDelete={() => { const it = items.find((i) => i.id === menu.id); if (it) openAction('delete', it); }} />}
+      {menu && (() => {
+        const it = items.find((i) => i.id === menu.id);
+        if (!it) return null;
+        return <RowMenu menu={menu} onClose={closeMenu} items={[
+          it.isActive
+            ? { key: 'deactivate', label: t('Deactivate'), onSelect: () => openAction('deactivate', it) }
+            : { key: 'restore', label: t('Restore'), onSelect: () => void restoreRow(it) },
+          { key: 'delete', label: t('Delete'), tone: 'danger', onSelect: () => openAction('delete', it) },
+        ]} />;
+      })()}
 
       {/* Create and edit */}
       <Modal
@@ -478,9 +497,11 @@ function Labelled({ label, required, hint, error, children }: {
 }
 
 /** The ⋯ menu: arrow keys move, Escape closes and returns focus, a click elsewhere closes. */
-function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
+interface MenuEntry { key: string; label: string; tone?: 'danger'; onSelect: () => void; /** Shown under the label and the entry does nothing: a blocked action is disabled with its reason, never hidden. */ disabledReason?: string }
+
+function RowMenu({ menu, onClose, items }: {
   menu: { top: number; above: number; start: number; viaKeyboard: boolean }; onClose: (restoreFocus?: boolean) => void;
-  labels: { deactivate: string; delete: string }; onDeactivate: () => void; onDelete: () => void;
+  items: MenuEntry[];
 }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const box = useRef<HTMLDivElement>(null);
@@ -528,8 +549,17 @@ function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
         else if (e.key === 'Tab') onClose(false);
       }}
     >
-      <button ref={(el) => { refs.current[0] = el; }} role="menuitem" type="button" onClick={onDeactivate} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-slate-800 hover:bg-slate-50 focus-visible:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/5">{labels.deactivate}</button>
-      <button ref={(el) => { refs.current[1] = el; }} role="menuitem" type="button" onClick={onDelete} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{labels.delete}</button>
+      {items.map((entry, i) => (
+        <button
+          key={entry.key} ref={(el) => { refs.current[i] = el; }} role="menuitem" type="button"
+          aria-disabled={entry.disabledReason ? true : undefined}
+          onClick={() => { if (!entry.disabledReason) entry.onSelect(); }}
+          className={`block w-full rounded-lg px-3 py-2 text-start text-sm focus-visible:bg-slate-100 ${entry.disabledReason ? 'cursor-not-allowed text-slate-500 dark:text-slate-400' : entry.tone === 'danger' ? 'text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10' : 'text-slate-800 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-white/5'}`}
+        >
+          {entry.label}
+          {entry.disabledReason && <span className="mt-0.5 block max-w-56 whitespace-normal text-caption font-normal leading-snug">{entry.disabledReason}</span>}
+        </button>
+      ))}
     </div>,
     document.body,
   );
