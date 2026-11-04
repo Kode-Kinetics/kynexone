@@ -81,4 +81,45 @@ public sealed class OrgExportAndTemplateHttpTests : IClassFixture<HireIntegrityH
         foreach (var route in new[] { "/api/departments/export", "/api/departments/import-template", "/api/cost-centers/export", "/api/cost-centers/import-template" })
             (await _fx.SendAsync(HttpMethod.Get, route, null, nobody)).StatusCode.Should().Be(HttpStatusCode.Forbidden, route);
     }
+
+    private async Task<HttpResponseMessage> GetWithSwitcherAsync(string path, string token, Guid company)
+    {
+        using var client = _fx.Host.CreateClient();
+        using var req = new HttpRequestMessage(HttpMethod.Get, path);
+        req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        req.Headers.Add("X-Company-Id", company.ToString());
+        return await client.SendAsync(req);
+    }
+
+    // Written for the reviewer's suspicion that the download rows ignore the caller's company scope while the audit row claims one.
+    // Green on first run: the rows come through the company query filter, and the audit row reads the same scope (characterisation).
+    [Fact]
+    public async Task ADownloadByAScopedCallerOrAGroupCallerOnTheSwitcher_ReturnsOnlyThatScopesRows_AndTheAuditRowSaysSo()
+    {
+        string dOwn = Code("DO"), dFar = Code("DF"), dGrp = Code("DG"), cOwn = Code("CO"), cFar = Code("CF");
+        await SeedAsync(dOwn, dFar, dGrp, cOwn, cFar);
+        var scoped = await _fx.NewScopedUserAsync($"as{Guid.NewGuid():N}"[..10], _fx.CompanyId, "organization.read");
+        var group = await UserAsync("HR Manager", "organization.read");
+
+        foreach (var (route, action, own, far) in new[]
+        {
+            ("/api/departments/export", "organization.department_exported", dOwn, dFar),
+            ("/api/cost-centers/export", "organization.cost_center_exported", cOwn, cFar),
+        })
+        {
+            var before = (await _fx.AuditPayloadsAsync(action)).Count;
+            using var s = await _fx.SendAsync(HttpMethod.Get, route, null, scoped);
+            var text = await s.Content.ReadAsStringAsync();
+            text.Should().Contain(own).And.NotContain(far, $"{route} for a scoped caller");
+            var audit = (await _fx.AuditPayloadsAsync(action)).Skip(before).Single();
+            audit.Should().Contain("\"groupScope\":false").And.Contain(_fx.CompanyId.ToString()).And.NotContain(_fx.OtherCompanyId.ToString());
+
+            before = (await _fx.AuditPayloadsAsync(action)).Count;
+            using var g = await GetWithSwitcherAsync(route, group, _fx.OtherCompanyId);
+            var gtext = await g.Content.ReadAsStringAsync();
+            gtext.Should().Contain(far).And.NotContain(own, $"{route} for a group caller who switched to the sister company");
+            var gaudit = (await _fx.AuditPayloadsAsync(action)).Skip(before).Single();
+            gaudit.Should().Contain("\"groupScope\":false").And.Contain(_fx.OtherCompanyId.ToString()).And.NotContain(_fx.CompanyId.ToString());
+        }
+    }
 }
