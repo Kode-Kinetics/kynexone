@@ -30,6 +30,7 @@ import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
 import { CountrySelect } from '../components/CountrySelect';
+import { LocationPinCore, type PinPatch } from '../components/companySetup/LocationPinCore';
 import {
   companiesApi,
   branchesApi,
@@ -1976,6 +1977,18 @@ function LocationsTab() {
     finally { setSaving(false); }
   };
   const f = (key: string, v: string) => setForm(x => ({ ...x, [key]: v }));
+  // The pin panel speaks numbers and a patch; this form keeps its inputs as text, so the two are translated here and the typed inputs stay in sync.
+  const num = (v: string) => (v.trim() === '' ? null : Number(v));
+  const pinPatch = (patch: PinPatch) => setForm(x => {
+    const next = { ...x };
+    if ('latitude' in patch) next.latitude = patch.latitude == null ? '' : String(patch.latitude);
+    if ('longitude' in patch) next.longitude = patch.longitude == null ? '' : String(patch.longitude);
+    if ('radiusMeters' in patch) next.geofenceRadiusMeters = patch.radiusMeters == null ? '' : String(patch.radiusMeters);
+    if (patch.address != null) next.addressLine1 = patch.address;
+    if (patch.city != null) next.city = patch.city;
+    if (patch.countryCode != null) next.countryCode = patch.countryCode;
+    return next;
+  });
 
   return (
     <>
@@ -2018,8 +2031,11 @@ function LocationsTab() {
           <FormField label={t('Country')} required>{(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} />}</FormField>
           <FormField label={t('City')}><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Postal Code')}><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
-          <FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
-          <div />
+          <div className="col-span-2"><FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" maxLength={240} dir="auto" /></FormField></div>
+          <div className="col-span-2">
+            <LocationPinCore value={{ latitude: num(form.latitude), longitude: num(form.longitude), radiusMeters: num(form.geofenceRadiusMeters), address: form.addressLine1, city: form.city, countryCode: form.countryCode }}
+              onChange={pinPatch} countryCode={form.countryCode} name={form.nameEn.trim() || form.code.trim() || t('Location')} disabled={saving} addressMax={240} protectAddress fillDetails />
+          </div>
           <FormField label={t('Latitude')}><input type="number" step="any" value={form.latitude} onChange={(e) => f('latitude', e.target.value)} className="input w-full" placeholder="25.2048" /></FormField>
           <FormField label={t('Longitude')}><input type="number" step="any" value={form.longitude} onChange={(e) => f('longitude', e.target.value)} className="input w-full" placeholder="55.2708" /></FormField>
           <FormField label={t('Geofence Radius (m)')}><input type="number" value={form.geofenceRadiusMeters} onChange={(e) => f('geofenceRadiusMeters', e.target.value)} className="input w-full" placeholder="100" /></FormField>
