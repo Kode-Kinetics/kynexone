@@ -117,12 +117,12 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('Add your first location, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role may change locations but not import or export them', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role may change, import and export locations', async ({ page }) => {
   await boot(page, 'locations', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Riyadh Tower', exact: true })).toBeVisible();
   await expect(add(page)).toBeEnabled();
   await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeEnabled();
   await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
@@ -152,16 +152,14 @@ test('Arabic: right-to-left and translated', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-// Locations Add, Edit, Remove and Restore go through /api/admin/locations, which the server gates by permission alone.
-// Import, Export and the template go through /api/locations/*, which needs the Admin or HR Manager role.
-test('a custom role holding organization.write and organization.delete may add, edit and remove locations; import and export need the role', async ({ page }) => {
+// The server authorises by effective permission for every Setup structure write, so a custom role holding them may use all of it.
+test('a custom role holding organization.write and organization.delete may add, edit, remove, import and export locations', async ({ page }) => {
   await boot(page, 'locations', CUSTOM_ROLE_WITH_PERMISSIONS);
   await page.getByLabel(/Show turned-off/).check();
   await expect(add(page)).toBeEnabled();
   await expect(page.getByRole('button', { name: /Edit Riyadh Tower/ })).toBeEnabled();
   await expect(page.getByTestId('org-row-remove').first()).toBeEnabled();
   await expect(page.getByTestId('org-row-restore')).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Export' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toHaveAttribute('title', /Admin or HR Manager role/);
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Export' })).toBeEnabled();
 });

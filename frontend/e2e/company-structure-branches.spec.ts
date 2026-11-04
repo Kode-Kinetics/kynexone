@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
+import { READ_ONLY, axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Branches against a mocked API. npx next dev -p 5198 &  npx playwright test -c e2e/playwright.company-structure.config.ts */
 
@@ -107,14 +107,14 @@ test('an empty tenant shows the empty state with its first step', async ({ page 
   await expect(page.getByText('Add your first branch, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role sees the list with Add, Import, Edit and Remove disabled and the reason shown', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role may add, import and edit (the server authorises by permission); Remove needs organization.delete', async ({ page }) => {
   await boot(page, 'branches', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Riyadh HQ', exact: true })).toBeVisible();
-  await expect(add(page)).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(add(page)).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled(); // no organization.delete
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
   await expect(page.getByText('Add your first branch, or import a CSV.')).toHaveCount(0);
 });
 
@@ -155,12 +155,13 @@ test('Arabic: the page is right-to-left and the dialog is translated', async ({ 
   expect(errors).toEqual([]);
 });
 
-test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (branches)', async ({ page }) => {
+test('a custom role holding every organization permission is allowed to write (the server authorises by permission, not role name)', async ({ page }) => {
   await boot(page, 'branches', CUSTOM_ROLE_WITH_PERMISSIONS);
   await expect(page.getByRole('cell', { name: 'Riyadh HQ', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add Branch', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByRole('button', { name: 'Add Branch', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
+  await expect(page.getByTestId('org-row-remove').first()).toBeEnabled();
 });
 
 test('when the company list cannot be loaded, the tab says so and Retry brings the companies back', async ({ page }) => {
@@ -171,4 +172,23 @@ test('when the company list cannot be loaded, the tab says so and Retry brings t
   await notice.getByRole('button', { name: 'Retry' }).click();
   await expect(notice).toBeHidden();
   await expect(page.getByRole('combobox', { name: 'Filter by company' })).toBeVisible();
+});
+
+test('a read-only user can still Export and download the CSV template (branches); only Import is blocked', async ({ page }) => {
+  await boot(page, 'branches', READ_ONLY);
+  await expect(page.getByRole('button', { name: 'Export' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Template' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
+});
+
+test('the branch time zone offers every supported IANA zone, with the wizard shortlist first, and keeps an unlisted saved value', async ({ page }) => {
+  await boot(page, 'branches');
+  await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
+  const zone = field(page.getByRole('dialog'), 'Time Zone');
+  const values = await zone.locator('option').evaluateAll((os) => (os as HTMLOptionElement[]).map((o) => o.value).filter(Boolean));
+  expect(values.slice(0, 3)).toEqual(['Asia/Riyadh', 'Asia/Dubai', 'Asia/Qatar']);
+  for (const id of ['Europe/Paris', 'America/Los_Angeles', 'Asia/Singapore']) expect(values).toContain(id);
+  expect(values.length).toBeGreaterThan(100);
+  await zone.selectOption('Europe/Paris');
+  expect(await zone.inputValue()).toBe('Europe/Paris');
 });

@@ -101,7 +101,7 @@ import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/M
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
 import { TIME_ZONES } from '../lib/companySetupWizard';
-import { TIME_ZONE_CITY, timeZoneOffset } from '../lib/companySetupFields';
+import { TIME_ZONE_CITY, otherTimeZones, timeZoneOffset } from '../lib/companySetupFields';
 import { msg } from '../i18n/translations';
 import { LoadError, useConfirm } from '../components/gl/glUi';
 import { describeApiError } from '../lib/apiError';
@@ -178,7 +178,7 @@ function CompaniesTab() {
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
   // tab via the /companies redirect and get the same read-only list they had before,
   // with no inert (always-403) action controls.
-  // The API also requires the Admin or HR Manager role (CompaniesController), so the permission alone does not show write controls.
+  // The API authorises by effective permission (a custom role holding organization.write is allowed), so the gate is the permission alone.
   const { canWrite, writeBlockedReason } = useOrgStructureAccess(['organization.write', 'organization.establishment.write']);
   // Suspend / reactivate is Admin-only on the server.
   const canSetStatus = hasRole('Admin');
@@ -374,7 +374,7 @@ function CompaniesTab() {
         emptyLabel={msg('No companies yet')} emptyHint={msg('Add your first company, or import a CSV.')}
         actions={(
           <ImportExportToolbar
-            blockedReason={writeBlockedReason}
+            importBlockedReason={writeBlockedReason}
             entityName="Companies"
             onExport={async () => { const csv = await companiesApi.export(); downloadCsv(csv, 'companies.csv'); }}
             onDownloadTemplate={async () => { const csv = await companiesApi.importTemplate(); downloadCsv(csv, 'companies-template.csv'); }}
@@ -670,7 +670,7 @@ function BranchesTab({ companies, companiesError, onRetryCompanies }: { companie
         }
         actions={(
           <ImportExportToolbar
-            blockedReason={access.writeBlockedReason}
+            importBlockedReason={access.writeBlockedReason}
             entityName="Branches"
             onExport={async () => { const csv = await branchesApi.export(); downloadCsv(csv, 'branches.csv'); }}
             onDownloadTemplate={async () => { const csv = await branchesApi.importTemplate(); downloadCsv(csv, 'branches-template.csv'); }}
@@ -738,11 +738,22 @@ function BranchesTab({ companies, companiesError, onRetryCompanies }: { companie
           <FormField label={t('Time Zone')} required>
             <select value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="select w-full">
               <option value="">{t('Select time zone')}</option>
-              {/* A zone saved before this list existed stays selectable until it is changed. */}
-              {[...(form.timeZoneId && !TIME_ZONES.includes(form.timeZoneId) ? [form.timeZoneId] : []), ...TIME_ZONES].map((zone) => {
-                const offset = timeZoneOffset(zone);
-                return <option key={zone} value={zone}>{`${TIME_ZONE_CITY[zone] ? t(TIME_ZONE_CITY[zone]) : zone}${offset ? ` (${offset})` : ''}`}</option>;
-              })}
+              {/* The wizard's shortlist first, then every other zone the browser knows; a saved zone outside both stays selectable. */}
+              {(() => {
+                const others = otherTimeZones(TIME_ZONES);
+                const extra = form.timeZoneId && !TIME_ZONES.includes(form.timeZoneId) && !others.includes(form.timeZoneId) ? [form.timeZoneId] : [];
+                const option = (zone: string) => {
+                  const offset = timeZoneOffset(zone);
+                  return <option key={zone} value={zone}>{`${TIME_ZONE_CITY[zone] ? t(TIME_ZONE_CITY[zone]) : zone}${offset ? ` (${offset})` : ''}`}</option>;
+                };
+                return (
+                  <>
+                    {extra.map(option)}
+                    <optgroup label={t('Common time zones')}>{TIME_ZONES.map(option)}</optgroup>
+                    {others.length > 0 && <optgroup label={t('All time zones')}>{others.map(option)}</optgroup>}
+                  </>
+                );
+              })()}
             </select>
           </FormField>
           <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
@@ -825,7 +836,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={(
           <ImportExportToolbar
-            blockedReason={access.writeBlockedReason}
+            importBlockedReason={access.writeBlockedReason}
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
@@ -910,7 +921,7 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'designation', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
-  // Write controls mirror DesignationsController: create, update, remove, restore and import are Admin or HR Manager; Remove and Restore also need organization.delete.
+  // Write controls mirror DesignationsController: the server authorises by permission (organization.write); Remove and Restore also need organization.delete. Export and the template are reads.
   const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DesignationDto[]>([]);
@@ -973,7 +984,7 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
         emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
-            blockedReason={access.writeBlockedReason}
+            importBlockedReason={access.writeBlockedReason}
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
@@ -1067,7 +1078,7 @@ function GradesTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'grade', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
-  // Write controls mirror GradesController: create, update, pay scale, remove, restore and import are Admin or HR Manager; Remove and Restore also need organization.delete.
+  // Write controls mirror GradesController: the server authorises by permission (organization.write); Remove and Restore also need organization.delete. Export and the template are reads.
   const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<GradeDto[]>([]);
@@ -1158,7 +1169,7 @@ function GradesTab() {
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
           <ImportExportToolbar
-            blockedReason={access.writeBlockedReason}
+            importBlockedReason={access.writeBlockedReason}
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
@@ -1928,8 +1939,7 @@ function LocationsTab() {
   const removal = useOrgRowRemoval({ kind: 'location', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
   // Add, Edit, Remove and Restore mirror SetupSettingsController (permission only); import and export mirror LocationsController (role and permission).
-  const access = useOrgStructureAccess(['organization.write'], { roleRequired: false });
-  const transferAccess = useOrgStructureAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1998,7 +2008,7 @@ function LocationsTab() {
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
         actions={(
           <ImportExportToolbar
-            blockedReason={transferAccess.writeBlockedReason}
+            importBlockedReason={access.writeBlockedReason}
             entityName="Locations"
             onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
             onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}

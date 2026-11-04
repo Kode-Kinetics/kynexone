@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, orphanLabels, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
+import { READ_ONLY, axeSeriousOrWorse, boot, field, orphanLabels, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Grades against a mocked API. */
 
@@ -84,14 +84,14 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('Add your first grade, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role sees Add, Import, Edit and Remove disabled and the reason shown', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role may add, import and edit (the server authorises by permission); Remove needs organization.delete', async ({ page }) => {
   await boot(page, 'grades', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Professional Grade 5', exact: true })).toBeVisible();
-  await expect(add(page)).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(add(page)).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled(); // no organization.delete
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
 test('without organization.delete, Remove and Restore are disabled with the reason', async ({ page }) => {
@@ -151,12 +151,13 @@ test('Arabic: right-to-left, translated, and the Arabic name is posted', async (
   expect(errors).toEqual([]);
 });
 
-test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (grades)', async ({ page }) => {
+test('a custom role holding every organization permission is allowed to write (the server authorises by permission, not role name)', async ({ page }) => {
   await boot(page, 'grades', CUSTOM_ROLE_WITH_PERMISSIONS);
   await expect(page.getByRole('cell', { name: 'Professional Grade 5', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add Grade', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByRole('button', { name: 'Add Grade', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
+  await expect(page.getByTestId('org-row-remove').first()).toBeEnabled();
 });
 
 test('when a grade\'s pay scale cannot be loaded, saving is turned off so the lines are not replaced with nothing', async ({ page }) => {
@@ -166,4 +167,11 @@ test('when a grade\'s pay scale cannot be loaded, saving is turned off so the li
   await expect(dialog.getByRole('alert').filter({ hasText: 'pay scale' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
   expect(writes).toEqual([]);
+});
+
+test('a read-only user can still Export and download the CSV template (grades); only Import is blocked', async ({ page }) => {
+  await boot(page, 'grades', READ_ONLY);
+  await expect(page.getByRole('button', { name: 'Export' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Template' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
 });

@@ -68,19 +68,19 @@ test('a read-only user sees Create, Import, Edit and More actions disabled with 
   await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
   await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
   await expect(page.getByRole('button', { name: /More actions/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('organization.write permission');
 });
 
-test('a user without the Admin or HR Manager role gets disabled write controls even holding organization.write', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role gets enabled write controls', async ({ page }) => {
   await boot(page, 'companies', { roles: ['HR Officer'], permissions: ['organization.read', 'organization.write', 'dashboard.read'] });
   await expect(page.getByRole('cell', { name: companySa.legalNameEn })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
 test('Arabic: the blocked reason is translated', async ({ page }) => {
   await boot(page, 'companies', { locale: 'ar', roles: ['HR Officer'], permissions: ['organization.read', 'dashboard.read'] });
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('مدير الموارد البشرية');
+  await expect(page.getByTestId('write-blocked-reason')).toContainText('صلاحية organization.write');
 });
 
 test('suspending the only active company explains itself in the page, not a browser alert', async ({ page }) => {
@@ -124,12 +124,12 @@ test('a company with no country shows an Arabic warning, not English', async ({ 
   await expect(alert).not.toContainText('has no country set');
 });
 
-test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (companies)', async ({ page }) => {
+test('a custom role holding every organization permission but not the Admin or HR Manager role may write (companies)', async ({ page }) => {
   await boot(page, 'companies', CUSTOM_ROLE_WITH_PERMISSIONS);
   await expect(page.getByRole('cell', { name: 'Masar Trading KSA', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByRole('button', { name: 'Create company', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
 test('every label in the company dialog names a control', async ({ page }) => {

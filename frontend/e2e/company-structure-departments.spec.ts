@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
+import { READ_ONLY, axeSeriousOrWorse, boot, field, NO_DELETE, WRITE_PERMISSION_WITHOUT_ROLE, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Departments against a mocked API. */
 
@@ -65,14 +65,14 @@ test('an empty tenant shows the empty state', async ({ page }) => {
   await expect(page.getByText('Add your first department, or import a CSV.')).toBeVisible();
 });
 
-test('a user holding organization.write without the Admin or HR Manager role sees Add, Import, Edit and Remove disabled and the reason shown', async ({ page }) => {
+test('a user holding organization.write without the Admin or HR Manager role may add, import and edit (the server authorises by permission); Remove needs organization.delete', async ({ page }) => {
   await boot(page, 'departments', WRITE_PERMISSION_WITHOUT_ROLE);
   await expect(page.getByRole('cell', { name: 'Finance', exact: true })).toBeVisible();
-  await expect(add(page)).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(add(page)).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('org-row-remove').first()).toBeDisabled(); // no organization.delete
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
 });
 
 test('without organization.delete, Remove and Restore are disabled with the reason', async ({ page }) => {
@@ -115,10 +115,18 @@ test('Arabic: right-to-left and translated', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test('a custom role holding every organization permission but not the Admin or HR Manager role sees the writes disabled with the reason (departments)', async ({ page }) => {
+test('a custom role holding every organization permission is allowed to write (the server authorises by permission, not role name)', async ({ page }) => {
   await boot(page, 'departments', CUSTOM_ROLE_WITH_PERMISSIONS);
   await expect(page.getByRole('cell', { name: 'Finance', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add Department', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
-  await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+  await expect(page.getByRole('button', { name: 'Add Department', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeEnabled();
+  await expect(page.getByTestId('write-blocked-reason')).toHaveCount(0);
+  await expect(page.getByTestId('org-row-remove').first()).toBeEnabled();
+});
+
+test('a read-only user can still Export and download the CSV template (departments); only Import is blocked', async ({ page }) => {
+  await boot(page, 'departments', READ_ONLY);
+  await expect(page.getByRole('button', { name: 'Export' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Template' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import CSV' })).toBeDisabled();
 });

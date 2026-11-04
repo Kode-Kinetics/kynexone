@@ -280,6 +280,8 @@ export interface ImportExportToolbarProps {
   canImport?: boolean;
   /** When set, every button stays visible but disabled, with this sentence as its tooltip (the person lacks the role or permission). */
   blockedReason?: string;
+  /** Blocks only Import CSV (a write) while Export and the template, which are reads, stay available. Falls back to `blockedReason`. */
+  importBlockedReason?: string;
   /**
    * Opt-in: when provided, importing runs a pre-commit dry-run and a persistent results view
    * instead of the 5-second toast. Importers that omit this keep the original toast flow.
@@ -389,6 +391,7 @@ export function ImportExportToolbar({
   onImport,
   canImport = true,
   blockedReason,
+  importBlockedReason,
   onPreview,
   onViewIncomplete,
   importHelp,
@@ -612,9 +615,9 @@ export function ImportExportToolbar({
       <button
         type="button"
         className={btnOutline}
-        disabled={importing || previewing || !!blockedReason}
+        disabled={importing || previewing || !!(importBlockedReason ?? blockedReason)}
         onClick={() => fileInputRef.current?.click()}
-        title={blockedReason ?? t('Import {entity} from CSV', { entity: t(entityName) })}
+        title={(importBlockedReason ?? blockedReason) ?? t('Import {entity} from CSV', { entity: t(entityName) })}
       >
         <Upload className="h-3.5 w-3.5" />
         {importing ? t('Importing…') : previewing ? t('Checking…') : t('Import CSV')}

@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ORG_STRUCTURE_WRITE_ROLES } from '../src/components/setup/OrgRowActions';
 
 /**
  * Setup → Locations against the real backend source: the routes the client calls, the body it sends, the row it reads,
@@ -74,7 +73,7 @@ test('each call needs the role or permission the screen asks for', () => {
   expect(after('Put', 'api/admin/locations/{id:guid}')).toBe('organization.write');
   expect(after('Delete', 'api/admin/locations/{id:guid}')).toBe('organization.delete');
   expect(after('Post', 'api/admin/locations/{id:guid}/restore')).toBe('organization.delete');
-  // Import and export: the controller's roles are the ones the toolbar checks.
-  const roles = locationsController.match(/\[Authorize\(Roles = "([^"]+)"\)\]\s*public class LocationsController/)?.[1].split(',');
-  expect(roles).toEqual([...ORG_STRUCTURE_WRITE_ROLES]);
+  // Import and export: the controller is role-attributed, and the permission-aware handler lets a holder of the mapped
+  // organization permission through, so the screen gates on the permission alone (useOrgStructureAccess).
+  expect(locationsController).toMatch(/\[Authorize\(Roles = "Admin,HR Manager"\)\]\s*public class LocationsController/);
 });
