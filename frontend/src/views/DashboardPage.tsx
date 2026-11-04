@@ -184,7 +184,7 @@ function CompanyDashboard() {
       <div className="min-w-0">
         <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.025em] text-slate-950 dark:text-white">{t('HR Command Center')}</h1>
         <p className="mt-1 text-body-sm text-slate-600 dark:text-slate-400">
-          {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}. </span>}
+          {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}<span aria-hidden className="mx-1.5 text-slate-400">·</span></span>}
           {clock.primary}{clock.secondary ? ` (${clock.secondary})` : ''}, <span className="tabular-nums">{clock.time}</span>
         </p>
       </div>
