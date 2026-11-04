@@ -8,6 +8,8 @@ using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -22,14 +24,18 @@ public class CostCentersController : ControllerBase
     private readonly ZayraDbContext _db;
     private readonly IAuditService? _audit;
 
-    /// <summary>Reason is read only on a row that deactivates an existing cost centre (the form asks for one too); it is recorded in the audit row.</summary>
-    private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "DepartmentCode", "IsActive", "Reason" };
+    /// <summary>
+    /// ParentCode (a cost centre of the same company), FunctionalClass and ErpCode (finance only) are what the form edits; a blank cell
+    /// means unchanged. Reason is read on a row that deactivates an existing cost centre or changes its class or ERP code (the form asks
+    /// for one too); it is recorded in the audit row. The old DepartmentCode column corresponded to nothing on the entity and is no longer
+    /// written; a file that still carries it is read as before (an unknown code is a warning, never an effect).
+    /// </summary>
+    private static readonly string[] CsvHeaders = { "Code", "Name", "NameAr", "ParentCode", "FunctionalClass", "ErpCode", "IsActive", "Reason" };
 
     /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.
-    /// DepartmentCode is deliberately blank: it is a cross-reference, and a tenant that has not yet
-    /// imported departments has nothing for it to resolve to.</summary>
+    /// ParentCode, FunctionalClass and ErpCode are blank: a first import has no parent to point at, and the class and ERP code are finance's call.</summary>
     private static readonly string[] CsvExampleRow =
-        { "CC-OPS", "Operations", "", "", "true", "" };
+        { "CC-OPS", "Operations", "", "", "", "", "true", "" };
 
     public CostCentersController(IOrganizationSetupService organization, ZayraDbContext db, IAuditService? audit = null) { _organization = organization; _db = db; _audit = audit; }
 
@@ -82,7 +88,14 @@ public class CostCentersController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var items = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId.Value && !c.IsDeleted).OrderBy(c => c.Code).ToListAsync(ct);
-        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[] { c.Code, c.Name, c.NameAr ?? string.Empty, string.Empty, c.IsActive ? "true" : "false", string.Empty });
+        var codeById = items.ToDictionary(c => c.Id, c => c.Code);
+        var rows = items.Select(c => (IReadOnlyList<object?>)new object?[]
+        {
+            c.Code, c.Name, c.NameAr ?? string.Empty,
+            c.ParentId is Guid parent && codeById.TryGetValue(parent, out var parentCode) ? parentCode : string.Empty,
+            c.FunctionalClass ?? string.Empty, c.GlSegment ?? string.Empty,
+            c.IsActive ? "true" : "false", string.Empty,
+        });
         await RecordDownloadAsync("organization.cost_center_exported", items.Count, ct);
         return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"cost_centers_{DateTime.UtcNow:yyyyMMdd}.csv");
     }
@@ -160,11 +173,44 @@ public class CostCentersController : ControllerBase
 
         var rows = Csv.Parse(csv);
         var context = Context();
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mayDecideFinance = OrgWriteRules.MayDecideFunctionalClass(this);
+
+        // The tree the file edits: every live cost centre's parent, kept current as rows are applied (a loop is judged on the result).
+        var parentOf = (await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && !c.IsDeleted)
+            .Select(c => new { c.Id, c.ParentId }).ToListAsync(ct)).ToDictionary(c => c.Id, c => c.ParentId);
+        // ERP code -> the cost centre of THIS company holding it (unique per company), kept current the same way.
+        var erpOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in costCenters.Where(c => c.CompanyId == companyId && !string.IsNullOrWhiteSpace(c.GlSegment)))
+            erpOwner[c.GlSegment!.Trim()] = OrgCodes.Normalize(c.Code);
+        // Rows this file creates (code -> id; a would-be id in a preview). A parent may be one of them.
+        var createdIds = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+
+        // Duplicates are judged in file order; rows are applied parents first, so a child listed before its parent (an export is sorted
+        // by code) still finds it.
+        var duplicate = new bool[rows.Count];
+        var firstOf = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var c = rows[i].GetValueOrDefault("Code", string.Empty).Trim();
+            if (c.Length == 0) continue;
+            if (!firstOf.TryAdd(OrgCodes.Normalize(c), i)) duplicate[i] = true;
+        }
+        int Depth(int i)
+        {
+            var d = 0;
+            var seen = new HashSet<int> { i };
+            var cursor = i;
+            while (rows[cursor].GetValueOrDefault("ParentCode", string.Empty).Trim() is { Length: > 0 } pc
+                   && firstOf.TryGetValue(OrgCodes.Normalize(pc), out var next) && seen.Add(next))
+            { d++; cursor = next; }
+            return d;
+        }
+        var order = Enumerable.Range(0, rows.Count).OrderBy(Depth).ThenBy(i => i).ToList();
+
+        var rowResults = new ImportRowResult[rows.Count];
         int created = 0, updated = 0, skipped = 0;
 
-        for (int i = 0; i < rows.Count; i++)
+        foreach (var i in order)
         {
             var row = rows[i];
             var rowNum = i + 2;
@@ -175,23 +221,78 @@ public class CostCentersController : ControllerBase
 
             if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
             if (string.IsNullOrWhiteSpace(name)) errors.Add("Name is required");
-            if (!string.IsNullOrWhiteSpace(code) && !seenCodes.Add(code)) errors.Add($"Duplicate Code '{code}' within this batch");
+            if (duplicate[i]) errors.Add($"Duplicate Code '{code}' within this batch");
 
-            // DepartmentCode is a column of the template that corresponds to no column on the
-            // entity. It is a warning rather than an error precisely because nothing is destroyed
-            // by ignoring it — there is no relationship here to lose. The template itself is the
-            // defect, and it is out of this change's scope.
+            // A file written before ParentCode existed may still carry DepartmentCode. It corresponds to no column on the entity, so an
+            // unknown code is a warning: there is no relationship here to lose.
             var deptCode = row.GetValueOrDefault("DepartmentCode", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(deptCode) && !deptByCode.ContainsKey(OrgCodes.Normalize(deptCode)))
                 warnings.Add($"DepartmentCode '{deptCode}' not found — will be ignored");
 
             existingByCode.TryGetValue(OrgCodes.Normalize(code), out var existing);
+            var selfId = existing?.Id ?? Guid.NewGuid();
 
             var rowReason = row.GetValueOrDefault("Reason", string.Empty).Trim();
             if (rowReason.Length > Zayra.Api.Infrastructure.Filters.ReasonLimitAttribute.MaxLength) errors.Add("Reason is longer than 500 characters.");
             // Deactivating is a recorded decision (M-10): the form asks for a reason, so a file row must carry one.
             var deactivates = existing is { IsActive: true } && row.TryGetValue("IsActive", out var activeCell) && string.Equals(activeCell.Trim(), "false", StringComparison.OrdinalIgnoreCase);
             if (deactivates && rowReason.Length == 0) errors.Add($"Reason is required to deactivate cost centre '{code}'. Add a Reason column to the row.");
+
+            // ── ParentCode: a cost centre of this company, no loop. Blank = unchanged. ─────────────────────────────────
+            Guid? parentId = null;
+            var parentCell = row.GetValueOrDefault("ParentCode", string.Empty).Trim();
+            if (parentCell.Length > 0 && errors.Count == 0)
+            {
+                var parentKey = OrgCodes.Normalize(parentCell);
+                bool parentInFile = false;
+                if (createdIds.TryGetValue(parentKey, out var inFile)) { parentId = inFile; parentInFile = true; }
+                else if (existingByCode.TryGetValue(parentKey, out var parentRow) && parentRow.CompanyId == companyId) parentId = parentRow.Id;
+                if (parentId is null)
+                    errors.Add($"ParentCode '{parentCell}' not found in this company. Add the parent cost centre first or correct the code; this row was not applied.");
+                else if (OrgCodes.Normalize(code) == parentKey)
+                    errors.Add(CostCentreRuleException.ParentMessage("cost_centre_parent_self"));
+                else if (parentId != existing?.ParentId)
+                {
+                    // The service re-checks all of this when it writes; the same rules run here so a preview says what a commit will.
+                    var refusal = CostCentreHierarchy.Check(selfId, parentId, parentOf);
+                    if (refusal is not null) errors.Add(CostCentreRuleException.ParentMessage(refusal));
+                    else if (!parentInFile)
+                    {
+                        var check = await new CostCentreRefValidator(_db).ValidateAsync(tenantId, companyId, parentId.Value, forNewAssignment: true, ct);
+                        if (!check.IsValid) errors.Add(check.Message!);
+                    }
+                }
+            }
+
+            // ── FunctionalClass and ErpCode: finance decisions. Blank = unchanged; a change by anyone else is skipped, loudly. ──
+            string? classToApply = null, erpToApply = null;
+            var classCell = row.GetValueOrDefault("FunctionalClass", string.Empty).Trim();
+            if (classCell.Length > 0)
+            {
+                var wanted = classCell.ToUpperInvariant();
+                if (!CostCentreFunctionalClasses.IsKnown(wanted))
+                    errors.Add($"FunctionalClass '{classCell}' is not one of: {string.Join(", ", CostCentreFunctionalClasses.All)}.");
+                else if (!string.Equals(wanted, existing?.FunctionalClass, StringComparison.Ordinal))
+                {
+                    if (!mayDecideFinance) warnings.Add($"FunctionalClass '{wanted}' was not applied: setting the functional class needs the finance.gl.manage permission.");
+                    else if (rowReason.Length == 0) errors.Add($"Reason is required to set the FunctionalClass of cost centre '{code}'. Add a Reason column to the row.");
+                    else classToApply = wanted;
+                }
+            }
+            var erpCell = row.GetValueOrDefault("ErpCode", string.Empty).Trim();
+            if (erpCell.Length > 0)
+            {
+                if (!CostCentreCode.IsValidGlSegment(erpCell))
+                    errors.Add($"ErpCode '{erpCell}': {CostCentreRuleException.GlSegmentInvalid().Message}");
+                else if (!string.Equals(erpCell, existing?.GlSegment ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!mayDecideFinance) warnings.Add($"ErpCode '{erpCell}' was not applied: setting the ERP code needs the finance.gl.manage permission.");
+                    else if (existing is not null && rowReason.Length == 0) errors.Add($"Reason is required to change the ErpCode of cost centre '{code}'. Add a Reason column to the row.");
+                    else if (erpOwner.TryGetValue(erpCell, out var holder) && holder != OrgCodes.Normalize(code))
+                        errors.Add(CostCentreRuleException.GlSegmentTaken().Message);
+                    else erpToApply = erpCell;
+                }
+            }
 
             if (errors.Count == 0)
             {
@@ -204,6 +305,9 @@ public class CostCentersController : ControllerBase
                     // A blank or missing NameAr cell is "unchanged" (null), like Parent, Class and ERP code; the form clears it with an empty string.
                     NameAr: row.TryGetValue("NameAr", out var nameArCell) && !string.IsNullOrWhiteSpace(nameArCell) ? nameArCell.Trim() : null,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
+                    ParentId: parentId != existing?.ParentId ? parentId : null,
+                    FunctionalClass: classToApply,
+                    GlSegment: erpToApply,
                     Reason: string.IsNullOrWhiteSpace(rowReason) ? null : rowReason);
 
                 // Same rule as the form: the row's company (none = tenant-wide) must be within the grant.
@@ -211,6 +315,11 @@ public class CostCentersController : ControllerBase
                     errors.Add("You can only import cost centres for the companies you manage.");
                 else try
                 {
+                    // The pending-run lock: a class, ERP code or active-state change of a cost centre a run in review resolves to. The service
+                    // enforces it on a write; a preview asks the same guard.
+                    if (!commit && existing is not null && (classToApply is not null || erpToApply is not null || deactivates))
+                        await new CostAttributionGuard(_db).EnsureCostCentreUnchangedAsync(tenantId, existing.CompanyId, existing.Id, ct);
+                    Guid appliedId = selfId;
                     if (existing is not null)
                     {
                         if (commit) await _organization.UpdateCostCenterAsync(tenantId, existing.Id, request, context, ct);
@@ -218,18 +327,25 @@ public class CostCentersController : ControllerBase
                     }
                     else
                     {
-                        if (commit) await _organization.CreateCostCenterAsync(tenantId, request, context, ct);
+                        if (commit) appliedId = (await _organization.CreateCostCenterAsync(tenantId, request, context, ct)).Id;
                         created++;
+                        createdIds[OrgCodes.Normalize(code)] = appliedId;
+                    }
+                    parentOf[appliedId] = parentId ?? (existing is null ? null : parentOf.GetValueOrDefault(appliedId));
+                    if (erpToApply is not null)
+                    {
+                        foreach (var stale in erpOwner.Where(kv => kv.Value == OrgCodes.Normalize(code)).Select(kv => kv.Key).ToList()) erpOwner.Remove(stale);
+                        erpOwner[erpToApply] = OrgCodes.Normalize(code);
                     }
                 }
                 catch (InvalidOperationException ex) { errors.Add(ex.Message); }
             }
 
             if (errors.Count > 0) skipped++;
-            rowResults.Add(new ImportRowResult(
+            rowResults[i] = new ImportRowResult(
                 rowNum, code, name,
                 errors.Count > 0 ? ImportRowStatus.Error : warnings.Count > 0 ? ImportRowStatus.Warning : ImportRowStatus.Ok,
-                errors, warnings).WithArabic());
+                errors, warnings).WithArabic();
         }
 
         return commit
