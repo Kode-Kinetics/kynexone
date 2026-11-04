@@ -33,6 +33,12 @@ interface Options {
   manage?: boolean;
   /** finance.gl.manage: may set the functional class. */
   finance?: boolean;
+  /** organization.delete: Delete and Restore (the API also needs the Admin or HR Manager role). Defaults to `manage`. */
+  del?: boolean;
+  /** The user's roles. Defaults to HR Manager when `manage`, HR Officer otherwise; `admin` makes it Admin. */
+  roles?: string[];
+  /** Company grants of a user who is not group scope: only these companies are writable. */
+  onlyCompanies?: string[];
   empty?: boolean;
   listDown?: boolean;
 }
@@ -51,7 +57,17 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
     previewLinks: 0,
     previewRows: [] as any[],
     importRefusal: null as null | { status: number; body: unknown },
+    /** What DELETE answers for a row the server turns off rather than deletes (ids listed here). */
+    inUseIds: new Set<string>(['cc-sales']),
   };
+  const roles = options.roles ?? [manage ? 'HR Manager' : 'HR Officer'];
+  const hasWriteRole = roles.some((r) => r === 'Admin' || r === 'HR Manager');
+  const scoped = options.onlyCompanies;
+  /** The server's rules in front of every write: role, permission, company scope. */
+  const mayWrite = () => hasWriteRole && manage;
+  const forbidden = () => ({ status: 403, body: { code: 'forbidden', message: 'You do not have access to change this cost centre.' } });
+  const reasonRequired = () => ({ status: 422, body: { error: 'cost_centre_reason_required', message: 'Enter a reason for this change.', messageAr: 'أدخل سببًا لهذا التغيير.' } });
+  const hasReason = (r: unknown) => typeof r === 'string' && r.trim().length > 0;
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(({ locale }) => {
     localStorage.setItem('zayra_access_token', 'cc-master-fixture');
@@ -69,10 +85,10 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
 
     if (p === '/api/auth/me') {
       return reply({
-        id: 'user-hr', tenantId: 'cc-tenant', tenantSlug: 'cc-fixture', fullName: 'Huda HR', roles: [manage ? 'HR Manager' : 'HR Officer'],
-        permissions: ['organization.read', 'organization.write', 'dashboard.read', ...(manage ? ['organization.costcenter.manage'] : []), ...(options.finance ? ['finance.gl.read', 'finance.gl.manage'] : [])],
-        accountType: 'Group', isGroupScope: true,
-        companies: [companySa, companyAe].map((c) => ({ id: c.id, name: c.legalNameEn, code: c.id, countryCode: c.countryCode, isActive: true })),
+        id: 'user-hr', tenantId: 'cc-tenant', tenantSlug: 'cc-fixture', fullName: 'Huda HR', roles,
+        permissions: ['organization.read', 'organization.write', 'dashboard.read', ...(manage ? ['organization.costcenter.manage'] : []), ...((options.del ?? manage) ? ['organization.delete'] : []), ...(options.finance ? ['finance.gl.read', 'finance.gl.manage'] : [])],
+        accountType: scoped ? 'Company' : 'Group', isGroupScope: !scoped,
+        companies: [companySa, companyAe].filter((c) => !scoped || scoped.includes(c.id)).map((c) => ({ id: c.id, name: c.legalNameEn, code: c.id, countryCode: c.countryCode, isActive: true })),
       });
     }
     if (p === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
@@ -86,6 +102,10 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
       return reply(paged(rows));
     }
     if (p === '/api/organization/cost-centers' && method === 'POST') {
+      if (!mayWrite()) { const r = forbidden(); return reply(r.body, r.status); }
+      if (scoped && !(body as Cc).companyId) { return reply({ message: 'Choose the company.' }, 400); }
+      if (scoped && !scoped.includes((body as Cc).companyId ?? '')) { const r = forbidden(); return reply(r.body, r.status); }
+      if ((body as { functionalClass?: string }).functionalClass && !hasReason((body as { reason?: string }).reason)) { const r = reasonRequired(); return reply(r.body, r.status); }
       if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
       const b = body as Cc;
       const created = { ...b, id: `cc-new-${rows.length}`, companyId: b.companyId ?? null, parentId: b.parentId && b.parentId !== ZERO ? b.parentId : null, functionalClass: b.functionalClass || null, glSegment: b.glSegment || null };
@@ -94,22 +114,43 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
     }
     const one = p.match(/^\/api\/cost-centers\/([^/]+)$/);
     if (one && method === 'PUT') {
-      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      if (!mayWrite()) { const r = forbidden(); return reply(r.body, r.status); }
       const row = rows.find((r) => r.id === one[1]);
-      const b = body as Cc;
-      if (row) {
-        Object.assign(row, { code: b.code, name: b.name, nameAr: b.nameAr, isActive: b.isActive, companyId: b.companyId ?? row.companyId });
-        if (b.parentId !== undefined && b.parentId !== null) row.parentId = b.parentId === ZERO ? null : b.parentId;
-        if (b.functionalClass !== undefined && b.functionalClass !== null) row.functionalClass = b.functionalClass || null;
-        if (b.glSegment !== undefined && b.glSegment !== null) row.glSegment = b.glSegment || null;
-      }
-      return reply(row ?? {});
+      const b = body as Cc & { reason?: string };
+      if (!row || (scoped && row.companyId && !scoped.includes(row.companyId))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (scoped && b.companyId && !scoped.includes(b.companyId)) { const r = forbidden(); return reply(r.body, r.status); }
+      // M-10: deactivating, moving to another company and changing the ERP code are recorded with a reason.
+      const segmentChanged = b.glSegment != null && b.glSegment.trim().toLowerCase() !== (row.glSegment ?? '').toLowerCase();
+      if (((row.isActive && !b.isActive) || (b.companyId != null && b.companyId !== row.companyId) || segmentChanged) && !hasReason(b.reason)) { const r = reasonRequired(); return reply(r.body, r.status); }
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      Object.assign(row, { code: b.code, name: b.name, nameAr: b.nameAr, isActive: b.isActive, companyId: b.companyId ?? row.companyId });
+      if (b.parentId !== undefined && b.parentId !== null) row.parentId = b.parentId === ZERO ? null : b.parentId;
+      if (b.functionalClass !== undefined && b.functionalClass !== null) row.functionalClass = b.functionalClass || null;
+      if (b.glSegment !== undefined && b.glSegment !== null) row.glSegment = b.glSegment || null;
+      return reply(row);
     }
     if (one && method === 'DELETE') {
-      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      if (!mayWrite() || !(options.del ?? manage)) { const r = forbidden(); return reply(r.body, r.status); }
       const i = rows.findIndex((r) => r.id === one[1]);
-      if (i >= 0) rows.splice(i, 1);
-      return route.fulfill({ status: 204 });
+      if (i < 0 || (scoped && rows[i].companyId && !scoped.includes(rows[i].companyId!))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (!hasReason(u.searchParams.get('reason'))) { const r = reasonRequired(); return reply(r.body, r.status); }
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      // The server decides: a cost centre something points at is turned off, any other is deleted (OrgWriteRules.Body).
+      if (ctl.inUseIds.has(rows[i].id)) {
+        rows[i].isActive = false;
+        return reply({ outcome: 'turnedOff', message: 'Turned off. Used by 18 employees. It stays in history and can be restored anytime.', usage: { total: 18, summary: 'Used by 18 employees', items: [{ kind: 'employee', label: 'employees', count: 18 }] } });
+      }
+      rows.splice(i, 1);
+      return reply({ outcome: 'deleted', message: 'Deleted.', usage: { total: 0, summary: '', items: [] } });
+    }
+    const restore = p.match(/^\/api\/cost-centers\/([^/]+)\/restore$/);
+    if (restore && method === 'POST') {
+      if (!(options.del ?? manage) || !manage) { const r = forbidden(); return reply(r.body, r.status); }
+      const row = rows.find((r) => r.id === restore[1]);
+      if (!row || (scoped && row.companyId && !scoped.includes(row.companyId))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      row.isActive = true;
+      return reply({ outcome: 'restored', message: 'Turned back on.' });
     }
     if (p === '/api/cost-centers/export') return route.fulfill({ status: 200, contentType: 'text/csv', body: 'code,name\n' });
     if (p === '/api/cost-centers/import-template') return route.fulfill({ status: 200, contentType: 'text/csv', body: 'code,name\n' });
@@ -226,12 +267,123 @@ test('no cost centres yet: a message and a primary Add button', async ({ page })
   await expect(tid(page, 'cc-master-new')).toBeVisible();
 });
 
-test('without organization.costcenter.manage: New, Import and the row actions are gone and a visible sentence says why', async ({ page }) => {
+test('without organization.costcenter.manage: New and the row actions are shown disabled and a visible sentence says why', async ({ page }) => {
   await boot(page, { manage: false });
   await expect(tid(page, 'cc-master-readonly-note')).toHaveText('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.');
-  await expect(tid(page, 'cc-master-new')).toHaveCount(0);
+  await expect(tid(page, 'cc-master-new')).toBeDisabled();
+  await expect(tid(page, 'cc-master-new')).toHaveAttribute('aria-describedby', /.+/);
   await expect(tid(page, 'cc-master-import')).toHaveCount(0);
-  await expect(tid(page, 'cc-master-row-SALES').getByRole('button')).toHaveCount(1); // only the expand button
+  const row = tid(page, 'cc-master-row-SALES');
+  await expect(row.getByRole('button', { name: 'Edit' })).toBeDisabled();
+  await expect(row.getByRole('button', { name: /More actions/ })).toBeDisabled();
+});
+
+// ═════════════════════════════ Screen 1: who may do what (role, permission, company) ═════════════════════════════
+
+test('the API needs the Admin or HR Manager role to write: holding the permission without the role shows New and Edit disabled with the role named', async ({ page }) => {
+  const { writes } = await boot(page, { roles: ['HR Officer'] });
+  await expect(tid(page, 'cc-master-readonly-note')).toHaveText('You can view cost centres but not change them. Changing them needs the Admin or HR Manager role.');
+  await expect(tid(page, 'cc-master-new')).toBeDisabled();
+  await expect(tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' })).toBeDisabled();
+  expect(writes).toHaveLength(0);
+});
+
+test('Delete and Restore need organization.delete: without it they are in the menu, disabled, each with the reason; Deactivate and Edit stay available', async ({ page }) => {
+  const { writes } = await boot(page, { del: false });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'SALES');
+  const del = page.getByRole('menuitem', { name: /^Delete/ });
+  await expect(del).toHaveAttribute('aria-disabled', 'true');
+  await expect(del).toContainText('Deleting or restoring a cost centre needs the organization.delete permission.');
+  await expect(page.getByRole('menuitem', { name: 'Deactivate', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  await del.click({ force: true }); // aria-disabled stays focusable and does nothing
+  await expect(page.getByRole('dialog', { name: 'Delete SALES?' })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await openMenu(page, 'OPS');
+  const restore = page.getByRole('menuitem', { name: /^Restore/ });
+  await expect(restore).toHaveAttribute('aria-disabled', 'true');
+  await expect(restore).toContainText('needs the organization.delete permission');
+  await restore.click({ force: true });
+  expect(writes).toHaveLength(0);
+  await page.keyboard.press('Escape');
+  await expect(tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' })).toBeEnabled();
+});
+
+test('an Admin with organization.delete has Delete and Restore enabled', async ({ page }) => {
+  const { writes } = await boot(page, { roles: ['Admin'] });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'OPS');
+  await expect(page.getByRole('menuitem', { name: 'Restore', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-OPS')).not.toContainText('Inactive');
+  expect(lastWrite(writes, 'POST').path).toBe('/api/cost-centers/cc-ops/restore');
+});
+
+test('a 403 from the server is shown with its own sentence, in the form and on Restore, and nothing else changes', async ({ page }) => {
+  const { ctl } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  ctl.refuse = { status: 403, body: { code: 'forbidden', message: 'Your company grant does not cover this cost centre.' } };
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await tid(page, 'cc-form-name').fill('Sales EMEA');
+  await tid(page, 'cc-form-save').click();
+  await expect(tid(page, 'cc-form-error')).toContainText('Your company grant does not cover this cost centre.');
+  await expect(tid(page, 'cc-form-name')).toHaveValue('Sales EMEA');
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog', { name: 'Discard changes?' }).getByRole('button', { name: 'Discard changes', exact: true }).click();
+  ctl.refuse = { status: 403, body: { code: 'forbidden', message: 'Your company grant does not cover this cost centre.' } };
+  await openMenu(page, 'OPS');
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-action-error')).toHaveText('Your company grant does not cover this cost centre.');
+});
+
+test('a company-scoped user: rows of other companies are disabled with the reason, and the Company list offers only companies they can write', async ({ page }) => {
+  const { writes } = await boot(page, { onlyCompanies: ['co-sa'] });
+  await tid(page, 'cc-master-view-flat').click();
+  const other = tid(page, 'cc-master-row-AE-OPS');
+  await expect(other.getByRole('button', { name: 'Edit' })).toBeDisabled();
+  await expect(other.getByRole('button', { name: /More actions/ })).toBeDisabled();
+  await expect(other).toContainText('This belongs to another company or to the whole group. Ask a group administrator.');
+  await expect(tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' })).toBeEnabled();
+  await tid(page, 'cc-master-new').click();
+  await expect(tid(page, 'cc-form-company').locator('option[value="co-ae"]')).toBeDisabled();
+  await expect(tid(page, 'cc-form-company').locator('option[value="co-sa"]')).toBeEnabled();
+  expect(writes).toHaveLength(0);
+});
+
+test('the Reason field marks itself invalid and names its error when it is left empty', async ({ page }) => {
+  await boot(page, { finance: true });
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await tid(page, 'cc-form-erp-code').fill('S999');
+  await tid(page, 'cc-form-save').click();
+  const reason = tid(page, 'cc-form-reason');
+  await expect(reason).toHaveAttribute('aria-invalid', 'true');
+  const describedBy = await reason.getAttribute('aria-describedby');
+  expect(describedBy).toBeTruthy();
+  const errorId = describedBy!.split(' ')[0];
+  await expect(page.locator(`[id="${errorId}"]`)).toHaveText('Enter a reason for this change.');
+});
+
+test('the Delete and Deactivate reason field marks itself invalid and names its error when left empty', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  const reason = tid(page, 'cc-form-reason');
+  await expect(reason).toHaveAttribute('aria-invalid', 'true');
+  const errorId = (await reason.getAttribute('aria-describedby'))!.split(' ')[0];
+  await expect(page.locator(`[id="${errorId}"]`)).toHaveText('Enter a reason for this change.');
+});
+
+test('a 422 reason-required answer from the server is shown inline in the form', async ({ page }) => {
+  const { ctl } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await tid(page, 'cc-form-name').fill('Sales EMEA');
+  ctl.refuse = { status: 422, body: { error: 'cost_centre_reason_required', message: 'Enter a reason for this change.', messageAr: 'أدخل سببًا لهذا التغيير.' } };
+  await tid(page, 'cc-form-save').click();
+  await expect(tid(page, 'cc-form-error')).toHaveText('Enter a reason for this change.');
 });
 
 // ═════════════════════════════ Screen 1: create and edit ═════════════════════════════
@@ -425,6 +577,151 @@ test('Delete asks for a reason, then a 409 in use shows the same counts; a delet
   await expect(tid(page, 'cc-master-row-ORPHAN')).toHaveCount(0);
   const del = lastWrite(writes, 'DELETE');
   expect(new URLSearchParams(del.query).get('reason')).toBe('Created by mistake');
+});
+
+// ═════════════════════════════ Screen 1: unsaved changes ═════════════════════════════
+
+const leavePrompt = (page: Page) => page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; });
+
+test('an open cost-centre form reports itself to Setup, so leaving the page asks first; closed, it does not', async ({ page }) => {
+  await boot(page);
+  expect(await leavePrompt(page)).toBe(false);
+  await tid(page, 'cc-master-new').click();
+  expect(await leavePrompt(page)).toBe(true);
+  await page.getByRole('dialog', { name: 'New cost centre' }).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'New cost centre' })).toHaveCount(0);
+  expect(await leavePrompt(page)).toBe(false);
+});
+
+test('Escape, the backdrop and Cancel on a form with typed input ask before discarding; Keep editing keeps what was typed; a clean form closes at once', async ({ page }) => {
+  await boot(page);
+  const form = page.getByRole('dialog', { name: 'New cost centre' });
+  const ask = page.getByRole('dialog', { name: 'Discard changes?' });
+  await tid(page, 'cc-master-new').click();
+  await page.keyboard.press('Escape');
+  await expect(form).toHaveCount(0); // nothing typed: no question
+  await tid(page, 'cc-master-new').click();
+  await tid(page, 'cc-form-name').fill('Marketing');
+  await page.keyboard.press('Escape');
+  await expect(ask).toBeVisible();
+  await expect(ask).toContainText('What you typed has not been saved.');
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(ask).toHaveCount(0);
+  await expect(tid(page, 'cc-form-name')).toHaveValue('Marketing');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await page.mouse.click(5, 5); // the backdrop
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(form).toHaveCount(0);
+  await expect(ask).toHaveCount(0);
+  // Editing and changing nothing is clean too.
+  await tid(page, 'cc-master-view-flat').click();
+  await tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Edit cost centre SALES' })).toHaveCount(0);
+});
+
+test('the Delete reason dialog asks before discarding a typed reason', async ({ page }) => {
+  const { writes } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delete ORPHAN?' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0); // no reason typed: closes at once
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Created by mistake');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('dialog', { name: 'Discard changes?' });
+  await expect(ask).toBeVisible();
+  await ask.getByRole('button', { name: 'Keep editing', exact: true }).click();
+  await expect(tid(page, 'cc-form-reason')).toHaveValue('Created by mistake');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await ask.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(0);
+});
+
+test('Delete says which happened: a cost centre nothing uses is deleted, one that is used is turned off and can be restored', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Created by mistake');
+  await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-ORPHAN')).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Deleted ORPHAN.' })).toBeVisible();
+  await openMenu(page, 'SALES');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('Merged elsewhere');
+  await page.getByRole('dialog', { name: 'Delete SALES?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-SALES')).toContainText('Inactive');
+  await expect(page.getByRole('status').filter({ hasText: 'Turned off SALES. Used by 18 employees. Restore anytime.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Deleted ORPHAN.' })).toHaveCount(0);
+});
+
+test('Arabic: the new messages are translated (blocked reasons, restore, delete outcome, discard question)', async ({ page }) => {
+  await boot(page, { locale: 'ar', del: false });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'OPS');
+  const restore = page.getByRole('menuitem', { name: /^استعادة/ });
+  await expect(restore).toContainText('يتطلب حذف مركز التكلفة أو استعادته صلاحية organization.delete.');
+  await page.keyboard.press('Escape');
+  await tid(page, 'cc-master-new').click();
+  await tid(page, 'cc-form-name').fill('تسويق');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('dialog', { name: 'هل تريد تجاهل التغييرات؟' });
+  await expect(ask).toContainText('ما أدخلته لم يُحفظ بعد.');
+  await expect(ask.getByRole('button', { name: 'متابعة التعديل' })).toBeVisible();
+  await expect(ask.getByRole('button', { name: 'تجاهل التغييرات' })).toBeVisible();
+});
+
+test('Arabic: Delete says whether it deleted or turned the cost centre off', async ({ page }) => {
+  await boot(page, { locale: 'ar' });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'حذف', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('أُنشئ بالخطأ');
+  await page.getByRole('dialog', { name: 'حذف ORPHAN؟' }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'تم حذف ORPHAN.' })).toBeVisible();
+  await openMenu(page, 'SALES');
+  await page.getByRole('menuitem', { name: 'حذف', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('دمج');
+  await page.getByRole('dialog', { name: 'حذف SALES؟' }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'تم إيقاف SALES.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'يمكنك استعادته في أي وقت.' })).toBeVisible();
+});
+
+// ═════════════════════════════ Screen 1: restore ═════════════════════════════
+
+test('Restore: a turned-off cost centre offers Restore (not Deactivate) in its menu, calls the restore route and turns the row back on', async ({ page }) => {
+  const { writes } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'SALES');
+  await expect(page.getByRole('menuitem', { name: 'Restore', exact: true })).toHaveCount(0); // active rows deactivate
+  await page.keyboard.press('Escape');
+  await openMenu(page, 'OPS');
+  await expect(page.getByRole('menuitem', { name: 'Deactivate', exact: true })).toHaveCount(0);
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-row-OPS')).toContainText('Active');
+  await expect(tid(page, 'cc-master-row-OPS')).not.toContainText('Inactive');
+  await expect(page.getByRole('status').filter({ hasText: 'Turned OPS back on.' })).toBeVisible();
+  expect(lastWrite(writes, 'POST')).toMatchObject({ method: 'POST', path: '/api/cost-centers/cc-ops/restore' });
+});
+
+test('Restore: a 409 locked_into_approved_run shows the server sentence, the row stays off, and Edit still offers its Status field', async ({ page }) => {
+  const { ctl } = await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  ctl.refuse = { status: 409, body: { error: 'locked_into_approved_run', message: 'A payroll run for this company is awaiting finance review or lock; reopen it first.', messageAr: 'x' } };
+  await openMenu(page, 'OPS');
+  await page.getByRole('menuitem', { name: 'Restore', exact: true }).click();
+  await expect(tid(page, 'cc-master-action-error')).toHaveText('A payroll run for this company is awaiting finance review or lock; reopen it first.');
+  await expect(tid(page, 'cc-master-row-OPS')).toContainText('Inactive');
+  await tid(page, 'cc-master-row-OPS').getByRole('button', { name: 'Edit' }).click();
+  await expect(tid(page, 'cc-form-status')).toHaveValue('false');
 });
 
 test('the In use column shows the server count, "Not in use" for zero and a dash when the server did not say', async ({ page }) => {
