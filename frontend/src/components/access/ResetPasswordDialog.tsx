@@ -104,6 +104,12 @@ export function ResetPasswordDialog({ user, onClose, onChanged }: {
       setCopied(false);
       onChanged();
     } catch (err) {
+      // The link goes by email and is refused for anyone with no working login yet: steer to the manual route.
+      if (method === 'link' && (err as { response?: { status?: number } } | null)?.response?.status === 400) {
+        setMethod('temporary');
+        setError(t('A reset link cannot be sent to this person. Set a temporary password instead and hand it to them in person.'));
+        return;
+      }
       setError(refusal(err, method === 'link'
         ? t('The reset link could not be sent. Try again in a moment.')
         : t('The temporary password could not be set. Try again in a moment.')));
