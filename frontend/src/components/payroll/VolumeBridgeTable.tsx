@@ -8,6 +8,7 @@ import { offCycleSummary, tiesOk, volumeMovement, volumeTies, type DrillTarget }
 import { Table, Td, Th } from '../ui/Table';
 import { ReconFigure } from './ReconFigure';
 import { categoryHint, categoryName } from './reconWords';
+import { useReconPeriod } from './useReconPeriod';
 
 const ADDS: VolumeAddCategory[] = ['NEW_JOINER', 'REHIRE', 'LATE_JOINER', 'REINSTATED', 'TRANSFER_IN'];
 const EXITS: VolumeExitCategory[] = ['LEAVER', 'TRANSFER_OUT', 'NOT_PAID', 'UNEXPLAINED'];
@@ -21,6 +22,7 @@ const EXITS: VolumeExitCategory[] = ['LEAVER', 'TRANSFER_OUT', 'NOT_PAID', 'UNEX
 export function VolumeBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill: (target: DrillTarget, title: string, opener: HTMLElement) => void }) {
   const t = useT();
   const fmt = useFormat();
+  const period = useReconPeriod();
   const { volume } = recon;
   const full = recon.mode === 'Full';
   const lineOf = (c: string): ReconVolumeLine | undefined => volume.lines.find(l => l.category === c);
@@ -75,7 +77,7 @@ export function VolumeBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill
 
   return (
     <div className="space-y-3">
-      <Table caption={full ? t('Headcount bridge from {prior} to {current}', { prior: recon.priorPeriod ?? '—', current: recon.period }) : t('Headcount of {current}', { current: recon.period })} density="compact">
+      <Table caption={full ? t('Headcount bridge from {prior} to {current}', { prior: period(recon.priorPeriod), current: period(recon.period) }) : t('Headcount of {current}', { current: period(recon.period) })} density="compact">
         <thead>
           <tr>
             <Th>{t('Movement')}</Th>
@@ -85,9 +87,9 @@ export function VolumeBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill
         </thead>
         <tbody>
           {full && (
-            <tr data-testid="recon-volume-opening" className="font-semibold">
-              <Td>{t('Paid in {period}', { period: recon.priorPeriod ?? '—' })}</Td>
-              <Td numeric>
+            <tr data-testid="recon-volume-opening">
+              <Td className="font-semibold">{t('Paid in {period}', { period: period(recon.priorPeriod) })}</Td>
+              <Td numeric className="font-semibold">
                 <ReconFigure
                   label={t('{what}: {count, plural, one {# employee} other {# employees}}. Show the employees.', { what: t('Opening headcount'), count: volume.opening })}
                   onOpen={opener => onDrill({ section: 'volume', category: 'OPENING' }, t('Opening headcount · {count, plural, one {# employee} other {# employees}}', { count: volume.opening }), opener)}
@@ -101,9 +103,9 @@ export function VolumeBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill
           {full && ADDS.map(c => row(c, '+'))}
           {full && section(t('Left'))}
           {full && EXITS.map(c => row(c, '−'))}
-          <tr data-testid="recon-volume-closing" className="font-semibold">
-            <Td>{t('Paid in {period}', { period: recon.period })}</Td>
-            <Td numeric>
+          <tr data-testid="recon-volume-closing">
+            <Td className="font-semibold">{t('Paid in {period}', { period: period(recon.period) })}</Td>
+            <Td numeric className="font-semibold">
               <ReconFigure
                 label={t('{what}: {count, plural, one {# employee} other {# employees}}. Show the employees.', { what: t('Closing headcount'), count: volume.closing })}
                 onOpen={opener => onDrill({ section: 'volume', category: 'CLOSING' }, t('Closing headcount · {count, plural, one {# employee} other {# employees}}', { count: volume.closing }), opener)}

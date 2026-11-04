@@ -1,7 +1,7 @@
 'use client';
 
 import { X } from 'lucide-react';
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { payrollReconApi, type ReconEmployeesPage } from '../../api/payrollRecon';
 import { useFormat } from '../../hooks/useFormat';
@@ -63,21 +63,24 @@ export function ReconDrillDownDrawer({ runId, priorRunId, target, title, subtitl
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     requestAnimationFrame(() => closeRef.current?.focus());
+    // Escape closes; Tab stays inside the drawer.
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current(); return; }
+      if (e.key !== 'Tab') return;
+      const nodes = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
+      if (nodes.length === 0) return;
+      const first = nodes[0]; const last = nodes[nodes.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && !dialogRef.current?.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKeyDown);
     return () => {
+      document.removeEventListener('keydown', onKeyDown);
       document.body.style.overflow = overflow;
       if (opener && opener.isConnected) opener.focus();
     };
   }, [open, opener]);
-
-  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCloseRef.current(); return; }
-    if (e.key !== 'Tab') return;
-    const nodes = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
-    if (nodes.length === 0) return;
-    const first = nodes[0]; const last = nodes[nodes.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  }, []);
 
   if (!open || typeof document === 'undefined') return null;
 
@@ -87,7 +90,7 @@ export function ReconDrillDownDrawer({ runId, priorRunId, target, title, subtitl
   const amount = (n: number | null | undefined) => (n == null ? '—' : fmt.money(n, currency));
 
   return createPortal(
-    <div className="fixed inset-0 z-50" onKeyDown={onKeyDown}>
+    <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} aria-hidden="true" />
       <div
         ref={dialogRef}
@@ -121,7 +124,7 @@ export function ReconDrillDownDrawer({ runId, priorRunId, target, title, subtitl
               <p className="text-body-sm text-fg-muted" data-testid="recon-drilldown-count">
                 {t('{count, plural, one {# employee} other {# employees}}', { count: data.total })}
               </p>
-              <Table caption={t('Employees behind {figure}', { figure: title })} density="compact">
+              <Table caption={t('Employees behind {figure}', { figure: title })} density="compact" maxHeight="calc(100vh - 16rem)">
                 <thead>
                   <tr>
                     <Th>{t('Employee')}</Th>

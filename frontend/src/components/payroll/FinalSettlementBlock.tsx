@@ -4,10 +4,11 @@ import { AlertTriangle, CheckCircle2 } from 'lucide-react';
 import type { ReconDto } from '../../api/payrollRecon';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
-import { normalizeCells, signedAmount, tiesOk, type DrillTarget } from '../../lib/payrollRecon';
+import { amountText, normalizeCells, signedAmount, tiesOk, type DrillTarget } from '../../lib/payrollRecon';
 import { Table, Td, Th } from '../ui/Table';
 import { ReconFigure } from './ReconFigure';
 import { fsCellName, fsComponentName } from './reconWords';
+import { useReconPeriod } from './useReconPeriod';
 
 /**
  * Final settlements, on an accrual basis. A final settlement is never inside a monthly run: it is
@@ -18,11 +19,13 @@ import { fsCellName, fsComponentName } from './reconWords';
 export function FinalSettlementBlock({ recon, onDrill }: { recon: ReconDto; onDrill: (target: DrillTarget, title: string, opener: HTMLElement) => void }) {
   const t = useT();
   const fmt = useFormat();
+  const periodText = useReconPeriod();
   const fs = recon.finalSettlement;
   const cells = normalizeCells(fs.cells);
   const accrued = cells.reduce((s, c) => s + c.count, 0);
   const full = recon.mode === 'Full';
-  const num = (v: number) => fmt.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const plain = (v: number) => fmt.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const num = (v: number) => amountText(v, plain);
   const missing = fs.leaversWithoutFs ?? [];
 
   return (
@@ -31,7 +34,7 @@ export function FinalSettlementBlock({ recon, onDrill }: { recon: ReconDto; onDr
         {t('Final settlements are counted on an accrual basis: in the period they were approved, which is the period the ledger books them, not when they are paid. They are never part of a monthly run.')}
       </p>
 
-      <Table caption={t('Where each accrued final settlement sits in {period}', { period: recon.period })} density="compact">
+      <Table caption={t('Where each accrued final settlement sits in {period}', { period: periodText(recon.period) })} density="compact">
         <thead>
           <tr>
             <Th>{t('Where the employee is')}</Th>
@@ -55,7 +58,7 @@ export function FinalSettlementBlock({ recon, onDrill }: { recon: ReconDto; onDr
             );
           })}
           <tr className="bg-surface-sunken font-semibold" data-testid="recon-fs-total">
-            <Td>{t('Settlements accrued in {period}', { period: recon.period })}</Td>
+            <Td>{t('Settlements accrued in {period}', { period: periodText(recon.period) })}</Td>
             <Td numeric><bdi>{fmt.integer(accrued)}</bdi></Td>
           </tr>
         </tbody>
@@ -66,7 +69,7 @@ export function FinalSettlementBlock({ recon, onDrill }: { recon: ReconDto; onDr
         <p role="alert" className="flex items-start gap-2 text-body-sm text-danger-fg"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{t('The final settlement cells do not add up to the settlements accrued. Do not sign off until this is resolved.')}</p>
       )}
 
-      <Table caption={t('Final settlement value by component, {period}', { period: recon.period })} density="compact">
+      <Table caption={t('Final settlement value by component, {period}', { period: periodText(recon.period) })} density="compact">
         <thead>
           <tr>
             <Th>{t('Component')}</Th>
@@ -89,7 +92,7 @@ export function FinalSettlementBlock({ recon, onDrill }: { recon: ReconDto; onDr
                     onOpen={opener => onDrill({ section: 'finalSettlement', component: c.code }, name, opener)}
                   >{num(c.current)}</ReconFigure>
                 </Td>
-                {full && <Td numeric><bdi>{signedAmount(c.delta, num)}</bdi></Td>}
+                {full && <Td numeric><bdi>{signedAmount(c.delta, plain)}</bdi></Td>}
               </tr>
             );
           })}

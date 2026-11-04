@@ -21,6 +21,7 @@ import { ValueBridgeTable } from './ValueBridgeTable';
 import { VolumeBridgeTable } from './VolumeBridgeTable';
 import { usePeriodLabel } from './LockSummary';
 import { issueText } from './reconWords';
+import { useReconPeriod } from './useReconPeriod';
 
 export type ReconTab = 'volume' | 'value' | 'finalSettlement' | 'signoff';
 
@@ -45,6 +46,7 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
   onSignedOff?: () => void;
 }) {
   const t = useT();
+  const period = useReconPeriod();
   const [live, setLive] = useState('');
   const onAnnounce = setLive;
   const [drill, setDrill] = useState<{ target: DrillTarget; title: string } | null>(null);
@@ -58,9 +60,9 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
     const key = `${run.id}|${state}|${recon?.snapshotHash ?? ''}`;
     if (announcedFor.current === key) return;
     announcedFor.current = key;
-    if (state === 'ready' && recon) onAnnounce(t('Reconciliation loaded for {period}.', { period: recon.period }));
+    if (state === 'ready' && recon) onAnnounce(t('Reconciliation loaded for {period}.', { period: period(recon.period) }));
     else if (state === 'failed') onAnnounce(t('The reconciliation could not be loaded.'));
-  }, [state, recon, run.id, onAnnounce, t]);
+  }, [state, recon, run.id, onAnnounce, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openDrill = (target: DrillTarget, title: string, el: HTMLElement) => { opener.current = el; setDrill({ target, title }); };
 
@@ -92,7 +94,7 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
           </h4>
           {recon && (
             <p className="text-body-sm text-fg-muted">
-              {recon.mode === 'Full' ? t('{period} against {prior}', { period: recon.period, prior: recon.priorPeriod ?? '—' }) : t('{period}, with no prior month to compare', { period: recon.period })}
+              {recon.mode === 'Full' ? t('{period} against {prior}', { period: period(recon.period), prior: period(recon.priorPeriod) }) : t('{period}, with no prior month to compare', { period: period(recon.period) })}
             </p>
           )}
         </div>
@@ -135,7 +137,7 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
           {recon.mode === 'NoPrior' && (
             <p role="status" className="rounded-lg border border-line bg-surface px-3 py-2 text-body-sm text-fg-muted" data-testid="recon-noprior">
               {recon.lastRunPeriod
-                ? t('There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.', { period: recon.period, last: recon.lastRunPeriod })
+                ? t('There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.', { period: period(recon.period), last: period(recon.lastRunPeriod) })
                 : t('There is no earlier run to compare with. This shows the closing headcount and how pay is made up. A sign-off is still required.')}
               {recon.priorVoided && ` ${t('The run for the month before was voided and has not been replaced.')}`}
             </p>
@@ -155,7 +157,7 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
             </div>
           )}
 
-          <ComparisonPicker candidates={candidates} priorRunId={priorRunId} onChange={onPriorRunChange} automaticPeriod={recon.mode === 'Full' && !priorRunId ? recon.priorPeriod ?? null : null} />
+          <ComparisonPicker candidates={candidates} priorRunId={priorRunId} onChange={onPriorRunChange} automaticPeriod={recon.mode === 'Full' && !priorRunId && recon.priorPeriod ? period(recon.priorPeriod) : null} />
 
           <RovingTabList items={tabs} activeId={tab} onChange={onTab} idPrefix="recon" label={t('Reconciliation sections')} compact />
           <TabPanel idPrefix="recon" tabId={tab}>
@@ -186,7 +188,7 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
         priorRunId={priorRunId}
         target={drill?.target ?? null}
         title={drill?.title ?? ''}
-        subtitle={recon ? t('{period} against {prior}', { period: recon.period, prior: recon.priorPeriod ?? '—' }) : undefined}
+        subtitle={recon ? t('{period} against {prior}', { period: period(recon.period), prior: period(recon.priorPeriod) }) : undefined}
         currency={recon?.currency ?? null}
         opener={opener.current}
         onClose={() => setDrill(null)}

@@ -6,7 +6,7 @@ import {
   MIN_EXPLANATION_LENGTH, activeSignoff, buildSignoffRequest, categoryOfKey, drillParams, employeeReasonCategories,
   explanationId, flaggedItems, itemKey, missingExplanations, normalizeCells, offCycleSummary, parseReconError,
   requiredExplanations, reviewFromSignoff, rowTies, signedAmount, signoffGate, tiesOk, valueTieIssues, volumeMovement,
-  volumeTies, reconTrusted, isPeriodOwning, priorRunCandidates, parseRecon,
+  volumeTies, reconTrusted, isPeriodOwning, priorRunCandidates, parseRecon, parsePeriod, amountText,
 } from '../src/lib/payrollRecon';
 
 const fixture = (name: string): ReconDto => JSON.parse(fs.readFileSync(path.join(__dirname, '../e2e/fixtures', name), 'utf8')) as ReconDto;
@@ -94,6 +94,12 @@ test.describe('sign formatting', () => {
     expect(signedAmount(5, f)).toBe('+SAR 5.00');
     expect(signedAmount(-5, f)).toBe('−SAR 5.00');
     expect(signedAmount(0, f)).toBe('SAR 0.00');
+  });
+  test('an amount with no plus sign still uses the real minus sign when it is negative', () => {
+    expect(amountText(-1500, f)).toBe('−SAR 1500.00');
+    expect(amountText(1500, f)).toBe('SAR 1500.00');
+    expect(amountText(0, f)).toBe('SAR 0.00');
+    expect(amountText(-0.004, f)).toBe('SAR 0.00');
   });
   test('negative zero and sub-cent noise read as zero, not as a change', () => {
     expect(signedAmount(-0, f)).toBe('SAR 0.00');
@@ -369,5 +375,13 @@ test.describe('reading the reconciliation reply', () => {
     for (const bad of [null, undefined, [], 'x', 42, {}, { mode: 'Full' }, { ...FULL(), mode: 'Sometimes' }, { ...FULL(), volume: null }, { ...FULL(), value: { sections: 'x' } }, { ...FULL(), scope: null }]) {
       expect(parseRecon(bad)).toBeNull();
     }
+  });
+});
+
+test.describe('the period the server names', () => {
+  test('yyyy-MM becomes a year and a month; anything else is not a period', () => {
+    expect(parsePeriod('2026-11')).toEqual({ year: 2026, month: 11 });
+    expect(parsePeriod('2026-01')).toEqual({ year: 2026, month: 1 });
+    for (const bad of ['2026-13', '2026-00', '2026', 'November', '', null, undefined, '2026-1']) expect(parsePeriod(bad)).toBeNull();
   });
 });

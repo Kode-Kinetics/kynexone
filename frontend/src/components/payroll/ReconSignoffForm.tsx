@@ -170,7 +170,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
         {withdrawing && (
           <div className="space-y-2 rounded-lg border border-line p-3">
             <label className="block text-body-sm font-medium text-fg" htmlFor="recon-withdraw-reason">{t('Reason for withdrawing')}</label>
-            <Textarea id="recon-withdraw-reason" rows={2} value={withdrawReason} onChange={e => setWithdrawReason(e.target.value)} aria-describedby="recon-withdraw-hint" />
+            <Textarea id="recon-withdraw-reason" rows={2} className="w-full max-w-2xl" value={withdrawReason} onChange={e => setWithdrawReason(e.target.value)} aria-describedby="recon-withdraw-hint" />
             <p id="recon-withdraw-hint" className="text-meta text-fg-muted">{t('At least {min} characters. Approve is withheld until the reconciliation is signed off again.', { min: MIN_EXPLANATION_LENGTH })}</p>
             {withdrawError && <p role="alert" className="text-body-sm text-danger-fg">{withdrawError}</p>}
             <div className="flex gap-2">
@@ -207,7 +207,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
                   {t('Why did {item} move?', { item: i.label })}{' '}
                   <span className="font-normal text-fg-muted"><bdi>{money(i.prior)} → {money(i.current)} ({signedAmount(i.delta, v => money(v))})</bdi></span>
                 </label>
-                <Textarea id={id} rows={2} data-testid={`recon-explanation-${testKey('Item', i.key)}`} value={drafts[explanationId('Item', i.key)] ?? ''} onChange={e => setDraft('Item', i.key, e.target.value)} aria-describedby="recon-reason-hint" />
+                <Textarea id={id} rows={2} className="w-full max-w-2xl" data-testid={`recon-explanation-${testKey('Item', i.key)}`} value={drafts[explanationId('Item', i.key)] ?? ''} onChange={e => setDraft('Item', i.key, e.target.value)} aria-describedby="recon-reason-hint" />
               </div>
             );
           })}
@@ -231,7 +231,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
                   {t('Why is {employee} not paid this month?', { employee: nameOf(t, p) })}{' '}
                   {p.category && <Badge tone="warning">{categoryName(t, p.category)}</Badge>}
                 </label>
-                <Textarea id={id} rows={2} data-testid={`recon-explanation-${testKey('Employee', String(p.employeeId))}`} value={drafts[explanationId('Employee', String(p.employeeId))] ?? ''} onChange={e => setDraft('Employee', String(p.employeeId), e.target.value)} aria-describedby="recon-reason-hint" />
+                <Textarea id={id} rows={2} className="w-full max-w-2xl" data-testid={`recon-explanation-${testKey('Employee', String(p.employeeId))}`} value={drafts[explanationId('Employee', String(p.employeeId))] ?? ''} onChange={e => setDraft('Employee', String(p.employeeId), e.target.value)} aria-describedby="recon-reason-hint" />
               </div>
             );
           })}
@@ -269,7 +269,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
 
       <div className="space-y-1">
         <label htmlFor="recon-signoff-notes" className="block text-body-sm font-medium text-fg">{t('Notes (optional)')}</label>
-        <Textarea id="recon-signoff-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} />
+        <Textarea id="recon-signoff-notes" rows={2} className="w-full max-w-2xl" value={notes} onChange={e => setNotes(e.target.value)} />
       </div>
 
       {recon.scope.reasons.length > 0 && !recon.scope.canSignOff && (

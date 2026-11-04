@@ -41,6 +41,11 @@ export function signedAmount(n: number, format: (abs: number) => string): string
   return `${c > 0 ? '+' : '−'}${format(Math.abs(n))}`;
 }
 
+/** An amount as it is, with the real minus sign when negative (no plus sign): the same glyph as `signedAmount` uses. */
+export function amountText(n: number, format: (abs: number) => string): string {
+  return cents(n) < 0 ? `−${format(Math.abs(n))}` : format(Math.abs(n) < 0.005 ? 0 : n);
+}
+
 // ── Do the numbers tie? ────────────────────────────────────────────────────────
 
 /** A server tie counts only when it says so; an absent field is not a pass. */
@@ -294,4 +299,12 @@ export function parseRecon(raw: unknown): ReconDto | null {
   if (!isObj(raw.value) || !Array.isArray(raw.value.sections) || !isObj(raw.value.headline)) return null;
   if (!isObj(raw.finalSettlement) || !isObj(raw.integrity) || !isObj(raw.thresholds)) return null;
   return raw as unknown as ReconDto;
+}
+
+/** "2026-11" -> { year: 2026, month: 11 }; null for anything that is not a calendar month. */
+export function parsePeriod(p: string | null | undefined): { year: number; month: number } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(p ?? '');
+  if (!m) return null;
+  const month = Number(m[2]);
+  return month >= 1 && month <= 12 ? { year: Number(m[1]), month } : null;
 }

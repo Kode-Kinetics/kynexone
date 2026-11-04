@@ -6,8 +6,9 @@ import type { ReconAdds, ReconBridgeRow, ReconContinuing, ReconDto, ReconExits, 
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
 import { categoryName, groupName, driverName, sectionName } from './reconWords';
-import { categoryOfKey, signedAmount, valueTieIssues, type DrillTarget, type ValueCell } from '../../lib/payrollRecon';
+import { amountText, categoryOfKey, signedAmount, valueTieIssues, type DrillTarget, type ValueCell } from '../../lib/payrollRecon';
 import { Table, Td, Th } from '../ui/Table';
+import { useReconPeriod } from './useReconPeriod';
 import { ReconFigure } from './ReconFigure';
 
 type Group = 'adds' | 'exits' | 'continuing';
@@ -26,12 +27,14 @@ const sum = (o: object) => Math.round(Object.values(o as Record<string, number>)
 export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill: (target: DrillTarget, title: string, opener: HTMLElement) => void }) {
   const t = useT();
   const fmt = useFormat();
+  const period = useReconPeriod();
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const full = recon.mode === 'Full';
   const { value } = recon;
   const cur = recon.currency;
-  const num = (v: number) => fmt.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const signed = (v: number) => signedAmount(v, num);
+  const plain = (v: number) => fmt.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const num = (v: number) => amountText(v, plain);
+  const signed = (v: number) => signedAmount(v, plain);
   const issues = valueTieIssues(value, full);
   const cols = full ? 8 : 3;
 
@@ -71,7 +74,7 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
         ) : <Td key={i} />));
       return (
         <tr key={`${key}-${k}`} data-testid={`recon-breakdown-${key}-${k}`} className="bg-surface-sunken/60">
-          <Td className="ps-9 text-fg-muted">{groupName(t, group)} · {label}</Td>
+          <Td className="ps-9 text-fg-muted">{label}</Td>
           <Td />
           {cells}
         </tr>
@@ -156,7 +159,7 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
           ? t('Amounts are in {currency}. Open a line’s breakdown to see what joiners added, what leavers took away and what moved among continuing staff.', { currency: cur })
           : t('Amounts are in {currency}. There is no prior month, so this shows how this month’s pay is made up.', { currency: cur })}
       </p>
-      <Table caption={t('Value bridge from {prior} to {current}', { prior: recon.priorPeriod ?? '—', current: recon.period })} density="compact" data-testid="recon-value-table">
+      <Table caption={t('Value bridge from {prior} to {current}', { prior: period(recon.priorPeriod), current: period(recon.period) })} density="compact" data-testid="recon-value-table">
         <thead>
           <tr>
             <Th>{t('Component')}</Th>

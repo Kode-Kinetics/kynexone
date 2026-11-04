@@ -410,7 +410,7 @@ test.describe('scope, prior month and failures', () => {
 
   test('with no prior month the closing and its composition are shown, no movement is invented, and sign-off is still required', async ({ page }) => {
     await boot(page, { recon: 'recon-noprior.json' });
-    await expect(page.getByTestId('recon-noprior')).toContainText('2026-08');
+    await expect(page.getByTestId('recon-noprior')).toContainText('August 2026');
     await expect(page.getByTestId('recon-volume-closing')).toContainText('42');
     await expect(page.getByTestId('recon-volume-row-NEW_JOINER')).toHaveCount(0);
     await openTab(page, 'Value');
