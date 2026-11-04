@@ -152,6 +152,7 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
     <Link href="/saudi-compliance" className={TILE}>
       <span className="flex items-baseline justify-between gap-2">
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Saudization')}</span>
+        {!n.nitaqatBand && <span title={t('No Nitaqat snapshot has been calculated yet')} className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700 dark:bg-white/10 dark:text-slate-300">{t('Band not calculated')}</span>}
         {n.nitaqatBand && <span title={t('Latest Nitaqat snapshot')} className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300"><EnumLabel enum="NitaqatBand" value={n.nitaqatBand} /></span>}
       </span>
       <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">
