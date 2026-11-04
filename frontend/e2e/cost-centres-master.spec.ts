@@ -33,6 +33,12 @@ interface Options {
   manage?: boolean;
   /** finance.gl.manage: may set the functional class. */
   finance?: boolean;
+  /** organization.delete: Delete and Restore (the API also needs the Admin or HR Manager role). Defaults to `manage`. */
+  del?: boolean;
+  /** The user's roles. Defaults to HR Manager when `manage`, HR Officer otherwise; `admin` makes it Admin. */
+  roles?: string[];
+  /** Company grants of a user who is not group scope: only these companies are writable. */
+  onlyCompanies?: string[];
   empty?: boolean;
   listDown?: boolean;
 }
@@ -51,7 +57,17 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
     previewLinks: 0,
     previewRows: [] as any[],
     importRefusal: null as null | { status: number; body: unknown },
+    /** What DELETE answers for a row the server turns off rather than deletes (ids listed here). */
+    inUseIds: new Set<string>(['cc-sales']),
   };
+  const roles = options.roles ?? [manage ? 'HR Manager' : 'HR Officer'];
+  const hasWriteRole = roles.some((r) => r === 'Admin' || r === 'HR Manager');
+  const scoped = options.onlyCompanies;
+  /** The server's rules in front of every write: role, permission, company scope. */
+  const mayWrite = () => hasWriteRole && manage;
+  const forbidden = () => ({ status: 403, body: { code: 'forbidden', message: 'You do not have access to change this cost centre.' } });
+  const reasonRequired = () => ({ status: 422, body: { error: 'cost_centre_reason_required', message: 'Enter a reason for this change.', messageAr: 'أدخل سببًا لهذا التغيير.' } });
+  const hasReason = (r: unknown) => typeof r === 'string' && r.trim().length > 0;
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript(({ locale }) => {
     localStorage.setItem('zayra_access_token', 'cc-master-fixture');
@@ -69,10 +85,10 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
 
     if (p === '/api/auth/me') {
       return reply({
-        id: 'user-hr', tenantId: 'cc-tenant', tenantSlug: 'cc-fixture', fullName: 'Huda HR', roles: [manage ? 'HR Manager' : 'HR Officer'],
-        permissions: ['organization.read', 'organization.write', 'dashboard.read', ...(manage ? ['organization.costcenter.manage'] : []), ...(options.finance ? ['finance.gl.read', 'finance.gl.manage'] : [])],
-        accountType: 'Group', isGroupScope: true,
-        companies: [companySa, companyAe].map((c) => ({ id: c.id, name: c.legalNameEn, code: c.id, countryCode: c.countryCode, isActive: true })),
+        id: 'user-hr', tenantId: 'cc-tenant', tenantSlug: 'cc-fixture', fullName: 'Huda HR', roles,
+        permissions: ['organization.read', 'organization.write', 'dashboard.read', ...(manage ? ['organization.costcenter.manage'] : []), ...((options.del ?? manage) ? ['organization.delete'] : []), ...(options.finance ? ['finance.gl.read', 'finance.gl.manage'] : [])],
+        accountType: scoped ? 'Company' : 'Group', isGroupScope: !scoped,
+        companies: [companySa, companyAe].filter((c) => !scoped || scoped.includes(c.id)).map((c) => ({ id: c.id, name: c.legalNameEn, code: c.id, countryCode: c.countryCode, isActive: true })),
       });
     }
     if (p === '/api/auth/mfa/status') return reply({ promptToEnroll: false });
@@ -86,6 +102,10 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
       return reply(paged(rows));
     }
     if (p === '/api/organization/cost-centers' && method === 'POST') {
+      if (!mayWrite()) { const r = forbidden(); return reply(r.body, r.status); }
+      if (scoped && !(body as Cc).companyId) { return reply({ message: 'Choose the company.' }, 400); }
+      if (scoped && !scoped.includes((body as Cc).companyId ?? '')) { const r = forbidden(); return reply(r.body, r.status); }
+      if ((body as { functionalClass?: string }).functionalClass && !hasReason((body as { reason?: string }).reason)) { const r = reasonRequired(); return reply(r.body, r.status); }
       if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
       const b = body as Cc;
       const created = { ...b, id: `cc-new-${rows.length}`, companyId: b.companyId ?? null, parentId: b.parentId && b.parentId !== ZERO ? b.parentId : null, functionalClass: b.functionalClass || null, glSegment: b.glSegment || null };
@@ -94,22 +114,43 @@ async function boot(page: Page, options: Options = {}, url = '/setup?tab=costCen
     }
     const one = p.match(/^\/api\/cost-centers\/([^/]+)$/);
     if (one && method === 'PUT') {
-      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      if (!mayWrite()) { const r = forbidden(); return reply(r.body, r.status); }
       const row = rows.find((r) => r.id === one[1]);
-      const b = body as Cc;
-      if (row) {
-        Object.assign(row, { code: b.code, name: b.name, nameAr: b.nameAr, isActive: b.isActive, companyId: b.companyId ?? row.companyId });
-        if (b.parentId !== undefined && b.parentId !== null) row.parentId = b.parentId === ZERO ? null : b.parentId;
-        if (b.functionalClass !== undefined && b.functionalClass !== null) row.functionalClass = b.functionalClass || null;
-        if (b.glSegment !== undefined && b.glSegment !== null) row.glSegment = b.glSegment || null;
-      }
-      return reply(row ?? {});
+      const b = body as Cc & { reason?: string };
+      if (!row || (scoped && row.companyId && !scoped.includes(row.companyId))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (scoped && b.companyId && !scoped.includes(b.companyId)) { const r = forbidden(); return reply(r.body, r.status); }
+      // M-10: deactivating, moving to another company and changing the ERP code are recorded with a reason.
+      const segmentChanged = b.glSegment != null && b.glSegment.trim().toLowerCase() !== (row.glSegment ?? '').toLowerCase();
+      if (((row.isActive && !b.isActive) || (b.companyId != null && b.companyId !== row.companyId) || segmentChanged) && !hasReason(b.reason)) { const r = reasonRequired(); return reply(r.body, r.status); }
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      Object.assign(row, { code: b.code, name: b.name, nameAr: b.nameAr, isActive: b.isActive, companyId: b.companyId ?? row.companyId });
+      if (b.parentId !== undefined && b.parentId !== null) row.parentId = b.parentId === ZERO ? null : b.parentId;
+      if (b.functionalClass !== undefined && b.functionalClass !== null) row.functionalClass = b.functionalClass || null;
+      if (b.glSegment !== undefined && b.glSegment !== null) row.glSegment = b.glSegment || null;
+      return reply(row);
     }
     if (one && method === 'DELETE') {
-      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      if (!mayWrite() || !(options.del ?? manage)) { const r = forbidden(); return reply(r.body, r.status); }
       const i = rows.findIndex((r) => r.id === one[1]);
-      if (i >= 0) rows.splice(i, 1);
-      return route.fulfill({ status: 204 });
+      if (i < 0 || (scoped && rows[i].companyId && !scoped.includes(rows[i].companyId!))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (!hasReason(u.searchParams.get('reason'))) { const r = reasonRequired(); return reply(r.body, r.status); }
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      // The server decides: a cost centre something points at is turned off, any other is deleted (OrgWriteRules.Body).
+      if (ctl.inUseIds.has(rows[i].id)) {
+        rows[i].isActive = false;
+        return reply({ outcome: 'turnedOff', message: 'Turned off. Used by 18 employees. It stays in history and can be restored anytime.', usage: { total: 18, summary: 'Used by 18 employees', items: [{ kind: 'employee', label: 'employees', count: 18 }] } });
+      }
+      rows.splice(i, 1);
+      return reply({ outcome: 'deleted', message: 'Deleted.', usage: { total: 0, summary: '', items: [] } });
+    }
+    const restore = p.match(/^\/api\/cost-centers\/([^/]+)\/restore$/);
+    if (restore && method === 'POST') {
+      if (!(options.del ?? manage) || !mayWrite()) { const r = forbidden(); return reply(r.body, r.status); }
+      const row = rows.find((r) => r.id === restore[1]);
+      if (!row || (scoped && row.companyId && !scoped.includes(row.companyId))) return reply({ code: 'not_found', message: 'Not found.' }, 404);
+      if (ctl.refuse) { const r = ctl.refuse; ctl.refuse = null; return reply(r.body, r.status); }
+      row.isActive = true;
+      return reply({ outcome: 'restored', message: 'Turned back on.' });
     }
     if (p === '/api/cost-centers/export') return route.fulfill({ status: 200, contentType: 'text/csv', body: 'code,name\n' });
     if (p === '/api/cost-centers/import-template') return route.fulfill({ status: 200, contentType: 'text/csv', body: 'code,name\n' });
