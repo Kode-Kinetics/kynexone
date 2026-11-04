@@ -446,7 +446,8 @@ function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
     case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: d.label });
     case 'payroll_review': return t('Payroll review is done');
     case 'overrides': return t('{count, plural, one {# error cleared by override} other {# errors cleared by override}}', { count: d.count });
-    case 'this_device': return t('Marked on this device');
+    case 'signed_off': return d.name ? t('Signed off by {name}', { name: d.name }) : t('Reconciliation signed off');
+    case 'review_not_required': return t('No reconciliation sign-off is needed for this run');
   }
 }
 
