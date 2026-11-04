@@ -336,6 +336,20 @@ test('a 403 from the server is shown with its own sentence, in the form and on R
   await expect(tid(page, 'cc-master-action-error')).toHaveText('Your company grant does not cover this cost centre.');
 });
 
+test('a company-scoped user: rows of other companies are disabled with the reason, and the Company list offers only companies they can write', async ({ page }) => {
+  const { writes } = await boot(page, { onlyCompanies: ['co-sa'] });
+  await tid(page, 'cc-master-view-flat').click();
+  const other = tid(page, 'cc-master-row-AE-OPS');
+  await expect(other.getByRole('button', { name: 'Edit' })).toBeDisabled();
+  await expect(other.getByRole('button', { name: /More actions/ })).toBeDisabled();
+  await expect(other).toContainText('This belongs to another company or to the whole group. Ask a group administrator.');
+  await expect(tid(page, 'cc-master-row-SALES').getByRole('button', { name: 'Edit' })).toBeEnabled();
+  await tid(page, 'cc-master-new').click();
+  await expect(tid(page, 'cc-form-company').locator('option[value="co-ae"]')).toBeDisabled();
+  await expect(tid(page, 'cc-form-company').locator('option[value="co-sa"]')).toBeEnabled();
+  expect(writes).toHaveLength(0);
+});
+
 test('the Reason field marks itself invalid and names its error when it is left empty', async ({ page }) => {
   await boot(page, { finance: true });
   await tid(page, 'cc-master-view-flat').click();
@@ -347,6 +361,18 @@ test('the Reason field marks itself invalid and names its error when it is left 
   const describedBy = await reason.getAttribute('aria-describedby');
   expect(describedBy).toBeTruthy();
   const errorId = describedBy!.split(' ')[0];
+  await expect(page.locator(`[id="${errorId}"]`)).toHaveText('Enter a reason for this change.');
+});
+
+test('the Delete and Deactivate reason field marks itself invalid and names its error when left empty', async ({ page }) => {
+  await boot(page);
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Delete ORPHAN?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+  const reason = tid(page, 'cc-form-reason');
+  await expect(reason).toHaveAttribute('aria-invalid', 'true');
+  const errorId = (await reason.getAttribute('aria-describedby'))!.split(' ')[0];
   await expect(page.locator(`[id="${errorId}"]`)).toHaveText('Enter a reason for this change.');
 });
 

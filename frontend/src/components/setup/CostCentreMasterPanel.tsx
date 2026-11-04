@@ -80,6 +80,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const [action, setAction] = useState<{ kind: 'deactivate' | 'delete'; item: CostCenterDto } | null>(null);
   const [actionReason, setActionReason] = useState('');
   const [actionError, setActionError] = useState('');
+  const [actionReasonError, setActionReasonError] = useState('');
   const [inUse, setInUse] = useState<{ item: CostCenterDto; counts: Record<string, number> } | null>(null);
   const [rowError, setRowError] = useState('');
   const [discarding, setDiscarding] = useState<null | 'form' | 'action'>(null);
@@ -151,6 +152,9 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const deactivating = !!editing && editing.isActive && !form.isActive;
   const movingCompany = !!editing && !!editing.companyId && form.companyId !== editing.companyId;
   const needsReason = classChanged || segmentChanged || deactivating || movingCompany;
+  // A company the person's grant does not cover cannot be written, so it cannot be picked (its option is disabled) and a
+  // cost centre already in one cannot be moved out of it from here: the select is disabled and says why.
+  const companyBlockedReason = formOpen && form.companyId && editing && !writeAccess(editing.companyId).allowed ? writeAccess(editing.companyId).reason : undefined;
   const parents = parentOptions(items, { id: editing?.id, companyId: form.companyId, parentId: editing?.parentId ?? null });
 
   const showServerError = (err: unknown) => pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? describeApiError(err, t);
@@ -187,12 +191,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   };
 
   // ── Deactivate and delete ──
-  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setRowError(''); setSavedNote(''); setActionReason(''); setActionError(''); setAction({ kind, item }); };
+  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setRowError(''); setSavedNote(''); setActionReason(''); setActionError(''); setActionReasonError(''); setAction({ kind, item }); };
   const runAction = async () => {
     if (!action) return;
     const { kind, item } = action;
-    if (!actionReason.trim()) { setActionError(t('Enter a reason for this change.')); return; }
-    setSaving(true); setActionError('');
+    if (!actionReason.trim()) { setActionReasonError(t('Enter a reason for this change.')); return; }
+    setSaving(true); setActionError(''); setActionReasonError('');
     try {
       let note = '';
       if (kind === 'delete') {
@@ -401,11 +405,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           <Labelled label={t('Company')} required error={errors.company}>
             {(id, describedBy) => (
               <>
-                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote || codeLockedByServer} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
+                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote || codeLockedByServer || companyBlockedReason !== undefined} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
                   <option value="">{t('Choose the company')}</option>
-                  {org.options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {org.options.map((c) => <option key={c.id} value={c.id} disabled={!writeAccess(c.id).allowed && c.id !== form.companyId}>{c.name}</option>)}
                 </select>
                 {(lockedNote || codeLockedByServer) && <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('The company cannot change once the cost centre is in use.')}</p>}
+                {companyBlockedReason && <p data-testid="cc-form-company-blocked" className="mt-1 text-xs text-slate-600 dark:text-slate-300">{companyBlockedReason}</p>}
               </>
             )}
           </Labelled>
@@ -479,7 +484,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           {action && (
             <div>
               <label htmlFor={`${headingId}-action-reason`} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Reason')} <span aria-hidden className="text-rose-500">*</span></label>
-              <input id={`${headingId}-action-reason`} data-testid="cc-form-reason" value={actionReason} maxLength={500} onChange={(e) => setActionReason(e.target.value)} className="input w-full" />
+              <input
+                id={`${headingId}-action-reason`} data-testid="cc-form-reason" value={actionReason} maxLength={500}
+                aria-invalid={!!actionReasonError} aria-describedby={actionReasonError ? `${headingId}-action-reason-error` : undefined}
+                onChange={(e) => { setActionReason(e.target.value); if (actionReasonError) setActionReasonError(''); }} className="input w-full"
+              />
+              {actionReasonError && <p id={`${headingId}-action-reason-error`} role="alert" className="mt-1 text-xs font-medium text-rose-700 dark:text-rose-300">{actionReasonError}</p>}
             </div>
           )}
           <FieldError error={actionError} />
