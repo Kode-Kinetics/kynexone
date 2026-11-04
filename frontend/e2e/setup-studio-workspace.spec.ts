@@ -217,7 +217,8 @@ test('company_actions_menu_keyboard_escape_and_confirmations_preserve_records', 
 test('company_actions_read_only_has_no_mutation_controls', async ({ page }) => {
   const { writes } = await boot(page, { readOnly: true, area: 'organization', setting: 'companies' });
   await expect(page.getByRole('row').filter({ hasText: 'Workspace Fixture LLC' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^(Edit|More actions|Add Company|Create company)/ })).toHaveCount(0);
+  // Write controls stay visible but disabled, with the reason, for a person who may not use them.
+  await expect(page.getByRole('button', { name: /^(Edit|More actions|Add Company|Create company)/, disabled: false })).toHaveCount(0);
   expect(writes).toEqual([]);
 });
 
@@ -316,7 +317,7 @@ test('tenant_admin_can_revisit_and_edit_saved_settings', async ({ page }) => {
 test('read_only_user_cannot_edit', async ({ page }) => {
   const { writes, reads } = await boot(page, { readOnly: true, area: 'leave', setting: 'leavePolicies' });
   await expect(page.getByTestId('setup-studio-workspace')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /Add Company|Create company|New Policy|Edit/, exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Add Company|Create company|New Policy|Edit/, exact: true, disabled: false })).toHaveCount(0);
   expect(reads.filter(path => path.startsWith('/api/leave/'))).toEqual([]);
   expect(writes).toEqual([]);
 });
