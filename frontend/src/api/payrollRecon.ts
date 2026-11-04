@@ -173,6 +173,8 @@ export interface ReconEmployeesQuery {
   itemCode?: string;
   /** prior | current | a continuing driver (package, proration, ...) | flagged. */
   bucket?: string;
+  /** The comparison run the signer chose instead of the previous month, so the list matches the bridge. */
+  priorRunId?: string;
   page?: number;
   pageSize?: number;
 }

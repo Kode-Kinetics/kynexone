@@ -160,7 +160,7 @@ export function buildSignoffRequest(input: {
 
 export type SignoffBlocker =
   | 'already_signed' | 'no_permission' | 'run_status' | 'not_applicable' | 'scope' | 'integrity' | 'no_stamp'
-  | 'explanations' | 'flagged_unknown' | 'acknowledge';
+  | 'employees_unknown' | 'explanations' | 'flagged_unknown' | 'acknowledge';
 
 /** Can the form be submitted, and if not, the first reason why (the one the screen says). */
 export function signoffGate(input: {
@@ -172,6 +172,8 @@ export function signoffGate(input: {
   /** null = the count of flagged employees could not be read. */
   flaggedEmployeeCount: number | null;
   flaggedAffirmed: boolean;
+  /** False when the employees who need a written reason could not be listed. Default true. */
+  employeesKnown?: boolean;
 }): { canSubmit: boolean; blocker: SignoffBlocker | null } {
   const { recon } = input;
   const stop = (blocker: SignoffBlocker) => ({ canSubmit: false, blocker });
@@ -182,6 +184,7 @@ export function signoffGate(input: {
   if (!recon.scope.canSignOff || recon.scope.partial) return stop('scope');
   if (!reconTrusted(recon)) return stop('integrity');
   if (typeof recon.processVersion !== 'number' || !recon.snapshotHash) return stop('no_stamp');
+  if (input.employeesKnown === false) return stop('employees_unknown');
   if (missingExplanations(input.required, input.drafts).length > 0) return stop('explanations');
   if (input.flaggedEmployeeCount === null) return stop('flagged_unknown');
   if (input.flaggedEmployeeCount > 0 && !input.flaggedAffirmed) return stop('acknowledge');
@@ -193,12 +196,12 @@ export function signoffGate(input: {
 /** "newJoiner" -> "NEW_JOINER": the category names the API uses. */
 export const categoryOfKey = (key: string): string => key.replace(/([A-Z])/g, '_$1').toUpperCase();
 
+/** A cell of an item row: its prior or current amount, or one add / exit category / continuing driver. */
+export type ValueCell = 'prior' | 'current' | { group: 'adds'; key: keyof ReconAdds } | { group: 'exits'; key: keyof ReconExits } | { group: 'continuing'; key: keyof ReconContinuing };
+
 export type DrillTarget =
   | { section: 'volume'; category: VolumeCategory | 'OPENING' | 'CLOSING' | 'CONTINUING' }
-  | {
-    section: 'value'; kind: ReconSectionKind; itemCode: string;
-    cell: 'prior' | 'current' | { group: 'adds'; key: keyof ReconAdds } | { group: 'exits'; key: keyof ReconExits } | { group: 'continuing'; key: keyof ReconContinuing };
-  }
+  | { section: 'value'; kind: ReconSectionKind; itemCode: string; cell: ValueCell }
   | { section: 'value'; flagged: true }
   | { section: 'finalSettlement'; cell: string }
   | { section: 'finalSettlement'; component: string };
@@ -258,4 +261,37 @@ export function offCycleSummary(v: ReconOffCycleMemo | number | null | undefined
   if (typeof v === 'number') return { count: v, gross: null };
   if (v && typeof v === 'object') return { count: v.count ?? 0, gross: typeof v.gross === 'number' ? v.gross : null };
   return { count: 0, gross: null };
+}
+
+// ── Which run can be the comparison ────────────────────────────────────────────
+
+/** Regular and Replacement runs own their pay period; off-cycle runs sit inside one. */
+export const isPeriodOwning = (runType: string | null | undefined): boolean => runType === 'Regular' || runType === 'Replacement';
+
+type Candidate = { id: string; companyId: string | null; year: number; month: number; status: string; runType: string };
+
+/**
+ * The earlier runs a signer may pick as the comparison instead of the previous month: the same company,
+ * period-owning, carrying totals (not Draft, not Voided). Newest first.
+ */
+export function priorRunCandidates<T extends Candidate>(run: Candidate, runs: T[]): T[] {
+  const period = (r: Candidate) => r.year * 12 + r.month;
+  return runs
+    .filter(r => r.id !== run.id && r.companyId === run.companyId && isPeriodOwning(r.runType)
+      && r.status !== 'Draft' && r.status !== 'Voided' && period(r) < period(run))
+    .sort((a, b) => period(b) - period(a));
+}
+
+// ── Reading the reply ──────────────────────────────────────────────────────────
+
+const MODES: readonly string[] = ['Full', 'NoPrior', 'NotApplicable'];
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** Narrow an untrusted reply to the parts the screen reads. Anything else is "not a reconciliation", never guessed. */
+export function parseRecon(raw: unknown): ReconDto | null {
+  if (!isObj(raw) || typeof raw.mode !== 'string' || !MODES.includes(raw.mode)) return null;
+  if (!isObj(raw.scope) || !isObj(raw.volume) || !Array.isArray(raw.volume.lines)) return null;
+  if (!isObj(raw.value) || !Array.isArray(raw.value.sections) || !isObj(raw.value.headline)) return null;
+  if (!isObj(raw.finalSettlement) || !isObj(raw.integrity) || !isObj(raw.thresholds)) return null;
+  return raw as unknown as ReconDto;
 }

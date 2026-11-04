@@ -6,7 +6,7 @@ import {
   MIN_EXPLANATION_LENGTH, activeSignoff, buildSignoffRequest, categoryOfKey, drillParams, employeeReasonCategories,
   explanationId, flaggedItems, itemKey, missingExplanations, normalizeCells, offCycleSummary, parseReconError,
   requiredExplanations, reviewFromSignoff, rowTies, signedAmount, signoffGate, tiesOk, valueTieIssues, volumeMovement,
-  volumeTies, reconTrusted,
+  volumeTies, reconTrusted, isPeriodOwning, priorRunCandidates, parseRecon,
 } from '../src/lib/payrollRecon';
 
 const fixture = (name: string): ReconDto => JSON.parse(fs.readFileSync(path.join(__dirname, '../e2e/fixtures', name), 'utf8')) as ReconDto;
@@ -226,6 +226,11 @@ test.describe('who may sign, and why not', () => {
     expect(signoffGate({ ...ok(), flaggedEmployeeCount: null }).blocker).toBe('flagged_unknown');
   });
 
+  test('the employees who need a reason could not be listed: signing is withheld, not waved through', () => {
+    expect(signoffGate({ ...ok(), employeesKnown: false }).blocker).toBe('employees_unknown');
+    expect(signoffGate({ ...ok(), employeesKnown: true }).canSubmit).toBe(true);
+  });
+
   test('no flagged employees means there is nothing to acknowledge', () => {
     expect(signoffGate({ ...ok(), flaggedEmployeeCount: 0, flaggedAffirmed: false })).toEqual({ canSubmit: true, blocker: null });
   });
@@ -327,5 +332,42 @@ test.describe('tolerant readers for loosely specified fields', () => {
     expect(offCycleSummary({ count: 2, gross: 5000 })).toEqual({ count: 2, gross: 5000 });
     expect(offCycleSummary(3)).toEqual({ count: 3, gross: null });
     expect(offCycleSummary(undefined)).toEqual({ count: 0, gross: null });
+  });
+});
+
+test.describe('which runs can be the comparison', () => {
+  const r = (id: string, year: number, month: number, status: string, over: Record<string, unknown> = {}) => ({ id, companyId: 'c1', year, month, status, runType: 'Regular', ...over });
+  const target = r('now', 2026, 11, 'Processed');
+
+  test('only Regular and Replacement runs own a period', () => {
+    expect(isPeriodOwning('Regular')).toBe(true);
+    expect(isPeriodOwning('Replacement')).toBe(true);
+    for (const t of ['OffCycle', 'Supplementary', 'Correction', '', undefined]) expect(isPeriodOwning(t)).toBe(false);
+  });
+
+  test('earlier, same company, period-owning, with totals; newest first; never itself, a draft, a voided run or another company', () => {
+    const runs = [
+      r('a', 2026, 10, 'Locked'), r('b', 2026, 9, 'Approved'), r('c', 2026, 8, 'Voided'), r('d', 2026, 7, 'Draft'),
+      r('e', 2026, 10, 'Locked', { companyId: 'c2' }), r('f', 2026, 10, 'Processed', { runType: 'OffCycle' }),
+      r('g', 2026, 12, 'Locked'), r('h', 2026, 6, 'Locked', { runType: 'Replacement' }), target,
+    ];
+    expect(priorRunCandidates(target, runs).map(x => x.id)).toEqual(['a', 'b', 'h']);
+  });
+
+  test('none earlier means none to offer', () => {
+    expect(priorRunCandidates(target, [target])).toEqual([]);
+  });
+});
+
+test.describe('reading the reconciliation reply', () => {
+  test('a real reply is returned as it came', () => {
+    const d = FULL();
+    expect(parseRecon(d)).toEqual(d);
+  });
+
+  test('anything that is not a reconciliation is rejected, so it cannot render as an empty bridge', () => {
+    for (const bad of [null, undefined, [], 'x', 42, {}, { mode: 'Full' }, { ...FULL(), mode: 'Sometimes' }, { ...FULL(), volume: null }, { ...FULL(), value: { sections: 'x' } }, { ...FULL(), scope: null }]) {
+      expect(parseRecon(bad)).toBeNull();
+    }
   });
 });
