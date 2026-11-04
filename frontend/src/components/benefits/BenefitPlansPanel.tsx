@@ -443,6 +443,8 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 }) {
   const toast = useAppToast();
   const { t } = useLocale();
+  // On Release A tenants the amount, frequency and payslip line are set in Benefits by grade; the server refuses them here.
+  const releaseA = useReleaseA();
   const editing = initial !== null;
   const [paymentPolicy, setPaymentPolicy] = useState(initial?.paymentPolicy ?? DEFAULT_PAYMENT_POLICY);
   const initialUsesCustomType = !!initial && !PLAN_TYPES.includes(initial.planType);
@@ -465,9 +467,9 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (form.effectiveTo && form.effectiveTo < form.effectiveFrom) { setError('Effective to cannot be before effective from.'); return; }
-    if (form.planType === 'Custom' && !customPlanType.trim()) { setError('Enter a custom benefit type.'); return; }
-    const rulesProblem = educationRulesProblem(paymentPolicy);
+    if (form.effectiveTo && form.effectiveTo < form.effectiveFrom) { setError(t('Effective to cannot be before effective from.')); return; }
+    if (form.planType === 'Custom' && !customPlanType.trim()) { setError(t('Enter a custom benefit type.')); return; }
+    const rulesProblem = releaseA ? null : educationRulesProblem(paymentPolicy);
     if (rulesProblem) { setError(t(rulesProblem.key, rulesProblem.params)); return; }
     setSaving(true); setError(null);
     try {
@@ -475,71 +477,74 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
         name: form.name.trim(), planType: form.planType === 'Custom' ? customPlanType.trim() : form.planType, classification: form.classification, currency: form.currency.trim().toUpperCase(),
         effectiveFrom: form.effectiveFrom, effectiveTo: form.effectiveTo || null,
         requiresEnrollment: form.requiresEnrollment, isActive: form.isActive,
-        paymentPolicy, expectedPolicyVersion: initial?.policyVersion ?? 0,
+        ...(releaseA ? {} : { paymentPolicy }), expectedPolicyVersion: initial?.policyVersion ?? 0,
       };
       const saved = editing
         ? await benefitsApi.updatePlan(initial!.id, body)
         : await benefitsApi.createPlan({ ...body, companyId: form.companyId || null, code: form.code.trim().toUpperCase() });
-      toast.success(editing ? 'Plan updated.' : form.classification === 'Mandatory'
-        ? 'Mandatory plan created. Grade rules can define optional enhancements.'
-        : 'Plan created. Add at least one grade eligibility rule before enrolling employees.');
+      toast.success(editing ? t('Plan updated.') : releaseA ? t('Plan created. Set who gets it, and how much, in Benefits by grade.') : form.classification === 'Mandatory'
+        ? t('Mandatory plan created. Grade rules can define optional enhancements.')
+        : t('Plan created. Add at least one grade eligibility rule before enrolling employees.'));
       onSaved(saved);
-    } catch (err) { setError(benefitsErrorMessage(err, editing ? 'Could not update the plan.' : 'Could not create the plan.')); }
+    } catch (err) { setError(benefitsErrorMessage(err, editing ? t('Could not update the plan.') : t('Could not create the plan.'))); }
     finally { setSaving(false); }
   };
 
   return (
-    <Modal title={editing ? `Edit plan ${initial!.code}` : 'New benefit plan'} onClose={onClose}>
+    <Modal title={editing ? t('Edit plan {code}', { code: initial!.code }) : t('New benefit plan')} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3">
         <FormError message={error} />
         <div className="grid grid-cols-2 gap-3">
-          <label className={LABEL}>Plan code <span className="text-rose-500">*</span>
+          <label className={LABEL}>{t('Plan code')} <span aria-hidden="true" className="text-rose-700">*</span>
             <input required disabled={editing} value={form.code} onChange={(e) => set('code', e.target.value)} className={`${INPUT} disabled:opacity-60`} placeholder="MED-GOLD" />
           </label>
-          <label className={LABEL}>Plan type
+          <label className={LABEL}>{t('Plan type')}
             <select className={INPUT} value={form.planType} onChange={(e) => set('planType', e.target.value)}>
-              {PLAN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              {PLAN_TYPES.map((type) => <option key={type} value={type}>{t(type)}</option>)}
             </select>
           </label>
-          {form.planType === 'Custom' && <label className={LABEL}>Custom benefit type
-            <input required className={INPUT} maxLength={120} value={customPlanType} onChange={(e) => setCustomPlanType(e.target.value)} placeholder="e.g. Home office allowance" />
+          {form.planType === 'Custom' && <label className={LABEL}>{t('Custom benefit type')} <span aria-hidden="true" className="text-rose-700">*</span>
+            <input required className={INPUT} maxLength={120} value={customPlanType} onChange={(e) => setCustomPlanType(e.target.value)} placeholder={t('For example, Home office allowance')} />
           </label>}
-          <label className={LABEL}>Policy class
+          <label className={LABEL}>{t('Policy class')}
             <select className={INPUT} value={form.classification} onChange={(e) => set('classification', e.target.value as typeof form.classification)}>
-              <option value="Discretionary">Discretionary — grade eligibility</option>
-              <option value="Contractual">Contractual — grade eligibility</option>
-              <option value="Mandatory">Mandatory minimum — no grade exclusion</option>
+              <option value="Discretionary">{t('Discretionary')}</option>
+              <option value="Contractual">{t('Contractual')}</option>
+              <option value="Mandatory">{t('Mandatory minimum')}</option>
             </select>
+            <span className="mt-1 block font-normal text-slate-500">{form.classification === 'Mandatory' ? t('Every eligible employee gets it; grades cannot exclude anyone.') : t('Grades decide who gets it.')}</span>
           </label>
         </div>
-        <label className={LABEL}>Plan name <span className="text-rose-500">*</span>
+        <label className={LABEL}>{t('Plan name')} <span aria-hidden="true" className="text-rose-700">*</span>
           <input required value={form.name} onChange={(e) => set('name', e.target.value)} className={INPUT} placeholder="Medical Gold" />
         </label>
         <div className="grid grid-cols-2 gap-3">
-          <label className={LABEL}>Company scope
+          <label className={LABEL}>{t('Company scope')}
             <select disabled={editing} className={`${INPUT} disabled:opacity-60`} value={form.companyId} onChange={(e) => set('companyId', e.target.value)}>
-              <option value="">All companies</option>
+              <option value="">{t('All companies')}</option>
               {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </label>
-          <label className={LABEL}>Currency <span className="text-rose-500">*</span>
+          <label className={LABEL}>{t('Currency')} <span aria-hidden="true" className="text-rose-700">*</span>
             <input required maxLength={3} value={form.currency} onChange={(e) => set('currency', e.target.value)} className={INPUT} />
           </label>
-          <label className={LABEL}>Effective from <span className="text-rose-500">*</span>
+          <label className={LABEL}>{t('Effective from')} <span aria-hidden="true" className="text-rose-700">*</span>
             <input type="date" required value={form.effectiveFrom} onChange={(e) => set('effectiveFrom', e.target.value)} className={INPUT} />
           </label>
-          <label className={LABEL}>Effective to
-            <input type="date" value={form.effectiveTo} onChange={(e) => set('effectiveTo', e.target.value)} className={INPUT} />
+          <label className={LABEL}>{t('Effective to')}
+            <input type="date" min={form.effectiveFrom} value={form.effectiveTo} onChange={(e) => set('effectiveTo', e.target.value)} className={INPUT} />
           </label>
         </div>
-        <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />
-        {editing && <p className="text-caption text-slate-500 dark:text-slate-400">Code and company scope identify the plan to existing enrolments and cannot be changed.</p>}
+        {releaseA
+          ? <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-white/5 dark:text-slate-300" data-testid="plan-payment-in-benefits-by-grade">{t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+          : <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />}
+        {editing && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Code and company scope identify the plan to existing enrolments and cannot be changed.')}</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
-          <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> Active (open for enrolment)
+          <input type="checkbox" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} /> {t('Active (open for enrolment)')}
         </label>
         <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.05]">Cancel</button>
-          <button type="submit" disabled={saving} className={PRIMARY}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Create plan'}</button>
+          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-xs font-semibold text-slate-500 hover:bg-slate-100 dark:hover:bg-white/[0.05]">{t('Cancel')}</button>
+          <button type="submit" disabled={saving} className={PRIMARY}>{saving ? t('Saving…') : editing ? t('Save changes') : t('Create plan')}</button>
         </div>
       </form>
     </Modal>

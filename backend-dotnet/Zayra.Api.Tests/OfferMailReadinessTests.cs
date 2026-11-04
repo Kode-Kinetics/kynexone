@@ -15,17 +15,17 @@ public sealed class OfferMailReadinessTests
     }
 
     [Fact]
-    public async Task PlatformFallbackAndTenantSenderUseSameResolverAndNoCredentialFingerprint()
+    public async Task TenantSenderIsStrictlyItsOwn_NeverThePlatformRelay_AndNoCredentialFingerprint()
     {
         await using var db = OfferSmtpOutcomeTests.Db(); var config = OfferSmtpOutcomeTests.Config(); var tenant = Guid.NewGuid(); var service = OfferSmtpOutcomeTests.Service(db, config, new());
-        var platform = await service.GetEffectiveSenderAsync(tenant);
-        platform.FromAddress.Should().Be("hr@example.invalid"); platform.Source.Should().StartWith("Platform");
+        // The platform relay is configured (environment), but a tenant without its own relay has no sender.
+        var none = await service.GetEffectiveSenderAsync(tenant);
+        none.Configured.Should().BeFalse(); none.FromAddress.Should().BeNull(); none.Source.Should().Be("None");
+        OfferSmtpOutcomeTests.SeedTenantRelay(db, tenant, from: "tenant@example.invalid", host: "tenant.invalid");
+        var own = await service.GetEffectiveSenderAsync(tenant);
+        own.Source.Should().Be("Tenant"); own.FromAddress.Should().Be("tenant@example.invalid"); own.FromName.Should().Be("People");
         config["Smtp:Password"] = "secret-1"; config["Smtp:Username"] = "secret-account";
-        (await service.GetEffectiveSenderAsync(tenant)).ConfigurationFingerprint.Should().Be(platform.ConfigurationFingerprint);
-        foreach(var (key,value) in new Dictionary<string,string> { ["Smtp.Host"] = "tenant.invalid", ["Smtp.FromAddress"] = "tenant@example.invalid", ["Smtp.FromName"] = "Tenant HR" })
-            db.SystemSettings.Add(new() { TenantId = tenant, Category = "Email", SettingKey = key, SettingValue = value });
-        await db.SaveChangesAsync(); var own = await service.GetEffectiveSenderAsync(tenant);
-        own.Source.Should().Be("Tenant"); own.FromAddress.Should().Be("tenant@example.invalid"); own.ConfigurationFingerprint.Should().NotBe(platform.ConfigurationFingerprint);
-        (await service.GetEffectiveSenderAsync(Guid.NewGuid())).FromAddress.Should().Be("hr@example.invalid");
+        (await service.GetEffectiveSenderAsync(tenant)).ConfigurationFingerprint.Should().Be(own.ConfigurationFingerprint);
+        (await service.GetEffectiveSenderAsync(Guid.NewGuid())).Configured.Should().BeFalse();
     }
 }
