@@ -62,12 +62,17 @@ public class BenefitsController : ControllerBase
         if (code.Length is < 1 or > 40 || !System.Text.RegularExpressions.Regex.IsMatch(code, "^[A-Z][A-Z0-9_]*$")
             || Zayra.Api.Infrastructure.Payroll.PayComponentPolicy.IsReservedCode(code)) return BadRequest(new { message = "Use a unique benefit component code of up to 40 uppercase letters, numbers or underscores. System payroll codes are reserved." });
         if (name.Length is < 1 or > 180 || req.ComponentType is not ("Earning" or "Deduction")) return BadRequest(new { message = "Provide a name and select Earning or Deduction." });
-        if (req.ComponentType == "Deduction" && req.IsTaxable) return BadRequest(new { message = "Income-taxable is an earning property, not a salary deduction property." });
+        if (req.ComponentType == "Deduction" && req.IsTaxable) return BadRequest(new { message = "Deductions can't be taxable. Untick Taxable or choose Earning." });
         return await FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, "benefits.component", tenantId.Value, tenantId.Value, async () =>
         {
-            if (await _db.SalaryComponents.AnyAsync(x => x.TenantId == tenantId && x.Code == code, ct)
-                || await _db.PayComponents.AnyAsync(x => x.TenantId == tenantId && x.Code == code, ct))
-                return Conflict(new { message = "This component code already exists. Select its existing dedicated mapping or use a different code." });
+            var existing = await _db.SalaryComponents.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Code.ToUpper() == code
+                && x.SalaryStructureId == null && x.IsActive && x.ComponentType == req.ComponentType, ct);
+            if (existing is not null)
+                return Conflict(new { error = "payslip_line_exists", message = $"A payslip line with the code {code} already exists. It has been selected for you.",
+                    existing = new BenefitPaymentComponentDto(existing.Id, existing.Code, existing.Name, existing.ComponentType, existing.IsTaxable, existing.IsActive, null) });
+            if (await _db.SalaryComponents.AnyAsync(x => x.TenantId == tenantId && x.Code.ToUpper() == code, ct)
+                || await _db.PayComponents.AnyAsync(x => x.TenantId == tenantId && x.Code.ToUpper() == code, ct))
+                return Conflict(new { error = "payslip_code_taken", message = $"The code {code} is already used by another payroll item and can't be reused here. Enter a different code." });
             var component = new SalaryComponent { TenantId = tenantId.Value, Code = code, Name = name,
                 ComponentType = req.ComponentType, CalculationType = "Fixed", Amount = 0, Percentage = 0, IsTaxable = req.IsTaxable };
             _db.SalaryComponents.Add(component);
@@ -227,18 +232,35 @@ public class BenefitsController : ControllerBase
         var classification = NormalizeClassification(req.Classification);
         if (classification is null)
             return BadRequest($"Classification must be one of: {string.Join(", ", BenefitPlanClassifications.All)}.");
-        if (await _db.BenefitPlans.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == req.CompanyId && x.Code == req.Code && !x.IsDeleted, ct))
+        var code = req.Code?.Trim().ToUpperInvariant() ?? "";
+        var name = req.Name?.Trim() ?? "";
+        var planType = req.PlanType?.Trim() ?? "";
+        if (code.Length is < 1 or > 40) return BadRequest("Plan code is required and must be 40 characters or fewer.");
+        if (name.Length is < 1 or > 180) return BadRequest("Plan name is required and must be 180 characters or fewer.");
+        if (planType.Length is < 1 or > 120) return BadRequest("Plan type is required and must be 120 characters or fewer.");
+        Company? company = null;
+        if (req.CompanyId.HasValue)
+        {
+            company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == req.CompanyId && x.TenantId == tenantId && x.IsActive && !x.IsDeleted, ct);
+            if (company is null) return BadRequest("The selected company does not exist or is inactive.");
+        }
+        // A blank currency used to fall back to AED regardless of the company; take the company's own currency instead.
+        var currency = string.IsNullOrWhiteSpace(req.Currency) ? company?.DefaultCurrency ?? "" : req.Currency.Trim().ToUpperInvariant();
+        if (!System.Text.RegularExpressions.Regex.IsMatch(currency, "^[A-Z]{3}$"))
+            return BadRequest("Currency must be a three-letter currency code, for example SAR.");
+        // The unique index covers soft-deleted rows too, so a deleted plan's code is still taken.
+        if (await _db.BenefitPlans.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == req.CompanyId && x.Code.ToUpper() == code, ct))
             return Conflict("Benefit plan code already exists for this company scope.");
 
         var plan = new BenefitPlan
         {
             TenantId = tenantId.Value,
             CompanyId = req.CompanyId,
-            Code = req.Code.Trim(),
-            Name = req.Name.Trim(),
-            PlanType = req.PlanType.Trim(),
+            Code = code,
+            Name = name,
+            PlanType = planType,
             Classification = classification,
-            Currency = string.IsNullOrWhiteSpace(req.Currency) ? "AED" : req.Currency.Trim(),
+            Currency = currency,
             EffectiveFrom = req.EffectiveFrom,
             EffectiveTo = req.EffectiveTo,
             RequiresEnrollment = req.RequiresEnrollment,
@@ -253,7 +275,11 @@ public class BenefitsController : ControllerBase
             catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         }
         _db.BenefitPlans.Add(plan);
-        await _db.SaveChangesAsync(ct);
+        _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog { TenantId = tenantId.Value, CompanyId = plan.CompanyId, UserId = GetUserId(),
+            EntityName = nameof(BenefitPlan), EntityId = plan.Id.ToString(), Action = "benefits.plan.created",
+            Metadata = JsonSerializer.Serialize(new { plan.Code, plan.Name, plan.PlanType, plan.Classification, plan.Currency, plan.EffectiveFrom, plan.EffectiveTo, plan.IsActive, policy = plan.PaymentPolicyJson }) });
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateException) { return Conflict("Benefit plan code already exists for this company scope."); }
         return CreatedAtAction(nameof(ListPlans), new { companyId = plan.CompanyId }, BenefitPlanDto.From(plan));
     }
 
@@ -362,7 +388,9 @@ public class BenefitsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         var plan = await _db.BenefitPlans.FirstOrDefaultAsync(x => x.Id == planId && x.TenantId == tenantId && !x.IsDeleted, ct);
         if (plan is null) return NotFound("Benefit plan not found.");
-        if (string.IsNullOrWhiteSpace(req.Name)) return BadRequest("Plan name is required.");
+        if (string.IsNullOrWhiteSpace(req.Name) || req.Name.Trim().Length > 180) return BadRequest("Plan name is required and must be 180 characters or fewer.");
+        if (req.PlanType?.Trim().Length > 120) return BadRequest("Plan type must be 120 characters or fewer.");
+        var before = BenefitPlanDto.From(plan);
         var classification = NormalizeClassification(req.Classification);
         if (classification is null)
             return BadRequest($"Classification must be one of: {string.Join(", ", BenefitPlanClassifications.All)}.");
@@ -389,6 +417,9 @@ public class BenefitsController : ControllerBase
         plan.EffectiveTo = req.EffectiveTo;
         plan.RequiresEnrollment = req.RequiresEnrollment;
         plan.IsActive = req.IsActive;
+        _db.AuditLogs.Add(new Zayra.Api.Domain.Entities.AuditLog { TenantId = tenantId.Value, CompanyId = plan.CompanyId, UserId = GetUserId(),
+            EntityName = nameof(BenefitPlan), EntityId = plan.Id.ToString(), Action = "benefits.plan.updated",
+            Metadata = JsonSerializer.Serialize(new { before, after = BenefitPlanDto.From(plan) }) });
         await _db.SaveChangesAsync(ct);
         return Ok(BenefitPlanDto.From(plan));
     }
