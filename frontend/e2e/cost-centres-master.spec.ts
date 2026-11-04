@@ -245,6 +245,24 @@ test('search or any filter switches to a flat list and says so; a filter with no
   await expect(tid(page, 'cc-master-row-SALES')).toHaveCount(0);
 });
 
+test('Flat is a different view from Tree: it lists every cost centre sorted by code, with a Parent column, and Tree restores the hierarchy', async ({ page }) => {
+  await boot(page);
+  const table = tid(page, 'cc-master-table');
+  await expect(table.getByRole('columnheader', { name: 'Parent', exact: true })).toHaveCount(0);
+  await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveCount(0); // collapsed in Tree
+  await tid(page, 'cc-master-view-flat').click();
+  await expect(tid(page, 'cc-master-view-flat')).toHaveAttribute('aria-pressed', 'true');
+  await expect(table.getByRole('columnheader', { name: 'Parent', exact: true })).toBeVisible();
+  await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveAttribute('data-depth', '0');
+  await expect(tid(page, 'cc-master-parent-SALES-RY')).toContainText('SALES');
+  await expect(tid(page, 'cc-master-parent-SALES')).toContainText('No parent');
+  await tid(page, 'cc-master-view-tree').click();
+  await expect(tid(page, 'cc-master-view-tree')).toHaveAttribute('aria-pressed', 'true');
+  await expect(table.getByRole('columnheader', { name: 'Parent', exact: true })).toHaveCount(0);
+  await expect(tid(page, 'cc-master-row-SALES-RY')).toHaveCount(0);
+  await expect(tid(page, 'cc-master-no-hierarchy')).toHaveCount(0); // the fixture has a hierarchy
+});
+
 test('a cost centre with no company carries a rose chip that says it cannot be used for posting; inactive reads as text', async ({ page }) => {
   await boot(page);
   await tid(page, 'cc-master-view-flat').click();
@@ -820,8 +838,9 @@ for (const locale of ['en', 'ar'] as const) {
       const vp = page.viewportSize()!;
       const wrap = (await table.locator('xpath=..').boundingBox())!;
       const heads = table.locator('thead th');
-      expect(await heads.count()).toBe(8);
-      for (let i = 0; i < 8; i++) {
+      const columns = view === 'flat' ? 9 : 8; // Flat adds the Parent column
+      expect(await heads.count()).toBe(columns);
+      for (let i = 0; i < columns; i++) {
         const b = (await heads.nth(i).boundingBox())!;
         expect(b.x, `header ${i} start`).toBeGreaterThanOrEqual(wrap.x - 0.5);
         expect(b.x + b.width, `header ${i} end`).toBeLessThanOrEqual(wrap.x + wrap.width + 0.5);

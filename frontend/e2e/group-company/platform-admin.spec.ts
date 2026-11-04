@@ -105,12 +105,11 @@ test.describe('Group→Company: platform admin', () => {
       // still purges the throwaway tenant when one of them fails.
     } finally {
       if (createdId) {
-        const deleted = await api.delete(`/api/platform/tenants/${createdId}?confirm=DELETE`, {
+        const deleted = await api.delete(`/api/platform/tenants/${createdId}?confirm=${encodeURIComponent(slug)}`, {
           headers: platformHeaders(),
         });
         const body = await deleted.text();
-        // PlatformController.DeleteTenant is currently a deliberate stub answering 409
-        // `tenant_delete_disabled`. That is a product decision, not a test failure — but the
+        // Older builds answered 409 `tenant_delete_disabled` here. That is not a test failure — but the
         // throwaway tenant then SURVIVES, so say so instead of leaving a silent leak. Every other
         // refusal still fails the test.
         if (deleted.status() === 409 && body.includes('tenant_delete_disabled')) {

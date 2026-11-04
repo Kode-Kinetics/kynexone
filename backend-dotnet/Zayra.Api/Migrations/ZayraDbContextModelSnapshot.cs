@@ -30908,6 +30908,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<bool>("AllowAdminInvitationHandover")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allow_admin_invitation_handover");
+
                     b.Property<bool>("AllowMultipleSessions")
                         .HasColumnType("boolean")
                         .HasColumnName("allow_multiple_sessions");

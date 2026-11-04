@@ -115,12 +115,15 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const display = useCallback((c: CostCenterDto) => (locale === 'ar' && c.nameAr ? c.nameAr : c.name), [locale]);
 
   const filtering = isFiltering(filters);
+  const flatList = filtering || view === 'flat';
+  const hasHierarchy = useMemo(() => items.some((i) => !!i.parentId), [items]);
+  const codeById = useMemo(() => new Map(items.map((i) => [i.id, i.code])), [items]);
   const rows = useMemo(() => {
-    if (filtering || view === 'flat') {
+    if (flatList) {
       return filterItems(items, filters).slice().sort((a, b) => a.code.localeCompare(b.code, 'en', { numeric: true })).map((item) => ({ item, depth: 0, hasChildren: false }));
     }
     return buildTree(items, expanded);
-  }, [expanded, filtering, filters, items, view]);
+  }, [expanded, flatList, filters, items]);
   const unassignedCount = items.filter((i) => !i.companyId).length;
 
   // ── Form ──
@@ -299,6 +302,9 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
         </div>
       </div>
       <p role="status" aria-live="polite" className={filtering && view === 'tree' ? 'text-xs text-slate-600 dark:text-slate-300' : 'sr-only'}>{filtering && view === 'tree' ? t('Showing flat results') : ''}</p>
+      {!loading && !loadError && items.length > 0 && !hasHierarchy && (
+        <p data-testid="cc-master-no-hierarchy" className="text-xs text-slate-600 dark:text-slate-300">{t('No cost centre has a parent yet, so Tree and Flat look the same. Choose a Parent cost centre when editing one to build a hierarchy.')}</p>
+      )}
 
       {loadError ? <LoadError message={loadError} onRetry={() => void load()} />
         : loading ? <Spinner />
@@ -309,12 +315,16 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
             {/* Fixed layout: the columns share the width the page gives them (about 640px beside Setup's menu); long text wraps and nothing is cut. */}
             <table data-testid="cc-master-table" className="w-full table-fixed text-sm">
               <colgroup>
-                <col className="w-[15%]" /><col className="w-[15%]" /><col className="w-[10%]" /><col className="w-[12%]" />
-                <col className="w-[14%]" /><col className="w-[8%]" /><col className="w-[9%]" /><col className="w-[17%]" />
+                {flatList
+                  ? <><col className="w-[12%]" /><col className="w-[14%]" /><col className="w-[10%]" /><col className="w-[9%]" /><col className="w-[11%]" /><col className="w-[12%]" /><col className="w-[7%]" /><col className="w-[8%]" /><col className="w-[17%]" /></>
+                  : <><col className="w-[15%]" /><col className="w-[15%]" /><col className="w-[10%]" /><col className="w-[12%]" /><col className="w-[14%]" /><col className="w-[8%]" /><col className="w-[9%]" /><col className="w-[17%]" /></>}
               </colgroup>
               <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-white/[0.03] dark:text-slate-400">
                 <tr>
-                  {['Code', 'Name', 'ERP code', 'Functional class', 'Company', 'In use', 'Status'].map((h) => <th key={h} scope="col" className="px-3 py-2 text-start font-medium">{t(h)}</th>)}
+                  {(flatList
+                    ? ['Code', 'Name', 'Parent', 'ERP code', 'Functional class', 'Company', 'In use', 'Status']
+                    : ['Code', 'Name', 'ERP code', 'Functional class', 'Company', 'In use', 'Status']
+                  ).map((h) => <th key={h} scope="col" className="px-3 py-2 text-start font-medium">{t(h)}</th>)}
                   <th scope="col" className="px-3 py-2 text-start font-medium"><span className="sr-only">{t('Actions')}</span></th>
                 </tr>
               </thead>
@@ -333,6 +343,11 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                       </span>
                     </td>
                     <td className="px-3 py-2 [overflow-wrap:anywhere]"><bdi dir="auto">{display(item)}</bdi></td>
+                    {flatList && (
+                      <td data-testid={`cc-master-parent-${item.code}`} className="px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
+                        {item.parentId && codeById.get(item.parentId) ? <bdi dir="ltr">{codeById.get(item.parentId)}</bdi> : <><span aria-hidden>—</span><span className="sr-only">{t('No parent')}</span></>}
+                      </td>
+                    )}
                     <td className="px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">{item.glSegment ? <bdi dir="ltr">{item.glSegment}</bdi> : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
                     <td className="px-3 py-2 text-xs">{item.functionalClass ? classLabel(item.functionalClass) : <><span aria-hidden>—</span><span className="sr-only">{t('Not set')}</span></>}</td>
                     <td className="px-3 py-2 text-xs">

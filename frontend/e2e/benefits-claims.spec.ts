@@ -6,7 +6,7 @@ const plan = { id: 'education', companyId: 'company-benefits', code: 'EDU', name
 const balance = { canClaim: true, maximumAmount: 2000, reservedAmount: 200, approvedAmount: 300, remainingAmount: 1500, periodFrom: '2026-01-01', periodTo: '2026-12-31' };
 const enrollment = { id: 'enrolled', benefitPlanId: plan.id, employeeId: 42, employeeName: 'Alex Morgan', companyId: plan.companyId, coverageTier: 'Employee', entitlementTier: 'Education', maximumBenefitAmount: 5000, requestedBenefitAmount: null, limitPeriod: 'Annual', effectiveFrom: '2026-01-01', effectiveTo: null, status: 'Active', assignmentSource: 'GradeDefault', hasException: false, exceptionReason: null, updatedAtUtc: '2026-10-09T12:00:00Z', planName: plan.name, planType: plan.planType, currency: 'SAR', effectiveStatus: 'Current', paymentPolicy: policy, claimBalance: balance, deductions: [], currentEmployeeAmount: null, currentEmployerAmount: null };
 
-async function boot(page: Page, options: { readonly?: boolean; noReceipt?: boolean; missingRoute?: boolean; emptyMappings?: boolean } = {}) {
+async function boot(page: Page, options: { readonly?: boolean; noReceipt?: boolean; missingRoute?: boolean; emptyMappings?: boolean; componentConflict?: 'taken' | 'existing'; noPayrollWrite?: boolean; releaseA?: boolean } = {}) {
   const saves: Record<string, unknown>[] = [], submits: Record<string, unknown>[] = [], mappings: Record<string, unknown>[] = [], workflows: Record<string, unknown>[] = [];
   const balances: string[] = []; const uploads: string[] = []; const errors: string[] = [];
   let claim: Record<string, unknown> | null = null; let withdrawals = 0;
@@ -15,14 +15,14 @@ async function boot(page: Page, options: { readonly?: boolean; noReceipt?: boole
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url()), path = url.pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', 'payroll.write', 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
-    if (path === '/api/features/disabled-keys') return reply(['release_a']);
+    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', ...(options.noPayrollWrite ? [] : ['payroll.write']), 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
+    if (path === '/api/features/disabled-keys') return reply(options.releaseA ? [] : ['release_a']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === `${base}/plans` && req.method() === 'POST') { saves.push(req.postDataJSON()); return reply({ id: 'new-plan', ...req.postDataJSON(), policyVersion: 1 }); }
     if (path === `${base}/plans`) return reply([plan]);
     if (path === `${base}/plans/${plan.id}/eligibility`) return reply([]);
     if (path === `${base}/enrollments`) return reply([]);
-    if (path === `${base}/payment-components` && req.method() === 'POST') { mappings.push(req.postDataJSON()); return reply({ id: 'new-component', ...req.postDataJSON(), isActive: true, salaryStructureId: null }); }
+    if (path === `${base}/payment-components` && req.method() === 'POST') { mappings.push(req.postDataJSON()); if (options.componentConflict === 'taken') return reply({ error: 'payslip_code_taken', message: 'The code BEN_EARN is already used by another payroll item and can\'t be reused here. Enter a different code.' }, 409); if (options.componentConflict === 'existing') return reply({ error: 'payslip_line_exists', message: 'A payslip line with the code BEN_EARN already exists. It has been selected for you.', existing: { id: 'earning', code: 'BEN_EARN', name: 'Benefit earning', componentType: 'Earning', isActive: true, salaryStructureId: null, isTaxable: false } }, 409); return reply({ id: 'new-component', ...req.postDataJSON(), isActive: true, salaryStructureId: null }); }
     if (path === `${base}/payment-components`) return reply(options.emptyMappings ? [] : [{ id: 'earning', code: 'BEN_EARN', name: 'Benefit earning', componentType: 'Earning', isActive: true, salaryStructureId: null, isTaxable: false }, { id: 'deduction', code: 'BEN_DED', name: 'Benefit deduction', componentType: 'Deduction', isActive: true, salaryStructureId: null, isTaxable: false }, { id: 'bound', code: 'BOUND', name: 'Bound salary component', componentType: 'Earning', isActive: true, salaryStructureId: 'salary', isTaxable: false }]);
     if (path === '/api/ess/benefits') return reply({ employeeId: 42, enrollments: [{ ...enrollment, paymentPolicy: { ...policy, receiptRequired: !options.noReceipt }, claimBalance: claim && claim.status === 'Pending' ? { ...balance, reservedAmount: 450, remainingAmount: 1250 } : balance }] });
     if (path.endsWith('/claim-balance')) { balances.push(url.searchParams.get('expenseDate')!); return reply({ ...balance, remainingAmount: url.searchParams.get('expenseDate') === '2026-02-01' ? 100 : 1500 }); }
@@ -398,4 +398,98 @@ test('without Release A, HR records the children a per-child education claim nam
   // The per-plan path posts to /api/employees, never the Release A-only /api/entitlements prefix.
   expect(added).toEqual([{ path: '/api/employees/42/dependants', body: expect.objectContaining({ fullName: 'Sara Morgan', relationship: 'Child' }) }]);
   expect(fixture.errors).toEqual([]);
+});
+
+test('a payslip code taken by another payroll item (409) shows the server message and keeps every value typed in the plan form', async ({ page }) => {
+  const { saves, mappings, errors } = await boot(page, { componentConflict: 'taken' });
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
+  await dialog.getByLabel('Plan code').fill('GYM'); await dialog.getByLabel('Plan name').fill('Gym membership');
+  await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('SalaryAllowance');
+  await dialog.getByLabel('Payment amount (SAR)', { exact: true }).fill('125');
+  await dialog.getByLabel('Payment frequency', { exact: true }).selectOption('Annual');
+  await dialog.getByLabel('Payment month', { exact: true }).selectOption('6');
+  await dialog.getByRole('button', { name: 'Add payslip line', exact: true }).click();
+  await dialog.getByLabel('Payslip line code').fill('BEN_EARN');
+  await dialog.getByRole('button', { name: 'Create payslip line', exact: true }).click();
+  await expect(dialog).toContainText('already used by another payroll item');
+  expect(mappings).toHaveLength(1);
+  // Nothing typed is lost, the creator stays open for a corrected code, and no plan was saved.
+  await expect(dialog.getByLabel('Plan code')).toHaveValue('GYM');
+  await expect(dialog.getByLabel('Plan name')).toHaveValue('Gym membership');
+  await expect(dialog.getByLabel('Payment amount (SAR)', { exact: true })).toHaveValue('125');
+  await expect(dialog.getByLabel('Payment frequency', { exact: true })).toHaveValue('Annual');
+  await expect(dialog.getByLabel('Payment month', { exact: true })).toHaveValue('6');
+  await expect(dialog.getByLabel('Payslip line code')).toHaveValue('BEN_EARN');
+  await expect(dialog.getByLabel('Payslip line', { exact: true })).toHaveValue('');
+  // The existing line is still selectable (the non-idempotent retry path), then the plan saves.
+  await dialog.getByLabel('Payslip line', { exact: true }).selectOption('earning');
+  await dialog.getByRole('button', { name: 'Create plan', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(saves[0]).toMatchObject({ code: 'GYM', paymentPolicy: { delivery: 'SalaryAllowance', amount: 125, frequency: 'Annual', paymentMonth: 6, salaryComponentId: 'earning' } });
+  expect(errors).toEqual([]);
+});
+
+test('switching delivery resets amount, frequency and payslip line but keeps the employee instructions', async ({ page }) => {
+  await boot(page);
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
+  await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('SalaryAllowance');
+  await dialog.getByLabel('Payment amount (SAR)', { exact: true }).fill('300');
+  await dialog.getByLabel('Payment frequency', { exact: true }).selectOption('Annual');
+  await dialog.getByLabel('Payslip line', { exact: true }).selectOption('earning');
+  await dialog.getByLabel('Employee instructions (optional)').fill('Keep this note');
+  await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('PayrollDeduction');
+  await expect(dialog.getByLabel('Payment amount (SAR)', { exact: true })).toHaveValue('');
+  await expect(dialog.getByLabel('Payment frequency', { exact: true })).toHaveValue('Monthly');
+  await expect(dialog.getByLabel('Payslip line', { exact: true })).toHaveValue('');
+  await expect(dialog.getByLabel('Payslip line', { exact: true }).getByRole('option', { name: /Benefit earning/ })).toHaveCount(0);
+  await expect(dialog.getByLabel('Employee instructions (optional)')).toHaveValue('Keep this note');
+});
+
+test('without payroll.write the plan form offers no way to create a payslip line', async ({ page }) => {
+  await boot(page, { noPayrollWrite: true, emptyMappings: true });
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
+  await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('SalaryAllowance');
+  await expect(dialog.getByRole('button', { name: 'Add payslip line', exact: true })).toHaveCount(0);
+  await expect(dialog).toContainText('No payslip line is available for this benefit yet');
+});
+
+test('re-creating a payslip line that already exists selects it instead of dead-ending', async ({ page }) => {
+  const { saves, errors } = await boot(page, { componentConflict: 'existing' });
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
+  await dialog.getByLabel('Plan code').fill('BEN-EARN'); await dialog.getByLabel('Plan name').fill('Benefit earning');
+  await dialog.getByLabel('How this benefit works', { exact: true }).selectOption('SalaryAllowance');
+  await dialog.getByLabel('Payment amount (SAR)', { exact: true }).fill('1000');
+  await dialog.getByRole('button', { name: 'Add payslip line', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create payslip line', exact: true }).click();
+  await expect(dialog.getByTestId('benefit-payslip-line-notice')).toContainText('already exists, so it has been selected');
+  await expect(dialog.getByLabel('Payslip line', { exact: true })).toHaveValue('earning');
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Create plan', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(saves[0]).toMatchObject({ code: 'BEN-EARN', paymentPolicy: { delivery: 'SalaryAllowance', amount: 1000, salaryComponentId: 'earning' } });
+  expect(errors).toEqual([]);
+});
+
+test('with Release A the plan form sends no payment policy and points to Benefits by grade', async ({ page }) => {
+  const { saves, errors } = await boot(page, { releaseA: true });
+  await page.goto('/setup?tab=benefitPlans');
+  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
+  await expect(dialog.getByTestId('plan-payment-in-benefits-by-grade')).toBeVisible();
+  await expect(dialog.getByLabel('How this benefit works', { exact: true })).toHaveCount(0);
+  await dialog.getByLabel('Plan code').fill('TST-CSL'); await dialog.getByLabel('Plan name').fill('Test Casual Allowance');
+  await dialog.getByRole('button', { name: 'Create plan', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(saves).toHaveLength(1);
+  expect(saves[0]).toMatchObject({ code: 'TST-CSL', name: 'Test Casual Allowance', currency: 'SAR' });
+  expect(saves[0]).not.toHaveProperty('paymentPolicy');
+  expect(errors).toEqual([]);
 });

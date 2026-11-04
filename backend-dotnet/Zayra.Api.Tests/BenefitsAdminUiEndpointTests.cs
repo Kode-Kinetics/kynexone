@@ -105,6 +105,9 @@ public class BenefitsAdminUiEndpointTests
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
+        // CreatePlan refuses a company that is not this tenant's, so the company must exist.
+        db.Companies.Add(new Company { Id = companyId, TenantId = tenantId, LegalNameEn = "KSA Co", DefaultCurrency = "SAR", IsActive = true });
+        await db.SaveChangesAsync();
         var ctrl = Admin(db, tenantId);
         var plan = await CreatePlan(ctrl, companyId, "MED");
 

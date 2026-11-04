@@ -145,6 +145,9 @@ export interface PlatformTenantSummary {
   activeUserCount: number;
   activeEmployeeCount: number;
   isDeleted?: boolean;
+  deletedAtUtc?: string | null;
+  /** End of the recovery window; after it the retention rule may erase the data. */
+  recoverableUntilUtc?: string | null;
 }
 
 export interface TenantBranding {
@@ -489,6 +492,8 @@ export interface PlatformHealthStatus {
   checkedAtUtc: string;
 }
 
+export type TwoStepPolicy = 'Optional' | 'PrivilegedRoles' | 'Everyone';
+
 export interface TenantSecurityPolicy {
   tenantId: string;
   tenantName: string;
@@ -504,6 +509,15 @@ export interface TenantSecurityPolicy {
   sessionTimeoutMinutes: number;
   refreshTokenExpiryDays: number;
   allowMultipleSessions: boolean;
+  /** 'Optional' (each person chooses) | 'PrivilegedRoles' | 'Everyone'. */
+  mfaPolicy: TwoStepPolicy;
+  /** How long a trusted browser skips the code step: 0 (off) to 90 days. */
+  mfaTrustedDeviceDays: number;
+  /** Platform-controlled: a workspace administrator may hand a temporary password to someone whose invitation is pending. */
+  allowAdminInvitationHandover: boolean;
+  /** When mandatory two-step starts for this tenant's payroll/banking/access roles; null = follows the platform date. */
+  privilegedMfaEnforceFromUtc?: string | null;
+  platformPrivilegedMfaEnforceFromUtc?: string | null;
   isCustomPolicy: boolean;
   updatedAtUtc?: string;
 }
@@ -711,8 +725,17 @@ export const platformApi = {
   updateLocalization: (tenantId: string, body: Partial<TenantLocalization>) =>
     platform.put<TenantLocalization>(`/api/platform/tenants/${tenantId}/localization`, body).then(r => r.data),
 
-  deleteTenant: (tenantId: string) =>
-    platform.delete(`/api/platform/tenants/${tenantId}?confirm=DELETE`).then(r => r.data),
+  /** Account export (JSON): account, structure, sign-in users, plan, features and billing. Not employee or payroll records. */
+  exportTenantAccount: (tenantId: string) =>
+    platform.get<Blob>(`/api/platform/tenants/${tenantId}/export`, { responseType: 'blob' }).then(r => {
+      const disposition = String(r.headers['content-disposition'] ?? '');
+      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+      return { blob: r.data, filename: match ? decodeURIComponent(match[1]) : `tenant-${tenantId}-account-export.json` };
+    }),
+
+  /** Soft delete (Owner only). The server requires the tenant's slug as the typed confirmation. */
+  deleteTenant: (tenantId: string, slug: string) =>
+    platform.delete(`/api/platform/tenants/${tenantId}?confirm=${encodeURIComponent(slug)}`).then(r => r.data),
 
   // ── Soft-delete lifecycle ─────────────────────────────────────────────────
   restoreTenant: (tenantId: string) =>
@@ -855,6 +878,15 @@ export const platformApi = {
 
   updateTenantSecurityPolicy: (tenantId: string, body: Partial<TenantSecurityPolicy>) =>
     platform.put(`/api/platform/tenants/${tenantId}/security-policy`, body),
+
+  /** Who must use two-step sign-in and how long a trusted browser lasts. A reason is required to move to 'Optional'. */
+  updateTenantInvitationHandover: (tenantId: string, body: { enabled: boolean; reason?: string }) =>
+    platform.put<{ allowAdminInvitationHandover: boolean }>(`/api/platform/tenants/${tenantId}/invitation-handover`, body).then(r => r.data),
+  setTenantPrivilegedMfaEnforcement: (tenantId: string, body: { enforceFromUtc: string | null; reason: string }) =>
+    platform.put<{ privilegedMfaEnforceFromUtc: string | null; platformPrivilegedMfaEnforceFromUtc: string | null }>(
+      `/api/platform/tenants/${tenantId}/privileged-mfa-enforcement`, body).then(r => r.data),
+  updateTenantTwoStepPolicy: (tenantId: string, body: { mfaPolicy?: TwoStepPolicy; mfaTrustedDeviceDays?: number; reason?: string }) =>
+    platform.put<{ mfaPolicy: TwoStepPolicy; mfaTrustedDeviceDays: number }>(`/api/platform/tenants/${tenantId}/two-step-policy`, body).then(r => r.data),
 
   getHealth: () =>
     platform.get<PlatformHealthStatus>('/api/platform/health').then(r => r.data),

@@ -438,12 +438,16 @@ public class AuthService : IAuthService
                 .SingleOrDefaultAsync(x => x.Id == userId && x.TenantId == tenantId, ct);
             if (tenant?.IsActive != true || user is null || user.IsDeleted)
                 throw new InvalidOperationException("User not found.");
-            AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user);
-
+            // Separate query: FOR UPDATE cannot be applied to the nullable side of the outer join an Include would add.
+            // The user row lock above already serialises this account; the links are fixed up onto the tracked user.
+            await _db.EmployeeUserAccounts.Where(x => x.UserId == user.Id && !x.IsDeleted).LoadAsync(ct);
             var passwordPolicy = await _db.SecuritySettings
                 .TagWith(RowLockingInterceptor.ForShareTag)
                 .AsNoTracking()
                 .SingleOrDefaultAsync(x => x.TenantId == tenantId, ct);
+            AdminPasswordSetGuard.ThrowIfAccountCannotTakeOne(user, passwordPolicy?.AllowAdminInvitationHandover == true);
+            var completesInvitation = AdminPasswordSetGuard.IsAwaitingInvitation(user);
+            var invitation = completesInvitation ? AdminPasswordSetGuard.PendingInvitation(user) : null;
             ValidatePasswordAgainstPolicy(temporaryPassword, passwordPolicy);
 
             // Every session, open sign-in challenge, reset link, welcome code and trusted browser ends with the old password.
@@ -452,6 +456,22 @@ public class AuthService : IAuthService
             user.PasswordHash = passwordHash;
             user.MustChangePassword = true;
             user.LastPasswordChangedAt = setAtUtc;
+            if (invitation is not null)
+            {
+                // Same end state as accepting the invitation (AcceptInvitationAsync), except the password must still be
+                // replaced at first sign-in and the email is confirmed by the administrator, not by the person.
+                user.Status = "Active";
+                user.AccessMode = invitation.AccessMode;
+                user.IsActive = true;
+                user.IsEmailConfirmed = true;
+                invitation.InvitationTokenHash = string.Empty;
+                invitation.InvitationExpiresAtUtc = null;
+                invitation.ClearWelcomeCode();
+                invitation.RequiresPasswordSetup = false;
+                invitation.Status = "Active";
+                invitation.InvitationAcceptedAtUtc = setAtUtc;
+                invitation.UpdatedAtUtc = setAtUtc;
+            }
             // A lockout from wrong passwords guarded the old password; it ends with it. An administrator's
             // deliberate lock (Status "Locked", AccessManagementService.LockUserAsync) stays until they unlock.
             var failureLockoutCleared = user.Status == "Active" && (user.IsLocked || user.LockoutEnd is not null || user.FailedLoginCount > 0);
@@ -472,7 +492,7 @@ public class AuthService : IAuthService
                 "User",
                 user.Id.ToString(),
                 context with { TenantId = tenantId },
-                System.Text.Json.JsonSerializer.Serialize(new { reason, mustChangePassword = true, sessionsRevoked = true, failureLockoutCleared })));
+                System.Text.Json.JsonSerializer.Serialize(new { reason, mustChangePassword = true, sessionsRevoked = true, failureLockoutCleared, completedInvitation = invitation is not null, emailConfirmedByAdmin = invitation is not null })));
             await _db.SaveChangesAsync(ct);
             changed = user;
         }
