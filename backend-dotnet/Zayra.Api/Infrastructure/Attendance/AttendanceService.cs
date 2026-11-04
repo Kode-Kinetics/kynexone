@@ -1017,14 +1017,22 @@ public class AttendanceService : IAttendanceService
         // make a long run quadratic. So a run must start clean: unsaved changes would be saved by the first day, or lost.
         if (_db.ChangeTracker.HasChanges())
             throw new InvalidOperationException("Attendance processing must start with no unsaved changes; save or discard them first.");
-        var employees = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted
+        var employeeQuery = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted
             && x.Status == EmployeeStatuses.Active
-            && (request.EmployeeId == null || x.Id == request.EmployeeId)).ToListAsync(ct);
+            && (request.EmployeeId == null || x.Id == request.EmployeeId));
+        // A selection is the COMPLETE set (the controller resolves "all employees" to the caller's allowed ids): an empty list
+        // processes nobody, never everybody.
+        if (request.EmployeeIds is { } selected)
+        {
+            var ids = selected.ToList();
+            employeeQuery = employeeQuery.Where(x => ids.Contains(x.Id));
+        }
+        var employees = await employeeQuery.ToListAsync(ct);
         var policies = await EnsureActivePoliciesAsync(tenantId, ct);
         // Days commit one at a time, so the run is audited as it goes: a "started" entry now, then one entry per employee
         // whose days have committed. A run that dies part-way is visible as such.
         await Audit(tenantId, context, "attendance.process_started", "AttendanceDailyRecord", $"{request.FromDate}:{request.ToDate}",
-            JsonSerializer.Serialize(new { from = request.FromDate, to = request.ToDate, employees = employees.Count, employeeId = request.EmployeeId }), ct);
+            JsonSerializer.Serialize(new { from = request.FromDate, to = request.ToDate, employees = employees.Count, employeeId = request.EmployeeId, selected = request.EmployeeIds?.Count }), ct);
         await _db.SaveChangesAsync(ct);
         var processed = 0;
         _rangeCoverage = new AttendanceDerivedArtifacts.PayrollCoverageMemo();

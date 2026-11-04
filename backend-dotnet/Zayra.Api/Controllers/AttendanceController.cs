@@ -358,12 +358,43 @@ public class AttendanceController : ControllerBase
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
     public async Task<ActionResult<int>> Process(ProcessAttendanceRequest request, CancellationToken ct)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
-            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
-            return Forbid();
-        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request, Context(), ct)); }
+        var (refusal, targets, _) = await ResolveProcessTargetsAsync(request, ct);
+        if (refusal is not null) return refusal;
+        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request with { EmployeeIds = targets }, Context(), ct)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>The most employees one explicit processing selection may name.</summary>
+    public const int MaxProcessSelection = 2000;
+
+    /// <summary>
+    /// Who a processing request targets, decided ONCE for <see cref="Process"/> and <see cref="ProcessInBackground"/> so the queue is
+    /// never a wider door than the synchronous endpoint.
+    /// <list type="bullet">
+    /// <item>Named employees (<c>EmployeeId</c> and/or <c>EmployeeIds</c>): EVERY one must be in the caller's data scope, else 403.
+    /// An empty <c>EmployeeIds</c> list with nobody else named is a 400, never "everyone".</item>
+    /// <item>Nobody named ("all employees"): allowed to an unrestricted scope and to an Organization-level scope (a company-limited
+    /// HR user's scope is Organization level with an explicit set, which is why "all" used to be a 403); a Team, Department,
+    /// DirectReports or Own scope is refused.</item>
+    /// </list>
+    /// <c>Targets</c> is the COMPLETE set to process: null only for an unrestricted "all"; otherwise the named ids, or exactly the
+    /// scope's allowed ids (an empty list processes nobody).
+    /// </summary>
+    private async Task<(ActionResult? Refusal, IReadOnlyList<int>? Targets, DataScope? Scope)> ResolveProcessTargetsAsync(ProcessAttendanceRequest request, CancellationToken ct)
+    {
+        var named = (request.EmployeeIds ?? Array.Empty<int>()).ToList();
+        if (request.EmployeeId is int one) named.Add(one);
+        named = named.Distinct().ToList();
+        if (named.Count == 0 && request.EmployeeIds is not null)
+            return (BadRequest(new { message = "Choose at least one employee, or choose all employees." }), null, null);
+        if (named.Count > MaxProcessSelection)
+            return (BadRequest(new { message = $"A selection may name at most {MaxProcessSelection:N0} employees and this one names {named.Count:N0}. Process the rest in a second run, or choose all employees." }), null, null);
+
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if (named.Count > 0)
+            return named.All(scope.CanAccessEmployee) ? (null, named.OrderBy(x => x).ToList(), scope) : (Forbid(), null, scope);
+        if (!scope.IsUnrestricted && scope.Level != DataScopeLevel.Organization) return (Forbid(), null, scope);
+        return (null, scope.AllowedEmployeeIds?.Distinct().OrderBy(x => x).ToList(), scope);
     }
 
     /// <summary>
@@ -389,10 +420,8 @@ public class AttendanceController : ControllerBase
         CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
-            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
-            return Forbid();
+        var (refusal, targets, scope) = await ResolveProcessTargetsAsync(request, ct);
+        if (refusal is not null) return refusal;
         try { await _attendance.ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         if (idempotencyKey is { Length: > 200 }) return BadRequest(new { message = "Idempotency-Key is limited to 200 characters." });
@@ -404,15 +433,18 @@ public class AttendanceController : ControllerBase
             CompanyIds: entityScope.IsGroupLevel ? Array.Empty<Guid>() : entityScope.AccessibleCompanyIds.ToArray(),
             RequestedByUserId: GetUserId(),
             IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            UserAgent: Request.Headers.UserAgent.ToString());
-        // A caller with a restricted data scope (a Mobile-mode employee, a Supervisor) gets ONE active job per
-        // employee: a fresh Idempotency-Key or date range per request would otherwise let them queue jobs
-        // without limit. A later request returns the queued/running job until it finishes.
-        var key = !scope.IsUnrestricted
-            ? $"scoped:{request.EmployeeId}:{GetUserId()}"
+            UserAgent: Request.Headers.UserAgent.ToString(),
+            EmployeeIds: targets);
+        // Every key carries the logical request: range + target set + company scope. A caller with a restricted data scope is
+        // also keyed by themselves and cannot choose their own key, so a fresh Idempotency-Key per request does not queue
+        // more jobs, and two callers never receive each other's job. The key used to ignore the range for them, so a
+        // second range returned the FIRST range's job without saying so.
+        var logical = Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload);
+        var key = !scope!.IsUnrestricted
+            ? $"scoped:{GetUserId()}:{logical}"
             : string.IsNullOrWhiteSpace(idempotencyKey)
-                ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
-                : "client:" + idempotencyKey.Trim();
+                ? logical
+                : $"client:{Infrastructure.Attendance.AttendanceProcessingJobHandler.Digest(idempotencyKey.Trim())}:{logical}";
 
         var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
             key, payload, GetUserId(), ct);
