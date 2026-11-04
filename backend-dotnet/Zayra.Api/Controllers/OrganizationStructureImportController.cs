@@ -174,9 +174,7 @@ public class OrganizationStructureImportController : ControllerBase
         {
             if (string.IsNullOrEmpty(section)) continue;
             chars += section.Length;
-            var lines = 1L;
-            foreach (var ch in section) if (ch == '\n') lines++;
-            rows += Math.Max(0, lines - 1);   // the first line is the header
+            rows += Csv.CountDataRows(section);   // counted the way the parser reads it: the header and blank lines are not rows, a lone CR is a line break
         }
         if (chars > MaxPackageChars)
             return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "import_too_large", message = $"This import is too large ({chars:N0} characters). Split it into files under {MaxPackageChars:N0} characters and import them one after the other." });
