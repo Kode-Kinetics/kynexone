@@ -2,7 +2,7 @@ import { expect, type Locator, type Page, type Request } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright';
 
 /**
- * Shared mocked API for the Setup → Company structure specs (Companies, Branches, Locations, Departments).
+ * Shared mocked API for the Setup → Company structure specs (Companies, Branches, Locations, Departments, Designations, Grades).
  * Every /api request is intercepted: this proves the UI contract (states, wiring, wording, EN and AR), not server
  * authorisation. The mock auth can represent any role set and permission set, so a read-only user is a real session.
  */
@@ -10,7 +10,7 @@ import AxeBuilder from '@axe-core/playwright';
 export const companySa = { id: 'co-sa', legalNameEn: 'Masar Trading KSA', legalNameAr: 'مسار للتجارة', tradeName: 'Masar KSA', countryCode: 'SA', jurisdiction: '', registrationNumber: 'CR-1', defaultCurrency: 'SAR', isActive: true, approvalStatus: 'Active' };
 export const companyAe = { id: 'co-ae', legalNameEn: 'Masar Services UAE', legalNameAr: '', tradeName: 'Masar UAE', countryCode: 'AE', jurisdiction: '', registrationNumber: 'CR-2', defaultCurrency: 'AED', isActive: true, approvalStatus: 'Active' };
 
-export type Entity = 'companies' | 'branches' | 'locations' | 'departments';
+export type Entity = 'companies' | 'branches' | 'locations' | 'departments' | 'designations' | 'grades';
 
 export interface FixtureOptions {
   locale?: 'en' | 'ar';
@@ -38,6 +38,14 @@ const seed = {
     { id: 'de-fin', companyId: 'co-sa', code: 'FIN', nameEn: 'Finance', nameAr: 'المالية', isActive: true },
     { id: 'de-old', companyId: 'co-sa', code: 'OLD', nameEn: 'Legacy Unit', nameAr: '', isActive: false },
   ],
+  designations: () => [
+    { id: 'dg-swe', companyId: 'co-sa', code: 'SWE', titleEn: 'Software Engineer', titleAr: 'مهندس برمجيات', jobGrade: 'L3', gradeId: 'gr-5', jobLevel: 'Officer', jobDescription: '', isManagerRole: false, isActive: true },
+    { id: 'dg-old', companyId: 'co-sa', code: 'OLD', titleEn: 'Retired Title', titleAr: '', jobGrade: '', isManagerRole: false, isActive: false },
+  ],
+  grades: () => [
+    { id: 'gr-5', companyId: 'co-sa', code: 'G5', name: 'Professional Grade 5', nameAr: 'الدرجة المهنية 5', band: 'Professional', level: 5, minSalary: 5000, midSalary: 7000, maxSalary: 9000, currency: 'SAR', isActive: true },
+    { id: 'gr-old', companyId: 'co-sa', code: 'G0', name: 'Retired Grade', nameAr: '', band: '', level: 0, minSalary: 0, midSalary: 0, maxSalary: 0, currency: 'SAR', isActive: false },
+  ],
 };
 
 export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}) {
@@ -49,6 +57,8 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     branches: empty ? [] : seed.branches(),
     locations: empty ? [] : seed.locations(),
     departments: empty ? [] : seed.departments(),
+    designations: empty ? [] : seed.designations(),
+    grades: empty ? [] : seed.grades(),
   } as Record<Entity, any[]>;
   const ctl = {
     down: new Set<Entity>(options.down ?? []),
@@ -90,8 +100,13 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     if (p === '/api/features/disabled-keys') return reply(['release_a']);
     if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
 
+    // The grade editor's own reads: no pay lines yet, and no pay components to pick from.
+    if (/^\/api\/grades\/[^/]+\/pay-scale$/.test(p)) return method === 'GET' ? reply([]) : reply({ count: 0, structure: null });
+    if (p === '/api/grades/package-components') return reply([]);
+
     const collections: Array<[Entity, string, boolean]> = [
       ['companies', '/api/companies', true], ['branches', '/api/branches', true], ['departments', '/api/departments', true], ['locations', '/api/admin/locations', false],
+      ['designations', '/api/designations', true], ['grades', '/api/grades', true],
     ];
     for (const [entity, base, isPaged] of collections) {
       if (p === base && method === 'GET') {
@@ -161,3 +176,10 @@ export const field = (scope: Locator | Page, name: string) =>
  * (Branches, Departments, Locations and Companies controllers are role-gated). The screen must not offer what it refuses.
  */
 export const WRITE_PERMISSION_WITHOUT_ROLE = { roles: ['HR Officer'], permissions: ['organization.read', 'organization.write', 'dashboard.read'] };
+
+/**
+ * Holds every organization permission but none of the roles the controllers require. Branches, Departments, Designations,
+ * Grades and Companies (and the Locations import and export) are role-gated, so every write is refused for this person.
+ * Locations Add, Edit, Remove and Restore are gated by permission alone (SetupSettingsController), so they are not.
+ */
+export const CUSTOM_ROLE_WITH_PERMISSIONS = { roles: ['Org Custodian'], permissions: MANAGER_PERMISSIONS };
