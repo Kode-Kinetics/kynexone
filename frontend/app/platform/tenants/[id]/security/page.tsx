@@ -295,6 +295,14 @@ function fmtDate(iso?: string | null) {
   return iso ? new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'not set';
 }
 
+/** Local calendar tomorrow as YYYY-MM-DD, so today or a past date cannot be picked. */
+function tomorrowIso(daysAhead = 1) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function PrivilegedMfaPanel({ tenantId, policy, onSaved }: {
   tenantId: string;
   policy: TenantSecurityPolicy;
@@ -308,6 +316,7 @@ function PrivilegedMfaPanel({ tenantId, policy, onSaved }: {
   async function save(clear: boolean) {
     if (reason.trim().length < 10) { setMsg({ text: 'Give a reason of at least 10 characters.', ok: false }); return; }
     if (!clear && !date) { setMsg({ text: 'Pick the date mandatory two-step should start.', ok: false }); return; }
+    if (!clear && date < tomorrowIso()) { setMsg({ text: 'Pick a date from tomorrow onwards.', ok: false }); return; }
     setSaving(true); setMsg(null);
     try {
       await platformApi.setTenantPrivilegedMfaEnforcement(tenantId, {
@@ -340,7 +349,7 @@ function PrivilegedMfaPanel({ tenantId, policy, onSaved }: {
         </dl>
         <label htmlFor="privileged-mfa-date" className="block space-y-1.5">
           <span className="block text-xs font-medium text-slate-400">New start date</span>
-          <input id="privileged-mfa-date" type="date" value={date} onChange={e => setDate(e.target.value)}
+          <input id="privileged-mfa-date" type="date" min={tomorrowIso()} max={tomorrowIso(89)} value={date} onChange={e => setDate(e.target.value)}
             className="bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60" />
         </label>
         <label htmlFor="privileged-mfa-reason" className="block space-y-1.5">
@@ -415,6 +424,7 @@ export default function TenantSecurityPage() {
   const { id } = useParams<{ id: string }>();
   const [policy, setPolicy]   = useState<TenantSecurityPolicy | null>(null);
   const [form, setForm]       = useState<Partial<TenantSecurityPolicy>>({});
+  const [reason, setReason]   = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [msg, setMsg]         = useState<{ text: string; ok: boolean } | null>(null);
@@ -447,13 +457,16 @@ export default function TenantSecurityPage() {
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    if (reason.trim().length < 10) { setMsg({ text: 'Give a reason of at least 10 characters.', ok: false }); return; }
     setSaving(true); setMsg(null);
     try {
-      await platformApi.updateTenantSecurityPolicy(id, form);
+      await platformApi.updateTenantSecurityPolicy(id, { ...form, reason: reason.trim() });
+      setReason('');
       setMsg({ text: 'Security policy saved.', ok: true });
       await load();
-    } catch {
-      setMsg({ text: 'Save failed. Please try again.', ok: false });
+    } catch (ex: unknown) {
+      const detail = (ex as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      setMsg({ text: detail ?? 'Save failed. Please try again.', ok: false });
     } finally { setSaving(false); }
   }
 
@@ -578,6 +591,16 @@ export default function TenantSecurityPage() {
             Last updated {new Date(policy.updatedAtUtc).toLocaleString('en-GB')}
           </p>
         )}
+
+        <div className="bg-slate-900 border border-white/[0.07] rounded-xl overflow-hidden">
+          <div className="px-5 py-4">
+            <label htmlFor="security-policy-reason" className="block space-y-1.5">
+              <span className="block text-xs font-medium text-amber-300">Reason for this change (required, at least 10 characters, recorded in the audit log)</span>
+              <textarea id="security-policy-reason" rows={2} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-sapphire/60 resize-none" />
+            </label>
+          </div>
+        </div>
 
         <div className="flex justify-end">
           <button type="submit" disabled={saving}

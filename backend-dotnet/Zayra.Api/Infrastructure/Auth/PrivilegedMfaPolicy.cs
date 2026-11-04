@@ -284,23 +284,25 @@ public static class PrivilegedMfaPolicy
     /// <item>Later than the platform date (a postponement): Owner only, and at most 30 days later.</item>
     /// <item>Less than 7 days from now (little notice): Owner only.</item>
     /// <item>With no platform date configured, any explicit tenant date is an Owner decision.</item>
+    /// <item>Following the platform date (<paramref name="requested"/> null) is always allowed.</item>
     /// </list>
     /// </summary>
     public static (int Status, string Message)? CheckTenantDateChange(
         DateTime? requested, DateTime? platformDate, DateTime nowUtc, bool callerIsOwner)
     {
-        var effective = requested ?? platformDate;
-        if (effective is null) return null; // following a platform date that does not exist: prompt-only, harmless
-        if (requested is not null && platformDate is null && !callerIsOwner)
+        // Following the platform date is always allowed, whoever asks and wherever that date is: it adds no exception.
+        if (requested is null) return null;
+        var effective = requested.Value;
+        if (platformDate is null && !callerIsOwner)
             return (403, "No platform enforcement date is set, so a tenant date needs a platform Owner.");
-        if (platformDate is { } platform && effective.Value > platform)
+        if (platformDate is { } platform && effective > platform)
         {
-            if (effective.Value - platform > MaxTenantPostponement)
+            if (effective - platform > MaxTenantPostponement)
                 return (400, $"A tenant can trail the platform date ({FormatDate(platform)}) by at most 30 days.");
             if (!callerIsOwner)
                 return (403, "Postponing a tenant beyond the platform date needs a platform Owner.");
         }
-        if (effective.Value - nowUtc < MinNoticeWithoutOwner && !callerIsOwner)
+        if (effective - nowUtc < MinNoticeWithoutOwner && !callerIsOwner)
             return (403, "A date less than 7 days away gives users too little notice; it needs a platform Owner.");
         return null;
     }
