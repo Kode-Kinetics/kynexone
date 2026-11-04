@@ -19,6 +19,8 @@ export interface FixtureOptions {
   empty?: boolean;
   /** Entities whose list request answers 500 until `ctl.down` is cleared. */
   down?: Entity[];
+  /** A grade's pay-scale lines answer 500 until `ctl.payScaleDown` is cleared. */
+  payScaleDown?: boolean;
 }
 
 export interface Recorded { method: string; path: string; body: any }
@@ -62,6 +64,7 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
   } as Record<Entity, any[]>;
   const ctl = {
     down: new Set<Entity>(options.down ?? []),
+    payScaleDown: !!options.payScaleDown,
     /** The next write answers this once. */
     refuse: null as null | { status: number; body: unknown },
     /** While set, every write waits for it (hold a save in flight). */
@@ -101,7 +104,7 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
 
     // The grade editor's own reads: no pay lines yet, and no pay components to pick from.
-    if (/^\/api\/grades\/[^/]+\/pay-scale$/.test(p)) return method === 'GET' ? reply([]) : reply({ count: 0, structure: null });
+    if (/^\/api\/grades\/[^/]+\/pay-scale$/.test(p)) return method === 'GET' ? (ctl.payScaleDown ? reply({ code: 'internal_error', message: 'boom', traceId: 't-2' }, 500) : reply([])) : reply({ count: 0, structure: null });
     if (p === '/api/grades/package-components') return reply([]);
 
     const collections: Array<[Entity, string, boolean]> = [
@@ -183,3 +186,8 @@ export const WRITE_PERMISSION_WITHOUT_ROLE = { roles: ['HR Officer'], permission
  * Locations Add, Edit, Remove and Restore are gated by permission alone (SetupSettingsController), so they are not.
  */
 export const CUSTOM_ROLE_WITH_PERMISSIONS = { roles: ['Org Custodian'], permissions: MANAGER_PERMISSIONS };
+
+/** Labels in `scope` that name nothing: not wrapping a control and not pointing (for=) at an element that exists. The read-only Status is not a control. */
+export const orphanLabels = (scope: Locator) => scope.locator('label').evaluateAll((labels) => (labels as HTMLLabelElement[])
+  .filter((l) => !l.querySelector('input,select,textarea') && !(l.htmlFor && document.getElementById(l.htmlFor)))
+  .map((l) => (l.textContent ?? '').trim()).filter((text) => text !== 'Status'));

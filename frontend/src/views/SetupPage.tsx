@@ -542,9 +542,11 @@ function CompaniesTab() {
             {!canSetErpCode && <p className="mt-1 text-xs text-slate-500">{t('Only a finance user who manages the general ledger can change this code.')}</p>}
           </FormField>
           <FormField label={t('Work Email Domain (optional)')} info={t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}>
+            {(id) => (<>
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">
               <span className="grid place-items-center bg-slate-50 px-2.5 text-sm font-medium text-slate-400 dark:bg-white/[0.04] dark:text-slate-500">@</span>
               <input
+                id={id}
                 type="text"
                 aria-label={t('Work Email Domain (optional)')}
                 value={form.emailDomain ?? ''}
@@ -561,6 +563,7 @@ function CompaniesTab() {
                 ? t('Enter a bare domain like "acme.sa" — no "@", scheme, or path.')
                 : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}
             </p>
+            </>)}
           </FormField>
           <FormField label={t('Work Email Pattern (optional)')} info={t('Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.')}>
             <select aria-label={t('Work Email Pattern (optional)')} value={form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN} onChange={(e) => f('workEmailPattern', e.target.value)} className="select w-full">
@@ -586,7 +589,7 @@ function CompaniesTab() {
 
 // ─── Branches ────────────────────────────────────────────────────────────────
 
-function BranchesTab({ companies }: { companies: CompanyDto[] }) {
+function BranchesTab({ companies, companiesError, onRetryCompanies }: { companies: CompanyDto[]; companiesError?: string; onRetryCompanies?: () => void }) {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'branch', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
@@ -645,6 +648,7 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   return (
     <>
       {removal.notice}
+      {companiesError && <LoadError message={`${t('The companies could not be loaded.')} ${companiesError}`} onRetry={() => onRetryCompanies?.()} />}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
         onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
@@ -901,10 +905,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
 // ─── Designations ─────────────────────────────────────────────────────────────
 
-function DesignationsTab({ grades }: { grades: GradeDto[] }) {
+function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: GradeDto[]; gradesError?: string; onRetryGrades?: () => void }) {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'designation', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  // Write controls mirror DesignationsController: create, update, remove, restore and import are Admin or HR Manager; Remove and Restore also need organization.delete.
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DesignationDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -920,12 +926,13 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await designationsApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await designationsApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -944,7 +951,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
       if (editing) await designationsApi.update(editing.id, form);
       else await designationsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -954,16 +961,18 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
+      {gradesError && <LoadError message={`${t('The grades could not be loaded.')} ${gradesError}`} onRetry={() => onRetryGrades?.()} />}
       <TableShell
         columns={[msg('Code'), msg('Title'), msg('Company'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Designation')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
+            blockedReason={access.writeBlockedReason}
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
@@ -980,7 +989,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{t('Manager')}</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={d.titleEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
+              <OrgRowActions name={d.titleEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={access.writeBlockedReason ?? writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                   onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.titleEn })} onRestore={() => void removal.restore({ id: d.id, name: d.titleEn })} />
             </td>
           </tr>
@@ -991,9 +1000,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Designation') : t('Add Designation')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -1001,8 +1011,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, gradeId: undefined, departmentId: undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, gradeId: undefined, departmentId: undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="SWE-L3" />
@@ -1011,10 +1023,12 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <input type="text" value={form.titleEn} onChange={(e) => f('titleEn', e.target.value)} className="input w-full" placeholder="Software Engineer" />
           </FormField>
           <FormField label={t('Title (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.titleEn} kind="organization-label" onSuggest={(s) => f('titleAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.titleEn} kind="organization-label" onSuggest={(s) => f('titleAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Job Grade')}>
             <input type="text" value={form.jobGrade ?? ''} onChange={(e) => f('jobGrade', e.target.value)} className="input w-full" placeholder="L3" />
@@ -1052,6 +1066,8 @@ function GradesTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'grade', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  // Write controls mirror GradesController: create, update, pay scale, remove, restore and import are Admin or HR Manager; Remove and Restore also need organization.delete.
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1074,26 +1090,30 @@ function GradesTab() {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  // The open grade's pay lines could not be read: saving would replace them with nothing, so Save stays off.
+  const [payScaleFailed, setPayScaleFailed] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await gradesApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await gradesApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm({ ...emptyGrade(), companyId: org.defaultCompanyId || undefined }); setPayScale([]); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyGrade(), companyId: org.defaultCompanyId || undefined }); setPayScale([]); setPayScaleFailed(false); setError(''); setModalOpen(true); };
   const openEdit = async (g: GradeDto) => {
     setEditing(g);
     setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive, companyId: g.companyId ?? undefined });
     setPayScale([]);
+    setPayScaleFailed(false);
     setError('');
     setModalOpen(true);
     try {
       const comps = await gradesApi.getPayScale(g.id);
       setPayScale(comps.map((c: GradePayScaleComponentDto) => { const rest = { ...c } as Partial<GradePayScaleComponentDto>; delete rest.id; return rest as Omit<GradePayScaleComponentDto, 'id'>; }));
-    } catch { /* empty pay scale */ }
+    } catch { if (!benefitsByGrade) setPayScaleFailed(true); }
   };
   useEffect(() => {
     if (!requestedGrade || openedRequested.current === requestedGrade || loading) return;
@@ -1121,7 +1141,7 @@ function GradesTab() {
       gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, lines);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
@@ -1133,10 +1153,11 @@ function GradesTab() {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Grade')} loading={loading} loadError={loadError} onRetry={load} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
           <ImportExportToolbar
+            blockedReason={access.writeBlockedReason}
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
@@ -1154,18 +1175,21 @@ function GradesTab() {
             <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={g.name} isActive={g.isActive} busy={removal.busyId === g.id} blockedReason={writeAccess(g.companyId).reason}
+              <OrgRowActions name={g.name} isActive={g.isActive} busy={removal.busyId === g.id} blockedReason={access.writeBlockedReason ?? writeAccess(g.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                   onEdit={() => openEdit(g)} onRemove={() => void removal.remove({ id: g.id, name: g.name })} onRestore={() => void removal.restore({ id: g.id, name: g.name })} />
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} closeDisabled={saving} footer={<><button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving || payScaleFailed} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
+        {payScaleFailed && <FormError error={t('The pay scale lines could not be loaded, so saving is turned off to keep them. Close this window and open the grade again.')} />}
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <div className="grid grid-cols-2 gap-3">
             <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
@@ -1407,10 +1431,12 @@ function MasterDataTab() {
           <FormField label={t('Code')} required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
           <FormField label={t('Name (English)')} required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
           <FormField label={t('Name (Arabic)')}>
+            {(id) => (
             <div className="flex items-stretch gap-1.5">
-              <input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <input id={id} value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={typeForm.nameEn} kind="organization-label" onSuggest={(s) => setTypeForm(x => ({ ...x, nameAr: s }))} />
             </div>
+            )}
           </FormField>
           <FormField label={t('Description')}><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
@@ -1436,10 +1462,12 @@ function MasterDataTab() {
           </FormField>
           <FormField label={t('Value (English)')} required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
           <FormField label={t('Value (Arabic)')}>
+            {(id) => (
             <div className="flex items-stretch gap-1.5">
-              <input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <input id={id} value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={valueForm.valueEn} kind="organization-label" onSuggest={(s) => setValueForm(x => ({ ...x, valueAr: s }))} />
             </div>
+            )}
           </FormField>
           <FormField label={t('Sort order')}><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
@@ -1751,7 +1779,7 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
         footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
+          <FormField label={t('Country')} required>{(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} />}</FormField>
           <FormField label={t('Work Week')}><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
           <FormField label={t('Weekend Days')}><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
@@ -2580,6 +2608,11 @@ export function SetupPage() {
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  // A failed lookup is shown on the tab that needs it, with Retry, instead of reading as "no companies" / "no grades".
+  const [companiesError, setCompaniesError] = useState('');
+  const [gradesError, setGradesError] = useState('');
+  const [lookupRetry, setLookupRetry] = useState(0);
+  const retryLookups = useCallback(() => setLookupRetry(n => n + 1), []);
   const [editorDirty, setEditorDirty] = useState(false);
   const discardSetupWork = useCallback(() => setEditorDirty(false), []);
   // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
@@ -2627,6 +2660,7 @@ export function SetupPage() {
       setCompanies([]);
       setGrades([]);
       setCostCenters([]);
+      setCompaniesError(''); setGradesError('');
       return;
     }
     let active = true;
@@ -2634,21 +2668,22 @@ export function SetupPage() {
     setCompanies([]);
     setGrades([]);
     setCostCenters([]);
+    setCompaniesError(''); setGradesError('');
     const refreshCompanies = () => {
       if (!canReadCompanies) return;
       const request = ++companiesRequest;
       companiesApi.listAll()
-        .then(rows => { if (active && request === companiesRequest) setCompanies(rows); })
-        .catch(() => { if (active && request === companiesRequest) setCompanies([]); });
+        .then(rows => { if (active && request === companiesRequest) { setCompanies(rows); setCompaniesError(''); } })
+        .catch(err => { if (active && request === companiesRequest) { setCompanies([]); setCompaniesError(describeApiError(err, t)); } });
     };
     refreshCompanies();
     window.addEventListener('kynexone:companies-changed', refreshCompanies);
     if (canWrite) {
-      gradesApi.listAll().then(rows => { if (active) setGrades(rows); }).catch(() => { if (active) setGrades([]); });
+      gradesApi.listAll().then(rows => { if (active) setGrades(rows); }).catch(err => { if (active) { setGrades([]); setGradesError(describeApiError(err, t)); } });
       costCentersApi.listAll().then(rows => { if (active) setCostCenters(rows); }).catch(() => { if (active) setCostCenters([]); });
     }
     return () => { active = false; window.removeEventListener('kynexone:companies-changed', refreshCompanies); };
-  }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable]);
+  }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable, lookupRetry, t]);
 
   const tabHref = (tab: Tab) => {
     const params = new URLSearchParams(searchParams?.toString());
@@ -2799,9 +2834,9 @@ export function SetupPage() {
     switch (id) {
       case 'establishment': return <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />;
       case 'companies': return <CompaniesTab />;
-      case 'branches': return <BranchesTab companies={companies} />;
+      case 'branches': return <BranchesTab companies={companies} companiesError={companiesError} onRetryCompanies={retryLookups} />;
       case 'departments': return <DepartmentsTab costCenters={costCenters} />;
-      case 'designations': return <DesignationsTab grades={grades} />;
+      case 'designations': return <DesignationsTab grades={grades} gradesError={gradesError} onRetryGrades={retryLookups} />;
       case 'grades': return <GradesTab />;
       case 'costCenters': return <CostCentreMasterPanel companies={companies} />;
       case 'masterData': return <MasterDataTab />;

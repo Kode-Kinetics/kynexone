@@ -162,3 +162,13 @@ test('a custom role holding every organization permission but not the Admin or H
   await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
   await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
 });
+
+test('when the company list cannot be loaded, the tab says so and Retry brings the companies back', async ({ page }) => {
+  const { ctl } = await boot(page, 'branches', { down: ['companies'] });
+  const notice = page.getByRole('alert').filter({ hasText: 'The companies could not be loaded.' });
+  await expect(notice).toBeVisible();
+  ctl.down.clear();
+  await notice.getByRole('button', { name: 'Retry' }).click();
+  await expect(notice).toBeHidden();
+  await expect(page.getByRole('combobox', { name: 'Filter by company' })).toBeVisible();
+});

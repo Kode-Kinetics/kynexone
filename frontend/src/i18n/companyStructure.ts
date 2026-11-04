@@ -6,6 +6,9 @@
  */
 const ar: Record<string, string> = {
   'Changing this needs the organization.write permission.': 'يتطلب التعديل صلاحية organization.write.',
+  'The companies could not be loaded.': 'تعذّر تحميل الشركات.',
+  'The grades could not be loaded.': 'تعذّر تحميل الدرجات.',
+  'The pay scale lines could not be loaded, so saving is turned off to keep them. Close this window and open the grade again.': 'تعذّر تحميل بنود سلّم الرواتب، لذلك أُوقف الحفظ حفاظاً عليها. أغلق هذه النافذة وافتح الدرجة من جديد.',
   'You do not have permission to remove or restore this.': 'ليست لديك صلاحية حذف هذا العنصر أو استعادته.',
   // Companies tab: validation and save messages
   'Registration number': 'رقم التسجيل',

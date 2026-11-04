@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field, companySa, READ_ONLY, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, orphanLabels, companySa, READ_ONLY, CUSTOM_ROLE_WITH_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Companies against a mocked API. New companies are created by the guided wizard, not a dialog. */
 
@@ -130,4 +130,10 @@ test('a custom role holding every organization permission but not the Admin or H
   await expect(page.getByRole('button', { name: 'Create company', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: /^Edit/ }).first()).toBeDisabled();
   await expect(page.getByTestId('write-blocked-reason')).toContainText('Admin or HR Manager');
+});
+
+test('every label in the company dialog names a control', async ({ page }) => {
+  await boot(page, 'companies');
+  await page.getByRole('button', { name: /^Edit/ }).first().click();
+  expect(await orphanLabels(page.getByRole('dialog'))).toEqual([]);
 });
