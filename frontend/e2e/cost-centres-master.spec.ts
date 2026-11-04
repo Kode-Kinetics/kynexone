@@ -663,6 +663,38 @@ test('Delete says which happened: a cost centre nothing uses is deleted, one tha
   await expect(page.getByRole('status').filter({ hasText: 'Deleted ORPHAN.' })).toHaveCount(0);
 });
 
+test('Arabic: the new messages are translated (blocked reasons, restore, delete outcome, discard question)', async ({ page }) => {
+  await boot(page, { locale: 'ar', del: false });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'OPS');
+  const restore = page.getByRole('menuitem', { name: /^استعادة/ });
+  await expect(restore).toContainText('يتطلب حذف مركز التكلفة أو استعادته صلاحية organization.delete.');
+  await page.keyboard.press('Escape');
+  await tid(page, 'cc-master-new').click();
+  await tid(page, 'cc-form-name').fill('تسويق');
+  await page.keyboard.press('Escape');
+  const ask = page.getByRole('dialog', { name: 'هل تريد تجاهل التغييرات؟' });
+  await expect(ask).toContainText('ما أدخلته لم يُحفظ بعد.');
+  await expect(ask.getByRole('button', { name: 'متابعة التعديل' })).toBeVisible();
+  await expect(ask.getByRole('button', { name: 'تجاهل التغييرات' })).toBeVisible();
+});
+
+test('Arabic: Delete says whether it deleted or turned the cost centre off', async ({ page }) => {
+  await boot(page, { locale: 'ar' });
+  await tid(page, 'cc-master-view-flat').click();
+  await openMenu(page, 'ORPHAN');
+  await page.getByRole('menuitem', { name: 'حذف', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('أُنشئ بالخطأ');
+  await page.getByRole('dialog', { name: 'حذف ORPHAN؟' }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'تم حذف ORPHAN.' })).toBeVisible();
+  await openMenu(page, 'SALES');
+  await page.getByRole('menuitem', { name: 'حذف', exact: true }).click();
+  await tid(page, 'cc-form-reason').fill('دمج');
+  await page.getByRole('dialog', { name: 'حذف SALES؟' }).getByRole('button', { name: 'حذف', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'تم إيقاف SALES.' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'يمكنك استعادته في أي وقت.' })).toBeVisible();
+});
+
 // ═════════════════════════════ Screen 1: restore ═════════════════════════════
 
 test('Restore: a turned-off cost centre offers Restore (not Deactivate) in its menu, calls the restore route and turns the row back on', async ({ page }) => {
