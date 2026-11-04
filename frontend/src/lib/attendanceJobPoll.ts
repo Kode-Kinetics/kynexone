@@ -50,7 +50,11 @@ export function parseJobSnapshot(raw: unknown): JobSnapshot | null {
   return { id, state, completed, total, percent, message: str(r.progressMessage), error: state === 'failed' ? str(r.lastError) : null, result };
 }
 
-export type JobPollPhase = 'idle' | 'enqueuing' | 'polling' | 'succeeded' | 'failed' | 'cancelled';
+/**
+ * `untracked`: the job was accepted, but the caller may not read job status (attendance.write without
+ * attendance.read answers 403 on GET /api/jobs/{id}). It is neither success nor failure: nothing is known.
+ */
+export type JobPollPhase = 'idle' | 'enqueuing' | 'polling' | 'succeeded' | 'failed' | 'cancelled' | 'untracked';
 
 export interface JobPollState {
   phase: JobPollPhase;
@@ -61,18 +65,28 @@ export interface JobPollState {
   /** Consecutive polls that failed or could not be read. */
   failures: number;
   error: string | null;
+  /** Soft timeout: no progress change for STALL_AFTER_MS. The job may still be running; this is not a failure. */
+  stalled: boolean;
+  /** Clock reading (ms) of the last progress change; null when the caller supplies no clock. */
+  lastProgressAt: number | null;
 }
 
-export const initialJobPoll: JobPollState = { phase: 'idle', jobId: null, job: null, deduplicated: false, failures: 0, error: null };
+export const initialJobPoll: JobPollState = { phase: 'idle', jobId: null, job: null, deduplicated: false, failures: 0, error: null, stalled: false, lastProgressAt: null };
+
+/** About ten minutes without a progress change before the screen says the job is taking longer than usual. */
+export const STALL_AFTER_MS = 10 * 60_000;
 
 /** Consecutive failed polls tolerated before the screen stops and says it lost contact with the job. */
 export const MAX_POLL_FAILURES = 5;
 
 export type JobPollAction =
   | { type: 'enqueue' }
-  | { type: 'enqueued'; jobId: string; deduplicated: boolean }
+  | { type: 'enqueued'; jobId: string; deduplicated: boolean; now?: number }
   | { type: 'enqueueFailed'; error: string }
-  | { type: 'snapshot'; job: JobSnapshot }
+  | { type: 'snapshot'; job: JobSnapshot; now?: number }
+  | { type: 'checkStall'; now: number }
+  /** 403 on the status read: the job exists but this caller cannot watch it. */
+  | { type: 'pollDenied' }
   /** `fatal`: retrying cannot help (job not visible to the caller, not allowed). */
   | { type: 'pollFailed'; error: string; fatal: boolean }
   | { type: 'reset' };
@@ -88,10 +102,15 @@ export function jobPollReducer(state: JobPollState, action: JobPollAction): JobP
     case 'enqueueFailed':
       return { ...initialJobPoll, phase: 'failed', error: action.error };
     case 'enqueued':
-      return { ...initialJobPoll, phase: 'polling', jobId: action.jobId, deduplicated: action.deduplicated };
+      return { ...initialJobPoll, phase: 'polling', jobId: action.jobId, deduplicated: action.deduplicated, lastProgressAt: action.now ?? null };
     case 'snapshot': {
       if (TERMINAL.includes(state.phase) || state.phase !== 'polling' || action.job.id !== state.jobId) return state;
-      const base = { ...state, job: action.job, failures: 0 };
+      const changed = !state.job || state.job.state !== action.job.state || state.job.completed !== action.job.completed || state.job.total !== action.job.total;
+      const base = {
+        ...state, job: action.job, failures: 0,
+        stalled: changed ? false : state.stalled,
+        lastProgressAt: changed && action.now !== undefined ? action.now : state.lastProgressAt,
+      };
       switch (action.job.state) {
         case 'succeeded': return { ...base, phase: 'succeeded', error: null };
         case 'failed': return { ...base, phase: 'failed', error: action.job.error };
@@ -99,6 +118,12 @@ export function jobPollReducer(state: JobPollState, action: JobPollAction): JobP
         default: return { ...base, phase: 'polling' };
       }
     }
+    case 'checkStall': {
+      if (state.phase !== 'polling' || state.stalled || state.lastProgressAt === null) return state;
+      return action.now - state.lastProgressAt >= STALL_AFTER_MS ? { ...state, stalled: true } : state;
+    }
+    case 'pollDenied':
+      return state.phase === 'polling' ? { ...state, phase: 'untracked', error: null } : state;
     case 'pollFailed': {
       if (state.phase !== 'polling') return state;
       const failures = state.failures + 1;

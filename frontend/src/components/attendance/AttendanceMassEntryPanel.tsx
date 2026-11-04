@@ -1,11 +1,12 @@
 'use client';
 
-import { FormEvent, useId, useState } from 'react';
+import { useId, useState } from 'react';
 import { Users } from 'lucide-react';
-import { attendanceApi, type AttendanceBulkEntryResult } from '../../api/attendance';
+import { attendanceApi } from '../../api/attendance';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
+import { outcomeTone } from '../../lib/attendanceBulkResult';
 import { describeBulkError } from '../../lib/attendanceBulkError';
 import {
   MASS_ENTRY_MAX_DAYS,
@@ -14,13 +15,14 @@ import {
   MASS_ENTRY_SUBMIT_KEY,
   MASS_ENTRY_SUMMARY_KEY,
   massEntryState,
+  normaliseBulkEntryResult,
+  tenantToday,
+  type BulkEntryResultShape,
 } from '../../lib/attendanceBulkEntry';
 import { selectedIds, type Selection } from '../../lib/attendanceSelection';
 import { StatusChip } from '../StatusChip';
 import { EmployeeMultiSelect } from './EmployeeMultiSelect';
 import { SectionTitle } from './attendanceUi';
-
-const today = () => new Date().toISOString().slice(0, 10);
 
 /**
  * Mass entry (attendance.write): the same in time, and optionally out time, for chosen employees over a date
@@ -33,14 +35,16 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
   const { defaultTimezone } = useTenantSettings();
   const ids = useId();
   const [selection, setSelection] = useState<Selection>(new Map());
-  const [fromDate, setFromDate] = useState(today);
-  const [toDate, setToDate] = useState(today);
+  const [fromDate, setFromDate] = useState(() => tenantToday(defaultTimezone));
+  const [toDate, setToDate] = useState(() => tenantToday(defaultTimezone));
   const [inTime, setInTime] = useState('09:00');
   const [outTime, setOutTime] = useState('');
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [result, setResult] = useState<AttendanceBulkEntryResult | null>(null);
+  const [result, setResult] = useState<BulkEntryResultShape | null>(null);
+  // The employee and department lists are fetched by the multi-select, which mounts only once this is opened.
+  const [open, setOpen] = useState(false);
 
   const state = massEntryState({ employees: selection.size, fromDate, toDate, inTime, outTime, reason, busy, canWrite });
   const { plan } = state;
@@ -56,17 +60,16 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
   };
   const problem = problemText();
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
     if (!state.canSubmit) return;
     setBusy(true);
     setError('');
     setResult(null);
     try {
-      const done = await attendanceApi.events.bulkEntry({
+      const done = normaliseBulkEntryResult(await attendanceApi.events.bulkEntry({
         employeeIds: selectedIds(selection), fromDate, toDate, inTime,
         outTime: outTime || undefined, reason: reason.trim(),
-      });
+      }));
       setResult(done);
       if (done.created > 0) onRecorded();
     } catch (err) {
@@ -78,8 +81,18 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
 
   if (!canWrite) return null;
 
+  if (!open) {
+    return (
+      <section className="surface p-4">
+        <SectionTitle icon={Users} title={t('Mass entry')} subtitle={t('Record the same attendance for many employees at once. A reason is required and is kept in the audit trail.')} />
+        <button type="button" className="btn-secondary mt-4 w-full justify-center" onClick={() => setOpen(true)} aria-expanded={false}>{t('Open mass entry')}</button>
+      </section>
+    );
+  }
+
   return (
-    <form onSubmit={submit} className="surface p-4" aria-busy={busy}>
+    // Deliberately not a form element: Enter in the search box or on a checkbox must never record punches.
+    <section className="surface p-4" aria-busy={busy}>
       <SectionTitle icon={Users} title={t('Mass entry')} subtitle={t('Record the same attendance for many employees at once. A reason is required and is kept in the audit trail.')} />
       <div className="mt-4 space-y-3">
         <EmployeeMultiSelect id={`${ids}-mass`} label={t('Employees to include')} selection={selection} onChange={setSelection} max={MASS_ENTRY_MAX_EMPLOYEES} disabled={busy} />
@@ -88,7 +101,7 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
           <input type="date" className="input w-full" value={toDate} onChange={(e) => setToDate(e.target.value)} aria-label={t('To date')} disabled={busy} />
           <div>
             <label htmlFor={`${ids}-in`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('In time')}</label>
-            <input id={`${ids}-in`} type="time" className="input w-full" value={inTime} onChange={(e) => setInTime(e.target.value)} disabled={busy} required />
+            <input id={`${ids}-in`} type="time" className="input w-full" value={inTime} onChange={(e) => setInTime(e.target.value)} disabled={busy} />
           </div>
           <div>
             <label htmlFor={`${ids}-out`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Out time (optional)')}</label>
@@ -100,14 +113,14 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
         <div>
           <label htmlFor={`${ids}-reason`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Reason (required)')}</label>
           <textarea id={`${ids}-reason`} className="input min-h-20 w-full" maxLength={MASS_ENTRY_MAX_REASON} value={reason} onChange={(e) => setReason(e.target.value)}
-            placeholder={t('For example: the biometric device was offline')} disabled={busy} required />
+            placeholder={t('For example: the biometric device was offline')} disabled={busy} />
         </div>
 
         {problem && selection.size > 0 && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{problem}</p>}
         {plan.problem === null && (
-          <p role="status" className="text-sm font-medium text-slate-800 dark:text-slate-100">{t(MASS_ENTRY_SUMMARY_KEY, summaryParams)}</p>
+          <p className="text-sm font-medium text-slate-800 dark:text-slate-100">{t(MASS_ENTRY_SUMMARY_KEY, summaryParams)}</p>
         )}
-        <button type="submit" disabled={!state.canSubmit} className="btn-primary w-full justify-center">
+        <button type="button" onClick={submit} disabled={!state.canSubmit} className="btn-primary w-full justify-center">
           {plan.problem === null ? t(MASS_ENTRY_SUBMIT_KEY, summaryParams) : t('Mass entry')}
         </button>
         {plan.problem === 'no-employees' && <p className="text-xs text-slate-500">{t('Select at least one employee.')}</p>}
@@ -116,7 +129,7 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
         {result && (
           <div className="space-y-2" role="status">
             <div className="flex flex-wrap gap-1.5">
-              <StatusChip tone="emerald" label={t('Requested {requested}: {created} recorded, {duplicates} already recorded, {failed} refused.', { requested: result.requested, created: result.created, duplicates: result.duplicates, failed: result.failed })} />
+              <StatusChip tone={outcomeTone(result.created, result.failed)} label={t('Requested {requested}: {created} recorded, {duplicates} already recorded, {failed} refused.', { requested: result.requested, created: result.created, duplicates: result.duplicates, failed: result.failed })} />
             </div>
             {result.errors.length > 0 && (
               <div className="max-h-56 overflow-auto rounded-lg border border-slate-200 dark:border-white/10">
@@ -144,6 +157,6 @@ export function AttendanceMassEntryPanel({ canWrite, onRecorded }: { canWrite: b
           </div>
         )}
       </div>
-    </form>
+    </section>
   );
 }

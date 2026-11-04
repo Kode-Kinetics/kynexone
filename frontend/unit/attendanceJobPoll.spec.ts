@@ -119,3 +119,54 @@ test('poll delay backs off after failures and is capped', () => {
 test('reset returns to idle', () => {
   expect(jobPollReducer({ ...initialJobPoll, phase: 'failed', error: 'x' }, { type: 'reset' })).toEqual(initialJobPoll);
 });
+
+// ── Review round: soft timeout, queued, and "started but cannot view progress" ──────────────────────────────
+import { STALL_AFTER_MS } from '../src/lib/attendanceJobPoll';
+
+const MIN = 60_000;
+
+test('a queued job is reported as queued, not as progress', () => {
+  expect(parseJobSnapshot(dto({ status: 'Queued', progressTotal: null, percentComplete: null, progressCompleted: 0 }))?.state).toBe('queued');
+});
+
+test('soft timeout: no progress change for about 10 minutes marks the poll stalled, but keeps polling', () => {
+  expect(STALL_AFTER_MS).toBe(10 * MIN);
+  let s = jobPollReducer(jobPollReducer(initialJobPoll, { type: 'enqueue' }), { type: 'enqueued', jobId: 'job-1', deduplicated: false, now: 0 });
+  s = jobPollReducer(s, { type: 'snapshot', job: parseJobSnapshot(dto())!, now: 1000 });
+  expect(jobPollReducer(s, { type: 'checkStall', now: 9 * MIN }).stalled).toBe(false);
+  const stalled = jobPollReducer(s, { type: 'checkStall', now: 1000 + 10 * MIN });
+  expect(stalled.stalled).toBe(true);
+  expect(stalled.phase).toBe('polling');
+  expect(shouldKeepPolling(stalled)).toBe(true);
+  expect(stalled.error).toBeNull();
+});
+
+test('soft timeout: any progress change clears the stall and restarts the clock', () => {
+  let s = jobPollReducer(jobPollReducer(initialJobPoll, { type: 'enqueue' }), { type: 'enqueued', jobId: 'job-1', deduplicated: false, now: 0 });
+  s = jobPollReducer(s, { type: 'snapshot', job: parseJobSnapshot(dto())!, now: 0 });
+  s = jobPollReducer(s, { type: 'checkStall', now: 11 * MIN });
+  expect(s.stalled).toBe(true);
+  s = jobPollReducer(s, { type: 'snapshot', job: parseJobSnapshot(dto({ progressCompleted: 5, percentComplete: 50 }))!, now: 11 * MIN });
+  expect(s.stalled).toBe(false);
+  expect(jobPollReducer(s, { type: 'checkStall', now: 15 * MIN }).stalled).toBe(false);
+});
+
+test('soft timeout: the same answer again is not progress', () => {
+  let s = jobPollReducer(jobPollReducer(initialJobPoll, { type: 'enqueue' }), { type: 'enqueued', jobId: 'job-1', deduplicated: false, now: 0 });
+  s = jobPollReducer(s, { type: 'snapshot', job: parseJobSnapshot(dto())!, now: 0 });
+  s = jobPollReducer(s, { type: 'snapshot', job: parseJobSnapshot(dto())!, now: 9 * MIN });
+  expect(jobPollReducer(s, { type: 'checkStall', now: 10 * MIN }).stalled).toBe(true);
+});
+
+test('a terminal job is never marked stalled', () => {
+  const done = jobPollReducer({ ...initialJobPoll, phase: 'polling', jobId: 'job-1', lastProgressAt: 0 }, { type: 'snapshot', job: parseJobSnapshot(dto({ status: 'Succeeded' }))!, now: 1 });
+  expect(jobPollReducer(done, { type: 'checkStall', now: 99 * MIN }).stalled).toBe(false);
+});
+
+test('403 on the job status means "started, cannot view progress": its own phase, not a failure', () => {
+  const s = jobPollReducer({ ...initialJobPoll, phase: 'polling', jobId: 'job-1' }, { type: 'pollDenied' });
+  expect(s.phase).toBe('untracked');
+  expect(s.jobId).toBe('job-1');
+  expect(s.error).toBeNull();
+  expect(shouldKeepPolling(s)).toBe(false);
+});

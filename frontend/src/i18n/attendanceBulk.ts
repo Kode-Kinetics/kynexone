@@ -33,7 +33,14 @@ export const attendanceBulk = {
     'We lost contact with the processing job. It may still be running; check the daily records in a moment.': 'We lost contact with the processing job. It may still be running; check the daily records in a moment.',
     'Processing was cancelled.': 'Processing was cancelled.',
     'Could not start processing.': 'Could not start processing.',
-    'You can only process employees within your own access. Choose “Selected employees” and pick people you manage.': 'You can only process employees within your own access. Choose “Selected employees” and pick people you manage.',
+
+    "You don't have permission to process attendance for this selection.": "You don't have permission to process attendance for this selection.",
+    'Queued — waiting for a worker.': 'Queued — waiting for a worker.',
+    'Processing is taking longer than usual. The job may still be running; check the daily records later.': 'Processing is taking longer than usual. The job may still be running; check the daily records later.',
+    'Processing started, but you do not have access to view its progress. Check the daily records later.': 'Processing started, but you do not have access to view its progress. Check the daily records later.',
+    'Processed {processed}, expected {expected}. Check the daily records.': 'Processed {processed}, expected {expected}. Check the daily records.',
+    'Download error report (first {shown} of {total})': 'Download error report (first {shown} of {total})',
+    'Open mass entry': 'Open mass entry',
 
     // CSV import
     'Download the template, fill it in, check it, then import the valid rows.': 'Download the template, fill it in, check it, then import the valid rows.',
@@ -106,7 +113,14 @@ export const attendanceBulk = {
     'We lost contact with the processing job. It may still be running; check the daily records in a moment.': 'فقدنا الاتصال بمهمة المعالجة. قد تكون لا تزال قيد التنفيذ؛ راجع السجلات اليومية بعد قليل.',
     'Processing was cancelled.': 'أُلغيت المعالجة.',
     'Could not start processing.': 'تعذّر بدء المعالجة.',
-    'You can only process employees within your own access. Choose “Selected employees” and pick people you manage.': 'يمكنك معالجة الموظفين ضمن صلاحياتك فقط. اختر «موظفون محددون» ثم حدّد من تديرهم.',
+
+    "You don't have permission to process attendance for this selection.": 'ليست لديك صلاحية معالجة الحضور لهذا التحديد.',
+    'Queued — waiting for a worker.': 'في قائمة الانتظار — بانتظار توفّر منفّذ.',
+    'Processing is taking longer than usual. The job may still be running; check the daily records later.': 'تستغرق المعالجة وقتًا أطول من المعتاد. قد تكون المهمة لا تزال قيد التنفيذ؛ راجع السجلات اليومية لاحقًا.',
+    'Processing started, but you do not have access to view its progress. Check the daily records later.': 'بدأت المعالجة، لكن ليست لديك صلاحية عرض تقدّمها. راجع السجلات اليومية لاحقًا.',
+    'Processed {processed}, expected {expected}. Check the daily records.': 'تمت معالجة {processed} والمتوقع {expected}. راجع السجلات اليومية.',
+    'Download error report (first {shown} of {total})': 'تنزيل تقرير الأخطاء (أول {shown} من {total})',
+    'Open mass entry': 'فتح الإدخال الجماعي',
 
     // CSV import
     'Download the template, fill it in, check it, then import the valid rows.': 'نزّل القالب واملأه ثم تحقّق منه، وبعدها استورد الصفوف الصالحة.',

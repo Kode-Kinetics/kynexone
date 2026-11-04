@@ -81,3 +81,33 @@ export function massEntryState(input: MassEntryStateInput): MassEntryState {
     && (input.outTime === '' || hasOut) && reason.length > 0 && reason.length <= MASS_ENTRY_MAX_REASON;
   return { plan, canSubmit, overnight: hasOut && HH_MM.test(input.inTime) && input.outTime <= input.inTime };
 }
+
+/**
+ * Today's calendar date (yyyy-MM-dd) in the tenant's time zone. `toISOString()` is the UTC day, which is
+ * yesterday for the first three hours of a Riyadh morning. An unknown zone falls back to the UTC day.
+ */
+export function tenantToday(timeZone: string, now: Date = new Date()): string {
+  try {
+    if (timeZone) return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  } catch { /* unknown zone */ }
+  return now.toISOString().slice(0, 10);
+}
+
+export interface BulkEntryResultShape {
+  requested: number;
+  created: number;
+  duplicates: number;
+  failed: number;
+  errors: Array<{ employeeCode: string; date: string; message: string }>;
+}
+
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+
+/** Reads a bulk-entry response defensively: a missing list or count must not crash the screen. */
+export function normaliseBulkEntryResult(raw: unknown): BulkEntryResultShape {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    requested: num(r.requested), created: num(r.created), duplicates: num(r.duplicates), failed: num(r.failed),
+    errors: Array.isArray(r.errors) ? (r.errors as BulkEntryResultShape['errors']) : [],
+  };
+}

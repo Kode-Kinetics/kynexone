@@ -101,3 +101,30 @@ export function importGate({ content, validatedContent, preview, busy }: ImportG
     stale: preview !== null && !fresh,
   };
 }
+
+const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+
+/** Reads an import / preview response defensively: a missing list or count must not crash the screen. */
+export function normaliseImportResult(raw: unknown): ImportPreview {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const errors = Array.isArray(r.errors) ? (r.errors as ImportRowError[]) : [];
+  return {
+    batchId: typeof r.batchId === 'string' ? r.batchId : undefined,
+    status: typeof r.status === 'string' ? r.status : undefined,
+    fileName: typeof r.fileName === 'string' ? r.fileName : '',
+    totalRows: count(r.totalRows),
+    validRows: count(r.validRows),
+    importedRows: count(r.importedRows),
+    duplicateRows: count(r.duplicateRows),
+    failedRows: count(r.failedRows),
+    timeZone: typeof r.timeZone === 'string' ? r.timeZone : '',
+    errors,
+  };
+}
+
+/** The server lists at most a few hundred errors; a report holding fewer than `failedRows` is partial and must say so. */
+export function errorReportScope(result: Pick<ImportPreview, 'failedRows' | 'errors'>): { partial: boolean; shown: number; total: number } {
+  const shown = result.errors.length;
+  const total = Math.max(result.failedRows, shown);
+  return { partial: total > shown, shown, total };
+}
