@@ -361,6 +361,12 @@ public class OrganizationStructureImportController : ControllerBase
 
         }
         catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            // A rival writer saved the same code between this import's validation and its insert: the unique index refused the
+            // whole unit (the transaction rolled back, so nothing of this import remains). A conflict the caller can read, not a 500.
+            return Conflict(new { error = Zayra.Api.Application.Organization.OrgCodeConflictException.ErrorCode, message = "A code in this import was just taken by someone else, so nothing was imported. Run the import again to see the current state." });
+        }
 
         // The audit rows (one per entity, then the bulk marker) are written inside ApplyStructureAsync, in the
         // same transaction as the data: there is no committed import without its trail.
