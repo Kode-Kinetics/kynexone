@@ -20,7 +20,7 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Attendance;
 
-public class AttendanceService : IAttendanceService
+public partial class AttendanceService : IAttendanceService
 {
     private readonly ZayraDbContext _db;
     private readonly INotificationService _notifications;
@@ -518,8 +518,7 @@ public class AttendanceService : IAttendanceService
             && _db.Database.CurrentTransaction is not null)
         {
             var lockIdentity = $"attendance-punch:{tenantId:N}:{employee.Id}:{request.PunchTimestampUtc.ToUniversalTime().Ticks}:{direction}:{request.DeviceId?.ToString("N") ?? "self"}";
-            await _db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock(hashtextextended({lockIdentity}, 0))", ct);
+            await AcquirePunchAdvisoryLockAsync(lockIdentity, ct);
         }
 
         var duplicate = await _db.AttendanceRawEvents.AnyAsync(x =>
@@ -604,6 +603,11 @@ public class AttendanceService : IAttendanceService
         }
         return raw;
     }
+
+    /// <summary>The ONE transaction-scoped advisory lock of the punch writers: the exact logical punch (events/push, punch/*), or the tenant's
+    /// bulk writes (import, mass entry). Writes no row; the identity names the caller's own tenant.</summary>
+    private Task AcquirePunchAdvisoryLockAsync(string lockIdentity, CancellationToken ct) =>
+        _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({lockIdentity}, 0))", ct);
 
     /// <summary>
     /// Marks one selfie evidence row used by <paramref name="raw"/>, in the same SaveChanges as the raw event. The rule is
@@ -950,41 +954,6 @@ public class AttendanceService : IAttendanceService
     internal static bool IsUniqueViolation(DbUpdateException ex) =>
         ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation }
         || (ex.InnerException?.GetType().Name == "SqliteException" && ex.InnerException.Message.Contains("UNIQUE constraint failed", StringComparison.Ordinal));
-
-    public async Task<AttendanceImportBatch> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, RequestContext context, CancellationToken ct)
-    {
-        var batch = new AttendanceImportBatch { TenantId = tenantId, FileName = request.FileName, CreatedBy = context.UserId, Status = "Processing" };
-        _db.AttendanceImportBatches.Add(batch);
-        var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var rowNumber = 0;
-        foreach (var row in rows)
-        {
-            rowNumber++;
-            if (rowNumber == 1 && row.Contains("employee", StringComparison.OrdinalIgnoreCase)) continue;
-            batch.TotalRows++;
-            var cells = row.Split(',').Select(x => x.Trim()).ToArray();
-            if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var punchAt))
-            {
-                _db.AttendanceImportErrors.Add(new AttendanceImportError { TenantId = tenantId, ImportBatchId = batch.Id, RowNumber = rowNumber, RawRow = row, ErrorMessage = "Expected employeeCode,punchTimestamp,punchDirection." });
-                batch.FailedRows++;
-                continue;
-            }
-            try
-            {
-                await PushEventAsync(tenantId, new AttendanceRawEventRequest(null, cells[0], null, "CSV import", punchAt.ToUniversalTime(), cells[2], cells.ElementAtOrDefault(3), null, null, null, null, JsonSerializer.Serialize(cells), batch.Id.ToString(), cells.ElementAtOrDefault(4) ?? "CSV", null), context, ct);
-                batch.ImportedRows++;
-            }
-            catch (Exception ex)
-            {
-                _db.AttendanceImportErrors.Add(new AttendanceImportError { TenantId = tenantId, ImportBatchId = batch.Id, RowNumber = rowNumber, RawRow = row, ErrorMessage = ex.Message });
-                batch.FailedRows++;
-            }
-        }
-        batch.Status = batch.FailedRows > 0 ? "CompletedWithErrors" : "Completed";
-        await Audit(tenantId, context, "attendance.import.completed", "AttendanceImportBatch", batch.Id.ToString(), ct);
-        await _db.SaveChangesAsync(ct);
-        return batch;
-    }
 
     public async Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
     {

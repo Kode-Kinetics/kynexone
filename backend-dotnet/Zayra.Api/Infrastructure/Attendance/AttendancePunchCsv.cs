@@ -171,7 +171,8 @@ public static class AttendancePunchCsv
 
     // An explicit ISO zone: the value is an instant already and is taken as written.
     private static readonly Regex ExplicitZone = new(
-        @"^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\s*(Z|z|[+-]\d{2}:\d{2})$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        @"^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?\s*(Z|z|[+-]\d{2}:\d{2})$", RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
 
     private static readonly string[] LocalFormats =
     {
@@ -180,6 +181,13 @@ public static class AttendancePunchCsv
         "d/M/yyyy H:mm", "d/M/yyyy H:mm:ss", "d-M-yyyy H:mm", "d-M-yyyy H:mm:ss",
     };
 
+    // The text is the user's: a pathological value must not hang the request (it is simply not an explicit-zone timestamp).
+    private static bool IsExplicitZone(string text)
+    {
+        try { return ExplicitZone.IsMatch(text); }
+        catch (RegexMatchTimeoutException) { return false; }
+    }
+
     /// <summary>Reads a punch time: an explicit <c>Z</c>/<c>±hh:mm</c> is honoured; anything else is a wall-clock time in
     /// <paramref name="timeZone"/>, year-first or day-first (never month-first).</summary>
     public static bool TryParseTimestamp(string text, TimeZoneInfo timeZone, out DateTime utc, out string? error)
@@ -187,7 +195,7 @@ public static class AttendancePunchCsv
         utc = default;
         error = null;
         text = text.Trim();
-        if (ExplicitZone.IsMatch(text))
+        if (IsExplicitZone(text))
         {
             if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var instant))
             {

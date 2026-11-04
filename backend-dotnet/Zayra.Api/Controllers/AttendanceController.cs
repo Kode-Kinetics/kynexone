@@ -261,21 +261,74 @@ public class AttendanceController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// The CSV template for the punch import: the header and one worked example, built through <see cref="Csv.Template(IReadOnlyList{string}, IReadOnlyList{string})"/>
+    /// so a mismatched example is refused at source (ImportTemplateShapeTests covers it). The example's code is a placeholder: the action
+    /// reads no database or user, which is what lets that test call it without a service graph.
+    /// </summary>
+    [HttpGet("events/import-template")]
+    [HasPermission("attendance.bulk_import")]
+    public IActionResult ImportTemplate() =>
+        CsvDownload.Result(Csv.Template(AttendancePunchCsv.TemplateHeaders, AttendancePunchCsv.TemplateExample), "attendance_punches_import_template.csv");
+
+    /// <summary>The dry run of <see cref="Import"/>: the same reading and judging, and NOTHING is written.</summary>
+    [HttpPost("events/import-preview")]
+    [HasPermission("attendance.bulk_import")]
+    public Task<ActionResult<AttendanceImportResult>> ImportPreview(ImportAttendanceRequest request, CancellationToken ct) =>
+        RunImportAsync(request, commit: false, ct);
+
+    /// <summary>
+    /// Imports a punch file. A row for the importer's OWN record, or for an employee outside their data scope (or not active, or
+    /// unknown: all read alike), is a ROW error: nothing is written for it and the rest of the file proceeds. This replaced an opaque
+    /// whole-file 403.
+    /// </summary>
     [HttpPost("events/import")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: FileName, Source, Status, TotalRows, ImportedRows, FailedRows, CreatedAtUtc. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<AttendanceImportBatch>> Import(ImportAttendanceRequest request, CancellationToken ct)
-    {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (!scope.IsUnrestricted && await HasOutOfScopeImportRowAsync(RequireTenant(), request, scope, ct))
-            return Forbid();
-        // An import carries caller-chosen timestamps; a row for the importer's own record would let them write
-        // their own attendance. Refuse the file rather than silently dropping the row.
-        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), ct);
-        if (self is int ownId && await ImportHasRowForEmployeeAsync(RequireTenant(), request, ownId, ct))
-            return Forbid();
+    public Task<ActionResult<AttendanceImportResult>> Import(ImportAttendanceRequest request, CancellationToken ct) =>
+        RunImportAsync(request, commit: true, ct);
 
-        return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
+    private async Task<ActionResult<AttendanceImportResult>> RunImportAsync(ImportAttendanceRequest request, bool commit, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var authority = await BulkAuthorityAsync(tenantId, ct);
+        try
+        {
+            return commit
+                ? await _attendance.ImportCsvAsync(tenantId, request, authority, Context(), ct)
+                : await _attendance.PreviewImportAsync(tenantId, request, authority, Context(), ct);
+        }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// Mass entry: the same In (+ Out) for a SELECTION of employees over a date range. An explicit selection is a deliberate act, unlike a
+    /// file: ONE id outside the caller's data scope refuses the whole request (403) and nothing is written. The caller's own id, a
+    /// payroll-locked day, a future day or an inactive employee is refused per item. Needs a reason; every punch keeps it.
+    /// </summary>
+    [HttpPost("events/bulk-entry")]
+    [HasPermission("attendance.write")]
+    public async Task<ActionResult<BulkAttendanceEntryResult>> BulkEntry(BulkAttendanceEntryRequest request, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var ids = (request.EmployeeIds ?? Array.Empty<int>()).Distinct().ToList();
+        if (ids.Count == 0) return BadRequest(new { message = "Choose at least one employee." });
+        if (ids.Count > AttendanceService.BulkMaxEmployees)
+            return BadRequest(new { message = $"Mass entry is limited to {AttendanceService.BulkMaxEmployees} employees at a time and this selection has {ids.Count}. Split it into smaller groups." });
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!ids.All(scope.CanAccessEmployee)) return Forbid();
+        var authority = new AttendanceBulkAuthority(scope.IsUnrestricted ? null : scope.AllowedEmployeeIds,
+            await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct));
+        try { return await _attendance.BulkEntryAsync(tenantId, request, authority, Context(), ct); }
+        catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Who is writing, for the bulk routine: the caller's data scope and their own employee record, which no bulk path may write a punch for.</summary>
+    private async Task<AttendanceBulkAuthority> BulkAuthorityAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        return new AttendanceBulkAuthority(scope.IsUnrestricted ? null : scope.AllowedEmployeeIds,
+            await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct));
     }
 
     /// <summary>
@@ -917,31 +970,6 @@ public class AttendanceController : ControllerBase
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-
-    private Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
-        => AnyImportRowAsync(tenantId, request, employeeId => !scope.CanAccessEmployee(employeeId), ct);
-
-    private Task<bool> ImportHasRowForEmployeeAsync(Guid tenantId, ImportAttendanceRequest request, int employeeId, CancellationToken ct)
-        => AnyImportRowAsync(tenantId, request, id => id == employeeId, ct);
-
-    /// <summary>Whether any data row of the CSV resolves to an employee matching <paramref name="match"/>.</summary>
-    private async Task<bool> AnyImportRowAsync(Guid tenantId, ImportAttendanceRequest request, Func<int, bool> match, CancellationToken ct)
-    {
-        var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var rowNumber = 0;
-        foreach (var row in rows)
-        {
-            rowNumber++;
-            if (rowNumber == 1 && row.Contains("employee", StringComparison.OrdinalIgnoreCase)) continue;
-            var cells = row.Split(',').Select(x => x.Trim()).ToArray();
-            if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
-                continue;
-            var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, null, cells[0], ct);
-            if (employeeId is not null && match(employeeId.Value))
-                return true;
-        }
-        return false;
-    }
 
     private Task<int?> ResolveAttendanceEmployeeIdAsync(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
     {

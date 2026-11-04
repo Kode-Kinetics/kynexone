@@ -23,7 +23,12 @@ public interface IAttendanceService
     Task<bool?> SetDeviceSignatureRequiredAsync(Guid tenantId, Guid id, bool required, RequestContext context, CancellationToken ct);
 
     Task<AttendanceRawEvent> PushEventAsync(Guid tenantId, AttendanceRawEventRequest request, RequestContext context, CancellationToken ct);
-    Task<AttendanceImportBatch> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, RequestContext context, CancellationToken ct);
+    /// <summary>Reads and judges a punch file exactly as <see cref="ImportCsvAsync"/> would, and writes NOTHING.</summary>
+    Task<AttendanceImportResult> PreviewImportAsync(Guid tenantId, ImportAttendanceRequest request, AttendanceBulkAuthority authority, RequestContext context, CancellationToken ct);
+    /// <summary>Imports the valid rows of a punch file (a duplicate is counted and skipped; a self, out-of-scope, locked, future or malformed row is reported and skipped).</summary>
+    Task<AttendanceImportResult> ImportCsvAsync(Guid tenantId, ImportAttendanceRequest request, AttendanceBulkAuthority authority, RequestContext context, CancellationToken ct);
+    /// <summary>The same punches for a set of employees over a date range, through the same judging and idempotent save as the import.</summary>
+    Task<BulkAttendanceEntryResult> BulkEntryAsync(Guid tenantId, BulkAttendanceEntryRequest request, AttendanceBulkAuthority authority, RequestContext context, CancellationToken ct);
     Task<PagedResult<AttendanceRawEvent>> GetRawEventsAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, bool? processed, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
 
     Task<int> ProcessAsync(Guid tenantId, ProcessAttendanceRequest request, RequestContext context, CancellationToken ct);
