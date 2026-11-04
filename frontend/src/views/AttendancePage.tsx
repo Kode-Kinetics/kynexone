@@ -14,7 +14,6 @@ import {
   RefreshCw,
   ShieldCheck,
   Timer,
-  Upload,
   Users,
 } from 'lucide-react';
 import { attendanceApi } from '../api/attendance';
@@ -31,6 +30,9 @@ import type {
 import { employeesApi } from '../api/employees';
 import { SelfieViewerModal } from '../components/attendance/SelfieViewerModal';
 import { AttendanceExceptionsPanel } from '../components/attendance/AttendanceExceptionsPanel';
+import { AttendanceCsvImportPanel } from '../components/attendance/AttendanceCsvImportPanel';
+import { AttendanceMassEntryPanel } from '../components/attendance/AttendanceMassEntryPanel';
+import { AttendanceProcessPanel } from '../components/attendance/AttendanceProcessPanel';
 import { useT } from '../hooks/useT';
 import { msg } from '../i18n/translations';
 import { useLocale } from '../contexts/LocaleContext';
@@ -40,7 +42,7 @@ import type { EmployeeListItem } from '../api/employees';
 import { StatusChip } from '../components/StatusChip';
 import { useAuth } from '../contexts/AuthContext';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
-import { DomainUnavailable, Empty, Panel as BasePanel, statusTone } from '../components/attendance/attendanceUi';
+import { DomainUnavailable, Empty, Panel as BasePanel, SectionTitle, statusTone } from '../components/attendance/attendanceUi';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import {
   attendanceErrorSummary,
@@ -61,8 +63,6 @@ function useMinutes() {
     ? t('{hours}h {minutes}m', { hours: Math.floor(value / 60), minutes: value % 60 })
     : t('{minutes}m', { minutes: 0 }), [t]);
 }
-
-const CSV_EXAMPLE = 'employeeCode,punchTimestamp,punchDirection\nEMP-001,2026-06-16T09:00:00Z,In\nEMP-001,2026-06-16T18:00:00Z,Out';
 
 const tabs: Array<{ key: TabKey; label: string; icon: typeof Activity }> = [
   { key: 'dashboard', label: msg('Live Dashboard'), icon: Activity },
@@ -157,14 +157,12 @@ export function AttendancePage() {
   const [punchDirection, setPunchDirection] = useState('In');
   const [punchSource, setPunchSource] = useState<'web' | 'mobile' | 'kiosk'>('web');
   const [rawForm, setRawForm] = useState({ employeeCode: '', employeeId: '', deviceId: '', punchAt: nowLocal(), direction: 'In', source: 'API push', verificationMethod: 'RFID' });
-  const [csvContent, setCsvContent] = useState('');
-  const [processForm, setProcessForm] = useState({ fromDate: today(), toDate: today(), employeeId: '' });
   const [regularizationForm, setRegularizationForm] = useState({ employeeId: '', workDate: today(), requestType: 'Missed punch', requestedIn: '', requestedOut: '', reason: '' });
   const [decisionComment, setDecisionComment] = useState(() => t('Reviewed by HR.'));
 
   const selectedEmployee = useMemo(
-    () => employees.find((e) => e.id === Number(punchEmployeeId || regularizationForm.employeeId || processForm.employeeId)),
-    [employees, punchEmployeeId, regularizationForm.employeeId, processForm.employeeId],
+    () => employees.find((e) => e.id === Number(punchEmployeeId || regularizationForm.employeeId)),
+    [employees, punchEmployeeId, regularizationForm.employeeId],
   );
 
   // Open on the most recent day that actually HAS attendance, resolved from the data itself.
@@ -272,49 +270,6 @@ export function AttendancePage() {
       verificationMethod: rawForm.verificationMethod,
       rawPayloadJson: JSON.stringify({ source: rawForm.source, submittedFrom: 'Attendance workspace' }),
     }), t('Raw attendance event saved.'));
-  };
-
-  const [csvFileName, setCsvFileName] = useState('');
-
-  const handleCsvFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setCsvFileName(file.name);
-    const reader = new FileReader();
-    reader.onload = (ev) => setCsvContent((ev.target?.result as string) ?? '');
-    reader.readAsText(file);
-    e.target.value = '';
-  };
-
-  const submitImport = async (event: FormEvent) => {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setMessage('');
-    try {
-      const batch = await attendanceApi.events.importCsv({ fileName: csvFileName || `attendance-${Date.now()}.csv`, csvContent });
-      if (batch.failedRows > 0) {
-        setMessage(t('Imported {imported} of {total} rows. {failed} rows failed — check that employee codes exist in the system.', { imported: batch.importedRows, total: batch.totalRows, failed: batch.failedRows }));
-      } else {
-        setMessage(`✓ ${t('Imported all {count} rows successfully.', { count: batch.importedRows })}`);
-      }
-      setCsvContent('');
-      setCsvFileName('');
-      await load();
-    } catch (err: any) {
-      setError(err.response?.data?.message ?? err.message ?? t('CSV import failed.'));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const submitProcessing = (event: FormEvent) => {
-    event.preventDefault();
-    runAction(() => attendanceApi.process({
-      fromDate: processForm.fromDate,
-      toDate: processForm.toDate,
-      employeeId: processForm.employeeId ? Number(processForm.employeeId) : undefined,
-    }), t('Attendance processed into daily records and payroll impacts.'));
   };
 
   const submitRegularization = (event: FormEvent) => {
@@ -473,22 +428,8 @@ export function AttendancePage() {
               </div>
             </form>
 )}
-            {canManageSources && <form onSubmit={submitImport} className="surface p-4">
-              <SectionTitle icon={Upload} title={t('CSV Attendance Import')} subtitle={t('Columns: employeeCode, punchTimestamp (ISO 8601), punchDirection, location (opt), method (opt)')} />
-              <div className="mt-4 flex items-center gap-2">
-                <label className="btn-secondary flex cursor-pointer items-center gap-1.5 text-sm">
-                  <Upload className="h-3.5 w-3.5" />
-                  {csvFileName ? csvFileName : t('Choose CSV file')}
-                  <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleCsvFile} />
-                </label>
-                {csvFileName && <button type="button" onClick={() => { setCsvContent(''); setCsvFileName(''); }} className="text-xs text-slate-400 hover:text-rose-500">{t('Clear')}</button>}
-              </div>
-              <textarea className="input mt-3 min-h-28 w-full font-mono text-xs" value={csvContent} onChange={(e) => setCsvContent(e.target.value)} placeholder={CSV_EXAMPLE} />
-              <p className="mt-1 text-xs text-slate-400">{t('Employee codes must match exactly what is registered in the system.')}</p>
-              <button type="submit" disabled={saving || !csvContent.trim()} className="btn-primary mt-3 w-full justify-center">
-                {saving ? t('Importing…') : t('Import CSV')}
-              </button>
-            </form>}
+            {canManageSources && <AttendanceCsvImportPanel onImported={load} />}
+            <AttendanceMassEntryPanel canWrite={canProcess} onRecorded={load} />
           </div>
           <Panel title={t('Raw Punch Logs')} action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
             {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}
@@ -499,15 +440,7 @@ export function AttendancePage() {
       {activeTab === 'processing' && (
         <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
           {dailyUnavailable && <DomainUnavailable message={dailyUnavailable} />}
-          {canProcess && <form onSubmit={submitProcessing} className="surface p-4">
-            <SectionTitle icon={RefreshCw} title={t('Process Attendance')} subtitle={t('Transforms raw punches into daily attendance, exceptions, and payroll impacts.')} />
-            <div className="mt-4 space-y-3">
-              <input type="date" className="input w-full" value={processForm.fromDate} onChange={(e) => setProcessForm({ ...processForm, fromDate: e.target.value })} aria-label={t('From date')} />
-              <input type="date" className="input w-full" value={processForm.toDate} onChange={(e) => setProcessForm({ ...processForm, toDate: e.target.value })} aria-label={t('To date')} />
-              <EmployeeSelect value={processForm.employeeId} employees={employees} onChange={(value) => setProcessForm({ ...processForm, employeeId: value })} includeAll />
-              <button type="submit" disabled={saving || !!loadErrors.daily || !!loadErrors.employees} className="btn-primary w-full justify-center">{t('Process Records')}</button>
-            </div>
-          </form>}
+          {canProcess && <AttendanceProcessPanel blocked={!!loadErrors.daily} onProcessed={load} />}
           <div className="grid gap-5 md:grid-cols-3">
             <Kpi label={t('Worked Today')} value={dailyUnavailable ? 'Unavailable' : minutes(totalWorked)} icon={Timer} tone="blue" />
             <Kpi label={t('Overtime Cases')} value={dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)} icon={Clock} tone="amber" />
@@ -594,18 +527,6 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
         <span className={`grid h-9 w-9 place-items-center rounded-lg ${color}`}><Icon className="h-4 w-4" /></span>
       </div>
       <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">{value === 'Unavailable' ? t('Unavailable') : value}</p>
-    </div>
-  );
-}
-
-function SectionTitle({ icon: Icon, title, subtitle }: { icon: typeof Activity; title: string; subtitle: string }) {
-  return (
-    <div className="flex gap-3">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire"><Icon className="h-4 w-4" /></span>
-      <div>
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
-      </div>
     </div>
   );
 }

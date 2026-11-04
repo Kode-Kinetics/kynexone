@@ -57,7 +57,6 @@ export const attendanceBulk = {
     'Imported {imported, plural, one {# row} other {# rows}}. {duplicates} already recorded, {failed} skipped.': 'Imported {imported, plural, one {# row} other {# rows}}. {duplicates} already recorded, {failed} skipped.',
     'Could not download the template.': 'Could not download the template.',
     'Could not read the file.': 'Could not read the file.',
-    'Could not validate the file.': 'Could not validate the file.',
 
     // Mass entry
     'Mass entry': 'Mass entry',
@@ -131,7 +130,6 @@ export const attendanceBulk = {
     'Imported {imported, plural, one {# row} other {# rows}}. {duplicates} already recorded, {failed} skipped.': 'تم استيراد {imported, plural, zero {صفر صف} one {صف واحد} two {صفّين} few {# صفوف} many {# صفًّا} other {# صف}}. المسجّل مسبقًا: {duplicates}، والمتخطّى: {failed}.',
     'Could not download the template.': 'تعذّر تنزيل القالب.',
     'Could not read the file.': 'تعذّرت قراءة الملف.',
-    'Could not validate the file.': 'تعذّر التحقق من الملف.',
 
     // Mass entry
     'Mass entry': 'إدخال جماعي',
