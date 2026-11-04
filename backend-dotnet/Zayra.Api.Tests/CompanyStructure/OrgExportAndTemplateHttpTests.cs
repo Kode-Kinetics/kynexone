@@ -67,13 +67,13 @@ public sealed class OrgExportAndTemplateHttpTests : IClassFixture<HireIntegrityH
     }
 
     [Fact]
-    public async Task Export_AndTemplate_NeedTheSameReadPermissionAsTheList()
+    public async Task Export_AndTemplate_NeedOrganizationRead_AndAFinanceViewerDoesNotGainThem()
     {
-        // A finance viewer lists cost centres on finance.gl.read alone, so the cost-centre download takes it too; departments need organization.read.
+        // A finance viewer lists cost centres on finance.gl.read alone, but downloads stay with the HR audience (organization.read): the legacy role gate on these routes is not widened to finance roles.
         var finance = await UserAsync("Finance", "finance.gl.read");
         (await _fx.SendAsync(HttpMethod.Get, "/api/cost-centers", null, finance)).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await _fx.SendAsync(HttpMethod.Get, "/api/cost-centers/export", null, finance)).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await _fx.SendAsync(HttpMethod.Get, "/api/cost-centers/import-template", null, finance)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await _fx.SendAsync(HttpMethod.Get, "/api/cost-centers/export", null, finance)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await _fx.SendAsync(HttpMethod.Get, "/api/cost-centers/import-template", null, finance)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await _fx.SendAsync(HttpMethod.Get, "/api/departments/export", null, finance)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await _fx.SendAsync(HttpMethod.Get, "/api/departments/import-template", null, finance)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
 

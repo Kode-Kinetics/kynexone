@@ -81,7 +81,7 @@ public class CostCentersController : ControllerBase
         => CostCenterEndpoints.RestoreAsync(this, _organization, _db, id, Context(), cancellationToken);
 
     [HttpGet("export")]
-    [HasPermission("organization.read", "finance.gl.read")]
+    [HasPermission("organization.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Export(CancellationToken ct)
     {
@@ -101,7 +101,7 @@ public class CostCentersController : ControllerBase
     }
 
     [HttpGet("import-template")]
-    [HasPermission("organization.read", "finance.gl.read")]
+    [HasPermission("organization.read")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> ImportTemplate(CancellationToken ct = default)
     {
