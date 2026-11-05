@@ -512,19 +512,17 @@ public class AttendanceController : ControllerBase
                 ? logical
                 : $"client:{Infrastructure.Attendance.AttendanceProcessingJobHandler.Digest(idempotencyKey.Trim())}:{logical}";
 
-        // A flood guard, applied BEFORE enqueue: an identical request for a job that is still active is not a new job and is
-        // never refused, but a new one needs room under the per-user and per-tenant limits of ACTIVE (queued or running) runs.
-        var jobType = Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType;
-        if (await jobs.FindActiveAsync(tenantId, jobType, key, ct) is null)
-        {
-            if (GetUserId() is Guid me && await jobs.CountActiveAsync(tenantId, jobType, me, ct) >= MaxActiveProcessingJobsPerUser)
-                return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"You already have {MaxActiveProcessingJobsPerUser} attendance processing runs in progress. Wait for one to finish, then start the next." });
-            if (await jobs.CountActiveAsync(tenantId, jobType, null, ct) >= MaxActiveProcessingJobsPerTenant)
-                return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"Your company already has {MaxActiveProcessingJobsPerTenant} attendance processing runs in progress. Try again when one has finished." });
-        }
+        // A flood guard: an identical request for a job that is still active is not a new job and is never refused, but a new
+        // one needs room under the per-user and per-tenant limits of ACTIVE (queued or running) runs. The store counts and
+        // enqueues atomically, so concurrent requests with different ranges cannot all slip under the limit together.
+        var admission = await jobs.EnqueueWithinLimitsAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
+            key, payload, GetUserId(), MaxActiveProcessingJobsPerUser, MaxActiveProcessingJobsPerTenant, ct);
+        if (admission.Admission == Infrastructure.Jobs.BackgroundJobAdmission.UserLimitReached)
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"You already have {MaxActiveProcessingJobsPerUser} attendance processing runs in progress. Wait for one to finish, then start the next." });
+        if (admission.Admission == Infrastructure.Jobs.BackgroundJobAdmission.TenantLimitReached)
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"Your company already has {MaxActiveProcessingJobsPerTenant} attendance processing runs in progress. Try again when one has finished." });
 
-        var result = await jobs.EnqueueAsync(tenantId, jobType,
-            key, payload, GetUserId(), ct);
+        var result = admission.Enqueued!;
         if (!result.Created) Response.Headers["X-Job-Deduplicated"] = "true";
         return Accepted($"/api/jobs/{result.Job.Id}",
             new Infrastructure.Jobs.BackgroundJobEnqueueResponse(result.Job.Id, result.Job.Status, !result.Created, $"/api/jobs/{result.Job.Id}"));

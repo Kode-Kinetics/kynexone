@@ -19,6 +19,11 @@ public sealed record BackgroundJobEnqueueResponse(Guid JobId, string Status, boo
 
 public enum BackgroundJobCancelOutcome { NotFound, Cancelled, CancelRequested, AlreadyFinished }
 
+public enum BackgroundJobAdmission { Admitted, UserLimitReached, TenantLimitReached }
+
+/// <summary><see cref="Enqueued"/> is set when <see cref="Admission"/> is Admitted (a new job, or the live job already holding the key).</summary>
+public sealed record BackgroundJobAdmissionResult(BackgroundJobEnqueueResult? Enqueued, BackgroundJobAdmission Admission);
+
 /// <summary>
 /// F3 — every read and write of <c>background_jobs</c>.
 ///
@@ -93,6 +98,91 @@ public sealed class BackgroundJobStore
         }
         throw new InvalidOperationException(
             $"Could not enqueue or locate background job {jobType}/{idempotencyKey} after 3 attempts.");
+    }
+
+    /// <summary>
+    /// <see cref="EnqueueAsync"/> behind a flood guard: a NEW job is admitted only while the caller has fewer than
+    /// <paramref name="maxActivePerUser"/> and the tenant fewer than <paramref name="maxActivePerTenant"/> active (Queued or
+    /// Running) jobs of the type. An identical key that is still live is returned as-is and never refused.
+    ///
+    /// <para>The count and the insert run in ONE transaction under a per-(tenant, type) advisory lock, so concurrent requests
+    /// with different keys are admitted one at a time and cannot all read a count below the limit before any of them inserts.
+    /// The lock is held for a handful of indexed queries. Off PostgreSQL (unit tests) there is no lock.</para>
+    /// </summary>
+    public async Task<BackgroundJobAdmissionResult> EnqueueWithinLimitsAsync(
+        Guid tenantId, string jobType, string idempotencyKey, object payload, Guid? createdByUserId,
+        int maxActivePerUser, int maxActivePerTenant, CancellationToken ct)
+    {
+        async Task<BackgroundJobAdmissionResult> AdmitAsync(bool insideLock)
+        {
+            if (await FindKeyHolderAsync(tenantId, jobType, idempotencyKey, ct) is { } live)
+                return new BackgroundJobAdmissionResult(new BackgroundJobEnqueueResult(live, false), BackgroundJobAdmission.Admitted);
+            if (createdByUserId is Guid me && await CountActiveAsync(tenantId, jobType, me, ct) >= maxActivePerUser)
+                return new BackgroundJobAdmissionResult(null, BackgroundJobAdmission.UserLimitReached);
+            if (await CountActiveAsync(tenantId, jobType, null, ct) >= maxActivePerTenant)
+                return new BackgroundJobAdmissionResult(null, BackgroundJobAdmission.TenantLimitReached);
+            // Under the lock a duplicate-key insert fails the whole transaction (PostgreSQL aborts it), so insert once and let
+            // the caller below resolve the 23505; without the lock, EnqueueAsync's own retry handles it.
+            var enqueued = insideLock
+                ? new BackgroundJobEnqueueResult(await InsertAsync(tenantId, jobType, idempotencyKey, payload, createdByUserId, ct), true)
+                : await EnqueueAsync(tenantId, jobType, idempotencyKey, payload, createdByUserId, ct);
+            return new BackgroundJobAdmissionResult(enqueued, BackgroundJobAdmission.Admitted);
+        }
+
+        var postgres = (_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase);
+        if (!postgres) return await AdmitAsync(insideLock: false);
+
+        var lockKey = $"background-job-admission:{tenantId:N}:{jobType}";
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            await TakeAdmissionLockAsync(lockKey, ct);
+            return await AdmitAsync(insideLock: true);
+        }
+        try
+        {
+            return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
+                await TakeAdmissionLockAsync(lockKey, ct);
+                var admitted = await AdmitAsync(insideLock: true);
+                await tx.CommitAsync(ct);
+                return admitted;
+            });
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex, "ux_background_jobs_"))
+        {
+            // The same key was enqueued by a writer that does not take the admission lock (e.g. a roster recompute): return it.
+            foreach (var entry in _db.ChangeTracker.Entries<BackgroundJob>().Where(e => e.State == EntityState.Added).ToList())
+                entry.State = EntityState.Detached;
+            var holder = await FindKeyHolderAsync(tenantId, jobType, idempotencyKey, ct);
+            if (holder is null) throw;
+            return new BackgroundJobAdmissionResult(new BackgroundJobEnqueueResult(holder, false), BackgroundJobAdmission.Admitted);
+        }
+    }
+
+    private Task TakeAdmissionLockAsync(string lockKey, CancellationToken ct) =>
+        _db.Database.SqlQuery<int>($"SELECT 1 AS \"Value\" FROM (SELECT pg_advisory_xact_lock(hashtextextended({lockKey}, 0))) AS t").ToListAsync(ct);
+
+    private async Task<BackgroundJob> InsertAsync(
+        Guid tenantId, string jobType, string idempotencyKey, object payload, Guid? createdByUserId, CancellationToken ct)
+    {
+        var descriptor = _registry.Get(jobType);
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 200)
+            throw new ArgumentException("An idempotency key (1..200 chars) is required.", nameof(idempotencyKey));
+        var job = new BackgroundJob
+        {
+            TenantId = tenantId,
+            JobType = jobType,
+            IdempotencyKey = idempotencyKey,
+            KeyRetention = descriptor.KeyRetention,
+            MaxAttempts = descriptor.MaxAttempts,
+            PayloadJson = payload as string ?? JsonSerializer.Serialize(payload),
+            CreatedByUserId = createdByUserId,
+            RunAfterUtc = DateTime.UtcNow,
+        };
+        _db.BackgroundJobs.Add(job);
+        await _db.SaveChangesAsync(ct);
+        return job;
     }
 
     private Task<BackgroundJob?> FindKeyHolderAsync(Guid tenantId, string jobType, string key, CancellationToken ct) =>
