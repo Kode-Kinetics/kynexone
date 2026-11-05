@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Claims;
+using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -593,6 +594,75 @@ public sealed class BackgroundJobQueuePostgresTests
     }
 
     // ───────────────────────────── helpers ─────────────────────────────
+
+    // ───────────────────────────── Admission: the flood guard under concurrency ─────────────────────────────
+
+    /// <summary>Fires <paramref name="requests"/> admitted enqueues at once, each on its own DbContext (as separate HTTP requests would).</summary>
+    private async Task<BackgroundJobAdmissionResult[]> RaceAdmissionsAsync(
+        BackgroundJobTypeDescriptor type, Guid tenantId, int requests, Func<int, (string Key, Guid User)> who, int perUser, int perTenant)
+    {
+        await using var sp = BuildInstance(type, new ItemProbe());
+        var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var racers = Enumerable.Range(0, requests).Select(i => Task.Run(async () =>
+        {
+            await using var scope = sp.CreateAsyncScope();
+            var store = scope.ServiceProvider.GetRequiredService<BackgroundJobStore>();
+            var (key, user) = who(i);
+            await start.Task;
+            return await store.EnqueueWithinLimitsAsync(tenantId, type.JobType, key, new ItemsPayload(1), user, perUser, perTenant, default);
+        })).ToArray();
+        start.SetResult();
+        return await Task.WhenAll(racers);
+    }
+
+    private async Task<int> ActiveJobsAsync(Guid tenantId, string jobType)
+    {
+        await using var db = _fx.CreateDb();
+        return await db.BackgroundJobs.IgnoreQueryFilters().CountAsync(j => j.TenantId == tenantId && j.JobType == jobType
+            && (j.Status == BackgroundJobStatuses.Queued || j.Status == BackgroundJobStatuses.Running));
+    }
+
+    [Fact]
+    public async Task ConcurrentEnqueues_WithDifferentKeys_FromOneUser_AdmitExactlyThePerUserLimit()
+    {
+        var type = NewType();
+        var tenantId = await SeedTenantAsync();
+        var user = Guid.NewGuid();
+
+        var results = await RaceAdmissionsAsync(type, tenantId, 12, i => ($"range-{i}", user), perUser: 3, perTenant: 10);
+
+        results.Count(r => r.Enqueued?.Created == true).Should().Be(3, "only three runs may be active for one user, however many requests race");
+        results.Count(r => r.Admission == BackgroundJobAdmission.UserLimitReached).Should().Be(9);
+        (await ActiveJobsAsync(tenantId, type.JobType)).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task ConcurrentEnqueues_FromManyUsers_AdmitExactlyThePerTenantLimit()
+    {
+        var type = NewType();
+        var tenantId = await SeedTenantAsync();
+
+        var results = await RaceAdmissionsAsync(type, tenantId, 16, i => ($"range-{i}", Guid.NewGuid()), perUser: 3, perTenant: 5);
+
+        results.Count(r => r.Enqueued?.Created == true).Should().Be(5);
+        results.Count(r => r.Admission == BackgroundJobAdmission.TenantLimitReached).Should().Be(11);
+        (await ActiveJobsAsync(tenantId, type.JobType)).Should().Be(5);
+    }
+
+    [Fact]
+    public async Task ConcurrentEnqueues_OfTheSameKey_CreateOneJob_AndAreNeverRefused()
+    {
+        var type = NewType();
+        var tenantId = await SeedTenantAsync();
+        var user = Guid.NewGuid();
+
+        var results = await RaceAdmissionsAsync(type, tenantId, 8, _ => ("same-range", user), perUser: 1, perTenant: 1);
+
+        results.Should().OnlyContain(r => r.Admission == BackgroundJobAdmission.Admitted, "a repeat of a live request is the same job, not a new one");
+        results.Count(r => r.Enqueued!.Created).Should().Be(1);
+        results.Select(r => r.Enqueued!.Job.Id).Distinct().Should().ContainSingle();
+        (await ActiveJobsAsync(tenantId, type.JobType)).Should().Be(1);
+    }
 
     private static BackgroundJobTypeDescriptor NewType() => new(
         $"test.items.{Guid.NewGuid():N}", typeof(ItemsTestHandler), ["attendance.read"], ["attendance.write"]);

@@ -18,26 +18,31 @@ namespace Zayra.Api.Tests.Security;
 
 /// <summary>
 /// A Mobile-mode employee reaches POST /attendance/process/async for their own record (attendance.write from the
-/// access mode). A fresh Idempotency-Key or date range per call let them queue jobs without limit; a caller with a
-/// restricted data scope now gets one active job per employee.
+/// access mode). A fresh Idempotency-Key per call let them queue jobs without limit; a caller with a restricted
+/// data scope is keyed by themselves and the request (range, target set, company scope) and cannot choose their own key.
 /// </summary>
 public sealed class AttendanceProcessingScopedCapTests
 {
     private static readonly CancellationToken Ct = CancellationToken.None;
 
     [Fact]
-    public async Task AScopedCaller_GetsOneActiveJobPerEmployee_WhateverKeyOrRangeTheySend()
+    public async Task AScopedCaller_CannotChooseTheirOwnKey_AndEachDistinctRequestIsItsOwnJob()
     {
         var (db, tenantId, employeeId) = await SeedAsync();
         var controller = Controller(db, await CallerAsync(db, tenantId, "Employee"), new FixedScope(new[] { employeeId }));
         var store = Store(db);
+        var august = new ProcessAttendanceRequest(new DateOnly(2026, 8, 2), new DateOnly(2026, 8, 3), employeeId);
 
-        var first = await EnqueueAsync(controller, store, new ProcessAttendanceRequest(new DateOnly(2026, 8, 2), new DateOnly(2026, 8, 3), employeeId), "key-1");
-        var second = await EnqueueAsync(controller, store, new ProcessAttendanceRequest(new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 5), employeeId), "key-2");
+        var first = await EnqueueAsync(controller, store, august, "key-1");
+        var sameRequestFreshKey = await EnqueueAsync(controller, store, august, "key-2");
+        var otherRange = await EnqueueAsync(controller, store, new ProcessAttendanceRequest(new DateOnly(2026, 8, 4), new DateOnly(2026, 8, 5), employeeId), "key-3");
 
-        second.JobId.Should().Be(first.JobId);
-        second.Deduplicated.Should().BeTrue();
-        (await db.BackgroundJobs.CountAsync()).Should().Be(1);
+        // A fresh Idempotency-Key does not queue another job for the same request (the caller's key is ignored)...
+        sameRequestFreshKey.JobId.Should().Be(first.JobId);
+        sameRequestFreshKey.Deduplicated.Should().BeTrue();
+        // ...but the range is part of the key now: it used to be ignored, so a second range silently returned the first range's job.
+        otherRange.JobId.Should().NotBe(first.JobId);
+        (await db.BackgroundJobs.CountAsync()).Should().Be(2);
     }
 
     [Fact]

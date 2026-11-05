@@ -1,5 +1,6 @@
 import client from './client';
 import type { PagedResult } from './organization';
+import type { ImportPreview } from '../lib/attendanceImport';
 
 /** One attendance rule set: what counts as late, an early exit or a half day, and the length of the working day. */
 export interface AttendancePolicy {
@@ -203,6 +204,37 @@ export interface AttendanceImportBatch {
   createdAtUtc: string;
 }
 
+/** 202 body of an enqueue endpoint (BackgroundJobEnqueueResponse). */
+export interface BackgroundJobEnqueued {
+  jobId: string;
+  status: string;
+  /** True when an identical queued/running job already existed and its id was returned instead. */
+  deduplicated: boolean;
+  statusUrl: string;
+}
+
+/** POST /api/attendance/events/bulk-entry. */
+export interface AttendanceBulkEntryRequest {
+  employeeIds: number[];
+  /** yyyy-MM-dd, tenant calendar day. */
+  fromDate: string;
+  toDate: string;
+  /** HH:mm in the tenant time zone. An out time not after the in time means the next day. */
+  inTime: string;
+  outTime?: string;
+  reason: string;
+  verificationMethod?: string;
+  locationName?: string;
+}
+
+export interface AttendanceBulkEntryResult {
+  requested: number;
+  created: number;
+  duplicates: number;
+  failed: number;
+  errors: Array<{ employeeCode: string; date: string; message: string }>;
+}
+
 export interface AttendanceRegularizationRequest {
   id: string;
   employeeId: number;
@@ -267,8 +299,17 @@ export const attendanceApi = {
   monthly: (params: { year?: number; month?: number; employeeId?: number } = {}) =>
     client.get<AttendanceMonthlySummary[]>('/api/attendance/monthly', { params }).then((r) => r.data),
 
-  process: (data: { fromDate: string; toDate: string; employeeId?: number }) =>
+  /** Synchronous processing. Kept for seeds and single-employee reprocessing; the screen uses processAsync. */
+  process: (data: { fromDate: string; toDate: string; employeeId?: number; employeeIds?: number[] }) =>
     client.post<number>('/api/attendance/process', data).then((r) => r.data),
+
+  /**
+   * Processing as a durable background job (202). No employee id and no list = every employee in the caller's
+   * scope; a list = exactly those people (each must be in scope or the whole request is refused with 403).
+   * Poll the job with jobsApi.get.
+   */
+  processAsync: (data: { fromDate: string; toDate: string; employeeId?: number; employeeIds?: number[] }) =>
+    client.post<BackgroundJobEnqueued>('/api/attendance/process/async', data).then((r) => r.data),
 
   reprocess: (data: { fromDate: string; toDate: string; employeeId?: number }) =>
     client.post<number>('/api/attendance/reprocess', data).then((r) => r.data),
@@ -303,8 +344,17 @@ export const attendanceApi = {
   events: {
     push: (data: AttendanceRawEventRequest) =>
       client.post<AttendanceRawEvent>('/api/attendance/events/push', data).then((r) => r.data),
+    /** The CSV template (text/csv), exactly as the server builds it. */
+    importTemplate: () =>
+      client.get<string>('/api/attendance/events/import-template', { responseType: 'text', transformResponse: (d) => d }).then((r) => r.data),
+    /** Dry run: reads and checks the file, writes nothing. */
+    importPreview: (data: { fileName: string; csvContent: string }) =>
+      client.post<ImportPreview>('/api/attendance/events/import-preview', data).then((r) => r.data),
+    /** Commits the valid rows of the file (rows already recorded are skipped, bad rows are reported). */
     importCsv: (data: { fileName: string; csvContent: string }) =>
-      client.post<AttendanceImportBatch>('/api/attendance/events/import', data).then((r) => r.data),
+      client.post<ImportPreview>('/api/attendance/events/import', data).then((r) => r.data),
+    bulkEntry: (data: AttendanceBulkEntryRequest) =>
+      client.post<AttendanceBulkEntryResult>('/api/attendance/events/bulk-entry', data).then((r) => r.data),
     raw: (params: { employeeId?: number; from?: string; to?: string; processed?: boolean; page?: number; pageSize?: number } = {}) =>
       client.get<PagedResult<AttendanceRawEvent>>('/api/attendance/events/raw', { params }).then((r) => r.data),
   },

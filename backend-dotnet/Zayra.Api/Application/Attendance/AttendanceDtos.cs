@@ -318,7 +318,11 @@ public record DeviceSignaturePolicyRequest(bool Required);
 public record DeviceKeyResult(Guid DeviceId, string DeviceName, string ApiKey);
 
 public record ImportAttendanceRequest(string FileName, string CsvContent);
-public record ProcessAttendanceRequest(DateOnly FromDate, DateOnly ToDate, int? EmployeeId);
+/// <summary>
+/// Process the range for everyone the caller may (no employee named), for one employee, or for a selection.
+/// <see cref="EmployeeIds"/> null means "not a selection"; an EMPTY list is a refused (400) request, never "everyone".
+/// </summary>
+public record ProcessAttendanceRequest(DateOnly FromDate, DateOnly ToDate, int? EmployeeId, IReadOnlyList<int>? EmployeeIds = null);
 public record RegularizationRequestDto(int EmployeeId, DateOnly WorkDate, string RequestType, DateTime? RequestedInUtc, DateTime? RequestedOutUtc, string Reason);
 public record RegularizationDecisionRequest(string Comments);
 

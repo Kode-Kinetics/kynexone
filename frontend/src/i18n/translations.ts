@@ -55,6 +55,7 @@ import { appChrome } from './appChrome';
 import { removalSafety } from './removalSafety';
 import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
+import { attendanceBulk } from './attendanceBulk';
 import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
 import { dailyD } from './dailyD';
@@ -83,6 +84,7 @@ const en: Dict = {
   ...companyStructure.en,
   ...appChrome.en,
   ...dailyA.en,
+  ...attendanceBulk.en,
   ...dailyB.en,
   ...dailyC.en,
   ...dailyD.en,
@@ -1607,6 +1609,7 @@ const ar: Dict = {
   ...companyStructure.ar,
   ...appChrome.ar,
   ...dailyA.ar,
+  ...attendanceBulk.ar,
   ...dailyB.ar,
   ...dailyC.ar,
   ...dailyD.ar,

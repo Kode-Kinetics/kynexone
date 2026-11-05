@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Attendance;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Models;
@@ -24,7 +25,10 @@ public sealed record AttendanceProcessingJobPayload(
     IReadOnlyList<Guid> CompanyIds,
     Guid? RequestedByUserId,
     string? IpAddress,
-    string? UserAgent);
+    string? UserAgent,
+    // The selected employees, or the caller's whole data-scope set for "all employees" under a company-limited scope. A non-null
+    // list is the COMPLETE set (an empty one processes nobody). Null on a job queued before selections existed: no selection.
+    IReadOnlyList<int>? EmployeeIds = null);
 
 /// <summary>
 /// F3 — "Process Attendance" as a durable job. Identical per-day logic to the synchronous
@@ -56,11 +60,20 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
 
     public AttendanceProcessingJobHandler(IAttendanceService attendance) => _attendance = attendance;
 
-    /// <summary>The logical identity used when the client sends no Idempotency-Key.</summary>
+    /// <summary>
+    /// The logical identity of a request: range, the one named employee, the selected set (a digest of the sorted distinct ids, so the
+    /// same set in any order is the same job) and the caller's company scope (a digest too: a long company list must not push the
+    /// key past its 200-character limit).
+    /// </summary>
     public static string DefaultIdempotencyKey(AttendanceProcessingJobPayload p) =>
         $"attendance.process:{p.FromDate:yyyy-MM-dd}:{p.ToDate:yyyy-MM-dd}:" +
         $"{(p.EmployeeId?.ToString() ?? "all")}:" +
-        (p.GroupScope ? "group" : string.Join(',', p.CompanyIds.OrderBy(x => x)));
+        (p.EmployeeIds is null ? "-" : $"sel{p.EmployeeIds.Distinct().Count()}-{Digest(string.Join(',', p.EmployeeIds.Distinct().OrderBy(x => x)))}") + ":" +
+        (p.GroupScope ? "group" : "co-" + Digest(string.Join(',', p.CompanyIds.OrderBy(x => x))));
+
+    /// <summary>A short, stable fingerprint for building bounded idempotency keys.</summary>
+    public static string Digest(string text) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))[..16].ToLowerInvariant();
 
     public async Task ExecuteAsync(JobExecutionContext ctx)
     {
@@ -76,8 +89,7 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
             throw new BackgroundJobPermanentFailureException(ex.Message);
         }
 
-        var companyIds = p.CompanyIds.ToList();
-        var employeeIds = await Employees(ctx, p, companyIds)
+        var employeeIds = await EmployeesFor(ctx.Db, ctx.TenantId, p)
             .OrderBy(e => e.Id)
             .Select(e => e.Id)
             .ToListAsync(ct);
@@ -110,7 +122,7 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
             await ctx.RunItemAsync(ItemKey(employeeId, month.From), async itemCt =>
             {
                 processedDays = 0;
-                var employee = await Employees(ctx, p, companyIds)
+                var employee = await EmployeesFor(ctx.Db, ctx.TenantId, p)
                     .FirstOrDefaultAsync(e => e.Id == employeeId, itemCt);
                 if (employee is null) return; // deleted or moved out of scope since the job started
                 processedDays = await _attendance.ProcessEmployeeRangeAsync(
@@ -173,10 +185,19 @@ public sealed class AttendanceProcessingJobHandler : IBackgroundJobHandler
         return chunks;
     }
 
-    private static IQueryable<Employee> Employees(JobExecutionContext ctx, AttendanceProcessingJobPayload p, List<Guid> companyIds)
+    /// <summary>The employees a job processes: the payload's targets within the caller's company scope. Public to the test assembly.</summary>
+    internal static IQueryable<Employee> EmployeesFor(ZayraDbContext db, Guid tenantId, AttendanceProcessingJobPayload p)
     {
-        var q = ScopedBypass.NullableTenantWide(ctx.Db.Employees, ctx.TenantId, EmployeeReadJustification)
-            .Where(e => !e.IsDeleted && (p.EmployeeId == null || e.Id == p.EmployeeId));
+        var companyIds = p.CompanyIds.ToList();
+        // Active only, for parity with the synchronous run (ProcessAsync): a leaver's days are never recomputed.
+        var q = ScopedBypass.NullableTenantWide(db.Employees, tenantId, EmployeeReadJustification)
+            .Where(e => !e.IsDeleted && e.Status == EmployeeStatuses.Active && (p.EmployeeId == null || e.Id == p.EmployeeId));
+        // A selection is the COMPLETE set to process: an empty list matches nobody.
+        if (p.EmployeeIds is { } selected)
+        {
+            var ids = selected.ToList();
+            q = q.Where(e => ids.Contains(e.Id));
+        }
         // Same rule as the ICompanyScopedOperational read filter the synchronous path runs under:
         // group scope sees everything; a scoped caller sees only its companies and never null-company rows.
         if (!p.GroupScope)
