@@ -90,6 +90,7 @@ public class MakerCheckerTests
         var run = await SeedProcessedRun(db, tenantId, processorId);
 
         // Processor calls /approve with the same user ID that processed the run.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tenantId, processorId, role: "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest(null), CancellationToken.None);
 
@@ -114,6 +115,7 @@ public class MakerCheckerTests
 
         // Seed a PayrollApprovals table row doesn't exist yet — nothing to block.
         // No validation errors seeded, so the engine check passes.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tenantId, approverId, role: "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest("Approved by Finance"), CancellationToken.None);
 
@@ -141,6 +143,7 @@ public class MakerCheckerTests
         var run = await SeedProcessedRun(db, tenantId, processorId);
 
         // Even with Admin role + direct controller call, processor is blocked.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tenantId, processorId, role: "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest("I am admin, let me approve"), CancellationToken.None);
 
@@ -165,6 +168,7 @@ public class MakerCheckerTests
         var run = await SeedProcessedRun(db, tenantId, processorId);
         run.CreatedByUserId = creatorId;
         await db.SaveChangesAsync();
+        await ReconTestSupport.SignOffAsync(db, run.Id);
 
         var result = await MakeCtrl(db, tenantId, creatorId).Approve(
             run.Id, new PayrollDecisionRequest("creator self-approval"), CancellationToken.None);
@@ -193,6 +197,7 @@ public class MakerCheckerTests
         await db.SaveChangesAsync();
         var capture = new _MakerCaptureNotifications();
 
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var result = await MakeCtrl(db, tenantId, Guid.NewGuid(), notifications: capture)
             .Approve(run.Id, new PayrollDecisionRequest("finance approved"), CancellationToken.None);
 
@@ -224,6 +229,7 @@ public class MakerCheckerTests
         db.PayrollRuns.Add(run);
         await db.SaveChangesAsync();
 
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tenantId, userId, role: "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest(null), CancellationToken.None);
 

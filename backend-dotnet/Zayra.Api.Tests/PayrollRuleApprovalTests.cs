@@ -87,6 +87,28 @@ public class PayrollRuleApprovalTests
     public void LowersPay_ClassifiesEachChange(string key, string? from, string? to, bool lowers)
         => CompanyPayrollRules.LowersPay(key, from, to).Should().Be(lowers);
 
+    [Theory]
+    [InlineData(PayrollRuleKeys.ReconVariancePct, "20")]
+    [InlineData(PayrollRuleKeys.ReconVarianceMinAmount, "500")]
+    public async Task AChangeToAReconciliationThreshold_NeedsAcknowledgement_ThenASecondPerson(string key, string value)
+    {
+        await using var db = CreateDb();
+        var (tenant, company) = await SeedAsync(db, withApprover: true);
+        var change = new[] { new PayrollRuleChange(key, value) };
+
+        // Without the acknowledgement nothing is saved or queued.
+        var refused = await As(db, tenant, Maker).Save(new(company, [.. change], false, "Agreed with finance", null), default);
+        refused.Should().BeOfType<ConflictObjectResult>().Which.Value!.ToString().Should().Contain("ERR_PAYROLL_RULE_ACK_REQUIRED");
+        (await db.PayrollRuleChangeRequests.CountAsync()).Should().Be(0);
+
+        // Acknowledged, it waits for a different approver instead of applying.
+        var queued = await As(db, tenant, Maker).Save(new(company, [.. change], true, "Agreed with finance", null,
+            CompanyPayrollRules.WarningCodesFor(change).ToList()), default);
+        queued.Should().BeOfType<AcceptedResult>();
+        (await db.CompanyPayrollRules.CountAsync(r => r.RuleKey == key)).Should().Be(0, "nothing applies before the second person decides");
+        (await db.PayrollRuleChangeRequests.CountAsync(r => r.Status == PayrollRuleChangeRequest.Pending)).Should().Be(1);
+    }
+
     // ── Maker-checker ───────────────────────────────────────────────────────────────────────────────
 
     [Fact]

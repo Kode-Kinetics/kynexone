@@ -359,6 +359,7 @@ public class PayrollCostingLockTests
         Json(refused).GetProperty("uncostedAmount").GetDecimal().Should().Be(5000m);
 
         k.Db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(k.Db, run.Id);
         (await k.Payroll(k.ApproverId).Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedUncostedCount: 1), default)).Should().BeOfType<OkObjectResult>();
         var res = await k.LockAsync(run.Id);
 
@@ -497,6 +498,7 @@ public class PayrollCostingLockTests
         var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 1000m) }, Array.Empty<(string, string, string, decimal, bool)>());
 
         k.Db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(k.Db, run.Id);
         (await k.Payroll(k.ApproverId, "Payroll Manager").Approve(run.Id, new PayrollDecisionRequest("l1"), default)).Should().BeOfType<OkObjectResult>();
         var level1 = await k.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
         (level1.Status, level1.CostCenterResolutionHash).Should().Be(("PendingFinanceReview", (string?)null));

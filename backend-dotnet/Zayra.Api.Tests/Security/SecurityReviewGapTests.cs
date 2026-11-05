@@ -105,21 +105,26 @@ public class SecurityReviewGapTests
         Assert.Single(w.Db.AttendanceRawEvents);
     }
 
-    // ── 3. Attendance import: a row for the importer's own record refuses the file ───────────────
+    // ── 3. Attendance import: a row for the importer's own record is refused PER ROW ─────────────
+    // (It used to refuse the whole file with an opaque 403; the rest of the file now proceeds, and nothing is ever written for the
+    // importer's own record.)
 
     [Theory]
     [InlineData("Admin")]
     [InlineData("HR Manager")]
-    public async Task Import_WithARowForTheImportersOwnRecord_IsRefused_AndNothingIsImported(string role)
+    public async Task Import_WithARowForTheImportersOwnRecord_RefusesThatRow_NothingIsWrittenForIt_AndTheRestIsImported(string role)
     {
         var w = await World.CreateAsync();
         var c = w.AttendanceController(w.Principal(role, w.CallerUserId, w.Caller.Id, await SeededAsync(role)));
 
         var result = await c.Import(new ImportAttendanceRequest("punches.csv", Csv(w.Report, w.Caller, w.Stranger)), default);
 
-        Assert.IsType<ForbidResult>(result.Result);
-        Assert.Empty(w.Db.AttendanceRawEvents);
-        Assert.Empty(w.Db.AttendanceImportBatches);
+        var dto = Assert.IsType<AttendanceImportResult>(result.Value);
+        Assert.Equal((2, 1), (dto.ImportedRows, dto.FailedRows));
+        Assert.Equal(3, Assert.Single(dto.Errors).RowNumber);   // the caller's row is the file's line 3
+        Assert.DoesNotContain(w.Db.AttendanceRawEvents, e => e.EmployeeId == w.Caller.Id);
+        Assert.Equal(new[] { w.Report.Id, w.Stranger.Id }.Order(),
+            (await w.Db.AttendanceRawEvents.Select(e => e.EmployeeId!.Value).ToListAsync()).Order());
     }
 
     [Theory]
@@ -132,9 +137,9 @@ public class SecurityReviewGapTests
 
         var result = await c.Import(new ImportAttendanceRequest("punches.csv", Csv(w.Report, w.Stranger)), default);
 
-        var batch = Assert.IsType<AttendanceImportBatch>(result.Value);
-        Assert.Equal(2, batch.ImportedRows);
-        Assert.Equal(0, batch.FailedRows);
+        var dto = Assert.IsType<AttendanceImportResult>(result.Value);
+        Assert.Equal(2, dto.ImportedRows);
+        Assert.Equal(0, dto.FailedRows);
         Assert.Equal(new[] { w.Report.Id, w.Stranger.Id }.Order(),
             (await w.Db.AttendanceRawEvents.Select(e => e.EmployeeId!.Value).ToListAsync()).Order());
     }

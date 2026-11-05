@@ -201,6 +201,7 @@ public class PodC3IndependentSmeTests
         (await Payroll(db, tenantId, Maker).GeneratePayslips(runId, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, runId);
         (await Payroll(db, tenantId, Checker).Approve(runId, new PayrollDecisionRequest("approved"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();

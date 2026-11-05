@@ -213,6 +213,7 @@ public class PayrollRunTypeGosiPeriodScopeTests
         var processed = await Payroll(db, tenantId, Maker).Process(runId, CancellationToken.None);
         processed.Should().BeOfType<OkObjectResult>($"Process must succeed — got {Describe(processed)}");
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, runId);
         var approved = await Payroll(db, tenantId, Checker, "checker")
             .Approve(runId, new PayrollDecisionRequest("ok", null), CancellationToken.None);
         approved.Should().BeOfType<OkObjectResult>($"Approve must succeed — got {Describe(approved)}");
@@ -402,6 +403,7 @@ public class PayrollRunTypeGosiPeriodScopeTests
             .Should().NotContain(r => r.Code == "GOSI_MISSING_FOR_SAUDI" && r.Severity == "Error",
                 "the period obligation is met; blocking the monthly run here would brick the tenant's payroll");
 
+        await ReconTestSupport.SignOffAsync(db, regular.Id);
         var approved = await Payroll(db, tid, Checker, "checker")
             .Approve(regular.Id, new PayrollDecisionRequest("ok", null), CancellationToken.None);
         approved.Should().BeOfType<OkObjectResult>($"the monthly run must Approve — got {Describe(approved)}");

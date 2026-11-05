@@ -9,6 +9,7 @@ import { useFormat } from '../../hooks/useFormat';
 import { useLockWithSummary } from '../../hooks/useLockWithSummary';
 import { usePayrollCompanies } from '../../hooks/usePayrollCompanies';
 import { useRunPipelineData } from '../../hooks/useRunPipelineData';
+import { useRunRecon } from '../../hooks/useRunRecon';
 import { useRunProcessing } from '../../hooks/useRunProcessing';
 import { useT } from '../../hooks/useT';
 import { resolvePayrollRunCurrency } from '../../lib/payrollCurrency';
@@ -16,16 +17,12 @@ import {
   attentionFor, derivePipeline, sortByAttention,
   type AttentionKind, type NextAction, type PipelineStage, type Reason, type StageKey,
 } from '../../lib/payrollPipeline';
+import { isPeriodOwning, priorRunCandidates, reviewFromSignoff, reviewIsRequired } from '../../lib/payrollRecon';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { EnumLabel } from '../EnumLabel';
 import { Button } from '../ui/Button';
 import { usePeriodLabel } from './LockSummary';
 import { RunReviewPanel } from './RunReviewPanel';
-
-const reviewStorageKey = (run: Pick<PayrollRun, 'id' | 'processedAtUtc'>) => `kynexone.payrollReview.${run.id}.${run.processedAtUtc ?? ''}`;
-const readReviewed = (run: Pick<PayrollRun, 'id' | 'processedAtUtc'>): string | null => {
-  try { return window.localStorage.getItem(reviewStorageKey(run)); } catch { return null; }
-};
 
 /** The tab each stage's name opens (the review stage opens its own panel instead). */
 const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
@@ -36,13 +33,15 @@ const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
  * The selected payroll run as the centre of the page: its stages in order, where it is, why it cannot
  * move on when it cannot, and the one thing to do next. The tabs below stay as the detailed views.
  */
-export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsChanged }: {
+export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsChanged, reviewRequestKey = 0 }: {
   runId: string | null;
   onSelectRun: (id: string | null) => void;
   onNavigate: (tab: string) => void;
   /** Bumped by the page whenever a run changed elsewhere (a tab processed or locked one). */
   version: number;
   onRunsChanged: () => void;
+  /** Bumped when something elsewhere (Approve refused for want of a sign-off) sends the user back to the review. */
+  reviewRequestKey?: number;
 }) {
   const t = useT();
   const fmt = useFormat();
@@ -58,7 +57,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const [staleAttendance, setStaleAttendance] = useState(false);
   const [starting, setStarting] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [reviewedAt, setReviewedAt] = useState<string | null>(null);
+  const [priorRunId, setPriorRunId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [missingRun, setMissingRun] = useState(false);
   const [showAllAttention, setShowAllAttention] = useState(false);
@@ -74,8 +73,27 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     else if (runId) setMissingRun(false);
   }, [data.runsState, runId, run, onSelectRun]);
 
-  useEffect(() => { setActionError(''); setStaleAttendance(false); setReviewOpen(false); }, [runId]);
-  useEffect(() => { setReviewedAt(run ? readReviewed(run) : null); }, [run?.id, run?.processedAtUtc]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setActionError(''); setStaleAttendance(false); setReviewOpen(false); setPriorRunId(null); }, [runId]);
+
+  // The reconciliation is read while the run waits for approval (it decides whether Review is done) and
+  // whenever the reviewer opens the stage. Off-cycle runs are not reconciled, so nothing is read for them.
+  const periodOwning = isPeriodOwning(run?.runType);
+  const awaitingApproval = run?.status === 'Processed' || run?.status === 'PendingFinanceReview';
+  const recon = useRunRecon(runId, { enabled: !!run && periodOwning && (awaitingApproval || reviewOpen), priorRunId, version });
+  const review = reviewFromSignoff(recon.recon?.signoff);
+  // A company can switch the sign-off requirement off: the reconciliation is still shown, but the run is not held at Review.
+  // Until the reconciliation has been read the sign-off is taken as required.
+  const holdAtReview = reviewIsRequired(run?.runType, recon.recon);
+  const signoffRequired = recon.recon?.signoffRequired !== false;
+
+  // Approve was refused for want of a current sign-off: show the review again.
+  const handledReviewRequest = useRef(reviewRequestKey);
+  useEffect(() => {
+    if (reviewRequestKey === handledReviewRequest.current) return;
+    handledReviewRequest.current = reviewRequestKey;
+    setReviewOpen(true);
+    requestAnimationFrame(() => reviewRef.current?.focus());
+  }, [reviewRequestKey]);
 
   // The job finished but the run on screen is still a Draft: read it again, once per job.
   const handledJob = useRef<string | null>(null);
@@ -103,10 +121,12 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     approvals: data.approvals,
     batches,
     prechecks: data.prechecks,
-    reviewedAtUtc: reviewedAt,
+    reviewedAtUtc: review?.reviewedAtUtc ?? null,
+    reviewedByName: review?.reviewedByName ?? null,
+    reviewApplicable: holdAtReview,
     can,
     currencyConfirmed: currency === null || currency.status !== 'unavailable',
-  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, reviewedAt, can.process, can.approve, can.lock, currency]); // eslint-disable-line react-hooks/exhaustive-deps
+  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, review?.reviewedAtUtc, review?.reviewedByName, holdAtReview, can.process, can.approve, can.lock, currency]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Polite announcements: when the stage that needs attention changes, or the job changes state. Never per progress tick.
   const announceKey = model && run ? `${run.id}|${model.focus}|${model.stages.find(s => s.key === model.focus)?.state}|${processing.status?.status ?? ''}` : '';
@@ -121,13 +141,6 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     const failure = processing.status?.status === 'Failed' && processing.status.errorMessage ? ` ${processing.status.errorMessage}` : '';
     setAnnouncement(t('Payroll stage {stage}: {state}.', { stage: stageName(t, stage.key), state: stateName(t, stage.state) }) + failure);
   }, [announceKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const markReviewed = () => {
-    if (!run) return;
-    const at = new Date().toISOString();
-    try { window.localStorage.setItem(reviewStorageKey(run), at); } catch { /* private mode: the review still counts for this visit */ }
-    setReviewedAt(at);
-  };
 
   const process = async () => {
     if (!runId || starting) return;
@@ -308,10 +321,19 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
               <RunReviewPanel
                 run={run}
                 results={data.results}
-                currency={currencyCode}
-                reviewedAtUtc={reviewedAt}
-                onComplete={markReviewed}
+                recon={recon.recon}
+                reconState={recon.state}
+                reconError={recon.error}
+                reloadRecon={recon.reload}
+                candidates={priorRunCandidates(run, data.runs)}
+                priorRunId={priorRunId}
+                onPriorRunChange={setPriorRunId}
+                mayApprove={can.approve}
+                signoffRequired={signoffRequired}
+                reviewedAtUtc={review?.reviewedAtUtc ?? null}
+                reviewedByName={review?.reviewedByName ?? null}
                 onOpenValidation={() => onNavigate('validation')}
+                onSignedOff={() => setReviewOpen(true)}
               />
             </div>
           )}
@@ -446,7 +468,8 @@ function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
     case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: d.label });
     case 'payroll_review': return t('Payroll review is done');
     case 'overrides': return t('{count, plural, one {# error cleared by override} other {# errors cleared by override}}', { count: d.count });
-    case 'this_device': return t('Marked on this device');
+    case 'signed_off': return d.name ? t('Signed off by {name}', { name: d.name }) : t('Reconciliation signed off');
+    case 'review_not_required': return t('No reconciliation sign-off is needed for this run');
   }
 }
 
@@ -461,7 +484,7 @@ function reasonText(t: T, r: Reason): string {
     case 'prechecks_unknown': return t('The pre-checks could not be read. You can still process the run.');
     case 'needs_process': return t('Waits for the run to be processed.');
     case 'needs_validation': return t('Waits for the validation errors to be cleared.');
-    case 'needs_review': return t('Open the review and mark it complete before approving.');
+    case 'needs_review': return t('Open the review and sign off the reconciliation before approving.');
     case 'needs_approval': return t('Waits for approval.');
     case 'needs_finance': return t('Payroll review is done. A finance approver decides next.');
     case 'needs_lock': return t('Waits for the run to be locked.');

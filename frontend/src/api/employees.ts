@@ -140,6 +140,7 @@ export interface EmployeeCreateRequest {
   confirmationDate?: string;
   probationStartDate?: string;
   probationEndDate?: string;
+  probationWaived?: boolean;
   noticePeriodDays?: number;
   workLocation?: string;
   payrollGroup?: string;
@@ -347,6 +348,7 @@ export interface EmployeeEntity {
   confirmationDate?: string;
   probationStartDate?: string;
   probationEndDate?: string;
+  probationWaived?: boolean;
   contractType: string;
   employmentType: string;
   jobTitle: string;

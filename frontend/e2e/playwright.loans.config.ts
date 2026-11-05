@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 const port = Number(process.env.LOAN_FIXTURE_PORT ?? 5183);
 export default defineConfig({
-  testDir: '.', testMatch: /loans-(?:separate-payments|governance)\.spec\.ts/, workers: 1, retries: 0,
+  testDir: '.', testMatch: /loans-(?:separate-payments|governance|batch-approver)\.spec\.ts/, workers: 1, retries: 0,
   reporter: 'list', timeout: 90_000,
   outputDir: '/tmp/kynex-loan-playwright-results',
   use: { baseURL: `http://localhost:${port}`, trace: 'retain-on-failure', actionTimeout: 15_000 },

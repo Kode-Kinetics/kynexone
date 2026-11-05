@@ -16,11 +16,11 @@ public class EmployeeInputValidatorTests
         EmployeePayrollProfileRequest? payroll = null, IReadOnlyCollection<EmployeeComplianceRecordRequest>? records = null,
         string? workEmail = null, string? employeeCode = null, DateOnly? probStart = null, DateOnly? probEnd = null,
         DateOnly? confirmation = null, int? notice = null, string? nationalityCode = null,
-        IReadOnlyCollection<AcknowledgedWarning>? ack = null) =>
+        IReadOnlyCollection<AcknowledgedWarning>? ack = null, bool probationWaived = false) =>
         new(employeeCode, employeeCode is not null, name, null, null, "Female", dob, nationality, null, null, workEmail, mobile,
             photo, Guid.NewGuid(), null, null, null, null, null, null, null, null, "Full-Time", "Unlimited", joining,
             confirmation, probStart, probEnd, notice, null, null, null, null, null, payroll, salary, records,
-            NationalityCode: nationalityCode, AcknowledgedWarnings: ack);
+            NationalityCode: nationalityCode, AcknowledgedWarnings: ack, ProbationWaived: probationWaived);
 
     private static EmployeeInputValidationContext Ctx(EmployeeGuardMode mode = EmployeeGuardMode.Create, string country = "SA") =>
         new(country, Today, mode, TimeZoneInfo.Utc);
@@ -44,6 +44,26 @@ public class EmployeeInputValidatorTests
         Run(Req(dob: Today.AddDays(1))).Errors["dateOfBirth"].Should().Contain(EmployeeFieldErrors.DobFuture);
         Run(Req(dob: Today.AddYears(-101))).Errors["dateOfBirth"].Should().Contain(EmployeeFieldErrors.DobOutOfRange);
         Run(Req(dob: Today.AddYears(-100))).Errors.Should().NotContainKey("dateOfBirth");
+    }
+
+    [Fact]
+    public void InputValidator_ProbationWaived_WithProbationDates_IsHardError()
+    {
+        var s = Today;
+        Run(Req(joining: Day(s), probEnd: s.AddDays(90), probationWaived: true)).Errors["probationEndDate"]
+            .Should().Contain(EmployeeFieldErrors.ProbationWaivedWithDates);
+        Run(Req(joining: Day(s), probStart: s, probationWaived: true)).Errors["probationEndDate"]
+            .Should().Contain(EmployeeFieldErrors.ProbationWaivedWithDates);
+        Run(Req(joining: Day(s), probationWaived: true)).Errors.Should().NotContainKey("probationEndDate");
+        Run(Req(joining: Day(s), probEnd: s.AddDays(90))).Errors.Should().NotContainKey("probationEndDate");
+    }
+
+    [Fact]
+    public void InputValidator_ProbationWaived_AlsoRefusedOnADraft()
+    {
+        var s = Today;
+        Run(Req(joining: Day(s), probEnd: s.AddDays(90), probationWaived: true), EmployeeGuardMode.Draft).Errors["probationEndDate"]
+            .Should().Contain(EmployeeFieldErrors.ProbationWaivedWithDates);
     }
 
     [Fact]
@@ -158,7 +178,7 @@ public class EmployeeInputValidatorTests
     {
         var s = Today;
         Run(Req(probStart: s.AddDays(10), probEnd: s)).Errors["probationEndDate"].Should().Contain(EmployeeFieldErrors.ProbationOrder);
-        Run(Req(joining: Day(s), confirmation: s.AddDays(-1))).Errors["confirmationDate"].Should().Contain(EmployeeFieldErrors.ProbationOrder);
+        Run(Req(joining: Day(s), confirmation: s.AddDays(-1))).Errors["confirmationDate"].Should().Contain(EmployeeFieldErrors.ConfirmationBeforeJoining);
         var r = Run(Req(probStart: s, probEnd: s.AddDays(200)));
         r.Errors.Should().BeEmpty();
         r.Warnings.Select(w => w.Code).Should().Contain(EmployeeWarningCodes.ProbationOverLimit);

@@ -298,6 +298,8 @@ PayrollRuleChangeRequests
 PayrollRunConsumptions
 PayrollRunEmployeeSelections
 PayrollRunEmployees
+PayrollRunReconExplanations
+PayrollRunReconSignoffs
 PayrollRuns
 PayrollSlips
 PayrollValidationOverrides

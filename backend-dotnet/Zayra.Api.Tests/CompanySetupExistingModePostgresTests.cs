@@ -507,7 +507,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
     }
 
     [Fact]
-    public async Task The_first_payroll_month_moves_only_while_the_cutover_is_planned()
+    public async Task The_first_payroll_month_moves_until_a_locked_payroll_run_pins_it()
     {
         var w = await SeedAsync();
         var body = await PrefillAsync(w, w.CompanyId);
@@ -524,6 +524,7 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
             cutover.Status = CutoverStatuses.Active;
             await db.SaveChangesAsync();
         }
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 12, "Locked");
         var again = await PrefillAsync(w, w.CompanyId);
         again.Company.FirstPayrollMonth.Should().Be("2026-12");
         (await DryRunAsync(w, again)).Ok.Should().BeTrue("an unchanged month is fine once payroll started");
@@ -1454,6 +1455,310 @@ public sealed class CompanySetupExistingModePostgresTests(PostgresFixture fixtur
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } },
         };
+    }
+
+    // ── Go-live cutover: migrationMode / previousSystem ─────────────────────────────────────────────────
+
+    private static CompanySetupDraftBody SwitchingBody(string suffix, string month, string? mode, string? previousSystem) =>
+        new(V.StartFromDefaults, null,
+            new CompanySetupCompany($"Switcher {suffix} Co", "شركة التحول", null, "SA", "SAR", $"20{suffix}000000", "7-1234567", null, null, null, null,
+                null, null, null, month, MigrationMode: mode, PreviousSystem: previousSystem),
+            [new CompanySetupBranch("HQ", "Head office", null, "Riyadh", "Asia/Riyadh", true, [])],
+            [], [], [], [],
+            new CompanySetupRules(new CompanySetupWorkWeek("Fri,Sat", false), new CompanySetupPackChoice(true), new CompanySetupPackChoice(true),
+                new CompanySetupEmployeeNumbering($"S{suffix}", true, false, true, true, 4, 1)),
+            new CompanySetupCompanyAdmin(V.AdminGroupOnly, null, null, null, null));
+
+    private async Task<Guid> CreateViaWizardAsync(World w, CompanySetupDraftBody body)
+    {
+        var (_, result) = await DraftAndCommitAsync(w, body);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        return result.Value!.CompanyId;
+    }
+
+    private async Task<CompanyCutover> CutoverOfAsync(Guid tenantId, Guid companyId)
+    {
+        await using var db = fixture.CreateDb();
+        return await db.CompanyCutovers.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.TenantId == tenantId && c.CompanyId == companyId);
+    }
+
+    private async Task AddRunAsync(Guid tenantId, Guid companyId, int year, int month, string status)
+    {
+        await using var db = fixture.CreateDb();
+        db.PayrollRuns.Add(new PayrollRun { TenantId = tenantId, CompanyId = companyId, Year = year, Month = month, Status = status });
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Create_switching_writes_an_Active_cutover_on_the_first_of_the_go_live_month_with_the_source_system_and_an_audit_row()
+    {
+        var w = await SeedAsync();
+        var since = DateTime.UtcNow;
+        var id = await CreateViaWizardAsync(w, SwitchingBody("01", "2026-03", "switching", "  Zoho People  "));
+        var cutover = await CutoverOfAsync(w.TenantId, id);
+        cutover.Status.Should().Be(CutoverStatuses.Active);
+        cutover.CutoverDate.Should().Be(new DateOnly(2026, 3, 1));
+        cutover.SourceSystem.Should().Be("Zoho People", "trimmed");
+        await using var db = fixture.CreateDb();
+        var audit = await db.AuditLogs.IgnoreQueryFilters().Where(a => a.TenantId == w.TenantId && a.CreatedAtUtc >= since && a.EntityId == cutover.Id.ToString()).ToListAsync();
+        audit.Should().ContainSingle();
+        audit[0].CompanyId.Should().Be(id);
+        audit[0].UserId.Should().Be(w.AdminId, "the actor");
+        audit[0].Metadata.Should().Contain("Zoho People").And.Contain("Active");
+    }
+
+    [Fact]
+    public async Task Create_switching_without_a_previous_system_stores_an_empty_source_and_still_governs()
+    {
+        var w = await SeedAsync();
+        var id = await CreateViaWizardAsync(w, SwitchingBody("02", "2026-01", "switching", null));
+        var cutover = await CutoverOfAsync(w.TenantId, id);
+        cutover.Status.Should().Be(CutoverStatuses.Active);
+        cutover.SourceSystem.Should().BeEmpty();
+        (await PrefillAsync(w, id)).Company.MigrationMode.Should().Be("switching", "an Active cutover is a switching company");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("new")]
+    public async Task Create_new_or_absent_mode_stays_Planned_and_ignores_a_previous_system(string? mode)
+    {
+        var w = await SeedAsync();
+        var id = await CreateViaWizardAsync(w, SwitchingBody("03", "2026-12", mode, "SAP"));
+        var cutover = await CutoverOfAsync(w.TenantId, id);
+        cutover.Status.Should().Be(CutoverStatuses.Planned);
+        cutover.SourceSystem.Should().BeEmpty("previousSystem is stored only when switching");
+        var body = await PrefillAsync(w, id);
+        body.Company.MigrationMode.Should().Be("new");
+        body.Company.PreviousSystem.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Prefill_derives_the_mode_from_the_existing_cutover()
+    {
+        var w = await SeedAsync();
+        (await PrefillAsync(w, w.CompanyId)).Company.MigrationMode.Should().Be("new", "Planned with no source system");
+        await ElsewhereAsync(async db => (await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(c => c.CompanyId == w.CompanyId)).SourceSystem = "SAP");
+        var planned = await PrefillAsync(w, w.CompanyId);
+        planned.Company.MigrationMode.Should().Be("new", "mode comes from the status only: a Planned cutover does not govern");
+        planned.Company.PreviousSystem.Should().Be("SAP");
+        await ElsewhereAsync(async db =>
+        {
+            var c = await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == w.CompanyId);
+            c.SourceSystem = string.Empty; c.Status = CutoverStatuses.Closed;
+        });
+        var closed = await PrefillAsync(w, w.CompanyId);
+        closed.Company.MigrationMode.Should().Be("switching", "a Closed cutover still governs");
+        closed.Company.PreviousSystem.Should().BeNull("an empty source system reads as null");
+    }
+
+    [Fact]
+    public async Task Complete_existing_leaves_a_company_with_a_cutover_and_locked_runs_byte_for_byte_unchanged()
+    {
+        var w = await SeedAsync();
+        await ElsewhereAsync(async db =>
+        {
+            var c = await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == w.CompanyId);
+            c.Status = CutoverStatuses.Active; c.SourceSystem = "SAP"; c.CutoverDate = new DateOnly(2026, 4, 1);
+        });
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 4, "Locked");
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 5, "Locked");
+        var before = await CutoverOfAsync(w.TenantId, w.CompanyId);
+        var fingerprint = await FingerprintAsync(w.TenantId);
+
+        var body = await PrefillAsync(w, w.CompanyId);
+        body.Company.MigrationMode.Should().Be("switching");
+        var plan = await DryRunAsync(w, body);
+        plan.Ok.Should().BeTrue(JsonSerializer.Serialize(plan.Problems));
+        plan.Items.Single(i => i.Area == V.Areas.Cutover).Action.Should().Be(V.ActionUnchanged);
+        var (_, result) = await DraftAndCommitAsync(w, body);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+
+        var after = await CutoverOfAsync(w.TenantId, w.CompanyId);
+        after.Should().BeEquivalentTo(before);
+        (await FingerprintAsync(w.TenantId)).Should().Be(fingerprint);
+
+        // (a) A body with NO baseline cannot tell the user's edits from changes made elsewhere: refused, nothing applied.
+        var noBaseline = body with { Company = body.Company with { MigrationMode = null, PreviousSystem = null, Baseline = null } };
+        await using (var db = fixture.CreateDb())
+        {
+            var created = await Service(db).CreateDraftAsync(Caller(w), noBaseline, default);
+            string code;
+            if (created.Status == 201)
+            {
+                await using var commitDb = fixture.CreateDb();
+                var refused = await Service(commitDb).CommitAsync(Caller(w), new CompanySetupCommitRequest(created.Value!.Id, created.Value.Version), created.Value.Id, default);
+                refused.Status.Should().NotBe(201, JsonSerializer.Serialize(refused.Error));
+                code = ErrorCode(refused.Error);
+                // The refused draft stays open; discard it so case (b) can start its own.
+                await using var discardDb = fixture.CreateDb();
+                (await Service(discardDb).DiscardDraftAsync(Caller(w), created.Value.Id, default)).Status.Should().Be(204);
+            }
+            else code = ErrorCode(created.Error);
+            code.Should().Be("draft_needs_refresh");
+        }
+        (await CutoverOfAsync(w.TenantId, w.CompanyId)).Should().BeEquivalentTo(before);
+        (await FingerprintAsync(w.TenantId)).Should().Be(fingerprint);
+        await using (var db = fixture.CreateDb())
+            (await db.PayrollRuns.IgnoreQueryFilters().Where(r => r.TenantId == w.TenantId).Select(r => r.Status).ToListAsync()).Should().Equal("Locked", "Locked");
+
+        // (b) An older client WITH a proper baseline edits an unrelated field and omits the new fields: saved, cutover untouched.
+        var old = body with
+        {
+            Company = body.Company with
+            {
+                TradeName = "Renamed Trade Name", MigrationMode = null, PreviousSystem = null, CutoverPinned = null,
+                Baseline = body.Company.Baseline!.Where(kv => kv.Key is not ("migrationMode" or "previousSystem")).ToDictionary(kv => kv.Key, kv => kv.Value),
+            },
+        };
+        var (_, oldResult) = await DraftAndCommitAsync(w, old);
+        oldResult.Status.Should().Be(201, JsonSerializer.Serialize(oldResult.Error));
+        var afterOld = await CutoverOfAsync(w.TenantId, w.CompanyId);
+        (afterOld.Status, afterOld.CutoverDate, afterOld.SourceSystem).Should().Be((before.Status, before.CutoverDate, before.SourceSystem));
+        await using (var db = fixture.CreateDb())
+            (await db.Companies.IgnoreQueryFilters().SingleAsync(c => c.Id == w.CompanyId)).TradeName.Should().Be("Renamed Trade Name");
+    }
+
+    [Fact]
+    public async Task The_go_live_month_of_an_Active_cutover_moves_until_a_locked_run_exists_in_or_after_the_earlier_month()
+    {
+        var w = await SeedAsync();
+        await ElsewhereAsync(async db =>
+        {
+            var c = await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == w.CompanyId);
+            c.Status = CutoverStatuses.Active; c.CutoverDate = new DateOnly(2026, 6, 1);
+        });
+        var body = await PrefillAsync(w, w.CompanyId);
+        var moved = body with { Company = body.Company with { FirstPayrollMonth = "2026-07" } };
+        var free = await DryRunAsync(w, moved);
+        free.Ok.Should().BeTrue("no payroll has been locked, so the boundary can still move: " + JsonSerializer.Serialize(free.Problems));
+        free.Items.Single(i => i.Area == V.Areas.Cutover).Action.Should().Be(V.ActionUpdate);
+
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 5, "Locked");
+        (await DryRunAsync(w, moved)).Ok.Should().BeTrue("a locked run BEFORE the earlier month is not affected");
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 7, "Locked");
+        var locked = await DryRunAsync(w, moved);
+        locked.Ok.Should().BeFalse();
+        locked.Problems.Should().Contain(p => p.Code == "first_payroll_month_locked" && p.Field == "company.firstPayrollMonth");
+        var earlier = await DryRunAsync(w, body with { Company = body.Company with { FirstPayrollMonth = "2026-05" } });
+        earlier.Problems.Should().Contain(p => p.Code == "first_payroll_month_locked", "moving earlier crosses the same locked month");
+    }
+
+    [Fact]
+    public async Task The_previous_system_changes_only_when_asked_and_only_while_no_locked_run_pins_the_boundary()
+    {
+        var w = await SeedAsync();
+        await ElsewhereAsync(async db =>
+        {
+            var c = await db.CompanyCutovers.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == w.CompanyId);
+            c.Status = CutoverStatuses.Active; c.SourceSystem = "SAP"; c.CutoverDate = new DateOnly(2026, 6, 1);
+        });
+        var body = await PrefillAsync(w, w.CompanyId);
+        var renamed = body with { Company = body.Company with { PreviousSystem = "Oracle HCM" } };
+        var (_, ok) = await DraftAndCommitAsync(w, renamed);
+        ok.Status.Should().Be(201, JsonSerializer.Serialize(ok.Error));
+        var cutover = await CutoverOfAsync(w.TenantId, w.CompanyId);
+        cutover.SourceSystem.Should().Be("Oracle HCM");
+        cutover.Status.Should().Be(CutoverStatuses.Active, "the wizard never changes an existing status");
+
+        await AddRunAsync(w.TenantId, w.CompanyId, 2026, 6, "Locked");
+        var again = await PrefillAsync(w, w.CompanyId);
+        var refused = await DryRunAsync(w, again with { Company = again.Company with { PreviousSystem = "Workday" } });
+        refused.Ok.Should().BeFalse();
+        refused.Problems.Should().Contain(p => p.Code == "previous_system_locked");
+        (await CutoverOfAsync(w.TenantId, w.CompanyId)).SourceSystem.Should().Be("Oracle HCM");
+    }
+
+    [Fact]
+    public async Task Choosing_switching_on_a_planned_cutover_promotes_it_to_Active_with_an_audit_row_and_is_refused_when_a_run_exists()
+    {
+        var w = await SeedAsync();
+        var body = await PrefillAsync(w, w.CompanyId);
+        var switching = body with { Company = body.Company with { MigrationMode = "switching", PreviousSystem = "Zoho" } };
+        var since = DateTime.UtcNow;
+        var (_, result) = await DraftAndCommitAsync(w, switching);
+        result.Status.Should().Be(201, JsonSerializer.Serialize(result.Error));
+        var cutover = await CutoverOfAsync(w.TenantId, w.CompanyId);
+        cutover.Status.Should().Be(CutoverStatuses.Active);
+        cutover.SourceSystem.Should().Be("Zoho");
+        await using (var db = fixture.CreateDb())
+        {
+            var audit = await db.AuditLogs.IgnoreQueryFilters().Where(a => a.TenantId == w.TenantId && a.CreatedAtUtc >= since && a.EntityId == cutover.Id.ToString()).ToListAsync();
+            audit.Should().ContainSingle();
+            audit[0].UserId.Should().Be(w.AdminId);
+            audit[0].Metadata.Should().Contain("Planned").And.Contain("Active").And.Contain("Zoho");
+        }
+
+        var w2 = await SeedAsync();
+        await AddRunAsync(w2.TenantId, w2.CompanyId, 2026, 11, "Processed");
+        var b2 = await PrefillAsync(w2, w2.CompanyId);
+        var refused = await DryRunAsync(w2, b2 with { Company = b2.Company with { MigrationMode = "switching", PreviousSystem = "Zoho" } });
+        refused.Problems.Should().Contain(p => p.Code == "switching_blocked_by_runs");
+        (await CutoverOfAsync(w2.TenantId, w2.CompanyId)).Status.Should().Be(CutoverStatuses.Planned, "never leave a half-switched row");
+    }
+
+    [Fact]
+    public async Task Planner_validates_the_migration_mode_and_the_previous_system()
+    {
+        var w = await SeedAsync();
+        async Task<CompanySetupPlan> Plan(string month, string? mode, string? system) =>
+            await DryRunAsync(w, SwitchingBody("04", month, mode, system));
+        var thisMonth = DateTime.UtcNow.ToString("yyyy-MM");
+
+        (await Plan("2026-12", "bogus", null)).Problems.Should().Contain(p => p.Code == "migration_mode_invalid" && p.Field == "company.migrationMode" && p.MessageAr != null);
+        (await Plan("2026-12", "Switching", null)).Problems.Should().Contain(p => p.Code == "migration_mode_invalid", "the vocabulary is exact");
+        (await Plan("2026-12", "switching", new string('x', 121))).Problems.Should().Contain(p => p.Code == "previous_system_too_long" && p.Field == "company.previousSystem");
+        (await Plan("2026-12", "switching", new string('x', 120))).Problems.Should().NotContain(p => p.Code.StartsWith("previous_system"));
+        (await Plan("2026-12", "switching", "SAP\u0000x")).Problems.Should().Contain(p => p.Code == "previous_system_invalid");
+        (await Plan("2026-12", "switching", "line\nbreak")).Problems.Should().Contain(p => p.Code == "previous_system_invalid");
+
+        (await Plan("2014-12", "switching", "SAP")).Problems.Should().Contain(p => p.Code == "first_payroll_month_out_of_range");
+        var far = DateTime.UtcNow.AddMonths(14).ToString("yyyy-MM");
+        (await Plan(far, "switching", "SAP")).Problems.Should().Contain(p => p.Code == "first_payroll_month_out_of_range");
+
+        var past = await Plan("2026-01", "switching", "SAP");
+        past.Problems.Should().BeEmpty(JsonSerializer.Serialize(past.Problems));
+        past.Warnings.Should().NotContain(x => x.Code == "first_payroll_month_past", "a past month is normal when switching");
+        (await Plan(thisMonth, "switching", "SAP")).Warnings.Should().NotContain(x => x.Code == "first_payroll_month_past");
+        (await Plan("2026-01", "new", null)).Warnings.Should().Contain(x => x.Code == "first_payroll_month_past", "kept for a brand-new company");
+        (await Plan("2026-01", null, null)).Warnings.Should().Contain(x => x.Code == "first_payroll_month_past");
+    }
+
+    [Fact]
+    public async Task A_caller_without_the_setup_permission_cannot_set_switching_mode_and_a_foreign_company_is_refused()
+    {
+        var w = await SeedAsync();
+        var other = await SeedAsync();
+        // A group-scope user whose role holds only organization.read.
+        Guid weakId;
+        await using (var db = fixture.CreateDb())
+        {
+            var read = await db.Permissions.SingleAsync(p => p.Key == "organization.read");
+            var role = new Role { Id = Guid.NewGuid(), TenantId = w.TenantId, Name = "Reader", NormalizedName = "READER", Description = "r", IsActive = true };
+            db.Roles.Add(role);
+            db.RolePermissions.Add(new RolePermission { RoleId = role.Id, PermissionId = read.Id });
+            await db.SaveChangesAsync();
+            weakId = await AddUserAsync(w.TenantId, "Weak Reader", role.Id, groupScope: true);
+        }
+        var weak = new CompanySetupCaller(w.TenantId, weakId, true, false, new RequestContext("127.0.0.1", "tests", weakId, w.TenantId), null);
+        var plan = await DryRunAsync(w, SwitchingBody("05", "2026-03", "switching", "SAP"), weak);
+        plan.Ok.Should().BeFalse();
+        plan.Problems.Should().Contain(p => p.Code == "migration_mode_needs_setup_permission");
+
+        var allowed = await DryRunAsync(w, SwitchingBody("05", "2026-03", "switching", "SAP"));
+        allowed.Problems.Should().NotContain(p => p.Code == "migration_mode_needs_setup_permission");
+
+        // The controller itself is gated on the setup permission, reads and writes alike.
+        typeof(CompanySetupController).GetCustomAttributes(typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute), true)
+            .Cast<Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute>()
+            .Should().Contain(a => a.Permissions.Contains(CompanySetupController.ApplyPermission));
+
+        // Tenant isolation: the other tenant's company id is not found for this tenant's admin, even with switching.
+        var foreign = (await PrefillAsync(other, other.CompanyId)) with { ExistingCompanyId = other.CompanyId };
+        var foreignPlan = await DryRunAsync(w, foreign with { Company = foreign.Company with { MigrationMode = "switching", PreviousSystem = "SAP" } });
+        foreignPlan.Ok.Should().BeFalse();
+        foreignPlan.Problems.Should().Contain(p => p.Code == "company_not_found");
+        (await CutoverOfAsync(other.TenantId, other.CompanyId)).SourceSystem.Should().BeEmpty();
     }
 
     private sealed class FakeTokenService : ITokenService

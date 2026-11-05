@@ -88,6 +88,31 @@ public static class CompanySetupReadiness
             Add("nitaqat", "Nitaqat establishment profile", "ملف المنشأة في نطاقات", nitaqat, V.ReadinessRecommended, $"/saudi-compliance?companyId={id}");
         }
 
+        // A company switching payroll from another system must bring its history over before the first payroll run. Derived from the
+        // rows the importer writes (OpeningBalanceOrigin, PayrollOpeningBalance, EmployeeEosbOpeningBalance) for THIS company. There is
+        // no stored reconciliation sign-off (the importer only reports it in its ledger), so no sign-off item is shown rather than a fake one.
+        var cutover = await ScopedBypass.TenantWide(db.CompanyCutovers, tenantId, Why).AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == id, ct);
+        if (CompanySetupBaseline.MigrationModeOf(cutover) == V.MigrationSwitching)
+        {
+            var carried = (await ScopedBypass.TenantWide(db.OpeningBalanceOrigins, tenantId, Why).AsNoTracking()
+                .Where(o => o.CompanyId == id).Select(o => o.EntityType).Distinct().ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+            var openingHref = SetupHref("openingBalances", id);
+            var ytd = carried.Contains(OpeningBalanceEntityTypes.PayrollYtd)
+                || await ScopedBypass.TenantWide(db.PayrollOpeningBalances, tenantId, Why).AnyAsync(b => b.CompanyId == id, ct);
+            Add("migrateHistoryPayrollYtd", "Bring over this year's payroll to date (year-to-date earnings and deductions)",
+                "استيراد رواتب السنة حتى تاريخه (الاستحقاقات والاستقطاعات التراكمية)", ytd, V.ReadinessTodo, openingHref);
+            Add("migrateHistoryLeave", "Bring over employees' leave balances", "استيراد أرصدة إجازات الموظفين",
+                carried.Contains(OpeningBalanceEntityTypes.LeaveBalance), V.ReadinessTodo, openingHref);
+            Add("migrateHistoryLoans", "Bring over open loans and advances (instalments paid and balance outstanding)",
+                "استيراد القروض والسلف القائمة (الأقساط المسددة والرصيد المتبقي)",
+                carried.Contains(OpeningBalanceEntityTypes.Loan) || carried.Contains(OpeningBalanceEntityTypes.Advance), V.ReadinessTodo, openingHref);
+            var eosb = carried.Contains(OpeningBalanceEntityTypes.EosbProvision)
+                || await ScopedBypass.TenantWide(db.EmployeeEosbOpeningBalances, tenantId, Why).AnyAsync(b => b.CompanyId == id, ct);
+            Add("migrateHistoryEosb", "Bring over the end-of-service provision, with each employee's legal hire date (prior service start) where it differs",
+                "استيراد مخصص نهاية الخدمة مع تاريخ التعيين القانوني لكل موظف (بداية الخدمة السابقة) إن اختلف",
+                eosb, V.ReadinessTodo, openingHref);
+        }
+
         // Company super admin: an active Admin login, not group-wide, granted this company. Until that person has
         // signed in, the item stays todo and carries their user id: the screen sends them the single-use sign-in link
         // (or, for a caller who cannot issue links, opens User Management at the href).
