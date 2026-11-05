@@ -126,8 +126,8 @@ test.describe('Home view switch', () => {
 
   test('a self-service-only portal login gets no switch even if a role grants the dashboard', async ({ page }) => {
     await open(page, ESS_ONLY_PORTAL);
-    await expect(page.locator('main')).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(1500);
+    await expect(myDayHeading(page)).toBeVisible({ timeout: 30_000 });
+    await expect(companyHeading(page)).toHaveCount(0);
     await expect(tablist(page)).toHaveCount(0);
   });
 

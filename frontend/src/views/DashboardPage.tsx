@@ -298,7 +298,9 @@ export function DashboardPage() {
   const { user } = useAuth();
   // "My day" needs an employee record linked to this login; an admin without one has no personal
   // view to show, and the self-service page would only answer with an error.
-  // Not for a self-service-only login (lib/homePath.ts decides who that is, including the ESSOnly portal).
+  // A self-service-only login (lib/homePath.ts decides who that is, including the ESSOnly portal) gets
+  // no switch; it stays on its own view even if a role also grants the workforce dashboard.
+  const employeeOnly = isEmployeeOnly(user) && user?.employeeId != null;
   const canSeeBoth = !isEmployeeOnly(user) && !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
   const storageKey = `kx.home-view.${user?.id ?? 'anon'}`;
   // Unknown until the browser's remembered choice is read, so the wrong view never mounts first
@@ -316,6 +318,7 @@ export function DashboardPage() {
     try { window.localStorage.setItem(storageKey, v); } catch { /* private mode */ }
   };
 
+  if (employeeOnly) return <EmployeeSelfServicePage />;
   if (!canSeeBoth) return <CompanyDashboard />;
 
   const labels: Record<HomeView, string> = { me: t('My day'), company: t('Company') };
