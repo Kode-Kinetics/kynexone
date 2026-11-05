@@ -32,8 +32,8 @@ function ModeChoice({ value, onChange, disabled, lockedNote }: { value: Migratio
         {options.map(o => {
           const checked = value === o.mode;
           return (
-            <label key={o.mode} className={`relative flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm focus-within:ring-2 focus-within:ring-sapphire/50 has-[:disabled]:cursor-default ${checked ? 'border-sapphire bg-sapphire/[0.05] dark:border-cyanAccent dark:bg-cyanAccent/[0.07]' : 'border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.02]'}`}>
-              <input type="radio" name={`${uid}-mode`} value={o.mode} checked={checked} disabled={disabled} onChange={() => onChange(o.mode)}
+            <label key={o.mode} htmlFor={`${uid}-${o.mode}`} className={`relative flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm focus-within:ring-2 focus-within:ring-sapphire/50 has-[:disabled]:cursor-default ${checked ? 'border-sapphire bg-sapphire/[0.05] dark:border-cyanAccent dark:bg-cyanAccent/[0.07]' : 'border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.02]'}`}>
+              <input type="radio" id={`${uid}-${o.mode}`} name={`${uid}-mode`} value={o.mode} checked={checked} disabled={disabled} onChange={() => onChange(o.mode)}
                 aria-describedby={`${uid}-${o.mode}-d`} data-testid={`migration-mode-${o.mode}`} className="mt-1 h-4 w-4 shrink-0 accent-sapphire" />
               <span className="min-w-0">
                 <span className="block font-semibold text-slate-900 dark:text-white">{o.title}</span>
