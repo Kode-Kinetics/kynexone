@@ -13,10 +13,14 @@ import {
   type InUseKey, type MasterForm,
 } from '../../lib/costCentreMaster';
 import { FUNCTIONAL_CLASSES, pickServerMessage, COST_ACCOUNTING_SETUP_HREF } from '../../lib/glCostAccounting';
+import { usageSentence } from '../../lib/orgUsage';
 import { Modal } from '../Modal';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
+import { useSetupEditorState } from './SetupEditorState';
 import { downloadCsv, ImportExportToolbar } from '../ImportExportToolbar';
 import { Badge, FieldError, LoadError, Spinner, WarningNote } from '../gl/glUi';
 import { useOrgCompanies } from './OrgCompanyControls';
+import { useOrgWriteAccess } from './OrgRowActions';
 
 /**
  * Setup → Company structure → Cost centres (screen 1). A parent tree with the functional class, the ERP code and the
@@ -39,8 +43,20 @@ const IN_USE_LINKS: Partial<Record<InUseKey, string>> = {
 
 export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }) {
   const { t, locale } = useLocale();
-  const { hasPermission } = useAuth();
-  const canManage = hasPermission('organization.costcenter.manage');
+  const { hasPermission, hasRole } = useAuth();
+  // The API's rules, so a control the server would refuse is shown disabled with the reason, never hidden:
+  // create, edit, import and delete need the Admin or HR Manager role AND organization.costcenter.manage; delete and
+  // restore also need organization.delete (restore carries no role rule); the company must be within the person's grant.
+  const hasManage = hasPermission('organization.costcenter.manage');
+  const hasWriteRole = hasRole('Admin') || hasRole('HR Manager');
+  const canManage = hasManage && hasWriteRole;
+  const hasDelete = hasPermission('organization.delete');
+  const writeBlockedReason = !hasManage
+    ? t('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.')
+    : !hasWriteRole ? t('You can view cost centres but not change them. Changing them needs the Admin or HR Manager role.') : undefined;
+  const deleteBlockedReason = hasDelete ? undefined : t('Deleting or restoring a cost centre needs the organization.delete permission.');
+  const writeAccess = useOrgWriteAccess(null);
+  const blockedNoteId = useId();
   const canSetClass = hasPermission('finance.gl.manage');
   const org = useOrgCompanies(companies);
   const headingId = useId();
@@ -64,9 +80,16 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   const [action, setAction] = useState<{ kind: 'deactivate' | 'delete'; item: CostCenterDto } | null>(null);
   const [actionReason, setActionReason] = useState('');
   const [actionError, setActionError] = useState('');
+  const [actionReasonError, setActionReasonError] = useState('');
   const [inUse, setInUse] = useState<{ item: CostCenterDto; counts: Record<string, number> } | null>(null);
+  const [rowError, setRowError] = useState('');
+  const [discarding, setDiscarding] = useState<null | 'form' | 'action'>(null);
+  const initialForm = useRef<MasterForm>(emptyForm(''));
   const [menu, setMenu] = useState<{ id: string; top: number; above: number; start: number; viaKeyboard: boolean } | null>(null);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
+
+  // Setup asks before leaving the page while a form or a reason dialog is open (like the other Setup tabs).
+  useSetupEditorState(formOpen || !!action);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -106,24 +129,35 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   // ── Form ──
   const openNew = () => {
     setEditing(null);
-    setForm(emptyForm(org.defaultCompanyId || ''));
+    initialForm.current = emptyForm(org.defaultCompanyId || '');
+    setForm(initialForm.current);
     setErrors({}); setFormError(''); setLockedNote('');
     setFormOpen(true);
   };
   const openEdit = (c: CostCenterDto) => {
     setEditing(c);
-    setForm(formOf(c));
+    initialForm.current = formOf(c);
+    setForm(initialForm.current);
     setErrors({}); setFormError(''); setLockedNote('');
     setFormOpen(true);
   };
+  const formDirty = formOpen && (Object.keys(form) as Array<keyof MasterForm>).some((k) => form[k] !== initialForm.current[k]);
+  // Typed input is not thrown away by Esc, a click outside or Cancel without asking; a pristine form closes at once.
+  const closeForm = () => { if (saving) return; if (formDirty) setDiscarding('form'); else setFormOpen(false); };
+  const closeAction = () => { if (saving) return; if (actionReason.trim()) setDiscarding('action'); else setAction(null); };
   const set = <K extends keyof MasterForm>(key: K, value: MasterForm[K]) => setForm((f) => ({ ...f, [key]: value }));
 
   // M-9: the server says when a posted line carries the code; the 409 handler below stays for an older server.
   const codeLockedByServer = !!editing && isCodeLocked(editing);
   const classChanged = editing ? form.functionalClass !== (editing.functionalClass ?? '') : !!form.functionalClass;
+  // The ERP code decides where journal exports land: finance's to change on an existing cost centre, and recorded with a reason.
+  const segmentChanged = !!editing && form.glSegment.trim().toLowerCase() !== (editing.glSegment ?? '').toLowerCase();
   const deactivating = !!editing && editing.isActive && !form.isActive;
   const movingCompany = !!editing && !!editing.companyId && form.companyId !== editing.companyId;
-  const needsReason = classChanged || deactivating || movingCompany;
+  const needsReason = classChanged || segmentChanged || deactivating || movingCompany;
+  // A company the person's grant does not cover cannot be written, so it cannot be picked (its option is disabled) and a
+  // cost centre already in one cannot be moved out of it from here: the select is disabled and says why.
+  const companyBlockedReason = formOpen && form.companyId && editing && !writeAccess(editing.companyId).allowed ? writeAccess(editing.companyId).reason : undefined;
   const parents = parentOptions(items, { id: editing?.id, companyId: form.companyId, parentId: editing?.parentId ?? null });
 
   const showServerError = (err: unknown) => pickServerMessage((err as { response?: { data?: unknown } })?.response?.data, locale) ?? describeApiError(err, t);
@@ -160,22 +194,39 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
   };
 
   // ── Deactivate and delete ──
-  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setActionReason(''); setActionError(''); setAction({ kind, item }); };
+  const openAction = (kind: 'deactivate' | 'delete', item: CostCenterDto) => { setMenu(null); setRowError(''); setSavedNote(''); setActionReason(''); setActionError(''); setActionReasonError(''); setAction({ kind, item }); };
   const runAction = async () => {
     if (!action) return;
     const { kind, item } = action;
-    if (!actionReason.trim()) { setActionError(t('Enter a reason for this change.')); return; }
-    setSaving(true); setActionError('');
+    if (!actionReason.trim()) { setActionReasonError(t('Enter a reason for this change.')); return; }
+    setSaving(true); setActionError(''); setActionReasonError('');
     try {
-      if (kind === 'deactivate') await costCentersApi.update(item.id, saveBody(item, { ...formOf(item), isActive: false, reason: actionReason }));
-      else await costCentersApi.remove(item.id, actionReason);
+      let note = '';
+      if (kind === 'delete') {
+        // The server decides: nothing uses it = deleted; something does = turned off (it can be restored). Say which.
+        const result = await costCentersApi.remove(item.id, actionReason);
+        note = result?.outcome === 'turnedOff'
+          ? t('Turned off {name}. {reason}', { name: item.code, reason: result.usage?.summary ? `${usageSentence(result.usage.items, t, result.usage.summary)}. ${t('Restore anytime.')}` : t('Restore anytime.') })
+          : t('Deleted {name}.', { name: item.code });
+      } else await costCentersApi.update(item.id, saveBody(item, { ...formOf(item), isActive: false, reason: actionReason }));
       setAction(null);
+      if (note) setSavedNote(note);
       await load();
     } catch (err) {
       const refusal = inUseFromError(err);
       if (refusal) { setAction(null); setInUse({ item, counts: refusal.counts }); }
       else setActionError(showServerError(err));
     } finally { setSaving(false); }
+  };
+
+  // ── Restore: no reason is asked; the server's guard may refuse (a payroll run is awaiting review or lock). ──
+  const restoreRow = async (item: CostCenterDto) => {
+    setMenu(null); setRowError(''); setSavedNote('');
+    try {
+      await costCentersApi.restore(item.id);
+      setSavedNote(t('Turned {name} back on.', { name: item.code }));
+      await load();
+    } catch (err) { setRowError(showServerError(err)); }
   };
 
   // ── Row menu ──
@@ -217,16 +268,15 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
               onImport={async () => ({ received: 0, created: 0, skipped: 0, errors: [] })}
             />
           )}
-          {canManage && (
-            <button type="button" data-testid="cc-master-new" onClick={openNew} className="btn-primary !bg-blue-700 hover:!bg-blue-800"><Plus className="h-4 w-4" aria-hidden />{t('New cost centre')}</button>
-          )}
+          <button type="button" data-testid="cc-master-new" onClick={openNew} disabled={!canManage} title={writeBlockedReason} aria-describedby={writeBlockedReason ? blockedNoteId : undefined} className="btn-primary !bg-blue-700 hover:!bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"><Plus className="h-4 w-4" aria-hidden />{t('New cost centre')}</button>
         </div>
       </div>
 
-      {!canManage && (
-        <div data-testid="cc-master-readonly-note"><WarningNote>{t('You can view cost centres but not change them. Changing them needs the Manage cost centres permission.')}</WarningNote></div>
+      {writeBlockedReason && (
+        <div id={blockedNoteId} data-testid="cc-master-readonly-note"><WarningNote>{writeBlockedReason}</WarningNote></div>
       )}
       {savedNote && <p role="status" className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">{savedNote}</p>}
+      {rowError && <FieldError error={rowError} testId="cc-master-action-error" />}
 
       <div className="flex flex-wrap items-center gap-2">
         {(org.options.length > 1 || hasNoCompanyOption) && (
@@ -312,20 +362,29 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
                     </td>
                     <td className="px-3 py-2"><Badge tone={item.isActive ? 'emerald' : 'slate'}>{item.isActive ? t('Active') : t('Inactive')}</Badge></td>
                     <td className="px-3 py-2">
-                      {canManage && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          <button type="button" onClick={() => openEdit(item)} className="btn-secondary h-8 px-2 text-xs"><Pencil className="h-3 w-3" aria-hidden /> {t('Edit')}</button>
-                          <button
-                            type="button"
-                            ref={(el) => { if (el) triggerRefs.current.set(item.id, el); else triggerRefs.current.delete(item.id); }}
-                            aria-haspopup="menu" aria-expanded={menu?.id === item.id}
-                            aria-label={t('More actions for {code}', { code: item.code })}
-                            onClick={() => (menu?.id === item.id ? closeMenu() : openMenu(item, false))}
-                            onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMenu(item, true); } }}
-                            className="btn-secondary h-8 w-8 justify-center px-0"
-                          ><MoreHorizontal className="h-4 w-4" aria-hidden /></button>
-                        </div>
-                      )}
+                      {(() => {
+                        const scope = writeAccess(item.companyId);
+                        const editBlocked = writeBlockedReason ?? (scope.allowed ? undefined : scope.reason);
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <button type="button" onClick={() => openEdit(item)} disabled={!!editBlocked} title={editBlocked} aria-describedby={writeBlockedReason ? blockedNoteId : undefined} className="btn-secondary h-8 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"><Pencil className="h-3 w-3" aria-hidden /> {t('Edit')}</button>
+                              <button
+                                type="button"
+                                ref={(el) => { if (el) triggerRefs.current.set(item.id, el); else triggerRefs.current.delete(item.id); }}
+                                aria-haspopup="menu" aria-expanded={menu?.id === item.id}
+                                aria-label={t('More actions for {code}', { code: item.code })}
+                                disabled={!hasManage || !scope.allowed}
+                                title={!hasManage ? writeBlockedReason : scope.reason}
+                                onClick={() => (menu?.id === item.id ? closeMenu() : openMenu(item, false))}
+                                onKeyDown={(e) => { if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMenu(item, true); } }}
+                                className="btn-secondary h-8 w-8 justify-center px-0 disabled:cursor-not-allowed disabled:opacity-50"
+                              ><MoreHorizontal className="h-4 w-4" aria-hidden /></button>
+                            </div>
+                            {!writeBlockedReason && scope.reason && <p className="text-caption leading-snug text-slate-600 dark:text-slate-300">{scope.reason}</p>}
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -334,18 +393,25 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           </div>
         )}
 
-      {menu && <RowMenu menu={menu} onClose={closeMenu} labels={{ deactivate: t('Deactivate'), delete: t('Delete') }}
-        onDeactivate={() => { const it = items.find((i) => i.id === menu.id); if (it) openAction('deactivate', it); }}
-        onDelete={() => { const it = items.find((i) => i.id === menu.id); if (it) openAction('delete', it); }} />}
+      {menu && (() => {
+        const it = items.find((i) => i.id === menu.id);
+        if (!it) return null;
+        return <RowMenu menu={menu} onClose={closeMenu} items={[
+          it.isActive
+            ? { key: 'deactivate', label: t('Deactivate'), disabledReason: writeBlockedReason, onSelect: () => openAction('deactivate', it) }
+            : { key: 'restore', label: t('Restore'), disabledReason: deleteBlockedReason, onSelect: () => void restoreRow(it) },
+          { key: 'delete', label: t('Delete'), tone: 'danger', disabledReason: writeBlockedReason ?? deleteBlockedReason, onSelect: () => openAction('delete', it) },
+        ]} />;
+      })()}
 
       {/* Create and edit */}
       <Modal
         isOpen={formOpen}
         title={editing ? t('Edit cost centre {code}', { code: editing.code }) : t('New cost centre')}
-        onClose={() => { if (!saving) setFormOpen(false); }}
+        onClose={closeForm}
         size="lg"
         footer={<>
-          <button type="button" onClick={() => setFormOpen(false)} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
+          <button type="button" onClick={closeForm} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
           <button type="button" data-testid="cc-form-save" onClick={() => void save()} disabled={saving} className="btn-primary !bg-blue-700 hover:!bg-blue-800">{saving ? t('Saving…') : t('Save')}</button>
         </>}
       >
@@ -354,11 +420,12 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           <Labelled label={t('Company')} required error={errors.company}>
             {(id, describedBy) => (
               <>
-                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote || codeLockedByServer} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
+                <select id={id} aria-describedby={describedBy} data-testid="cc-form-company" value={form.companyId} disabled={!!lockedNote || codeLockedByServer || companyBlockedReason !== undefined} onChange={(e) => setForm((f) => ({ ...f, companyId: e.target.value, parentId: '' }))} className="select w-full">
                   <option value="">{t('Choose the company')}</option>
-                  {org.options.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {org.options.map((c) => <option key={c.id} value={c.id} disabled={!writeAccess(c.id).allowed && c.id !== form.companyId}>{c.name}</option>)}
                 </select>
                 {(lockedNote || codeLockedByServer) && <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{t('The company cannot change once the cost centre is in use.')}</p>}
+                {companyBlockedReason && <p data-testid="cc-form-company-blocked" className="mt-1 text-xs text-slate-600 dark:text-slate-300">{companyBlockedReason}</p>}
               </>
             )}
           </Labelled>
@@ -395,8 +462,8 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
               </select>
             )}
           </Labelled>
-          <Labelled label={t('ERP code')} hint={t('The cost-centre value in your ERP, if it differs from the code. Journal exports use it.')}>
-            {(id, describedBy) => <input id={id} aria-describedby={describedBy} data-testid="cc-form-erp-code" dir="ltr" value={form.glSegment} maxLength={30} onChange={(e) => set('glSegment', e.target.value)} className="input w-full" />}
+          <Labelled label={t('ERP code')} hint={editing && !canSetClass ? t('Only finance can change the ERP code.') : t('The cost-centre value in your ERP, if it differs from the code. Journal exports use it.')}>
+            {(id, describedBy) => <input id={id} aria-describedby={describedBy} data-testid="cc-form-erp-code" dir="ltr" value={form.glSegment} maxLength={30} disabled={!!editing && !canSetClass} onChange={(e) => set('glSegment', e.target.value)} className="input w-full" />}
           </Labelled>
           <Labelled label={t('Status')}>
             {(id) => (
@@ -408,7 +475,7 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           </Labelled>
           {needsReason && (
             <div className="sm:col-span-2">
-              <Labelled label={t('Reason')} required error={errors.reason} hint={t('Required to change the functional class, deactivate, or move to another company. Recorded in the audit log.')}>
+              <Labelled label={t('Reason')} required error={errors.reason} hint={t('Required to change the functional class or ERP code, deactivate, or move to another company. Recorded in the audit log.')}>
                 {(id, describedBy) => <input id={id} aria-describedby={describedBy} aria-invalid={!!errors.reason} data-testid="cc-form-reason" value={form.reason} maxLength={500} onChange={(e) => set('reason', e.target.value)} className="input w-full" />}
               </Labelled>
             </div>
@@ -420,10 +487,10 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
       <Modal
         isOpen={!!action}
         title={action?.kind === 'delete' ? t('Delete {code}?', { code: action.item.code }) : t('Deactivate {code}?', { code: action?.item.code ?? '' })}
-        onClose={() => { if (!saving) setAction(null); }}
+        onClose={closeAction}
         size="md"
         footer={<>
-          <button type="button" onClick={() => setAction(null)} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
+          <button type="button" onClick={closeAction} disabled={saving} className="btn-secondary">{t('Cancel')}</button>
           <button type="button" onClick={() => void runAction()} disabled={saving} className={action?.kind === 'delete' ? 'btn-primary !bg-rose-700 hover:!bg-rose-800' : 'btn-primary !bg-blue-700 hover:!bg-blue-800'}>{saving ? t('Saving…') : action?.kind === 'delete' ? t('Delete') : t('Deactivate')}</button>
         </>}
       >
@@ -432,12 +499,29 @@ export function CostCentreMasterPanel({ companies }: { companies: CompanyDto[] }
           {action && (
             <div>
               <label htmlFor={`${headingId}-action-reason`} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Reason')} <span aria-hidden className="text-rose-500">*</span></label>
-              <input id={`${headingId}-action-reason`} data-testid="cc-form-reason" value={actionReason} maxLength={500} onChange={(e) => setActionReason(e.target.value)} className="input w-full" />
+              <input
+                id={`${headingId}-action-reason`} data-testid="cc-form-reason" value={actionReason} maxLength={500}
+                aria-invalid={!!actionReasonError} aria-describedby={actionReasonError ? `${headingId}-action-reason-error` : undefined}
+                onChange={(e) => { setActionReason(e.target.value); if (actionReasonError) setActionReasonError(''); }} className="input w-full"
+              />
+              {actionReasonError && <p id={`${headingId}-action-reason-error`} role="alert" className="mt-1 text-xs font-medium text-rose-700 dark:text-rose-300">{actionReasonError}</p>}
             </div>
           )}
           <FieldError error={actionError} />
         </div>
       </Modal>
+
+      <ConfirmDialog
+        state={discarding ? {
+          title: t('Discard changes?'),
+          message: t('What you typed has not been saved.'),
+          tone: 'primary',
+          confirmLabel: t('Discard changes'),
+          cancelLabel: t('Keep editing'),
+          onConfirm: () => { if (discarding === 'form') setFormOpen(false); else setAction(null); setDiscarding(null); },
+        } : null}
+        onCancel={() => setDiscarding(null)}
+      />
 
       {/* M-8: what uses it */}
       <Modal isOpen={!!inUse} title={t('Cost centre {code} is in use', { code: inUse?.item.code ?? '' })} onClose={() => setInUse(null)} size="md"
@@ -491,9 +575,11 @@ function Labelled({ label, required, hint, error, children }: {
 }
 
 /** The ⋯ menu: arrow keys move, Escape closes and returns focus, a click elsewhere closes. */
-function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
+interface MenuEntry { key: string; label: string; tone?: 'danger'; onSelect: () => void; /** Shown under the label and the entry does nothing: a blocked action is disabled with its reason, never hidden. */ disabledReason?: string }
+
+function RowMenu({ menu, onClose, items }: {
   menu: { top: number; above: number; start: number; viaKeyboard: boolean }; onClose: (restoreFocus?: boolean) => void;
-  labels: { deactivate: string; delete: string }; onDeactivate: () => void; onDelete: () => void;
+  items: MenuEntry[];
 }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const box = useRef<HTMLDivElement>(null);
@@ -541,8 +627,17 @@ function RowMenu({ menu, onClose, labels, onDeactivate, onDelete }: {
         else if (e.key === 'Tab') onClose(false);
       }}
     >
-      <button ref={(el) => { refs.current[0] = el; }} role="menuitem" type="button" onClick={onDeactivate} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-slate-800 hover:bg-slate-50 focus-visible:bg-slate-100 dark:text-slate-100 dark:hover:bg-white/5">{labels.deactivate}</button>
-      <button ref={(el) => { refs.current[1] = el; }} role="menuitem" type="button" onClick={onDelete} className="block w-full rounded-lg px-3 py-2 text-start text-sm text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10">{labels.delete}</button>
+      {items.map((entry, i) => (
+        <button
+          key={entry.key} ref={(el) => { refs.current[i] = el; }} role="menuitem" type="button"
+          aria-disabled={entry.disabledReason ? true : undefined}
+          onClick={() => { if (!entry.disabledReason) entry.onSelect(); }}
+          className={`block w-full rounded-lg px-3 py-2 text-start text-sm focus-visible:bg-slate-100 ${entry.disabledReason ? 'cursor-not-allowed text-slate-500 dark:text-slate-400' : entry.tone === 'danger' ? 'text-rose-700 hover:bg-rose-50 focus-visible:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-500/10' : 'text-slate-800 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-white/5'}`}
+        >
+          {entry.label}
+          {entry.disabledReason && <span className="mt-0.5 block max-w-56 whitespace-normal text-caption font-normal leading-snug">{entry.disabledReason}</span>}
+        </button>
+      ))}
     </div>,
     document.body,
   );

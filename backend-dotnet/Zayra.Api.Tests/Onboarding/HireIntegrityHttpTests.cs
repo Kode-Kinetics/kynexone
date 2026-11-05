@@ -464,14 +464,18 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
     public Task<string> NewUserAsync(string name, params string[] permissions) => MintAsync(TenantId, name, null, permissions);
     public Task<string> NewScopedUserAsync(string name, Guid companyId, params string[] permissions) => MintAsync(TenantId, name, companyId, permissions);
     public Task<string> NewOtherTenantUserAsync(string name, params string[] permissions) => MintAsync(OtherTenantId, name, null, permissions);
+    /// <summary>A tenant-wide user holding the named built-in role (instead of HR Officer) plus the given permission overrides.</summary>
+    public Task<string> NewUserInRoleAsync(string roleName, string name, params string[] permissions) => MintAsync(TenantId, name, null, permissions, roleName);
+    /// <summary>A user scoped to one company, holding the named built-in role plus the given permission overrides.</summary>
+    public Task<string> NewScopedUserInRoleAsync(string roleName, string name, Guid companyId, params string[] permissions) => MintAsync(TenantId, name, companyId, permissions, roleName);
 
-    private async Task<string> MintAsync(Guid tenantId, string name, Guid? scopedCompany, string[] permissions)
+    private async Task<string> MintAsync(Guid tenantId, string name, Guid? scopedCompany, string[] permissions, string roleName = "HR Officer")
     {
         using var scope = Host.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
         var email = $"{name}-{Guid.NewGuid():N}@hire.local";
-        var role = await db.Roles.IgnoreQueryFilters().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == "HR Officer");
-        if (role is null) { role = new Role { TenantId = tenantId, Name = "HR Officer", NormalizedName = "HR OFFICER" }; db.Roles.Add(role); }
+        var role = await db.Roles.IgnoreQueryFilters().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Name == roleName);
+        if (role is null) { role = new Role { TenantId = tenantId, Name = roleName, NormalizedName = roleName.ToUpperInvariant() }; db.Roles.Add(role); }
         var user = new User
         {
             TenantId = tenantId, Email = email, NormalizedEmail = email.ToUpperInvariant(), FullName = name, PasswordHash = "no-login-path",
