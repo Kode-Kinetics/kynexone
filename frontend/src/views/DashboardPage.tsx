@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import Link from 'next/link';
 import { RefreshCw } from 'lucide-react';
 import { dashboardApi } from '../api/dashboard';
@@ -29,6 +30,7 @@ import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { resolvePayrollRunCurrency, resolvePayrollRunsCurrency } from '../lib/payrollCurrency';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useT } from '../hooks/useT';
+import { EmployeeSelfServicePage } from './EmployeeSelfServicePage';
 import { useFormat } from '../hooks/useFormat';
 import { msg } from '../i18n/translations';
 import { ErrorBanner } from '../components/ui/ErrorBanner';
@@ -88,7 +90,7 @@ function useTenantClock() {
 /** 12 months, so the payroll trend spans a year; shorter series are sliced where shown. */
 const MONTHS = 12;
 
-export function DashboardPage() {
+function CompanyDashboard() {
   const t = useT();
   const f = useFormat();
   const clock = useTenantClock();
@@ -277,6 +279,67 @@ export function DashboardPage() {
           {activityEl}
         </>
       )}
+    </div>
+  );
+}
+
+// ── Home: "My day" for the person, "Company" for the workforce ───────────────
+// Everyone is an employee first. Someone who also holds the workforce dashboard permission gets a
+// switch between their own day and the company view; it opens on "My day" and remembers the
+// last choice. The switch only chooses a view: every figure is still gated by the API's permissions.
+
+type HomeView = 'me' | 'company';
+
+const HOME_VIEWS: HomeView[] = ['me', 'company'];
+
+export function DashboardPage() {
+  const t = useT();
+  const { user } = useAuth();
+  // "My day" needs an employee record linked to this login; an admin without one has no personal
+  // view to show, and the self-service page would only answer with an error.
+  const canSeeBoth = !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
+  const storageKey = `kx.home-view.${user?.id ?? 'anon'}`;
+  // Unknown until the browser's remembered choice is read, so the wrong view never mounts first
+  // (it would flash, and fire the other view's requests for nothing).
+  const [view, setView] = useState<HomeView | null>(null);
+
+  useEffect(() => {
+    let remembered: HomeView = 'me';
+    try { if (window.localStorage.getItem(storageKey) === 'company') remembered = 'company'; } catch { /* private mode */ }
+    setView(remembered);
+  }, [storageKey]);
+
+  const choose = (v: HomeView) => {
+    setView(v);
+    try { window.localStorage.setItem(storageKey, v); } catch { /* private mode */ }
+  };
+
+  if (!canSeeBoth) return <CompanyDashboard />;
+
+  const labels: Record<HomeView, string> = { me: t('My day'), company: t('Company') };
+  const onKeyDown = (e: KeyboardEvent, current: HomeView) => {
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = HOME_VIEWS[(HOME_VIEWS.indexOf(current) + step + HOME_VIEWS.length) % HOME_VIEWS.length];
+    choose(next);
+    document.getElementById(`home-tab-${next}`)?.focus();
+  };
+
+  return (
+    <div className="flex flex-col gap-3.5">
+      <div role="tablist" aria-label={t('Home view')} className="inline-flex w-fit gap-1 rounded-xl border border-[color:var(--wg-line-strong)] bg-[color:var(--wg-surface)] p-1">
+        {HOME_VIEWS.map((id) => (
+          <button key={id} id={`home-tab-${id}`} type="button" role="tab" aria-selected={view === id} aria-controls="home-panel"
+            tabIndex={view === id ? 0 : -1} onClick={() => choose(id)} onKeyDown={(e) => onKeyDown(e, id)}
+            className={`h-8 rounded-lg px-4 text-body-sm font-semibold transition ${view === id ? 'bg-sapphire text-white dark:bg-blue-600' : 'text-slate-700 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white'}`}>
+            {labels[id]}
+          </button>
+        ))}
+      </div>
+      <div id="home-panel" role="tabpanel" aria-labelledby={view ? `home-tab-${view}` : undefined}>
+        {view === 'me' ? <EmployeeSelfServicePage /> : view === 'company' ? <CompanyDashboard /> : null}
+      </div>
     </div>
   );
 }
