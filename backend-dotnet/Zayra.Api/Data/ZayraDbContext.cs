@@ -4792,7 +4792,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Latitude).HasPrecision(10, 7);
             entity.Property(x => x.Longitude).HasPrecision(10, 7);
             entity.Property(x => x.GeofenceRadiusMeters).HasPrecision(10, 2);
-            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique();
+            // Unique among LIVE locations: a deleted row must not keep its code (create, delete, create again is allowed).
+            entity.HasIndex(x => new { x.TenantId, x.Code }).IsUnique().HasFilter("NOT is_deleted");
             entity.HasIndex(x => new { x.TenantId, x.IsActive });
         });
 
