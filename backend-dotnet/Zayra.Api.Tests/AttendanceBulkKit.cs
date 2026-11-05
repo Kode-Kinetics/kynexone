@@ -86,9 +86,9 @@ internal sealed class BulkKit
     }
 
     /// <summary>The attendance controller over this world, with the given data scope (null allowed = organisation-wide).</summary>
-    public AttendanceController Controller(int[]? allowed = null, params string[] permissions)
+    public AttendanceController Controller(int[]? allowed = null, AttendanceService? service = null, params string[] permissions)
     {
-        var controller = new AttendanceController(Service(), new FixedScope(allowed), new HrmHierarchyService(Db, new NullAudit()), Db)
+        var controller = new AttendanceController(service ?? Service(), new FixedScope(allowed), new HrmHierarchyService(Db, new NullAudit()), Db)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = Principal(permissions.Length == 0 ? new[] { "attendance.write", "attendance.bulk_import" } : permissions) } },
         };

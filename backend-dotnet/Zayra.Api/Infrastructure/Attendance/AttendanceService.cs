@@ -517,6 +517,11 @@ public partial class AttendanceService : IAttendanceService
         if ((_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase)
             && _db.Database.CurrentTransaction is not null)
         {
+            // The tenant's bulk lock first, SHARED (single punches never block each other), so a bulk import or mass entry - which holds it
+            // EXCLUSIVE while it checks for duplicates and inserts - and this punch take turns. The order (tenant lock, then this punch's
+            // own lock) is the same for every single punch and a bulk write takes only the first, so the two cannot deadlock.
+            await AcquireTenantBulkLockAsync(tenantId, exclusive: false, SinglePunchLockWait,
+                "Attendance is being updated in bulk for this company; try again in a moment.", ct);
             var lockIdentity = $"attendance-punch:{tenantId:N}:{employee.Id}:{request.PunchTimestampUtc.ToUniversalTime().Ticks}:{direction}:{request.DeviceId?.ToString("N") ?? "self"}";
             await AcquirePunchAdvisoryLockAsync(lockIdentity, ct);
         }

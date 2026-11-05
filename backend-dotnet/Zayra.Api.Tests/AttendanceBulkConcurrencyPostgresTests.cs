@@ -64,6 +64,64 @@ public sealed class AttendanceBulkConcurrencyPostgresTests
         (await check.AttendanceRawEvents.IgnoreQueryFilters().CountAsync(e => e.TenantId == k.TenantId)).Should().Be(2);
     }
 
+    [Fact]
+    public async Task ABulkImportAndASinglePush_OfTheSameInstant_LeaveExactlyOnePunch()
+    {
+        var k = await CreateAsync(_fx.CreateDb);
+        for (var round = 0; round < 6; round++)
+        {
+            var at = new DateTime(2026, 8, 10 + round, 5, 0, 0, DateTimeKind.Utc);
+            var csv = $"employeeCode,punchTimestamp,punchDirection\n{k.Employee.EmployeeCode},{at:yyyy-MM-ddTHH:mm:ssZ},In\n";
+
+            var bulk = Task.Run(async () =>
+            {
+                await using var db = _fx.CreateDb();
+                await Service(db).ImportCsvAsync(k.TenantId, new ImportAttendanceRequest("race.csv", csv), AttendanceBulkAuthority.Unrestricted,
+                    new RequestContext("127.0.0.1", "test", null, k.TenantId), default);
+            });
+            var single = Task.Run(async () =>
+            {
+                await using var db = _fx.CreateDb();
+                try
+                {
+                    await Service(db).PushEventAsync(k.TenantId, new AttendanceRawEventRequest(k.Employee.Id, null, null, "API push", at, "In", null, null, null,
+                        null, null, null, null, "API", null), new RequestContext("127.0.0.1", "test", null, k.TenantId), default);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("Duplicate")) { /* it lost the race: fine */ }
+            });
+            await Task.WhenAll(bulk, single);
+
+            await using var check = _fx.CreateDb();
+            (await check.AttendanceRawEvents.IgnoreQueryFilters().CountAsync(e => e.TenantId == k.TenantId && e.PunchTimestampUtc == at && e.PunchDirection == "In"))
+                .Should().Be(1, $"round {round}: the shared tenant lock makes the single push and the bulk write take turns");
+        }
+    }
+
+    [Fact]
+    public async Task WhileAnotherBulkWriteHoldsTheTenantLock_TheNextBulkWriteAnswersBusy_AndASinglePunchWaitsForIt()
+    {
+        var k = await CreateAsync(_fx.CreateDb);
+        await using var holder = _fx.CreateDb();
+        await using var held = await holder.Database.BeginTransactionAsync();
+        await holder.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({AttendanceService.BulkLockKey(k.TenantId)}, 0))");
+
+        await using var bulkDb = _fx.CreateDb();
+        var started = DateTime.UtcNow;
+        var busy = async () => await Service(bulkDb).BulkEntryAsync(k.TenantId, new BulkAttendanceEntryRequest(new[] { k.Employee.Id }, Day, Day, "08:00", "17:00", "Device down"),
+            AttendanceBulkAuthority.Unrestricted, new RequestContext("127.0.0.1", "test", null, k.TenantId), default);
+        await busy.Should().ThrowAsync<AttendanceBusyException>();
+        (DateTime.UtcNow - started).Should().BeLessThan(TimeSpan.FromSeconds(30), "the wait is bounded (about 5 seconds)");
+
+        await using var pushDb = _fx.CreateDb();
+        var push = Task.Run(() => Service(pushDb).PushEventAsync(k.TenantId, new AttendanceRawEventRequest(k.Employee.Id, null, null, "API push",
+            new DateTime(2026, 8, 20, 5, 0, 0, DateTimeKind.Utc), "In", null, null, null, null, null, null, null, "API", null),
+            new RequestContext("127.0.0.1", "test", null, k.TenantId), default));
+        await Task.Delay(1500);
+        push.IsCompleted.Should().BeFalse("a single punch takes the tenant bulk lock SHARED, so it waits for an exclusive holder");
+        await held.CommitAsync();
+        await push;
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

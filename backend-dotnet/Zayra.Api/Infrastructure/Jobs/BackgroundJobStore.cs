@@ -104,6 +104,16 @@ public sealed class BackgroundJobStore
             .OrderByDescending(j => j.CreatedAtUtc)
             .FirstOrDefaultAsync(ct);
 
+    /// <summary>The live (Queued or Running, or a finished job whose key is kept forever) job holding <paramref name="key"/>, if any.</summary>
+    public Task<BackgroundJob?> FindActiveAsync(Guid tenantId, string jobType, string key, CancellationToken ct) =>
+        FindKeyHolderAsync(tenantId, jobType, key, ct);
+
+    /// <summary>How many jobs of the type are Queued or Running for the tenant, or only for <paramref name="createdBy"/>.</summary>
+    public Task<int> CountActiveAsync(Guid tenantId, string jobType, Guid? createdBy, CancellationToken ct) =>
+        _db.BackgroundJobs.AsNoTracking().CountAsync(j => j.TenantId == tenantId && j.JobType == jobType
+            && (j.Status == BackgroundJobStatuses.Queued || j.Status == BackgroundJobStatuses.Running)
+            && (createdBy == null || j.CreatedByUserId == createdBy), ct);
+
     public Task<BackgroundJob?> GetAsync(Guid tenantId, Guid jobId, CancellationToken ct) =>
         _db.BackgroundJobs.AsNoTracking().FirstOrDefaultAsync(j => j.TenantId == tenantId && j.Id == jobId, ct);
 

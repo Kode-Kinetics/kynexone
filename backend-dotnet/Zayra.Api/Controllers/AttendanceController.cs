@@ -274,6 +274,7 @@ public class AttendanceController : ControllerBase
     /// <summary>The dry run of <see cref="Import"/>: the same reading and judging, and NOTHING is written.</summary>
     [HttpPost("events/import-preview")]
     [HasPermission("attendance.bulk_import")]
+    [RequestSizeLimit(MaxBulkRequestBytes)]
     public Task<ActionResult<AttendanceImportResult>> ImportPreview(ImportAttendanceRequest request, CancellationToken ct) =>
         RunImportAsync(request, commit: false, ct);
 
@@ -284,8 +285,12 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("events/import")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [RequestSizeLimit(MaxBulkRequestBytes)]
     public Task<ActionResult<AttendanceImportResult>> Import(ImportAttendanceRequest request, CancellationToken ct) =>
         RunImportAsync(request, commit: true, ct);
+
+    /// <summary>The largest body a punch-file import, its preview or a mass entry accepts (about 5,000 rows at their longest is far below it).</summary>
+    public const int MaxBulkRequestBytes = 2_000_000;
 
     private async Task<ActionResult<AttendanceImportResult>> RunImportAsync(ImportAttendanceRequest request, bool commit, CancellationToken ct)
     {
@@ -297,6 +302,7 @@ public class AttendanceController : ControllerBase
                 ? await _attendance.ImportCsvAsync(tenantId, request, authority, Context(), ct)
                 : await _attendance.PreviewImportAsync(tenantId, request, authority, Context(), ct);
         }
+        catch (AttendanceBusyException ex) { return Conflict(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -307,6 +313,8 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("events/bulk-entry")]
     [HasPermission("attendance.write")]
+    [Authorize(Policy = HasPermissionAttribute.PolicyPrefix + "attendance.bulk_import")]
+    [RequestSizeLimit(MaxBulkRequestBytes)]
     public async Task<ActionResult<BulkAttendanceEntryResult>> BulkEntry(BulkAttendanceEntryRequest request, CancellationToken ct)
     {
         var tenantId = RequireTenant();
@@ -320,6 +328,7 @@ public class AttendanceController : ControllerBase
             await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct));
         try { return await _attendance.BulkEntryAsync(tenantId, request, authority, Context(), ct); }
         catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
+        catch (AttendanceBusyException ex) { return Conflict(new { message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
@@ -413,9 +422,13 @@ public class AttendanceController : ControllerBase
     {
         var (refusal, targets, _) = await ResolveProcessTargetsAsync(request, ct);
         if (refusal is not null) return refusal;
-        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request with { EmployeeIds = targets }, Context(), ct)); }
+        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request with { EmployeeId = null, EmployeeIds = targets }, Context(), ct)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>Active (queued or running) background processing runs one user, and one company, may have at a time.</summary>
+    public const int MaxActiveProcessingJobsPerUser = 3;
+    public const int MaxActiveProcessingJobsPerTenant = 10;
 
     /// <summary>The most employees one explicit processing selection may name.</summary>
     public const int MaxProcessSelection = 2000;
@@ -481,7 +494,7 @@ public class AttendanceController : ControllerBase
 
         var entityScope = this.GetEntityScope();
         var payload = new Infrastructure.Attendance.AttendanceProcessingJobPayload(
-            request.FromDate, request.ToDate, request.EmployeeId,
+            request.FromDate, request.ToDate, EmployeeId: null,
             GroupScope: entityScope.IsGroupLevel,
             CompanyIds: entityScope.IsGroupLevel ? Array.Empty<Guid>() : entityScope.AccessibleCompanyIds.ToArray(),
             RequestedByUserId: GetUserId(),
@@ -499,7 +512,18 @@ public class AttendanceController : ControllerBase
                 ? logical
                 : $"client:{Infrastructure.Attendance.AttendanceProcessingJobHandler.Digest(idempotencyKey.Trim())}:{logical}";
 
-        var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
+        // A flood guard, applied BEFORE enqueue: an identical request for a job that is still active is not a new job and is
+        // never refused, but a new one needs room under the per-user and per-tenant limits of ACTIVE (queued or running) runs.
+        var jobType = Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType;
+        if (await jobs.FindActiveAsync(tenantId, jobType, key, ct) is null)
+        {
+            if (GetUserId() is Guid me && await jobs.CountActiveAsync(tenantId, jobType, me, ct) >= MaxActiveProcessingJobsPerUser)
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"You already have {MaxActiveProcessingJobsPerUser} attendance processing runs in progress. Wait for one to finish, then start the next." });
+            if (await jobs.CountActiveAsync(tenantId, jobType, null, ct) >= MaxActiveProcessingJobsPerTenant)
+                return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"Your company already has {MaxActiveProcessingJobsPerTenant} attendance processing runs in progress. Try again when one has finished." });
+        }
+
+        var result = await jobs.EnqueueAsync(tenantId, jobType,
             key, payload, GetUserId(), ct);
         if (!result.Created) Response.Headers["X-Job-Deduplicated"] = "true";
         return Accepted($"/api/jobs/{result.Job.Id}",

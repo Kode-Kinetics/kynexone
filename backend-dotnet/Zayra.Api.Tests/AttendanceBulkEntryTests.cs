@@ -56,18 +56,26 @@ public sealed class AttendanceBulkEntryTests
     }
 
     [Fact]
-    public async Task AnOutTimeAtOrBeforeTheInTime_IsTheNextDay_AnOvernightShift()
+    public async Task AnOutTimeBeforeTheInTime_IsTheNextDay_AnOvernightShift()
     {
         var k = await CreateAsync();
 
         await k.Service().BulkEntryAsync(k.TenantId, Entry(new[] { k.Report.Id }, Wednesday, Wednesday, inTime: "22:00", outTime: "06:00"), k.Authority(), k.Context(), default);
-        await k.Service().BulkEntryAsync(k.TenantId, Entry(new[] { k.Stranger.Id }, Wednesday, Wednesday, inTime: "08:00", outTime: "08:00"), k.Authority(), k.Context(), default);
 
         var report = k.Events().Where(e => e.EmployeeId == k.Report.Id).ToList();
         report.Single(e => e.PunchDirection == "In").PunchTimestampUtc.Should().Be(new DateTime(2026, 6, 10, 19, 0, 0, DateTimeKind.Utc));
         report.Single(e => e.PunchDirection == "Out").PunchTimestampUtc.Should().Be(new DateTime(2026, 6, 11, 3, 0, 0, DateTimeKind.Utc), "06:00 the next morning, Riyadh");
-        k.Events().Single(e => e.EmployeeId == k.Stranger.Id && e.PunchDirection == "Out").PunchTimestampUtc
-            .Should().Be(new DateTime(2026, 6, 11, 5, 0, 0, DateTimeKind.Utc), "out == in is also the next day");
+    }
+
+    [Fact]
+    public async Task AnOutTimeEqualToTheInTime_IsA400_NotAGuess()
+    {
+        var k = await CreateAsync();
+
+        var result = await k.Controller().BulkEntry(Entry(new[] { k.Report.Id }, Wednesday, Wednesday, inTime: "08:00", outTime: "08:00"), default);
+
+        JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(result.Result).Value).Should().Contain("same");
+        (await k.Db.AttendanceRawEvents.CountAsync()).Should().Be(0);
     }
 
     [Fact]
@@ -285,6 +293,52 @@ public sealed class AttendanceBulkEntryTests
         Assert.IsType<BadRequestObjectResult>(backwards.Result);
     }
 
+    // ── review hardening ─────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task TheTotalNumberOfPunchesIsCapped_At5000_WithTheMathsExplained()
+    {
+        var k = await CreateAsync();
+        var c = k.Controller();
+        var hundred = Enumerable.Range(1, 100).ToArray();
+
+        var over = await c.BulkEntry(Entry(hundred, Wednesday, Wednesday.AddDays(25)), default);   // 100 x 26 x 2 = 5,200
+        var atCap = await c.BulkEntry(Entry(hundred, Wednesday, Wednesday.AddDays(24)), default);  // 100 x 25 x 2 = 5,000
+
+        var message = JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(over.Result).Value);
+        message.Should().Contain("5,000").And.Contain("5,200").And.Contain("100 employees").And.Contain("26 days");
+        atCap.Value.Should().BeOfType<BulkAttendanceEntryResult>().Which.Requested.Should().Be(5000);
+    }
+
+    [Fact]
+    public async Task MissingOrDefaultDates_AreA400()
+    {
+        var k = await CreateAsync();
+        var c = k.Controller();
+
+        var noDates = await c.BulkEntry(new BulkAttendanceEntryRequest(new[] { k.Report.Id }, default, default, "08:00", "17:00", "Device down"), default);
+        var noTo = await c.BulkEntry(new BulkAttendanceEntryRequest(new[] { k.Report.Id }, Wednesday, default, "08:00", "17:00", "Device down"), default);
+
+        Assert.IsType<BadRequestObjectResult>(noDates.Result);
+        Assert.IsType<BadRequestObjectResult>(noTo.Result);
+        (await k.Db.AttendanceRawEvents.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ARangeOlderThan400DaysOrBefore2000_IsA400()
+    {
+        var k = await CreateAsync();
+        var c = k.Controller();
+
+        var old = await c.BulkEntry(Entry(new[] { k.Report.Id }, new DateOnly(2025, 1, 1), new DateOnly(2025, 1, 2)), default);       // 535 days back
+        var ancient = await c.BulkEntry(Entry(new[] { k.Report.Id }, new DateOnly(1999, 12, 30), new DateOnly(1999, 12, 31)), default);
+        var edge = await c.BulkEntry(Entry(new[] { k.Report.Id }, new DateOnly(2025, 6, 1), new DateOnly(2025, 6, 1)), default);        // 384 days back
+
+        JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(old.Result).Value).Should().Contain("400 days");
+        Assert.IsType<BadRequestObjectResult>(ancient.Result);
+        edge.Value.Should().BeOfType<BulkAttendanceEntryResult>();
+    }
+
     // ── I8 audit ─────────────────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -296,7 +350,8 @@ public sealed class AttendanceBulkEntryTests
 
         var audit = await k.Db.AttendanceAuditLogs.SingleAsync(a => a.Action == "attendance.bulk_entry.completed");
         audit.UserId.Should().Be(k.UserId);
-        audit.MetadataJson.Should().Contain("Biometric device down on site").And.Contain("\"created\":8").And.Contain("\"employees\":2");
+        audit.MetadataJson.Should().Contain("Biometric device down on site").And.Contain("\"created\":8").And.Contain("\"employees\":2")
+            .And.Contain($"\"employeeIds\":[{k.Report.Id},{k.Stranger.Id}]");
         audit.EntityId.Should().Be(k.Events().Select(e => e.SyncBatchReference).Distinct().Single());
         (await k.Db.AttendanceAuditLogs.CountAsync()).Should().Be(1, "one audit row per batch, not per punch");
     }

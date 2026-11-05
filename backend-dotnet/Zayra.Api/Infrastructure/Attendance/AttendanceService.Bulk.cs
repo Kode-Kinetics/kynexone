@@ -7,21 +7,40 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Attendance;
 
+/// <summary>Another bulk attendance write holds the tenant's bulk lock and did not release it in time. The caller retries (HTTP 409).</summary>
+public class AttendanceBusyException(string? message = null) : InvalidOperationException(message ?? AttendanceService.BulkBusyMessage);
+
 /// <summary>
 /// Bulk punches: the CSV import, its dry run and mass entry for a selection of employees. All three go through ONE judging routine
-/// (<see cref="EvaluateBulkAsync"/>) and ONE idempotent save, so a file cannot be judged one way in the preview and another for real,
-/// and mass entry can never write something the import would have refused.
+/// (<see cref="EvaluateBulkAsync"/>) and ONE save, so a file cannot be judged one way in the preview and another for real, and mass
+/// entry can never write something the import would have refused.
 ///
 /// <para>Every guard of the single-punch paths holds per row: no punch for the caller's own record (I1); only employees inside the
 /// caller's data scope, an out-of-scope row reading exactly like an unknown code (I2); active employees only (I3); the server's
 /// verification labels are reserved (I4); nothing in a payroll-locked period (I5); nothing more than five minutes ahead of now (I6).</para>
+///
+/// <para><b>Idempotency (I7).</b> A web/CSV punch has no device, and NULLs are distinct in the punch unique index, so the index cannot
+/// stop a duplicate. The writers take turns on ONE per-tenant advisory lock instead: a bulk write takes it EXCLUSIVE, every single-punch
+/// writer (events/push, punch/*) takes it SHARED as well as its own per-punch lock. A bulk write therefore sees every committed punch
+/// when it checks for duplicates and nothing can slip in between the check and the insert.</para>
 /// </summary>
 public partial class AttendanceService
 {
+    /// <summary>The advisory-lock identity of a tenant's bulk punch writes: EXCLUSIVE for import and mass entry, SHARED for every single-punch writer.</summary>
+    internal static string BulkLockKey(Guid tenantId) => $"attendance-bulk-punches:{tenantId:N}";
+
+    public const string BulkBusyMessage = "Another bulk attendance operation is running for this company; try again in a moment.";
+
     /// <summary>How far ahead of the tenant's now a bulk punch may be.</summary>
     internal const int BulkMaxFutureMinutes = 5;
     public const int BulkMaxEmployees = 500;
     public const int BulkMaxDays = 31;
+    /// <summary>The most punches one mass entry writes (employees x days x in/out).</summary>
+    public const int BulkMaxPunches = 5000;
+    /// <summary>A bulk punch may be at most this many days before the tenant's today; and no earlier than year 2000.</summary>
+    public const int BulkMaxPastDays = 400;
+    internal const int MinPunchYear = 2000;
+    internal const int MaxPunchYear = 2100;
     public const int BulkMaxReasonLength = 500;
     /// <summary>The most error rows a response carries (the counts are always complete).</summary>
     internal const int BulkMaxReportedErrors = 500;
@@ -43,13 +62,24 @@ public partial class AttendanceService
         RequestContext context, CancellationToken ct) =>
         RunImportAsync(tenantId, request, authority, context, commit: true, ct);
 
+    /// <summary>Test seam: an import under a CHOSEN batch id, the way a retried attempt re-runs under the id it first chose.</summary>
+    internal Task<AttendanceImportResult> ImportCsvWithBatchIdAsync(Guid tenantId, ImportAttendanceRequest request, AttendanceBulkAuthority authority,
+        RequestContext context, Guid batchId, CancellationToken ct) =>
+        RunImportAsync(tenantId, request, authority, context, commit: true, ct, batchId);
+
+    /// <summary>Test seam: replaces the tenant bulk lock (so a test can make it time out without PostgreSQL).</summary>
+    internal Func<Guid, CancellationToken, Task>? BulkLockOverride { get; set; }
+
+    /// <summary>Test seam: stands in for the work-date resolution of a batch of punches (null = use the real one).</summary>
+    internal Func<TimeZoneInfo, IReadOnlyList<(int EmployeeId, DateTime PunchUtc)>, IReadOnlyList<DateOnly>?>? WorkDateResolverOverride { get; set; }
+
     private async Task<AttendanceImportResult> RunImportAsync(Guid tenantId, ImportAttendanceRequest request, AttendanceBulkAuthority authority,
-        RequestContext context, bool commit, CancellationToken ct)
+        RequestContext context, bool commit, CancellationToken ct, Guid? batchIdOverride = null)
     {
         var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
         var file = AttendancePunchCsv.Parse(request.CsvContent, tz);
         var fileName = string.IsNullOrWhiteSpace(request.FileName) ? "attendance.csv" : request.FileName.Trim();
-        var batchId = Guid.NewGuid();
+        var batchId = batchIdOverride ?? Guid.NewGuid();
 
         var units = file.Rows.Select(row =>
         {
@@ -66,6 +96,9 @@ public partial class AttendanceService
 
         return await InBulkTransactionAsync(tenantId, commit, async () =>
         {
+            // A retry after a transient failure whose first attempt in fact committed (the acknowledgement was lost): the batch is
+            // already stored, so its outcome is returned instead of a primary-key conflict.
+            if (commit && await StoredImportResultAsync(tenantId, batchId, tz, ct) is { } stored) return stored;
             await EvaluateBulkAsync(tenantId, units, authority, tz, ct);
             if (commit)
             {
@@ -81,7 +114,7 @@ public partial class AttendanceService
                 foreach (var u in failedUnits)
                     _db.AttendanceImportErrors.Add(new AttendanceImportError
                     {
-                        TenantId = tenantId, ImportBatchId = batchId, RowNumber = u.RowNumber, RawRow = u.RawRow, ErrorMessage = u.Error!,
+                        TenantId = tenantId, ImportBatchId = batchId, RowNumber = u.RowNumber, RawRow = Cap(u.RawRow, 500), ErrorMessage = u.Error!,
                     });
                 await Audit(tenantId, context, "attendance.import.completed", "AttendanceImportBatch", batchId.ToString(),
                     JsonSerializer.Serialize(new { fileName, total = units.Count, imported = created, duplicates, failed = failedUnits.Count, timeZone = tz.Id }), ct);
@@ -94,17 +127,39 @@ public partial class AttendanceService
                 commit ? batchId : null,
                 commit ? (failed.Count > 0 ? "CompletedWithErrors" : "Completed") : null,
                 fileName, units.Count, valid, commit ? valid : 0, duplicate, failed.Count, tz.Id,
-                failed.Take(BulkMaxReportedErrors).Select(u => new AttendanceImportRowError(u.RowNumber, u.ErrorColumn, u.Error!, Truncate(u.RawRow, 500))).ToList());
+                failed.Take(BulkMaxReportedErrors).Select(u => new AttendanceImportRowError(u.RowNumber, u.ErrorColumn, u.Error!, Cap(u.RawRow, 500))).ToList());
         }, ct);
     }
 
-    public async Task<BulkAttendanceEntryResult> BulkEntryAsync(Guid tenantId, BulkAttendanceEntryRequest request, AttendanceBulkAuthority authority,
-        RequestContext context, CancellationToken ct)
+    /// <summary>The outcome of an import batch that is already stored (its error rows keep their message and raw row; the column is not persisted).</summary>
+    private async Task<AttendanceImportResult?> StoredImportResultAsync(Guid tenantId, Guid batchId, TimeZoneInfo tz, CancellationToken ct)
+    {
+        var batch = await _db.AttendanceImportBatches.AsNoTracking().FirstOrDefaultAsync(b => b.TenantId == tenantId && b.Id == batchId, ct);
+        if (batch is null) return null;
+        var errors = await _db.AttendanceImportErrors.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && e.ImportBatchId == batchId).OrderBy(e => e.RowNumber).Take(BulkMaxReportedErrors)
+            .Select(e => new AttendanceImportRowError(e.RowNumber, null, e.ErrorMessage, e.RawRow)).ToListAsync(ct);
+        return new AttendanceImportResult(batch.Id, batch.Status, batch.FileName, batch.TotalRows, batch.ImportedRows, batch.ImportedRows,
+            Math.Max(0, batch.TotalRows - batch.ImportedRows - batch.FailedRows), batch.FailedRows, tz.Id, errors);
+    }
+
+    public Task<BulkAttendanceEntryResult> BulkEntryAsync(Guid tenantId, BulkAttendanceEntryRequest request, AttendanceBulkAuthority authority,
+        RequestContext context, CancellationToken ct) =>
+        RunBulkEntryAsync(tenantId, request, authority, context, ct, Guid.NewGuid().ToString());
+
+    /// <summary>Test seam: mass entry under a CHOSEN batch reference (see <see cref="ImportCsvWithBatchIdAsync"/>).</summary>
+    internal Task<BulkAttendanceEntryResult> BulkEntryWithBatchAsync(Guid tenantId, BulkAttendanceEntryRequest request, AttendanceBulkAuthority authority,
+        RequestContext context, string batchRef, CancellationToken ct) =>
+        RunBulkEntryAsync(tenantId, request, authority, context, ct, batchRef);
+
+    private async Task<BulkAttendanceEntryResult> RunBulkEntryAsync(Guid tenantId, BulkAttendanceEntryRequest request, AttendanceBulkAuthority authority,
+        RequestContext context, CancellationToken ct, string batchRef)
     {
         var ids = (request.EmployeeIds ?? Array.Empty<int>()).Distinct().ToList();
         if (ids.Count == 0) throw new InvalidOperationException("Choose at least one employee.");
         if (ids.Count > BulkMaxEmployees)
             throw new InvalidOperationException($"Mass entry is limited to {BulkMaxEmployees} employees at a time and this selection has {ids.Count}. Split it into smaller groups.");
+        if (request.FromDate == default || request.ToDate == default) throw new InvalidOperationException("Choose a from date and a to date.");
         if (request.FromDate > request.ToDate) throw new InvalidOperationException("From date must be on or before To date.");
         var days = request.ToDate.DayNumber - request.FromDate.DayNumber + 1;
         if (days > BulkMaxDays)
@@ -119,12 +174,23 @@ public partial class AttendanceService
             if (!TryParseClock(request.OutTime, out var parsedOut)) throw new InvalidOperationException("Out time must be a time of day such as 17:00, or left empty.");
             outTime = parsedOut;
         }
+        if (outTime == inTime)
+            throw new InvalidOperationException("The out time is the same as the in time. Use a different out time (an earlier one means the next morning), or leave it empty to enter only the in punch.");
+        var perDay = outTime is null ? 1 : 2;
+        var totalPunches = ids.Count * days * perDay;
+        if (totalPunches > BulkMaxPunches)
+            throw new InvalidOperationException(
+                $"Mass entry is limited to {BulkMaxPunches.ToString("N0", CultureInfo.InvariantCulture)} punches at a time. This request is {ids.Count.ToString("N0", CultureInfo.InvariantCulture)} employees x {days} days x {perDay} punch{(perDay == 1 ? "" : "es")} a day = {totalPunches.ToString("N0", CultureInfo.InvariantCulture)}. Choose fewer employees or days, or split it into smaller requests.");
         var method = Clean(request.VerificationMethod, "Manual");
         if (ReservedVerificationLabels.Violates(method, null)) throw new AttendanceRefusalException(AttendanceRefusals.VerificationLabelReserved);
         var location = Clean(request.LocationName);
 
         var tz = await ResolveTenantTimeZoneAsync(tenantId, ct);
-        var batchRef = Guid.NewGuid().ToString();
+        var today = TenantTimeZone.LocalDate(tz, _clock.GetUtcNow().UtcDateTime);
+        if (request.FromDate.Year < MinPunchYear || request.FromDate < today.AddDays(-BulkMaxPastDays))
+            throw new InvalidOperationException($"The from date is more than {BulkMaxPastDays} days in the past. Mass entry covers the last {BulkMaxPastDays} days; older attendance is corrected through a correction request.");
+        if (request.ToDate.Year > MaxPunchYear)
+            throw new InvalidOperationException("The to date is not a plausible date.");
         var payload = JsonSerializer.Serialize(new { reason, bulkEntry = true, batch = batchRef });
 
         var units = new List<BulkUnit>();
@@ -132,7 +198,7 @@ public partial class AttendanceService
         foreach (var id in ids)
             for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
             {
-                var unit = new BulkUnit { RowNumber = ++ordinal, EmployeeId = id, Date = date, Planned = outTime is null ? 1 : 2 };
+                var unit = new BulkUnit { RowNumber = ++ordinal, EmployeeId = id, Date = date, Planned = perDay };
                 // An out time at or before the in time is the next morning: an overnight shift.
                 var outDate = outTime is { } later && later <= inTime ? date.AddDays(1) : date;
                 DateTime outUtc = default;
@@ -150,22 +216,43 @@ public partial class AttendanceService
 
         return await InBulkTransactionAsync(tenantId, commit: true, async () =>
         {
+            if (await StoredBulkEntryResultAsync(tenantId, batchRef, ct) is { } stored) return stored;   // a retry whose first attempt committed
             await EvaluateBulkAsync(tenantId, units, authority, tz, ct);
             await StoreBulkPunchesAsync(tenantId, units, batchRef, context, ct);
             var created = units.Sum(u => u.Punches.Count(p => p.State == BulkPunchState.New));
             var duplicates = units.Sum(u => u.Punches.Count(p => p.State == BulkPunchState.Duplicate));
             var failedUnits = units.Where(u => u.Error is not null).ToList();
             var failed = failedUnits.Sum(u => u.Planned);
-            await Audit(tenantId, context, "attendance.bulk_entry.completed", "AttendanceRawEvent", batchRef,
+            var errors = failedUnits.Take(BulkMaxReportedErrors).Select(u => new BulkAttendanceEntryError(u.ResolvedCode ?? $"#{u.EmployeeId}", u.Date!.Value, u.Error!)).ToList();
+            await Audit(tenantId, context, BulkEntryAuditAction, "AttendanceRawEvent", batchRef,
                 JsonSerializer.Serialize(new
                 {
                     employees = ids.Count, from = request.FromDate, to = request.ToDate, inTime = request.InTime, outTime = request.OutTime,
                     method, reason, requested = units.Sum(u => u.Planned), created, duplicates, failed,
+                    employeeIds = ids.OrderBy(x => x).ToList(),
+                    errors = errors.Take(BulkReplayErrors).ToList(),
                 }), ct);
             await _db.SaveChangesAsync(ct);
-            return new BulkAttendanceEntryResult(units.Sum(u => u.Planned), created, duplicates, failed,
-                failedUnits.Take(BulkMaxReportedErrors).Select(u => new BulkAttendanceEntryError(u.ResolvedCode ?? $"#{u.EmployeeId}", u.Date!.Value, u.Error!)).ToList());
+            return new BulkAttendanceEntryResult(units.Sum(u => u.Planned), created, duplicates, failed, errors);
         }, ct);
+    }
+
+    private const string BulkEntryAuditAction = "attendance.bulk_entry.completed";
+    /// <summary>How many refused employee-days the audit row keeps, so a retried request can answer with them.</summary>
+    private const int BulkReplayErrors = 100;
+
+    private async Task<BulkAttendanceEntryResult?> StoredBulkEntryResultAsync(Guid tenantId, string batchRef, CancellationToken ct)
+    {
+        var audit = await _db.AttendanceAuditLogs.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.Action == BulkEntryAuditAction && a.EntityId == batchRef, ct);
+        if (audit is null) return null;
+        using var doc = JsonDocument.Parse(audit.MetadataJson);
+        var root = doc.RootElement;
+        var errors = root.TryGetProperty("errors", out var list)
+            ? list.Deserialize<List<BulkAttendanceEntryError>>(new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? new()
+            : new List<BulkAttendanceEntryError>();
+        return new BulkAttendanceEntryResult(root.GetProperty("requested").GetInt32(), root.GetProperty("created").GetInt32(),
+            root.GetProperty("duplicates").GetInt32(), root.GetProperty("failed").GetInt32(), errors);
     }
 
     // ── the shared routine ───────────────────────────────────────────────────────────────────────────────────
@@ -220,7 +307,9 @@ public partial class AttendanceService
     /// </summary>
     private async Task EvaluateBulkAsync(Guid tenantId, IReadOnlyList<BulkUnit> units, AttendanceBulkAuthority authority, TimeZoneInfo tz, CancellationToken ct)
     {
-        var latest = _clock.GetUtcNow().UtcDateTime.AddMinutes(BulkMaxFutureMinutes);
+        var nowUtc = _clock.GetUtcNow().UtcDateTime;
+        var latest = nowUtc.AddMinutes(BulkMaxFutureMinutes);
+        var earliestDay = TenantTimeZone.LocalDate(tz, nowUtc).AddDays(-BulkMaxPastDays);
         foreach (var u in units) u.Reset();
 
         // 1. Who: active employees by code or id, then the caller's own record and the caller's scope.
@@ -249,6 +338,11 @@ public partial class AttendanceService
             foreach (var p in u.Punches)
             {
                 if (ReservedVerificationLabels.Violates(p.Method, null)) { u.Fail(AttendancePunchCsv.ColumnMethod, AttendanceRefusals.VerificationLabelReserved.Message); break; }
+                if (p.Utc.Year < MinPunchYear || TenantTimeZone.LocalDate(tz, p.Utc) < earliestDay)
+                {
+                    u.Fail(AttendancePunchCsv.ColumnTimestamp, $"This date is more than {BulkMaxPastDays} days in the past, so it can't be entered here. Older attendance is corrected through a correction request.");
+                    break;
+                }
                 if (p.Utc > latest)
                 {
                     u.Fail(AttendancePunchCsv.ColumnTimestamp, $"This time is in the future. A punch may be at most {BulkMaxFutureMinutes} minutes ahead of now ({tz.Id} time).");
@@ -320,62 +414,76 @@ public partial class AttendanceService
 
     /// <summary>
     /// A new punch whose WORK DATE (AttendanceWorkDate: an overnight shift's early-morning punch belongs to the shift's own day) is in a
-    /// payroll-locked period (AttendancePayrollLock) fails its unit. Two cheap range queries rule out the common case of no lock at all
-    /// before the per-employee-day checks run.
+    /// payroll-locked period (AttendancePayrollLock) fails its unit. The lock rules are loaded ONCE for the range
+    /// (<see cref="AttendancePayrollLock.SnapshotAsync"/>) and decided in memory, with the same answers as the per-day check.
     /// </summary>
     private async Task RejectLockedDaysAsync(Guid tenantId, IReadOnlyList<BulkUnit> live, TimeZoneInfo tz, CancellationToken ct)
     {
         var pending = live.SelectMany(u => u.Punches.Where(p => !p.OnRecord).Select(p => (Unit: u, Punch: p))).ToList();
         if (pending.Count == 0) return;
-        var workDates = await AttendanceWorkDate.ResolveManyAsync(_db, tenantId, pending.Select(x => (x.Unit.ResolvedId, x.Punch.Utc)).ToList(), tz, ct);
-        var from = workDates.Min();
-        var to = workDates.Max();
-        var employeeIds = pending.Select(x => x.Unit.ResolvedId).Distinct().ToList();
-        var anyLockPeriod = await _db.AttendanceLockPeriods.AnyAsync(x => x.TenantId == tenantId && x.Status == "Locked" && x.PeriodStart <= to && x.PeriodEnd >= from, ct);
-        var anyLockedDay = !anyLockPeriod && await _db.AttendanceDailyRecords.AnyAsync(d => d.TenantId == tenantId && d.IsPayrollLocked
-            && d.WorkDate >= from && d.WorkDate <= to && employeeIds.Contains(d.EmployeeId), ct);
-        if (!anyLockPeriod && !anyLockedDay) return;
+        var workDates = await ResolveWorkDatesAsync(tenantId, pending, tz, ct);
+        var known = pending.Select((x, i) => (x.Unit, Date: workDates[i])).Where(x => x.Unit.Error is null && x.Date is not null).ToList();
+        if (known.Count == 0) return;
+        var snapshot = await AttendancePayrollLock.SnapshotAsync(_db, tenantId, known.Min(x => x.Date!.Value), known.Max(x => x.Date!.Value),
+            known.Select(x => x.Unit.ResolvedId).Distinct().ToList(), ct);
+        foreach (var (unit, date) in known)
+            if (unit.Error is null && snapshot.IsLocked(unit.ResolvedId, date!.Value))
+                unit.Fail(AttendancePunchCsv.ColumnTimestamp, $"{date.Value:yyyy-MM-dd} is in a payroll-locked period, so punches can't be added to it.");
+    }
 
-        var verdicts = new Dictionary<(int, DateOnly), bool>();
-        for (var i = 0; i < pending.Count; i++)
+    /// <summary>
+    /// The work date of each pending punch, in order (null where it could not be worked out: that row's unit is failed). One batch query;
+    /// if the batch throws, each punch is resolved on its own, so one bad row can never fail the whole file.
+    /// </summary>
+    private async Task<IReadOnlyList<DateOnly?>> ResolveWorkDatesAsync(Guid tenantId, List<(BulkUnit Unit, BulkPunch Punch)> pending, TimeZoneInfo tz, CancellationToken ct)
+    {
+        var punches = pending.Select(x => (x.Unit.ResolvedId, x.Punch.Utc)).ToList();
+        async Task<IReadOnlyList<DateOnly>> Resolve(IReadOnlyList<(int EmployeeId, DateTime PunchUtc)> batch) =>
+            WorkDateResolverOverride?.Invoke(tz, batch) ?? await AttendanceWorkDate.ResolveManyAsync(_db, tenantId, batch, tz, ct);
+        try { return (await Resolve(punches)).Select(d => (DateOnly?)d).ToList(); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or OverflowException)
         {
-            var (unit, _) = pending[i];
-            if (unit.Error is not null) continue;
-            var key = (unit.ResolvedId, workDates[i]);
-            if (!verdicts.TryGetValue(key, out var locked))
-                verdicts[key] = locked = await IsLocked(tenantId, key.Item1, key.Item2, ct);
-            if (locked)
-                unit.Fail(AttendancePunchCsv.ColumnTimestamp, $"{workDates[i]:yyyy-MM-dd} is in a payroll-locked period, so punches can't be added to it.");
+            var dates = new List<DateOnly?>();
+            foreach (var (unit, punch) in pending)
+            {
+                try { dates.Add((await Resolve(new[] { (unit.ResolvedId, punch.Utc) }))[0]); }
+                catch (Exception inner) when (inner is ArgumentException or InvalidOperationException or OverflowException)
+                {
+                    unit.Fail(AttendancePunchCsv.ColumnTimestamp, "This time could not be placed on a work day. Check the date.");
+                    dates.Add(null);
+                }
+            }
+            return dates;
         }
     }
 
     /// <summary>
-    /// Stores every NEW punch in one idempotent batch (<see cref="SaveRawEventsIdempotentAsync"/>: a unique-index conflict from a concurrent
-    /// resend skips just that row). A row that lost such a race becomes a duplicate.
+    /// Stores every NEW punch in one save. The tenant bulk lock (held EXCLUSIVE since before the duplicate check, to the end of the
+    /// transaction) is what keeps a concurrent writer from inserting the same punch, so there is no unique-index race to recover from here.
     /// </summary>
     private async Task StoreBulkPunchesAsync(Guid tenantId, IReadOnlyList<BulkUnit> units, string batchReference, RequestContext context, CancellationToken ct)
     {
-        var staged = new List<(BulkPunch Punch, AttendanceRawEvent Event)>();
+        var events = new List<AttendanceRawEvent>();
         foreach (var u in units.Where(u => u.Error is null))
             foreach (var p in u.Punches.Where(p => p.State == BulkPunchState.New))
-                staged.Add((p, new AttendanceRawEvent
+                events.Add(new AttendanceRawEvent
                 {
                     TenantId = tenantId, EmployeeId = u.ResolvedId, EmployeeCode = u.ResolvedCode ?? string.Empty,
                     Source = p.Source, PunchTimestampUtc = p.Utc, PunchDirection = p.Direction, LocationName = p.Location,
                     IpAddress = Clean(context.IpAddress), RawPayloadJson = CleanJson(p.PayloadJson), SyncBatchReference = batchReference,
                     VerificationMethod = p.Method, CreatedBy = context.UserId,
-                }));
-        var stored = await SaveRawEventsIdempotentAsync(staged.Select(s => s.Event).ToList(), ct);
-        var storedIds = stored.Select(e => e.Id).ToHashSet();
-        foreach (var (punch, ev) in staged)
-            if (!storedIds.Contains(ev.Id)) punch.State = BulkPunchState.Duplicate;
+                });
+        if (events.Count > 0)
+        {
+            _db.AttendanceRawEvents.AddRange(events);
+            await _db.SaveChangesAsync(ct);
+        }
         _db.ChangeTracker.Clear();
     }
 
     /// <summary>
     /// Runs <paramref name="work"/> in one transaction on a relational database (so the all-or-nothing batch and the advisory lock hold),
-    /// taking a per-tenant lock first so two bulk writes of the same punches can't both pass the duplicate check. A preview is read-only and
-    /// needs neither. (A punch's unique index cannot arbitrate here: the web/CSV rows have no device, and NULLs are distinct on PostgreSQL.)
+    /// taking the tenant's bulk lock EXCLUSIVE first. A preview is read-only and needs neither.
     /// </summary>
     private async Task<T> InBulkTransactionAsync<T>(Guid tenantId, bool commit, Func<Task<T>> work, CancellationToken ct)
     {
@@ -398,11 +506,33 @@ public partial class AttendanceService
         });
     }
 
+    /// <summary>How long a bulk write waits for another to finish before answering "busy" (409).</summary>
+    internal static readonly TimeSpan BulkLockWait = TimeSpan.FromSeconds(5);
+    /// <summary>How long a single punch waits for a running bulk write (it holds the lock for seconds, not minutes).</summary>
+    internal static readonly TimeSpan SinglePunchLockWait = TimeSpan.FromSeconds(20);
+
     private Task TakeBulkLockAsync(Guid tenantId, CancellationToken ct)
     {
-        if (!(_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase) || _db.Database.CurrentTransaction is null)
-            return Task.CompletedTask;
-        return AcquirePunchAdvisoryLockAsync($"attendance-bulk-punches:{tenantId:N}", ct);
+        if (BulkLockOverride is { } over) return over(tenantId, ct);
+        return AcquireTenantBulkLockAsync(tenantId, exclusive: true, BulkLockWait, null, ct);
+    }
+
+    /// <summary>
+    /// The tenant's bulk punch lock, transaction-scoped: EXCLUSIVE for a bulk write, SHARED for a single punch. A try-lock polled for at most
+    /// <paramref name="wait"/>, never an unbounded wait: a stuck holder must not pile up every request behind it. PostgreSQL only.
+    /// </summary>
+    internal async Task AcquireTenantBulkLockAsync(Guid tenantId, bool exclusive, TimeSpan wait, string? busyMessage, CancellationToken ct)
+    {
+        if (!(_db.Database.ProviderName ?? string.Empty).Contains("Npgsql", StringComparison.OrdinalIgnoreCase) || _db.Database.CurrentTransaction is null) return;
+        var key = BulkLockKey(tenantId);
+        var deadline = DateTime.UtcNow + wait;
+        while (!await _db.Database.SqlQuery<bool>(
+            $"SELECT (CASE WHEN {exclusive} THEN pg_try_advisory_xact_lock(hashtextextended({key}, 0)) ELSE pg_try_advisory_xact_lock_shared(hashtextextended({key}, 0)) END) AS \"Value\"")
+            .SingleAsync(ct))
+        {
+            if (DateTime.UtcNow >= deadline) throw new AttendanceBusyException(busyMessage);
+            await Task.Delay(100, ct);
+        }
     }
 
     private static bool TryLocalToUtc(DateOnly date, TimeOnly time, TimeZoneInfo tz, out DateTime utc, out string? error)
@@ -422,5 +552,5 @@ public partial class AttendanceService
     private static bool TryParseClock(string? text, out TimeOnly time) =>
         TimeOnly.TryParseExact((text ?? string.Empty).Trim(), new[] { "HH:mm", "H:mm" }, CultureInfo.InvariantCulture, DateTimeStyles.None, out time);
 
-    private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];
+    private static string Cap(string text, int max) => text.Length <= max ? text : text[..max];
 }

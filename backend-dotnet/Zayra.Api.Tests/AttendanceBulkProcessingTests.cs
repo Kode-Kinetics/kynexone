@@ -218,6 +218,9 @@ public sealed class AttendanceBulkProcessingTests
 
         var first = await EnqueueAsync(controller, f, baseRequest, clientKey);
         var same = await EnqueueAsync(controller, f, baseRequest with { EmployeeIds = new[] { f.Ids[1], f.Ids[0] } }, clientKey); // same set, any order
+        // Four distinct jobs for one user exceed the active-job cap (3), so the first one finishes before the others queue.
+        f.Db.BackgroundJobs.Single(j => j.Id == first.JobId).Status = BackgroundJobStatuses.Succeeded;
+        await f.Db.SaveChangesAsync();
         var otherRange = await EnqueueAsync(controller, f, baseRequest with { ToDate = Day.AddDays(2) }, clientKey);
         var otherSelection = await EnqueueAsync(controller, f, baseRequest with { EmployeeIds = new[] { f.Ids[0], f.Ids[2] } }, clientKey);
         var singleEmployee = await EnqueueAsync(controller, f, baseRequest with { EmployeeIds = null, EmployeeId = f.Ids[0] }, clientKey);
@@ -254,6 +257,82 @@ public sealed class AttendanceBulkProcessingTests
         var b = await EnqueueAsync(controller, f, new ProcessAttendanceRequest(Day, Day, null, new[] { f.Ids[1] }), key);
 
         b.JobId.Should().NotBe(a.JobId);
+    }
+
+    // ── employeeId + employeeIds are ONE set, never two filters ANDed ────────────────────────────────────────
+
+    [Fact]
+    public async Task BothEmployeeIdAndEmployeeIds_AreFoldedIntoOneSet_NotAnded()
+    {
+        var f = await SeedAsync(4);
+        var controller = f.Controller("HR Manager", DataScopeLevel.Organization, unrestricted: true);
+
+        var sync = await controller.Process(new ProcessAttendanceRequest(Day, Day, f.Ids[0], new[] { f.Ids[1], f.Ids[2] }), Ct);
+        var queued = await EnqueueAsync(controller, f, new ProcessAttendanceRequest(Day, Day, f.Ids[0], new[] { f.Ids[1], f.Ids[2] }), null);
+
+        sync.Result.Should().BeOfType<OkObjectResult>();
+        (await ProcessedEmployeesAsync(f)).Should().BeEquivalentTo(new[] { f.Ids[0], f.Ids[1], f.Ids[2] });
+        var payload = PayloadOf(f, queued);
+        payload.EmployeeIds.Should().BeEquivalentTo(new[] { f.Ids[0], f.Ids[1], f.Ids[2] });
+        payload.EmployeeId.Should().BeNull("the one named employee is part of the list; a second filter would AND with it");
+    }
+
+    // ── a flood of jobs: 3 active per user, 10 per tenant ────────────────────────────────────────────────────
+
+    private static ProcessAttendanceRequest Range(int n) => new(Day, Day.AddDays(n), null);
+
+    [Fact]
+    public async Task AUser_MayHaveThreeActiveProcessingJobs_TheFourthIsA429_AndAnIdenticalRequestStillReturnsItsJob()
+    {
+        var f = await SeedAsync(2);
+        var controller = f.Controller("HR Manager", DataScopeLevel.Organization, unrestricted: true);
+        var first = await EnqueueAsync(controller, f, Range(1), null);
+        await EnqueueAsync(controller, f, Range(2), null);
+        await EnqueueAsync(controller, f, Range(3), null);
+
+        var fourth = await controller.ProcessInBackground(Range(4), f.Store(), null, Ct);
+        var again = await EnqueueAsync(controller, f, Range(1), null);
+
+        var refused = fourth.Result.Should().BeOfType<ObjectResult>().Subject;
+        refused.StatusCode.Should().Be(429);
+        JsonSerializer.Serialize(refused.Value).Should().Contain("processing runs");
+        again.JobId.Should().Be(first.JobId);
+        again.Deduplicated.Should().BeTrue("an identical request for an active job is not refused");
+        (await f.Db.BackgroundJobs.CountAsync()).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task AFinishedJob_NoLongerCounts()
+    {
+        var f = await SeedAsync(2);
+        var controller = f.Controller("HR Manager", DataScopeLevel.Organization, unrestricted: true);
+        var first = await EnqueueAsync(controller, f, Range(1), null);
+        await EnqueueAsync(controller, f, Range(2), null);
+        await EnqueueAsync(controller, f, Range(3), null);
+        f.Db.BackgroundJobs.Single(j => j.Id == first.JobId).Status = BackgroundJobStatuses.Succeeded;
+        await f.Db.SaveChangesAsync();
+
+        var next = await controller.ProcessInBackground(Range(4), f.Store(), null, Ct);
+
+        next.Result.Should().BeOfType<AcceptedResult>();
+    }
+
+    [Fact]
+    public async Task ATenant_MayHaveTenActiveProcessingJobs_AcrossUsers()
+    {
+        var f = await SeedAsync(2);
+        var n = 0;
+        for (var user = 0; user < 4; user++)
+        {
+            var controller = f.Controller("HR Manager", DataScopeLevel.Organization, unrestricted: true);
+            for (var i = 0; i < (user < 3 ? 3 : 1); i++) await EnqueueAsync(controller, f, Range(++n), null);
+        }
+        n.Should().Be(10);
+
+        var eleventh = await f.Controller("HR Manager", DataScopeLevel.Organization, unrestricted: true).ProcessInBackground(Range(11), f.Store(), null, Ct);
+
+        eleventh.Result.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(429);
+        (await f.Db.BackgroundJobs.CountAsync()).Should().Be(10);
     }
 
     // ── the job handler's employee query ─────────────────────────────────────────────────────────────────────
