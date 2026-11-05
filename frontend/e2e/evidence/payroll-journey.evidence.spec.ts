@@ -42,6 +42,7 @@ import type { SignedInPersona } from './fixture';
 import {
   INTELLIFLOW_ADMIN, INTELLIFLOW_FINANCE, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG,
 } from '../world';
+import { signOffReconciliation, type ReconTransport } from '../bootstrap/reconSignoff';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -77,6 +78,10 @@ const WARNING_EXPLANATIONS: Record<string, string> = {
     + 'tenant has only just been provisioned and there are no prior periods to look back at. On a '
     + 'tenant with history this warning would mean something; on a fresh one it states a fact about '
     + 'the fixture, not about the run.',
+  WARN_NO_HOLIDAY_CALENDAR:
+    'The company has entered no public holiday inside the run\'s period, and the fixture world seeds none for a '
+    + 'future month, so an unpunched holiday would count as an absence. It is advisory and does not change any '
+    + 'figure this story reconciles.',
   WARN_GOSI_RATES_REQUIRE_SIGNOFF:
     'The GOSI contribution rates in force have not been counter-signed by a compliance officer for '
     + 'this tenant. It is advisory: the rates applied are the statutory defaults, and the sign-off is '
@@ -607,6 +612,13 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
             content(maker.page).getByRole('button', { name: 'Approve — Final' }),
             'a maker must never be offered the final approval on a Processed run',
           ).toHaveCount(0);
+          // The API holds Approve until the run's reconciliation is signed off. The maker, who neither created nor processed
+          // the run (the admin did), signs it through the API first; the maker-checker split on the approval itself is untouched.
+          const asMaker: ReconTransport = async (method, path, body) => {
+            const r = await ctx.api(method, path, { token: maker.token, data: body, recordId: runId });
+            return { status: r.status, body: r.json, text: r.text };
+          };
+          expect(await signOffReconciliation(asMaker, runId), 'the run must carry a reconciliation sign-off before the maker approves it').toBe('signed');
           await content(maker.page).getByRole('button', { name: 'Approve → Send to Finance' }).click();
           await expect(
             approvalCard(maker.page).getByText('Pending finance review', { exact: true }),
@@ -783,6 +795,10 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           const card = runCard(finance.page, period);
           await expect(card).toBeVisible({ timeout: 60_000 });
           await card.getByRole('button', { name: 'Lock' }).click();
+          // Locking is confirmed in the app's dialog, after the approver has read the summary of what is being frozen.
+          const lockDialog = finance.page.getByRole('dialog');
+          await expect(lockDialog.getByTestId('lock-summary'), 'the lock summary must be shown before anything is locked').toBeVisible();
+          await lockDialog.getByRole('button', { name: 'Lock run' }).click();
           await expect(card, 'locking must move the run to Locked').toContainText('Locked', { timeout: 180_000 });
           for (const name of ['Lock', 'Process']) {
             await expect(

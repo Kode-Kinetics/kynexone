@@ -27,6 +27,7 @@ const OPTIONS: Partial<Record<PayrollRuleKey, { value: string; label: string }[]
   leave_cashout_basis: [{ value: 'Gross', label: 'Full monthly package' }, { value: 'Basic', label: 'Basic wage' }, { value: 'BasicHousing', label: 'Basic wage plus housing' }],
   proration_basis: [{ value: 'Calendar30', label: '30-day month' }, { value: 'CalendarActual', label: 'Actual days in the month' }],
   absence_deduction_base: [{ value: 'Basic', label: 'Basic wage' }, { value: 'Gross', label: 'Full monthly package' }],
+  recon_signoff_required: [{ value: 'true', label: 'Require the sign-off' }, { value: 'false', label: 'Do not require the sign-off' }],
 };
 
 /** Plain-words warning per server warning code. */
@@ -35,6 +36,8 @@ const WARNING_TEXT: Record<string, string> = {
   LEAVE_CASHOUT_OFF: 'Saudi law pays out accrued, untaken annual leave when employment ends (Art. 111). Turning this off withholds that pay, and is recorded against the person who confirms it.',
   PROBATION_OVER_90: 'This is longer than the 90-day statutory probation (Art. 53). Up to 180 days needs the employee’s written agreement. It is recorded against the person who confirms it.',
   PROBATION_OVER_180: 'This is longer than the 180-day statutory maximum even with written agreement (Art. 53). It is recorded against the person who confirms it.',
+  RECON_THRESHOLD_CHANGED: 'Any change to this setting changes how closely payroll is reviewed. It needs a second person\'s approval and is recorded against the person who confirms it.',
+  RECON_SIGNOFF_OFF: 'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
 };
 
 const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
@@ -46,6 +49,18 @@ const LABELS: Record<PayrollRuleKey, { label: string; help: string }> = {
   max_probation_days: { label: 'Longest probation (days)', help: 'Offers with a longer probation are refused. Leave empty to keep the previous limit of twelve months.' },
   proration_basis: { label: 'Part-month pay is calculated on', help: 'How joiners and leavers are paid for a part month. Leave empty to keep the company’s current basis.' },
   absence_deduction_base: { label: 'An absent day is deducted from', help: 'The wage an absent day is priced on. Leave empty for basic wage.' },
+  recon_variance_pct: {
+    label: 'Variance that needs an explanation (%)',
+    help: 'A payroll item that moves by more than this share of its prior-month amount is flagged for review. Leave empty for the platform default: 5%. Allowed: 0.1 to 100.',
+  },
+  recon_variance_min_amount: {
+    label: 'Smallest change that needs an explanation',
+    help: 'A change below this amount is never flagged, however large its percentage. Leave empty for the platform default: 0.',
+  },
+  recon_signoff_required: {
+    label: 'Reconciliation sign-off before approval',
+    help: 'Whether a manpower and value reconciliation must be signed off before a payroll run can be approved. Leave empty for the default: required.',
+  },
 };
 
 function display(key: PayrollRuleKey, value: string | null, t: ReturnType<typeof useT>): string {
@@ -53,6 +68,8 @@ function display(key: PayrollRuleKey, value: string | null, t: ReturnType<typeof
   const option = OPTIONS[key]?.find(o => o.value === value);
   if (option) return t(option.label);
   if (key === 'max_probation_days') return t('{n} days', { n: value });
+  if (key === 'recon_variance_pct') return t('{n}% of the prior amount', { n: value });
+  if (key === 'recon_variance_min_amount') return t('Changes of at least {n}', { n: value });
   return t('{n}× the hourly rate', { n: value });
 }
 
@@ -283,6 +300,8 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
   const fieldWarnings = warningsForForm(form);
   const warnings = changedWarnings(form, initial);
   const changes = ruleFormToChanges(form, initial);
+  // The sign-off switch is the company's own control, not a statutory minimum: its confirmation says so.
+  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED');
   useEffect(() => { onDirty(changes.length > 0); return () => onDirty(false); }, [changes.length, onDirty]);
 
   const set = (key: PayrollRuleKey, value: string) => {
@@ -316,8 +335,10 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
     if (warnings.length > 0) {
       if (!acknowledged || note.trim().length < 5) return;
       onConfirm({
-        title: t('Save values below the statutory minimum?'),
-        message: t('You are choosing values that are below what Saudi law sets. They will be saved with your name and the time.'),
+        title: statutory ? t('Save values below the statutory minimum?') : t('Save these rules?'),
+        message: statutory
+          ? t('You are choosing values that are below what Saudi law sets. They will be saved with your name and the time.')
+          : t('These rules lower a payroll control. They will be saved with your name and the time.'),
         confirmLabel: t('Confirm and save'), onConfirm: submit, closeOnConfirm: false,
       });
       return;
@@ -366,10 +387,10 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
 
       {warnings.length > 0 && (
         <fieldset className="space-y-2 rounded-xl border border-amber-300 bg-amber-50/60 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
-          <legend className="px-1 text-xs font-semibold text-amber-800 dark:text-amber-200">{t('Below the statutory minimum')}</legend>
+          <legend className="px-1 text-xs font-semibold text-amber-800 dark:text-amber-200">{statutory ? t('Below the statutory minimum') : t('Needs your confirmation')}</legend>
           <label className="flex items-start gap-2 text-sm text-slate-800 dark:text-slate-200">
             <input type="checkbox" className="mt-1" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />
-            <span>{t('I understand these values are below the statutory minimum and I confirm them for this company.')}</span>
+            <span>{statutory ? t('I understand these values are below the statutory minimum and I confirm them for this company.') : t('I understand the effect of these values and I confirm them for this company.')}</span>
           </label>
           <label className="block text-xs font-medium text-slate-700 dark:text-slate-300">
             {t('Reason (required)')}

@@ -37,6 +37,7 @@ import { benefitPlanForm } from './benefitPlanForm';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
+import { payrollRecon } from './payrollRecon';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
@@ -1560,6 +1561,8 @@ const en: Dict = {
   ...payrollAttendance.en,
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.en,
+  // Payroll's manpower + value reconciliation and its sign-off — see ./payrollRecon.
+  ...payrollRecon.en,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
@@ -3086,6 +3089,7 @@ const ar: Dict = {
   ...payrollAttendance.ar,
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.ar,
+  ...payrollRecon.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,

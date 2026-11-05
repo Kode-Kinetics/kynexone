@@ -957,6 +957,7 @@ public class KsaWpsReviewFixesTests
         });
         await db.SaveChangesAsync();
         var approver = Payroll(db, tenant, Guid.NewGuid());
+        await ReconTestSupport.SignOffAsync(db, run.Id);
 
         var refused = await approver.Approve(run.Id, new PayrollDecisionRequest("ok"), default);
         refused.Should().BeOfType<ConflictObjectResult>();
@@ -1040,6 +1041,7 @@ public class KsaWpsReviewFixesTests
         await db.SaveChangesAsync();
         var admin = Payroll(db, tenant, Guid.NewGuid());
         ((ClaimsIdentity)admin.ControllerContext.HttpContext.User.Identity!).AddClaim(new Claim(ClaimTypes.Role, "Admin"));
+        await ReconTestSupport.SignOffAsync(db, run.Id);
 
         (await admin.Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedOutsideBankCount: 1), default)).Should().BeOfType<OkObjectResult>();
         (await PaymentBatchExclusions.ApprovedOutsideAsync(db, tenant, run.Id, default)).Should().BeEquivalentTo(new[] { 41 });

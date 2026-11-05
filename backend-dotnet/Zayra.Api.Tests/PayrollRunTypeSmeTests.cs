@@ -272,6 +272,7 @@ public class PayrollRunTypeSmeTests
         var processed = await Payroll(db, tenantId, Maker).Process(runId, CancellationToken.None);
         processed.Should().BeOfType<OkObjectResult>($"the run must Process — got {Describe(processed)}");
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, runId);
 
         var approved = await Payroll(db, tenantId, Checker, "checker")
             .Approve(runId, new PayrollDecisionRequest("ok", expectedExcludedCount), CancellationToken.None);
@@ -856,6 +857,7 @@ public class PayrollRunTypeSmeTests
         db.ChangeTracker.Clear();
 
         // An approver who does not state the hold-out count is refused.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var unacknowledged = await Payroll(db, tid, Checker, "checker")
             .Approve(run.Id, new PayrollDecisionRequest("looks fine"), CancellationToken.None);
         unacknowledged.Should().BeOfType<ConflictObjectResult>(

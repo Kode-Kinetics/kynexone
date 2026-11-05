@@ -44,6 +44,7 @@
   <ItemGroup>
     <!-- Golden and negative wage-file fixtures (KsaWpsQiwaHonestyTests). -->
     <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Recon\Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

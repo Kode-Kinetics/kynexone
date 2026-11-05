@@ -688,6 +688,7 @@ public class PayrollRecoveryB3Tests
         rebuilt.ResolvedReason.Should().Contain("HR-4471");
 
         // The approver must ACKNOWLEDGE the override by count — restating it in a body is not a control.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var unacknowledged = await Payroll(db, tid, Approver).Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None);
         unacknowledged.Should().BeOfType<ConflictObjectResult>();
         Body(unacknowledged).Should().Contain("overridden_errors_not_acknowledged");

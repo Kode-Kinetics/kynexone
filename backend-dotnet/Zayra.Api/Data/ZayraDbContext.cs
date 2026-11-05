@@ -1356,6 +1356,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     /// <summary>POD-B3 — durable, audited overrides of blocking validation codes (survive /validate's
     /// delete-and-rebuild of the result rows).</summary>
     public DbSet<PayrollValidationOverride> PayrollValidationOverrides => Set<PayrollValidationOverride>();
+    public DbSet<PayrollRunReconSignoff> PayrollRunReconSignoffs => Set<PayrollRunReconSignoff>();
+    public DbSet<PayrollRunReconExplanation> PayrollRunReconExplanations => Set<PayrollRunReconExplanation>();
     /// <summary>POD-B3 — the persisted witness of what each run CONSUMED, replayed by the void/reopen unwind.</summary>
     public DbSet<PayrollRunConsumption> PayrollRunConsumptions => Set<PayrollRunConsumption>();
     /// <summary>POD-C3 — the retro/arrears sub-ledger: one line per (settling run, employee, covered
@@ -2939,6 +2941,45 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // predicate before inserting, so a run-level code is upserted rather than duplicated.
             entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.Code, x.EmployeeId }).IsUnique();
         });
+        // The recorded review of a run's manpower + value reconciliation. ITenantOwned + ICompanyScopedOperational, so it
+        // inherits the tenant read filter and the company write guard (CompanyId is always stamped from the run). The
+        // partial unique index is the database backstop for "at most one Active sign-off per run"; the CHECKs keep the
+        // status machine honest without trusting the service.
+        modelBuilder.Entity<PayrollRunReconSignoff>(entity =>
+        {
+            entity.ToTable("payroll_run_recon_signoffs", t =>
+            {
+                t.HasCheckConstraint("ck_payroll_run_recon_signoffs__status", "\"status\" IN ('Active','Superseded')");
+                t.HasCheckConstraint("ck_payroll_run_recon_signoffs__reason",
+                    "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged','InputsChanged')");
+                t.HasCheckConstraint("ck_payroll_run_recon_signoffs__superseded_pair",
+                    "(\"status\" = 'Active' AND \"superseded_at_utc\" IS NULL AND \"superseded_reason\" IS NULL) " +
+                    "OR (\"status\" = 'Superseded' AND \"superseded_at_utc\" IS NOT NULL AND \"superseded_reason\" IS NOT NULL)");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.SnapshotHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.SnapshotJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(x => x.SignedOffByName).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.SupersededReason).HasMaxLength(20);
+            entity.Property(x => x.Notes).HasMaxLength(1000);
+            entity.HasOne<PayrollRun>().WithMany().HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId, x.SignedOffAtUtc }).HasDatabaseName("ix_payroll_run_recon_signoffs__run");
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId }).IsUnique()
+                .HasDatabaseName("ux_payroll_run_recon_signoffs__run_active").HasFilter("\"status\" = 'Active'");
+        });
+        modelBuilder.Entity<PayrollRunReconExplanation>(entity =>
+        {
+            entity.ToTable("payroll_run_recon_explanations", t =>
+                t.HasCheckConstraint("ck_payroll_run_recon_explanations__scope", "\"scope\" IN ('Item','Employee')"));
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Scope).HasMaxLength(20).IsRequired();
+            entity.Property(x => x.Key).HasMaxLength(120).IsRequired();
+            entity.Property(x => x.Text).HasMaxLength(1000).IsRequired();
+            entity.HasOne<PayrollRunReconSignoff>().WithMany(x => x.Explanations).HasForeignKey(x => x.SignoffId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(x => new { x.TenantId, x.SignoffId, x.Scope, x.Key }).IsUnique()
+                .HasDatabaseName("ux_payroll_run_recon_explanations__signoff_scope_key");
+        });
         // POD-B3 — the consumption witness. Written by Process inside the run transaction, replayed in
         // reverse by the void / reopen unwind, deleted once replayed. See PayrollRunConsumption for why
         // the unwind cannot be recomputed from the run's own outputs.
@@ -3169,6 +3210,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.TotalDeductions).HasPrecision(14, 2);
             entity.Property(x => x.TotalNetSalary).HasPrecision(14, 2);
             entity.Property(x => x.Status).HasMaxLength(40);
+            entity.Property(x => x.ProcessVersion).HasDefaultValue(0);
             entity.Property(x => x.ErpPostingStatus).HasMaxLength(40);
             entity.Property(x => x.ErpPostingReference).HasMaxLength(120);
             entity.Property(x => x.ErpPostingFailureReason).HasMaxLength(1000);
