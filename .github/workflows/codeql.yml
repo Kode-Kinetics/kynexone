@@ -16,7 +16,8 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     # Only the C# analysis compiles the 4M-line backend; JavaScript stays on the free runner.
-    runs-on: ${{ matrix.language == 'csharp' && 'kynex-32gb' || 'ubuntu-latest' }}
+    # C# runs on the heavy runner: HEAVY_RUNNER_LABEL (self-hosted, same-repo branches only) or the billed kynex-32gb.
+    runs-on: ${{ matrix.language != 'csharp' && 'ubuntu-latest' || (vars.HEAVY_RUNNER_LABEL && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.HEAVY_RUNNER_LABEL || 'kynex-32gb') }}
     permissions:
       security-events: write
       actions: read
