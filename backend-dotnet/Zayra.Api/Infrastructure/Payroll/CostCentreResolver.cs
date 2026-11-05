@@ -66,14 +66,21 @@ public static class CostCentreResolver
 {
     private const int MaxDepartmentDepth = 20;
 
-    public static CostCentreResolution Resolve(ResolverEmployee employee, CostCentreResolverSnapshot s)
+    public static CostCentreResolution Resolve(ResolverEmployee employee, CostCentreResolverSnapshot s) => ResolveWithSource(employee, s).Resolution;
+
+    /// <summary>
+    /// <see cref="Resolve"/>, plus the entity the cost centre was found on: the position, or the department (the employee's own or the ancestor the
+    /// walk stopped at). Null for the employee's own override, the company default and "nothing set". An invalid cost centre still names where it
+    /// was found, so a screen can say which department to fix.
+    /// </summary>
+    public static (CostCentreResolution Resolution, Guid? SourceEntityId) ResolveWithSource(ResolverEmployee employee, CostCentreResolverSnapshot s)
     {
         if (employee.CostCenterIsOverride && employee.CostCenterId is Guid own)
-            return Check(own, "Employee", s);
+            return (Check(own, "Employee", s), null);
 
         if (employee.PositionId is Guid positionId
             && s.Positions.TryGetValue(positionId, out var position) && position.CostCenterId is Guid positionCc)
-            return Check(positionCc, "Position", s);
+            return (Check(positionCc, "Position", s), positionId);
 
         var visited = new HashSet<Guid>();
         var cursor = employee.DepartmentId;
@@ -81,12 +88,12 @@ public static class CostCentreResolver
         {
             if (!visited.Add(id) || !s.Departments.TryGetValue(id, out var department)) break;
             if (department.CostCenterId is Guid departmentCc)
-                return Check(departmentCc, depth == 0 ? "Department" : "ParentDepartment", s);
+                return (Check(departmentCc, depth == 0 ? "Department" : "ParentDepartment", s), id);
             cursor = department.ParentDepartmentId;
         }
 
-        if (s.DefaultCostCenterId is Guid fallback) return Check(fallback, "CompanyDefault", s);
-        return CostCentreResolution.Unresolved("none");
+        if (s.DefaultCostCenterId is Guid fallback) return (Check(fallback, "CompanyDefault", s), null);
+        return (CostCentreResolution.Unresolved("none"), null);
     }
 
     private static CostCentreResolution Check(Guid id, string source, CostCentreResolverSnapshot s)
