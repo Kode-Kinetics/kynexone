@@ -88,7 +88,10 @@ public sealed class ReconSignoffLifecycleService
         if (IsMaker(run, uid))
             return new ReconActionResult(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot sign off its reconciliation. A different reviewer is required (maker-checker policy)." });
 
-        if (await _db.PayrollRunReconSignoffs.AnyAsync(s => s.TenantId == tenantId && s.PayrollRunId == run.Id && s.Status == ReconSignoffStatuses.Active, ct))
+        // A sign-off for THIS processing of the run is a reason to refuse; one from an earlier processing no longer counts for
+        // anything, and is retired below instead of blocking the review of the new figures.
+        if (await _db.PayrollRunReconSignoffs.AnyAsync(s => s.TenantId == tenantId && s.PayrollRunId == run.Id
+                && s.Status == ReconSignoffStatuses.Active && s.ProcessVersion == run.ProcessVersion, ct))
             return new ReconActionResult(409, new { error = "already_signed_off", message = "This run already has an active reconciliation sign-off. Withdraw it first to sign again." });
 
         if (req.ExpectedProcessVersion != run.ProcessVersion)
@@ -160,6 +163,12 @@ public sealed class ReconSignoffLifecycleService
         foreach (var e in explanations)
             signoff.Explanations.Add(new PayrollRunReconExplanation
             { TenantId = tenantId, SignoffId = signoff.Id, Scope = e.Scope, Key = e.Key, Text = e.Text, CreatedByUserId = caller.UserId });
+        // Retire the earlier-processing sign-off first and on its own, so the one-active-per-run index never sees two at once.
+        if (await _db.PayrollRunReconSignoffs.AnyAsync(s => s.TenantId == tenantId && s.PayrollRunId == run.Id && s.Status == ReconSignoffStatuses.Active, ct))
+        {
+            await SupersedeActiveAsync(_db, tenantId, run.Id, ReconSupersededReasons.Reprocessed, caller.UserId, ct);
+            await _db.SaveChangesAsync(ct);
+        }
         _db.PayrollRunReconSignoffs.Add(signoff);
         Audit(tenantId, caller.UserId, "payroll.recon.signed_off", run.Id, ip, new
         {
