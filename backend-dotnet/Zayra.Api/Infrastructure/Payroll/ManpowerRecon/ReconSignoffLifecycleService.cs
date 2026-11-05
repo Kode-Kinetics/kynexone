@@ -139,6 +139,15 @@ public sealed class ReconSignoffLifecycleService
                 return new ReconActionResult(400, new { error = "invalid_explanation", message = "An explanation needs a scope of Item or Employee, a key, and at most 1000 characters, once per key." });
             explanations.Add(new ReconExplanationRequest(scope, key, text));
         }
+        // An explanation answers a question the sign-off asked: a flagged item, or an employee who was not paid or is unexplained.
+        var asked = build.RequiredExplanations.Select(r => (r.Scope, r.Key)).ToHashSet();
+        var unknown = explanations.Where(e => !asked.Contains((e.Scope, e.Key))).Select(e => e.Key).ToList();
+        if (unknown.Count > 0)
+            return new ReconActionResult(422, new
+            {
+                error = "unknown_explanation_key", keys = unknown, allowedKeys = build.RequiredExplanations.Select(r => r.Key).ToList(),
+                message = "An explanation was given for something this sign-off does not ask about. Remove it or explain one of the listed items.",
+            });
         var missing = build.RequiredExplanations
             .Where(r => !explanations.Any(e => e.Scope == r.Scope && e.Key == r.Key
                                             && e.Text.Length >= PayrollValidationOverridePolicy.MinimumReasonLength))
