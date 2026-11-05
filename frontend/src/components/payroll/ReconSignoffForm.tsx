@@ -202,7 +202,7 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
       {items.length > 0 && (
         <fieldset className="space-y-3">
           <legend className="text-body font-semibold text-fg">{t('Why the larger movements happened')}</legend>
-          <p className="text-meta text-fg-muted">{t('These lines moved by more than {pct} or {amount}.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: money(recon.thresholds.minAmount) })}</p>
+          <p className="text-meta text-fg-muted">{t('The change among continuing staff on these lines was more than {pct} of the prior amount or {amount}.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: money(recon.thresholds.minAmount) })}</p>
           {items.map(i => {
             const id = `recon-reason-${testKey('Item', i.key)}`;
             return (

@@ -252,7 +252,9 @@ public static class ValueBridgeMath
             Bucket("continuing", "arrears"), Bucket("continuing", "attendance"), Bucket("continuing", "loans"),
             Bucket("continuing", "statutory"), Bucket("continuing", "other"));
         var delta = current - prior;
-        var flagged = input.Thresholds.IsFlagged(prior, delta) || continuing.Other != 0m;
+        // An item is flagged on what moved among CONTINUING staff, not on its total change: joiners and leavers are explained by
+        // the headcount reconciliation, so they must not demand a written reason line by line.
+        var flagged = input.Thresholds.IsFlagged(prior, continuing.Total) || continuing.Other != 0m;
         string? explanation = null;
         input.ItemExplanations?.TryGetValue(ReconItemDto.ExplanationKey(kind, code), out explanation);
         return new ReconItemDto(code, label, prior, adds, exits, continuing, current, delta,

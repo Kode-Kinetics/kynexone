@@ -3,7 +3,8 @@ using System.Globalization;
 namespace Zayra.Api.Infrastructure.Payroll.ManpowerRecon;
 
 /// <summary>
-/// When a movement in an item needs a written explanation. An item is flagged when |delta| is strictly greater than
+/// When a movement in an item needs a written explanation. An item is flagged when the movement among its CONTINUING
+/// staff (not its total change, which also holds joiners and leavers) is, in absolute value, strictly greater than
 /// the larger of (pct of |prior|) and the minimum amount; with nothing in the prior period a percentage means
 /// nothing, so only the minimum applies. Percent is in percent units (5 = 5%).
 /// </summary>
@@ -18,9 +19,9 @@ public sealed record ReconThresholds(decimal Pct, decimal MinAmount, string Sour
 
     public static readonly ReconThresholds Default = new(DefaultPct, DefaultMinAmount, SourceDefault);
 
-    public bool IsFlagged(decimal prior, decimal delta)
+    public bool IsFlagged(decimal prior, decimal movement)
     {
-        var size = Math.Abs(delta);
+        var size = Math.Abs(movement);
         if (prior == 0m) return size > MinAmount;
         return size > Math.Max(Pct / 100m * Math.Abs(prior), MinAmount);
     }

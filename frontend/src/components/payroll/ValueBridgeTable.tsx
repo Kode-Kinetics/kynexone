@@ -110,7 +110,7 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
               {item.flagged && (
                 <span className="badge badge-warning" data-testid={`recon-flag-${key}`}>
                   <AlertTriangle className="h-3 w-3" aria-hidden="true" /> {t('Review')}
-                  <span className="sr-only"> {t('This moved by more than {pct} or {amount}, so it needs a written reason at sign-off.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: fmt.money(recon.thresholds.minAmount, cur) })}</span>
+                  <span className="sr-only"> {t('The change among continuing staff was more than {pct} of the prior amount or {amount}, so it needs a written reason at sign-off.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: fmt.money(recon.thresholds.minAmount, cur) })}</span>
                 </span>
               )}
             </Td>
@@ -161,7 +161,7 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
       </p>
       {full && (
         <p className="text-meta text-fg-muted" data-testid="recon-flag-explanation">
-          {t('A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: fmt.money(recon.thresholds.minAmount, cur) })}
+          {t('A “Review” flag is raised when the change among continuing staff is more than {pct} of the prior amount or {amount}, whichever is larger; joiners and leavers are explained by the headcount reconciliation.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: fmt.money(recon.thresholds.minAmount, cur) })}
         </p>
       )}
       <Table caption={t('Value bridge from {prior} to {current}', { prior: period(recon.priorPeriod), current: period(recon.period) })} density="compact" data-testid="recon-value-table">

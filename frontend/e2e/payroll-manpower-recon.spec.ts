@@ -199,10 +199,10 @@ test.describe('value bridge', () => {
     await boot(page);
     await openTab(page, 'Value');
     const note = page.getByTestId('recon-flag-explanation');
-    await expect(note).toContainText('total change, including joiners and leavers');
-    await expect(note).toContainText('10.0%');
+    await expect(note).toContainText('the change among continuing staff is more than 10.0% of the prior amount or');
     await expect(note).toContainText('2,500.00');
-    await expect(note).toContainText('continuing staff only');
+    await expect(note).toContainText('whichever is larger');
+    await expect(note).toContainText('joiners and leavers are explained by the headcount reconciliation');
   });
 
   test('a row opens its breakdown into joiners, leavers and what moved among continuing staff', async ({ page }) => {

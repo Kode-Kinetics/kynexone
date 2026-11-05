@@ -33,7 +33,7 @@ const en: Record<string, string> = {
   'Hide breakdown for {item}': 'Hide breakdown for {item}',
   'Show breakdown for {item}': 'Show breakdown for {item}',
   'Reason recorded: {text}': 'Reason recorded: {text}',
-  'This moved by more than {pct} or {amount}, so it needs a written reason at sign-off.': 'This moved by more than {pct} or {amount}, so it needs a written reason at sign-off.',
+  'The change among continuing staff was more than {pct} of the prior amount or {amount}, so it needs a written reason at sign-off.': 'The change among continuing staff was more than {pct} of the prior amount or {amount}, so it needs a written reason at sign-off.',
   'Nothing moved on this line.': 'Nothing moved on this line.',
   'Amounts are in {currency}. Open a line’s breakdown to see what joiners added, what leavers took away and what moved among continuing staff.': 'Amounts are in {currency}. Open a line’s breakdown to see what joiners added, what leavers took away and what moved among continuing staff.',
   'Amounts are in {currency}. There is no prior month, so this shows how this month’s pay is made up.': 'Amounts are in {currency}. There is no prior month, so this shows how this month’s pay is made up.',
@@ -78,7 +78,7 @@ const en: Record<string, string> = {
   'There is no prior month to explain movement against. Sign off to confirm you have read this month’s headcount and pay composition.': 'There is no prior month to explain movement against. Sign off to confirm you have read this month’s headcount and pay composition.',
   'Signing off records that you read this reconciliation against the prior month and explained what moved. Approve is withheld until it is signed.': 'Signing off records that you read this reconciliation against the prior month and explained what moved. Approve is withheld until it is signed.',
   'Why the larger movements happened': 'Why the larger movements happened',
-  'These lines moved by more than {pct} or {amount}.': 'These lines moved by more than {pct} or {amount}.',
+  'The change among continuing staff on these lines was more than {pct} of the prior amount or {amount}.': 'The change among continuing staff on these lines was more than {pct} of the prior amount or {amount}.',
   'Why did {item} move?': 'Why did {item} move?',
   'Employees paid last month and not this month, with no reason on record': 'Employees paid last month and not this month, with no reason on record',
   'The employees who need a reason could not be listed.': 'The employees who need a reason could not be listed.',
@@ -192,7 +192,7 @@ const en: Record<string, string> = {
   'The sign-off is optional for this company. It is kept by the server if you give it.': 'The sign-off is optional for this company. It is kept by the server if you give it.',
   'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.': 'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.',
   'At least {min} characters. The reason is kept with the withdrawal.': 'At least {min} characters. The reason is kept with the withdrawal.',
-  'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.': 'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.',
+  'A “Review” flag is raised when the change among continuing staff is more than {pct} of the prior amount or {amount}, whichever is larger; joiners and leavers are explained by the headcount reconciliation.': 'A “Review” flag is raised when the change among continuing staff is more than {pct} of the prior amount or {amount}, whichever is larger; joiners and leavers are explained by the headcount reconciliation.',
 };
 
 const ar: Record<string, string> = {
@@ -227,7 +227,7 @@ const ar: Record<string, string> = {
   'Hide breakdown for {item}': 'إخفاء تفصيل {item}',
   'Show breakdown for {item}': 'عرض تفصيل {item}',
   'Reason recorded: {text}': 'السبب المسجّل: {text}',
-  'This moved by more than {pct} or {amount}, so it needs a written reason at sign-off.': 'تغيّر هذا بأكثر من {pct} أو {amount}، لذلك يلزم سبب مكتوب عند المصادقة.',
+  'The change among continuing staff was more than {pct} of the prior amount or {amount}, so it needs a written reason at sign-off.': 'زاد التغيّر بين الموظفين المستمرين على {pct} من المبلغ السابق أو على {amount}، لذلك يلزم سبب مكتوب عند المصادقة.',
   'Nothing moved on this line.': 'لم يتغيّر شيء في هذا البند.',
   'Amounts are in {currency}. Open a line’s breakdown to see what joiners added, what leavers took away and what moved among continuing staff.': 'المبالغ بعملة {currency}. افتح تفصيل أي بند لترى ما أضافه المنضمون وما أنقصه المغادرون وما تغيّر لدى الموظفين المستمرين.',
   'Amounts are in {currency}. There is no prior month, so this shows how this month’s pay is made up.': 'المبالغ بعملة {currency}. لا يوجد شهر سابق، لذلك يعرض هذا كيف تتكوّن رواتب هذا الشهر.',
@@ -272,7 +272,7 @@ const ar: Record<string, string> = {
   'There is no prior month to explain movement against. Sign off to confirm you have read this month’s headcount and pay composition.': 'لا يوجد شهر سابق لتفسير الحركة مقابله. صادق لتؤكد أنك اطلعت على عدد الموظفين وتكوّن الرواتب لهذا الشهر.',
   'Signing off records that you read this reconciliation against the prior month and explained what moved. Approve is withheld until it is signed.': 'تسجّل المصادقة أنك قرأت هذه المطابقة مقابل الشهر السابق وفسّرت ما تغيّر. يُمنع الاعتماد حتى تتم المصادقة.',
   'Why the larger movements happened': 'أسباب التغيّرات الكبيرة',
-  'These lines moved by more than {pct} or {amount}.': 'تغيّرت هذه البنود بأكثر من {pct} أو {amount}.',
+  'The change among continuing staff on these lines was more than {pct} of the prior amount or {amount}.': 'زاد التغيّر بين الموظفين المستمرين في هذه البنود على {pct} من المبلغ السابق أو على {amount}.',
   'Why did {item} move?': 'لماذا تغيّر {item}؟',
   'Employees paid last month and not this month, with no reason on record': 'موظفون صُرف لهم الشهر الماضي ولم يُصرف لهم هذا الشهر، دون سبب مسجّل',
   'The employees who need a reason could not be listed.': 'تعذّر عرض الموظفين الذين يحتاجون إلى سبب.',
@@ -386,7 +386,7 @@ const ar: Record<string, string> = {
   'The sign-off is optional for this company. It is kept by the server if you give it.': 'المصادقة اختيارية لدى هذه الشركة. وتُحفظ لدى الخادم إن أجريتها.',
   'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.': 'تسجّل المصادقة أنك قرأت هذه المطابقة مقابل الشهر السابق وفسّرت ما تغيّر. لا تشترط شركتك ذلك قبل الاعتماد.',
   'At least {min} characters. The reason is kept with the withdrawal.': '{min} أحرف على الأقل. يُحفظ السبب مع السحب.',
-  'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.': 'تُوسَم البنود بعلامة «مراجعة» عندما يزيد التغيّر الإجمالي للبند، بما فيه المنضمون والمغادرون، على {pct} من مبلغه السابق أو على {amount}، أيهما أكبر. أما الموظفون الذين تؤكدهم عند المصادقة فيُحتسبون بحسب تغيّر أجر كل منهم، ضمن الموظفين المستمرين فقط.',
+  'A “Review” flag is raised when the change among continuing staff is more than {pct} of the prior amount or {amount}, whichever is larger; joiners and leavers are explained by the headcount reconciliation.': 'تُوسَم البنود بعلامة «مراجعة» عندما يزيد التغيّر بين الموظفين المستمرين على {pct} من المبلغ السابق أو على {amount}، أيهما أكبر؛ أما المنضمون والمغادرون فتوضّحهم مطابقة أعداد الموظفين.',
 };
 
 export const payrollRecon = { en, ar };

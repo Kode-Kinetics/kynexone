@@ -314,6 +314,45 @@ public class ValueBridgeMathTests
         housing.Explanation.Should().Be("ignored: not flagged", "an explanation given for an unflagged item is still shown");
     }
 
+    [Fact]
+    public void AnItem_IsFlaggedOnTheMovementAmongContinuingStaff_NotOnItsTotalChange()
+    {
+        // Joiners double the item and a leaver takes some away, but the two continuing people moved by 1%.
+        var cats = new Dictionary<int, ReconCategory>
+        { [1] = ReconCategory.Continuing, [2] = ReconCategory.Continuing, [3] = ReconCategory.NewJoiner, [4] = ReconCategory.NewJoiner, [5] = ReconCategory.Leaver };
+        var r = Build(new[] { L(1, E, "BASIC", 1000), L(2, E, "BASIC", 1000), L(5, E, "BASIC", 500) },
+            new[] { L(1, E, "BASIC", 1010), L(2, E, "BASIC", 1010), L(3, E, "BASIC", 1500), L(4, E, "BASIC", 1500) }, cats);
+        var basic = Item(r, E, "BASIC");
+        basic.Delta.Should().Be(2520, "the total moved by more than 100%");
+        basic.Continuing.Total.Should().Be(20);
+        basic.Flagged.Should().BeFalse("joiners and leavers are explained by the headcount reconciliation, not by a written reason");
+    }
+
+    [Fact]
+    public void AMovementAmongContinuingStaff_IsFlagged_EvenWhenJoinersAndLeaversHideItInTheTotal()
+    {
+        var cats = new Dictionary<int, ReconCategory> { [1] = ReconCategory.Continuing, [2] = ReconCategory.Continuing, [3] = ReconCategory.Leaver };
+        var r = Build(new[] { L(1, E, "BASIC", 1000), L(2, E, "BASIC", 1000), L(3, E, "BASIC", 200) },
+            new[] { L(1, E, "BASIC", 1100), L(2, E, "BASIC", 1100) }, cats);
+        var basic = Item(r, E, "BASIC");
+        basic.Delta.Should().Be(0, "the leaver's 200 cancels the continuing 200");
+        basic.Continuing.Total.Should().Be(200);
+        basic.Flagged.Should().BeTrue("2200 prior, continuing moved 200 (9.1%) - over 5% of 2200 = 110");
+    }
+
+    [Fact]
+    public void WithNothingPaidBefore_OnlyTheMinimumAmountDecides_AndOnlyForContinuingStaff()
+    {
+        var cats = new Dictionary<int, ReconCategory> { [1] = ReconCategory.Continuing, [2] = ReconCategory.NewJoiner };
+        var t = new ReconThresholds(5, 10, "company");
+        // A new code that only a joiner holds: nothing moved among continuing staff.
+        var joinerOnly = Build(new[] { L(1, E, "BASIC", 100) }, new[] { L(1, E, "BASIC", 100), L(2, E, "TELEWORK", 400) }, cats, thresholds: t);
+        Item(joinerOnly, E, "TELEWORK").Flagged.Should().BeFalse();
+        // The same new code granted to a continuing employee moves by more than the minimum.
+        var continuing = Build(new[] { L(1, E, "BASIC", 100) }, new[] { L(1, E, "BASIC", 100), L(1, E, "TELEWORK", 40) }, cats, thresholds: t);
+        Item(continuing, E, "TELEWORK").Flagged.Should().BeTrue();
+    }
+
     // ── Integrity ────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
