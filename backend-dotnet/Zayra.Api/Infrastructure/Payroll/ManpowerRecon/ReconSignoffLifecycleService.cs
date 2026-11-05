@@ -37,14 +37,14 @@ internal static class ReconTransactions
 /// run's row lock, so a sign-off can never describe a run that was re-processed, reopened, sent back or voided a moment earlier,
 /// and a run can never carry two Active sign-offs.
 /// </summary>
-public sealed class ReconSignoffService
+public sealed class ReconSignoffLifecycleService
 {
     public const int MaxExplanations = 1000;
 
     private readonly ZayraDbContext _db;
     private readonly ManpowerReconService _recon;
 
-    public ReconSignoffService(ZayraDbContext db, ManpowerReconService? recon = null)
+    public ReconSignoffLifecycleService(ZayraDbContext db, ManpowerReconService? recon = null)
     {
         _db = db;
         _recon = recon ?? new ManpowerReconService(db);
@@ -195,6 +195,16 @@ public sealed class ReconSignoffService
             await _db.SaveChangesAsync(ct);
             return new ReconActionResult(200, ManpowerReconService.SignoffDto(active[0]));
         }, ct);
+
+    // ── Export audit ─────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Records that the reconciliation was exported, in the same save as nothing else: an export changes no figure.</summary>
+    public async Task RecordExportAsync(
+        Guid tenantId, Guid runId, Guid? userId, string? ip, string format, string label, bool partial, int processVersion, CancellationToken ct)
+    {
+        Audit(tenantId, userId, "payroll.recon.exported", runId, ip, new { format, label, partial, processVersion });
+        await _db.SaveChangesAsync(ct);
+    }
 
     // ── Retire ───────────────────────────────────────────────────────────────────────────────────
 

@@ -126,6 +126,7 @@ public class ListPageSizeClampTests
         ["Organization.Grades"] = "OrganizationSetupService.GetGradesAsync",
         ["Organization.CostCenters"] = "OrganizationSetupService.GetCostCentersAsync",
         ["Timesheets.List"] = "TimesheetService.ListAsync (1..200)",
+        ["PayrollRecon.Employees"] = "ManpowerReconService.DrillDown (1..200; the contract the reconciliation screen is built to)",
     };
 
     /// <summary>Lists that already capped at 200 before this change; left as they were.</summary>

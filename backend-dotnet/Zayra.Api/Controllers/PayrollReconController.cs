@@ -1,18 +1,15 @@
 using System.Security.Claims;
-using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Common;
-using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Payroll.ManpowerRecon;
-using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
 
 /// <summary>
 /// The manpower and value reconciliation of a payroll run against the prior month, its drill-down, export and sign-off.
-/// Thin: the bridge is built by <see cref="ManpowerReconService"/>, the sign-off by <see cref="ReconSignoffService"/>.
+/// Thin: the bridge is built by <see cref="ManpowerReconService"/>, the sign-off by <see cref="ReconSignoffLifecycleService"/>.
 /// Reading is <c>payroll.read</c>; signing and withdrawing are <c>payroll.approve</c> (no separate permission, so no role backfill).
 /// </summary>
 [ApiController]
@@ -20,17 +17,15 @@ namespace Zayra.Api.Controllers;
 [Authorize]
 public class PayrollReconController : ControllerBase
 {
-    private readonly ZayraDbContext _db;
     private readonly IDataScopeService _scopeService;
     private readonly ManpowerReconService _recon;
-    private readonly ReconSignoffService _signoff;
+    private readonly ReconSignoffLifecycleService _signoff;
 
-    public PayrollReconController(ZayraDbContext db, IDataScopeService scopeService)
+    public PayrollReconController(ManpowerReconService recon, ReconSignoffLifecycleService signoff, IDataScopeService scopeService)
     {
-        _db = db;
+        _recon = recon;
+        _signoff = signoff;
         _scopeService = scopeService;
-        _recon = new ManpowerReconService(db);
-        _signoff = new ReconSignoffService(db, _recon);
     }
 
     // ── Reads ────────────────────────────────────────────────────────────────────────────────────
@@ -74,16 +69,7 @@ public class PayrollReconController : ControllerBase
             return Conflict(new { error = "recon_not_applicable", message = "An off-cycle run has no manpower and value reconciliation." });
 
         var file = ReconExporter.Create(build, format);
-        _db.PayrollAuditLogs.Add(new PayrollAuditLog
-        {
-            TenantId = TenantId, Action = "payroll.recon.exported", EntityName = "PayrollRun", EntityId = id.ToString(), UserId = UserId,
-            MetadataJson = JsonSerializer.Serialize(new
-            {
-                ip = HttpContext?.Connection.RemoteIpAddress?.ToString() ?? "unknown", userId = UserId?.ToString(),
-                data = new { format = format.ToLowerInvariant(), label = file.Label, partial = build.Partial, processVersion = build.ProcessVersion },
-            }),
-        });
-        await _db.SaveChangesAsync(cancellationToken);
+        await _signoff.RecordExportAsync(TenantId, id, UserId, Ip, format.ToLowerInvariant(), file.Label, build.Partial, build.ProcessVersion, cancellationToken);
         return File(file.Bytes, file.ContentType, file.FileName);
     }
 
@@ -109,6 +95,10 @@ public class PayrollReconController : ControllerBase
         return Map(await _signoff.SignAsync(TenantId, id, caller, req, Ip, cancellationToken));
     }
 
+    /// <summary>
+    /// Withdraws the Active sign-off with a reason: nothing is deleted, the row is superseded (<c>Withdrawn</c>) by
+    /// <see cref="ReconSignoffLifecycleService.WithdrawAsync"/> and stays as the record of what was reviewed.
+    /// </summary>
     [HttpDelete("signoff")]
     [HasPermission("payroll.approve")]
     public async Task<IActionResult> WithdrawSignoff(Guid id, [FromBody] ReconWithdrawRequest? req, CancellationToken cancellationToken)

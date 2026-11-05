@@ -53,7 +53,8 @@ internal static class ReconHarness
         string? entityScopeJson = null, DataScope? dataScope = null)
     {
         var http = Http(tenantId, role, permissions, userId, entityScopeJson);
-        return new PayrollReconController(db, new FixedScope(dataScope))
+        var recon = new Zayra.Api.Infrastructure.Payroll.ManpowerRecon.ManpowerReconService(db);
+        return new PayrollReconController(recon, new Zayra.Api.Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService(db, recon), new FixedScope(dataScope))
         { ControllerContext = new ControllerContext { HttpContext = http } };
     }
 

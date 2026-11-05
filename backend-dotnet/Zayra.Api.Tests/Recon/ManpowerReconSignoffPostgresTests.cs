@@ -191,13 +191,14 @@ public class ManpowerReconSignoffPostgresTests
     {
         var finance = await NewScenarioAsync(_fx);
         StatusOf(await SignAsync(finance)).Should().Be(201);
-        (await finance.Payroll("Finance Approver").Approve(finance.Current.Id, new PayrollDecisionRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        // The scenario holds one employee out of the run on purpose, so the approver states that count as well.
+        (await finance.Payroll("Finance Approver").Approve(finance.Current.Id, new PayrollDecisionRequest("ok", ExpectedExcludedCount: 1), default)).Should().BeOfType<OkObjectResult>();
         await using (var check = _fx.CreateDb())
             (await check.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == finance.Current.Id)).Status.Should().Be("Approved");
 
         var hr = await NewScenarioAsync(_fx);
         StatusOf(await SignAsync(hr)).Should().Be(201);
-        (await hr.Payroll("HR Manager").Approve(hr.Current.Id, new PayrollDecisionRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        (await hr.Payroll("HR Manager").Approve(hr.Current.Id, new PayrollDecisionRequest("ok", ExpectedExcludedCount: 1), default)).Should().BeOfType<OkObjectResult>();
         await using (var check = _fx.CreateDb())
             (await check.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == hr.Current.Id)).Status.Should().Be("PendingFinanceReview");
     }
@@ -214,7 +215,7 @@ public class ManpowerReconSignoffPostgresTests
         StatusOf(res).Should().Be(409);
         ReconHarness.Json(((ObjectResult)res).Value).GetProperty("reason").GetString().Should().Be("PriorChanged");
         await using var check = _fx.CreateDb();
-        var stored = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync();
+        var stored = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync(x => x.PayrollRunId == s.Current.Id);
         stored.Status.Should().Be("Superseded");
         stored.SupersededReason.Should().Be("PriorChanged");
     }
@@ -256,7 +257,7 @@ public class ManpowerReconSignoffPostgresTests
         StatusOf(res).Should().Be(409);
         ErrorOf(res).Should().Be("signoff_stale");
         await using var check = _fx.CreateDb();
-        (await check.PayrollRunReconSignoffs.AsNoTracking().CountAsync(x => x.Status == "Active")).Should().Be(0);
+        (await check.PayrollRunReconSignoffs.AsNoTracking().CountAsync(x => x.PayrollRunId == s.Current.Id && x.Status == "Active")).Should().Be(0);
     }
 
     [Fact]
@@ -304,19 +305,22 @@ public class ManpowerReconSignoffPostgresTests
     {
         var reopen = await NewScenarioAsync(_fx);
         StatusOf(await SignAsync(reopen)).Should().Be(201);
-        (await reopen.Payroll("Admin").ReopenRun(reopen.Current.Id, new PayrollReasonRequest("fix the inputs"), default)).Should().BeOfType<OkObjectResult>();
+        await using (var db = _fx.CreateDb())
+            (await reopen.Payroll("Admin", db).ReopenRun(reopen.Current.Id, new PayrollReasonRequest("fix the inputs"), default)).Should().BeOfType<OkObjectResult>();
         await AssertSupersededAsync(reopen, "Reopened");
 
         var sendBack = await NewScenarioAsync(_fx, "Processed");
         StatusOf(await SignAsync(sendBack)).Should().Be(201);
         await using (var db = _fx.CreateDb())
             await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE payroll_runs SET status = 'PendingFinanceReview' WHERE id = {sendBack.Current.Id}");
-        (await sendBack.Payroll("Admin").SendBack(sendBack.Current.Id, new PayrollDecisionRequest("numbers look off"), default)).Should().BeOfType<OkObjectResult>();
+        await using (var db = _fx.CreateDb())
+            (await sendBack.Payroll("Admin", db).SendBack(sendBack.Current.Id, new PayrollDecisionRequest("numbers look off"), default)).Should().BeOfType<OkObjectResult>();
         await AssertSupersededAsync(sendBack, "SentBack");
 
         var voided = await NewScenarioAsync(_fx);
         StatusOf(await SignAsync(voided)).Should().Be(201);
-        (await voided.Payroll("Admin").VoidRun(voided.Current.Id, new PayrollDecisionRequest("duplicate run"), default)).Should().BeOfType<OkObjectResult>();
+        await using (var db = _fx.CreateDb())
+            (await voided.Payroll("Admin", db).VoidRun(voided.Current.Id, new PayrollDecisionRequest("duplicate run"), default)).Should().BeOfType<OkObjectResult>();
         await AssertSupersededAsync(voided, "Voided");
     }
 
@@ -350,7 +354,7 @@ public class ManpowerReconSignoffPostgresTests
 
         await using var check = _fx.CreateDb();
         (await check.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).ProcessVersion.Should().Be(1);
-        var so = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync();
+        var so = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync(x => x.PayrollRunId == run.Id);
         so.Status.Should().Be("Superseded");
         so.SupersededReason.Should().Be("Reprocessed");
     }

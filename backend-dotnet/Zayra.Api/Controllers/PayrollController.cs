@@ -1908,7 +1908,7 @@ public partial class PayrollController : ControllerBase
         {
             if (reconGate.Reason == Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.PriorChanged)
             {
-                await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+                await Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                     _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.PriorChanged, GetUserId(), cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
             }
@@ -2066,7 +2066,7 @@ public partial class PayrollController : ControllerBase
             run.Status = "Processed";
             run.CostCenterResolutionHash = null;
             // The figures may be changed before the next approval, so the review of them is retired with the send-back.
-            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                 _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.SentBack, GetUserId(), cancellationToken);
             await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
@@ -2409,7 +2409,7 @@ public partial class PayrollController : ControllerBase
             // M3 — the audit row and the business writes land in ONE SaveChanges, so POD-A3's sealer
             // stamps Seq/PreviousHash/EntryHash over state that is already committed-or-rolled-back
             // together. A separate save would let the chain record a reopen the transaction abandoned.
-            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                 _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.Reopened, GetUserId(), cancellationToken);
             await PayrollAudit("payroll.run.reopened", "PayrollRun", id.ToString(), payload, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);

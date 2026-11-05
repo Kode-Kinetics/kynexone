@@ -91,7 +91,7 @@ public class ReconInvalidationTests
         kit.Db.PayrollRunReconSignoffs.Add(old);
         await kit.Db.SaveChangesAsync();
 
-        await ReconSignoffService.SupersedeActiveAsync(kit.Db, kit.TenantId, run.Id, ReconSupersededReasons.Reopened, null, default);
+        await ReconSignoffLifecycleService.SupersedeActiveAsync(kit.Db, kit.TenantId, run.Id, ReconSupersededReasons.Reopened, null, default);
         await kit.Db.SaveChangesAsync();
 
         var rows = await kit.Db.PayrollRunReconSignoffs.AsNoTracking().ToListAsync();
@@ -105,7 +105,7 @@ public class ReconInvalidationTests
     {
         var kit = await GlPostingKit.CreateAsync();
         var run = await kit.SeedApprovedRunAsync(new[] { (1, "BASIC", "Salary", 5_000m) }, Array.Empty<(int, string, string, decimal)>(), 5_000m);
-        await ReconSignoffService.SupersedeActiveAsync(kit.Db, kit.TenantId, run.Id, ReconSupersededReasons.Voided, null, default);
+        await ReconSignoffLifecycleService.SupersedeActiveAsync(kit.Db, kit.TenantId, run.Id, ReconSupersededReasons.Voided, null, default);
         await kit.Db.SaveChangesAsync();
         (await kit.Db.PayrollAuditLogs.AsNoTracking().CountAsync(a => a.Action == "payroll.recon.superseded")).Should().Be(0);
     }

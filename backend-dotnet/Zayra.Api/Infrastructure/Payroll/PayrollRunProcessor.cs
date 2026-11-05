@@ -1030,7 +1030,7 @@ public sealed class PayrollRunProcessor
             // /validate, which is a read-model refresh of the same facts.
             _db.PayrollValidationOverrides.RemoveRange(Op(_db.PayrollValidationOverrides).Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
             // The same goes for the reconciliation sign-off: it reviewed the figures this pass is about to replace.
-            await ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+            await ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
                 _db, tenantId, id, ManpowerRecon.ReconSupersededReasons.Reprocessed, request.ActorUserId, cancellationToken);
 
         // Benefit execution is part of the payroll transaction and uses only frozen employee terms.

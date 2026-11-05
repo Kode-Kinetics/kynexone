@@ -19,7 +19,7 @@ public class ManpowerReconScopePostgresTests
     public async Task ADepartmentScopedCaller_GetsAPartialBridge_AndCannotSign()
     {
         var s = await ManpowerReconSignoffPostgresTests.NewScenarioAsync(_fx);
-        var firstEmployee = s.Db.Employees.OrderBy(e => e.EmployeeCode).First().Id;
+        var firstEmployee = s.Db.Employees.Where(e => e.TenantId == s.TenantId).OrderBy(e => e.EmployeeCode).First().Id;
         var scoped = new DataScope { Level = DataScopeLevel.Department, AllowedEmployeeIds = new[] { firstEmployee } };
         var ctrl = ReconHarness.Recon(s.Db, s.TenantId, "Payroll Manager", ReconHarness.SignPermissions, dataScope: scoped);
 
