@@ -246,6 +246,14 @@ export async function linkedHrSession(api: APIRequestContext, candidate: Emp): P
   let token = await tryLogin(api);
   if (!token) {
     const admin = await apiLogin(api, INTELLIFLOW_ADMIN.email, INTELLIFLOW_ADMIN.password, INTELLIFLOW_SLUG);
+    // An invitation goes only to the employee's own work email, so give the candidate that address first, the way HR
+    // does it in the product (Employee access → Add work emails). Idempotent: re-saving the same address is a no-op.
+    const workEmail = await send(api, 'POST', '/api/employee-access/work-emails', admin, {
+      rows: [{ employeeCode: candidate.code, workEmail: LINKED_HR_EMAIL }], dryRun: false,
+    });
+    if (!workEmail.ok()) {
+      throw new Error(`Could not set the work email of ${candidate.code}: ${workEmail.status()} ${(await workEmail.text()).slice(0, 300)}`);
+    }
     const invite = await send(api, 'POST', '/api/access/employee-logins/invite', admin, {
       employeeId: candidate.id, email: LINKED_HR_EMAIL, accessMode: 'FullPortal', roles: [INTELLIFLOW_HR_MGR.role], confirmedWorkEmail: true,
     });
