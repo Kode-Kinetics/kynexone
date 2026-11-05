@@ -1899,6 +1899,30 @@ public partial class PayrollController : ControllerBase
                 errors  = blockingErrors,
             });
 
+        // ── Manpower + value reconciliation: the run needs a recorded review of THIS pass of the figures ──
+        // Both approval levels (Admin/Finance below, HR/Payroll Manager further down) share this one check; there is no role
+        // bypass. A refusal caused by a changed comparison run also retires the stale sign-off, and is committed (a refusal
+        // writes nothing else).
+        var reconGate = await Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.CheckAsync(_db, tenantId, run, cancellationToken);
+        if (reconGate.Blocked)
+        {
+            if (reconGate.Reason == Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.PriorChanged)
+            {
+                await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+                    _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.PriorChanged, GetUserId(), cancellationToken);
+                await _db.SaveChangesAsync(cancellationToken);
+            }
+            return Conflict(new
+            {
+                error         = "reconciliation_not_reviewed",
+                message       = "This run has no manpower and value reconciliation sign-off for its current figures. " +
+                                "Review GET /api/payroll/runs/{id}/recon and sign it off before approving.",
+                reason        = reconGate.Reason,
+                processVersion = reconGate.ProcessVersion,
+                signedVersion  = reconGate.SignedVersion,
+            });
+        }
+
         // ── POD-B2 (M5b): deliberate hold-outs must be ACKNOWLEDGED, not merely warned ───────────────
         // EMPLOYEE_EXCLUDED_FROM_RUN is a Warning by design (an exclusion is intentional and must not
         // block), but a warning is invisible in practice: this endpoint and Lock only block on
@@ -1997,6 +2021,9 @@ public partial class PayrollController : ControllerBase
             run.CostCenterResolutionHash = sealedHash;
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Approved";
+            if (reconGate.Waived)
+                await PayrollAudit("payroll.recon.approved_without_signoff", "PayrollRun", id.ToString(),
+                    new { level = "Finance", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
             // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
                 new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees }, cancellationToken);
@@ -2011,6 +2038,9 @@ public partial class PayrollController : ControllerBase
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "PayrollReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "PendingFinanceReview";
             run.CostCenterResolutionHash = null;   // AM-8: sealed only at final approval
+            if (reconGate.Waived)
+                await PayrollAudit("payroll.recon.approved_without_signoff", "PayrollRun", id.ToString(),
+                    new { level = "Payroll", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
             await PayrollAudit("payroll.run.payroll_approved", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
@@ -2035,6 +2065,9 @@ public partial class PayrollController : ControllerBase
             _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "SentBack", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Processed";
             run.CostCenterResolutionHash = null;
+            // The figures may be changed before the next approval, so the review of them is retired with the send-back.
+            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+                _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.SentBack, GetUserId(), cancellationToken);
             await PayrollAudit("payroll.run.sent_back", "PayrollRun", id.ToString(), new { notes = req.Notes }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             return Ok(run);
@@ -2376,6 +2409,8 @@ public partial class PayrollController : ControllerBase
             // M3 — the audit row and the business writes land in ONE SaveChanges, so POD-A3's sealer
             // stamps Seq/PreviousHash/EntryHash over state that is already committed-or-rolled-back
             // together. A separate save would let the chain record a reopen the transaction abandoned.
+            await Infrastructure.Payroll.ManpowerRecon.ReconSignoffService.SupersedeActiveAsync(
+                _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.Reopened, GetUserId(), cancellationToken);
             await PayrollAudit("payroll.run.reopened", "PayrollRun", id.ToString(), payload, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             await tx.CommitAsync(cancellationToken);
@@ -7126,7 +7161,7 @@ public partial class PayrollController : ControllerBase
         if (!CanReviewRunPayDetail()) return Forbid();
         var tenantId = GetTenantId();
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == runId, cancellationToken);
-        if (run is null) return NotFound();
+        if (run is null || !this.GetEntityScope().CanAccessCompany(run.CompanyId)) return NotFound();
 
         var (priorYear, priorMonth) = run.Month == 1 ? (run.Year - 1, 12) : (run.Year, run.Month - 1);
         // POD-B2 — this lookup was company-, type- AND status-blind: in a multi-entity tenant it could
@@ -7136,8 +7171,9 @@ public partial class PayrollController : ControllerBase
         var priorRun = await _db.PayrollRuns.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.Year == priorYear && x.Month == priorMonth
                      && x.CompanyId == run.CompanyId
-                     && x.RunType == PayrollRunTypes.Regular
-                     && x.Status != "Voided")
+                     && (x.RunType == PayrollRunTypes.Regular || x.RunType == PayrollRunTypes.Replacement)
+                     && x.Status != "Voided" && x.Status != "Draft")
+            .OrderBy(x => x.RunType == PayrollRunTypes.Replacement ? 0 : 1)
             .FirstOrDefaultAsync(cancellationToken);
 
         var currentSlips = await VisibleRunSlipsAsync(tenantId, runId, cancellationToken);
