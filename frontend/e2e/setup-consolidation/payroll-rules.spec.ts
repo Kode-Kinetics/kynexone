@@ -94,7 +94,7 @@ test('with no second approver the refusal is shown in the language of the screen
   });
   await panel(page).getByTestId('payroll-rule-absence_deduction_base').waitFor({ timeout: 30_000 });
   await panel(page).getByRole('button').first().click();
-  await editor(page).locator('select').last().selectOption('Gross');
+  await editor(page).locator('select[id$="-absence_deduction_base"]').selectOption('Gross');
   await editor(page).getByRole('button').last().click();
   await expect(editor(page).getByRole('alert')).toContainText('يحتاج إلى شخص آخر');
 });
