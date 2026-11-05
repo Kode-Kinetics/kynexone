@@ -15,6 +15,8 @@ const ar: Record<string, string> = {
   "You created this batch. Your company's loan policy lets you approve it yourself; you will be asked for a reason that is kept in the audit trail.":
     'أنت من أنشأ هذه الدفعة. تسمح لك سياسة القروض في شركتك باعتمادها بنفسك، وسيُطلب منك سبب يُحفظ في سجل التدقيق.',
   'You created this batch. Another Finance user must approve it.': 'أنت من أنشأ هذه الدفعة. يجب أن يعتمدها مستخدم مالي آخر.',
+  "Could not load this loan type's current payment-batch approver setting. Close the form and try again.":
+    'تعذّر تحميل إعداد معتمد دفعات الصرف الحالي لنوع القرض هذا. أغلق النموذج وحاول مرة أخرى.',
   'Give the reason you are approving this batch yourself (at least 10 characters). It is kept in the audit trail.':
     'اذكر سبب اعتمادك لهذه الدفعة بنفسك (10 أحرف على الأقل). يُحفظ السبب في سجل التدقيق.',
 };

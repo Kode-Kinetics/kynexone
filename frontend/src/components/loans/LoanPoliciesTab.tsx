@@ -70,6 +70,7 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
     companiesApi.listAll().then(items => { setCompanies(items); setCompanyId(current => current || items[0]?.id || ''); }).catch(() => {});
   }, [accessibleCompanies.length]);
   const save = async () => {
+    if (!approverReady) return;
     if (!form.companyId || !form.loanTypeId || !form.policyName.trim() || !form.allowedRepaymentMethods.length) { setError('Choose a company, loan type, policy name and at least one repayment method.'); return; }
     const shortest = form.minInstallments ?? 1;
     if (!Number.isInteger(shortest) || shortest < 1 || shortest > form.maxInstallments) { setError(t('The shortest repayment cannot be longer than the longest repayment.')); return; }
@@ -78,23 +79,37 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
     catch (e) { setError(loanErrorMessage(e, 'Unable to create policy version.')); }
     finally { setSaving(false); }
   };
-  // A new version starts from the active version's batch-approver setting, so publishing other terms never silently resets it.
-  const approverOf = (loanTypeId: string) => {
-    const active = policies.find(p => p.loanTypeId === loanTypeId && p.isActive);
-    return { batchApproverMode: active?.batchApproverMode ?? 'SeparateApprover', selfApprovalMaxAmount: active?.selfApprovalMaxAmount ?? 0 };
-  };
-  const begin = (policy?: LoanPolicy) => { const loanTypeId = typeId || loanTypes[0]?.id || ''; setForm(policy ? { ...policy, companyId } : { ...defaults, companyId, loanTypeId, ...approverOf(loanTypeId) }); setContractTypesText(policy?.allowedContractTypes.join(', ') ?? ''); setError(''); setOpen(true); };
+  // A new version starts from the ACTIVE version's batch-approver setting for the company and loan type chosen in the form,
+  // so publishing other terms never silently rewrites it. It is fetched for that pair, not read from the table: the table
+  // holds only the filtered type, and an old row's setting may be stale. Publishing waits until it has arrived.
+  const approverKey = `${form.companyId}|${form.loanTypeId}`;
+  const [approverFor, setApproverFor] = useState('');
+  useEffect(() => {
+    if (!open || !form.companyId || !form.loanTypeId || approverFor === approverKey) return;
+    let live = true;
+    loanGovernanceApi.policies({ companyId: form.companyId, loanTypeId: form.loanTypeId })
+      .then(list => {
+        if (!live) return;
+        const active = list.find(p => p.isActive && p.loanTypeId === form.loanTypeId);
+        setForm(f => ({ ...f, batchApproverMode: active?.batchApproverMode ?? 'SeparateApprover', selfApprovalMaxAmount: active?.selfApprovalMaxAmount ?? 0 }));
+        setApproverFor(approverKey);
+      })
+      .catch(e => { if (live) setError(loanErrorMessage(e, t("Could not load this loan type's current payment-batch approver setting. Close the form and try again."))); });
+    return () => { live = false; };
+  }, [open, approverKey, approverFor, form.companyId, form.loanTypeId, t]);
+  const approverReady = approverFor === approverKey;
+  const begin = (policy?: LoanPolicy) => { const loanTypeId = typeId || loanTypes[0]?.id || ''; setApproverFor(''); setForm(policy ? { ...policy, companyId } : { ...defaults, companyId, loanTypeId }); setContractTypesText(policy?.allowedContractTypes.join(', ') ?? ''); setError(''); setOpen(true); };
   return <div className="space-y-4">
     <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="font-semibold">Company loan policy versions</h2><p className="text-sm text-slate-500">Eligibility is checked before application and payment. Each change creates a new version; existing versions remain in history.</p></div><button className="btn-primary" onClick={() => begin()} disabled={!companyId}>New Policy Version</button></div>
     {error && !open && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
     <div className="flex flex-wrap gap-3"><label className="text-sm">Company<select className="select ms-2" value={companyId} onChange={e => setCompanyId(e.target.value)}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label><label className="text-sm">Loan type<select className="select ms-2" value={typeId} onChange={e => setTypeId(e.target.value)}><option value="">All types</option>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label></div>
     <div className="surface overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['Policy', 'Type', 'Version', 'Limits', 'Approval route', 'Status', ''].map((label, i) => <th key={i} className="p-3 text-start text-xs text-slate-500">{label}</th>)}</tr></thead><tbody>{loadError != null ? <LoadFailedRow colSpan={7} error={loadError} onRetry={() => { void load(); }} /> : policies.length === 0 ? <tr><td colSpan={7} className="p-6 text-center text-slate-500">No policy versions for this selection.</td></tr> : policies.map(policy => <tr key={policy.id} className="border-t border-slate-100 dark:border-white/10"><td className="p-3">{policy.policyName}</td><td className="p-3">{loanTypes.find(type => type.id === policy.loanTypeId)?.nameEn ?? policy.loanTypeId}</td><td className="p-3">v{policy.version}</td><td className="p-3">{policy.maxInstallments} installments · {policy.maxConcurrentLoans} concurrent</td><td className="p-3">HR Manager{policy.additionalApprovalThreshold > 0 ? ` → ${policy.additionalApproverRole} above ${policy.additionalApprovalThreshold.toLocaleString()}` : ''}</td><td className="p-3">{policy.isActive ? 'Active' : 'Inactive'}</td><td className="p-3"><button className="text-sapphire" onClick={() => begin(policy)}>Review / New Version</button></td></tr>)}</tbody></table></div>
-    <Modal isOpen={open} title="New Company Loan Policy Version" size="lg" onClose={() => !saving && setOpen(false)} footer={<><button className="btn-secondary" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Create Policy Version'}</button></>}>
+    <Modal isOpen={open} title="New Company Loan Policy Version" size="lg" onClose={() => !saving && setOpen(false)} footer={<><button className="btn-secondary" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="btn-primary" disabled={saving || !approverReady} onClick={save}>{saving ? 'Saving…' : 'Create Policy Version'}</button></>}>
       <div className="space-y-4">{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<p className="text-sm text-slate-500">Amount limits use the employee company currency. Zero monetary or salary limits mean no additional limit; zero additional approval threshold disables the extra approval. Publishing makes this the active version.</p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="text-sm">Company<select className="select mt-1 w-full" value={form.companyId} onChange={e => setForm(f => ({ ...f, companyId: e.target.value }))}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label>
-          <label className="text-sm">Loan type<select className="select mt-1 w-full" value={form.loanTypeId} onChange={e => { const loanTypeId = e.target.value; setForm(f => ({ ...f, loanTypeId, ...approverOf(loanTypeId) })); }}>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label>
+          <label className="text-sm">Loan type<select className="select mt-1 w-full" value={form.loanTypeId} onChange={e => setForm(f => ({ ...f, loanTypeId: e.target.value }))}>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label>
           <label className="text-sm sm:col-span-2">Policy name<input className="input mt-1 w-full" maxLength={160} value={form.policyName} onChange={e => setForm(f => ({ ...f, policyName: e.target.value }))} /></label>
           {numericFields.map(([key, label]) => <label key={key} className="text-sm">{key === 'minInstallments' || key === 'maxInstallments' ? t(label) : label}<input type="number" min={key === 'minInstallments' || key === 'maxInstallments' ? 1 : 0} step={['maxMultiplierOfSalary', 'maxInstallmentPercentOfSalary', 'maxAmount', 'maxTotalOutstanding', 'additionalApprovalThreshold'].includes(key) ? '0.01' : '1'} className="input mt-1 w-full" value={form[key] ?? 1} onChange={e => setForm(f => ({ ...f, [key]: Number(e.target.value) }))} />{key === 'minInstallments' && <span className="mt-1 block text-xs text-slate-500">{t('The fewest instalments an employee may choose. 1 = no minimum.')}</span>}</label>)}
           <label className="text-sm">Additional approver role<input className="input mt-1 w-full" value="HR Director" readOnly /></label>

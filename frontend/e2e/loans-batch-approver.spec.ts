@@ -158,3 +158,42 @@ test('HR sees the setting read-only, and a new version keeps the active one inst
   expect(posted.maxAmount).toBe(9000);
   expect(errors).toEqual([]);
 });
+
+test('a new version reads the chosen type\'s own active setting, whatever the table is filtered to or which row it starts from', async ({ page }) => {
+  // The table only holds the filtered type's rows, so the form must ask the server for the type chosen in the modal;
+  // an old inactive row must not carry its stale setting into the new version either. Either slip silently rewrites
+  // the setting, and HR cannot see or correct it because the fieldset is read-only for them.
+  const housing = { ...loanType, id: 'type-2', nameEn: 'Housing', code: 'HOUSING' };
+  const base = { companyId: 'company-1', policyName: 'Current', maxAmount: 5000, maxTotalOutstanding: 0, maxMultiplierOfSalary: 0, maxInstallmentPercentOfSalary: 0, minServiceMonths: 0, maxInstallments: 12, minInstallments: 1, requireProbationCompleted: false, blockDuringNotice: true, blockOnOverdue: true, allowedEmploymentStatuses: ['Active'], allowedContractTypes: [], allowedRepaymentMethods: ['BankTransfer'], allowedRepaymentFrequencies: ['Monthly'], maxConcurrentLoans: 1, cooldownMonthsAfterRepayment: 0, additionalApprovalThreshold: 0, additionalApproverRole: 'HR Director', allowExceptions: false, allowEarlySettlement: true, allowRescheduling: false, isOffered: true, createdAtUtc: '2026-11-01T00:00:00Z' };
+  const all = [
+    { ...base, id: 'p1-old', loanTypeId: 'type-1', version: 1, isActive: false, batchApproverMode: 'SeparateApprover', selfApprovalMaxAmount: 0 },
+    { ...base, id: 'p1', loanTypeId: 'type-1', version: 2, isActive: true, batchApproverMode: 'SingleOperator', selfApprovalMaxAmount: 900 },
+    { ...base, id: 'p2', loanTypeId: 'type-2', version: 1, isActive: true, batchApproverMode: 'SingleOperator', selfApprovalMaxAmount: 2500 },
+  ];
+  const posted: any[] = [];
+  const errors = await boot(page, { id: 'hr', role: 'HR Manager' }, (path, method, body, route) => {
+    if (path === '/api/finance/loans/types') return [loanType, housing];
+    if (path.endsWith('/policies') && method === 'GET') {
+      const typeFilter = new URL(route.request().url()).searchParams.get('loanTypeId');
+      return all.filter(p => !typeFilter || p.loanTypeId === typeFilter);
+    }
+    if (path.endsWith('/policies') && method === 'POST') { posted.push(body); return { ...body, id: `new-${posted.length}`, version: 9, createdAtUtc: '2026-11-02T00:00:00Z' }; }
+  }, '/setup?tab=loanPolicies');
+  const mode = page.getByRole('group', { name: 'Who approves loan payment batches' }).getByLabel('Approval of payment batches');
+
+  await page.getByRole('combobox', { name: 'Loan type' }).filter({ has: page.getByRole('option', { name: 'All types' }) }).selectOption('type-1');
+  await page.getByRole('button', { name: 'New Policy Version', exact: true }).click();
+  await expect(mode).toHaveValue('SingleOperator');
+  await page.getByRole('dialog').getByLabel('Loan type').selectOption('type-2');
+  await page.getByLabel('Policy name', { exact: true }).fill('Housing v2');
+  await page.getByRole('button', { name: 'Create Policy Version', exact: true }).click();
+  await expect(page.getByText(/Policy version 9 created/)).toBeVisible();
+  expect(posted[0]).toMatchObject({ loanTypeId: 'type-2', batchApproverMode: 'SingleOperator', selfApprovalMaxAmount: 2500 });
+
+  await page.getByRole('row').filter({ hasText: 'v1' }).filter({ hasText: 'Inactive' }).getByRole('button', { name: 'Review / New Version' }).click();
+  await expect(mode).toHaveValue('SingleOperator');
+  await page.getByRole('button', { name: 'Create Policy Version', exact: true }).click();
+  await expect.poll(() => posted.length).toBe(2);
+  expect(posted[1]).toMatchObject({ loanTypeId: 'type-1', batchApproverMode: 'SingleOperator', selfApprovalMaxAmount: 900 });
+  expect(errors).toEqual([]);
+});
