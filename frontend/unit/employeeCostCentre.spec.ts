@@ -1,9 +1,17 @@
 import { expect, test } from '@playwright/test';
-import { buildEmployeeEditChanges } from '../src/lib/employeeEditDraft';
+import type { EmployeeDetail } from '../src/api/employees';
+import { buildEmployeeEditChanges, buildEmployeeEditSnapshot } from '../src/lib/employeeEditDraft';
+import { LOCAL_FIELD_CATALOG } from '../src/api/employeeFieldCatalog';
+import { emptyHireForm, rebaseHireCompany } from '../src/lib/hire/hireForm';
 import {
   NO_COST_CENTRE,
   costCentreErrorKind,
+  costCentreOptions,
   createCostCentreFields,
+  editCostCentreNeedsReason,
+  editCostCentrePatch,
+  needsDecision,
+  type EditCostCentreInput,
   isOverride,
   overridePatch,
   removeOverridePatch,
@@ -127,9 +135,15 @@ test.describe('the AM-30 request shapes', () => {
     expect(createCostCentreFields({ canManage: true, chosenId: 'sales', departmentCostCentreId: 'ops', reason: ' Project ' })).toEqual({ costCenterId: 'sales', costCenterReason: 'Project' });
   });
 
-  test('create: nothing chosen leaves the field out; clearing a department\'s cost centre sends the explicit None', () => {
+  test('create: "Follow department" (nothing chosen) sends nothing, so the person inherits; it never invents an explicit None', () => {
     expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: '', reason: '' })).toEqual({});
-    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: '' })).toEqual({ costCenterId: NO_COST_CENTRE });
+    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: '' })).toEqual({});
+  });
+
+  test('create (a saved hire draft): following the department again where an override exists sends the explicit None', () => {
+    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: '', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE });
+    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: '', reason: '', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE });
+    expect(createCostCentreFields({ canManage: false, chosenId: '', departmentCostCentreId: '', reason: '', hadOverride: true })).toEqual({});
   });
 });
 
@@ -139,8 +153,176 @@ test.describe('costCentreErrorKind', () => {
     expect(costCentreErrorKind(err(422, 'cost_centre_reason_required'))).toBe('reason');
     expect(costCentreErrorKind(err(409, 'locked_into_approved_run'))).toBe('locked');
     expect(costCentreErrorKind(err(403, 'x'))).toBe('forbidden');
-    expect(costCentreErrorKind(err(422, 'cost_centre_inactive'))).toBe('other');
     expect(costCentreErrorKind(new Error('network'))).toBe('other');
+  });
+
+  test('a missing keep-or-follow decision is its own kind, so the screen can jump to the prompt', () => {
+    expect(costCentreErrorKind(err(422, 'cost_centre_decision_required'))).toBe('decision');
+    expect(costCentreErrorKind(err(422, 'cost_centre_decision_invalid'))).toBe('decision');
+  });
+
+  test('a cost centre that cannot be used (inactive, other company, not found) is the "ref" kind', () => {
+    for (const code of ['cost_centre_inactive', 'cost_centre_other_company', 'cost_centre_not_found']) expect(costCentreErrorKind(err(422, code))).toBe('ref');
+  });
+
+  test('a reason with control or direction characters is a reason problem; a stale screen is its own kind', () => {
+    expect(costCentreErrorKind(err(422, 'reason_invalid_characters'))).toBe('reason');
+    expect(costCentreErrorKind(err(409, 'cost_centre_state_changed'))).toBe('stale');
+    expect(costCentreErrorKind(err(422, 'something_else'))).toBe('other');
+  });
+});
+
+// ═══════════════════════ The edit flow: what the PUT carries (Wave A, D2/D4) ═══════════════════════
+
+const codes: Record<string, string> = { admin: 'ADMIN', sales: 'SALES', ops: 'OPS', hr: 'CC-HR' };
+const edit = (over: Partial<EditCostCentreInput> = {}): EditCostCentreInput => ({
+  canManage: true, isOverride: false, overrideId: null, inheritedId: 'admin', choice: undefined,
+  departmentChanged: false, decision: undefined, reason: '', codeOf: (id) => codes[id] ?? '', ...over,
+});
+
+test.describe('editCostCentrePatch', () => {
+  test('without organization.costcenter.manage nothing about the cost centre is ever sent', () => {
+    expect(editCostCentrePatch(edit({ canManage: false, choice: 'sales', reason: 'x' }))).toEqual({});
+    expect(editCostCentrePatch(edit({ canManage: false, isOverride: true, overrideId: 'sales', departmentChanged: true, decision: 'keep', reason: 'x' }))).toEqual({});
+  });
+
+  test('untouched, no department change: nothing is sent', () => {
+    expect(editCostCentrePatch(edit())).toEqual({});
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales' }))).toEqual({});
+  });
+
+  test('untouched, department changed, no override: nothing is sent, the server re-derives', () => {
+    expect(editCostCentrePatch(edit({ departmentChanged: true, inheritedId: 'hr' }))).toEqual({});
+  });
+
+  test('a different cost centre is an override: its code and the trimmed reason', () => {
+    expect(editCostCentrePatch(edit({ choice: 'sales', reason: '  Seconded ' }))).toEqual({ changes: { costCenter: 'SALES' }, costCenterReason: 'Seconded' });
+  });
+
+  test('re-pointing an existing override to another cost centre is the same shape', () => {
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', choice: 'ops', reason: 'Moved' }))).toEqual({ changes: { costCenter: 'OPS' }, costCenterReason: 'Moved' });
+  });
+
+  test('choosing the inherited cost centre is never sent as a code (that would make it an override)', () => {
+    expect(editCostCentrePatch(edit({ choice: 'admin', reason: 'x' }))).toEqual({});
+    expect(editCostCentrePatch(edit({ choice: '', reason: 'x' }))).toEqual({});
+  });
+
+  test('"Follow" (or the inherited cost centre) while overridden removes the override: an empty code and the reason', () => {
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', choice: '', reason: ' Back ' }))).toEqual({ changes: { costCenter: '' }, costCenterReason: 'Back' });
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', choice: 'admin', reason: 'Back' }))).toEqual({ changes: { costCenter: '' }, costCenterReason: 'Back' });
+  });
+
+  test('picking the current override again is no change', () => {
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', choice: 'sales', reason: 'x' }))).toEqual({});
+  });
+
+  test('override + department change + no explicit pick: the decision, the reason and the override id it was made against', () => {
+    const base = { isOverride: true, overrideId: 'sales', departmentChanged: true, inheritedId: 'hr', reason: ' Transfer ' } as const;
+    expect(editCostCentrePatch(edit({ ...base, decision: 'keep' }))).toEqual({ costCenterDecision: 'keep', costCenterReason: 'Transfer', expectedCostCenterOverrideId: 'sales' });
+    expect(editCostCentrePatch(edit({ ...base, decision: 'drop' }))).toEqual({ costCenterDecision: 'drop', costCenterReason: 'Transfer', expectedCostCenterOverrideId: 'sales' });
+    // Picking the override itself again is the same as not touching the dropdown: the decision still applies.
+    expect(editCostCentrePatch(edit({ ...base, choice: 'sales', decision: 'keep' }))).toMatchObject({ costCenterDecision: 'keep' });
+  });
+
+  test('override + department change + an explicit pick: the pick wins and no decision is sent (the server refuses both)', () => {
+    const base = { isOverride: true, overrideId: 'sales', departmentChanged: true, inheritedId: 'hr', reason: 'r', decision: 'keep' as const };
+    expect(editCostCentrePatch(edit({ ...base, choice: 'ops' }))).toEqual({ changes: { costCenter: 'OPS' }, costCenterReason: 'r' });
+    expect(editCostCentrePatch(edit({ ...base, choice: '' }))).toEqual({ changes: { costCenter: '' }, costCenterReason: 'r' });
+  });
+
+  test('override + department change with no decision yet: no cost-centre fields (the screen must ask first)', () => {
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true }))).toEqual({});
+  });
+
+  test('a decision with no department change is never sent (the server answers not_applicable)', () => {
+    expect(editCostCentrePatch(edit({ isOverride: true, overrideId: 'sales', decision: 'drop', reason: 'x' }))).toEqual({});
+  });
+
+  test('a choice whose code is unknown is not sent as an empty code (that would read as "remove")', () => {
+    expect(editCostCentrePatch(edit({ choice: 'ghost', reason: 'x' }))).toEqual({});
+  });
+});
+
+test.describe('needsDecision and editCostCentreNeedsReason', () => {
+  test('the keep-or-follow question is asked only for an override, a department change, a manager, and no explicit pick', () => {
+    expect(needsDecision(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true }))).toBe(true);
+    expect(needsDecision(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true, choice: 'sales' }))).toBe(true);
+    expect(needsDecision(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true, choice: 'ops' }))).toBe(false);
+    expect(needsDecision(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true, choice: '' }))).toBe(false);
+    expect(needsDecision(edit({ isOverride: false, departmentChanged: true }))).toBe(false);
+    expect(needsDecision(edit({ isOverride: true, overrideId: 'sales', departmentChanged: false }))).toBe(false);
+    expect(needsDecision(edit({ canManage: false, isOverride: true, overrideId: 'sales', departmentChanged: true }))).toBe(false);
+  });
+
+  test('a reason is due whenever the PUT would change the override or carry a decision', () => {
+    expect(editCostCentreNeedsReason(edit())).toBe(false);
+    expect(editCostCentreNeedsReason(edit({ choice: 'sales' }))).toBe(true);
+    expect(editCostCentreNeedsReason(edit({ isOverride: true, overrideId: 'sales', choice: '' }))).toBe(true);
+    expect(editCostCentreNeedsReason(edit({ isOverride: true, overrideId: 'sales', departmentChanged: true }))).toBe(true);
+    expect(editCostCentreNeedsReason(edit({ departmentChanged: true }))).toBe(false);
+    expect(editCostCentreNeedsReason(edit({ canManage: false, choice: 'sales' }))).toBe(false);
+  });
+});
+
+test.describe('costCentreOptions', () => {
+  const list = [
+    { id: 'admin', code: 'ADMIN', name: 'Administration', nameAr: 'الإدارة', companyId: 'co', isActive: true },
+    { id: 'sales', code: 'SALES', name: 'Sales', nameAr: null, companyId: 'co', isActive: true },
+    { id: 'old', code: 'OLD', name: 'Old', companyId: 'co', isActive: false },
+    { id: 'elsewhere', code: 'AE', name: 'UAE', companyId: 'other', isActive: true },
+    { id: 'group', code: 'GRP', name: 'Group', companyId: null, isActive: true },
+  ];
+
+  test('only this company\'s active cost centres, labelled CODE — name', () => {
+    expect(costCentreOptions(list, 'co', 'en', null)).toEqual([
+      { value: 'admin', code: 'ADMIN', name: 'Administration', label: 'ADMIN — Administration' },
+      { value: 'sales', code: 'SALES', name: 'Sales', label: 'SALES — Sales' },
+    ]);
+  });
+
+  test('Arabic uses the Arabic name and falls back to the English one', () => {
+    expect(costCentreOptions(list, 'co', 'ar', null).map((o) => o.label)).toEqual(['ADMIN — الإدارة', 'SALES — Sales']);
+  });
+
+  test('the inherited cost centre is the first option ("follow"), with an empty value, and is not listed twice', () => {
+    const options = costCentreOptions(list, 'co', 'en', { id: 'admin', code: 'ADMIN', name: 'Administration' });
+    expect(options[0]).toEqual({ value: '', code: 'ADMIN', name: 'Administration', label: 'ADMIN — Administration', inherit: true });
+    expect(options.filter((o) => o.code === 'ADMIN')).toHaveLength(1);
+    expect(options.map((o) => o.value)).toEqual(['', 'sales']);
+  });
+
+  test('nothing to inherit still offers the follow option, without a code', () => {
+    const options = costCentreOptions(list, 'co', 'en', { id: null, code: '', name: '' });
+    expect(options[0]).toEqual({ value: '', code: '', name: '', label: '', inherit: true });
+  });
+
+  test('no company: nothing is offered rather than every company\'s list', () => {
+    expect(costCentreOptions(list, '', 'en', null)).toEqual([]);
+  });
+});
+
+test.describe('the edit draft takes the cost centre from the server resolution, never the cached string (D3)', () => {
+  const fields = [{ section: 'Employment', key: 'costCenter', label: 'Cost center' }] as const;
+  test('the snapshot shows the resolved code even when the cached copy disagrees', () => {
+    const employee = { id: 1, costCenter: 'STALE', costCentreResolution: { costCenterId: 'hr', code: 'CC-HR', source: 'Department' } } as unknown as EmployeeDetail;
+    expect(buildEmployeeEditSnapshot(employee, fields as never, LOCAL_FIELD_CATALOG)).toEqual({ costCenter: 'CC-HR' });
+  });
+  test('no resolution: blank, not the cached copy', () => {
+    const employee = { id: 1, costCenter: 'STALE' } as unknown as EmployeeDetail;
+    expect(buildEmployeeEditSnapshot(employee, fields as never, LOCAL_FIELD_CATALOG)).toEqual({ costCenter: '' });
+  });
+});
+
+test.describe('the hire form: changing the employing company clears the cost centre and its reason', () => {
+  test('rebaseHireCompany clears costCenterId and costCenterReason when the company changes', () => {
+    const form = { ...emptyHireForm(), companyId: 'co', costCenterId: 'sales', costCenterReason: 'Project' };
+    const next = rebaseHireCompany(form, 'other', { branches: [], departments: [], designations: [], grades: [], managers: [] });
+    expect(next).toMatchObject({ companyId: 'other', costCenterId: '', costCenterReason: '' });
+  });
+  test('the same company keeps them', () => {
+    const form = { ...emptyHireForm(), companyId: 'co', costCenterId: 'sales', costCenterReason: 'Project' };
+    expect(rebaseHireCompany(form, 'co', { branches: [], departments: [], designations: [], grades: [], managers: [] })).toMatchObject({ costCenterId: 'sales', costCenterReason: 'Project' });
   });
 });
 

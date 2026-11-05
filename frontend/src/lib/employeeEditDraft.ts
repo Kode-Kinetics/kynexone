@@ -24,7 +24,8 @@ export function buildEmployeeEditSnapshot(
   const snapshot: EmployeeEditDraft = {};
 
   for (const field of fields) {
-    let raw = source[field.key];
+    // D3: the cached `costCenter` string is written inconsistently by the server; the resolution is what payroll costs to.
+    let raw = field.key === 'costCenter' ? employee.costCentreResolution?.code ?? '' : source[field.key];
     if (field.key.startsWith('salaryBreakdown.')) {
       const key = field.key.slice('salaryBreakdown.'.length) as keyof EmployeeSalaryBreakdownRequest;
       raw = employee.salaryBreakdown?.[key];
