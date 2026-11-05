@@ -1,19 +1,51 @@
 'use client';
 
-import { useState, type FocusEvent, type ReactNode } from 'react';
+import { useId, useState, type FocusEvent, type ReactNode } from 'react';
 import { Lock } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { useLocale } from '../../contexts/LocaleContext';
 import { DEFAULT_WORK_EMAIL_PATTERN, WORK_EMAIL_PATTERNS, WORK_EMAIL_PATTERN_LABELS, isValidEmailDomain } from '../../api/organization';
 import { assembleWorkEmail, deriveWorkEmailLocalPart } from '../../api/employees';
-import type { CompanySetupCompany } from '../../api/companySetup';
-import { COUNTRY_CURRENCY, CURRENCIES, firstPayrollMonthLocked, isSaudi, legacyWarnings } from '../../lib/companySetupWizard';
+import type { CompanySetupCompany, MigrationMode } from '../../api/companySetup';
+import { COUNTRY_CURRENCY, CURRENCIES, PREVIOUS_SYSTEM_EXAMPLES, PREVIOUS_SYSTEM_MAX, firstPayrollMonthLocked, goLiveMonthTitle, isSaudi, legacyWarnings, migrationModeOf, stripInvisibleControls, withMigrationMode } from '../../lib/companySetupWizard';
 import {
   cleanEmailDomain, currencyLabel, digitsOnly, hasArabicLetters, isPastMonth, isPublicEmailDomain, isSaudiVatNumber, maskMol, maskRegistration, monthLabel, toAsciiDigits,
 } from '../../lib/companySetupFields';
 import { CountryOptions } from './CountryOptions';
 import { Notice, SectionHeader, WizardField, useWizardForm } from './wizardForm';
 import { ArabicSuggest } from './ArabicSuggest';
+
+/** Two radio cards: native radios (arrow keys, one tab stop, announced as "1 of 2"); the card shows the choice by border, a filled dot and the checked state, not colour alone. */
+function ModeChoice({ value, onChange, disabled, lockedNote }: { value: MigrationMode; onChange: (mode: MigrationMode) => void; disabled: boolean; lockedNote?: ReactNode }) {
+  const t = useT();
+  const uid = useId();
+  const helpId = `${uid}-help`;
+  const options: { mode: MigrationMode; title: string; description: string }[] = [
+    { mode: 'new', title: t('New company'), description: t('We have not run payroll before.') },
+    { mode: 'switching', title: t('Switching from another payroll or HR system'), description: t('Our payroll history is in that system today.') },
+  ];
+  return (
+    <fieldset className="min-w-0 sm:col-span-2" aria-describedby={lockedNote ? helpId : undefined} data-testid="migration-mode" disabled={disabled}>
+      <legend className="mb-1 text-sm font-medium text-slate-700 dark:text-slate-300">{t('Is this a new company or are you switching systems?')}</legend>
+      {lockedNote && <p id={helpId} className="mb-1.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{lockedNote}</p>}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {options.map(o => {
+          const checked = value === o.mode;
+          return (
+            <label key={o.mode} className={`relative flex cursor-pointer items-start gap-3 rounded-xl border p-3 text-sm focus-within:ring-2 focus-within:ring-sapphire/50 has-[:disabled]:cursor-default ${checked ? 'border-sapphire bg-sapphire/[0.05] dark:border-cyanAccent dark:bg-cyanAccent/[0.07]' : 'border-slate-200 bg-white dark:border-white/10 dark:bg-white/[0.02]'}`}>
+              <input type="radio" name={`${uid}-mode`} value={o.mode} checked={checked} disabled={disabled} onChange={() => onChange(o.mode)}
+                aria-describedby={`${uid}-${o.mode}-d`} data-testid={`migration-mode-${o.mode}`} className="mt-1 h-4 w-4 shrink-0 accent-sapphire" />
+              <span className="min-w-0">
+                <span className="block font-semibold text-slate-900 dark:text-white">{o.title}</span>
+                <span id={`${uid}-${o.mode}-d`} className="block text-xs leading-5 text-slate-600 dark:text-slate-400">{o.description}</span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </fieldset>
+  );
+}
 
 function assembleWorkEmailPreview(pattern: string | undefined, domain: string | undefined, placeholderDomain: string): string {
   const local = deriveWorkEmailLocalPart('John Smith', pattern || DEFAULT_WORK_EMAIL_PATTERN);
@@ -41,7 +73,7 @@ export function CompanyStep() {
   // Addendum A4: an existing company keeps its country and currency (payroll, GOSI and bank files depend on them),
   // and its first payroll month once payroll has started.
   const existing = !!body.existingCompanyId;
-  const monthLocked = existing && firstPayrollMonthLocked(c);
+  const monthLocked = existing && firstPayrollMonthLocked(c);  // only when the server pinned the cutover
   const identityReason = t('Fixed for an existing company: payroll, GOSI and bank files depend on it.');
   const set = (patch: Partial<CompanySetupCompany>) => update(b => ({ ...b, company: { ...b.company, ...patch } }));
   // Hints (never blockers) wait until the field was left, like the errors do.
@@ -75,7 +107,10 @@ export function CompanyStep() {
   const domainHint = domain && isPublicEmailDomain(domain)
     ? t('{domain} is a public email service. Use the domain of your company email, such as acme.sa.', { domain }) : null;
   const month = monthLabel(c.firstPayrollMonth, locale);
-  const monthHint = !monthLocked && month && isPastMonth(c.firstPayrollMonth)
+  const switching = migrationModeOf(c) === 'switching';
+  const monthTitle = goLiveMonthTitle(c);
+  const detailsLocked = monthLocked;
+  const monthHint = !monthLocked && !switching && month && isPastMonth(c.firstPayrollMonth)
     ? t('{month} is in the past. You will need opening balances for the months before it.', { month }) : null;
 
   // Existing mode: values saved before today's rules and not changed here do not block; they are flagged instead.
@@ -110,13 +145,39 @@ export function CompanyStep() {
               {CURRENCIES.map(code => <option key={code} value={code}>{currencyLabel(code, locale)}</option>)}
             </select>}
           </WizardField>
-          <WizardField field="company.firstPayrollMonth" label={t('First payroll month')} required
+          <ModeChoice value={migrationModeOf(c)} disabled={readOnly || detailsLocked} onChange={mode => set(withMigrationMode(c, mode))}
+            lockedNote={detailsLocked ? <Locked>{t('Payroll has already started for this company, so this stays as it is.')}</Locked> : undefined} />
+          {switching && <WizardField field="company.previousSystem" label={t('Previous system (optional)')}
+            help={detailsLocked ? <Locked>{t('Payroll has already started for this company, so this stays as it is.')}</Locked> : t('For example Oracle HCM or SAP. You can type any name.')}>
+            {control => <>
+              <input {...control} className="input w-full" list={`${control.id}-examples`} maxLength={PREVIOUS_SYSTEM_MAX} autoComplete="off" readOnly={readOnly || detailsLocked} aria-readonly={detailsLocked || undefined}
+                value={c.previousSystem ?? ''} onChange={e => set({ previousSystem: e.target.value })}
+                onPaste={e => { const text = e.clipboardData.getData('text'); const clean = stripInvisibleControls(text); if (clean !== text) { e.preventDefault(); set({ previousSystem: ((c.previousSystem ?? '') + clean).slice(0, PREVIOUS_SYSTEM_MAX) }); } }} />
+              <datalist id={`${control.id}-examples`}>{PREVIOUS_SYSTEM_EXAMPLES.map(name => <option key={name} value={name} />)}</datalist>
+            </>}
+          </WizardField>}
+          <WizardField field="company.firstPayrollMonth" label={t(monthTitle)} required
             help={<Help hint={monthHint}>{monthLocked
               ? <Locked>{t('Payroll has already started for this company, so its first payroll month stays as it is.')}</Locked>
+              : switching ? t('The first month KynexOne runs your payroll. Earlier months stay in your previous system and come over as opening balances.')
               : month ? t('Payroll in KynexOne starts with {month}. You can change it until payroll starts.', { month })
                 : t('The first month you will run payroll for this company in KynexOne. Defaults to next month.')}</Help>}>
-            {control => <input {...control} type="month" className="input w-full" dir="ltr" readOnly={readOnly || monthLocked} aria-readonly={monthLocked || undefined} min="2000-01" max="2099-12" placeholder="2026-11" value={c.firstPayrollMonth} onChange={e => set({ firstPayrollMonth: e.target.value })} />}
+            {control => <input {...control} type="month" className="input w-full" dir="ltr" readOnly={readOnly || monthLocked} aria-readonly={monthLocked || undefined} min={switching ? '2015-01' : '2000-01'} max="2099-12" placeholder="2026-11" value={c.firstPayrollMonth} onChange={e => set({ firstPayrollMonth: e.target.value })} />}
           </WizardField>
+          {switching && (
+            <div className="sm:col-span-2" data-testid="bring-over-panel"><Notice tone="info">
+              <p className="font-semibold">{t('Bring these over after setup')}</p>
+              <p>{t('Earlier months are normal when you switch. After setup, bring over the items below.')}</p>
+              <ul className="mt-1 list-disc space-y-0.5 ps-5">
+                <li>{t('Payroll year to date')}</li>
+                <li>{t('Leave balances')}</li>
+                <li>{t('Loans and advances')}</li>
+                <li>{t('End-of-service opening provision, with each person’s original hire date')}</li>
+                <li>{t('The last WPS or Mudad month paid')}</li>
+              </ul>
+              <p className="mt-1">{t('You can do this from Setup → Opening balances.')}</p>
+            </Notice></div>
+          )}
         </div>
       </section>
 

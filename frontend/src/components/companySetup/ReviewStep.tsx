@@ -5,7 +5,7 @@ import { AlertTriangle, CheckCircle2, ChevronDown, CircleDot, Info } from 'lucid
 import { useLocale } from '../../contexts/LocaleContext';
 import type { CompanySetupDraftBody, CompanySetupPlan, OrgSection, PlanItem, Problem } from '../../api/companySetup';
 import {
-  AREA_LABEL, CHANGED_ELSEWHERE, CHANGED_FIELD_LABEL, DRAFT_NEEDS_REFRESH, buildTree, currentValueLabel, resolveChangedElsewhere, canCommit, groupPlan,
+  areaLabelFor, CHANGED_ELSEWHERE, CHANGED_FIELD_LABEL, DRAFT_NEEDS_REFRESH, buildTree, currentValueLabel, resolveChangedElsewhere, canCommit, groupPlan, goLiveMonthTitle, migrationModeOf,
   planIsNoChange, reasonFields, setupCodeCopy, stepCopy, wizardMode, type StepId,
 } from '../../lib/companySetupWizard';
 import { conflictNamesRow, draftValueLabel, isOpenBucket, reviewBucket, reviewCounts, savedInStep4, type ReviewBucket as Bucket } from './reviewModel';
@@ -153,7 +153,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
       <li key={`${item.area}-${item.code}-${i}`} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 px-4 py-2.5" data-action={item.action} data-bucket={b}>
         <div className="min-w-0 flex-1">
           <p className="break-words text-sm text-slate-900 dark:text-white">
-            <span className="text-slate-500 dark:text-slate-400">{t(AREA_LABEL[item.area])}</span>{' · '}
+            <span className="text-slate-500 dark:text-slate-400">{t(areaLabelFor(item.area, body.company))}</span>{' · '}
             <bdi>{locale === 'ar' ? item.labelAr || item.label : item.label}</bdi>
             {item.code && <span className="ms-1.5 text-xs text-slate-500 dark:text-slate-400"><bdi>{item.code}</bdi></span>}
           </p>
@@ -212,7 +212,7 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
           return (
             <li key={`c-${i.area}-${i.code}`} className="space-y-2 px-4 py-3 text-sm text-slate-900 dark:text-slate-100">
               <p className="text-xs font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">{title(step)}</p>
-              <p className="leading-6">{(() => { const reason = (locale === 'ar' && i.reasonAr) || i.reason; return conflictNamesRow({ code: i.code, reason }) ? reason : t('{area} {code}: {reason}', { area: t(AREA_LABEL[i.area]), code: i.code, reason: reason || t('Already exists') }); })()}</p>
+              <p className="leading-6">{(() => { const reason = (locale === 'ar' && i.reasonAr) || i.reason; return conflictNamesRow({ code: i.code, reason }) ? reason : t('{area} {code}: {reason}', { area: t(areaLabelFor(i.area, body.company)), code: i.code, reason: reason || t('Already exists') }); })()}</p>
               <button type="button" className={`rounded text-sm font-semibold text-sapphire underline-offset-4 hover:underline dark:text-cyanAccent ${FOCUS_RING}`} onClick={() => onGoTo(step)}>{t('Go to {step}', { step: title(step) })}</button>
             </li>
           );
@@ -270,6 +270,17 @@ export function ReviewStep({ plan, state, onRetry, onGoTo, visibleSteps, onChang
   return (
     <div className="space-y-5" data-testid="review-plan" data-mode={mode} aria-busy={checking || undefined}>
       {decision}
+
+      <dl className="grid gap-x-6 gap-y-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm sm:grid-cols-[auto_1fr] dark:border-white/10 dark:bg-white/[0.02]" data-testid="review-cutover">
+        <dt className="text-slate-500 dark:text-slate-400">{t('Company status')}</dt>
+        <dd className="font-medium text-slate-900 dark:text-white">{migrationModeOf(body.company) === 'switching' ? t('Switching from another payroll or HR system') : t('New company')}</dd>
+        {migrationModeOf(body.company) === 'switching' && <>
+          <dt className="text-slate-500 dark:text-slate-400">{t('Previous system')}</dt>
+          <dd className="font-medium text-slate-900 dark:text-white"><bdi>{body.company.previousSystem?.trim() || t('Not given')}</bdi></dd>
+        </>}
+        <dt className="text-slate-500 dark:text-slate-400">{t(goLiveMonthTitle(body.company))}</dt>
+        <dd className="font-medium text-slate-900 dark:text-white" dir="ltr">{body.company.firstPayrollMonth}</dd>
+      </dl>
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="sr-only">{t('Select a count to see the rows behind it.')}</span>

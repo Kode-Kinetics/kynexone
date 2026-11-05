@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.CompanySetup;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CompanySetup;
 using Zayra.Api.Infrastructure.Email;
@@ -40,6 +41,55 @@ public class CompanySetupReadinessHrefTests
         reviewer.MustChangePassword = true;
         await db.SaveChangesAsync();
         (await Status()).Should().Be("todo", "a permission alone is not a usable reviewer");
+    }
+
+    [Fact]
+    public async Task A_switching_company_lists_the_history_to_bring_over_and_derives_done_from_the_carried_rows()
+    {
+        await using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+        var tenantId = Guid.NewGuid();
+        var company = new Company { TenantId = tenantId, LegalNameEn = "Acme", CountryCode = "SA", DefaultCurrency = "SAR" };
+        var other = new Company { TenantId = tenantId, LegalNameEn = "Other", CountryCode = "SA", DefaultCurrency = "SAR" };
+        db.Companies.AddRange(company, other);
+        var cutover = new CompanyCutover { TenantId = tenantId, CompanyId = company.Id, CutoverDate = new DateOnly(2026, 3, 1), Status = CutoverStatuses.Planned };
+        db.CompanyCutovers.Add(cutover);
+        await db.SaveChangesAsync();
+        string[] keys = ["migrateHistoryPayrollYtd", "migrateHistoryLeave", "migrateHistoryLoans", "migrateHistoryEosb"];
+        async Task<IReadOnlyList<ReadinessItem>> Items() => await CompanySetupReadiness.ComputeAsync(db, new NoEmail(), tenantId, company, default);
+
+        (await Items()).Select(i => i.Key).Should().NotContain(k => k.StartsWith("migrateHistory"), "a brand-new company has no history to bring");
+
+        cutover.SourceSystem = "SAP";
+        await db.SaveChangesAsync();
+        (await Items()).Select(i => i.Key).Should().NotContain(k => k.StartsWith("migrateHistory"), "a source system alone does not make a Planned cutover switching");
+        cutover.Status = CutoverStatuses.Active;
+        await db.SaveChangesAsync();
+        var items = await Items();
+        foreach (var key in keys)
+        {
+            var item = items.Single(i => i.Key == key);
+            item.Status.Should().Be("todo");
+            item.Href.Should().Be($"/setup?tab=openingBalances&companyId={company.Id}");
+            item.Label.Should().NotBeNullOrWhiteSpace();
+            item.LabelAr.Should().NotBeNullOrWhiteSpace();
+        }
+        items.Single(i => i.Key == "migrateHistoryEosb").Label.Should().Contain("hire date");
+
+        // Rows carried for ANOTHER company do not count; this company's rows do.
+        db.OpeningBalanceOrigins.Add(new OpeningBalanceOrigin { TenantId = tenantId, CompanyId = other.Id, EntityType = OpeningBalanceEntityTypes.LeaveBalance, EntityId = Guid.NewGuid() });
+        db.OpeningBalanceOrigins.Add(new OpeningBalanceOrigin { TenantId = tenantId, CompanyId = company.Id, EntityType = OpeningBalanceEntityTypes.Advance, EntityId = Guid.NewGuid() });
+        db.PayrollOpeningBalances.Add(new PayrollOpeningBalance { TenantId = tenantId, CompanyId = company.Id, Year = 2026, BalanceType = OpeningBalanceTypes.YtdGross, Amount = 1 });
+        await db.SaveChangesAsync();
+        items = await Items();
+        items.Single(i => i.Key == "migrateHistoryLeave").Status.Should().Be("todo");
+        items.Single(i => i.Key == "migrateHistoryLoans").Status.Should().Be("done", "an advance counts as loans/advances");
+        items.Single(i => i.Key == "migrateHistoryPayrollYtd").Status.Should().Be("done");
+        items.Single(i => i.Key == "migrateHistoryEosb").Status.Should().Be("todo");
+
+        // An Active cutover with no named source is a switching company too.
+        cutover.SourceSystem = string.Empty;
+        await db.SaveChangesAsync();
+        (await Items()).Select(i => i.Key).Should().Contain(keys);
     }
 
     [Fact]

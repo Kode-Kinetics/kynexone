@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { translate } from '../src/i18n/translations';
 import type { CompanySetupContext, CompanySetupDraftBody, CompanySetupPlan } from '../src/api/companySetup';
 import {
   buildTree, canCommit, defaultFirstPayrollMonth, eligibleCompanySuperAdmins, emptyBody, firstBlockingStep, groupPlan, molEstablishmentError,
@@ -7,6 +8,7 @@ import {
   legacyWarnings, reasonFields, setupCodeCopy, setupLandingCompanyLink,
   gradeWarnings, sortedGradeIndexes, suggestedMidpoint,
   STEP_IDS, serverStep, stepOrder, withScreenSteps, positionOfField as screenPositionOfField, wizardPositions as screenPositions,
+  stripInvisibleControls, migrationModeOf, goLiveMonthTitle, areaLabelFor, withMigrationMode, readinessHref,
   CHANGED_ELSEWHERE, chooseWeekend, countryDisplayName, currentValueLabel, editRow, resolveChangedElsewhere, withOneHeadOffice,
 } from '../src/lib/companySetupWizard';
 
@@ -241,15 +243,10 @@ test('drafts resume at their own address, with ids encoded', () => {
   expect(completeCompanyHref('a/b')).toBe('/setup/company/a%2Fb/complete');
 });
 
-test('the first payroll month locks up front once the cutover the server reports has left Planned', () => {
+test('the first payroll month locks up front only when the server pins the cutover (as the prefill sends it)', () => {
+  expect(firstPayrollMonthLocked({ cutoverPinned: true })).toBe(true);
   expect(firstPayrollMonthLocked({ cutoverStatus: 'Planned' })).toBe(false);
-  expect(firstPayrollMonthLocked({ cutoverStatus: 'Active' })).toBe(true);
-  expect(firstPayrollMonthLocked({ cutoverStatus: 'Closed' })).toBe(true);
-  // No cutover yet, or an older server that sends nothing: the month stays editable and the planner decides.
-  expect(firstPayrollMonthLocked({ cutoverStatus: null })).toBe(false);
-  expect(firstPayrollMonthLocked({})).toBe(false);
-  // As the prefill sends it (JSON): the status survives a draft round trip and still locks.
-  const company = JSON.parse(JSON.stringify({ ...emptyBody('SA').company, cutoverStatus: 'Active' })) as CompanySetupDraftBody['company'];
+  const company = JSON.parse(JSON.stringify({ ...emptyBody('SA').company, cutoverPinned: true })) as CompanySetupDraftBody['company'];
   expect(firstPayrollMonthLocked(company)).toBe(true);
 });
 
@@ -617,4 +614,113 @@ test('server problems about the reviewer are shown on the Approvers step even th
 
 test('an old draft has no reviewer and empty bodies ask for none', () => {
   expect(emptyBody('SA').payReviewer).toEqual({ mode: 'groupOnly' });
+});
+
+// ── Go-live cutover: new company vs switching from another system ───────────────────────────────────────────────
+const NOW = new Date(2026, 10, 3);
+
+test('migration mode defaults to new; an old draft or prefill without the field loads as new', () => {
+  expect(emptyBody('SA').company.migrationMode).toBe('new');
+  expect(migrationModeOf({})).toBe('new');
+  expect(migrationModeOf({ migrationMode: 'switching' })).toBe('switching');
+  expect(migrationModeOf({ migrationMode: 'bogus' as never })).toBe('new');
+  const oldDraft = JSON.parse(JSON.stringify({ ...saudiBody().company, migrationMode: undefined })) as CompanySetupDraftBody['company'];
+  expect(migrationModeOf(oldDraft)).toBe('new');
+  expect(validateStep(2, { body: { ...saudiBody(), company: oldDraft }, context, today: NOW })).toEqual([]);
+});
+
+test('the month is called Go-live month when switching and First payroll month for a new company', () => {
+  expect(goLiveMonthTitle({ migrationMode: 'switching' })).toBe('Go-live month');
+  expect(goLiveMonthTitle({ migrationMode: 'new' })).toBe('First payroll month');
+  expect(goLiveMonthTitle({})).toBe('First payroll month');
+  expect(areaLabelFor('cutover', { migrationMode: 'switching' })).toBe('Go-live month');
+  expect(areaLabelFor('cutover', {})).toBe('First payroll month');
+  expect(areaLabelFor('branch', { migrationMode: 'switching' })).toBe('Branch');
+});
+
+test('switching: the go-live month is 2015-01 or later and at most 12 months ahead; new keeps only the format check', () => {
+  const body = (month: string, mode: 'new' | 'switching') => {
+    const b = saudiBody();
+    b.company = { ...b.company, migrationMode: mode, firstPayrollMonth: month };
+    return b;
+  };
+  const errs = (month: string, mode: 'new' | 'switching') => fields(validateStep(2, { body: body(month, mode), context, today: NOW }));
+  expect(errs('2024-03', 'switching')).toEqual([]);
+  expect(errs('2015-01', 'switching')).toEqual([]);
+  expect(errs('2014-12', 'switching')).toEqual(['company.firstPayrollMonth']);
+  expect(errs('2027-11', 'switching')).toEqual([]);
+  expect(errs('2027-12', 'switching')).toEqual(['company.firstPayrollMonth']);
+  expect(errs('2014-12', 'new')).toEqual([]);
+  expect(errs('2026-13', 'switching')).toEqual(['company.firstPayrollMonth']);
+  expect(errs('', 'new')).toEqual(['company.firstPayrollMonth']);
+});
+
+test('previous system is at most 120 characters, and only checked when switching', () => {
+  const b = saudiBody();
+  b.company = { ...b.company, migrationMode: 'switching', previousSystem: 'x'.repeat(120) };
+  expect(validateStep(2, { body: b, context, today: NOW })).toEqual([]);
+  b.company.previousSystem = 'x'.repeat(121);
+  expect(fields(validateStep(2, { body: b, context, today: NOW }))).toEqual(['company.previousSystem']);
+  b.company.migrationMode = 'new';
+  expect(validateStep(2, { body: b, context, today: NOW })).toEqual([]);
+});
+
+test('switching to new clears the previous system; the draft round trip keeps both fields', () => {
+  expect(withMigrationMode({ migrationMode: 'switching', previousSystem: 'Oracle HCM' }, 'new')).toMatchObject({ migrationMode: 'new', previousSystem: null });
+  expect(withMigrationMode({ migrationMode: 'new' }, 'switching')).toMatchObject({ migrationMode: 'switching' });
+  const b = saudiBody();
+  b.company = { ...b.company, migrationMode: 'switching', previousSystem: 'SAP SuccessFactors' };
+  expect(JSON.parse(JSON.stringify(b)).company).toMatchObject({ migrationMode: 'switching', previousSystem: 'SAP SuccessFactors' });
+});
+
+test('the opening-balances readiness item deep-links to Setup > Opening balances for that company', () => {
+  expect(readinessHref({ key: 'migrateHistory', href: '/somewhere?companyId=co-9' })).toBe('/setup?tab=openingBalances&companyId=co-9');
+  expect(readinessHref({ key: 'migrateHistory', href: '/somewhere' })).toBe('/setup?tab=openingBalances');
+  expect(readinessHref({ key: 'branches', href: '/setup?tab=branches' })).toBe('/setup?tab=branches');
+});
+
+// ── Review fixes: pinned lock, UTC window, server codes, bidi controls ──────────────────────────────────────────
+test('the go-live controls lock only when the server says the cutover is pinned', () => {
+  expect(firstPayrollMonthLocked({ cutoverPinned: true })).toBe(true);
+  expect(firstPayrollMonthLocked({ cutoverPinned: false })).toBe(false);
+  expect(firstPayrollMonthLocked({})).toBe(false);
+  // An Active or Closed status alone no longer locks: the server decides through its *_locked problems.
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Active' })).toBe(false);
+  expect(firstPayrollMonthLocked({ cutoverStatus: 'Closed', cutoverPinned: true })).toBe(true);
+});
+
+test('the go-live window is read in UTC, like the server', () => {
+  const b = saudiBody();
+  b.company = { ...b.company, migrationMode: 'switching' };
+  const errs = (month: string, today: Date) => { b.company.firstPayrollMonth = month; return fields(validateStep(2, { body: b, context, today })); };
+  // 2026-11-30 22:00 UTC is already 1 December in Riyadh (UTC+3), but it is still November in UTC: the last month is 2027-11.
+  const lateNov = new Date('2026-11-30T22:00:00Z');
+  expect(errs('2027-11', lateNov)).toEqual([]);
+  expect(errs('2027-12', lateNov)).toEqual(['company.firstPayrollMonth']);
+  // One hour into December UTC the window moves on.
+  const earlyDec = new Date('2026-12-01T00:30:00Z');
+  expect(errs('2027-12', earlyDec)).toEqual([]);
+  expect(errs('2028-01', earlyDec)).toEqual(['company.firstPayrollMonth']);
+});
+
+test('every new cutover server code has copy, in English and Arabic', () => {
+  for (const code of ['previous_system_locked', 'first_payroll_month_out_of_range', 'migration_mode_invalid', 'migration_mode_needs_setup_permission',
+    'previous_system_too_long', 'previous_system_invalid', 'CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN', 'switching_blocked_by_runs']) {
+    const en = setupCodeCopy(code);
+    expect(en, code).toBeTruthy();
+    expect(translate('ar', en!), code).not.toBe(en);
+  }
+  expect(setupCodeCopy('switching_blocked_by_runs')).toBe('This company already has payroll runs after that month, so it cannot be switched to a go-live date here. Bring history in from Setup > Opening balances.');
+});
+
+test('previous system rejects invisible direction and format controls', () => {
+  const b = saudiBody();
+  b.company = { ...b.company, migrationMode: 'switching' };
+  for (const bad of ['Oracle\u200EHCM', 'a\u202Eb', 'a\u2066b', 'a\u200Bb', 'a\uFEFFb', 'a\u200Db']) {
+    b.company.previousSystem = bad;
+    expect(fields(validateStep(2, { body: b, context, today: NOW })), JSON.stringify(bad)).toEqual(['company.previousSystem']);
+  }
+  b.company.previousSystem = 'نظام رواتب';
+  expect(validateStep(2, { body: b, context, today: NOW })).toEqual([]);
+  expect(stripInvisibleControls('Or\u200Eacle\uFEFF HCM')).toBe('Oracle HCM');
 });

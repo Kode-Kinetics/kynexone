@@ -3,7 +3,7 @@ import { isValidEmailDomain } from '../api/organization';
 import { resolveSetupPath } from './setupPathState';
 import type {
   CompanySetupCompany, CompanySetupContext, CompanySetupDraftBody, CompanySetupDraftSummary, CompanySetupGrade, CompanySetupPlan,
-  ExistingRow, ManageableCompany, OrgSection, PlanAction, PlanArea, PlanItem, Problem, WithBaseline,
+  ExistingRow, ManageableCompany, MigrationMode, ReadinessItem, OrgSection, PlanAction, PlanArea, PlanItem, Problem, WithBaseline,
 } from '../api/companySetup';
 
 /**
@@ -84,10 +84,43 @@ export function draftHref(summary: Pick<CompanySetupDraftSummary, 'id' | 'existi
   return summary.existingCompanyId ? completeCompanyHref(summary.existingCompanyId, summary.id) : `/setup/new-company?draft=${encodeURIComponent(summary.id)}`;
 }
 
-/** A4: the first payroll month is fixed once the company's cutover has left Planned. Unknown status: the server decides. */
-export function firstPayrollMonthLocked(company: Pick<CompanySetupCompany, 'cutoverStatus'>): boolean {
-  const status = (company.cutoverStatus ?? '').trim().toLowerCase();
-  return status !== '' && status !== 'planned';
+/** The go-live month, mode and previous system are fixed only when the server says the cutover is pinned; anything else is the server's call (*_locked problems). */
+export function firstPayrollMonthLocked(company: Pick<CompanySetupCompany, 'cutoverPinned'> & Partial<Pick<CompanySetupCompany, 'cutoverStatus'>>): boolean {
+  return company.cutoverPinned === true;
+}
+
+/** Absent or unknown means a new company, so drafts saved before the field existed load as before. */
+export function migrationModeOf(company: Pick<CompanySetupCompany, 'migrationMode'>): MigrationMode {
+  return company.migrationMode === 'switching' ? 'switching' : 'new';
+}
+
+/** What the month is called: the go-live month for a company switching systems, the first payroll month for a new one. */
+export function goLiveMonthTitle(company: Pick<CompanySetupCompany, 'migrationMode'>): string {
+  return migrationModeOf(company) === 'switching' ? msg('Go-live month') : msg('First payroll month');
+}
+
+/** Choosing a mode; leaving "switching" drops the previous system so a hidden value is never saved. */
+export function withMigrationMode<C extends Pick<CompanySetupCompany, 'migrationMode' | 'previousSystem'>>(company: C, mode: MigrationMode): C {
+  return { ...company, migrationMode: mode, ...(mode === 'new' ? { previousSystem: null } : {}) };
+}
+
+export const PREVIOUS_SYSTEM_MAX = 120;
+/** Bidi and zero-width format controls: invisible in the field, so they cannot be fixed by eye. */
+const INVISIBLE_CONTROLS = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+export const stripInvisibleControls = (value: string): string => value.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '');
+/** A switching company's go-live month may be this far ahead, and no earlier than this. */
+export const GO_LIVE_EARLIEST = '2015-01';
+export const GO_LIVE_MAX_MONTHS_AHEAD = 12;
+
+/** Examples offered (never required) for the previous system; any text is accepted. */
+export const PREVIOUS_SYSTEM_EXAMPLES = ['Oracle HCM', 'SAP SuccessFactors', 'Workday', 'Microsoft Dynamics 365', 'Odoo', 'Zoho People', 'Jisr'] as const;
+
+/** Setup > Opening balances (the migration import), for one company when the server's link names it. */
+export const OPENING_BALANCES_HREF = '/setup?tab=openingBalances';
+export function readinessHref(item: Pick<ReadinessItem, 'key' | 'href'>): string {
+  if (!/migrateHistory|openingBalance/i.test(item.key)) return item.href;
+  const companyId = /[?&]companyId=([^&#]+)/.exec(item.href)?.[1];
+  return companyId ? `${OPENING_BALANCES_HREF}&companyId=${companyId}` : OPENING_BALANCES_HREF;
 }
 
 /** "5 of 9 done" inputs for one chooser row; complete when every item is done. */
@@ -211,6 +244,7 @@ export const CHANGED_FIELD_LABEL: Record<string, string> = {
   taxNumber: msg('VAT number (optional)'), qiwaEstablishmentId: msg('Qiwa establishment ID (optional)'),
   emailDomain: msg('Work email domain (optional)'), workEmailPattern: msg('Work email pattern (optional)'),
   erpCompanyCode: msg('ERP company code (optional)'), firstPayrollMonth: msg('First payroll month'),
+  migrationMode: msg('Company status'), previousSystem: msg('Previous system (optional)'),
   nameEn: msg('Name (English)'), nameAr: msg('Name (Arabic)'), titleEn: msg('Title (English)'), titleAr: msg('Title (Arabic)'),
   city: msg('City'), timeZoneId: msg('Time zone'), isHeadOffice: msg('Head office'),
   latitude: msg('Latitude'), longitude: msg('Longitude'), radiusMeters: msg('Radius (m)'),
@@ -227,6 +261,14 @@ export const SETUP_CODE_COPY: Record<string, string> = {
   currency_locked: msg('The salary currency of an existing company cannot change: payroll and bank files depend on it. To pay in another currency, create a new company.'),
   draft_target_locked: msg('This draft belongs to one company and cannot be moved to another. Discard it and start again from Guided setup.'),
   existing_code_locked: msg('The code of a row the company already has cannot change, because other records refer to it. Put the code back, or add a new row with the new code.'),
+  previous_system_locked: msg('Payroll has already started for this company, so its previous system cannot change.'),
+  first_payroll_month_out_of_range: msg('The go-live month must be January 2015 or later and no more than 12 months from now.'),
+  migration_mode_invalid: msg('Choose either a new company or switching from another system.'),
+  migration_mode_needs_setup_permission: msg('Only someone who can manage company setup can change whether this company is new or switching. Ask your company or group super admin.'),
+  previous_system_too_long: msg('Use 120 characters or fewer for the previous system.'),
+  previous_system_invalid: msg('The previous system has characters that are not allowed. Type its name again.'),
+  CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN: msg('A payroll run is already locked for a month before this go-live month, so the go-live month cannot be moved later than it.'),
+  switching_blocked_by_runs: msg('This company already has payroll runs after that month, so it cannot be switched to a go-live date here. Bring history in from Setup > Opening balances.'),
   first_payroll_month_locked: msg('Payroll has already started for this company, so the first payroll month cannot change. Put back the month that was saved.'),
   company_not_manageable: msg('You cannot change the setup of this company. Choose one of your companies in Guided setup, or ask your group super admin.'),
   company_admin_required: msg('Only an administrator of this company can complete its setup. Ask your company or group super admin.'),
@@ -310,6 +352,11 @@ export const AREA_LABEL: Record<PlanArea, string> = {
   gccSetting: msg('End-of-service settings'), workWeek: msg('Working week'), companyAdmin: msg('Company super admin'), payReviewer: msg('Independent pay reviewer'),
 };
 
+/** The review's label for a plan area; the cutover row follows the company's mode. */
+export function areaLabelFor(area: PlanArea, company: Pick<CompanySetupCompany, 'migrationMode'>): string {
+  return area === 'cutover' ? goLiveMonthTitle(company) : AREA_LABEL[area];
+}
+
 export interface FieldError { field: string; message: string; params?: MessageParams }
 
 const SAUDI = new Set(['SA', 'SAU', 'KSA']);
@@ -339,7 +386,7 @@ export function defaultFirstPayrollMonth(today: Date = new Date()): string {
 export function emptyBody(countryCode = ''): CompanySetupDraftBody {
   return {
     startFrom: 'defaults',
-    company: { legalNameEn: '', legalNameAr: '', countryCode, currency: COUNTRY_CURRENCY[countryCode] ?? '', registrationNumber: '', firstPayrollMonth: defaultFirstPayrollMonth() },
+    company: { legalNameEn: '', legalNameAr: '', countryCode, currency: COUNTRY_CURRENCY[countryCode] ?? '', registrationNumber: '', firstPayrollMonth: defaultFirstPayrollMonth(), migrationMode: 'new' },
     branches: [], costCentres: [], departments: [], designations: [], grades: [],
     rules: {
       workWeek: { weekendDays: 'Fri,Sat', override: false },
@@ -406,13 +453,15 @@ export interface ValidationInput {
   adminStepVisible?: boolean;
   /** Existing mode: what the company has today (the prefill). Values kept from it are judged as saved, not as typed. */
   baseline?: CompanySetupDraftBody | null;
+  /** Clock for the go-live window; tests pass one. */
+  today?: Date;
 }
 
 /**
  * Existing mode: registration values saved before today's rules and left as they are do not block (the server warns
  * instead of refusing); a value the reader changes is checked as on create.
  */
-const LEGACY_FIELDS = ['company.legalNameAr', 'company.registrationNumber', 'company.molEstablishmentNumber', 'company.unifiedNationalNumber', 'company.emailDomain', 'company.taxNumber'] as const;
+const LEGACY_FIELDS = ['company.firstPayrollMonth', 'company.previousSystem', 'company.legalNameAr', 'company.registrationNumber', 'company.molEstablishmentNumber', 'company.unifiedNationalNumber', 'company.emailDomain', 'company.taxNumber'] as const;
 function keptFromBaseline(field: string, { body, baseline }: ValidationInput): boolean {
   if (!body.existingCompanyId || !baseline || !(LEGACY_FIELDS as readonly string[]).includes(field)) return false;
   const key = field.slice('company.'.length) as keyof CompanySetupCompany;
@@ -434,7 +483,7 @@ export function legacyWarnings(input: ValidationInput): FieldError[] {
   return validateStepRaw(2, input).filter(e => keptFromBaseline(e.field, input));
 }
 
-function validateStepRaw(step: StepId, { body, context, adminStepVisible = true }: ValidationInput): FieldError[] {
+function validateStepRaw(step: StepId, { body, context, adminStepVisible = true, today = new Date() }: ValidationInput): FieldError[] {
   const errors: FieldError[] = [];
   const c = body.company;
   const saudi = isSaudi(c.countryCode);
@@ -460,6 +509,17 @@ function validateStepRaw(step: StepId, { body, context, adminStepVisible = true 
         errors.push({ field: 'company.taxNumber', message: msg('A Saudi VAT number is 15 digits that start and end with 3. Leave it blank if the company is not registered for VAT.') });
       if (!isValidEmailDomain(c.emailDomain ?? '')) errors.push({ field: 'company.emailDomain', message: msg('Use a bare domain such as acme.sa, without "@" or "https://". Leave it blank if the company has none.') });
       if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(c.firstPayrollMonth ?? '')) errors.push({ field: 'company.firstPayrollMonth', message: msg('Choose a month, for example 2026-11.') });
+      else if (migrationModeOf(c) === 'switching') {
+        const [y, m] = c.firstPayrollMonth.split('-').map(Number);
+        const index = y * 12 + m;
+        const latest = today.getUTCFullYear() * 12 + today.getUTCMonth() + 1 + GO_LIVE_MAX_MONTHS_AHEAD; // UTC, like the server
+        if (c.firstPayrollMonth < GO_LIVE_EARLIEST) errors.push({ field: 'company.firstPayrollMonth', message: msg('Choose a go-live month from January 2015 onward.') });
+        else if (index > latest) errors.push({ field: 'company.firstPayrollMonth', message: msg('Choose a go-live month no more than 12 months from now.') });
+      }
+      if (migrationModeOf(c) === 'switching' && (c.previousSystem ?? '').length > PREVIOUS_SYSTEM_MAX)
+        errors.push({ field: 'company.previousSystem', message: msg('Use 120 characters or fewer for the previous system.') });
+      else if (migrationModeOf(c) === 'switching' && INVISIBLE_CONTROLS.test(c.previousSystem ?? ''))
+        errors.push({ field: 'company.previousSystem', message: msg('Remove the invisible direction or formatting characters from the previous system, then type it again.') });
       break;
     }
     case 3: {

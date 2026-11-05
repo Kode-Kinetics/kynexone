@@ -7,6 +7,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { usersApi, type PasswordResetLinkResult } from '../../api/identity';
 import { companySetupApi, type ReadinessItem } from '../../api/companySetup';
+import { readinessHref } from '../../lib/companySetupWizard';
 
 /** The permission POST /api/access/users/{id}/password-reset-link requires (AccessController's class-level gate). */
 const ISSUE_LINK_PERMISSION = 'security.manage';
@@ -63,8 +64,8 @@ export function CompanyReadinessList({ items, compact = false }: {
                   </div>
                   {item.status !== 'done' && !sendsLink && (
                     isNext
-                      ? <Link href={item.href} className="btn-primary max-w-full shrink-0 justify-center max-sm:w-full"><bdi className="truncate">{t('Next: {item}', { item: label(item) })}</bdi></Link>
-                      : <Link href={item.href} className="btn-secondary shrink-0">{t('Open')}<span className="sr-only"> {label(item)}</span></Link>
+                      ? <Link href={readinessHref(item)} className="btn-primary max-w-full shrink-0 justify-center max-sm:w-full"><bdi className="truncate">{t('Next: {item}', { item: label(item) })}</bdi></Link>
+                      : <Link href={readinessHref(item)} className="btn-secondary shrink-0">{t('Open')}<span className="sr-only"> {label(item)}</span></Link>
                   )}
                 </div>
                 {sendsLink && <SendSignInLink userId={item.userId!} href={item.href} />}
