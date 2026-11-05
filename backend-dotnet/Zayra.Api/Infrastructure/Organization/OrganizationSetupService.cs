@@ -309,7 +309,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(branch, request);
         _db.Branches.Add(branch);
         _audit.Stage("organization.branch_created", nameof(Branch), branch.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Branch", request.Code, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -331,7 +331,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         branch.UpdatedAtUtc = DateTime.UtcNow;
         branch.UpdatedBy = context.UserId;
         _audit.Stage("organization.branch_updated", nameof(Branch), branch.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Branch", request.Code, cancellationToken);
         return WithCompanyName(branch, await CompanyNamesAsync(tenantId, new[] { branch.CompanyId }, cancellationToken));
     }
 
@@ -363,7 +363,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         _db.Departments.Add(department);
         _audit.Stage("organization.department_created", nameof(Department), department.Id.ToString(), context with { TenantId = tenantId },
             DepartmentAuditJson(null, department, request.Reason), department.CompanyId);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Department", request.Code, cancellationToken);
         return department.ToDto();
     }
 
@@ -391,7 +391,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             CostAttributionAudit.Stage(_audit, context with { TenantId = tenantId }, nameof(Department), department.Id, department.CompanyId,
                 new { costCenterId = before.CostCenterId, parentDepartmentId = before.ParentDepartmentId },
                 new { costCenterId = department.CostCenterId, parentDepartmentId = department.ParentDepartmentId }, request.Reason);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Department", request.Code, cancellationToken);
         return department.ToDto();
     }
 
@@ -422,7 +422,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(designation, request);
         _db.Designations.Add(designation);
         _audit.Stage("organization.designation_created", nameof(Designation), designation.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
         return designation.ToDto();
     }
 
@@ -442,7 +442,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         designation.UpdatedAtUtc = DateTime.UtcNow;
         designation.UpdatedBy = context.UserId;
         _audit.Stage("organization.designation_updated", nameof(Designation), designation.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
         return designation.ToDto();
     }
 
@@ -472,7 +472,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (string.IsNullOrWhiteSpace(request.Currency)) grade.Currency = await CompanyCurrencyAsync(tenantId, companyId, cancellationToken) ?? grade.Currency;
         _db.Grades.Add(grade);
         _audit.Stage("organization.grade_created", nameof(Grade), grade.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Grade", request.Code, cancellationToken);
         return grade.ToDto();
     }
 
@@ -498,7 +498,7 @@ public class OrganizationSetupService : IOrganizationSetupService
             .Where(c => c.TenantId == tenantId && c.GradeId == grade.Id && c.IsActive).ToListAsync(cancellationToken);
         await GradeSalaryStructureSync.StageAsync(_db, grade, packageLines, context.UserId, createIfMissing: false, cancellationToken);
         _audit.Stage("organization.grade_updated", nameof(Grade), grade.Id.ToString(), context, null);
-        await _db.SaveChangesAsync(cancellationToken);
+        await SaveCodedRowAsync("Grade", request.Code, cancellationToken);
         return grade.ToDto();
     }
 
@@ -568,7 +568,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(costCenter, request);
         costCenter.FunctionalClass = functionalClass;
         costCenter.GlSegment = glSegment;
-        await ApplyParentAsync(tenantId, costCenter, request.ParentId, cancellationToken);
+        await ApplyParentAsync(tenantId, costCenter, request.ParentId, companyChanged: false, cancellationToken);
         _db.CostCenters.Add(costCenter);
         // The audit row is staged, not written: it commits in the same SaveChanges as the cost centre.
         _audit.Stage("organization.cost_center_created", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
@@ -596,9 +596,10 @@ public class OrganizationSetupService : IOrganizationSetupService
         if (classChanged && string.IsNullOrWhiteSpace(request.Reason)) throw CostCentreRuleException.ReasonRequired();
         var glSegment = NormalizeGlSegment(request.GlSegment, out var segmentGiven);
         if (segmentGiven && glSegment is not null && !CostCentreCode.IsValidGlSegment(glSegment)) throw CostCentreRuleException.GlSegmentInvalid();
+        var segmentChanged = segmentGiven && !string.Equals(glSegment ?? string.Empty, costCenter.GlSegment ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
-        // AM-9: a class or active-state change of a cost centre a pending run resolves to would change what that run posts.
-        if (classChanged || before.IsActive != request.IsActive)
+        // AM-9: a class, ERP segment or active-state change of a cost centre a pending run resolves to would change what that run posts.
+        if (classChanged || segmentChanged || before.IsActive != request.IsActive)
             await new CostAttributionGuard(_db).EnsureCostCentreUnchangedAsync(tenantId, costCenter.CompanyId, id, cancellationToken);
 
         // M-9: once a posted line carries the cost centre, its code and company are frozen (the line holds a snapshot of both).
@@ -608,7 +609,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         // The setup rule for every organisation row: a code that anything points at (not only a posted line) is not re-typed.
         if (codeChanged) await EnsureCodeUnlockedAsync(OrgRowKind.CostCenter, tenantId, id, costCenter.Code, request.Code, context, cancellationToken);
         if (codeChanged) await EnsureCostCenterCodeUnique(tenantId, request.CompanyId, request.Code, id, cancellationToken);
-        if (segmentGiven && glSegment is not null && !string.Equals(glSegment, costCenter.GlSegment, StringComparison.OrdinalIgnoreCase))
+        if (segmentChanged && glSegment is not null)
             await EnsureGlSegmentUnique(tenantId, request.CompanyId, glSegment, id, cancellationToken);
         if ((before.IsActive && !request.IsActive) || companyChanged)
             await EnsureNotInUseAsync(tenantId, costCenter, cancellationToken);
@@ -617,8 +618,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         Apply(costCenter, request);
         if (!codeChanged) costCenter.Code = keepCode;
         if (classGiven) costCenter.FunctionalClass = functionalClass;
-        if (segmentGiven) costCenter.GlSegment = glSegment;
-        await ApplyParentAsync(tenantId, costCenter, request.ParentId, cancellationToken);
+        if (segmentChanged) costCenter.GlSegment = glSegment;
+        await ApplyParentAsync(tenantId, costCenter, request.ParentId, companyChanged, cancellationToken);
         costCenter.UpdatedAtUtc = DateTime.UtcNow;
         costCenter.UpdatedBy = context.UserId;
         _audit.Stage("organization.cost_center_updated", nameof(CostCenter), costCenter.Id.ToString(), context with { TenantId = tenantId },
@@ -680,9 +681,18 @@ public class OrganizationSetupService : IOrganizationSetupService
     }
 
     /// <summary>Sets the parent (null = unchanged, Guid.Empty = clear) after the reference and tree rules: same company, active when new, no loop, at most ten levels.</summary>
-    private async Task ApplyParentAsync(Guid tenantId, CostCenter costCenter, Guid? requestedParent, CancellationToken cancellationToken)
+    private async Task ApplyParentAsync(Guid tenantId, CostCenter costCenter, Guid? requestedParent, bool companyChanged, CancellationToken cancellationToken)
     {
-        if (requestedParent is null || requestedParent == costCenter.ParentId) return;
+        if (requestedParent is null || requestedParent == costCenter.ParentId)
+        {
+            // A move to another company keeps the parent unless the request says otherwise: it must still be a cost centre of the (new) company.
+            if (companyChanged && costCenter.ParentId is Guid kept)
+            {
+                var stillValid = await new CostCentreRefValidator(_db).ValidateAsync(tenantId, costCenter.CompanyId, kept, forNewAssignment: false, cancellationToken);
+                if (!stillValid.IsValid) throw CostCentreRuleException.Parent(stillValid.Code!, stillValid.Message!);
+            }
+            return;
+        }
         if (requestedParent == Guid.Empty) { costCenter.ParentId = null; return; }
 
         var parentId = requestedParent.Value;
@@ -950,7 +960,9 @@ public class OrganizationSetupService : IOrganizationSetupService
         costCenter.CompanyId = request.CompanyId;
         costCenter.Code = OrgCodes.Normalize(request.Code);
         costCenter.Name = Zayra.Api.Application.Organization.CostCentreText.Normalise(request.Name);
-        costCenter.NameAr = Zayra.Api.Application.Organization.CostCentreText.Normalise(request.NameAr) is { Length: > 0 } nameAr ? nameAr : null;
+        // Null = the request did not mention the Arabic name (a CSV row without the column), so a stored one is kept; empty clears it.
+        if (request.NameAr is not null)
+            costCenter.NameAr = Zayra.Api.Application.Organization.CostCentreText.Normalise(request.NameAr) is { Length: > 0 } nameAr ? nameAr : null;
         costCenter.IsActive = request.IsActive;
     }
 
@@ -1184,6 +1196,17 @@ public class OrganizationSetupService : IOrganizationSetupService
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(cancellationToken);
         if (holder is not null) throw new CompanyRegistrationNumberTakenException(holder.Value);
+    }
+
+    /// <summary>Saves a branch, department, designation or grade. Two writers can both pass the duplicate pre-check; the unique
+    /// index then refuses the loser, and that refusal is a 409 the caller can read, not an unhandled database error.</summary>
+    private async Task SaveCodedRowAsync(string entity, string code, CancellationToken ct)
+    {
+        try { await _db.SaveChangesAsync(ct); }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            throw new OrgCodeConflictException(entity, OrgCodes.Normalize(code));
+        }
     }
 
     private async Task EnsureBranchCodeUnique(Guid tenantId, Guid companyId, string code, Guid? excludedId, CancellationToken cancellationToken)

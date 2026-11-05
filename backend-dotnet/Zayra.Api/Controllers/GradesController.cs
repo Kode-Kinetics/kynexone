@@ -359,6 +359,8 @@ public class GradesController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
+        // A company-scoped caller reads the components of a company they hold; any other company reads as not found.
+        if (companyId is not null && !OrgWriteRules.MayWriteCompany(this, companyId)) return NotFound();
         return Ok(await GradePackageCatalog.OptionsAsync(_db, tenantId.Value, companyId, ct));
     }
 

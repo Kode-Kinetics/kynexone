@@ -70,7 +70,8 @@ public sealed class ImportTemplateShapeTests
                         && typeof(ControllerBase).IsAssignableFrom(t))
             .SelectMany(t => t
                 .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                .Where(m => m.GetParameters().Length == 0)
+                // Parameterless, or taking only an optional CancellationToken (the audited department and cost-centre downloads are async).
+                .Where(m => m.GetParameters().All(p => p.ParameterType == typeof(CancellationToken) && p.IsOptional))
                 .SelectMany(m => m.GetCustomAttributes<HttpGetAttribute>()
                     .Select(a => a.Template)
                     .Where(IsTemplateRoute)
@@ -98,7 +99,14 @@ public sealed class ImportTemplateShapeTests
         object? result;
         try
         {
-            result = endpoint.Action.Invoke(controller, null);
+            var args = endpoint.Action.GetParameters().Select(p => p.DefaultValue is DBNull or null ? default(CancellationToken) : p.DefaultValue).ToArray();
+            result = endpoint.Action.Invoke(controller, args.Length == 0 ? null : args);
+            // An async action: the controller was built without its services, so the audit step is skipped and only the file is produced.
+            if (result is Task task)
+            {
+                task.GetAwaiter().GetResult();
+                result = task.GetType().GetProperty("Result")?.GetValue(task);
+            }
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
