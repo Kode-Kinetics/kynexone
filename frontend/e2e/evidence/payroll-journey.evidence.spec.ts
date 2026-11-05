@@ -78,6 +78,10 @@ const WARNING_EXPLANATIONS: Record<string, string> = {
     + 'tenant has only just been provisioned and there are no prior periods to look back at. On a '
     + 'tenant with history this warning would mean something; on a fresh one it states a fact about '
     + 'the fixture, not about the run.',
+  WARN_NO_HOLIDAY_CALENDAR:
+    'The company has entered no public holiday inside the run\'s period, and the fixture world seeds none for a '
+    + 'future month, so an unpunched holiday would count as an absence. It is advisory and does not change any '
+    + 'figure this story reconciles.',
   WARN_GOSI_RATES_REQUIRE_SIGNOFF:
     'The GOSI contribution rates in force have not been counter-signed by a compliance officer for '
     + 'this tenant. It is advisory: the rates applied are the statutory defaults, and the sign-off is '
@@ -791,6 +795,10 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           const card = runCard(finance.page, period);
           await expect(card).toBeVisible({ timeout: 60_000 });
           await card.getByRole('button', { name: 'Lock' }).click();
+          // Locking is confirmed in the app's dialog, after the approver has read the summary of what is being frozen.
+          const lockDialog = finance.page.getByRole('dialog');
+          await expect(lockDialog.getByTestId('lock-summary'), 'the lock summary must be shown before anything is locked').toBeVisible();
+          await lockDialog.getByRole('button', { name: 'Lock run' }).click();
           await expect(card, 'locking must move the run to Locked').toContainText('Locked', { timeout: 180_000 });
           for (const name of ['Lock', 'Process']) {
             await expect(
