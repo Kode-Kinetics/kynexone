@@ -36,14 +36,26 @@ public static class CompanySetupBaseline
     public static Dictionary<string, string?> Company(Company c, CompanyCutover? cutover) => CompanyFields(
         c.LegalNameEn, c.LegalNameAr, c.TradeName, c.RegistrationNumber, c.WpsEmployerId, c.GosiEmployerId, c.UnifiedNationalNumber,
         c.TaxNumber, c.QiwaEstablishmentId, c.EmailDomain, c.WorkEmailPattern, c.ErpCompanyCode,
-        cutover?.CutoverDate.ToString("yyyy-MM", CultureInfo.InvariantCulture));
+        cutover?.CutoverDate.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+        MigrationModeOf(cutover), Text(cutover?.SourceSystem));
+
+    /// <summary>"switching" when the company's cutover governs payroll (any status but Planned); otherwise "new". A source system
+    /// alone does not make a Planned cutover switching. The one derivation the prefill, the baseline and the readiness checklist share.</summary>
+    public static string MigrationModeOf(CompanyCutover? cutover) =>
+        cutover is not null && CutoverStatuses.Governs(cutover.Status)
+            ? CompanySetupVocabulary.MigrationSwitching : CompanySetupVocabulary.MigrationNew;
+
+    /// <summary>The previous system as the prefill shows it: the cutover's source system, null when empty.</summary>
+    public static string? PreviousSystemOf(CompanyCutover? cutover) => Text(cutover?.SourceSystem);
 
     public static Dictionary<string, string?> Company(CompanySetupCompany c) => CompanyFields(
         c.LegalNameEn, c.LegalNameAr, c.TradeName, c.RegistrationNumber, c.MolEstablishmentNumber, c.GosiEmployerId, c.UnifiedNationalNumber,
-        c.TaxNumber, c.QiwaEstablishmentId, c.EmailDomain, c.WorkEmailPattern, c.ErpCompanyCode, c.FirstPayrollMonth);
+        c.TaxNumber, c.QiwaEstablishmentId, c.EmailDomain, c.WorkEmailPattern, c.ErpCompanyCode, c.FirstPayrollMonth,
+        Text(c.MigrationMode), Text(c.PreviousSystem));
 
     private static Dictionary<string, string?> CompanyFields(string? legalNameEn, string? legalNameAr, string? tradeName, string? registration,
-        string? mol, string? gosi, string? unified, string? tax, string? qiwa, string? emailDomain, string? workEmailPattern, string? erp, string? month) =>
+        string? mol, string? gosi, string? unified, string? tax, string? qiwa, string? emailDomain, string? workEmailPattern, string? erp, string? month,
+        string? migrationMode, string? previousSystem) =>
         new(StringComparer.Ordinal)
         {
             ["legalNameEn"] = Text(legalNameEn),
@@ -59,6 +71,8 @@ public static class CompanySetupBaseline
             ["workEmailPattern"] = Text(WorkEmailPatterns.Normalize(workEmailPattern)),
             ["erpCompanyCode"] = Text(erp),
             ["firstPayrollMonth"] = Text(month),
+            ["migrationMode"] = Text(migrationMode),
+            ["previousSystem"] = Text(previousSystem),
         };
 
     // ── Branches, locations, cost centres (steps 3–4) ───────────────────────────────────────────────
@@ -98,7 +112,10 @@ public static class CompanySetupBaseline
 
     /// <summary>Keys a baseline may lack because the value did not exist when it was taken: the cost centre's Arabic name
     /// (stored only since Addendum B — before it the column did not exist, so the value read then was empty).</summary>
-    public static bool AbsentMeansEmpty(string area, string key) => area == "costCentre" && key == "nameAr";
+    public static bool AbsentMeansEmpty(string area, string key) =>
+        (area == "costCentre" && key == "nameAr")
+        // A draft started before the go-live fields existed carries no baseline for them: absent = the caller never touched them.
+        || (area == "company" && key is "migrationMode" or "previousSystem");
 
     // ── Departments, designations, grades (step 4; Addendum B: owned by one company) ─────────────────
 
@@ -219,6 +236,8 @@ public static class CompanySetupBaseline
         "taxNumber" => ("VAT number", "الرقم الضريبي"),
         "qiwaEstablishmentId" => ("Qiwa establishment id", "رقم المنشأة في قوى"),
         "emailDomain" => ("email domain", "نطاق البريد الإلكتروني"),
+        "migrationMode" => ("migration mode", "وضع الانتقال"),
+        "previousSystem" => ("previous system", "النظام السابق"),
         "workEmailPattern" => ("work-email pattern", "نمط البريد الإلكتروني للعمل"),
         "erpCompanyCode" => ("ERP company code", "رمز الشركة في نظام تخطيط الموارد"),
         "firstPayrollMonth" => ("first payroll month", "أول شهر للرواتب"),
