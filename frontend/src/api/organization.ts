@@ -1,5 +1,6 @@
 import client from './client';
 import { fetchAllPages } from '../lib/paging';
+import type { OrgRowRemoval } from './orgRows';
 
 export interface PagedResult<T> {
   items: T[];
@@ -458,7 +459,9 @@ export const costCentersApi = {
   update: (id: string, data: CostCenterRequest) =>
     client.put<CostCenterDto>(`/api/cost-centers/${id}`, data).then((r) => r.data),
   /** A delete needs a reason (recorded in the audit log); DELETE has no body, so it rides the query string. */
-  remove: (id: string, reason?: string) => client.delete(`/api/cost-centers/${id}`, { params: reason?.trim() ? { reason: reason.trim() } : undefined }),
+  remove: (id: string, reason?: string) => client.delete<OrgRowRemoval>(`/api/cost-centers/${id}`, { params: reason?.trim() ? { reason: reason.trim() } : undefined }).then((r) => r.data),
+  /** Switches a turned-off cost centre back on. The server runs the pending-payroll-run guard and may answer 409 locked_into_approved_run. */
+  restore: (id: string) => client.post<{ outcome: 'restored'; message: string }>(`/api/cost-centers/${id}/restore`).then((r) => r.data),
   export: () => client.get<string>('/api/cost-centers/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/cost-centers/import-template', { responseType: 'text' }).then((r) => r.data),
   /** companyId: the company the file's cost centres belong to (cost-centre codes are per company). */
