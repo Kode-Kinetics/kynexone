@@ -5,6 +5,7 @@ import { Search, X } from 'lucide-react';
 import { employeesApi } from '../../api/employees';
 import type { EmployeeListItem } from '../../api/employees';
 import { departmentsApi } from '../../api/organization';
+import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { createLatestRequestGate, runLatest } from '../../lib/latestRequest';
 import {
@@ -29,15 +30,23 @@ interface Props {
   /** Most people the receiving endpoint accepts in one request. */
   max: number;
   disabled?: boolean;
+  /** Height cap of the results list (Tailwind max-h class); compact layouts pass a smaller one. */
+  listMaxHeightClass?: string;
 }
 
 /**
- * Pick many Active employees: server search by name or code (debounced, latest answer wins), an optional
+ * Pick many Active employees: server "360" search (debounced, latest answer wins) over code, names, work email, job title,
+ * department and branch, plus phone, personal email and the exact ID/Iqama number for employees.sensitive holders, an optional
  * department filter, "select all shown", and a running count. The selection is held by the parent and is
  * independent of the visible results, so it survives new searches and filter changes.
  */
-export function EmployeeMultiSelect({ id, label, selection, onChange, max, disabled }: Props) {
+export function EmployeeMultiSelect({ id, label, selection, onChange, max, disabled, listMaxHeightClass = 'max-h-56' }: Props) {
   const { t, locale } = useLocale();
+  const { hasPermission } = useAuth();
+  // The server matches phone, personal email and ID only for employees.sensitive; the hint says what this user can search.
+  const searchHint = hasPermission('employees.sensitive')
+    ? t('Name, code, email, phone, ID/Iqama, job title, department or branch')
+    : t('Name, code, email, job title, department or branch');
   const [query, setQuery] = useState('');
   const [department, setDepartment] = useState('');
   const [results, setResults] = useState<EmployeeListItem[]>([]);
@@ -105,7 +114,7 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
           <div className="relative">
             <Search className="pointer-events-none absolute start-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <input id={`${id}-search`} type="search" className="input w-full ps-8" autoComplete="off" value={query}
-              placeholder={t('Search by name or employee code')} onChange={(e) => setQuery(e.target.value)}
+              placeholder={searchHint} title={searchHint} onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
           </div>
         </div>
@@ -132,14 +141,14 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
       {atCap && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">{t('You can select at most {max} employees at once.', { max })}</p>}
 
       <ul aria-label={t('Employees matching your search')} aria-busy={loading}
-        className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10">
+        className={`${listMaxHeightClass} divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10`}>
         {shown.map((e) => (
           <li key={e.id}>
             <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/[0.03]">
               <input type="checkbox" checked={selection.has(e.id)} onChange={() => toggle(e)} />
               <span className="font-mono text-xs text-slate-500">{e.employeeCode}</span>
               <span className="min-w-0 flex-1 truncate text-slate-800 dark:text-slate-100">{nameOf(e)}</span>
-              <span className="truncate text-xs text-slate-400">{e.department}</span>
+              <span className="max-w-[45%] truncate text-xs text-slate-400">{[e.designation, e.department].filter(Boolean).join(' · ')}</span>
             </label>
           </li>
         ))}

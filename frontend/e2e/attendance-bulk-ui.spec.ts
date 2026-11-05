@@ -1,7 +1,8 @@
 /**
  * ATTENDANCE BULK OPERATIONS — the screen, driven as the IntelliFlow HR Manager against the real API.
  *
- *   /attendance → Raw Punch Logs:  Download template · paste a CSV · Validate · "Import N valid rows (skip M)" · Mass entry
+ *   /attendance → Raw Punch Logs:  Download template · paste a CSV · Validate · "Import N valid rows (skip M)"
+ *   /attendance → Live Dashboard:  Record attendance → Several employees → progress (% and who is recorded) → Process now → daily records
  *   /attendance → Processing:      All employees → Process Records → progress → completion (a background job)
  *   …and one Arabic / right-to-left smoke over all three panels.
  *
@@ -149,51 +150,70 @@ test.describe('Attendance bulk operations — screen', () => {
     await expect(m.getByText(en('Valid: {count}', { count: 0 }), { exact: true })).toBeVisible();
   });
 
-  test('Mass entry: Enter in the search box sends nothing; two employees x two days records 8 punches and says so', async ({ page }) => {
+  test('Live Dashboard mass entry: Enter sends nothing; 2 employees x 2 days shows live progress, who is recorded, then Process now fills the daily records', async ({ page }) => {
     const [e1, e2] = pools.uiMass;
     const bulkRequests: string[] = [];
-    page.on('request', (r: Request) => { if (r.method() === 'POST' && r.url().includes('/api/attendance/events/bulk-entry')) bulkRequests.push(r.url()); });
+    page.on('request', (r: Request) => { if (r.method() === 'POST' && r.url().includes('/api/attendance/events/bulk-entry')) bulkRequests.push(r.postData() ?? ''); });
+    const processRequests: string[] = [];
+    page.on('request', (r: Request) => { if (r.method() === 'POST' && r.url().includes('/api/attendance/process/async')) processRequests.push(r.postData() ?? ''); });
 
-    await openAttendance(page, en('Raw Punch Logs'));
+    await openAttendance(page, en('Live Dashboard'));
     const m = main(page);
-    await m.getByRole('button', { name: en('Open mass entry') }).click();
+    const panel = m.getByRole('region', { name: en('Record attendance') });
+    await expect(panel, 'record attendance is on the first screen').toBeVisible();
+    await panel.getByRole('button', { name: en('Several employees') }).click();
+    await expect(panel.getByRole('button', { name: en('Several employees') })).toHaveAttribute('aria-pressed', 'true');
 
-    // Search, then press Enter in the search box: this must never submit anything.
-    const search = m.getByLabel(en('Find employees'), { exact: true });
-    await search.fill(e1.code);
-    const first = m.getByRole('checkbox', { name: codePattern(e1.code) });
-    await expect(first).toBeVisible();
+    // 360 search: the hint names what an HR Manager (employees.sensitive) can search by.
+    const search = panel.getByLabel(en('Find employees'), { exact: true });
+    await expect(search).toHaveAttribute('placeholder', en('Name, code, email, phone, ID/Iqama, job title, department or branch'));
+    await search.fill(e1.code.toLowerCase());
+    const first = panel.getByRole('checkbox', { name: codePattern(e1.code) });
+    await expect(first, 'search is case-insensitive').toBeVisible();
     await search.press('Enter');
     await page.waitForTimeout(1_000);
     expect(bulkRequests, 'Enter in the search box sent a mass entry').toEqual([]);
-    await expect(m.getByText(/^Requested \d+:/)).toHaveCount(0);
 
     // Select two employees across two searches (the selection survives a new search).
     await first.check();
     await search.fill(e2.code);
-    const second = m.getByRole('checkbox', { name: codePattern(e2.code) });
+    const second = panel.getByRole('checkbox', { name: codePattern(e2.code) });
     await expect(second).toBeVisible();
     await second.check();
-    await expect(m.getByRole('status').filter({ hasText: en(SELECTED_KEY, { count: 2 }) })).toBeVisible();
+    await expect(panel.getByRole('status').filter({ hasText: en(SELECTED_KEY, { count: 2 }) })).toBeVisible();
 
-    // Fill the form: two past days, In and Out, a reason.
-    await m.getByLabel(en('From date')).fill(massDays[0]);
-    await m.getByLabel(en('To date')).fill(massDays[1]);
-    await m.getByLabel(en('In time')).fill(`09:${mm}`);
-    await m.getByLabel(en('Out time (optional)')).fill(`14:${mm}`);
-    const submit = m.getByRole('button', { name: en(SUBMIT_KEY, { employees: 2, days: 2 }) });
+    // Two past days, In and Out, a reason (Enter in the reason box sends nothing either).
+    await panel.getByLabel(en('From date')).fill(massDays[0]);
+    await panel.getByLabel(en('To date')).fill(massDays[1]);
+    await panel.getByLabel(en('In time')).fill(`09:${mm}`);
+    await panel.getByLabel(en('Out time (optional)')).fill(`14:${mm}`);
+    const submit = panel.getByRole('button', { name: en(SUBMIT_KEY, { employees: 2, days: 2 }) });
     await expect(submit, 'a reason is required before anything can be recorded').toBeDisabled();
-    await m.getByLabel(en('Reason (required)')).fill(`E2E mass entry ${Date.now()}`);
-    await expect(m.getByText(en(SUMMARY_KEY, { employees: 2, days: 2 }), { exact: true })).toBeVisible();
+    const reason = panel.getByLabel(en('Reason (required)'));
+    await reason.fill(`E2E mass entry ${Date.now()}`);
+    await reason.press('Enter');
+    await page.waitForTimeout(500);
+    expect(bulkRequests, 'Enter in the reason box sent a mass entry').toEqual([]);
     await expect(submit).toBeEnabled();
-    expect(bulkRequests).toEqual([]);
 
     const before = (await Promise.all([e1, e2].map((e) => rawPunches(api, admin, e.id, massDays[0])))).flat().length;
     await submit.click();
-    await expect(m.getByText(en('Requested {requested}: {created} recorded, {duplicates} already recorded, {failed} refused.', { requested: 8, created: 8, duplicates: 0, failed: 0 }))).toBeVisible({ timeout: 30_000 });
-    expect(bulkRequests).toHaveLength(1);
 
-    // The API holds the 8 new punches (4 on each of the two days), and the raw log shows the first day's.
+    // Progress: a bar with %, then the finished line, the counts, and each person marked Recorded.
+    const progress = panel.getByRole('progressbar', { name: en('Mass entry progress') });
+    await expect(progress).toBeVisible();
+    await expect(progress).toHaveAttribute('aria-valuenow', '100', { timeout: 30_000 });
+    await expect(panel.getByRole('status').filter({ hasText: en('Finished: {done} of {total} employees recorded.', { done: 2, total: 2 }) })).toBeVisible();
+    await expect(panel.getByText(en('{created} punches recorded, {duplicates} already on file, {refused} refused.', { created: 8, duplicates: 0, refused: 0 }))).toBeVisible();
+    const people = panel.getByRole('list', { name: en('Employees in this entry') });
+    for (const e of [e1, e2]) {
+      await expect(people.getByRole('listitem').filter({ hasText: codePattern(e.code) }).getByText(en('Recorded'), { exact: true })).toBeVisible();
+    }
+    expect(bulkRequests, 'two people go one request each, so the bar moves per person').toHaveLength(2);
+    expect(bulkRequests.map((b) => (JSON.parse(b) as { employeeIds: number[] }).employeeIds).flat().sort((a, b) => a - b))
+      .toEqual([e1.id, e2.id].sort((a, b) => a - b));
+
+    // The API holds the 8 new punches (In and Out on each of the two days, for each person).
     for (const e of [e1, e2]) {
       for (const day of massDays) {
         const bulk = (await rawPunches(api, admin, e.id, day)).filter((p) => p.source === 'Manual (bulk)' && p.punchTimestampUtc.slice(0, 10) === day);
@@ -201,10 +221,23 @@ test.describe('Attendance bulk operations — screen', () => {
       }
     }
     expect((await Promise.all([e1, e2].map((e) => rawPunches(api, admin, e.id, massDays[0])))).flat().length - before).toBe(4);
-    await showRawLogFor(page, massDays[0]);
+
+    // Process now: one job for exactly these two people and days, with its own % progress, then the daily records show them.
+    await panel.getByRole('button', { name: en('Process {count, plural, one {# employee} other {# employees}} now', { count: 2 }) }).click();
+    await expect(panel.getByRole('status').filter({ hasText: en('Attendance processed for {employees, plural, one {# employee} other {# employees}}.', { employees: 2 }) }))
+      .toBeVisible({ timeout: 150_000 });
+    expect(processRequests).toHaveLength(1);
+    const asked = JSON.parse(processRequests[0]) as { fromDate: string; toDate: string; employeeIds: number[] };
+    expect({ ...asked, employeeIds: [...asked.employeeIds].sort((a, b) => a - b) })
+      .toEqual({ fromDate: massDays[0], toDate: massDays[1], employeeIds: [e1.id, e2.id].sort((a, b) => a - b) });
+    await m.getByLabel(en('Attendance date')).fill(massDays[0]);
     for (const e of [e1, e2]) {
-      await expect(m.getByRole('row').filter({ hasText: codePattern(e.code) }).filter({ hasText: 'Manual (bulk)' })).toHaveCount(2);
+      await expect(m.getByRole('row').filter({ hasText: codePattern(e.code) }).first(), `${e.code} in the dashboard's daily records`).toBeVisible({ timeout: 30_000 });
     }
+
+    // New entry clears the progress view for the next one.
+    await panel.getByRole('button', { name: en('New entry') }).click();
+    await expect(progress).toHaveCount(0);
   });
 
   test('Processing: All employees runs as a job with progress, completes, and is never a 403', async ({ page }) => {
@@ -253,7 +286,7 @@ test.describe('Attendance bulk operations — screen', () => {
     const m = main(page);
 
     // The titles the feature added, in each language: present in Arabic, absent in English.
-    const newTitles = ['CSV Attendance Import', 'Mass entry', 'Open mass entry', 'Validate file', 'Download template'];
+    const newTitles = ['CSV Attendance Import', 'Validate file', 'Download template'];
     const rawTab = m.getByRole('tab', { name: ar('Raw Punch Logs'), exact: true });
     await expect(rawTab).toBeVisible({ timeout: 60_000 });
     await rawTab.click();
@@ -262,15 +295,20 @@ test.describe('Attendance bulk operations — screen', () => {
     await expect(m.getByRole('button', { name: ar('Download template') })).toBeVisible();
     await expect(m.getByRole('button', { name: ar('Validate file'), exact: true })).toBeVisible();
     await expect(m.getByLabel(ar('CSV content'))).toBeVisible();
-    await expect(m.getByText(ar('Mass entry'), { exact: true }).first()).toBeVisible();
-    await expect(m.getByRole('button', { name: ar('Open mass entry') })).toBeVisible();
     for (const title of newTitles) {
       expect(ar(title), `the Arabic dictionary has "${title}"`).not.toBe(title);
       await expect(m.getByText(title, { exact: true }), `English "${title}" is still on screen`).toHaveCount(0);
     }
 
-    // Opened, the mass-entry form and its multi-select are translated too.
-    await m.getByRole('button', { name: ar('Open mass entry') }).click();
+    // The Live Dashboard's record panel, switched to several employees: the form and its multi-select are translated too.
+    const dashboardTab = m.getByRole('tab', { name: ar('Live Dashboard'), exact: true });
+    await dashboardTab.click();
+    await expect(m.getByRole('region', { name: ar('Record attendance') })).toBeVisible();
+    await m.getByRole('button', { name: ar('Several employees') }).click();
+    for (const title of ['Record attendance', 'One employee', 'Several employees']) {
+      expect(ar(title), `the Arabic dictionary has "${title}"`).not.toBe(title);
+      await expect(m.getByText(title, { exact: true }), `English "${title}" is still on screen`).toHaveCount(0);
+    }
     await expect(m.getByText(ar('Employees to include'), { exact: true })).toBeVisible();
     await expect(m.getByLabel(ar('Find employees'), { exact: true })).toBeVisible();
     await expect(m.getByRole('button', { name: ar('Select all shown') })).toBeVisible();
