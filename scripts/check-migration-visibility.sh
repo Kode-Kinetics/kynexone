@@ -81,8 +81,9 @@ fi
 # Left unset (local use) it still builds, so it can never read a stale assembly.
 ef_build_flag=()
 if [ "${MIGRATION_VISIBILITY_NO_BUILD:-}" = "1" ]; then ef_build_flag=(--no-build); fi
+ef_configuration="${MIGRATION_VISIBILITY_CONFIGURATION:-Debug}"
 if ! dotnet tool run dotnet-ef migrations list --no-connect ${ef_build_flag[@]+"${ef_build_flag[@]}"} \
-     --project "$PROJECT" --context ZayraDbContext \
+     --configuration "$ef_configuration" --project "$PROJECT" --context ZayraDbContext \
      > "$workdir/ef-raw.txt" 2> "$workdir/ef-err.txt"; then
   echo "::error::check-migration-visibility: 'dotnet ef migrations list' failed. Output:" >&2
   # dotnet-ef writes its own diagnostics to stdout, not stderr — print both or lose the reason.
