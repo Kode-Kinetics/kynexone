@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { pickable } from '../lib/pickable';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
@@ -28,7 +29,7 @@ import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
-import { createCostCentreFields, createNeedsReason } from '../lib/employeeCostCentre';
+import { costCentreRefusalKey, createCostCentreFields, createNeedsReason } from '../lib/employeeCostCentre';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
@@ -435,6 +436,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [editOriginal, setEditOriginal] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
   const [editNotice, setEditNotice] = useState('');
+  const [editCostCentreRefused, setEditCostCentreRefused] = useState(false);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentType, setDocumentType] = useState('Passport');
   const [documentExpiry, setDocumentExpiry] = useState('');
@@ -1874,6 +1876,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     }
     setEditSaving(true);
     setEditNotice('');
+    setEditCostCentreRefused(false);
     setActionNotice('');
     try {
       const effectiveDate = salaryPackageChanged ? editSalaryEffectiveDate : new Date().toISOString().slice(0, 10);
@@ -1906,6 +1909,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       const emailProblem = workEmailProblemKey(workEmailErrorCode(e));
       if (emailProblem) { setEditNotice(t(emailProblem)); return; }
+      // Wave A: a department change for someone with a cost-centre override needs keep-or-follow, which only Edit employee asks.
+      const costCentreKey = costCentreRefusalKey(e);
+      if (costCentreKey) {
+        setEditNotice(t(costCentreKey));
+        setEditCostCentreRefused(true);
+        return;
+      }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
       const detailMsg = data?.message ?? (data?.errors ? Object.entries(data.errors).map(([f, m]) => `${f}: ${m.join(' ')}`).join(' · ') : '');
       setEditNotice(detailMsg ? `Could not save — ${detailMsg}` : 'Could not save the changes. Please review the values and try again.');
@@ -2519,6 +2529,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {unavailableEditKeys.length > 0 && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{unavailableEditNotice}</p>}
           {editNotice && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{editNotice}</p>}
+          {editNotice && editCostCentreRefused && editEmployeeId && (
+            <p data-testid="legacy-edit-cost-centre-link" className="rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700 dark:bg-white/5 dark:text-slate-200">
+              {t('Changing the department of someone with a cost centre override needs a decision. Open Edit employee to choose.')}{' '}
+              <Link href={employeeWorkspaceHref(editEmployeeId, { edit: true, section: 'employment' })} className="font-semibold text-sapphire underline">{t('Open Edit employee')}</Link>
+            </p>
+          )}
           {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => (
             <EmployeeCreatePanel key={step.label} steps={employeeWindowSteps} step={index} activeStep={editStep}>
               {index === 1 && <dl className="mb-5 grid gap-3 border-b border-slate-100 pb-4 text-sm sm:grid-cols-2 dark:border-white/10">

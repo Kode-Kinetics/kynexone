@@ -1,11 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // Cost accounting v1 (WP-F phase 2): the employee's cost-centre field, its override dialogs, and every employee
-// form that writes a cost centre (AM-30). Every API request is intercepted; this suite never touches a real tenant.
+// form that writes a cost centre (AM-30), and the cost centre in Edit employee on a transfer (Wave A,
+// employee-edit-cost-centre.spec.ts). Every API request is intercepted; this suite never touches a real tenant.
 // Start a dev server separately (e.g. `npx next dev -p 5197`).
 export default defineConfig({
   testDir: '.',
-  testMatch: /cost-centre-employee\.spec\.ts/,
+  testMatch: /(cost-centre-employee|employee-edit-cost-centre)\.spec\.ts/,
   workers: 1,
   retries: 0,
   forbidOnly: !!process.env.CI,

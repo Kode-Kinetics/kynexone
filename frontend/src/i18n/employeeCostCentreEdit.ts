@@ -33,7 +33,7 @@ const ar: Record<string, string> = {
   'Changing the department moves the cost centre, so only HR managers and admins can change it.': 'تغيير القسم ينقل مركز التكلفة، لذا يقتصر تغييره على مديري الموارد البشرية ومسؤولي النظام.',
 
   // ── Keep or follow (an override meets a department change) ──
-  'This employee has a cost centre override. After the move:': 'لهذا الموظف مركز تكلفة استثنائي. بعد النقل:',
+  'This employee has a cost centre override. What happens to it after the move?': 'لهذا الموظف مركز تكلفة استثنائي. ماذا يحدث له بعد النقل؟',
   'Keep {code} (override)': 'الإبقاء على {code} (استثناء)',
   'Follow {department} → {code}': 'اتباع {department} ← {code}',
   'Follow {department} (no cost centre)': 'اتباع {department} (بلا مركز تكلفة)',
@@ -43,7 +43,7 @@ const ar: Record<string, string> = {
   'From {from} to {to}. Reason: {reason}': 'من {from} إلى {to}. السبب: {reason}',
   'Keeps {code} (override). Reason: {reason}': 'يبقى {code} (استثناء). السبب: {reason}',
   'Follows {department}: {code}. Reason: {reason}': 'يتبع {department}: {code}. السبب: {reason}',
-  'Follows the department': 'يتبع القسم',
+  'Follows {department}: {code}': 'يتبع {department}: {code}',
 
   // ── Refusals, in words, by code ──
   'This cost centre is inactive. Choose an active one.': 'مركز التكلفة هذا غير نشط. اختر مركزًا نشطًا.',

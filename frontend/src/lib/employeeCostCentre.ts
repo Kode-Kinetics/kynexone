@@ -247,6 +247,11 @@ export interface EditCostCentrePatch {
   expectedCostCenterOverrideId?: string | null;
 }
 
+/** The code an edit patch sends ('' removes the override), or undefined when it sends none. */
+export function patchCostCentreCode(patch: EditCostCentrePatch): string | undefined {
+  return patch.changes ? patch.changes.costCenter : undefined;
+}
+
 /** What the dropdown amounts to: no change, follow (remove any override), or a specific cost centre. */
 function editIntent(input: EditCostCentreInput): { kind: 'none' } | { kind: 'follow' } | { kind: 'pick'; id: string } {
   const { choice } = input;
