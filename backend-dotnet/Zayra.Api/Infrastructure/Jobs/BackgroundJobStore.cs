@@ -142,6 +142,11 @@ public sealed class BackgroundJobStore
         {
             return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
+                // The strategy re-runs this delegate on the SAME context after a transient failure. A job staged by the
+                // failed attempt is still tracked as Added; admitting again would stage a second row with the same
+                // idempotency key and trip the unique index. Drop the previous attempt's staged job first.
+                foreach (var staged in _db.ChangeTracker.Entries<BackgroundJob>().Where(e => e.State == EntityState.Added).ToList())
+                    staged.State = EntityState.Detached;
                 await using var tx = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
                 await TakeAdmissionLockAsync(lockKey, ct);
                 var admitted = await AdmitAsync(insideLock: true);
