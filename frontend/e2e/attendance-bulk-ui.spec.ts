@@ -199,6 +199,10 @@ test.describe('Attendance bulk operations — screen', () => {
     const before = (await Promise.all([e1, e2].map((e) => rawPunches(api, admin, e.id, massDays[0])))).flat().length;
     await submit.click();
 
+    // The form folds into a one-line summary while the progress view runs, so the daily records stay close.
+    await expect(panel.getByLabel(en('Find employees'), { exact: true })).toHaveCount(0);
+    await expect(panel.getByText(en('{employees, plural, one {# employee} other {# employees}} × {days, plural, one {# day} other {# days}}', { employees: 2, days: 2 }))).toBeVisible();
+
     // Progress: a bar with %, then the finished line, the counts, and each person marked Recorded.
     const progress = panel.getByRole('progressbar', { name: en('Mass entry progress') });
     await expect(progress).toBeVisible();
@@ -213,10 +217,12 @@ test.describe('Attendance bulk operations — screen', () => {
     expect(bulkRequests.map((b) => (JSON.parse(b) as { employeeIds: number[] }).employeeIds).flat().sort((a, b) => a - b))
       .toEqual([e1.id, e2.id].sort((a, b) => a - b));
 
-    // The API holds the 8 new punches (In and Out on each of the two days, for each person).
+    // The API holds the 8 new punches (In and Out on each of the two days, for each person). Only THIS run's punches are
+    // counted (its minute): an earlier run on the same database may have left bulk punches on these days at another minute.
     for (const e of [e1, e2]) {
       for (const day of massDays) {
-        const bulk = (await rawPunches(api, admin, e.id, day)).filter((p) => p.source === 'Manual (bulk)' && p.punchTimestampUtc.slice(0, 10) === day);
+        const bulk = (await rawPunches(api, admin, e.id, day)).filter((p) => p.source === 'Manual (bulk)' && p.punchTimestampUtc.slice(0, 10) === day
+          && p.punchTimestampUtc.slice(14, 16) === mm);
         expect(bulk.map((p) => p.punchDirection).sort(), `${e.code} on ${day}`).toEqual(['In', 'Out']);
       }
     }
@@ -231,8 +237,10 @@ test.describe('Attendance bulk operations — screen', () => {
     expect({ ...asked, employeeIds: [...asked.employeeIds].sort((a, b) => a - b) })
       .toEqual({ fromDate: massDays[0], toDate: massDays[1], employeeIds: [e1.id, e2.id].sort((a, b) => a - b) });
     await m.getByLabel(en('Attendance date')).fill(massDays[0]);
+    // The daily records table (same screen, right below the panel) names each person; it shows names, not codes.
     for (const e of [e1, e2]) {
-      await expect(m.getByRole('row').filter({ hasText: codePattern(e.code) }).first(), `${e.code} in the dashboard's daily records`).toBeVisible({ timeout: 30_000 });
+      expect(e.name, `${e.code} has a name to look for`).toBeTruthy();
+      await expect(m.getByRole('row').filter({ hasText: e.name! }).first(), `${e.code} in the dashboard's daily records`).toBeVisible({ timeout: 30_000 });
     }
 
     // New entry clears the progress view for the next one.

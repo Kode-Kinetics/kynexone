@@ -14,6 +14,7 @@ import {
   MASS_ENTRY_MAX_REASON,
   MASS_ENTRY_PUNCH_MATHS_KEY,
   MASS_ENTRY_SUBMIT_KEY,
+  MASS_ENTRY_SUMMARY_KEY,
   inclusiveDays,
   massEntryState,
   normaliseBulkEntryResult,
@@ -84,6 +85,8 @@ export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded 
 }
 
 const STATUS_TONE: Record<PersonStatus, 'emerald' | 'amber' | 'rose' | 'slate'> = { done: 'emerald', partial: 'amber', notDone: 'rose', waiting: 'slate' };
+/** A long range refused for the same rule repeats one reason per day: show the first few, then a count. */
+const MAX_REASONS_SHOWN = 2;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded: () => void }) {
@@ -172,18 +175,34 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
     void process.start({ fromDate: entry.fromDate, toDate: entry.toDate, employeeIds: people });
   };
 
-  const newEntry = () => { dispatch({ type: 'reset' }); setSelection(new Map()); setReason(''); };
+  // The people stay selected (HR often records a second entry for the same team); the reason must be given again.
+  const newEntry = () => { dispatch({ type: 'reset' }); setReason(''); };
 
   const shownPeople = useMemo(() => (filter === 'all' ? run.people : run.people.filter((p) => p.status === filter)), [run.people, filter]);
   const statusLabel = (s: PersonStatus) => ({ done: t('Recorded'), partial: t('Partly recorded'), notDone: t('Not recorded'), waiting: t('Pending') }[s]);
   const toProcess = recordedIds(run).length;
   const toRetry = retryIds(run).length;
   const locked = running || run.phase !== 'idle';
+  // While running the bar is neutral; once ended its colour says how it went: all recorded, some, or none.
+  const barColour = running ? 'bg-sapphire'
+    : summary.done === summary.total ? 'bg-emerald-500'
+      : summary.done + summary.partial > 0 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
     // Deliberately not a form element: Enter in the search box or on a checkbox must never record punches.
     <div className="space-y-4" aria-busy={running}>
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {run.phase !== 'idle' && sentRef.current && (
+        // While a run is shown the form folds into one line, so the progress view and the daily records below stay in reach.
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
+          <span className="font-semibold text-slate-800 dark:text-slate-100">
+            {t(MASS_ENTRY_SUMMARY_KEY, { employees: run.people.length, days: inclusiveDays(sentRef.current.fromDate, sentRef.current.toDate) ?? 1 })}
+          </span>
+          {' · '}{fx.date(sentRef.current.fromDate)}{sentRef.current.toDate !== sentRef.current.fromDate && <> – {fx.date(sentRef.current.toDate)}</>}
+          {' · '}{sentRef.current.inTime}{sentRef.current.outTime && <>–{sentRef.current.outTime}</>}
+          {' · '}<span className="italic">{sentRef.current.reason}</span>
+        </p>
+      )}
+      {run.phase === 'idle' && <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
         <EmployeeMultiSelect id={`${ids}-mass`} label={t('Employees to include')} selection={selection} onChange={setSelection}
           max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-44" />
         <fieldset className="space-y-3" disabled={locked}>
@@ -223,7 +242,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
             </button>
           )}
         </fieldset>
-      </div>
+      </div>}
 
       {run.phase !== 'idle' && (
         <div className="space-y-3 rounded-xl border border-slate-200 p-3 dark:border-white/10" aria-label={t('Mass entry progress')}>
@@ -242,7 +261,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
           <div className="flex items-center gap-2">
             <div role="progressbar" aria-label={t('Mass entry progress')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={summary.percent}
               className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-              <div className="h-full rounded-full bg-sapphire transition-[width] duration-300" style={{ width: `${summary.percent}%` }} />
+              <div className={`h-full rounded-full transition-[width] duration-300 ${barColour}`} style={{ width: `${summary.percent}%` }} />
             </div>
             <span className="w-10 text-end text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{summary.percent}%</span>
           </div>
@@ -267,7 +286,12 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
                 <span className="mt-0.5 font-mono text-xs text-slate-500">{p.code}</span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-slate-800 dark:text-slate-100">{p.name}</span>
-                  {p.reasons.length > 0 && <span className="block text-xs text-slate-500 dark:text-slate-400">{p.reasons.join(' · ')}</span>}
+                  {p.reasons.length > 0 && (
+                    <span className="block text-xs text-slate-500 dark:text-slate-400">
+                      {p.reasons.slice(0, MAX_REASONS_SHOWN).join(' · ')}
+                      {p.reasons.length > MAX_REASONS_SHOWN && <> {t('+{count} more', { count: p.reasons.length - MAX_REASONS_SHOWN })}</>}
+                    </span>
+                  )}
                 </span>
                 <StatusChip tone={STATUS_TONE[p.status]} label={statusLabel(p.status)} dot />
               </li>
