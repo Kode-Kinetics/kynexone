@@ -379,14 +379,18 @@ public sealed class ManpowerReconService
         }
     }
 
-    private async Task<Dictionary<int, Employee>> LoadEmployeesAsync(Guid tenantId, List<int> ids, CancellationToken ct)
+    /// <summary>The few employee facts the classification reads; names, contact details and pay stay in the table.</summary>
+    private sealed record EmployeeFacts(int Id, string Status, DateTime JoiningDate, DateOnly? OriginalJoiningDate, Guid? CompanyId);
+
+    private async Task<Dictionary<int, EmployeeFacts>> LoadEmployeesAsync(Guid tenantId, List<int> ids, CancellationToken ct)
     {
-        if (ids.Count == 0) return new Dictionary<int, Employee>();
+        if (ids.Count == 0) return new Dictionary<int, EmployeeFacts>();
         // Tenant-wide on purpose: an employee who has since moved to another company is hidden from a company-scoped caller by the
         // company filter, which would turn a transfer-out into an unexplained exit. Only the ids already on this run's visible slips are read.
         var rows = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
                 "Reconciliation classifies employees on this run's slips, including ones who have since moved company.")
-            .AsNoTracking().Where(e => ids.Contains(e.Id)).ToListAsync(ct);
+            .AsNoTracking().Where(e => ids.Contains(e.Id))
+            .Select(e => new EmployeeFacts(e.Id, e.Status, e.JoiningDate, e.OriginalJoiningDate, e.CompanyId)).ToListAsync(ct);
         return rows.ToDictionary(e => e.Id);
     }
 

@@ -233,6 +233,23 @@ public sealed class ReconSignoffLifecycleService
         await _db.SaveChangesAsync(ct);
     }
 
+    // ── Drill-down audit ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Records that the people behind a figure were looked up. Called for the first page of a lookup only, so paging through
+    /// one list leaves one row; a different figure is a different lookup and leaves its own.
+    /// </summary>
+    public async Task RecordViewAsync(
+        Guid tenantId, Guid runId, Guid? userId, string? ip, ReconDrillQuery query, int total, bool partial, int processVersion, CancellationToken ct)
+    {
+        Audit(tenantId, userId, "payroll.recon.viewed", runId, ip, new
+        {
+            section = query.Section, category = query.Category, kind = query.Kind, itemCode = query.ItemCode, bucket = query.Bucket,
+            total, partial, processVersion,
+        });
+        await _db.SaveChangesAsync(ct);
+    }
+
     // ── Retire ───────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>

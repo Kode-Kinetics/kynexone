@@ -49,10 +49,14 @@ public class PayrollReconController : ControllerBase
         if (!Holds("payroll.read")) return Forbid();
         var built = await BuildAsync(id, priorRunId, cancellationToken);
         if (built.Result is not null) return built.Result;
-        var rows = ManpowerReconService.DrillDown(built.Build!, new ReconDrillQuery(section, category, kind, itemCode, bucket, page, pageSize));
-        return rows is null
-            ? BadRequest(new { error = "invalid_drilldown", message = "Choose a section (volume, value or finalSettlement) with a category, or an item code and bucket for value." })
-            : Ok(rows);
+        var query = new ReconDrillQuery(section, category, kind, itemCode, bucket, page, pageSize);
+        var rows = ManpowerReconService.DrillDown(built.Build!, query);
+        if (rows is null)
+            return BadRequest(new { error = "invalid_drilldown", message = "Choose a section (volume, value or finalSettlement) with a category, or an item code and bucket for value." });
+        // Looking up the people behind a figure reads personal pay data: the first page of each lookup is recorded.
+        if (page <= 1)
+            await _signoff.RecordViewAsync(TenantId, id, UserId, Ip, query, rows.Total, built.Build!.Partial, built.Build.ProcessVersion, cancellationToken);
+        return Ok(rows);
     }
 
     [HttpGet("export")]
