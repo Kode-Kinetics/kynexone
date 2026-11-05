@@ -36,7 +36,7 @@ public sealed record MatrixComponentDto(
     string Code, string NameEn, string NameAr, string Class, string Floor, string Group,
     IReadOnlyList<string> AllowedValueTypes, IReadOnlyList<string> AllowedCoverageTiers, IReadOnlyList<string> AllowedDependantScopes,
     IReadOnlyList<string> AllowedLimitPeriods, string? DefaultLimitPeriod,
-    bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason);
+    bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason, bool IsCustom = false);
 
 /// <param name="Inherited">A company view showing the group default (no company value of its own).</param>
 /// <param name="NextChangeOn">The start of a later, already-published version in the same scope, if any.</param>
@@ -89,6 +89,9 @@ public sealed class MatrixCellInput
 }
 
 public sealed record PublishMatrixRequest(Guid? CompanyId, DateOnly EffectiveFrom, List<MatrixCellInput>? Cells);
+
+/// <summary>A benefit the customer adds to Benefits by grade. The English name is required (it makes the code); Arabic is optional.</summary>
+public sealed record CreateBenefitRequest(string? NameEn, string? NameAr);
 
 public sealed record SetOfferingRequest(Guid CompanyId, string ComponentCode, bool Offered, DateOnly EffectiveFrom);
 

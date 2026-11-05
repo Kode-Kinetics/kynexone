@@ -14,6 +14,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 using Zayra.Api.Tests.Security;
 
@@ -296,7 +297,7 @@ public class EntitlementMatrixTests
     {
         var actions = typeof(EntitlementMatrixController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttributes().Any(a => a is Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute)).ToList();
-        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "ImportLegacy");
+        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "AddBenefit", "RemoveBenefit", "ImportLegacy");
         foreach (var action in actions)
         {
             var permissions = action.GetCustomAttribute<HasPermissionAttribute>()!.Permissions;
@@ -617,6 +618,179 @@ public class EntitlementMatrixTests
             await File.WriteAllTextAsync(Path.Combine(dir, name + ".json"), JsonSerializer.Serialize(body, json) + "\n");
     }
 
+    // ── Customer-added benefits ──────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("Mobile Allowance", "BEN_MOBILE_ALLOWANCE")]
+    [InlineData("  gym  &  fitness!! ", "BEN_GYM_FITNESS")]
+    [InlineData("Car (company) 2", "BEN_CAR_COMPANY_2")]
+    [InlineData("بدل الجوال", null)]
+    [InlineData("   ", null)]
+    public void CustomCode_IsMadeFromTheEnglishName(string name, string? expected) =>
+        EntitlementMatrixService.CustomCodeFor(name).Should().Be(expected);
+
+    [Fact]
+    public void CustomCode_IsCappedAndNeverEndsInAnUnderscore()
+    {
+        var code = EntitlementMatrixService.CustomCodeFor("Executive club membership and family leisure facilities for senior managers");
+        code.Should().StartWith("BEN_").And.NotEndWith("_");
+        code!.Length.Should().BeLessThanOrEqualTo(EntitlementComponentRules.CustomCodeMaxLength);
+    }
+
+    [Fact]
+    public async Task AddingABenefit_MakesANonPayingContractRow_ThatShowsInTheGrid_ForEveryGrade()
+    {
+        await using var h = await H.Create();
+        var added = await h.AddBenefit("Mobile Allowance", "بدل الجوال");
+        Status(added).Should().Be(200, JsonSerializer.Serialize(((ObjectResult)added).Value));
+
+        var row = await h.Db.PayComponents.SingleAsync(x => x.Code == "BEN_MOBILE_ALLOWANCE");
+        (row.ComponentType, row.EntitlementClass, row.StatutoryFloor, row.CompanyId, row.IsSystem, row.IsOffered)
+            .Should().Be((PayComponentTypes.Benefit, PayEntitlementClasses.Contractual, PayStatutoryFloors.None, (Guid?)null, false, true));
+        (row.WpsIncluded, row.IsTaxable, row.GosiSubject, row.EosbIncluded, row.EmitWhenZero, row.Value).Should().Be((false, false, false, false, false, (decimal?)null));
+        (row.NameEn, row.NameAr).Should().Be(("Mobile Allowance", "بدل الجوال"));
+        // Payroll never sees it, whatever the tenant's run catalogue holds.
+        PayComponentEngine.IsNonPaying(row).Should().BeTrue();
+        PayComponentEngine.ResolveInEffect([row], h.Tid, Nov1).Should().NotContain(c => c.Code == row.Code);
+        (await h.Db.AuditLogs.CountAsync(a => a.Action == EntitlementMatrixService.AuditBenefitAdded && a.EntityName == "PayComponent")).Should().Be(1);
+
+        var matrix = await h.Read(null, Today);
+        var component = matrix.Components.Single(c => c.Code == "BEN_MOBILE_ALLOWANCE");
+        component.Should().Match<MatrixComponentDto>(c => c.IsCustom && c.Group == "Contract" && c.CanBeSkipped && !c.IsFloor && !c.IsLoanFacility
+            && c.NameEn == "Mobile Allowance" && c.NameAr == "بدل الجوال");
+        component.AllowedValueTypes.Should().BeEquivalentTo("Amount", "InKind", "Quantity");
+        matrix.Components.Where(c => c.Code != "BEN_MOBILE_ALLOWANCE").Should().OnlyContain(c => !c.IsCustom);
+        // A benefit nobody has a value for yet is a gap for every grade, so it is never silently missing from a package.
+        matrix.Gaps.Where(g => g.ComponentCode == "BEN_MOBILE_ALLOWANCE").Select(g => g.GradeId).Should().BeEquivalentTo(matrix.Grades.Select(g => g.Id));
+    }
+
+    [Fact]
+    public async Task ABenefitWithoutAnArabicName_UsesItsEnglishName()
+    {
+        await using var h = await H.Create();
+        Status(await h.AddBenefit("Gym membership", null)).Should().Be(200);
+        (await h.Read(null, Today)).Components.Single(c => c.Code == "BEN_GYM_MEMBERSHIP").NameAr.Should().Be("Gym membership");
+    }
+
+    [Fact]
+    public async Task AValueForACustomBenefit_PublishesLikeAnyCell_AndCompaniesCanSkipIt()
+    {
+        await using var h = await H.Create();
+        Status(await h.AddBenefit("Mobile Allowance", null)).Should().Be(200);
+        var published = Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, h.G.Skip(1).Select(g => H.Amount(g, "ben_mobile_allowance", 300m)).ToList()));
+        published.Published.Should().Be(5);
+
+        var matrix = await h.Read(null, Nov1);
+        matrix.Gaps.Should().NotContain(g => g.ComponentCode == "BEN_MOBILE_ALLOWANCE");
+        var cell = matrix.Cells.Single(c => c.GradeId == h.G[2].Id && c.ComponentCode == "BEN_MOBILE_ALLOWANCE");
+        (cell.Amount, cell.LimitPeriod).Should().Be((300m, "Annual"));
+        (await h.Db.GradeEntitlements.Where(c => c.PayComponentCode == "BEN_MOBILE_ALLOWANCE").Select(c => c.EntitlementClass).Distinct().ToListAsync())
+            .Should().Equal(PayEntitlementClasses.Contractual);
+
+        var skip = Ok<MatrixOfferingDto>(await h.SetOffering(h.Logistics, "BEN_MOBILE_ALLOWANCE", offered: false, Nov1));
+        skip.ChangesOn.Should().Be(Nov1, "a skip starts on the first day of a month, like every other benefit's");
+        (await h.Read(h.Facility.Id, Nov1)).Offerings.Single(o => o.ComponentCode == "BEN_MOBILE_ALLOWANCE").Mode.Should().Be("Adopted");
+        (await h.Read(h.Logistics.Id, Nov1)).Offerings.Single(o => o.ComponentCode == "BEN_MOBILE_ALLOWANCE").Mode.Should().Be("Skipped");
+    }
+
+    [Fact]
+    public async Task ACustomBenefitFollowsTheContractRules_NoMonthlyPeriod_NoFamilyCover_NoClassOfCover()
+    {
+        await using var h = await H.Create();
+        Status(await h.AddBenefit("Mobile Allowance", null)).Should().Be(200);
+        MatrixCellInput Cell(Action<MatrixCellInput> change)
+        {
+            var c = H.Amount(h.G[1], "BEN_MOBILE_ALLOWANCE", 300m);
+            change(c);
+            return c;
+        }
+        CellErrors(await h.PublishGroup(Nov1, [Cell(c => c.LimitPeriod = "Monthly")])).Single().Code.Should().Be("limit_period_not_allowed");
+        CellErrors(await h.PublishGroup(Nov1, [Cell(c => c.DependantScope = "Family")])).Single().Code.Should().Be("dependants_not_allowed");
+        CellErrors(await h.PublishGroup(Nov1, [Cell(c => { c.ValueType = "PercentOfBasic"; c.Amount = null; c.Rate = 0.1m; })])).Single().Code.Should().Be("value_type_not_allowed");
+        CellErrors(await h.PublishGroup(Nov1, [Cell(c => c.CoverageTier = "A")])).Single().Code.Should().Be("invalid_value");
+        (await h.Db.GradeEntitlements.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ACodeNobodyCreated_OrOneThatWasRemoved_CannotReceiveValues()
+    {
+        await using var h = await H.Create();
+        CellErrors(await h.PublishGroup(Nov1, [H.Amount(h.G[1], "BEN_NEVER_ADDED", 100m)])).Single().Code.Should().Be("unknown_component");
+
+        Status(await h.AddBenefit("Parking", null)).Should().Be(200);
+        Status(await h.RemoveBenefit("BEN_PARKING")).Should().Be(200);
+        CellErrors(await h.PublishGroup(Nov1, [H.Amount(h.G[1], "BEN_PARKING", 100m)])).Single().Code.Should().Be("unknown_component");
+        (await h.Db.GradeEntitlements.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ABenefitNameMustBeNewAndMakeAnEnglishCode()
+    {
+        await using var h = await H.Create();
+        Error(await h.AddBenefit("  ", null)).Should().Be("name_required");
+        Error(await h.AddBenefit("بدل الجوال", "بدل الجوال")).Should().Be("name_needs_english");
+        Error(await h.AddBenefit(new string('x', 101), null)).Should().Be("name_too_long");
+        Error(await h.AddBenefit("Bad\u0007name", null)).Should().Be("name_invalid");
+
+        Status(await h.AddBenefit("Mobile Allowance", null)).Should().Be(200);
+        Error(await h.AddBenefit("mobile-allowance", null)).Should().Be("benefit_exists", "the same code, whatever the punctuation or case");
+        // A different kind of pay component already on the code is a clash too (one code, one meaning).
+        h.Db.PayComponents.Add(new PayComponent { TenantId = h.Tid, CompanyId = null, Code = "BEN_TAKEN", NameEn = "Taken", NameAr = "Taken", ComponentType = PayComponentTypes.Earning });
+        await h.Db.SaveChangesAsync();
+        Error(await h.AddBenefit("Taken", null)).Should().Be("benefit_exists");
+        (await h.Db.PayComponents.CountAsync(x => x.Code == "BEN_MOBILE_ALLOWANCE")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task AddingAndRemovingABenefit_NeedsAccessToEveryCompany()
+    {
+        await using var h = await H.Create();
+        var oneCompany = h.Controller([h.Facility.Id]);
+        Error(await oneCompany.AddBenefit(h.Service, new CreateBenefitRequest("Mobile Allowance", null), default)).Should().Be("group_scope_required");
+        (await h.Db.PayComponents.AnyAsync(x => x.Code == "BEN_MOBILE_ALLOWANCE")).Should().BeFalse();
+
+        Status(await h.AddBenefit("Mobile Allowance", null)).Should().Be(200);
+        Error(await oneCompany.RemoveBenefit(h.Service, "BEN_MOBILE_ALLOWANCE", default)).Should().Be("group_scope_required");
+        (await h.Db.PayComponents.AnyAsync(x => x.Code == "BEN_MOBILE_ALLOWANCE" && !x.IsDeleted)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task OnlyAnUnusedCustomBenefitCanBeRemoved_AndItCanBeAddedAgainAfterwards()
+    {
+        await using var h = await H.Create();
+        Error(await h.RemoveBenefit("HOUSING")).Should().Be("built_in_benefit");
+        Error(await h.RemoveBenefit("EDUCATION")).Should().Be("built_in_benefit");
+        Error(await h.RemoveBenefit("BEN_NOT_THERE")).Should().Be("unknown_component");
+
+        Status(await h.AddBenefit("Parking", null)).Should().Be(200);
+        Status(await h.RemoveBenefit("ben_parking")).Should().Be(200);
+        (await h.Read(null, Today)).Components.Should().NotContain(c => c.Code == "BEN_PARKING");
+        (await h.Db.AuditLogs.CountAsync(a => a.Action == EntitlementMatrixService.AuditBenefitRemoved)).Should().Be(1);
+
+        // The same name again revives the row (the unique key counts deleted rows), with its new Arabic name.
+        Status(await h.AddBenefit("Parking", "موقف")).Should().Be(200);
+        (await h.Db.PayComponents.CountAsync(x => x.Code == "BEN_PARKING")).Should().Be(1);
+        (await h.Read(null, Today)).Components.Single(c => c.Code == "BEN_PARKING").NameAr.Should().Be("موقف");
+
+        // Once any grade has a value — even "Not offered" — it is history, and stays.
+        Ok<PublishMatrixResult>(await h.PublishGroup(Nov1, [H.NotOffered(h.G[1], "BEN_PARKING")]));
+        Error(await h.RemoveBenefit("BEN_PARKING")).Should().Be("benefit_in_use");
+        (await h.Read(null, Nov1)).Components.Should().Contain(c => c.Code == "BEN_PARKING");
+    }
+
+    [Fact]
+    public async Task ABenefitInAnEmployeesPackage_CannotBeRemoved()
+    {
+        await using var h = await H.Create();
+        Status(await h.AddBenefit("Parking", null)).Should().Be(200);
+        var employee = new Employee { TenantId = h.Tid, CompanyId = h.Facility.Id, GradeId = h.G[1].Id, Status = EmployeeStatuses.Active, FullName = "A", EmployeeCode = "A1" };
+        h.Db.Employees.Add(employee);
+        await h.Db.SaveChangesAsync();
+        h.Db.EmployeeEntitlements.Add(new EmployeeEntitlement { TenantId = h.Tid, CompanyId = h.Facility.Id, EmployeeId = employee.PublicId, PayComponentCode = "BEN_PARKING" });
+        await h.Db.SaveChangesAsync();
+        Error(await h.RemoveBenefit("BEN_PARKING")).Should().Be("benefit_in_use");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
     private static T Ok<T>(IActionResult result)
@@ -698,6 +872,11 @@ public class EntitlementMatrixTests
 
         public Task<IActionResult> PublishCompany(Company company, DateOnly from, List<MatrixCellInput> cells) =>
             Controller().Publish(Service, new PublishMatrixRequest(company.Id, from, cells), false, default);
+
+        public Task<IActionResult> AddBenefit(string? nameEn, string? nameAr) =>
+            Controller().AddBenefit(Service, new CreateBenefitRequest(nameEn, nameAr), default);
+
+        public Task<IActionResult> RemoveBenefit(string code) => Controller().RemoveBenefit(Service, code, default);
 
         public Task<IActionResult> SetOffering(Company company, string code, bool offered, DateOnly from) =>
             Controller().SetOffering(Service, new SetOfferingRequest(company.Id, code, offered, from), default);

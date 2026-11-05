@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, CheckCircle2, HeartPulse, Loader2, Plus, RefreshCw, Search, ShieldCheck, UserPlus, XCircle,
 } from 'lucide-react';
@@ -33,6 +35,7 @@ export function BenefitsPage() {
   const canEnroll = canManagePlans || hasRole('HR Officer');
   const canRecordMoney = hasPermission('employees.approve');
   const releaseA = useReleaseA();
+  const router = useRouter();
   const canApplyException = canRecordMoney && !releaseA;
   const canProposeAdditional = hasPermission('employees.write') && !releaseA;
 
@@ -77,6 +80,12 @@ export function BenefitsPage() {
 
   const activePlans = plans.filter((p) => p.isActive);
 
+  // A Release A tenant sets every benefit — and adds new ones — in Benefits by grade. With nothing left here (no plans, no
+  // enrolments made before) this screen has no job, so it hands over instead of showing an empty page with nowhere to go.
+  const handedOver = releaseA && !loading && !error && plans.length === 0 && enrollments.length === 0;
+  useEffect(() => { if (handedOver) router.replace('/benefits/by-grade'); }, [handedOver, router]);
+  if (handedOver) return <div className="h-40 animate-pulse rounded-2xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" aria-label={t('Loading benefits by grade')} />;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -98,6 +107,13 @@ export function BenefitsPage() {
           <ModuleSettingsLink sections={['benefitPlans']} label={msg('Benefit settings')} />
         </div>
       </div>
+
+      {releaseA && !loading && !error && (
+        <p role="status" data-testid="benefits-moved-note" className="rounded-xl border border-sapphire/30 bg-sapphire/5 p-3 text-sm text-slate-700 dark:text-slate-200">
+          {t('Which grades get a benefit is now set in Benefits by grade. This page keeps the enrolments made before.')}{' '}
+          <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>
+        </p>
+      )}
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">

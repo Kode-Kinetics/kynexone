@@ -147,6 +147,11 @@ export const quantityPeriodKeys: Record<string, string> = {
   Annual: '{count} × {class} a year', PerDay: '{count} × {class} a day', Lifetime: '{count} × {class} once',
 };
 
+/** The same count with no class to name (a benefit the customer added has none), as one sentence. */
+export const plainQuantityPeriodKeys: Record<string, string> = {
+  Annual: '{count} a year', PerDay: '{count} a day', Lifetime: '{count} once',
+};
+
 /** The "Resets" picker's choices. */
 export const periodChoiceKeys: Record<string, string> = {
   Monthly: 'Every month', Annual: 'Every year', PerDay: 'Every day', PerTerm: 'Every contract year', Lifetime: 'Once only',
@@ -173,7 +178,10 @@ export function summarise(d: CellDraft, money: (n: number) => string): SummaryPa
     case 'InKind': parts.push({ key: 'Provided in kind' }); break;
     case 'CoverageTier': parts.push({ key: tierKeys[d.coverageTier] ?? d.coverageTier }); break;
     case 'Quantity':
-      parts.push({ key: (period && quantityPeriodKeys[period]) || '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? '' } });
+      // A built-in count has a class (Economy, Business); one the customer added does not, so it is just the number.
+      parts.push(d.coverageTier
+        ? { key: (period && quantityPeriodKeys[period]) || '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? d.coverageTier } }
+        : { key: (period && plainQuantityPeriodKeys[period]) || '{count}', values: { count: d.quantity } });
       break;
     default: parts.push({ key: 'Eligible' });
   }

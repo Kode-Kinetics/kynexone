@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   entitlementsApi, type BlockReason, type EntitlementMatrix as Matrix, type MatrixCellError, type MatrixComponent, type MatrixGrade,
   type MatrixCell, type MatrixOffering, type PublishMatrixResult,
@@ -56,6 +56,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   const [error, setError] = useState('');
   const [serverErrors, setServerErrors] = useState<MatrixCellError[]>([]);
   const [notice, setNotice] = useState('');
+  const [adding, setAdding] = useState(false);
   const requestSeq = useRef(0);
 
   useEffect(() => { if (!isGroupScope && !companyId && companies[0]) setCompanyId(companies[0].id); }, [isGroupScope, companyId, companies]);
@@ -114,6 +115,8 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   const gapKeys = useMemo(() => new Set((matrix?.gaps ?? []).filter(g => !g.scheduledFrom).map(g => cellKey(g.gradeId, g.componentCode))), [matrix]);
   const scheduled = useMemo(() => new Map((matrix?.gaps ?? []).filter(g => g.scheduledFrom).map(g => [cellKey(g.gradeId, g.componentCode), g.scheduledFrom!])), [matrix]);
   const openGaps = [...gapKeys].filter(k => drafts[k]?.state === 'unset').length;
+  // A new benefit is a row for the whole group, so it is added from the group view by someone who can reach every company.
+  const canAddBenefit = canManage && !companyId && isGroupScope;
   const firstScheduled = [...scheduled.values()].sort()[0];
   const openCell = (key: string) => {
     // A statutory floor can only be offered: opening an empty one starts from its lawful minimum.
@@ -174,7 +177,15 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </label>
+      {canAddBenefit && <div className="flex flex-col items-end gap-1">
+        <button type="button" className="btn-secondary" aria-expanded={adding} disabled={changed.length > 0 || loading || !matrix}
+          onClick={() => setAdding(open => !open)}>{t('Add a benefit')}</button>
+        {changed.length > 0 && <p className="max-w-[16rem] text-caption text-slate-500">{t('Publish or discard your changes first, then add a benefit.')}</p>}
+      </div>}
     </div>
+    {adding && canAddBenefit && changed.length === 0 && <AddBenefitPanel
+      onClose={() => setAdding(false)}
+      onAdded={async name => { setAdding(false); setNotice(fillTemplate(t('{benefit} was added. Set its value for each grade, then publish.'), { benefit: name })); await load(asOf); }} />}
     <p className="text-xs text-slate-500 dark:text-slate-400">{t(companyId
       ? 'This company uses the group values unless you tailor a grade. Values you set here take priority over the group default.'
       : 'These values apply to every company unless a company tailors or skips a benefit.')}</p>
@@ -222,6 +233,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
                 </th></tr>
                 {rows.map(c => <MatrixRow key={c.code} component={c} grades={grades} drafts={drafts} original={original} gapKeys={gapKeys}
                   offering={offering(c.code)} companyView={!!companyId} canManage={canManage} today={matrix.today} companyId={companyId}
+                  canRemove={canAddBenefit && changed.length === 0} onRemoved={name => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); }}
                   onEdit={openCell} onMarkRest={() => setDrafts(list => markRestNotOffered(list, grades, c, new Set(scheduled.keys())))} onOfferingChanged={() => void load(asOf)}
                   say={say} money={money} reasonText={reasonText} componentName={componentName} serverError={serverError} editing={editing} cellByKey={cellByKey} scheduled={scheduled} />)}
               </tbody>;
@@ -266,10 +278,11 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   </section>;
 }
 
-function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, companyView, canManage, today, companyId, onEdit, onMarkRest,
+function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, companyView, canManage, today, companyId, canRemove, onRemoved, onEdit, onMarkRest,
   onOfferingChanged, say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled }: {
   component: MatrixComponent; grades: MatrixGrade[]; drafts: Drafts; original: Drafts; gapKeys: Set<string>; offering?: MatrixOffering;
   companyView: boolean; canManage: boolean; today: string; companyId: string; editing: string | null;
+  canRemove: boolean; onRemoved: (name: string) => void;
   onEdit: (key: string) => void; onMarkRest: () => void; onOfferingChanged: () => void;
   say: (parts: SummaryPart[]) => string; money: (n: number) => string;
   reasonText: (r: BlockReason | null | undefined, field: 'title' | 'why' | 'fix') => string; componentName: (c: MatrixComponent) => string;
@@ -286,6 +299,8 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
         <p className="mt-1 font-semibold text-slate-600 dark:text-slate-300">{reasonText(c.floorReason, 'title')}</p>
         <p className="text-slate-500 dark:text-slate-400">{reasonText(c.floorReason, 'why')}</p>
       </details>}
+      {c.isCustom && <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">{t('Added by you')}</span>}
+      {c.isCustom && canRemove && <RemoveBenefit code={c.code} name={componentName(c)} onRemoved={onRemoved} />}
       {companyView && offering && offering.mode !== 'Group' && !c.isLoanFacility && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-caption font-semibold ${
         offering.mode === 'Skipped' ? 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'
           : offering.mode === 'Tailored' ? 'bg-sapphire/10 text-sapphire' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
@@ -338,6 +353,66 @@ function loanSummary(cell: MatrixCell | undefined, money: (n: number) => string,
   if (cell.rate !== null && cell.valueType.startsWith('MultipleOf'))
     return fillTemplate(t(owed ? 'Up to {rate} {basis}, at most {owed} owed' : 'Up to {rate} {basis}'), { rate: cell.rate, basis: t(valueTypeKeys[cell.valueType]), ...owed });
   return owed ? fillTemplate(t('Eligible, at most {owed} owed'), owed) : t('Eligible');
+}
+
+/** Adds a benefit of the customer's own to the grid: a name, in English (it makes the code) and optionally Arabic. */
+function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Promise<void>; onClose: () => void }) {
+  const { t } = useLocale();
+  const [nameEn, setNameEn] = useState('');
+  const [nameAr, setNameAr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!nameEn.trim()) { setError(t('Give the benefit a name.')); return; }
+    setBusy(true); setError('');
+    try {
+      const added = await entitlementsApi.addBenefit({ nameEn: nameEn.trim(), nameAr: nameAr.trim() || null });
+      await onAdded(added.nameEn);
+    } catch (err) { setError(loanErrorMessage(err, t('Unable to add the benefit.'))); setBusy(false); }
+  };
+  return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
+    <div>
+      <h2 id="add-benefit-heading" className="font-semibold text-slate-800 dark:text-slate-100">{t('Add a benefit')}</h2>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{t('It is added for every grade and company. Set its value for each grade in the grid, then publish.')}</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{t('It is recorded in each employee’s package and is not paid through payroll. For a monthly cash allowance, use Other allowances.')}</p>
+    </div>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <label className="text-sm">{t('Benefit name (English)')}
+        <input className="input mt-1 w-full" maxLength={100} required value={nameEn} onChange={e => setNameEn(e.target.value)} />
+      </label>
+      <label className="text-sm">{t('Benefit name (Arabic, optional)')}
+        <input className="input mt-1 w-full" maxLength={100} dir="rtl" value={nameAr} onChange={e => setNameAr(e.target.value)} />
+      </label>
+    </div>
+    {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+    <div className="flex flex-wrap gap-2">
+      <button type="submit" className="btn-primary h-8 px-3 text-xs" disabled={busy}>{t('Add benefit')}</button>
+      <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={busy} onClick={onClose}>{t('Cancel')}</button>
+    </div>
+  </form>;
+}
+
+/** Takes away a benefit that was added by mistake. The server refuses once any grade has a value for it. */
+function RemoveBenefit({ code, name, onRemoved }: { code: string; name: string; onRemoved: (name: string) => void }) {
+  const { t } = useLocale();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const remove = async () => {
+    setBusy(true); setError('');
+    try { await entitlementsApi.removeBenefit(code); onRemoved(name); }
+    catch (e) { setError(loanErrorMessage(e, t('Unable to remove the benefit.'))); setBusy(false); }
+  };
+  if (!open) return <button type="button" className="mt-1 block text-caption font-normal text-sapphire underline" onClick={() => setOpen(true)}>{t('Remove benefit')}</button>;
+  return <div className="mt-2 space-y-2 rounded-lg border border-slate-200 p-2 text-xs font-normal dark:border-white/10">
+    <p>{fillTemplate(t('Remove {benefit}? This works only while no grade has a value for it.'), { benefit: name })}</p>
+    {error && <p role="alert" className="text-red-600">{error}</p>}
+    <div className="flex gap-2">
+      <button type="button" className="btn-primary h-7 px-2 text-xs" disabled={busy} onClick={() => void remove()}>{t('Yes, remove it')}</button>
+      <button type="button" className="btn-secondary h-7 px-2 text-xs" disabled={busy} onClick={() => { setOpen(false); setError(''); }}>{t('Keep it')}</button>
+    </div>
+  </div>;
 }
 
 function OfferingSwitch({ code, name, companyId, offering, today, onChanged }: {
@@ -421,7 +496,7 @@ function CellEditor({ draft: d, component: c, grade, companyView, hasCompanyValu
       {offered && <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-sm">{t('How it is given')}
           <select className="select mt-1 w-full" value={d.valueType} onChange={e => onChange({ valueType: e.target.value as CellDraft['valueType'] })}>
-            {c.allowedValueTypes.map(v => <option key={v} value={v}>{t(valueTypeKeys[v] ?? v)}</option>)}
+            {c.allowedValueTypes.map(v => <option key={v} value={v}>{t(v === 'Quantity' && c.isCustom ? 'Number of items' : valueTypeKeys[v] ?? v)}</option>)}
           </select>
         </label>
         {d.valueType === 'Amount' && <label className="text-sm">{currency ? fillTemplate(t('Amount ({currency})'), { currency }) : t('Amount (company currency)')}

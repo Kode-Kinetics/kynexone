@@ -49,6 +49,13 @@ public static class EntitlementComponentRules
     public const string Education = "EDUCATION";
     public const string PerDiem = "PER_DIEM";
     public const string LoanPrefix = "LOAN_";
+    /// <summary>A benefit the customer added themselves in Benefits by grade (<c>BEN_&lt;NAME&gt;</c>). Always a non-paying contract
+    /// benefit: its definition is a tenant <c>pay_components</c> row (type Benefit, class Contractual) that payroll drops
+    /// (<c>PayComponentEngine.IsNonPaying</c>), its values live in <c>grade_entitlements</c>. Cash allowances stay HOUSING,
+    /// TRANSPORT and OTHER_ALLOWANCES — they reach the payslip through the salary structure, which a new code cannot.</summary>
+    public const string CustomPrefix = "BEN_";
+    /// <summary>The longest custom code (the prefix included).</summary>
+    public const int CustomCodeMaxLength = 40;
     public const string LoanHousingAdvance = "LOAN_HOUSING_ADVANCE";
 
     /// <summary>Criteria a cell may never use (non-discrimination). R1 refuses them with ENTITLEMENT_BANNED_CRITERION.</summary>
@@ -99,6 +106,7 @@ public static class EntitlementComponentRules
     public static EntitlementComponentRule? For(string code)
     {
         if (ByCode.TryGetValue(code, out var rule)) return rule;
+        if (IsCustom(code)) return CustomRule(code, code, code);
         if (!code.StartsWith(LoanPrefix, StringComparison.OrdinalIgnoreCase)) return null;
         return new EntitlementComponentRule(code.ToUpperInvariant(), code, code, PayEntitlementClasses.Facility, PayStatutoryFloors.None,
             PayComponentTypes.Facility,
@@ -106,6 +114,15 @@ public static class EntitlementComponentRules
              GradeEntitlementValueTypes.EligibilityOnly],
             [], NoDependants, [], null, true);
     }
+
+    public static bool IsCustom(string? code) => code is not null && code.StartsWith(CustomPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The rule every customer-added benefit follows. A contract benefit is fixed for each contract year, so it is given as
+    /// an amount, a count of items or in kind, and resets annually; it has no floor, dependants or class of cover.</summary>
+    public static EntitlementComponentRule CustomRule(string code, string nameEn, string nameAr) =>
+        new(code.ToUpperInvariant(), nameEn, nameAr, PayEntitlementClasses.Contractual, PayStatutoryFloors.None, PayComponentTypes.Benefit,
+            [GradeEntitlementValueTypes.Amount, GradeEntitlementValueTypes.InKind, GradeEntitlementValueTypes.Quantity],
+            [], NoDependants, [EntitlementLimitPeriods.Annual], EntitlementLimitPeriods.Annual, false);
 
     /// <summary>
     /// The statutory-floor violations of a cell, as block codes (<see cref="ReleaseABlockReasons"/>). Empty when the

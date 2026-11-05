@@ -3,7 +3,7 @@ import type { MatrixCell, MatrixComponent, MatrixGrade } from '../src/api/entitl
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys,
-  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, summarise, tierKeys, type CellDraft,
+  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, plainQuantityPeriodKeys, summarise, tierKeys, type CellDraft,
 } from '../src/lib/entitlementMatrix';
 
 // Release A R1 — the pure rules behind Benefits by grade, with the Masar Holding demo values (plan §5).
@@ -119,4 +119,29 @@ test('every word the matrix can show has Arabic', () => {
     expect(LOCALE_DICTS.en[key], key).toBe(key);
     expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key] ?? ''), key).toBe(true);
   }
+});
+
+// A benefit the customer added: a contract benefit with no class of cover, no dependants and a yearly reset.
+const PARKING = component({
+  code: 'BEN_PARKING', nameEn: 'Parking', nameAr: 'موقف', class: 'Contractual', group: 'Contract', isCustom: true,
+  allowedValueTypes: ['Amount', 'InKind', 'Quantity'], allowedLimitPeriods: ['Annual'], defaultLimitPeriod: 'Annual',
+});
+
+test('a customer-added benefit starts as a yearly amount and sends no class of cover or dependants', () => {
+  const draft = { ...blankDraft(PARKING, 'g1'), state: 'offered' as const, amount: '1200' };
+  expect(draft).toMatchObject({ valueType: 'Amount', coverageTier: '', dependantScope: 'None', limitPeriod: 'Annual' });
+  expect(draftProblem(draft, PARKING)).toBeNull();
+  expect(inputFromDraft(draft)).toMatchObject({ componentCode: 'BEN_PARKING', valueType: 'Amount', amount: 1200, coverageTier: null, dependantScope: 'None', limitPeriod: 'Annual' });
+  expect(text(draft)).toBe('{amount} a year');
+});
+
+test('a customer-added count reads as a plain number, not "1 × " with no class', () => {
+  const count = { ...blankDraft(PARKING, 'g1'), state: 'offered' as const, valueType: 'Quantity' as const, quantity: '2' };
+  expect(draftProblem(count, PARKING)).toBeNull();
+  expect(inputFromDraft(count)).toMatchObject({ valueType: 'Quantity', quantity: 2, coverageTier: null });
+  expect(summarise(count, sar)).toEqual([{ key: plainQuantityPeriodKeys.Annual, values: { count: '2' } }]);
+  expect(draftProblem({ ...count, quantity: '0' }, PARKING)).toBe('Enter how many (1 to 99).');
+  // A built-in count keeps its class.
+  const ticket = { ...blankDraft(TICKET, 'g1'), state: 'offered' as const, quantity: '1', coverageTier: 'Economy' };
+  expect(summarise(ticket, sar)[0]).toEqual({ key: quantityPeriodKeys.Annual, values: { count: '1', class: tierKeys.Economy } });
 });

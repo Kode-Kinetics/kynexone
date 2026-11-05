@@ -105,6 +105,67 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('add a benefit: it appears for every grade as a gap, is set like any cell, and can be removed while unused', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const parking = {
+        code: 'BEN_PARKING', nameEn: 'Parking', nameAr: 'موقف', class: 'Contractual', floor: 'None', group: 'Contract',
+        allowedValueTypes: ['Amount', 'InKind', 'Quantity'], allowedCoverageTiers: [], allowedDependantScopes: ['None'],
+        allowedLimitPeriods: ['Annual'], defaultLimitPeriod: 'Annual', isFloor: false, canBeSkipped: true, isLoanFacility: false,
+        floorReason: null, isCustom: true,
+      };
+      const withParking = {
+        ...groupMatrix,
+        components: [...groupMatrix.components, parking],
+        offerings: [...groupMatrix.offerings, { componentCode: 'BEN_PARKING', mode: 'Group', offered: true, skippedFrom: null, changesOn: null, canBeSkipped: true }],
+        gaps: [...groupMatrix.gaps, ...groupMatrix.grades.map((g: { id: string }) => ({ gradeId: g.id, componentCode: 'BEN_PARKING', scheduledFrom: null }))],
+      };
+      let exists = false;
+      const calls: { method: string; path: string; body: any }[] = [];
+      await page.route('**/api/entitlements/**', route => {
+        const request = route.request(); const p = new URL(request.url()).pathname;
+        if (p === '/api/entitlements/components' && request.method() === 'POST') {
+          calls.push({ method: 'POST', path: p, body: request.postDataJSON() });
+          exists = true;
+          return route.fulfill({ json: parking });
+        }
+        if (p === '/api/entitlements/components/BEN_PARKING/remove' && request.method() === 'POST') {
+          calls.push({ method: 'POST', path: p, body: null });
+          exists = false;
+          return route.fulfill({ json: { removed: 'BEN_PARKING' } });
+        }
+        if (p === '/api/entitlements/matrix' && request.method() === 'GET') return route.fulfill({ json: exists ? withParking : groupMatrix });
+        return route.fallback();
+      });
+      const benefit = (locale === 'ar' ? parking.nameAr : parking.nameEn) as string;
+
+      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Parking');
+      await page.getByLabel(say(locale, 'Benefit name (Arabic, optional)')).fill('موقف');
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+
+      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit: 'Parking' }))).toBeVisible();
+      expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: { nameEn: 'Parking', nameAr: 'موقف' } });
+      await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
+      // Every grade is a gap until it has a value, so the new benefit can't be silently missing from a package.
+      await expect(page.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit, grade: 'G1', value: say(locale, 'Not set') })}`) })).toBeVisible();
+      await expect(page.getByText(say(locale, '{count} grade value(s) still need setting.', { count: withParking.gaps.length }))).toBeVisible();
+
+      // Its cell offers what a contract benefit allows, and a count reads "number of items", not tickets.
+      await cellButton(page, locale, 'BEN_PARKING', 'G1').click();
+      await expect(page.getByRole('option', { name: say(locale, 'Number of items') })).toHaveCount(1);
+      await expect(page.getByRole('option', { name: say(locale, 'Number of tickets') })).toHaveCount(0);
+      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await shot(page, `add-benefit-${locale}`);
+
+      // Unused, so it can be removed again.
+      await page.getByRole('button', { name: say(locale, 'Remove benefit'), exact: true }).click();
+      await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
+      await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
+      expect(calls[1]).toMatchObject({ path: '/api/entitlements/components/BEN_PARKING/remove' });
+      await expect(page.getByText(say(locale, 'Added by you'))).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('import review: every old line says what happens to it, and nothing is guessed', async ({ page }) => {
       const { errors } = await boot(page, locale);
       await page.getByText(say(locale, 'Bring in the old grade pay scales')).click();

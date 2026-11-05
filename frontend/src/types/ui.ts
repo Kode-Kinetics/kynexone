@@ -15,6 +15,8 @@ export interface NavItem {
   requiredPermissions?: string[];
   /** Tenant feature flag key that must be enabled for this item to show. Empty/absent = always visible. */
   requiredFeatureKey?: string;
+  /** Tenant feature flag key that HIDES this item when enabled: the screen it points to was folded into another one for those tenants. */
+  hiddenWhenFeatureKey?: string;
   /** Show only for Group account tenants (multi-company). */
   groupAccountOnly?: boolean;
   /** Shown only when Setup has a section this user may open (lib/setupAreas.ts setupHasEntries), not on a permission alone. */

@@ -88,6 +88,22 @@ public sealed class EntitlementMatrixController : ControllerBase
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.SetOfferingAsync(Actor(), req, ct));
 
     /// <summary>
+    /// POST /api/entitlements/components — adds a benefit of the customer's own to the grid (a non-paying contract benefit, set per
+    /// grade like the rest). Needs access to every company: a new benefit is a row for the whole group.
+    /// </summary>
+    [HttpPost("components")]
+    [HasPermission("entitlements.manage")]
+    public async Task<IActionResult> AddBenefit([FromServices] EntitlementMatrixService matrix, [FromBody] CreateBenefitRequest req,
+        CancellationToken ct) =>
+        this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.CreateBenefitAsync(Actor(), req, ct));
+
+    /// <summary>POST /api/entitlements/components/{code}/remove — removes a benefit the customer added and nobody has used yet.</summary>
+    [HttpPost("components/{code}/remove")]
+    [HasPermission("entitlements.manage")]
+    public async Task<IActionResult> RemoveBenefit([FromServices] EntitlementMatrixService matrix, string code, CancellationToken ct) =>
+        this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.RemoveBenefitAsync(Actor(), code, ct));
+
+    /// <summary>
     /// POST /api/entitlements/matrix/import-legacy?commit=false|true&amp;effectiveFrom= — brings the frozen grade pay
     /// scales into the matrix as group cells. Preview and commit list the same rows; rows that can't be mapped without
     /// guessing (and every benefit eligibility rule, which carries no value) are shown with the reason and never written.

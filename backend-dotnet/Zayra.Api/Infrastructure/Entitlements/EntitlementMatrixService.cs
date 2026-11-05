@@ -40,6 +40,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     public const string AuditSuperseded = "entitlements.matrix.superseded";
     public const string AuditSkipped = "entitlements.offering.skipped";
     public const string AuditOffered = "entitlements.offering.offered";
+    public const string AuditBenefitAdded = "entitlements.benefit.added";
+    public const string AuditBenefitRemoved = "entitlements.benefit.removed";
     public const string SourceRuleMatrix = "BenefitsByGradeMatrix";
     public const string SourceRuleImport = "LegacyPayScaleImport";
     public const string GapNotificationEntity = "EntitlementMatrixGap";
@@ -282,6 +284,7 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         foreach (var dup in req.Cells.GroupBy(c => (c.GradeId, c.ComponentCode)).Where(g => g.Count() > 1))
             errors.Add(new MatrixCellError(dup.Key.GradeId, dup.Key.ComponentCode, "duplicate_cell", "This benefit appears more than once for the grade.", null));
         var accepted = new List<(MatrixCellInput Input, EntitlementComponentRule Rule, Grade Grade)>();
+        var customBenefits = (await CustomBenefitsAsync(tid, ct)).Select(c => c.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var cell in req.Cells)
         {
             var grade = grades.FirstOrDefault(g => g.Id == cell.GradeId);
@@ -291,7 +294,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 continue;
             }
             var rule = EntitlementComponentRules.For(cell.ComponentCode);
-            if (rule == null)
+            // A customer-added code is real only while its definition row exists: no values for a benefit nobody created or that was removed.
+            if (rule == null || (EntitlementComponentRules.IsCustom(rule.Code) && !customBenefits.Contains(rule.Code)))
             {
                 errors.Add(Error(cell, "unknown_component", "This benefit isn't in the catalogue."));
                 continue;
@@ -651,6 +655,117 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         return matrix.Offerings.Single(o => o.ComponentCode == rule.Code);
     }
 
+    // ── Customer-added benefits ───────────────────────────────────────────────────────────────────
+
+    /// <summary>The active benefits this tenant added (tenant-wide <c>BEN_*</c> rows), oldest first. Never a company row.</summary>
+    private async Task<List<(string Code, string NameEn, string NameAr)>> CustomBenefitsAsync(Guid tid, CancellationToken ct) =>
+        (await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefits the customer added are one catalogue across the tenant.")
+                .AsNoTracking()
+                .Where(x => x.CompanyId == null && !x.IsDeleted && x.IsActive && x.Code.StartsWith(EntitlementComponentRules.CustomPrefix)
+                    && x.ComponentType == PayComponentTypes.Benefit)
+                .OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Code)
+                .Select(x => new { x.Code, x.NameEn, x.NameAr }).ToListAsync(ct))
+            .Select(x => (x.Code, x.NameEn, x.NameAr)).ToList();
+
+    /// <summary>The code a name makes: <c>BEN_</c> plus its English letters and digits, upper-cased, other runs becoming one underscore.
+    /// Null when the name has no English letter or digit to make one from.</summary>
+    public static string? CustomCodeFor(string? nameEn)
+    {
+        var slug = new System.Text.StringBuilder();
+        var gap = false;
+        foreach (var ch in (nameEn ?? string.Empty).ToUpperInvariant())
+        {
+            if (ch is >= 'A' and <= 'Z' or >= '0' and <= '9')
+            {
+                if (gap && slug.Length > 0) slug.Append('_');
+                slug.Append(ch);
+                gap = false;
+            }
+            else gap = true;
+        }
+        if (slug.Length == 0) return null;
+        var room = EntitlementComponentRules.CustomCodeMaxLength - EntitlementComponentRules.CustomPrefix.Length;
+        return EntitlementComponentRules.CustomPrefix + (slug.Length > room ? slug.ToString(0, room).TrimEnd('_') : slug.ToString());
+    }
+
+    /// <summary>
+    /// Adds a benefit to the grid for every grade and company. It is a non-paying contract benefit: a tenant <c>pay_components</c> row
+    /// (type Benefit, class Contractual, every payroll flag off) that <c>PayComponentEngine.IsNonPaying</c> drops, so a payroll run is
+    /// unchanged by it. Its grade values are then set and published like any other cell. Needs access to every company.
+    /// </summary>
+    public Task<MatrixResult> CreateBenefitAsync(MatrixActor actor, CreateBenefitRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            var nameEn = (req.NameEn ?? string.Empty).Trim();
+            var nameAr = (req.NameAr ?? string.Empty).Trim();
+            if (nameEn.Length == 0) return Bad("name_required", "Give the benefit a name.");
+            if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
+            if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
+            var code = CustomCodeFor(nameEn);
+            if (code is null) return Bad("name_needs_english", "Give the benefit an English name using letters or digits. An Arabic name can be added next to it.");
+
+            // The code is unique across everything in the tenant's pay catalogue, not just the benefits: a clash would put two meanings on one code.
+            var clash = await ScopedBypass.TenantWide(db.PayComponents, tid, "A new benefit code must not collide with any pay component code of the tenant.")
+                .AsNoTracking().Where(x => x.Code == code && x.ComponentType != PayComponentTypes.Benefit).AnyAsync(ct);
+            var sameType = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefit's own row, if it was added or removed before.")
+                .Where(x => x.Code == code && x.ComponentType == PayComponentTypes.Benefit && x.CompanyId == null).ToListAsync(ct);
+            if (clash || sameType.Any(x => !x.IsDeleted))
+                return Conflict("benefit_exists", $"A benefit called \"{nameEn}\" already exists. Choose a different name.");
+
+            await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tid, ct);
+            var row = sameType.FirstOrDefault();   // a removed one with the same name comes back, so the unique key is never broken
+            if (row == null)
+            {
+                row = new PayComponent { TenantId = tid, CompanyId = null, Code = code, CreatedBy = actor.UserId };
+                db.PayComponents.Add(row);
+            }
+            row.NameEn = nameEn; row.NameAr = nameAr.Length == 0 ? nameEn : nameAr;
+            // Every field that could make it pay is set to the non-paying value, exactly as a grade loan limit's row is.
+            row.ComponentType = PayComponentTypes.Benefit; row.CalcMethod = PayComponentCalcMethods.Fixed; row.Value = null;
+            row.ProviderKey = null; row.StructureField = null; row.GlDriverKey = null; row.FormulaExpression = null;
+            row.IsTaxable = false; row.GosiSubject = false; row.WpsIncluded = false; row.EosbIncluded = false; row.EmitWhenZero = false;
+            row.IsFamily = false; row.IsStatutory = false; row.IsSystem = false; row.IsActive = true; row.IsDeleted = false;
+            row.EntitlementClass = PayEntitlementClasses.Contractual; row.StatutoryFloor = PayStatutoryFloors.None; row.IsOffered = true;
+            row.EffectiveFrom = null; row.EffectiveTo = null;
+            row.DisplayOrder = 9100; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitAdded, row.Id, new { componentCode = code, nameEn, nameAr = row.NameAr }));
+            await db.SaveChangesAsync(ct);
+            return Ok(ToDto(EntitlementComponentRules.CustomRule(code, row.NameEn, row.NameAr)));
+        }, ct);
+
+    /// <summary>
+    /// Takes away a benefit that was added by mistake. Only a customer-added benefit nobody has used: one with no grade value in any
+    /// version (not even "Not offered") and in no employee's package. A used one is set to "Not offered" instead, which keeps the history.
+    /// </summary>
+    public Task<MatrixResult> RemoveBenefitAsync(MatrixActor actor, string code, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            code = (code ?? string.Empty).Trim().ToUpperInvariant();
+            if (!EntitlementComponentRules.IsCustom(code))
+                return Conflict("built_in_benefit", "Only a benefit you added yourself can be removed.");
+            var rows = await ScopedBypass.TenantWide(db.PayComponents, tid, "The tenant's own row for a benefit it added, with any company switches on it.")
+                .Where(x => x.Code == code && x.ComponentType == PayComponentTypes.Benefit && !x.IsDeleted).ToListAsync(ct);
+            if (!rows.Any(x => x.CompanyId == null))
+                return new MatrixResult(StatusCodes.Status404NotFound, new { error = "unknown_component", message = "This benefit isn't in the catalogue." });
+            var hasValues = await ScopedBypass.TenantWide(db.GradeEntitlements, tid, "A benefit with any grade value, in any version, can't be removed.")
+                .AnyAsync(x => x.PayComponentCode == code, ct);
+            var inPackages = await ScopedBypass.TenantWide(db.EmployeeEntitlements, tid, "A benefit in any employee's package can't be removed.")
+                .AnyAsync(x => x.PayComponentCode == code, ct);
+            if (hasValues || inPackages)
+                return Conflict("benefit_in_use", "This benefit already has values for grades or is in employees' packages, so it can't be removed. Set it to Not offered for every grade instead.");
+            foreach (var row in rows)
+            {
+                row.IsDeleted = true; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
+            }
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitRemoved, rows.First(x => x.CompanyId == null).Id, new { componentCode = code }));
+            await db.SaveChangesAsync(ct);
+            return Ok(new { removed = code });
+        }, ct);
+
     // ── Legacy import (grade_pay_scale_components, benefit_eligibility_rules) ────────────────────
 
     /// <summary>
@@ -837,11 +952,13 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         await ScopedBypass.TenantWide(db.Companies, tid, "Group completeness is checked against every active company.")
             .Where(x => !x.IsDeleted && x.IsActive).Select(x => x.Id).ToListAsync(ct);
 
-    /// <summary>The catalogue's benefits, plus the loan facilities of grade-limited loan types (shown read-only, named as
+    /// <summary>The catalogue's benefits, the benefits the customer added, plus the loan facilities of grade-limited loan types (shown read-only, named as
     /// the loan type is). A catalogue loan facility no loan type uses yet is left out: it has nowhere to be set.</summary>
     private async Task<List<EntitlementComponentRule>> ComponentRulesAsync(Guid tid, CancellationToken ct)
     {
         var rules = EntitlementComponentRules.Catalogue.Where(r => !r.IsLoanFacility).ToList();
+        foreach (var custom in await CustomBenefitsAsync(tid, ct))
+            rules.Add(EntitlementComponentRules.CustomRule(custom.Code, custom.NameEn, string.IsNullOrWhiteSpace(custom.NameAr) ? custom.NameEn : custom.NameAr));
         var loans = await db.LoanTypes.AsNoTracking()
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.EntitlementComponentCode != null)
             .Select(x => new { Code = x.EntitlementComponentCode!, x.NameEn, x.NameAr }).ToListAsync(ct);
@@ -863,7 +980,7 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     private static MatrixComponentDto ToDto(EntitlementComponentRule r) =>
         new(r.Code, r.NameEn, r.NameAr, r.Class, r.Floor, GroupOf(r), r.AllowedValueTypes, r.AllowedCoverageTiers,
             r.AllowedDependantScopes, r.AllowedLimitPeriods, r.DefaultLimitPeriod, r.IsFloor, CanSkipHere(r), r.IsLoanFacility,
-            BlockReasonDto.For(FloorCode(r.Floor)));
+            BlockReasonDto.For(FloorCode(r.Floor)), EntitlementComponentRules.IsCustom(r.Code));
 
     private static MatrixCellDto ToDto(GradeEntitlement c, Guid? viewCompanyId, DateOnly? nextChange) =>
         new(c.GradeId, c.PayComponentCode, c.Id, c.CompanyId.HasValue, viewCompanyId.HasValue && !c.CompanyId.HasValue, c.Eligible, c.ValueType,
@@ -906,7 +1023,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     private static AuditLog Audit(MatrixActor actor, Guid? companyId, string action, Guid entityId, object metadata) => new()
     {
         TenantId = actor.TenantId, CompanyId = companyId, UserId = actor.UserId, Action = action,
-        EntityName = action.StartsWith("entitlements.offering", StringComparison.Ordinal) ? "PayComponent" : "GradeEntitlement",
+        EntityName = action.StartsWith("entitlements.offering", StringComparison.Ordinal)
+            || action.StartsWith("entitlements.benefit", StringComparison.Ordinal) ? "PayComponent" : "GradeEntitlement",
         EntityId = entityId.ToString(), IpAddress = actor.IpAddress, CreatedAtUtc = DateTime.UtcNow,
         Metadata = JsonSerializer.Serialize(metadata),
     };

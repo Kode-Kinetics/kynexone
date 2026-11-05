@@ -22,6 +22,8 @@ export interface MatrixComponent {
   allowedValueTypes: MatrixValueType[]; allowedCoverageTiers: string[]; allowedDependantScopes: DependantScope[];
   allowedLimitPeriods: string[]; defaultLimitPeriod: string | null;
   isFloor: boolean; canBeSkipped: boolean; isLoanFacility: boolean; floorReason: BlockReason | null;
+  /** A benefit the customer added themselves: a non-paying contract benefit, removable until it has a value. */
+  isCustom?: boolean;
 }
 
 export interface MatrixCell {
@@ -80,6 +82,12 @@ export const entitlementsApi = {
     client.get<EntitlementMatrix>('/api/entitlements/matrix', { params, signal }).then(r => r.data),
   publish: (body: { companyId: string | null; effectiveFrom: string; cells: MatrixCellInput[] }, dryRun = false) =>
     client.put<PublishMatrixResult>('/api/entitlements/matrix', body, { params: dryRun ? { dryRun: true } : undefined }).then(r => r.data),
+  /** Adds a benefit of the customer's own (needs access to every company). Returns it as a grid row. */
+  addBenefit: (body: { nameEn: string; nameAr?: string | null }) =>
+    client.post<MatrixComponent>('/api/entitlements/components', body).then(r => r.data),
+  /** Removes a benefit the customer added and nobody has used yet (409 benefit_in_use otherwise). */
+  removeBenefit: (code: string) =>
+    client.post<{ removed: string }>(`/api/entitlements/components/${encodeURIComponent(code)}/remove`).then(r => r.data),
   setOffering: (body: { companyId: string; componentCode: string; offered: boolean; effectiveFrom: string }) =>
     client.put<MatrixOffering>('/api/entitlements/offerings', body).then(r => r.data),
   importLegacy: (commit: boolean, effectiveFrom?: string) =>
