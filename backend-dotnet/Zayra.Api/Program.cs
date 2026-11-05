@@ -460,8 +460,9 @@ builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Geo.MapLinkResolver.Http
     .ConfigurePrimaryHttpMessageHandler(Zayra.Api.Infrastructure.Geo.MapLinkResolver.CreateHandler)
     .RemoveAllLoggers();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Geo.MapLinkResolver>();
-// Setup → Locations: address search (OpenStreetMap Nominatim, fixed https host). Nominatim requires an identifying
-// User-Agent; the contact is configurable (Geo:UserAgent).
+// Setup → Locations: address search. A chain of free keyless providers (Nominatim, then Photon; order and on/off via
+// Geo:Providers, default "nominatim,photon") over fixed https hosts; the handler refuses every other host. Both ask for an
+// identifying User-Agent; the contact is configurable (Geo:UserAgent). Up to 6 s per provider, 10 s overall.
 builder.Services.AddHttpClient(Zayra.Api.Infrastructure.Geo.AddressSearcher.HttpClientName, c =>
     {
         c.Timeout = TimeSpan.FromSeconds(10);

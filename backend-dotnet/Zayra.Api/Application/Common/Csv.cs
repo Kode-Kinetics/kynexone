@@ -188,6 +188,32 @@ public static class Csv
     /// </summary>
     private const char ByteOrderMark = '﻿';
 
+    /// <summary>
+    /// The number of data rows <see cref="Parse"/> would read: the non-blank lines after the first (the header), lines ending in CRLF, LF or a
+    /// lone CR. Counts without building the lines, so a size check can use it on input it has not yet decided to accept.
+    /// </summary>
+    public static long CountDataRows(string? content)
+    {
+        if (string.IsNullOrEmpty(content)) return 0;
+        long rows = 0;
+        var header = true;
+        var nonBlank = false;
+        var i = content[0] == ByteOrderMark ? 1 : 0;
+        for (; i <= content.Length; i++)
+        {
+            var ch = i < content.Length ? content[i] : '\n';
+            if (ch == '\r' && i + 1 < content.Length && content[i + 1] == '\n') continue;   // CRLF: the LF ends the line
+            if (ch == '\n' || ch == '\r')
+            {
+                if (header) header = false;
+                else if (nonBlank) rows++;
+                nonBlank = false;
+            }
+            else if (!char.IsWhiteSpace(ch)) nonBlank = true;
+        }
+        return rows;
+    }
+
     private static List<string> SplitLines(string content)
     {
         if (content.Length > 0 && content[0] == ByteOrderMark) content = content[1..];

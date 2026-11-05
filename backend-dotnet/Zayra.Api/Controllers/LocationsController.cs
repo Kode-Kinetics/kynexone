@@ -33,6 +33,15 @@ public class LocationsController : ControllerBase
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), this.GetUserId(), this.GetTenantId());
 
+    private LocationService Locations => new(_db, _audit);
+
+    private Func<Guid?, bool> MayWrite => company => OrgWriteRules.MayWriteCompany(this, company);
+
+    private IActionResult Refuse(LocationRuleException ex) => ex.Status == 403 ? Forbid() : StatusCode(ex.Status, ex.ToPayload());
+
+    private static LocationInput ToInput(LocationRequest r) =>
+        new(null, r.Code, r.NameEn, r.NameAr, null, r.City, r.CountryCode, null, null, null, null, r.IsActive, r.Reason);
+
     [HttpGet]
     public async Task<IActionResult> Search([FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default)
     {
@@ -43,7 +52,7 @@ public class LocationsController : ControllerBase
 
         var query = _db.Locations.AsNoTracking().Where(l => l.TenantId == tenantId.Value && !l.IsDeleted);
         var total = await query.CountAsync(ct);
-        var items = await query.OrderBy(l => l.Code).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var items = (await query.OrderBy(l => l.Code).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct)).Select(LocationDto.From).ToList();
         return Ok(new { items, total, page, pageSize });
     }
 
@@ -53,7 +62,7 @@ public class LocationsController : ControllerBase
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
         var loc = await _db.Locations.AsNoTracking().FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId.Value && !l.IsDeleted, ct);
-        return loc is null ? NotFound() : Ok(loc);
+        return loc is null ? NotFound() : Ok(LocationDto.From(loc));
     }
 
     [HttpPost]
@@ -63,26 +72,12 @@ public class LocationsController : ControllerBase
         if (tenantId is null) return Unauthorized();
         // A location made here belongs to no company, so it is the whole group's: group scope only (same rule as remove / restore).
         if (!OrgWriteRules.MayWriteCompany(this, null)) return Forbid();
-        if (string.IsNullOrWhiteSpace(req.Code)) return BadRequest(new { message = "Code is required" });
-        if (string.IsNullOrWhiteSpace(req.NameEn)) return BadRequest(new { message = "NameEn is required" });
-
-        var code = req.Code.Trim();
-        var duplicate = await _db.Locations.AnyAsync(l => l.TenantId == tenantId && !l.IsDeleted && l.Code.ToUpper() == code.ToUpper(), ct);
-        if (duplicate) return BadRequest(new { message = $"A location with code '{code}' already exists." });
-
-        var loc = new Location
+        try
         {
-            TenantId = tenantId.Value,
-            Code = code,
-            NameEn = req.NameEn.Trim(),
-            NameAr = req.NameAr?.Trim() ?? string.Empty,
-            CountryCode = req.CountryCode?.Trim() ?? string.Empty,
-            City = req.City?.Trim() ?? string.Empty,
-            IsActive = req.IsActive
-        };
-        _db.Locations.Add(loc);
-        await _db.SaveChangesAsync(ct);
-        return CreatedAtAction(nameof(Get), new { id = loc.Id }, loc);
+            var loc = await Locations.CreateAsync(tenantId.Value, ToInput(req), Context(), MayWrite, ct);
+            return CreatedAtAction(nameof(Get), new { id = loc.Id }, loc);
+        }
+        catch (LocationRuleException ex) { return Refuse(ex); }
     }
 
     [HttpPut("{id:guid}")]
@@ -90,26 +85,12 @@ public class LocationsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        var denied = await OrgWriteRules.GuardEditAsync(this, new OrgRowRemoval(_db, _audit), OrgRowKind.Location, id, null, ct);
-        if (denied is not null) return denied;
-        var loc = await _db.Locations.FirstOrDefaultAsync(l => l.Id == id && l.TenantId == tenantId.Value && !l.IsDeleted, ct);
-        if (loc is null) return NotFound();
-        if (req.Code is not null && !string.Equals(req.Code.Trim(), loc.Code, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var usage = await new OrgRowRemoval(_db, _audit).UsageAsync(OrgRowKind.Location, tenantId.Value, id, ct);
-            if (usage.InUse)
-                return BadRequest(new OrganizationRuleException(OrganizationRuleException.CodeLocked,
-                    $"The code can't be changed because this is in use. {usage.Summary}. Change the name instead.").ToPayload());
+            var loc = await Locations.UpdateAsync(tenantId.Value, id, ToInput(req), replaceOptional: false, Context(), MayWrite, ct);
+            return loc is null ? NotFound() : Ok(loc);
         }
-        loc.Code = req.Code?.Trim() ?? loc.Code;
-        loc.NameEn = req.NameEn?.Trim() ?? loc.NameEn;
-        loc.NameAr = req.NameAr?.Trim() ?? loc.NameAr;
-        loc.CountryCode = req.CountryCode?.Trim() ?? loc.CountryCode;
-        loc.City = req.City?.Trim() ?? loc.City;
-        // On or off changes only through Remove / Restore.
-        loc.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-        return Ok(loc);
+        catch (LocationRuleException ex) { return Refuse(ex); }
     }
 
     [HttpDelete("{id:guid}")]
@@ -137,93 +118,26 @@ public class LocationsController : ControllerBase
         CsvDownload.Result(Csv.Template(CsvHeaders, CsvExampleRow), "locations_import_template.csv");
 
     [HttpPost("import-preview")]
-    public async Task<IActionResult> ImportPreview([FromBody] LocationImportRequest req, CancellationToken ct)
-    {
-        var tenantId = this.GetTenantId();
-        if (tenantId is null) return Unauthorized();
-        return Ok(await RunPreviewAsync(tenantId.Value, req.Csv, ct));
-    }
+    public Task<IActionResult> ImportPreview([FromBody] LocationImportRequest req, CancellationToken ct) => RunImportAsync(req.Csv, commit: false, ct);
 
     [HttpPost("import")]
-    public async Task<IActionResult> Import([FromBody] LocationImportRequest req, CancellationToken ct)
+    public Task<IActionResult> Import([FromBody] LocationImportRequest req, CancellationToken ct) => RunImportAsync(req.Csv, commit: true, ct);
+
+    /// <summary>Preview and commit walk the SAME loop in the service, so a spreadsheet cannot be judged one way in the dry run and another for real.</summary>
+    private async Task<IActionResult> RunImportAsync(string csv, bool commit, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        return Ok(await RunCommitAsync(tenantId.Value, req.Csv, ct));
-    }
-
-    private async Task<ImportPreviewResult> RunPreviewAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
-        var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Locations.AsNoTracking().Where(l => l.TenantId == tenantId && !l.IsDeleted).ToDictionaryAsync(l => l.Code.ToUpperInvariant(), ct);
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int wouldCreate = 0, wouldUpdate = 0, wouldSkip = 0;
-
-        for (int i = 0; i < rows.Count; i++)
+        try
         {
-            var row = rows[i]; var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            if (errors.Count > 0) { wouldSkip++; rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool exists = !string.IsNullOrWhiteSpace(code) && existingByCode.ContainsKey(code.ToUpperInvariant());
-            if (exists) wouldUpdate++; else wouldCreate++;
-            if (!string.IsNullOrWhiteSpace(code)) seenCodes.Add(code);
-            rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Ok, errors, warnings));
+            var outcome = await Locations.ImportAsync(tenantId.Value, Csv.Parse(csv), commit, Context(), MayWrite, ct);
+            return Ok(commit
+                ? new ImportCommitResult(outcome.Received, outcome.Created, outcome.Updated, outcome.Skipped, outcome.Rows, Array.Empty<string>())
+                : (object)new ImportPreviewResult(outcome.Received, outcome.Created, outcome.Updated, outcome.Skipped, outcome.Rows));
         }
-        return new ImportPreviewResult(rows.Count, wouldCreate, wouldUpdate, wouldSkip, rowResults);
-    }
-
-    private async Task<ImportCommitResult> RunCommitAsync(Guid tenantId, string csv, CancellationToken ct)
-    {
-        var rows = Csv.Parse(csv);
-        var existingByCode = await _db.Locations.Where(l => l.TenantId == tenantId && !l.IsDeleted).ToDictionaryAsync(l => l.Code.ToUpperInvariant(), ct);
-        var rowResults = new List<ImportRowResult>();
-        var seenCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        int created = 0, updated = 0, skipped = 0;
-
-        for (int i = 0; i < rows.Count; i++)
-        {
-            var row = rows[i]; var rowNum = i + 2;
-            var code = row.GetValueOrDefault("Code", string.Empty).Trim();
-            var nameEn = row.GetValueOrDefault("NameEn", string.Empty).Trim();
-            var errors = new List<string>(); var warnings = new List<string>();
-            if (string.IsNullOrWhiteSpace(code)) errors.Add("Code is required");
-            if (string.IsNullOrWhiteSpace(nameEn)) errors.Add("NameEn is required");
-            if (!string.IsNullOrWhiteSpace(code) && seenCodes.Contains(code)) errors.Add($"Duplicate Code '{code}' within this batch");
-            if (errors.Count > 0) { skipped++; rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Error, errors, warnings)); continue; }
-            bool isActive = !row.TryGetValue("IsActive", out var av) || !string.Equals(av, "false", StringComparison.OrdinalIgnoreCase);
-            seenCodes.Add(code);
-            if (existingByCode.TryGetValue(code.ToUpperInvariant(), out var existing))
-            {
-                existing.NameEn = nameEn;
-                existing.NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim();
-                existing.CountryCode = row.GetValueOrDefault("CountryCode", string.Empty).Trim();
-                existing.City = row.GetValueOrDefault("City", string.Empty).Trim();
-                existing.UpdatedAtUtc = DateTime.UtcNow; updated++;
-            }
-            else
-            {
-                _db.Locations.Add(new Location
-                {
-                    TenantId = tenantId, Code = code, NameEn = nameEn,
-                    NameAr = row.GetValueOrDefault("NameAr", string.Empty).Trim(),
-                    CountryCode = row.GetValueOrDefault("CountryCode", string.Empty).Trim(),
-                    City = row.GetValueOrDefault("City", string.Empty).Trim(),
-                    IsActive = isActive
-                });
-                created++;
-            }
-            rowResults.Add(new ImportRowResult(rowNum, code, nameEn, ImportRowStatus.Ok, errors, warnings));
-        }
-        await _db.SaveChangesAsync(ct);
-        return new ImportCommitResult(rows.Count, created, updated, skipped, rowResults, Array.Empty<string>());
+        catch (LocationRuleException ex) { return Refuse(ex); }
     }
 }
 
-public record LocationRequest(string? Code, string? NameEn, string? NameAr, string? CountryCode, string? City, bool IsActive = true);
+public record LocationRequest(string? Code, string? NameEn, string? NameAr, string? CountryCode, string? City, bool IsActive = true, string? Reason = null);
 public record LocationImportRequest(string Csv);

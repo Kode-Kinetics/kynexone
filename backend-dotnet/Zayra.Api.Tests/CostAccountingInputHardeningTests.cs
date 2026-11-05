@@ -224,7 +224,7 @@ public class CostAccountingInputHardeningTests : IClassFixture<CostCentreReadAcc
     public async Task TheTemplateAndTheExport_CarryTheReasonColumn()
     {
         var (c, _, _) = await Controller();
-        var template = System.Text.Encoding.UTF8.GetString(((FileContentResult)c.ImportTemplate()).FileContents);
+        var template = System.Text.Encoding.UTF8.GetString(((FileContentResult)await c.ImportTemplate()).FileContents);
         template.Split('\n')[0].Trim().Should().EndWith("Reason");
         var export = System.Text.Encoding.UTF8.GetString(((FileContentResult)await c.Export(default)).FileContents);
         export.Split('\n')[0].Trim().Should().Be(template.Split('\n')[0].Trim());
