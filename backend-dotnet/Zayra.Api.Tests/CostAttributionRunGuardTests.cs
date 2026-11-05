@@ -131,6 +131,51 @@ public class CostAttributionRunGuardTests
         (await Svc(w).UpdateCostCenterAsync(w.Tenant, w.X.Id, new CostCenterRequest(w.A.Id, "X", "X renamed"), Ctx(w.Tenant), default))!.Name.Should().Be("X renamed");
     }
 
+    // ── Integrity pass: ERP segment and restore are held to the same run lock as the class and active state ──
+
+    [Theory]
+    [MemberData(nameof(Locking))]
+    public async Task Integrity_ChangingTheErpSegmentOfACostCentreTheRunResolvesTo_IsRefused_ButAnUnusedOneIsNot(string status)
+    {
+        var w = await Seed(status);
+        await Locked(() => Svc(w).UpdateCostCenterAsync(w.Tenant, w.X.Id,
+            new CostCenterRequest(w.A.Id, "X", "X", GlSegment: "SEG-X", Reason: "re-point ERP"), Ctx(w.Tenant), default));
+        (await Svc(w).UpdateCostCenterAsync(w.Tenant, w.Z.Id,
+            new CostCenterRequest(w.A.Id, "Z", "Z", GlSegment: "SEG-Z", Reason: "re-point ERP"), Ctx(w.Tenant), default))!.GlSegment.Should().Be("SEG-Z");
+    }
+
+    private static CostCentersController CostCentres(W w, params string[] permissions) => new(Svc(w), w.Db)
+    {
+        ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = EstablishmentApiTests.User(w.Tenant, permissions) } }
+    };
+
+    [Theory]
+    [MemberData(nameof(Locking))]
+    public async Task Integrity_RestoringACostCentreAPendingRunWouldResolveTo_IsRefused_ButAnUnusedOneIsNot(string status)
+    {
+        var w = await Seed(status);
+        // X is where Dept1 (and so the person in the run) points; it has been switched off, so the run currently resolves it to nothing.
+        foreach (var cc in new[] { w.X, w.Z }) (await w.Db.CostCenters.SingleAsync(c => c.Id == cc.Id)).IsActive = false;
+        await w.Db.SaveChangesAsync();
+
+        var hr = CostCentres(w, "organization.write", "organization.costcenter.manage", "organization.delete");
+        ((ObjectResult)await hr.Restore(w.X.Id, default)).StatusCode.Should().Be(409);
+        (await w.Db.CostCenters.AsNoTracking().SingleAsync(c => c.Id == w.X.Id)).IsActive.Should().BeFalse("a refused restore writes nothing");
+
+        (await hr.Restore(w.Z.Id, default)).Should().BeOfType<OkObjectResult>();
+        (await w.Db.CostCenters.AsNoTracking().SingleAsync(c => c.Id == w.Z.Id)).IsActive.Should().BeTrue();
+    }
+
+    [Theory]
+    [MemberData(nameof(NotLocking))]
+    public async Task Integrity_RestoringACostCentre_IsNotBlockedWhenNoRunIsAwaitingFinance(string status)
+    {
+        var w = await Seed(status);
+        (await w.Db.CostCenters.SingleAsync(c => c.Id == w.X.Id)).IsActive = false;
+        await w.Db.SaveChangesAsync();
+        (await CostCentres(w, "organization.write", "organization.costcenter.manage", "organization.delete").Restore(w.X.Id, default)).Should().BeOfType<OkObjectResult>();
+    }
+
     private static PositionsController Positions(W w) => new(w.Db, new AuditService(w.Db))
     {
         ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = EstablishmentApiTests.User(w.Tenant, "organization.write", "organization.costcenter.manage") } }

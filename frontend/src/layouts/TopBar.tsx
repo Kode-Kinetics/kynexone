@@ -15,6 +15,7 @@ import type { NotificationItem } from '../api/notifications';
 import type { ThemeMode } from '../types/ui';
 
 import { useFormat } from '../hooks/useFormat';
+import { primaryRole } from '../lib/primaryRole';
 function LanguageSwitcher() {
   const { locale, setLocale, t } = useLocale();
   const [open, setOpen] = useState(false);
@@ -346,7 +347,7 @@ export function TopBar({ theme, onToggleTheme, onOpenSidebar, onOpenSearch, navi
             <Avatar name={user?.fullName ?? 'User'} size="xs" />
             <div className="text-start">
               <p className="text-xs font-semibold leading-tight text-slate-900 dark:text-white">{user?.fullName ?? 'User'}</p>
-              <p className="text-caption leading-tight text-slate-500 dark:text-slate-400">{user?.roles[0] ?? 'Member'}</p>
+              <p className="text-caption leading-tight text-slate-500 dark:text-slate-400">{primaryRole(user?.roles) ?? 'Member'}</p>
             </div>
           </button>
           {userMenuOpen && (

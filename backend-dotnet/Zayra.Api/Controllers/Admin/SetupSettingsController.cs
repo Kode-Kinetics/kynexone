@@ -475,49 +475,39 @@ public class SetupSettingsController : ControllerBase
         var tid = GetTenantId();
         var q = _db.Locations.Where(x => x.TenantId == tid && !x.IsDeleted);
         if (branchId.HasValue) q = q.Where(x => x.BranchId == branchId);
-        return Ok(await q.OrderBy(x => x.NameEn).ToListAsync(ct));
+        return Ok((await q.OrderBy(x => x.NameEn).ToListAsync(ct)).Select(LocationDto.From).ToList());
     }
+
+    private RequestContext LocationContext() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), GetTenantId());
+    private Func<Guid?, bool> MayWriteLocation => company => OrgWriteRules.MayWriteCompany(this, company);
+    private IActionResult RefuseLocation(LocationRuleException ex) => ex.Status == 403 ? Forbid() : StatusCode(ex.Status, ex.ToPayload());
 
     [HttpPost("api/admin/locations")]
     [HasPermission("organization.write")]
     public async Task<IActionResult> CreateLocation([FromBody] LocationRequest req, CancellationToken ct)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tid = GetTenantId();
-        var uid = GetUserId();
-        if (await _db.Locations.AnyAsync(x => x.TenantId == tid && x.Code == req.Code && !x.IsDeleted, ct))
-            return Conflict("Location code already exists.");
-        var loc = new Location
+        try
         {
-            TenantId = tid, BranchId = req.BranchId, Code = req.Code, NameEn = req.NameEn,
-            NameAr = req.NameAr ?? string.Empty, AddressLine1 = req.AddressLine1 ?? string.Empty,
-            City = req.City ?? string.Empty, CountryCode = req.CountryCode ?? string.Empty,
-            PostalCode = req.PostalCode ?? string.Empty,
-            Latitude = req.Latitude, Longitude = req.Longitude,
-            GeofenceRadiusMeters = req.GeofenceRadiusMeters, CreatedBy = uid,
-        };
-        _db.Locations.Add(loc);
-        await _db.SaveChangesAsync(ct);
-        return Ok(loc);
+            var input = new LocationInput(req.BranchId, req.Code, req.NameEn, req.NameAr, req.AddressLine1, req.City, req.CountryCode, req.PostalCode,
+                req.Latitude, req.Longitude, req.GeofenceRadiusMeters, req.IsActive, req.Reason);
+            return Ok(await new LocationService(_db, _audit).CreateAsync(GetTenantId(), input, LocationContext(), MayWriteLocation, ct));
+        }
+        catch (LocationRuleException ex) { return RefuseLocation(ex); }
     }
 
     [HttpPut("api/admin/locations/{id:guid}")]
     [HasPermission("organization.write")]
     public async Task<IActionResult> UpdateLocation(Guid id, [FromBody] LocationRequest req, CancellationToken ct)
     {
-        if (!this.HasGroupEntityScope()) return Forbid();
-        var tid = GetTenantId();
-        var uid = GetUserId();
-        var loc = await _db.Locations.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (loc == null) return NotFound();
-        loc.NameEn = req.NameEn; loc.NameAr = req.NameAr ?? string.Empty;
-        loc.AddressLine1 = req.AddressLine1 ?? string.Empty; loc.City = req.City ?? string.Empty;
-        loc.CountryCode = req.CountryCode ?? string.Empty; loc.PostalCode = req.PostalCode ?? string.Empty;
-        loc.Latitude = req.Latitude; loc.Longitude = req.Longitude;
-        loc.GeofenceRadiusMeters = req.GeofenceRadiusMeters;
-        loc.UpdatedAtUtc = DateTime.UtcNow; loc.UpdatedBy = uid;
-        await _db.SaveChangesAsync(ct);
-        return Ok(loc);
+        try
+        {
+            // The screen saves the whole form: what it leaves out is cleared. Branch, code and on/off are not part of that overwrite.
+            var input = new LocationInput(req.BranchId, req.Code, req.NameEn, req.NameAr, req.AddressLine1, req.City, req.CountryCode, req.PostalCode,
+                req.Latitude, req.Longitude, req.GeofenceRadiusMeters, null, req.Reason);
+            var loc = await new LocationService(_db, _audit).UpdateAsync(GetTenantId(), id, input, replaceOptional: true, LocationContext(), MayWriteLocation, ct);
+            return loc is null ? NotFound() : Ok(loc);
+        }
+        catch (LocationRuleException ex) { return RefuseLocation(ex); }
     }
 
     [HttpDelete("api/admin/locations/{id:guid}")]
@@ -706,5 +696,5 @@ public record GCCSettingRequest(
     IReadOnlyCollection<Zayra.Api.Application.Compliance.FloorAcknowledgement>? AcknowledgedWarnings = null);
 public record EosbFloorCheckRequest(string CountryCode, decimal EosbYears1To5Rate, decimal EosbYearsAbove5Rate);
 public record FiscalYearRequest(int Year, DateOnly StartDate, DateOnly EndDate);
-public record LocationRequest(Guid? BranchId, string Code, string NameEn, string? NameAr, string? AddressLine1, string? City, string? CountryCode, string? PostalCode, decimal? Latitude, decimal? Longitude, decimal? GeofenceRadiusMeters, bool IsActive = true);
+public record LocationRequest(Guid? BranchId, string Code, string NameEn, string? NameAr, string? AddressLine1, string? City, string? CountryCode, string? PostalCode, decimal? Latitude, decimal? Longitude, decimal? GeofenceRadiusMeters, bool IsActive = true, string? Reason = null);
 public record NotificationTemplateRequest(string Code, string EventType, string Channel, string? SubjectEn, string? SubjectAr, string BodyEn, string? BodyAr, string? Variables, bool IsActive = true);

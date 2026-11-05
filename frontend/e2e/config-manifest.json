@@ -21,6 +21,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.company-structure.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
     "playwright.compensation-real.config.ts": {
       "disposition": "manual-stack",
       "reason": "Real-backend compensation journey with a seed project on :5213/:5313; needs its own disposable stack. OWNER DECISION: nightly compose job or retire."

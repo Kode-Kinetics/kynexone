@@ -86,11 +86,21 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<MigrationImportBatchDto>> CreateDryRunBatch([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var payloadJson = StableJson(req);
         var checksum = Checksum(payloadJson);
 
+        // A repeat of the same package resumes the caller's own batch. Another caller's batch (another scope) is never reused or overwritten.
+        var userId = GetUserId();
         var batch = await _db.MigrationImportBatches
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CreatedBy == userId && x.PackageChecksum == checksum && x.Status != "Committed", ct);
+        // A batch being committed is not reset to a dry run: that would let a second commit claim it while the first is still applying.
+        // One whose committer is long gone is released (Failed) and resumed like any failed batch.
+        if (batch is { Status: "Committing" })
+        {
+            if (await ReleaseIfStaleAsync(tenantId, batch.Id, ct)) await _db.Entry(batch).ReloadAsync(ct);
+            else return Conflict(ToDto(batch, errors: ["This package is being committed right now. Wait for it to finish, then run a new dry run if needed."]));
+        }
 
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
@@ -135,19 +145,78 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<MigrationImportBatchDto>> GetBatch(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var batch = await _db.MigrationImportBatches.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        var batch = await ReadableBatches(tenantId).AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (batch is null) return NotFound();
         return Ok(ToDto(batch));
+    }
+
+    /// <summary>
+    /// The stored batches this caller may read, commit or resume. A batch keeps the package as the creator's scope validated it, so
+    /// only a group-scope caller (who holds every company) reads another person's batch; a company-scoped caller reads their own.
+    /// Anything else reads as not found.
+    /// </summary>
+    private IQueryable<MigrationImportBatch> ReadableBatches(Guid tenantId)
+    {
+        var all = _db.MigrationImportBatches.Where(x => x.TenantId == tenantId);
+        if (this.HasGroupEntityScope()) return all;
+        var userId = GetUserId();
+        return userId is null ? all.Where(_ => false) : all.Where(x => x.CreatedBy == userId);
+    }
+
+    private const int MaxPackageRows = 20_000;
+    private const int MaxPackageChars = 5_000_000;
+
+    /// <summary>A package over the byte cap is 413; one over the row cap is 422. Judged before anything is parsed, stored or validated.</summary>
+    private ObjectResult? RefuseOversize(OrganizationStructureImportRequest req)
+    {
+        long chars = 0, rows = 0;
+        foreach (var section in new[] { req.CompaniesCsv, req.BranchesCsv, req.CostCentersCsv, req.DepartmentsCsv, req.GradesCsv, req.GradePayComponentsCsv, req.DesignationsCsv, req.PositionsCsv })
+        {
+            if (string.IsNullOrEmpty(section)) continue;
+            chars += section.Length;
+            rows += Csv.CountDataRows(section);   // counted the way the parser reads it: the header and blank lines are not rows, a lone CR is a line break
+        }
+        if (chars > MaxPackageChars)
+            return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = "import_too_large", message = $"This import is too large ({chars:N0} characters). Split it into files under {MaxPackageChars:N0} characters and import them one after the other." });
+        if (rows > MaxPackageRows)
+            return StatusCode(StatusCodes.Status422UnprocessableEntity, new { error = "import_too_many_rows", message = $"This import has {rows:N0} rows. At most {MaxPackageRows:N0} rows can be imported at a time; split the file and import the parts one after the other." });
+        return null;
+    }
+
+    /// <summary>Takes the batch for one committer: DryRunPassed to Committing in a single conditional update, so of any number of callers pressing Commit at once exactly one wins.</summary>
+    private async Task<bool> TryClaimAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        if (_db.Database.IsRelational())
+        {
+            var now = DateTime.UtcNow;
+            return await _db.MigrationImportBatches.Where(x => x.TenantId == tenantId && x.Id == id && x.Status == "DryRunPassed")
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, "Committing").SetProperty(x => x.CurrentSection, "organization_structure")
+                    .SetProperty(x => x.UpdatedAtUtc, now), ct) == 1;
+        }
+        // The in-memory provider the fast unit tests use has no set-based update, and runs one caller at a time.
+        var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.Status == "DryRunPassed", ct);
+        if (batch is null) return false;
+        batch.Status = "Committing";
+        batch.CurrentSection = "organization_structure";
+        batch.UpdatedAtUtc = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+        return true;
     }
 
     [HttpPost("batches/{id:guid}/commit")]
     public async Task<ActionResult<MigrationImportBatchDto>> CommitBatch(Guid id, CancellationToken ct)
     {
         var tenantId = GetTenantId();
-        var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+        var batch = await ReadableBatches(tenantId).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (batch is null) return NotFound();
         if (batch.Status == "Committed") return Ok(ToDto(batch));
+        // A claim whose committer is long gone (a crash or a restart mid-apply) is released, not honoured for ever: the batch is marked Failed
+        // and a fresh dry run re-validates it against what is stored now.
+        if (batch.Status == "Committing" && await ReleaseIfStaleAsync(tenantId, id, ct))
+        {
+            await _db.Entry(batch).ReloadAsync(ct);
+            return Conflict(ToDto(batch, errors: [StaleCommitMessage]));
+        }
         if (batch.Status != "DryRunPassed")
             return Conflict(ToDto(batch, errors: [$"Batch is {batch.Status}; run a clean dry-run before commit."]));
 
@@ -162,55 +231,109 @@ public class OrganizationStructureImportController : ControllerBase
             return UnprocessableEntity(ToDto(batch));
         }
 
-        batch.Status = "Committing";
-        batch.CurrentSection = "organization_structure";
-        batch.UpdatedAtUtc = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
-
-        var commit = await Commit(req, ct);
-        // Commit() now runs its unit through the execution strategy, and a retry inside that
-        // strategy clears the change tracker. Re-attach the batch from persisted state so the
-        // status updates below are actually written instead of being applied to a detached
-        // entity and silently dropped by SaveChanges.
-        if (_db.Entry(batch).State == EntityState.Detached)
-            batch = await _db.MigrationImportBatches.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
-        if (commit.Result is OkObjectResult ok && ok.Value is OrganizationStructureImportResult result)
+        if (!await TryClaimAsync(tenantId, id, ct))
         {
-            var reconciliation = await BuildReconciliationAsync(tenantId, ParsePackage(req), result, ct);
-            batch.Status = "Committed";
-            batch.CurrentSection = "committed";
-            batch.DryRun = false;
-            batch.CreatedRows = result.Applied.Values.Sum();
-            batch.UpdatedRows = CountWouldUpdate(result);
-            batch.SkippedRows = result.Rows.Count(x => x.Status == ImportRowStatus.Skipped);
-            batch.ErrorRows = result.Errors;
-            batch.ResultJson = StableJson(result);
-            batch.ReconciliationJson = StableJson(reconciliation);
-            batch.ErrorJson = "[]";
-            batch.CompletedAtUtc = DateTime.UtcNow;
-            batch.UpdatedAtUtc = DateTime.UtcNow;
-            await _db.SaveChangesAsync(ct);
-            return Ok(ToDto(batch, reconciliation));
+            await _db.Entry(batch).ReloadAsync(ct);
+            return Conflict(ToDto(batch, errors: [$"Batch is {batch.Status}; it is already being committed or no longer ready."]));
         }
+        await _db.Entry(batch).ReloadAsync(ct);
 
-        var failed = commit.Result is ObjectResult objectResult && objectResult.Value is OrganizationStructureImportResult failedResult
-            ? failedResult
-            : null;
-        var errors = failed?.Rows.SelectMany(x => x.Errors).ToList() ?? ["Commit failed before all sections completed."];
+        // Everything from here to the final status write is one guarded unit: whichever step throws, the claim is released to Failed. The apply
+        // itself runs in one transaction, so a failure in it leaves no new rows; a failure after it (the reconciliation, the status write) leaves
+        // the data applied and the record Failed, which a fresh dry run reconciles.
+        var applied = false;
+        try
+        {
+            var commit = await Commit(req, ct);
+            applied = commit.Result is OkObjectResult;
+            // Commit() runs its unit through the execution strategy, and a retry inside that strategy clears the change tracker.
+            // Re-attach the batch from persisted state so the status updates below are written, not applied to a detached entity.
+            if (_db.Entry(batch).State == EntityState.Detached)
+                batch = await _db.MigrationImportBatches.FirstAsync(x => x.TenantId == tenantId && x.Id == id, ct);
+            if (commit.Result is OkObjectResult ok && ok.Value is OrganizationStructureImportResult result)
+            {
+                var reconciliation = await BuildReconciliationAsync(tenantId, ParsePackage(req), result, ct);
+                batch.Status = "Committed";
+                batch.CurrentSection = "committed";
+                batch.DryRun = false;
+                batch.CreatedRows = result.Applied.Values.Sum();
+                batch.UpdatedRows = CountWouldUpdate(result);
+                batch.SkippedRows = result.Rows.Count(x => x.Status == ImportRowStatus.Skipped);
+                batch.ErrorRows = result.Errors;
+                batch.ResultJson = StableJson(result);
+                batch.ReconciliationJson = StableJson(reconciliation);
+                batch.ErrorJson = "[]";
+                batch.CompletedAtUtc = DateTime.UtcNow;
+                batch.UpdatedAtUtc = DateTime.UtcNow;
+                // The data is already committed: the caller going away must not leave the record half-written and claimed.
+                await _db.SaveChangesAsync(CancellationToken.None);
+                return Ok(ToDto(batch, reconciliation));
+            }
+
+            var failed = commit.Result is ObjectResult objectResult && objectResult.Value is OrganizationStructureImportResult failedResult
+                ? failedResult
+                : null;
+            var conflict = commit.Result is ConflictObjectResult;
+            var errors = failed?.Rows.SelectMany(x => x.Errors).ToList()
+                ?? [conflict ? "A code in this import was just taken by someone else, so nothing was applied. Run a new dry run to try again." : "Commit failed before all sections completed."];
+            batch.Status = "Failed";
+            batch.CurrentSection = "commit_failed";
+            batch.ErrorRows = failed?.Errors ?? errors.Count;
+            batch.ErrorJson = StableJson(errors);
+            batch.ResultJson = failed is null ? "{}" : StableJson(failed);
+            batch.UpdatedAtUtc = DateTime.UtcNow;
+            await _db.SaveChangesAsync(CancellationToken.None);
+            return conflict ? Conflict(ToDto(batch, errors: errors)) : UnprocessableEntity(ToDto(batch, errors: errors));
+        }
+        catch
+        {
+            _db.ChangeTracker.Clear();
+            var stuck = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, CancellationToken.None);
+            if (stuck is not null && stuck.Status == "Committing")
+            {
+                stuck.Status = "Failed";
+                stuck.CurrentSection = applied ? "commit_record_failed" : "commit_failed";
+                stuck.ErrorJson = StableJson(new[] { applied
+                    ? "The import was applied but its record could not be completed. Run a new dry run to see the current state."
+                    : "The commit failed and was rolled back; nothing was applied. Run a new dry run to try again." });
+                stuck.UpdatedAtUtc = DateTime.UtcNow;
+                await _db.SaveChangesAsync(CancellationToken.None);
+            }
+            throw;
+        }
+    }
+
+    /// <summary>A Committing batch not touched for this long has lost its committer (a normal apply finishes in seconds to minutes).</summary>
+    private static readonly TimeSpan StaleCommitAfter = TimeSpan.FromMinutes(15);
+    private const string StaleCommitMessage = "An earlier commit of this batch did not finish. Nothing can be assumed about it: run a new dry run to see what is stored now.";
+
+    /// <summary>Marks a Committing batch Failed when it is stale; true when it did (or already was released).</summary>
+    private async Task<bool> ReleaseIfStaleAsync(Guid tenantId, Guid id, CancellationToken ct)
+    {
+        var cutoff = DateTime.UtcNow - StaleCommitAfter;
+        var message = StableJson(new[] { StaleCommitMessage });
+        if (_db.Database.IsRelational())
+        {
+            var now = DateTime.UtcNow;
+            return await _db.MigrationImportBatches.Where(x => x.TenantId == tenantId && x.Id == id && x.Status == "Committing" && x.UpdatedAtUtc < cutoff)
+                .ExecuteUpdateAsync(u => u.SetProperty(x => x.Status, "Failed").SetProperty(x => x.CurrentSection, "commit_abandoned")
+                    .SetProperty(x => x.ErrorJson, message).SetProperty(x => x.UpdatedAtUtc, now), ct) == 1;
+        }
+        var batch = await _db.MigrationImportBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.Status == "Committing" && x.UpdatedAtUtc < cutoff, ct);
+        if (batch is null) return false;
         batch.Status = "Failed";
-        batch.CurrentSection = "commit_failed";
-        batch.ErrorRows = failed?.Errors ?? errors.Count;
-        batch.ErrorJson = StableJson(errors);
-        batch.ResultJson = failed is null ? "{}" : StableJson(failed);
+        batch.CurrentSection = "commit_abandoned";
+        batch.ErrorJson = message;
         batch.UpdatedAtUtc = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
-        return UnprocessableEntity(ToDto(batch, errors: errors));
+        return true;
     }
 
     [HttpPost("preview")]
     public async Task<ActionResult<OrganizationStructureImportResult>> Preview([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         return Ok(await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct));
@@ -220,6 +343,7 @@ public class OrganizationStructureImportController : ControllerBase
     public async Task<ActionResult<OrganizationStructureImportResult>> Commit([FromBody] OrganizationStructureImportRequest req, CancellationToken ct)
     {
         var tenantId = GetTenantId();
+        if (RefuseOversize(req) is { } tooLarge) return tooLarge;
         var parsed = ParsePackage(req);
         if (PackageSetsCostAttribution(parsed) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
         var validation = await ValidateAsync(tenantId, parsed, this.GetEntityScope(), ct);
@@ -284,6 +408,15 @@ public class OrganizationStructureImportController : ControllerBase
 
         }
         catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            // A rival writer saved the same code between this import's validation and its insert: the unique index refused the
+            // whole unit (the transaction rolled back, so nothing of this import remains). A conflict the caller can read, not a 500.
+            // The rolled-back inserts are still tracked as Added: drop them, or the caller's next SaveChanges (a stored batch's Failed
+            // status) would retry them and hit the same unique violation. CommitBatch re-attaches the batch from persisted state.
+            _db.ChangeTracker.Clear();
+            return Conflict(new { error = Zayra.Api.Application.Organization.OrgCodeConflictException.ErrorCode, message = "A code in this import was just taken by someone else, so nothing was imported. Run the import again to see the current state." });
+        }
 
         // The audit rows (one per entity, then the bulk marker) are written inside ApplyStructureAsync, in the
         // same transaction as the data: there is no committed import without its trail.

@@ -65,6 +65,17 @@ public sealed class CostAttributionGuard(ZayraDbContext db)
             throw CostCentreRuleException.LockedIntoApprovedRun();
     }
 
+    /// <summary>A switched-off cost centre is being restored: refuse if anyone in a locking run would then resolve to it instead of to nothing.</summary>
+    public async Task EnsureCostCentreRestoreUnchangedAsync(Guid tenantId, Guid? companyId, Guid costCenterId, CancellationToken ct)
+    {
+        if (companyId is not Guid company) return;
+        var people = await PeopleInLockingRunsAsync(tenantId, company, ct);
+        if (people.Count == 0) return;
+        var before = await CostCentreResolver.LoadSnapshotAsync(db, tenantId, company, ct);
+        if (!before.CostCentres.TryGetValue(costCenterId, out var row) || row.IsActive) return;
+        EnsureSame(people, before, before.WithCostCentre(row with { IsActive = true }));
+    }
+
     /// <summary>One employee's attribution inputs are changing (before/after). Not in a locking run, or resolving the same, is fine.</summary>
     public async Task EnsureEmployeeUnchangedAsync(Guid tenantId, Guid? companyId, int employeeId, ResolverEmployee before, ResolverEmployee after, CancellationToken ct)
     {

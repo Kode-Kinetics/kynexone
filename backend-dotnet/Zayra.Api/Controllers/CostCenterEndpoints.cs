@@ -58,17 +58,20 @@ internal static class CostCenterEndpoints
         var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
         if (!found || !OrgWriteRules.MayWriteCompany(c, current)) return c.NotFound();
         if (!OrgWriteRules.MayWriteCompany(c, request.CompanyId)) return c.Forbid();
+        var live = await db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId.Value && x.Id == id)
+            .Select(x => new { x.IsActive, x.FunctionalClass, x.GlSegment }).FirstAsync(ct);
         if (request.FunctionalClass is not null)
         {
-            var currentClass = await db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId.Value && x.Id == id)
-                .Select(x => x.FunctionalClass).FirstOrDefaultAsync(ct);
             var requested = string.IsNullOrWhiteSpace(request.FunctionalClass) ? null : request.FunctionalClass.Trim().ToUpperInvariant();
-            if (!string.Equals(requested, currentClass, StringComparison.Ordinal) && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
+            if (!string.Equals(requested, live.FunctionalClass, StringComparison.Ordinal) && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
         }
-        // M-10: deactivating and moving to another company are recorded with a reason (a class change is checked by the service).
-        var live = await db.CostCenters.AsNoTracking().Where(x => x.TenantId == tenantId.Value && x.Id == id)
-            .Select(x => new { x.IsActive }).FirstAsync(ct);
-        if (((live.IsActive && !request.IsActive) || request.CompanyId != current) && !CostAccountingGuards.HasReason(request.Reason)) return ReasonRequired(c);
+        // The ERP segment is where this cost centre's postings land in the ERP: a finance decision, like the class. A form that sends
+        // the segment back as it was (any case, any padding) is not a change.
+        var segmentChanged = request.GlSegment is not null
+            && !string.Equals(request.GlSegment.Trim(), live.GlSegment ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        if (segmentChanged && !OrgWriteRules.MayDecideFunctionalClass(c)) return c.Forbid();
+        // M-10: deactivating, moving to another company and changing the ERP segment are recorded with a reason (a class change is checked by the service).
+        if (((live.IsActive && !request.IsActive) || request.CompanyId != current || segmentChanged) && !CostAccountingGuards.HasReason(request.Reason)) return ReasonRequired(c);
         try
         {
             var costCenter = await organization.UpdateCostCenterAsync(tenantId.Value, id, request, context, ct);
@@ -94,10 +97,19 @@ internal static class CostCenterEndpoints
         return await OrgWriteRules.RemoveAsync(c, organization, OrgRowKind.CostCenter, id, context, ct, reason);
     }
 
+    // Switching a cost centre back on is a change to what a pending run resolves to, so it meets the same lock as switching it off.
     public static async Task<IActionResult> RestoreAsync(
-        ControllerBase c, IOrganizationSetupService organization, Guid id, RequestContext context, CancellationToken ct)
+        ControllerBase c, IOrganizationSetupService organization, ZayraDbContext db, Guid id, RequestContext context, CancellationToken ct)
     {
         if (!OrgWriteRules.MayManageCostCentres(c)) return c.Forbid();
+        var tenantId = c.GetTenantId();
+        if (tenantId is null) return c.Unauthorized();
+        var (found, current) = await CurrentCompanyAsync(db, tenantId.Value, id, ct);
+        if (found && OrgWriteRules.MayWriteCompany(c, current))
+        {
+            try { await new CostAttributionGuard(db).EnsureCostCentreRestoreUnchangedAsync(tenantId.Value, current, id, ct); }
+            catch (CostCentreRuleException ex) { return c.StatusCode(ex.Status, ex.ToPayload()); }
+        }
         return await OrgWriteRules.RestoreAsync(c, organization, OrgRowKind.CostCenter, id, context, ct);
     }
 }
