@@ -833,6 +833,16 @@ public class PlatformController : ControllerBase
             : NotFound(new { message = "No enrolled factor to reset for this platform user." });
     }
 
+    private bool CallerIsPlatformOwner() =>
+        string.Equals(User.FindFirst("platform_role")?.Value, PlatformRoles.Owner, StringComparison.Ordinal);
+
+    private IActionResult Refuse(string message) => StatusCode(StatusCodes.Status403Forbidden, new { message });
+
+    private async Task<bool> AnotherActiveOwnerExistsAsync(Guid exceptId, CancellationToken ct) =>
+        await _db.PlatformUsers.AsNoTracking().AnyAsync(u => u.Id != exceptId && u.Role == PlatformRoles.Owner && u.IsActive, ct);
+
+    private const string LastOwnerMessage = "At least one active Owner must remain. Promote another Owner first.";
+
     [HttpPost("team")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> CreateTeamMember([FromBody] CreatePlatformUserRequest req, CancellationToken ct)
@@ -845,6 +855,8 @@ public class PlatformController : ControllerBase
         var role = string.IsNullOrWhiteSpace(req.Role) ? PlatformRoles.Admin : req.Role;
         if (!PlatformRoles.All.Contains(role))
             return BadRequest(new { message = $"Invalid role. Valid roles: {string.Join(", ", PlatformRoles.All)}" });
+        if (role == PlatformRoles.Owner && !CallerIsPlatformOwner())
+            return Refuse("Only a platform Owner can create another Owner.");
 
         var email = req.Email.Trim().ToLowerInvariant();
         if (await _db.PlatformUsers.AsNoTracking().AnyAsync(u => u.Email == email, ct))
@@ -867,7 +879,7 @@ public class PlatformController : ControllerBase
             EntityId        = user.Id.ToString(),
             Action          = "PlatformUserCreated",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { user.Email, user.Role }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -885,12 +897,21 @@ public class PlatformController : ControllerBase
         var oldRole   = user.Role;
         var oldActive = user.IsActive;
 
-        if (req.Role is not null)
-        {
-            if (!PlatformRoles.All.Contains(req.Role))
-                return BadRequest(new { message = $"Invalid role. Valid roles: {string.Join(", ", PlatformRoles.All)}" });
-            user.Role = req.Role;
-        }
+        if (req.Role is not null && !PlatformRoles.All.Contains(req.Role))
+            return BadRequest(new { message = $"Invalid role. Valid roles: {string.Join(", ", PlatformRoles.All)}" });
+
+        var callerIsOwner = CallerIsPlatformOwner();
+        if (!callerIsOwner && (oldRole == PlatformRoles.Owner || req.Role == PlatformRoles.Owner))
+            return Refuse("Only a platform Owner can change an Owner or assign the Owner role.");
+        if (GetPlatformUserId() == id
+            && ((req.Role is not null && req.Role != oldRole) || (req.IsActive.HasValue && req.IsActive.Value != oldActive)))
+            return Refuse("You cannot change your own role or active status. Ask another Owner.");
+        var losesOwnerSeat = oldRole == PlatformRoles.Owner && oldActive
+            && ((req.Role is not null && req.Role != PlatformRoles.Owner) || req.IsActive == false);
+        if (losesOwnerSeat && !await AnotherActiveOwnerExistsAsync(id, ct))
+            return Conflict(new { message = LastOwnerMessage });
+
+        if (req.Role is not null) user.Role = req.Role;
 
         if (req.IsActive.HasValue) user.IsActive = req.IsActive.Value;
         if (!string.IsNullOrWhiteSpace(req.FullName)) user.FullName = req.FullName.Trim();
@@ -904,7 +925,7 @@ public class PlatformController : ControllerBase
             Action          = "PlatformUserUpdated",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { Role = oldRole, IsActive = oldActive }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { user.Role, user.IsActive }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -919,6 +940,10 @@ public class PlatformController : ControllerBase
     {
         var user = await _db.PlatformUsers.FirstOrDefaultAsync(u => u.Id == id, ct);
         if (user is null) return NotFound(new { message = "Platform user not found." });
+        if (GetPlatformUserId() == id)
+            return Refuse("You cannot change your own role or active status. Ask another Owner.");
+        if (user.Role == PlatformRoles.Owner && user.IsActive && !await AnotherActiveOwnerExistsAsync(id, ct))
+            return Conflict(new { message = LastOwnerMessage });
 
         // Soft deactivate — never hard-delete platform users
         user.IsActive = false;
@@ -931,7 +956,7 @@ public class PlatformController : ControllerBase
             Action          = "PlatformUserDeactivated",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { user.Email }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { IsActive = false }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -1108,7 +1133,7 @@ public class PlatformController : ControllerBase
                 maxEmployees = req.MaxEmployees,
                 expiresAtUtc = req.ExpiresAtUtc
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -1173,7 +1198,7 @@ public class PlatformController : ControllerBase
             Action = req.IsEnabled ? "FeatureEnabled" : "FeatureDisabled",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { featureKey, isEnabled = oldEnabled }),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(newValues),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -1268,7 +1293,7 @@ public class PlatformController : ControllerBase
             Action = "BrandingUpdated",
             OldValuesJson = "{}",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(req),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -1314,7 +1339,7 @@ public class PlatformController : ControllerBase
             Action = "LocalizationUpdated",
             OldValuesJson = "{}",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(req),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -1589,7 +1614,7 @@ public class PlatformController : ControllerBase
         // Audit BEFORE the remaining erasure (the audit log row is tenant-scoped but retained as the legal record).
         AuditTenant(tenantId, "TenantPurged",
             new { tenantName = name, slug = tenant.Slug },
-            new { purgedBy = "platform_admin", purgedAtUtc = DateTime.UtcNow });
+            new { purgedBy = PlatformActorEmail(), purgedAtUtc = DateTime.UtcNow });
         await _db.SaveChangesAsync(ct);
 
         // P4: signed-acknowledgement evidence is append-only; it is removed first, in its own purge transaction.
@@ -2056,7 +2081,7 @@ public class PlatformController : ControllerBase
                 maxUsers = req.MaxUsers ?? SubscriptionTiers.GetDefaults(plan).MaxUsers,
                 maxEmployees = req.MaxEmployees ?? SubscriptionTiers.GetDefaults(plan).MaxEmployees
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -2067,7 +2092,7 @@ public class PlatformController : ControllerBase
             EntityId = admin.Id.ToString(),
             Action = "AdminCreated",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = admin.Email, role = "Admin" }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -2131,7 +2156,7 @@ public class PlatformController : ControllerBase
             Action = "WorkspaceOwnerSetByPlatform",
             OldValuesJson = "{}",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { reason, platformUserId = GetPlatformUserId() }),
-            PerformedByName = User.FindFirstValue("name") ?? "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -2180,7 +2205,7 @@ public class PlatformController : ControllerBase
             EntityId = user.Id.ToString(),
             Action = "AdminCreated",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { email = user.Email, fullName = user.FullName, role = "Admin" }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -2433,7 +2458,7 @@ public class PlatformController : ControllerBase
                 companyIds = scope.CompanyIds,
                 entityScopeSource = scope.WasExplicit ? "request" : "role-default",
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -2970,7 +2995,7 @@ public class PlatformController : ControllerBase
             Action = "Updated",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { name = oldName }),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { name = tenant.Name }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -3072,8 +3097,8 @@ public class PlatformController : ControllerBase
             EntityId = userId.ToString(),
             Action = "PasswordResetRequested",
             OldValuesJson = "{}",
-            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = "platform_admin" }),
-            PerformedByName = "platform_admin",
+            NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { userEmail = user.Email, initiatedBy = PlatformActorEmail() }),
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -3136,7 +3161,7 @@ public class PlatformController : ControllerBase
                 Action = "PasswordResetLinkDisclosedToPlatformAdmin",
                 OldValuesJson = "{}",
                 NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { smtpConfigured, platformRole }),
-                PerformedByName = "platform_admin",
+                PerformedByName = PlatformActorEmail(),
                 IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
             });
             await _db.SaveChangesAsync(ct);
@@ -3231,7 +3256,7 @@ public class PlatformController : ControllerBase
             Action = "UserEdited",
             OldValuesJson = "{}",
             NewValuesJson = changes.ToJsonString(),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -3490,9 +3515,13 @@ public class PlatformController : ControllerBase
 
         if (tenantId.HasValue) q = q.Where(l => l.TenantId == tenantId.Value);
 
-        // When no tenant filter, show only platform-level events (tenant lifecycle, support sessions, password resets)
+        // When no tenant filter, show only platform-level events (tenant lifecycle, support sessions, password resets),
+        // the platform's own rows (team, platform configuration: TenantId is empty) and per-tenant security settings
+        // changed from the console (two-step policy, invitation handover, MFA date, password policy).
         if (!tenantId.HasValue)
             q = q.Where(l =>
+                l.TenantId == Guid.Empty ||
+                l.EntityType == "SecuritySetting" ||
                 l.EntityType == "Tenant" ||
                 l.EntityType == "SupportSession" ||
                 (l.EntityType == "User" && (l.Action.Contains("Password") || l.Action.Contains("Suspend") || l.Action.Contains("Reactivat"))));
@@ -3595,7 +3624,7 @@ public class PlatformController : ControllerBase
             EntityId = planName,
             Action = "PlanPriceUpdated",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { planName, monthlyPrice = req.MonthlyPrice }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -3703,7 +3732,7 @@ public class PlatformController : ControllerBase
             reason = session.Reason,
             durationMinutes = (int)(endedAt - session.StartedAtUtc).TotalMinutes
         }),
-        PerformedByName = "platform_admin",
+        PerformedByName = PlatformActorEmail(),
         IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
     };
 
@@ -3837,7 +3866,7 @@ public class PlatformController : ControllerBase
                 status = invoice.Status,
                 dueDate = invoice.DueDate
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -3875,7 +3904,7 @@ public class PlatformController : ControllerBase
                 paymentReference = invoice.PaymentReference,
                 paidDate = invoice.PaidDate
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -3905,7 +3934,7 @@ public class PlatformController : ControllerBase
             Action = "InvoiceDeleted",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(snap),
             NewValuesJson = "{}",
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
 
@@ -4039,7 +4068,7 @@ public class PlatformController : ControllerBase
             EntityId = invoiceId.ToString(),
             Action = "InvoiceSent",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { toEmail, invoiceNumber = invoice.InvoiceNumber, pdfAttached = true }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
@@ -4094,7 +4123,7 @@ public class PlatformController : ControllerBase
             TenantId = tenantId, EntityType = "InvoiceLine", EntityId = line.Id.ToString(),
             Action = "LineAdded",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { invoiceId, req.Description, req.Quantity, req.UnitPrice, lineTotal }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
 
@@ -4137,7 +4166,7 @@ public class PlatformController : ControllerBase
             TenantId = tenantId, EntityType = "InvoiceLine", EntityId = lineId.ToString(),
             Action = "LineUpdated",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { line.Description, line.Quantity, line.UnitPrice, line.LineTotal }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
         return Ok(line);
@@ -4161,7 +4190,7 @@ public class PlatformController : ControllerBase
             TenantId = tenantId, EntityType = "InvoiceLine", EntityId = lineId.ToString(),
             Action = "LineDeleted",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { line.Description, line.LineTotal }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
 
@@ -4238,7 +4267,7 @@ public class PlatformController : ControllerBase
             TenantId = tenantId, EntityType = "Payment", EntityId = payment.Id.ToString(),
             Action = "PaymentCreated",
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { payment.Amount, payment.Method, payment.Status, payment.Reference }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
 
@@ -4270,7 +4299,7 @@ public class PlatformController : ControllerBase
             Action = "PaymentUpdated",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { status = oldStatus }),
             NewValuesJson = System.Text.Json.JsonSerializer.Serialize(new { payment.Status, payment.Amount, payment.Reference }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
 
@@ -4301,7 +4330,7 @@ public class PlatformController : ControllerBase
             TenantId = tenantId, EntityType = "Payment", EntityId = paymentId.ToString(),
             Action = "PaymentDeleted",
             OldValuesJson = System.Text.Json.JsonSerializer.Serialize(new { payment.Amount, payment.Method, payment.Status }),
-            PerformedByName = "platform_admin", IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
+            PerformedByName = PlatformActorEmail(), IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? ""
         });
         await _db.SaveChangesAsync(ct);
 
@@ -4398,7 +4427,7 @@ public class PlatformController : ControllerBase
             EntityId        = announcement.Id.ToString(),
             Action          = "AnnouncementCreated",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { announcement.Title, announcement.Status, announcement.TargetPlan }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -4428,7 +4457,7 @@ public class PlatformController : ControllerBase
             EntityId        = id.ToString(),
             Action          = ann.Status == "Published" ? "AnnouncementPublished" : "AnnouncementUpdated",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { ann.Status, ann.Title }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -4453,7 +4482,7 @@ public class PlatformController : ControllerBase
             Action          = "AnnouncementArchived",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { ann.Title }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { Status = "Archived" }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -4500,7 +4529,7 @@ public class PlatformController : ControllerBase
             EntityId        = lead.Id.ToString(),
             Action          = "LeadCreated",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { lead.CompanyName, lead.ContactEmail, lead.Source }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -4528,7 +4557,7 @@ public class PlatformController : ControllerBase
             Action          = "LeadUpdated",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { Status = oldStatus }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { lead.Status, lead.AssignedTo }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -4839,7 +4868,7 @@ public class PlatformController : ControllerBase
                 useTls   = req.UseSsl,
                 passwordChanged,
             }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
 
@@ -5230,6 +5259,8 @@ public class PlatformController : ControllerBase
             IpAddress    = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             CreatedAtUtc = DateTime.UtcNow
         });
+        AuditPlatformAction(tenantId, "TenantPrivilegedMfaEnforcementChanged", "SecuritySetting", sec.Id.ToString(),
+            new { tenantId, previous, next = sec.PrivilegedMfaEnforceFromUtc, platformDate, reason = body.Reason.Trim() });
         await _db.SaveChangesAsync(ct);
         await Zayra.Api.Infrastructure.Employees.Onboarding.PayApprovalDeadEndHooks.For(_db, HttpContext).AfterCompanyChangedAsync(tenantId, null, "security_policy", ct);
         return Ok(new
@@ -5239,6 +5270,12 @@ public class PlatformController : ControllerBase
             platformPrivilegedMfaEnforceFromUtc = platformDate,
         });
     }
+
+    /// <summary>The platform-wide enforcement date shown on the Security Center.</summary>
+    [HttpGet("security/privileged-mfa-enforcement")]
+    [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
+    public async Task<IActionResult> GetPlatformPrivilegedMfaEnforcement(CancellationToken ct) =>
+        Ok(new { platformPrivilegedMfaEnforceFromUtc = await PrivilegedMfaPolicy.LoadPlatformEnforceFromAsync(_db, ct) });
 
     /// <summary>Moves the platform-wide enforcement date (operators, and every tenant without its own date).</summary>
     [HttpPut("security/privileged-mfa-enforcement")]
@@ -5273,7 +5310,7 @@ public class PlatformController : ControllerBase
             Action          = "PrivilegedMfaEnforcementChanged",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = previous }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { enforceFromUtc = entry.Value, reason = body.Reason.Trim() }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -5348,6 +5385,8 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> UpdateTenantSecurityPolicy(Guid tenantId, [FromBody] UpdateSecurityPolicyRequest body, CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(body.Reason) || body.Reason.Trim().Length < 10)
+            return BadRequest(new { message = "Give a reason of at least 10 characters; it is recorded in the audit log." });
         if (!await _db.Tenants.AsNoTracking().AnyAsync(t => t.Id == tenantId, ct)) return NotFound();
 
         var sec = await _db.SecuritySettings.FirstOrDefaultAsync(s => s.TenantId == tenantId, ct);
@@ -5356,22 +5395,26 @@ public class PlatformController : ControllerBase
             sec = new SecuritySetting { TenantId = tenantId };
             _db.SecuritySettings.Add(sec);
         }
+        var before = TenantSecurityPolicyAuditSnapshot(sec);
 
-        if (body.PasswordMinLength.HasValue)          sec.PasswordMinLength          = Math.Max(6, Math.Min(32, body.PasswordMinLength.Value));
+        // Same limits as the tenant's own settings (AccessManagementService.UpdateSecuritySettingsAsync).
+        if (body.PasswordMinLength.HasValue)          sec.PasswordMinLength          = Math.Clamp(body.PasswordMinLength.Value, 6, 64);
         if (body.PasswordRequireUppercase.HasValue)   sec.PasswordRequireUppercase   = body.PasswordRequireUppercase.Value;
         if (body.PasswordRequireLowercase.HasValue)   sec.PasswordRequireLowercase   = body.PasswordRequireLowercase.Value;
         if (body.PasswordRequireDigit.HasValue)       sec.PasswordRequireDigit       = body.PasswordRequireDigit.Value;
         if (body.PasswordRequireSpecial.HasValue)     sec.PasswordRequireSpecial     = body.PasswordRequireSpecial.Value;
-        if (body.PasswordExpiryDays.HasValue)         sec.PasswordExpiryDays         = Math.Max(0, body.PasswordExpiryDays.Value);
-        if (body.PasswordHistoryCount.HasValue)       sec.PasswordHistoryCount       = Math.Max(0, Math.Min(24, body.PasswordHistoryCount.Value));
-        if (body.MaxFailedLoginAttempts.HasValue)     sec.MaxFailedLoginAttempts     = Math.Max(3, Math.Min(20, body.MaxFailedLoginAttempts.Value));
-        if (body.LockoutDurationMinutes.HasValue)     sec.LockoutDurationMinutes     = Math.Max(5, body.LockoutDurationMinutes.Value);
-        if (body.SessionTimeoutMinutes.HasValue)      sec.SessionTimeoutMinutes      = Math.Max(15, body.SessionTimeoutMinutes.Value);
-        if (body.RefreshTokenExpiryDays.HasValue)     sec.RefreshTokenExpiryDays     = Math.Max(1, body.RefreshTokenExpiryDays.Value);
+        if (body.PasswordExpiryDays.HasValue)         sec.PasswordExpiryDays         = Math.Clamp(body.PasswordExpiryDays.Value, 0, 365);
+        if (body.PasswordHistoryCount.HasValue)       sec.PasswordHistoryCount       = Math.Clamp(body.PasswordHistoryCount.Value, 0, 24);
+        if (body.MaxFailedLoginAttempts.HasValue)     sec.MaxFailedLoginAttempts     = Math.Clamp(body.MaxFailedLoginAttempts.Value, 3, 20);
+        if (body.LockoutDurationMinutes.HasValue)     sec.LockoutDurationMinutes     = Math.Clamp(body.LockoutDurationMinutes.Value, 5, 1440);
+        if (body.SessionTimeoutMinutes.HasValue)      sec.SessionTimeoutMinutes      = Math.Clamp(body.SessionTimeoutMinutes.Value, 15, 1440);
+        if (body.RefreshTokenExpiryDays.HasValue)     sec.RefreshTokenExpiryDays     = Math.Clamp(body.RefreshTokenExpiryDays.Value, 1, 90);
         if (body.AllowMultipleSessions.HasValue)      sec.AllowMultipleSessions      = body.AllowMultipleSessions.Value;
 
         sec.UpdatedAtUtc = DateTime.UtcNow;
 
+        AuditPlatformAction(tenantId, "SecurityPolicyUpdated", "SecuritySetting", sec.Id.ToString(),
+            new { reason = body.Reason.Trim(), before, after = TenantSecurityPolicyAuditSnapshot(sec) });
         await _db.SaveChangesAsync(ct);
 
         await _db.AuditLogs.AddAsync(new AuditLog
@@ -5389,6 +5432,22 @@ public class PlatformController : ControllerBase
 
         return NoContent();
     }
+
+    private static object TenantSecurityPolicyAuditSnapshot(SecuritySetting s) => new
+    {
+        passwordMinLength = s.PasswordMinLength,
+        passwordRequireUppercase = s.PasswordRequireUppercase,
+        passwordRequireLowercase = s.PasswordRequireLowercase,
+        passwordRequireDigit = s.PasswordRequireDigit,
+        passwordRequireSpecial = s.PasswordRequireSpecial,
+        passwordExpiryDays = s.PasswordExpiryDays,
+        passwordHistoryCount = s.PasswordHistoryCount,
+        maxFailedLoginAttempts = s.MaxFailedLoginAttempts,
+        lockoutDurationMinutes = s.LockoutDurationMinutes,
+        sessionTimeoutMinutes = s.SessionTimeoutMinutes,
+        refreshTokenExpiryDays = s.RefreshTokenExpiryDays,
+        allowMultipleSessions = s.AllowMultipleSessions,
+    };
 
     private static InvoiceData BuildInvoiceData(
         TenantInvoice invoice,
@@ -5808,7 +5867,7 @@ public class PlatformController : ControllerBase
             EntityId         = control.Id.ToString(),
             Action           = "ControlCreated",
             NewValuesJson    = System.Text.Json.JsonSerializer.Serialize(new { control.ControlId, control.Title, control.Status }),
-            PerformedByName  = "platform_admin",
+            PerformedByName  = PlatformActorEmail(),
             IpAddress        = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -5842,7 +5901,7 @@ public class PlatformController : ControllerBase
             Action          = "ControlUpdated",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(oldSnap),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { control.Status, control.Owner, control.EvidenceNote }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -5910,7 +5969,7 @@ public class PlatformController : ControllerBase
             EntityId        = incident.Id.ToString(),
             Action          = "IncidentCreated",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { incident.Title, incident.Severity }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -5939,7 +5998,7 @@ public class PlatformController : ControllerBase
             Action          = "IncidentUpdated",
             OldValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { Status = oldStatus }),
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { incident.Status, incident.Severity }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -5989,7 +6048,7 @@ public class PlatformController : ControllerBase
             EntityId        = PlatformConfigKeys.MaintenanceMode,
             Action          = req.Enabled ? "MaintenanceModeEnabled" : "MaintenanceModeDisabled",
             NewValuesJson   = System.Text.Json.JsonSerializer.Serialize(new { req.Enabled, req.Message }),
-            PerformedByName = "platform_admin",
+            PerformedByName = PlatformActorEmail(),
             IpAddress       = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "",
         });
         await _db.SaveChangesAsync(ct);
@@ -6068,7 +6127,7 @@ public record SetCompanyCreationModeRequest(string Mode);
 
 public record AddTenantAdminRequest(string Email, string? FullName, string Password);
 
-public record SetWorkspaceOwnerRequest(Guid UserId, [property: System.ComponentModel.DataAnnotations.MaxLength(500)] string? Reason);
+public record SetWorkspaceOwnerRequest(Guid UserId, [System.ComponentModel.DataAnnotations.MaxLength(500)] string? Reason);
 /// <param name="EntityScope">
 /// Which legal entities the new account may see: "group" (every company, now and in future),
 /// "allCurrentCompanies", or "companies" with <paramref name="CompanyIds"/>. Omitted, it defaults to
@@ -6215,7 +6274,8 @@ public record UpdateSecurityPolicyRequest(
     int? LockoutDurationMinutes,
     int? SessionTimeoutMinutes,
     int? RefreshTokenExpiryDays,
-    bool? AllowMultipleSessions);
+    bool? AllowMultipleSessions,
+    string Reason);
 
 public record AddInvoiceLineRequest(
     string Description,

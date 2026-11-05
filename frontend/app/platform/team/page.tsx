@@ -83,6 +83,57 @@ function InviteModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   );
 }
 
+function decodeJwt(token: string): Record<string, unknown> | null {
+  try { return JSON.parse(atob(token.split('.')[1])); } catch { return null; }
+}
+
+function ResetMfaModal({ member, onClose, onDone }: {
+  member: PlatformTeamMember; onClose: () => void; onDone: (text: string) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  async function confirm() {
+    setSaving(true); setErr('');
+    try {
+      await platformApi.resetTeamMfa(member.id);
+      onDone(`Two-step reset for ${member.fullName}. They will set it up again at their next sign-in.`);
+      onClose();
+    } catch (ex: unknown) {
+      setErr((ex as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Reset failed. Please try again.');
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div role="dialog" aria-modal="true" aria-label="Reset two-step sign-in" className="relative z-10 w-full max-w-sm bg-slate-950 border border-white/10 rounded-2xl shadow-e3 overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.07]">
+          <h2 className="text-sm font-semibold text-white">Reset two-step sign-in</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-slate-500 hover:text-white transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          {err && <div role="alert" className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg px-3 py-2">{err}</div>}
+          <p className="text-sm text-slate-300">
+            Clear the authenticator of <span className="font-semibold text-white">{member.fullName}</span> ({member.email}) for a lost device?
+            Their sessions end and they must set up two-step again at their next sign-in. The change is recorded in the audit log.
+          </p>
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 border border-white/10 text-slate-400 rounded-lg py-2 text-sm transition-colors">Cancel</button>
+            <button type="button" onClick={confirm} disabled={saving}
+              className="flex-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-40">
+              {saving ? 'Resetting…' : 'Reset two-step'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PlatformTeamPage() {
   const router = useRouter();
   const [members, setMembers] = useState<PlatformTeamMember[]>([]);
@@ -90,10 +141,14 @@ export default function PlatformTeamPage() {
   const [showInvite, setShowInvite] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [resetTarget, setResetTarget] = useState<PlatformTeamMember | null>(null);
+  const [viewer, setViewer] = useState<{ role?: string; id?: string }>({});
 
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('platform_access_token') : null;
     if (!token) { router.replace('/platform/login'); return; }
+    const claims = decodeJwt(token);
+    setViewer({ role: claims?.platform_role as string | undefined, id: claims?.sub as string | undefined });
     load();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -233,6 +288,13 @@ export default function PlatformTeamPage() {
                       {m.lastLoginIp && <span className="text-slate-700 font-mono ms-1">· {m.lastLoginIp}</span>}
                     </td>
                     <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                      {viewer.role === 'Owner' && m.id !== viewer.id && m.mfaEnabled && (
+                        <button type="button" onClick={() => setResetTarget(m)}
+                          className="text-caption border px-2 py-1 rounded transition-colors text-amber-300 border-amber-500/20 hover:border-amber-500/40">
+                          Reset two-step
+                        </button>
+                      )}
                       {m.role !== 'Owner' && (
                         <button type="button"
                           onClick={() => toggleActive(m)}
@@ -245,6 +307,7 @@ export default function PlatformTeamPage() {
                           {updating === m.id ? '…' : m.isActive ? 'Deactivate' : 'Reactivate'}
                         </button>
                       )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -254,6 +317,10 @@ export default function PlatformTeamPage() {
         )}
       </div>
 
+      {resetTarget && (
+        <ResetMfaModal member={resetTarget} onClose={() => setResetTarget(null)}
+          onDone={text => { setMsg({ text, ok: true }); load(); }} />
+      )}
       {showInvite && <InviteModal onClose={() => setShowInvite(false)} onCreated={load} />}
     </div>
   );
