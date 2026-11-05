@@ -82,7 +82,10 @@ public sealed class ReconSignoffLifecycleService
 
         if (RequiresOrganizationScope(caller))
             return new ReconActionResult(403, new { error = "signoff_requires_organization_scope", message = "A reconciliation can only be signed off by someone who can see the whole run, not a department or team." });
-        if (caller.UserId is { } uid && IsMaker(run, uid))
+        // A sign-off with no person behind it would skip the maker-checker rule altogether, so it is refused.
+        if (caller.UserId is not { } uid)
+            return new ReconActionResult(403, new { error = "signoff_requires_user", message = "A reconciliation can only be signed off by a signed-in user." });
+        if (IsMaker(run, uid))
             return new ReconActionResult(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot sign off its reconciliation. A different reviewer is required (maker-checker policy)." });
 
         if (await _db.PayrollRunReconSignoffs.AnyAsync(s => s.TenantId == tenantId && s.PayrollRunId == run.Id && s.Status == ReconSignoffStatuses.Active, ct))
@@ -182,7 +185,9 @@ public sealed class ReconSignoffLifecycleService
             // Withdrawing is as much a decision about the figures as signing them, so it needs the same breadth of view and a different person.
             if (RequiresOrganizationScope(caller))
                 return new ReconActionResult(403, new { error = "signoff_requires_organization_scope", message = "A sign-off can only be withdrawn by someone who can see the whole run, not a department or team." });
-            if (caller.UserId is { } who && IsMaker(run, who))
+            if (caller.UserId is not { } who)
+                return new ReconActionResult(403, new { error = "signoff_requires_user", message = "A reconciliation sign-off can only be withdrawn by a signed-in user." });
+            if (IsMaker(run, who))
                 return new ReconActionResult(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot withdraw its reconciliation sign-off. A different reviewer is required (maker-checker policy)." });
             var reason = req.Reason?.Trim() ?? string.Empty;
             if (reason.Length < PayrollValidationOverridePolicy.MinimumReasonLength)
