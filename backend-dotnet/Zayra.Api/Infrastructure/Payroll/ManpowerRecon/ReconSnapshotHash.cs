@@ -21,6 +21,13 @@ public static class ReconSnapshotHash
         var node = Summary(dto);
         // Not part of what was reviewed: who is asking, the stamp itself, and whether the company requires a sign-off.
         foreach (var key in new[] { "scope", "snapshotHash", "signoffRequired", "processVersion" }) node.Remove(key);
+        // The integrity findings are a set: the same findings in another order are the same figures.
+        if (node["integrity"]?["issues"] is JsonArray issues)
+        {
+            var sorted = issues.Select(i => i?.ToJsonString() ?? "null").Order(StringComparer.Ordinal).ToList();
+            issues.Clear();
+            foreach (var json in sorted) issues.Add(JsonNode.Parse(json));
+        }
         var canonical = new StringBuilder();
         Write(canonical, node);
         canonical.Append("|pv=").Append(processVersion.ToString(CultureInfo.InvariantCulture));

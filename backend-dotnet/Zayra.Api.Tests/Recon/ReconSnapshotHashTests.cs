@@ -60,6 +60,23 @@ public class ReconSnapshotHashTests
     }
 
     [Fact]
+    public void TheIntegrityIssues_AreHashedAsASet_NotInTheOrderTheDatabaseReturnedThem()
+    {
+        // The same findings read back in another row order are the same figures: a sign-off must not go stale on it.
+        var d = Dto();
+        var issues = new List<ReconIssueDto>
+        {
+            new("lineRegister", "The current payslip lines of E5 do not add up to the payslip."),
+            new("lineRegister", "The current payslip lines of E1 do not add up to the payslip."),
+            new("settlementLines", "The lines of the final settlement for E9 do not add up to its totals."),
+        };
+        var a = d with { Integrity = new ReconIntegrityDto(false, issues) };
+        var b = d with { Integrity = new ReconIntegrityDto(false, Enumerable.Reverse(issues).ToList()) };
+        Hash(a).Should().Be(Hash(b));
+        Hash(a).Should().NotBe(Hash(d with { Integrity = new ReconIntegrityDto(false, issues.Take(2).ToList()) }), "a finding that goes away is a change");
+    }
+
+    [Fact]
     public void MoneyIsHashedByValue_NotByHowManyTrailingZerosItWasWrittenWith()
     {
         var d = Dto();

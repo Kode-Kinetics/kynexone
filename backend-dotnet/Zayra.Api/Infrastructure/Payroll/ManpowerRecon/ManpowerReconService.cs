@@ -138,7 +138,7 @@ public sealed class ManpowerReconService
             .Where(s => s.TenantId == tenantId && s.PayrollRunId == run.Id && s.Outcome == PayrollRunSelectionOutcomes.Excluded)
             .Select(s => new { s.EmployeeId, s.Reason }).ToListAsync(ct);
         var excludedIds = selections.Select(s => s.EmployeeId).ToHashSet();
-        var holdOutReasons = selections.GroupBy(s => s.EmployeeId).ToDictionary(g => g.Key, g => g.First().Reason);
+        var holdOutReasons = selections.GroupBy(s => s.EmployeeId).ToDictionary(g => g.Key, g => g.Select(s => s.Reason).OrderBy(r => r, StringComparer.Ordinal).First());
 
         var facts = new List<ReconEmployeeFacts>();
         foreach (var id in allIds.OrderBy(i => i))
@@ -259,7 +259,10 @@ public sealed class ManpowerReconService
                     $"{info[id].Code} {info[id].Name} ({ReconCategories.Name(c.Category)})"));
         }
 
-        var integrity = new ReconIntegrityDto(issues.Count == 0, issues);
+        // A fixed order (code, then text): the findings are read from rows the database returns in no particular order, and the
+        // reviewed figures (and their fingerprint) must not change when the same findings come back in another order.
+        var integrity = new ReconIntegrityDto(issues.Count == 0,
+            issues.OrderBy(i => i.Code, StringComparer.Ordinal).ThenBy(i => i.Message, StringComparer.Ordinal).ToList());
 
         // ── Scope and the sign-off ───────────────────────────────────────────────────────────────
         // canSignOff speaks for SCOPE only. Permission, run status, maker-checker and integrity are separate blockers the screen
@@ -457,7 +460,7 @@ public sealed class ManpowerReconService
         return rows.GroupBy(c => c.Code)
             .ToDictionary(g => g.Key, g =>
             {
-                var best = g.OrderByDescending(c => c.CompanyId != null).First();
+                var best = g.OrderByDescending(c => c.CompanyId != null).ThenBy(c => c.Id).First();
                 return new ComponentHint(best.Code, best.ProviderKey, best.CalcMethod);
             });
     }

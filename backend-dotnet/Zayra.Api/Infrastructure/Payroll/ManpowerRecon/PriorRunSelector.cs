@@ -50,6 +50,7 @@ public static class PriorRunSelector
         var prior = candidates
             .Where(r => r.Status is not ("Voided" or "Draft"))
             .OrderBy(r => string.Equals(r.RunType, PayrollRunTypes.Replacement, StringComparison.Ordinal) ? 0 : 1)
+            .ThenByDescending(r => r.CreatedAtUtc).ThenBy(r => r.Id) // the newest, and never "whichever row came back first"
             .FirstOrDefault();
         if (prior is not null)
             return new PriorRunSelection(ReconModes.Full, prior, false, IsNotFinal(prior), null, null);

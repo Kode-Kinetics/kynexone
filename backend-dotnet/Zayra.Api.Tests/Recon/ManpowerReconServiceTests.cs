@@ -415,6 +415,22 @@ public class ManpowerReconServiceTests
     }
 
     [Fact]
+    public async Task IntegrityIssues_ComeOutInAFixedOrder_WhateverOrderThePayslipsWereStoredIn()
+    {
+        var k = await Kit.CreateAsync();
+        foreach (var e in new[] { 3, 1, 2 })
+        {
+            k.AddEmployee(e); k.AddSlip(k.Prior, e, 1000);
+            k.AddSlip(k.Current, e, 1000).GrossSalary = 1050m;
+        }
+        await k.Db.SaveChangesAsync();
+        var issues = (await k.Build()).Build!.Dto.Integrity.Issues;
+        issues.Select(i => i.Code).Should().AllBe("lineRegister");
+        issues.Select(i => i.Message).Should().BeInAscendingOrder(StringComparer.Ordinal);
+        issues.Should().HaveCount(3);
+    }
+
+    [Fact]
     public async Task ADuplicateSlip_IsFlagged_AndTheEmployeeIsStillCountedOnce()
     {
         var k = await Kit.CreateAsync();
