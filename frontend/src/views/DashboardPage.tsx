@@ -25,6 +25,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useAuth } from '../contexts/AuthContext';
+import { isEmployeeOnly } from '../lib/homePath';
 import { useWorkforceFindings } from '../hooks/useWorkforceFindings';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { resolvePayrollRunCurrency, resolvePayrollRunsCurrency } from '../lib/payrollCurrency';
@@ -297,7 +298,8 @@ export function DashboardPage() {
   const { user } = useAuth();
   // "My day" needs an employee record linked to this login; an admin without one has no personal
   // view to show, and the self-service page would only answer with an error.
-  const canSeeBoth = !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
+  // Not for a self-service-only login (lib/homePath.ts decides who that is, including the ESSOnly portal).
+  const canSeeBoth = !isEmployeeOnly(user) && !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
   const storageKey = `kx.home-view.${user?.id ?? 'anon'}`;
   // Unknown until the browser's remembered choice is read, so the wrong view never mounts first
   // (it would flash, and fire the other view's requests for nothing).
