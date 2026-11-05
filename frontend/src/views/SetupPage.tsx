@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
@@ -30,6 +30,7 @@ import { EstablishmentPanel } from '../components/EstablishmentPanel';
 import { StatutoryRulesPanel } from '../components/StatutoryRulesPanel';
 import { GlSetupPanel } from '../components/gl/GlSetupPanel';
 import { CountrySelect } from '../components/CountrySelect';
+import { LocationPinCore, type PinPatch } from '../components/companySetup/LocationPinCore';
 import {
   companiesApi,
   branchesApi,
@@ -99,10 +100,13 @@ import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionI
 import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
 import { setupCountryCode } from '../lib/setupDraftLifecycle';
+import { TIME_ZONES } from '../lib/companySetupWizard';
+import { TIME_ZONE_CITY, otherTimeZones, timeZoneOffset } from '../lib/companySetupFields';
 import { msg } from '../i18n/translations';
-import { useConfirm } from '../components/gl/glUi';
+import { LoadError, useConfirm } from '../components/gl/glUi';
+import { describeApiError } from '../lib/apiError';
 import { CountryPayrollKeys } from '../components/setup/accessWorkspaceSetupPanels';
-import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
+import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgStructureAccess, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { useReleaseA } from '../lib/releaseA';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
@@ -167,14 +171,17 @@ function CompaniesTab() {
   const t = useT();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { currencyCode } = useTenantSettings();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
   const { accountType, isGroupScope } = useCompany();
   const router = useRouter();
   // Company mutations require organization write access. organization.read-only viewers
   // (e.g. HR Officer, Compliance Officer, Recruiter, HR Assistant, Auditor) reach this
   // tab via the /companies redirect and get the same read-only list they had before,
   // with no inert (always-403) action controls.
-  const canWrite = hasPermission('organization.write') || hasPermission('organization.establishment.write');
+  // The API authorises by effective permission (a custom role holding organization.write is allowed), so the gate is the permission alone.
+  const { canWrite, writeBlockedReason } = useOrgStructureAccess(['organization.write', 'organization.establishment.write']);
+  // Suspend / reactivate is Admin-only on the server.
+  const canSetStatus = hasRole('Admin');
   // The ERP company code decides whose ledger the ERP books a company's journals into: only the general-ledger
   // manager may set or change it (the server enforces this and explains a refusal; the form only reflects it).
   const canSetErpCode = hasPermission('finance.gl.manage');
@@ -189,14 +196,15 @@ function CompaniesTab() {
   const [statutorySummary, setStatutorySummary] = useState<StatutorySummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await companiesApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await companiesApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -235,8 +243,8 @@ function CompaniesTab() {
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof CompanyRequest, string>>>({});
   useEffect(() => { if (modalOpen) setFieldErrors({}); }, [modalOpen, editing]);
   const companyFieldLabels: Partial<Record<keyof CompanyRequest, string>> = {
-    legalNameEn: 'Legal name (English)', countryCode: 'Country', registrationNumber: 'Registration number',
-    defaultCurrency: 'Default currency', emailDomain: 'Email domain', erpCompanyCode: 'ERP company code',
+    legalNameEn: msg('Legal name (English)'), countryCode: msg('Country'), registrationNumber: msg('Registration number'),
+    defaultCurrency: msg('Default currency'), emailDomain: msg('Email domain'), erpCompanyCode: msg('ERP company code'),
   };
   // Fields that render their own inline error; anything else the server names goes to the banner.
   const inlineCompanyFields: ReadonlySet<keyof CompanyRequest> = new Set<keyof CompanyRequest>(['registrationNumber']);
@@ -249,7 +257,7 @@ function CompaniesTab() {
       const key = (segment.charAt(0).toLowerCase() + segment.slice(1)) as keyof CompanyRequest;
       const serverMessage = String(Array.isArray(raw) ? raw[0] ?? '' : raw ?? '').trim();
       const label = companyFieldLabels[key];
-      const message = label && /required/i.test(serverMessage) ? `${label} is required.` : serverMessage || `${label ?? segment} is invalid.`;
+      const message = label && /required/i.test(serverMessage) ? t('{label} is required.', { label: t(label) }) : serverMessage || t('{label} is invalid.', { label: label ? t(label) : segment });
       if (inlineCompanyFields.has(key)) fields[key] = message;
       else banner.push(message);
     }
@@ -258,23 +266,23 @@ function CompaniesTab() {
 
   const handleSave = async () => {
     setFieldErrors({});
-    if (!form.legalNameEn.trim()) { setError('Legal name (English) is required'); return; }
+    if (!form.legalNameEn.trim()) { setError(t('Legal name (English) is required')); return; }
     // The field has always been marked required; it was never enforced, which is part of how a
     // tenant's first company reached production with an empty country.
     if (!(form.countryCode ?? '').trim()) {
-      setError('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.');
+      setError(t('Country is required — it decides this entity’s statutory rules, leave entitlements and the identity documents its employees must hold.'));
       return;
     }
     if (!(form.registrationNumber ?? '').trim()) {
       setError('');
-      setFieldErrors({ registrationNumber: 'Registration number is required — it identifies this legal entity on statutory filings.' });
+      setFieldErrors({ registrationNumber: t('Registration number is required — it identifies this legal entity on statutory filings.') });
       return;
     }
-    if (!(form.defaultCurrency ?? '').trim()) { setError('Default currency is required'); return; }
+    if (!(form.defaultCurrency ?? '').trim()) { setError(t('Default currency is required')); return; }
     // Advisory client-side domain-format check mirroring the server regex (server stays authoritative).
     // Blank is allowed — employees then fall back to manual work-email entry.
     if (!isValidEmailDomain(form.emailDomain ?? '')) {
-      setError('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.');
+      setError(t('Email domain looks invalid. Use a bare domain like "acme.sa" (no "@", scheme, or path), or leave it blank.'));
       return;
     }
     if (!editing) return;
@@ -286,13 +294,13 @@ function CompaniesTab() {
     } catch (err: unknown) {
       const resp = (err as { response?: { data?: { error?: string; message?: string; field?: string; errors?: Record<string, unknown> } } })?.response?.data;
       if (resp?.error === 'registration_number_taken' || resp?.field === 'registrationNumber')
-        setFieldErrors({ registrationNumber: resp.message ?? 'Another company in this workspace already uses this registration number.' });
+        setFieldErrors({ registrationNumber: resp.message ?? t('Another company in this workspace already uses this registration number.') });
       else if (resp?.errors && typeof resp.errors === 'object') {
         const mapped = mapCompanyValidationErrors(resp.errors);
         setFieldErrors(mapped.fields);
-        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : 'Failed to save. Please try again.'));
+        setError(mapped.banner.join(' ') || (Object.keys(mapped.fields).length ? '' : t('Failed to save. Please try again.')));
       }
-      else setError(resp?.message ?? 'Failed to save. Please try again.');
+      else setError(describeApiError(err, t));
     }
     finally { setSaving(false); }
   };
@@ -310,6 +318,7 @@ function CompaniesTab() {
 
   // Suspend / reactivate — merged from the standalone /companies page so no capability
   // is lost when that route folds into Setup. Reproduces the last-active-company guard.
+  const [notice, setNotice] = useState('');
   const toggleStatus = async (c: CompanyDto) => {
     const name = c.tradeName || c.legalNameEn;
     if (!(await confirm({
@@ -323,29 +332,34 @@ function CompaniesTab() {
     catch (e: unknown) {
       const err = (e as { response?: { data?: { error?: string } } })?.response?.data;
       if (err?.error === 'last_active_company')
-        alert('Cannot deactivate the only active company — activate another company first.');
+        setNotice(t('Cannot deactivate the only active company — activate another company first.'));
       else notifyApiError(e);
     } finally { setToggling(null); }
   };
 
   return (
     <>
+      {notice && (
+        <div role="alert" data-testid="company-notice" className="mb-3 flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
+          <span>{notice}</span>
+          <button type="button" className="shrink-0 font-semibold underline" onClick={() => setNotice('')}>{t('Dismiss')}</button>
+        </div>
+      )}
       {canWrite && isGroupScope && <CompanyDraftsCard />}
       {missingCountry.length > 0 && (
         <div role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/[0.08] dark:text-amber-200">
           <p className="font-semibold">
             {missingCountry.length === 1
-              ? `${missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn} has no country set — set it in Setup → Companies before adding employees.`
-              : `${missingCountry.length} companies have no country set — set each one here before adding employees.`}
+              ? t('{name} has no country set — set it in Setup → Companies before adding employees.', { name: missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn })
+              : t('{count} companies have no country set — set each one here before adding employees.', { count: missingCountry.length })}
           </p>
           <p className="mt-1 text-xs">
-            A company’s country decides its statutory rules, leave entitlements and the identity documents its
-            employees must hold. Until it is set, employees of that entity cannot be added.
-            {missingCountry.length > 1 && ` Missing: ${missingCountry.map((c) => c.tradeName?.trim() || c.legalNameEn).join(', ')}.`}
+            {t('A company’s country decides its statutory rules, leave entitlements and the identity documents its employees must hold. Until it is set, employees of that entity cannot be added.')}
+            {missingCountry.length > 1 && ` ${t('Missing: {names}.', { names: missingCountry.map((c) => c.tradeName?.trim() || c.legalNameEn).join(', ') })}`}
           </p>
           {canWrite && (
             <button type="button" onClick={() => openEdit(missingCountry[0])} className="btn-secondary mt-2 h-7 px-2 text-xs">
-              <Pencil className="h-3 w-3" /> Set country for {missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn}
+              <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Set country for {name}', { name: missingCountry[0].tradeName?.trim() || missingCountry[0].legalNameEn })}
             </button>
           )}
         </div>
@@ -354,17 +368,19 @@ function CompaniesTab() {
         columns={[msg('Legal Name'), msg('Trade Name'), msg('Country'), msg('Currency'), msg('Status')]}
         onAdd={canWrite && isGroupScope && (accountType === 'Group' || items.length === 0) ? openCreate : undefined}
         addLabel={msg('Create company')}
-        loading={loading}
+        writeBlockedReason={isGroupScope && (accountType === 'Group' || items.length === 0) ? writeBlockedReason : undefined}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={items.length === 0}
         emptyLabel={msg('No companies yet')} emptyHint={msg('Add your first company, or import a CSV.')}
-        actions={canWrite ? (
+        actions={(
           <ImportExportToolbar
+            importBlockedReason={writeBlockedReason}
             entityName="Companies"
             onExport={async () => { const csv = await companiesApi.export(); downloadCsv(csv, 'companies.csv'); }}
             onDownloadTemplate={async () => { const csv = await companiesApi.importTemplate(); downloadCsv(csv, 'companies-template.csv'); }}
             onImport={async (csv) => { const r = await companiesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        ) : undefined}
+        )}
       >
         {items.map((c) => (
           <tr key={c.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -374,7 +390,7 @@ function CompaniesTab() {
               {/* "—" read as "nothing to show". It is not: a blank country blocks every employee of
                   this entity, so it is labelled as the problem it is. */}
               {c.countryCode?.trim() || (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">Not set</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-800 dark:bg-amber-500/[0.12] dark:text-amber-300">{t('Not set')}</span>
               )}
               {c.jurisdiction && <span className="ms-1 text-xs text-slate-400">({c.jurisdiction})</span>}
             </td>
@@ -383,19 +399,19 @@ function CompaniesTab() {
               {/* Preserve the standalone page's Draft-awareness and "Suspended" wording,
                   which the plain ActiveBadge (Active/Inactive) did not convey. */}
               {c.approvalStatus === 'Draft' ? (
-                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">Draft — awaiting platform approval</span>
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-caption font-semibold text-amber-700 dark:bg-amber-500/[0.12] dark:text-amber-300">{t('Draft — awaiting platform approval')}</span>
               ) : c.isActive ? (
                 <ActiveBadge active />
               ) : (
-                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">Suspended</span>
+                <span className="rounded-full bg-slate-200 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/[0.08] dark:text-slate-300">{t('Suspended')}</span>
               )}
             </td>
             <td className="sticky end-0 bg-white px-4 py-3 dark:bg-slate-900">
-              {canWrite && <CompanyRowActions companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
-                { label: 'View statutory profile', onSelect: () => { void loadStatutorySummary(c.id); } },
-                ...(c.approvalStatus !== 'Draft' ? [{ label: c.isActive ? 'Suspend' : 'Reactivate', disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
-                { label: 'Delete company', destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
-              ]} />}
+              <CompanyRowActions blockedReason={writeBlockedReason} companyName={c.tradeName || c.legalNameEn} onEdit={() => openEdit(c)} actions={[
+                { label: msg('View statutory profile'), onSelect: () => { void loadStatutorySummary(c.id); } },
+                ...(c.approvalStatus !== 'Draft' && canSetStatus ? [{ label: c.isActive ? msg('Suspend') : msg('Reactivate'), disabled: toggling === c.id, onSelect: () => { void toggleStatus(c); } }] : []),
+                { label: msg('Delete company'), destructive: true, disabled: deleting === c.id, onSelect: () => { void deleteCompany(c.id); } },
+              ]} />
             </td>
           </tr>
         ))}
@@ -404,26 +420,26 @@ function CompaniesTab() {
       {/* Statutory Pack Profile panel — shown when a company's globe icon is clicked */}
       {(summaryLoading || statutorySummary) && (
         <div className="mt-4 rounded-xl border border-indigo-200 bg-indigo-50/60 p-5 dark:border-indigo-800/40 dark:bg-indigo-900/20">
-          {summaryLoading && <p className="text-sm text-slate-500">Loading statutory profile…</p>}
+          {summaryLoading && <p className="text-sm text-slate-500">{t('Loading statutory profile…')}</p>}
           {statutorySummary && (
             <>
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  Statutory Pack Profile — {statutorySummary.countryNameEn}
+                  {t('Statutory Pack Profile')} — {statutorySummary.countryNameEn}
                   {statutorySummary.jurisdiction && <span className="ms-1 text-xs font-normal text-slate-500">({statutorySummary.jurisdiction})</span>}
                 </h3>
-                <button type="button" onClick={() => setStatutorySummary(null)} className="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+                <button type="button" onClick={() => setStatutorySummary(null)} className="text-xs text-slate-400 hover:text-slate-600">{t('Dismiss')}</button>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <InfoRow label="Social Insurance" value={statutorySummary.socialInsuranceScheme} detail={statutorySummary.socialInsuranceDescription} />
-                <InfoRow label="EOSB Formula" value={statutorySummary.eosbFormula} />
-                <InfoRow label="WPS Format" value={statutorySummary.wpsFormatLabel} />
-                <InfoRow label="Nationalization Scheme" value={statutorySummary.nationalizationScheme} />
-                <InfoRow label="Locale / Currency" value={`${statutorySummary.localeCode} · ${statutorySummary.currencyCode} ${statutorySummary.currencySymbol}`} />
-                <InfoRow label="Calendar / RTL" value={`${statutorySummary.calendarSystem} · ${statutorySummary.isRtl ? 'RTL' : 'LTR'}`} />
+                <InfoRow label={t('Social Insurance')} value={statutorySummary.socialInsuranceScheme} detail={statutorySummary.socialInsuranceDescription} />
+                <InfoRow label={t('EOSB Formula')} value={statutorySummary.eosbFormula} />
+                <InfoRow label={t('WPS Format')} value={statutorySummary.wpsFormatLabel} />
+                <InfoRow label={t('Nationalization Scheme')} value={statutorySummary.nationalizationScheme} />
+                <InfoRow label={t('Locale / Currency')} value={`${statutorySummary.localeCode} · ${statutorySummary.currencyCode} ${statutorySummary.currencySymbol}`} />
+                <InfoRow label={t('Calendar / RTL')} value={`${statutorySummary.calendarSystem} · ${statutorySummary.isRtl ? 'RTL' : 'LTR'}`} />
               </div>
               <p className="mt-3 border-t border-indigo-200 pt-3 text-xs text-amber-700 dark:border-indigo-700/40 dark:text-amber-300">
-                Review the tenant-wide rule history in <Link href="/setup?tab=statutoryRules" className="font-semibold underline">Statutory Rules</Link>. Configure company-specific values under GL &amp; rates.
+                {t('The statutory rule history is tenant-wide. Configure company-specific values under GL & rates.')} <Link href="/setup?tab=statutoryRules" className="font-semibold underline">{t('Statutory Rules')}</Link>
               </p>
             </>
           )}
@@ -432,39 +448,47 @@ function CompaniesTab() {
 
       <Modal
         isOpen={modalOpen}
-        title={editing ? 'Edit Company' : 'Add Company'}
+        title={editing ? t('Edit Company') : t('Add Company')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
+            <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
       >
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
-          <FormField label="Legal Name (EN)" required>
+          <FormField label={t('Legal Name (EN)')} required>
             <input type="text" value={form.legalNameEn} onChange={(e) => f('legalNameEn', e.target.value)} className="input w-full" placeholder="Acme Corp LLC" />
           </FormField>
-          <FormField label="Legal Name (AR)">
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.legalNameEn} onSuggest={(s) => f('legalNameAr', s)} />
-            </div>
+          <FormField label={t('Legal Name (AR)')}>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.legalNameAr ?? ''} onChange={(e) => f('legalNameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.legalNameEn} onSuggest={(s) => f('legalNameAr', s)} />
+              </div>
+            )}
           </FormField>
-          <FormField label="Trade Name">
+          <FormField label={t('Trade Name')}>
             <input type="text" value={form.tradeName ?? ''} onChange={(e) => f('tradeName', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="Country" required>
-            <CountrySelect
-              value={setupCountryCode(form.countryCode)}
-              onChange={(cc) => {
-                const pack = availablePacks.find(p => setupCountryCode(p.countryCode) === cc);
-                setForm(current => ({ ...current, countryCode: cc, jurisdiction: pack?.jurisdictions[0]?.code ?? '' }));
-              }}
-            />
-            <p className="mt-1 text-xs text-slate-500">{t('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')}</p>
+          <FormField label={t('Country')} required>
+            {(id) => (
+              <>
+                <CountrySelect
+                  id={id}
+                  value={setupCountryCode(form.countryCode)}
+                  onChange={(cc) => {
+                    const pack = availablePacks.find(p => setupCountryCode(p.countryCode) === cc);
+                    setForm(current => ({ ...current, countryCode: cc, jurisdiction: pack?.jurisdictions[0]?.code ?? '' }));
+                  }}
+                />
+                <p className="mt-1 text-xs text-slate-500">{t('Country selection does not confirm payroll or statutory coverage. Review the statutory profile separately.')}</p>
+              </>
+            )}
           </FormField>
           <FormField label={t('Jurisdiction (optional)')} info={t('A special legal regime within the selected country, such as a free zone. Choose only when applicable.')}>
             <select
@@ -492,24 +516,24 @@ function CompaniesTab() {
               aria-describedby={fieldErrors.registrationNumber ? 'company-registration-number-error' : undefined}
             />
           </FormField>
-          <FormField label="Tax Number">
+          <FormField label={t('Tax Number')}>
             <input type="text" value={form.taxNumber ?? ''} onChange={(e) => f('taxNumber', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="Default Currency" required>
+          <FormField label={t('Default Currency')} required>
             <select value={form.defaultCurrency || currencyCode} onChange={(e) => f('defaultCurrency', e.target.value)} className="select w-full">
               {['USD', 'GBP', 'EUR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR'].map((c) => <option key={c}>{c}</option>)}
             </select>
           </FormField>
-          <FormField label="Status">
+          <FormField label={t('Status')}>
             <select value={form.isActive ? 'true' : 'false'} onChange={(e) => f('isActive', e.target.value === 'true')} className="select w-full">
-              <option value="true">Active</option>
-              <option value="false">Inactive</option>
+              <option value="true">{t('Active')}</option>
+              <option value="false">{t('Inactive')}</option>
             </select>
           </FormField>
-          <FormField label="WPS Employer ID">
+          <FormField label={t('WPS Employer ID')}>
             <input type="text" value={form.wpsEmployerId ?? ''} onChange={(e) => f('wpsEmployerId', e.target.value)} className="input w-full" />
           </FormField>
-          <FormField label="GOSI Employer ID">
+          <FormField label={t('GOSI Employer ID')}>
             <input type="text" value={form.gosiEmployerId ?? ''} onChange={(e) => f('gosiEmployerId', e.target.value)} className="input w-full" />
           </FormField>
           <FormField label={t('ERP company code')}>
@@ -519,9 +543,11 @@ function CompaniesTab() {
             {!canSetErpCode && <p className="mt-1 text-xs text-slate-500">{t('Only a finance user who manages the general ledger can change this code.')}</p>}
           </FormField>
           <FormField label={t('Work Email Domain (optional)')} info={t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}>
+            {(id) => (<>
             <div className="flex items-stretch overflow-hidden rounded-lg border border-slate-200 focus-within:border-sapphire dark:border-white/10">
               <span className="grid place-items-center bg-slate-50 px-2.5 text-sm font-medium text-slate-400 dark:bg-white/[0.04] dark:text-slate-500">@</span>
               <input
+                id={id}
                 type="text"
                 aria-label={t('Work Email Domain (optional)')}
                 value={form.emailDomain ?? ''}
@@ -535,9 +561,10 @@ function CompaniesTab() {
             </div>
             <p className={`mt-1 text-xs ${form.emailDomain && !isValidEmailDomain(form.emailDomain) ? 'text-rose-500' : 'text-slate-400'}`}>
               {form.emailDomain && !isValidEmailDomain(form.emailDomain)
-                ? 'Enter a bare domain like "acme.sa" — no "@", scheme, or path.'
+                ? t('Enter a bare domain like "acme.sa" — no "@", scheme, or path.')
                 : t('Optional preference for email suggestions. It does not restrict IT-issued employee addresses. It can also help identify your workspace at sign-in.')}
             </p>
+            </>)}
           </FormField>
           <FormField label={t('Work Email Pattern (optional)')} info={t('Choose how a name appears in an optional suggestion. This does not create a mailbox or assign an employee email.')}>
             <select aria-label={t('Work Email Pattern (optional)')} value={form.workEmailPattern || DEFAULT_WORK_EMAIL_PATTERN} onChange={(e) => f('workEmailPattern', e.target.value)} className="select w-full">
@@ -563,10 +590,11 @@ function CompaniesTab() {
 
 // ─── Branches ────────────────────────────────────────────────────────────────
 
-function BranchesTab({ companies }: { companies: CompanyDto[] }) {
+function BranchesTab({ companies, companiesError, onRetryCompanies }: { companies: CompanyDto[]; companiesError?: string; onRetryCompanies?: () => void }) {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'branch', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<BranchDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -574,19 +602,22 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<BranchDto | null>(null);
   useSetupEditorState(modalOpen);
-  const [form, setForm] = useState<BranchRequest>(emptyBranch(companies[0]?.id ?? ''));
+  // A new branch starts with the company the switcher selected, or the only company: never a silent guess among several.
+  const org = useOrgCompanies(companies);
+  const [form, setForm] = useState<BranchRequest>(emptyBranch(''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await branchesApi.listAll(filterCompany || undefined)); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await branchesApi.listAll(filterCompany || undefined)); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, [filterCompany]);
+  }, [filterCompany, t]);
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm(emptyBranch(companies[0]?.id ?? '')); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm(emptyBranch(org.defaultCompanyId)); setError(''); setModalOpen(true); };
   const openEdit = (b: BranchDto) => {
     setEditing(b);
     setForm({ companyId: b.companyId, code: b.code, nameEn: b.nameEn, nameAr: b.nameAr, countryCode: b.countryCode, city: b.city, addressLine1: b.addressLine1, addressLine2: b.addressLine2, timeZoneId: b.timeZoneId, laborOfficeCode: b.laborOfficeCode, isHeadOffice: b.isHeadOffice, isActive: b.isActive });
@@ -595,12 +626,17 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
 
   const handleSave = async () => {
     if (!form.nameEn.trim() || !form.code.trim()) { setError(t('Name and code are required')); return; }
+    // The form marks these required; they are checked here so a missing one never costs a round trip (or a guessed value).
+    if (!form.companyId) { setError(t('Choose the company this belongs to.')); return; }
+    if (!form.countryCode.trim()) { setError(t('Country is required.')); return; }
+    if (!form.city.trim()) { setError(t('City is required.')); return; }
+    if (!form.timeZoneId.trim()) { setError(t('Time zone is required.')); return; }
     setSaving(true); setError('');
     try {
       if (editing) await branchesApi.update(editing.id, form);
       else await branchesApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -613,11 +649,12 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
   return (
     <>
       {removal.notice}
+      {companiesError && <LoadError message={`${t('The companies could not be loaded.')} ${companiesError}`} onRetry={() => onRetryCompanies?.()} />}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('City'), msg('Head Office'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Branch')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={items.filter((x) => showOff || x.isActive).length === 0}
         emptyLabel={msg('No branches yet')} emptyHint={msg('Add your first branch, or import a CSV.')}
         filter={
@@ -631,14 +668,15 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />
           </>
         }
-        actions={
+        actions={(
           <ImportExportToolbar
+            importBlockedReason={access.writeBlockedReason}
             entityName="Branches"
             onExport={async () => { const csv = await branchesApi.export(); downloadCsv(csv, 'branches.csv'); }}
             onDownloadTemplate={async () => { const csv = await branchesApi.importTemplate(); downloadCsv(csv, 'branches-template.csv'); }}
             onImport={async (csv) => { const r = await branchesApi.import(csv); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        }
+        )}
       >
         {items.filter((b) => showOff || b.isActive).map((b) => (
           <tr key={b.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -649,8 +687,8 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <td className="px-4 py-3">{b.isHeadOffice ? <span className="rounded-full bg-sapphire/10 px-2 py-0.5 text-xs font-semibold text-sapphire dark:bg-sapphire/20">HQ</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={b.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={writeAccess(b.companyId).reason}
-                  onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
+              <OrgRowActions name={b.nameEn} isActive={b.isActive} busy={removal.busyId === b.id} blockedReason={access.writeBlockedReason ?? writeAccess(b.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(b)} onRemove={() => void removal.remove({ id: b.id, name: b.nameEn })} onRestore={() => void removal.restore({ id: b.id, name: b.nameEn })} />
             </td>
           </tr>
         ))}
@@ -660,10 +698,11 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Branch') : t('Add Branch')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         size="lg"
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -683,19 +722,39 @@ function BranchesTab({ companies }: { companies: CompanyDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Dubai Head Office" />
           </FormField>
           <FormField label={t('Name (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Country')} required>
-            <CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Branch country" />
+            {(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} />}
           </FormField>
           <FormField label={t('City')} required>
             <input type="text" value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" placeholder="Dubai" />
           </FormField>
           <FormField label={t('Time Zone')} required>
-            <input type="text" value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="input w-full" placeholder="America/New_York" />
+            <select value={form.timeZoneId} onChange={(e) => f('timeZoneId', e.target.value)} className="select w-full">
+              <option value="">{t('Select time zone')}</option>
+              {/* The wizard's shortlist first, then every other zone the browser knows; a saved zone outside both stays selectable. */}
+              {(() => {
+                const others = otherTimeZones(TIME_ZONES);
+                const extra = form.timeZoneId && !TIME_ZONES.includes(form.timeZoneId) && !others.includes(form.timeZoneId) ? [form.timeZoneId] : [];
+                const option = (zone: string) => {
+                  const offset = timeZoneOffset(zone);
+                  return <option key={zone} value={zone}>{`${TIME_ZONE_CITY[zone] ? t(TIME_ZONE_CITY[zone]) : zone}${offset ? ` (${offset})` : ''}`}</option>;
+                };
+                return (
+                  <>
+                    {extra.map(option)}
+                    <optgroup label={t('Common time zones')}>{TIME_ZONES.map(option)}</optgroup>
+                    {others.length > 0 && <optgroup label={t('All time zones')}>{others.map(option)}</optgroup>}
+                  </>
+                );
+              })()}
+            </select>
           </FormField>
           <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
           <div className="col-span-2 flex items-center gap-2">
@@ -716,6 +775,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const { locale } = useLocale();
   const removal = useOrgRowRemoval({ kind: 'department', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DepartmentDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -731,12 +791,13 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await departmentsApi.listAll()); } catch (e) { notifyApiError(e); }
+    setLoading(true); setLoadError('');
+    try { setItems(await departmentsApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -755,7 +816,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       if (editing) await departmentsApi.update(editing.id, form);
       else await departmentsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -767,14 +828,15 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
       {removal.notice}
       <TableShell
         columns={[msg('Code'), msg('Name'), msg('Company'), msg('Cost Center'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Department')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         emptyLabel={msg('No departments yet')} emptyHint={msg('Add your first department, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
-        actions={
+        actions={(
           <ImportExportToolbar
+            importBlockedReason={access.writeBlockedReason}
             entityName="Departments"
             onExport={async () => { const csv = await departmentsApi.export(); downloadCsv(csv, 'departments.csv'); }}
             onDownloadTemplate={async () => { const csv = await departmentsApi.importTemplate(); downloadCsv(csv, 'departments-template.csv'); }}
@@ -782,7 +844,7 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             onPreview={async (csv) => { const r = await departmentsApi.importPreview(csv, importCompanyId); return toDepartmentPreview(r.data, r.linksToClearHeader, locale); }}
             onImport={async (csv, _key, options) => { const r = await departmentsApi.import(csv, importCompanyId, options); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
-        }
+        )}
       >
         {shown.map((d) => (
           <tr key={d.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -792,8 +854,8 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{costCenters.find((c) => c.id === d.costCenterId)?.name ?? '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
-                  onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
+              <OrgRowActions name={d.nameEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={access.writeBlockedReason ?? writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.nameEn })} onRestore={() => void removal.restore({ id: d.id, name: d.nameEn })} />
             </td>
           </tr>
         ))}
@@ -803,9 +865,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Department') : t('Add Department')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -813,8 +876,10 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, costCenterId: undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, costCenterId: undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="ENG" />
@@ -823,10 +888,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
             <input type="text" value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" placeholder="Engineering" />
           </FormField>
           <FormField label={t('Name (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.nameAr ?? ''} onChange={(e) => f('nameAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => f('nameAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Cost Center')}>
             <select value={form.costCenterId ?? ''} onChange={(e) => f('costCenterId', e.target.value || undefined)} className="select w-full">
@@ -850,10 +917,12 @@ function DepartmentsTab({ costCenters }: { costCenters: CostCenterDto[] }) {
 
 // ─── Designations ─────────────────────────────────────────────────────────────
 
-function DesignationsTab({ grades }: { grades: GradeDto[] }) {
+function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: GradeDto[]; gradesError?: string; onRetryGrades?: () => void }) {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'designation', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  // Write controls mirror DesignationsController: the server authorises by permission (organization.write); Remove and Restore also need organization.delete. Export and the template are reads.
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<DesignationDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -869,12 +938,13 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await designationsApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await designationsApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -893,7 +963,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
       if (editing) await designationsApi.update(editing.id, form);
       else await designationsApi.create(form);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -903,16 +973,18 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
+      {gradesError && <LoadError message={`${t('The grades could not be loaded.')} ${gradesError}`} onRetry={() => onRetryGrades?.()} />}
       <TableShell
         columns={[msg('Code'), msg('Title'), msg('Company'), msg('Job Grade'), msg('Manager Role'), msg('Status')]}
-        onAdd={openNew}
+        onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason}
         addLabel={msg('Add Designation')}
-        loading={loading}
+        loading={loading} loadError={loadError} onRetry={load}
         empty={shown.length === 0}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         emptyLabel={msg('No designations yet')} emptyHint={msg('Add your first designation, or import a CSV.')}
         actions={
           <ImportExportToolbar
+            importBlockedReason={access.writeBlockedReason}
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
@@ -929,7 +1001,7 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <td className="px-4 py-3">{d.isManagerRole ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-600 dark:text-violet-400">{t('Manager')}</span> : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={d.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={d.titleEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={writeAccess(d.companyId).reason}
+              <OrgRowActions name={d.titleEn} isActive={d.isActive} busy={removal.busyId === d.id} blockedReason={access.writeBlockedReason ?? writeAccess(d.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                   onEdit={() => openEdit(d)} onRemove={() => void removal.remove({ id: d.id, name: d.titleEn })} onRestore={() => void removal.restore({ id: d.id, name: d.titleEn })} />
             </td>
           </tr>
@@ -940,9 +1012,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
         isOpen={modalOpen}
         title={editing ? t('Edit Designation') : t('Add Designation')}
         onClose={() => setModalOpen(false)}
+        closeDisabled={saving}
         footer={
           <>
-            <button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button>
             <button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button>
           </>
         }
@@ -950,8 +1023,10 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
         <FormError error={error} />
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, gradeId: undefined, departmentId: undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined, gradeId: undefined, departmentId: undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <FormField label={t('Code')} required>
             <input type="text" value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="SWE-L3" />
@@ -960,10 +1035,12 @@ function DesignationsTab({ grades }: { grades: GradeDto[] }) {
             <input type="text" value={form.titleEn} onChange={(e) => f('titleEn', e.target.value)} className="input w-full" placeholder="Software Engineer" />
           </FormField>
           <FormField label={t('Title (AR)')}>
-            <div className="flex items-stretch gap-1.5">
-              <input type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
-              <TransliterateButton source={form.titleEn} kind="organization-label" onSuggest={(s) => f('titleAr', s)} />
-            </div>
+            {(id) => (
+              <div className="flex items-stretch gap-1.5">
+                <input id={id} type="text" value={form.titleAr ?? ''} onChange={(e) => f('titleAr', e.target.value)} className="input w-full flex-1" dir="rtl" />
+                <TransliterateButton source={form.titleEn} kind="organization-label" onSuggest={(s) => f('titleAr', s)} />
+              </div>
+            )}
           </FormField>
           <FormField label={t('Job Grade')}>
             <input type="text" value={form.jobGrade ?? ''} onChange={(e) => f('jobGrade', e.target.value)} className="input w-full" placeholder="L3" />
@@ -1001,6 +1078,8 @@ function GradesTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'grade', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  // Write controls mirror GradesController: the server authorises by permission (organization.write); Remove and Restore also need organization.delete. Export and the template are reads.
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<GradeDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1023,26 +1102,30 @@ function GradesTab() {
   const importCompanyId = companyFilter && companyFilter !== UNASSIGNED_FILTER ? companyFilter : org.defaultCompanyId || undefined;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  // The open grade's pay lines could not be read: saving would replace them with nothing, so Save stays off.
+  const [payScaleFailed, setPayScaleFailed] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await gradesApi.listAll()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await gradesApi.listAll()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm({ ...emptyGrade(), companyId: org.defaultCompanyId || undefined }); setPayScale([]); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyGrade(), companyId: org.defaultCompanyId || undefined }); setPayScale([]); setPayScaleFailed(false); setError(''); setModalOpen(true); };
   const openEdit = async (g: GradeDto) => {
     setEditing(g);
     setForm({ code: g.code, name: g.name, nameAr: g.nameAr ?? '', band: g.band, level: g.level, minSalary: g.minSalary, midSalary: g.midSalary, maxSalary: g.maxSalary, currency: g.currency, isActive: g.isActive, companyId: g.companyId ?? undefined });
     setPayScale([]);
+    setPayScaleFailed(false);
     setError('');
     setModalOpen(true);
     try {
       const comps = await gradesApi.getPayScale(g.id);
       setPayScale(comps.map((c: GradePayScaleComponentDto) => { const rest = { ...c } as Partial<GradePayScaleComponentDto>; delete rest.id; return rest as Omit<GradePayScaleComponentDto, 'id'>; }));
-    } catch { /* empty pay scale */ }
+    } catch { if (!benefitsByGrade) setPayScaleFailed(true); }
   };
   useEffect(() => {
     if (!requestedGrade || openedRequested.current === requestedGrade || loading) return;
@@ -1070,7 +1153,7 @@ function GradesTab() {
       gradeSaved = true;
       if (!benefitsByGrade) await gradesApi.setPayScale(saved.id, lines);
       setModalOpen(false); load();
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save. Please try again.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); if (gradeSaved) notifyGradesChanged(); }
   };
   const f = (key: keyof GradeRequest, v: string | boolean | number) => setForm((x) => ({ ...x, [key]: v }));
@@ -1082,10 +1165,11 @@ function GradesTab() {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
-      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={openNew} addLabel={msg('Add Grade')} loading={loading} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Grade')} loading={loading} loadError={loadError} onRetry={load} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
           <ImportExportToolbar
+            importBlockedReason={access.writeBlockedReason}
             entityName="Grades"
             onExport={async () => { const csv = await gradesApi.export(); downloadCsv(csv, 'grades.csv'); }}
             onDownloadTemplate={async () => { const csv = await gradesApi.importTemplate(); downloadCsv(csv, 'grades-template.csv'); }}
@@ -1103,18 +1187,21 @@ function GradesTab() {
             <td className="px-4 py-3 tabular-nums text-slate-600 dark:text-slate-300">{payRange(g)}</td>
             <td className="px-4 py-3"><ActiveBadge active={g.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={g.name} isActive={g.isActive} busy={removal.busyId === g.id} blockedReason={writeAccess(g.companyId).reason}
+              <OrgRowActions name={g.name} isActive={g.isActive} busy={removal.busyId === g.id} blockedReason={access.writeBlockedReason ?? writeAccess(g.companyId).reason} deleteBlockedReason={access.deleteBlockedReason}
                   onEdit={() => openEdit(g)} onRemove={() => void removal.remove({ id: g.id, name: g.name })} onRestore={() => void removal.restore({ id: g.id, name: g.name })} />
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Grade') : t('Add Grade')} onClose={() => setModalOpen(false)} closeDisabled={saving} footer={<><button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button><button type="button" onClick={handleSave} disabled={saving || payScaleFailed} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
+        {payScaleFailed && <FormError error={t('The pay scale lines could not be loaded, so saving is turned off to keep them. Close this window and open the grade again.')} />}
         <div className="space-y-3">
           <FormField label={t('Company')} required>
-            <CompanySelectField value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined }))}
-              options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            {(id) => (
+              <CompanySelectField id={id} value={form.companyId ?? ''} onChange={(v) => setForm((x) => ({ ...x, companyId: v || undefined }))}
+                options={org.options} locked={!!editing?.companyId} lockedName={org.nameOf(editing?.companyId)} />
+            )}
           </FormField>
           <div className="grid grid-cols-2 gap-3">
             <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="G5" /></FormField>
@@ -1212,7 +1299,7 @@ function MasterDataTab() {
       else await masterDataApi.createType({ code: typeForm.code, nameEn: typeForm.nameEn, nameAr: typeForm.nameAr, description: typeForm.description, allowCustomValues: typeForm.allowCustomValues });
       setTypeModal(false); loadTypes();
       if (editingType && selectedType?.id === editingType.id) setSelectedType({ ...selectedType, ...typeForm });
-    } catch (err: unknown) { setError((err as any)?.response?.data?.message ?? t('Failed to save.')); }
+    } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
   };
 
@@ -1356,10 +1443,12 @@ function MasterDataTab() {
           <FormField label={t('Code')} required><input value={typeForm.code} onChange={(e) => setTypeForm(x => ({ ...x, code: e.target.value }))} className="input w-full" placeholder="NATIONALITY" /></FormField>
           <FormField label={t('Name (English)')} required><input value={typeForm.nameEn} onChange={(e) => setTypeForm(x => ({ ...x, nameEn: e.target.value }))} className="input w-full" /></FormField>
           <FormField label={t('Name (Arabic)')}>
+            {(id) => (
             <div className="flex items-stretch gap-1.5">
-              <input value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <input id={id} value={typeForm.nameAr} onChange={(e) => setTypeForm(x => ({ ...x, nameAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={typeForm.nameEn} kind="organization-label" onSuggest={(s) => setTypeForm(x => ({ ...x, nameAr: s }))} />
             </div>
+            )}
           </FormField>
           <FormField label={t('Description')}><input value={typeForm.description} onChange={(e) => setTypeForm(x => ({ ...x, description: e.target.value }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
@@ -1385,10 +1474,12 @@ function MasterDataTab() {
           </FormField>
           <FormField label={t('Value (English)')} required><input value={valueForm.valueEn} onChange={(e) => setValueForm(x => ({ ...x, valueEn: e.target.value }))} className="input w-full" /></FormField>
           <FormField label={t('Value (Arabic)')}>
+            {(id) => (
             <div className="flex items-stretch gap-1.5">
-              <input value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
+              <input id={id} value={valueForm.valueAr} onChange={(e) => setValueForm(x => ({ ...x, valueAr: e.target.value }))} className="input w-full flex-1" dir="rtl" />
               <TransliterateButton source={valueForm.valueEn} kind="organization-label" onSuggest={(s) => setValueForm(x => ({ ...x, valueAr: s }))} />
             </div>
+            )}
           </FormField>
           <FormField label={t('Sort order')}><input type="number" value={valueForm.sortOrder} onChange={(e) => setValueForm(x => ({ ...x, sortOrder: Number(e.target.value) }))} className="input w-full" /></FormField>
           <div className="flex items-center gap-2">
@@ -1700,7 +1791,7 @@ export function GCCSettingsTab({ countryCode, onSaved }: { countryCode?: string;
         footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3 text-sm">
-          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} /></FormField>
+          <FormField label={t('Country')} required>{(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Country" disabled={!!editing} />}</FormField>
           <FormField label={t('Work Week')}><input value={form.workWeek ?? ''} onChange={(e) => f('workWeek', e.target.value)} className="input w-full" placeholder="Mon-Fri" /></FormField>
           <FormField label={t('Weekend Days')}><input value={form.weekendDays ?? ''} onChange={(e) => f('weekendDays', e.target.value)} className="input w-full" placeholder="Fri,Sat" /></FormField>
           <div />
@@ -1847,24 +1938,27 @@ function LocationsTab() {
   const t = useT();
   const removal = useOrgRowRemoval({ kind: 'location', onDone: () => { void load(); } });
   const writeAccess = useOrgWriteAccess();
+  // Add, Edit, Remove and Restore mirror SetupSettingsController (permission only); import and export mirror LocationsController (role and permission).
+  const access = useOrgStructureAccess();
   const [showOff, setShowOff] = useState(false);
   const [items, setItems] = useState<AdminLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<AdminLocation | null>(null);
   useSetupEditorState(modalOpen);
-  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
+  const [form, setForm] = useState({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: '', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
-    try { setItems(await locationsApi.list()); } catch { /**/ }
+    setLoading(true); setLoadError('');
+    try { setItems(await locationsApi.list()); } catch (err) { setLoadError(describeApiError(err, t)); }
     finally { setLoading(false); }
-  }, []);
+  }, [t]);
   useEffect(() => { load(); }, [load]);
 
-  const emptyForm = () => ({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: 'US', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
+  const emptyForm = () => ({ code: '', nameEn: '', nameAr: '', addressLine1: '', city: '', countryCode: '', postalCode: '', latitude: '', longitude: '', geofenceRadiusMeters: '' });
   const openNew = () => { setEditing(null); setForm(emptyForm()); setError(''); setModalOpen(true); };
   const openEdit = (l: AdminLocation) => {
     setEditing(l);
@@ -1873,8 +1967,18 @@ function LocationsTab() {
   };
   const save = async () => {
     if (!form.code.trim() || !form.nameEn.trim()) { setError(t('Code and name are required')); return; }
+    if (!form.countryCode.trim()) { setError(t('Country is required.')); return; }
+    // The attendance geofence is a circle: a point on the earth and a radius. Reject what no map can hold, before the request.
+    const hasLat = form.latitude.trim() !== '';
+    const hasLng = form.longitude.trim() !== '';
+    const lat = Number(form.latitude);
+    const lng = Number(form.longitude);
+    if (hasLat && !(Number.isFinite(lat) && lat >= -90 && lat <= 90)) { setError(t('Latitude must be between -90 and 90.')); return; }
+    if (hasLng && !(Number.isFinite(lng) && lng >= -180 && lng <= 180)) { setError(t('Longitude must be between -180 and 180.')); return; }
+    if (hasLat !== hasLng) { setError(t('Latitude and longitude must be given together, or both left blank.')); return; }
+    if (form.geofenceRadiusMeters.trim() !== '' && !(Number(form.geofenceRadiusMeters) > 0)) { setError(t('Geofence radius must be greater than zero.')); return; }
     setSaving(true); setError('');
-    const body = { ...form, latitude: form.latitude ? Number(form.latitude) : undefined, longitude: form.longitude ? Number(form.longitude) : undefined, geofenceRadiusMeters: form.geofenceRadiusMeters ? Number(form.geofenceRadiusMeters) : undefined };
+    const body = { ...form, latitude: hasLat ? lat : undefined, longitude: hasLng ? lng : undefined, geofenceRadiusMeters: form.geofenceRadiusMeters.trim() !== '' ? Number(form.geofenceRadiusMeters) : undefined };
     try {
       if (editing) await locationsApi.update(editing.id, body);
       else await locationsApi.create(body);
@@ -1883,21 +1987,34 @@ function LocationsTab() {
     finally { setSaving(false); }
   };
   const f = (key: string, v: string) => setForm(x => ({ ...x, [key]: v }));
+  // The pin panel speaks numbers and a patch; this form keeps its inputs as text, so the two are translated here and the typed inputs stay in sync.
+  const num = (v: string) => (v.trim() === '' ? null : Number(v));
+  const pinPatch = (patch: PinPatch) => setForm(x => {
+    const next = { ...x };
+    if ('latitude' in patch) next.latitude = patch.latitude == null ? '' : String(patch.latitude);
+    if ('longitude' in patch) next.longitude = patch.longitude == null ? '' : String(patch.longitude);
+    if ('radiusMeters' in patch) next.geofenceRadiusMeters = patch.radiusMeters == null ? '' : String(patch.radiusMeters);
+    if (patch.address != null) next.addressLine1 = patch.address;
+    if (patch.city != null) next.city = patch.city;
+    if (patch.countryCode != null) next.countryCode = patch.countryCode;
+    return next;
+  });
 
   return (
     <>
       {removal.notice}
-      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={openNew} addLabel={msg('Add Location')}
-        loading={loading} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
+      <TableShell columns={[msg('Code'), msg('Name'), msg('City'), msg('Country'), msg('Geofence'), msg('Status'), '']} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Location')}
+        loading={loading} loadError={loadError} onRetry={load} empty={items.filter((x) => showOff || x.isActive).length === 0} emptyLabel={msg('No locations yet')} emptyHint={msg('Add your first location, or import a CSV.')}
         filter={<ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} />}
-        actions={
+        actions={(
           <ImportExportToolbar
+            importBlockedReason={access.writeBlockedReason}
             entityName="Locations"
             onExport={async () => { const csv = await locationsApi.export(); downloadCsv(csv, 'locations.csv'); }}
             onDownloadTemplate={async () => { const csv = await locationsApi.importTemplate(); downloadCsv(csv, 'locations-template.csv'); }}
             onImport={async (csv) => { const r = await locationsApi.import(csv); load(); return r; }}
           />
-        }
+        )}
       >
         {items.filter((l) => showOff || l.isActive).map((l) => (
           <tr key={l.id} className="group hover:bg-slate-50 dark:hover:bg-white/[0.03]">
@@ -1908,24 +2025,27 @@ function LocationsTab() {
             <td className="px-4 py-3 text-slate-500 text-xs">{l.geofenceRadiusMeters ? `${l.geofenceRadiusMeters}m` : '—'}</td>
             <td className="px-4 py-3"><ActiveBadge active={l.isActive} /></td>
             <td className="px-4 py-3">
-              <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={writeAccess(undefined).reason}
-                  onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
+              <OrgRowActions name={l.nameEn} isActive={l.isActive} busy={removal.busyId === l.id} blockedReason={access.writeBlockedReason ?? writeAccess(undefined).reason} deleteBlockedReason={access.deleteBlockedReason}
+                    onEdit={() => openEdit(l)} onRemove={() => void removal.remove({ id: l.id, name: l.nameEn })} onRestore={() => void removal.restore({ id: l.id, name: l.nameEn })} />
             </td>
           </tr>
         ))}
       </TableShell>
-      <Modal isOpen={modalOpen} title={editing ? t('Edit Location') : t('Add Location')} onClose={() => setModalOpen(false)} size="lg"
-        footer={<><button type="button" onClick={() => setModalOpen(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
+      <Modal isOpen={modalOpen} title={editing ? t('Edit Location') : t('Add Location')} onClose={() => setModalOpen(false)} closeDisabled={saving} size="lg"
+        footer={<><button type="button" onClick={() => setModalOpen(false)} disabled={saving} className="btn-secondary disabled:opacity-60">{t('Cancel')}</button><button type="button" onClick={save} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="grid grid-cols-2 gap-3">
           <FormField label={t('Code')} required><input value={form.code} onChange={(e) => f('code', e.target.value)} className="input w-full" placeholder="DXB-HQ" /></FormField>
           <FormField label={t('Name (EN)')} required><input value={form.nameEn} onChange={(e) => f('nameEn', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Name (AR)')}><input value={form.nameAr} onChange={(e) => f('nameAr', e.target.value)} className="input w-full" dir="rtl" /></FormField>
-          <FormField label={t('Country')} required><CountrySelect value={form.countryCode} onChange={(cc) => f('countryCode', cc)} ariaLabel="Location country" /></FormField>
+          <FormField label={t('Country')} required>{(id) => <CountrySelect id={id} value={form.countryCode} onChange={(cc) => f('countryCode', cc)} />}</FormField>
           <FormField label={t('City')}><input value={form.city} onChange={(e) => f('city', e.target.value)} className="input w-full" /></FormField>
           <FormField label={t('Postal Code')}><input value={form.postalCode} onChange={(e) => f('postalCode', e.target.value)} className="input w-full" /></FormField>
-          <FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" /></FormField>
-          <div />
+          <div className="col-span-2"><FormField label={t('Address')}><input value={form.addressLine1} onChange={(e) => f('addressLine1', e.target.value)} className="input w-full" maxLength={240} dir="auto" /></FormField></div>
+          <div className="col-span-2">
+            <LocationPinCore value={{ latitude: num(form.latitude), longitude: num(form.longitude), radiusMeters: num(form.geofenceRadiusMeters), address: form.addressLine1, city: form.city, countryCode: form.countryCode }}
+              onChange={pinPatch} countryCode={form.countryCode} name={form.nameEn.trim() || form.code.trim() || t('Location')} disabled={saving} addressMax={240} protectAddress fillDetails />
+          </div>
           <FormField label={t('Latitude')}><input type="number" step="any" value={form.latitude} onChange={(e) => f('latitude', e.target.value)} className="input w-full" placeholder="25.2048" /></FormField>
           <FormField label={t('Longitude')}><input type="number" step="any" value={form.longitude} onChange={(e) => f('longitude', e.target.value)} className="input w-full" placeholder="55.2708" /></FormField>
           <FormField label={t('Geofence Radius (m)')}><input type="number" value={form.geofenceRadiusMeters} onChange={(e) => f('geofenceRadiusMeters', e.target.value)} className="input w-full" placeholder="100" /></FormField>
@@ -2277,7 +2397,7 @@ function EmailConfigTab() {
 const DELETE_ROW_BUTTON = 'inline-flex h-7 items-center gap-1 rounded-lg border border-slate-200 px-2 text-xs font-medium text-slate-600 hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40 dark:border-white/10 dark:text-slate-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-400';
 
 function TableShell({
-  columns, onAdd, addLabel, loading, empty, emptyLabel, emptyHint, filter, actions, children,
+  columns, onAdd, addLabel, writeBlockedReason, loading, loadError, onRetry, empty, emptyLabel, emptyHint, filter, actions, children,
 }: {
   columns: string[];
   // Optional so read-only surfaces (e.g. organization.read viewers on the Companies
@@ -2285,7 +2405,12 @@ function TableShell({
   // still pass onAdd, so their behaviour is unchanged.
   onAdd?: () => void;
   addLabel?: string;
+  /** The person may not add or change rows: Add stays visible but disabled, and this says what is missing. */
+  writeBlockedReason?: string;
   loading: boolean;
+  /** A failed load: shown with Retry instead of the empty state, so a failure never looks like an empty tenant. */
+  loadError?: string;
+  onRetry?: () => void;
   empty: boolean;
   emptyLabel: string;
   /** A second line for the empty table, naming the first step (e.g. "Add your first branch, or import a CSV."). Shown to writers only. */
@@ -2302,14 +2427,15 @@ function TableShell({
         <div className="flex min-w-0 flex-wrap items-center gap-2">{filter}</div>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {actions}
-          {onAdd && (
-            <button type="button" onClick={onAdd} className="btn-primary">
+          {(onAdd || writeBlockedReason) && (
+            <button type="button" onClick={onAdd} disabled={!onAdd} title={onAdd ? undefined : writeBlockedReason} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
               <Plus className="h-4 w-4" aria-hidden="true" />
               {addLabel ? t(addLabel) : null}
             </button>
           )}
         </div>
       </div>
+      {writeBlockedReason && <p data-testid="write-blocked-reason" className="text-xs text-slate-500 dark:text-slate-400">{writeBlockedReason}</p>}
       <div className="surface overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -2331,7 +2457,12 @@ function TableShell({
                   </td>
                 </tr>
               )}
-              {!loading && empty && (
+              {!loading && loadError && (
+                <tr>
+                  <td colSpan={columns.length + 1} className="px-4 py-6"><LoadError message={loadError} onRetry={() => onRetry?.()} /></td>
+                </tr>
+              )}
+              {!loading && !loadError && empty && (
                 <tr>
                   <td colSpan={columns.length + 1} className="px-4 py-12 text-center text-sm text-slate-500 dark:text-slate-400">
                     <p className="font-medium text-slate-600 dark:text-slate-300">{t(emptyLabel)}</p>
@@ -2339,7 +2470,7 @@ function TableShell({
                   </td>
                 </tr>
               )}
-              {!loading && children}
+              {!loading && !loadError && children}
             </tbody>
           </table>
         </div>
@@ -2351,25 +2482,38 @@ function TableShell({
 function ActiveBadge({ active }: { active: boolean }) {
   const t = useT();
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20' : 'bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-slate-500'}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${active ? 'bg-emerald-50 text-emerald-800 dark:bg-emeraldZ/20 dark:text-emeraldZ' : 'bg-slate-100 text-slate-400 dark:bg-white/10 dark:text-slate-500'}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-emeraldZ' : 'bg-slate-400'}`} />
       {active ? t('Active') : t('Inactive')}
     </span>
   );
 }
 
+/**
+ * A labelled control. `children` is the control itself (a plain input, select or textarea gets the id automatically) or
+ * a function receiving the id for a custom control, so the label is always tied to what it names: a screen reader
+ * announces "Code, edit text", and a click on the label focuses the field.
+ */
 function FormField({ label, required, children, info, error, errorId }: {
-  label: string; required?: boolean; children: React.ReactNode; info?: string;
+  label: string; required?: boolean; children: React.ReactNode | ((id: string) => React.ReactNode); info?: string;
   /** Shown under the control. Give the control aria-invalid and aria-describedby={errorId}. */
   error?: string; errorId?: string;
 }) {
+  const id = useId();
+  const control = typeof children === 'function' ? children(id) : Children.map(children, (child) => {
+    if (isValidElement(child) && typeof child.type === 'string' && ['input', 'select', 'textarea'].includes(child.type)) {
+      const props = (child as ReactElement<{ id?: string }>).props;
+      return props.id ? child : cloneElement(child as ReactElement<{ id?: string; 'aria-required'?: boolean }>, required ? { id, 'aria-required': true } : { id });
+    }
+    return child;
+  });
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label} {required && <span className="text-red-500">*</span>}
+      <label htmlFor={id} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
+        {label} {required && <span className="text-red-500" aria-hidden="true">*</span>}
         {info && <InfoTip text={info} className="ms-1" />}
       </label>
-      {children}
+      {control}
       {error && (
         <p id={errorId} role="alert" className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
           {error}
@@ -2382,7 +2526,7 @@ function FormField({ label, required, children, info, error, errorId }: {
 function FormError({ error }: { error: string }) {
   if (!error) return null;
   return (
-    <p className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
+    <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-600 dark:bg-red-500/10 dark:text-red-400">
       {error}
     </p>
   );
@@ -2490,6 +2634,11 @@ export function SetupPage() {
   const [companies, setCompanies] = useState<CompanyDto[]>([]);
   const [grades, setGrades] = useState<GradeDto[]>([]);
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
+  // A failed lookup is shown on the tab that needs it, with Retry, instead of reading as "no companies" / "no grades".
+  const [companiesError, setCompaniesError] = useState('');
+  const [gradesError, setGradesError] = useState('');
+  const [lookupRetry, setLookupRetry] = useState(0);
+  const retryLookups = useCallback(() => setLookupRetry(n => n + 1), []);
   const [editorDirty, setEditorDirty] = useState(false);
   const discardSetupWork = useCallback(() => setEditorDirty(false), []);
   // A Guided setup deep link is the address this Setup visit arrived with, read once here, before the company scope is
@@ -2537,6 +2686,7 @@ export function SetupPage() {
       setCompanies([]);
       setGrades([]);
       setCostCenters([]);
+      setCompaniesError(''); setGradesError('');
       return;
     }
     let active = true;
@@ -2544,21 +2694,22 @@ export function SetupPage() {
     setCompanies([]);
     setGrades([]);
     setCostCenters([]);
+    setCompaniesError(''); setGradesError('');
     const refreshCompanies = () => {
       if (!canReadCompanies) return;
       const request = ++companiesRequest;
       companiesApi.listAll()
-        .then(rows => { if (active && request === companiesRequest) setCompanies(rows); })
-        .catch(() => { if (active && request === companiesRequest) setCompanies([]); });
+        .then(rows => { if (active && request === companiesRequest) { setCompanies(rows); setCompaniesError(''); } })
+        .catch(err => { if (active && request === companiesRequest) { setCompanies([]); setCompaniesError(describeApiError(err, t)); } });
     };
     refreshCompanies();
     window.addEventListener('kynexone:companies-changed', refreshCompanies);
     if (canWrite) {
-      gradesApi.listAll().then(rows => { if (active) setGrades(rows); }).catch(() => { if (active) setGrades([]); });
+      gradesApi.listAll().then(rows => { if (active) setGrades(rows); }).catch(err => { if (active) { setGrades([]); setGradesError(describeApiError(err, t)); } });
       costCentersApi.listAll().then(rows => { if (active) setCostCenters(rows); }).catch(() => { if (active) setCostCenters([]); });
     }
     return () => { active = false; window.removeEventListener('kynexone:companies-changed', refreshCompanies); };
-  }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable]);
+  }, [canReadCompanies, canWrite, companyVersion, configurationScopeUnavailable, lookupRetry, t]);
 
   const tabHref = (tab: Tab) => {
     const params = new URLSearchParams(searchParams?.toString());
@@ -2709,9 +2860,9 @@ export function SetupPage() {
     switch (id) {
       case 'establishment': return <EstablishmentPanel focusDepartmentId={focusDepartmentId} focusLevelId={focusLevelId} />;
       case 'companies': return <CompaniesTab />;
-      case 'branches': return <BranchesTab companies={companies} />;
+      case 'branches': return <BranchesTab companies={companies} companiesError={companiesError} onRetryCompanies={retryLookups} />;
       case 'departments': return <DepartmentsTab costCenters={costCenters} />;
-      case 'designations': return <DesignationsTab grades={grades} />;
+      case 'designations': return <DesignationsTab grades={grades} gradesError={gradesError} onRetryGrades={retryLookups} />;
       case 'grades': return <GradesTab />;
       case 'costCenters': return <CostCentreMasterPanel companies={companies} />;
       case 'masterData': return <MasterDataTab />;
