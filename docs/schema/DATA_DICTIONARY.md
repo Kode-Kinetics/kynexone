@@ -926,6 +926,29 @@ cookie is stateless and cannot be revoked. RLS is a target rule — the live bri
 - **Lifecycle** — `POST` on `PUT /api/payroll/company-rules` creates it; `POST .../{id}/approve|reject` decides it once. Audited as `payroll.rules.change_requested`, `change_approved`, `change_rejected` and (on approval) `payroll.rules.changed`.
 - **Retention** `T` — kept with the audit log for the life of the company.
 
+### `payroll_run_recon_signoffs`
+- **Purpose** — the recorded review of a payroll run's manpower and value reconciliation against the prior month: who looked at which bridge, and when. A run may only be approved while one of these is `Active` for its current process version (unless the company turned the rule off). The bridge itself is derived from the run's slips and payslip lines on every read; this row freezes only its fingerprint and a summary, so the review can be shown later exactly as it was signed.
+- **Tier** T · **Domain** Payroll · **RLS** target shape (a); today the `ITenantOwned` query filter is the bridge, and `ICompanyScopedOperational` adds the company write guard
+- **Keys** — `company_id` (stamped from the run), `payroll_run_id`, `process_version int` (the run's `payroll_runs.process_version` when signed), `prior_run_id` and `prior_process_version` (the comparison run, null when there was none), `snapshot_hash varchar(64)` (SHA-256 hex of the canonical bridge, process versions bound in), `snapshot_json jsonb` (the summary: counts, item totals and final-settlement cells; no per-employee pay), `signed_off_by_user_id`, `signed_off_by_name varchar(200)`, `signed_off_at_utc`, `status varchar(20)` (`Active`/`Superseded`), `superseded_at_utc`, `superseded_reason varchar(20)` (`Reprocessed`/`Reopened`/`SentBack`/`Voided`/`Withdrawn`/`PriorChanged`), `notes varchar(1000)`
+- **Rel** — `tenant_id → tenants` (N:1, RESTRICT; tenant erasure sweeps it with every `ITenantOwned` table), `payroll_run_id → payroll_runs` (N:1, RESTRICT: a signed-off run is never hard-deleted); parent of `payroll_run_recon_explanations` (1:N)
+- **Constraint** — `ux_payroll_run_recon_signoffs__run_active` (UNIQUE `tenant_id, payroll_run_id` WHERE `status = 'Active'`: at most one live sign-off per run, however two sign-offs race); `ck_payroll_run_recon_signoffs__status`; `ck_payroll_run_recon_signoffs__superseded_pair` (`superseded_at_utc` and `superseded_reason` are both set exactly when the status is `Superseded`); `ck_payroll_run_recon_signoffs__reason`
+- **Indexes** — `ux_payroll_run_recon_signoffs__run_active` (above); `ix_payroll_run_recon_signoffs__run` (`tenant_id, payroll_run_id, signed_off_at_utc`: the latest sign-off of a run, read on every reconciliation and by the Approve gate); `IX_payroll_run_recon_signoffs_payroll_run_id` (EF FK index: the RESTRICT check when a run is deleted) and `IX_payroll_run_recon_signoffs_tenant_id_company_id` (EF company-scope index).
+- **Lifecycle** — written by `POST /api/payroll/runs/{id}/recon/signoff` (`payroll.approve`, organisation-wide scope, not the person who created or processed the run) under the run's row lock. Superseded in the same transaction by a re-process (`Reprocessed`), reopen (`Reopened`), send-back (`SentBack`), void (`Voided`), a withdrawal (`DELETE .../recon/signoff`, reason required, `Withdrawn`), or a change to the comparison run (`PriorChanged`, found at Approve). Never updated otherwise and never deleted by the product. Audited as `payroll.recon.signed_off`, `payroll.recon.withdrawn` and `payroll.recon.superseded` on the payroll audit chain, in the same save.
+- **Retention** `E` — kept with the payroll run it reviews (84 months); see `OWNERSHIP_AND_RETENTION.md`.
+
+### `payroll_run_recon_explanations`
+- **Purpose** — the written reason given, at sign-off, for one flagged item of the value bridge or for one employee the run did not pay or could not explain.
+- **Tier** T · **Domain** Payroll · **RLS** target shape (a); today the `ITenantOwned` query filter is the bridge
+- **Keys** — `signoff_id`, `scope varchar(20)` (`Item`/`Employee`), `key varchar(120)` (`Kind:CODE` for an item, e.g. `Earning:OVERTIME`, or the employee id), `text varchar(1000)` (at least `PayrollValidationOverridePolicy.MinimumReasonLength` characters), `created_by_user_id`, `created_at_utc`
+- **Rel** — `signoff_id → payroll_run_recon_signoffs` (N:1, CASCADE: an explanation is part of its sign-off and is deleted only with it), `tenant_id → tenants` (N:1, RESTRICT)
+- **Constraint** — `ux_payroll_run_recon_explanations__signoff_scope_key` (UNIQUE `tenant_id, signoff_id, scope, key`); `ck_payroll_run_recon_explanations__scope`
+- **Indexes** — `ux_payroll_run_recon_explanations__signoff_scope_key` (above); `IX_payroll_run_recon_explanations_signoff_id` (EF FK index: the CASCADE from the sign-off).
+- **Lifecycle** — inserted with its sign-off in one save; never edited.
+- **Retention** `E` — with its sign-off.
+
+### `payroll_runs.process_version` (column)
+- `integer NOT NULL DEFAULT 0`, migration `20261104090000_AddPayrollManpowerReconSignoff`. Incremented by every Process of the run (beside `processed_at_utc`) and never reset, not even by a reopen, so a sign-off carrying an older value can never be mistaken for current. Approve compares it with the Active sign-off's `process_version`.
+
 ### `comp_off_credits` (index `ux_comp_off_credits__rest_day_work`)
 - Partial UNIQUE `tenant_id, employee_id, worked_date, work_type` WHERE `work_type = 'RestDayWork'`: one rest-day/holiday-work credit per employee per worked day, so two concurrent device batches cannot both insert. Other work types keep allowing several rows per date. Credits earned this way start `Pending` and follow the normal comp-off approval.
 

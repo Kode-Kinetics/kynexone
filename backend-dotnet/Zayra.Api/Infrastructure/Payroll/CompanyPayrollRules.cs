@@ -15,11 +15,18 @@ public static class PayrollRuleKeys
     public const string MaxProbationDays = "max_probation_days";
     public const string ProrationBasis = "proration_basis";
     public const string AbsenceDeductionBase = "absence_deduction_base";
+    /// <summary>Percent movement in a reconciliation item (against the prior month) that needs a written explanation. Default 5, legal 0.1 to 100.</summary>
+    public const string ReconVariancePct = "recon_variance_pct";
+    /// <summary>Smallest movement, in the company currency, that can need an explanation. Default 0.</summary>
+    public const string ReconVarianceMinAmount = "recon_variance_min_amount";
+    /// <summary>Whether a run needs a recorded manpower + value reconciliation sign-off before it can be approved. Default true.</summary>
+    public const string ReconSignoffRequired = "recon_signoff_required";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         RestDayWorkMode, RestDayMultiplier, HolidayMultiplier, LeaveCashOutOnExit,
         LeaveCashOutBasis, MaxProbationDays, ProrationBasis, AbsenceDeductionBase,
+        ReconVariancePct, ReconVarianceMinAmount, ReconSignoffRequired,
     };
 }
 
@@ -88,6 +95,7 @@ public static class CompanyPayrollRules
     public const string WarnLeaveCashOutOff = "LEAVE_CASHOUT_OFF";
     public const string WarnProbationOver90 = "PROBATION_OVER_90";
     public const string WarnProbationOver180 = "PROBATION_OVER_180";
+    public const string WarnReconSignoffOff = "RECON_SIGNOFF_OFF";
 
     /// <summary>Validates one value. Returns an error for a value that is meaningless (never for a legal-minimum
     /// shortfall) and the warning for one that is below a statutory minimum.</summary>
@@ -121,6 +129,24 @@ public static class CompanyPayrollRules
                 if (!bool.TryParse(v, out var on)) return ($"{key} must be true or false.", null);
                 return (null, on ? null : new PayrollRuleWarning(key, WarnLeaveCashOutOff,
                     "Saudi law pays out accrued, untaken annual leave when employment ends (Art. 111). Turning this off withholds that pay and is recorded against the person who confirms it."));
+            }
+            case PayrollRuleKeys.ReconVariancePct:
+            {
+                if (!decimal.TryParse(v, NumberStyles.Number, CultureInfo.InvariantCulture, out var pct) || pct < 0.1m || pct > 100m)
+                    return ($"{key} must be a percentage between 0.1 and 100.", null);
+                return (null, null);
+            }
+            case PayrollRuleKeys.ReconVarianceMinAmount:
+            {
+                if (!decimal.TryParse(v, NumberStyles.Number, CultureInfo.InvariantCulture, out var min) || min < 0m || min > 1_000_000_000m)
+                    return ($"{key} must be an amount of zero or more.", null);
+                return (null, null);
+            }
+            case PayrollRuleKeys.ReconSignoffRequired:
+            {
+                if (!bool.TryParse(v, out var required)) return ($"{key} must be true or false.", null);
+                return (null, required ? null : new PayrollRuleWarning(key, WarnReconSignoffOff,
+                    "Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it."));
             }
             case PayrollRuleKeys.MaxProbationDays:
             {
@@ -239,6 +265,26 @@ public static class CompanyPayrollRules
             .Where(r => r.TenantId == tenantId && r.CompanyId == companyId.Value)
             .ToListAsync(ct);
         return FromValues(InForce(rows, asOf ?? Today()).ToDictionary(r => r.Key, r => r.Value.Value));
+    }
+
+    /// <summary>The reconciliation rules in force: raw text for the two thresholds (null = the platform default) and whether a sign-off is required.</summary>
+    public sealed record ReconRuleValues(string? VariancePct, string? VarianceMinAmount, bool SignoffRequired);
+
+    public static async Task<ReconRuleValues> ResolveReconAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct, DateOnly? asOf = null)
+    {
+        if (companyId is null) return new ReconRuleValues(null, null, true);
+        var rows = await db.CompanyPayrollRules.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && r.CompanyId == companyId.Value
+                     && (r.RuleKey == PayrollRuleKeys.ReconVariancePct || r.RuleKey == PayrollRuleKeys.ReconVarianceMinAmount
+                         || r.RuleKey == PayrollRuleKeys.ReconSignoffRequired))
+            .ToListAsync(ct);
+        var inForce = InForce(rows, asOf ?? Today()).ToDictionary(r => r.Key, r => r.Value.Value);
+        inForce.TryGetValue(PayrollRuleKeys.ReconVariancePct, out var pct);
+        inForce.TryGetValue(PayrollRuleKeys.ReconVarianceMinAmount, out var min);
+        var required = !(inForce.TryGetValue(PayrollRuleKeys.ReconSignoffRequired, out var req)
+            && bool.TryParse(req.Trim(), out var on) && !on);
+        return new ReconRuleValues(pct, min, required);
     }
 
     public static CompanyPayrollRuleSet FromValues(IReadOnlyDictionary<string, string> v)
