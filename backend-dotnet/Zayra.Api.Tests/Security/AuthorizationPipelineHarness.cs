@@ -234,6 +234,10 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
     /// policy and is rejected only by <c>RequirePlatformRoleAttribute</c>'s 403 branch.</summary>
     public string PlatformMarketingToken { get; private set; } = null!;
 
+    /// <summary>Platform-audience token per operator role, for the role-matrix tests
+    /// (Admin, Support, Auditor, Finance next to <see cref="PlatformOwnerToken"/> and <see cref="PlatformMarketingToken"/>).</summary>
+    public IReadOnlyDictionary<string, string> PlatformTokensByRole { get; private set; } = null!;
+
     public async Task InitializeAsync()
     {
         // A private, shared-cache in-memory SQLite database. The anchor connection must stay open
@@ -276,6 +280,15 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
             PlatformOwnerToken = MintPlatformToken(owner, Jwt, Jwt.PlatformAudience);
             PlatformOwnerTokenOnTenantAudience = MintPlatformToken(owner, Jwt, Jwt.TenantAudience);
             PlatformMarketingToken = MintPlatformToken(marketing, Jwt, Jwt.PlatformAudience);
+
+            var byRole = new Dictionary<string, string>
+            {
+                [PlatformRoles.Owner] = PlatformOwnerToken,
+                [PlatformRoles.Marketing] = PlatformMarketingToken,
+            };
+            foreach (var role in new[] { PlatformRoles.Admin, PlatformRoles.Support, PlatformRoles.Auditor, PlatformRoles.Finance })
+                byRole[role] = MintPlatformToken(await ReadPlatformUserAsync(db, RoleOperatorEmail(role)), Jwt, Jwt.PlatformAudience);
+            PlatformTokensByRole = byRole;
         }
     }
 
@@ -293,6 +306,7 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
     private const string UnpermittedUserEmail = "employee.reader@authz-harness.local";
     private const string OwnerEmail = "owner@authz-harness.platform";
     private const string MarketingEmail = "marketing@authz-harness.platform";
+    private static string RoleOperatorEmail(string role) => $"{role.ToLowerInvariant()}@authz-harness.platform";
 
     /// <summary>The permission gating <c>GET /api/notifications/deliveries</c>.</summary>
     public const string GatedPermission = "notifications.manage";
@@ -329,7 +343,11 @@ public sealed class AuthorizationPipelineFixture : IAsyncLifetime
 
         db.PlatformUsers.AddRange(
             BuildPlatformUser(OwnerEmail, "Harness Platform Owner", PlatformRoles.Owner),
-            BuildPlatformUser(MarketingEmail, "Harness Platform Marketing", PlatformRoles.Marketing));
+            BuildPlatformUser(MarketingEmail, "Harness Platform Marketing", PlatformRoles.Marketing),
+            BuildPlatformUser(RoleOperatorEmail(PlatformRoles.Admin), "Harness Platform Admin", PlatformRoles.Admin),
+            BuildPlatformUser(RoleOperatorEmail(PlatformRoles.Support), "Harness Platform Support", PlatformRoles.Support),
+            BuildPlatformUser(RoleOperatorEmail(PlatformRoles.Auditor), "Harness Platform Auditor", PlatformRoles.Auditor),
+            BuildPlatformUser(RoleOperatorEmail(PlatformRoles.Finance), "Harness Platform Finance", PlatformRoles.Finance));
 
         await db.SaveChangesAsync();
     }
