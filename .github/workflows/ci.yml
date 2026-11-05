@@ -63,6 +63,7 @@ jobs:
     name: Backend Release build
     # The backend compile needs more than the free runner's 16 GB (EF migrations are 93% of its 4M lines of C#).
     runs-on: kynex-32gb
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -92,8 +93,10 @@ jobs:
   # ── Backend: fast unit lane (no Docker image pulls) ────────────────────────────
   backend-unit:
     name: Backend Unit + ratchets
-    # The backend compile needs more than the free runner's 16 GB (EF migrations are 93% of its 4M lines of C#).
-    runs-on: kynex-32gb
+    # Runs prebuilt output (--no-build), so it needs no compile memory. The 32 GB runner is billed
+    # per minute even on a public repo; the standard runner is not. Keep this lane on the free runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [changes, backend-build]
     if: needs.changes.outputs.docs_only != 'true'
     steps:
@@ -141,8 +144,10 @@ jobs:
   # straddles two shards (the Postgres collection fixtures are per class).
   backend-integration:
     name: Backend Integration (shard ${{ matrix.shard }}/4)
-    # The backend compile needs more than the free runner's 16 GB (EF migrations are 93% of its 4M lines of C#).
-    runs-on: kynex-32gb
+    # Runs prebuilt output (--no-build), so it needs no compile memory. The 32 GB runner is billed
+    # per minute even on a public repo; the standard runner is not. Keep this lane on the free runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: [changes, backend-build]
     if: needs.changes.outputs.docs_only != 'true'
     strategy:
@@ -686,6 +691,7 @@ jobs:
     # Keep schema proofs on the same supported image as the browser release gates.
     # The backend compile needs more than the free runner's 16 GB (EF migrations are 93% of its 4M lines of C#).
     runs-on: kynex-32gb
+    timeout-minutes: 30
     services:
       postgres:
         # Services start before steps can configure Docker; use the same official image via its cache.
