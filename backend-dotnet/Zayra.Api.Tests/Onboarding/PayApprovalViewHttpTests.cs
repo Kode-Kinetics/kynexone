@@ -312,6 +312,7 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
         var hr = await _fx.NewUserAsync("od4j", "employees.write", "employees.read");
         var other = await _fx.NewScopedUserAsync("od4jf", _fx.OtherCompanyId, "payroll.approve");
         var foreignTenant = await _fx.NewOtherTenantUserAsync("od4jt", "payroll.approve");
+        await _fx.NewUserAsync("od4jc", "payroll.approve"); // a second in-scope approver, so the hire is accepted under strict SoD
         var (id, _) = await CreateHireAsync(hr);
 
         ListHas(await Json(await ListAsync(other)), id).Should().BeFalse();
