@@ -62,8 +62,9 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
       setPeople(null);
       Promise.all(reasonCategories.map(async category => {
         const rows: ReconEmployeeRow[] = [];
-        for (let page = 1; page <= 10; page++) {
-          const r = await payrollReconApi.employees(runId, { section: 'volume', category, page, pageSize: 200, ...(priorRunId ? { priorRunId } : {}) });
+        // Read every page (the API serves at most 100 rows a page); the cap only stops a server that never reports its total.
+        for (let page = 1; page <= 500; page++) {
+          const r = await payrollReconApi.employees(runId, { section: 'volume', category, page, pageSize: 100, ...(priorRunId ? { priorRunId } : {}) });
           rows.push(...r.items.map(i => ({ ...i, category: i.category ?? category })));
           if (rows.length >= r.total || r.items.length === 0) break;
         }
