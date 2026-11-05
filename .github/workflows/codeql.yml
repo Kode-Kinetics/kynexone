@@ -12,11 +12,20 @@ on:
   schedule:
     - cron: '0 3 * * 1'  # Mondays 03:00 UTC
 
+# Rapid agent pushes used to leave every superseded C# analysis compiling on a paid runner.
+# Keep main and scheduled scans independent, but cancel an older run for the same PR branch.
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Only the C# analysis compiles the 4M-line backend; JavaScript stays on the free runner.
-    runs-on: ${{ matrix.language == 'csharp' && 'kynex-32gb' || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      DOTNET_gcServer: '0'
+      DOTNET_GCHeapCount: '1'
     permissions:
       security-events: write
       actions: read
@@ -54,9 +63,15 @@ jobs:
         if: matrix.language == 'csharp'
         run: ./scripts/ci/add-swap.sh
 
+      - name: Restore shipped backend dependencies
+        if: matrix.language == 'csharp'
+        run: dotnet restore backend-dotnet/Zayra.Api/Zayra.Api.csproj
+
       - name: Build shipped backend for CodeQL
         if: matrix.language == 'csharp'
-        run: dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj --configuration Release
+        run: >-
+          dotnet build backend-dotnet/Zayra.Api/Zayra.Api.csproj --no-restore --configuration Release
+          -p:UseSharedCompilation=false -maxcpucount:1
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
