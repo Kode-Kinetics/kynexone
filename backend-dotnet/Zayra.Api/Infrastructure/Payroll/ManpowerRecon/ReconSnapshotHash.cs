@@ -19,7 +19,8 @@ public static class ReconSnapshotHash
     public static string Compute(ReconDto dto, int processVersion, int? priorProcessVersion)
     {
         var node = Summary(dto);
-        node.Remove("scope");
+        // Not part of what was reviewed: who is asking, the stamp itself, and whether the company requires a sign-off.
+        foreach (var key in new[] { "scope", "snapshotHash", "signoffRequired", "processVersion" }) node.Remove(key);
         var canonical = new StringBuilder();
         Write(canonical, node);
         canonical.Append("|pv=").Append(processVersion.ToString(CultureInfo.InvariantCulture));
@@ -27,7 +28,7 @@ public static class ReconSnapshotHash
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
     }
 
-    /// <summary>The summary stored with a sign-off: the bridge as reviewed, with no sign-off and no explanation text, and no pay by employee.</summary>
+    /// <summary>The summary stored with a sign-off: the bridge as reviewed (with its stamp), with no sign-off and no explanation text, and no pay by employee.</summary>
     public static string SummaryJson(ReconDto dto) => Summary(dto).ToJsonString(Web);
 
     private static JsonObject Summary(ReconDto dto)
@@ -42,7 +43,7 @@ public static class ReconSnapshotHash
         switch (node)
         {
             case JsonObject o:
-                if (o.ContainsKey("explanation")) o["explanation"] = null;
+                o.Remove("explanation");
                 foreach (var (_, v) in o.ToList()) StripExplanations(v);
                 break;
             case JsonArray a:

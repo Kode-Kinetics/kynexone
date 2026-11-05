@@ -25,9 +25,9 @@ public sealed record ReconThresholds(decimal Pct, decimal MinAmount, string Sour
         return size > Math.Max(Pct / 100m * Math.Abs(prior), MinAmount);
     }
 
-    /// <summary>Percent movement against the prior, two decimals; 0 when there is no prior to compare to.</summary>
-    public static decimal DeltaPct(decimal prior, decimal delta) =>
-        prior == 0m ? 0m : Math.Round(delta / prior * 100m, 2, MidpointRounding.AwayFromZero);
+    /// <summary>Percent movement against the prior, two decimals; null when there is no prior to compare to.</summary>
+    public static decimal? DeltaPct(decimal prior, decimal delta) =>
+        prior == 0m ? null : Math.Round(delta / prior * 100m, 2, MidpointRounding.AwayFromZero);
 
     /// <summary>
     /// The company's rule values (raw text from the company payroll rules), or the platform default for anything unset

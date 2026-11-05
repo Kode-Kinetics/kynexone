@@ -8,7 +8,7 @@ namespace Zayra.Api.Tests.Recon;
 public class ReconSnapshotHashTests
 {
     private static ReconDto Dto() =>
-        JsonSerializer.Deserialize<ReconDto>(ReconContractShapeTests.FixtureText, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        JsonSerializer.Deserialize<ReconDto>(ReconContractShapeTests.FixtureText(), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
 
     private static string Hash(ReconDto d, int version = 3, int? priorVersion = 2) => ReconSnapshotHash.Compute(d, version, priorVersion);
 
@@ -54,6 +54,7 @@ public class ReconSnapshotHashTests
         // The sign-off itself, the written explanations, and the caller-specific scope are not part of what was reviewed.
         Hash(d with { Signoff = null }).Should().Be(baseline);
         Hash(d with { Scope = new ReconScopeDto("Department", true, false, new[] { "x" }) }).Should().Be(baseline);
+        Hash(d with { SnapshotHash = "something else", ProcessVersion = 99, SignoffRequired = !d.SignoffRequired }).Should().Be(baseline);
         var sections = d.Value.Sections.Select(s => s with { Items = s.Items.Select(i => i with { Explanation = "changed" }).ToList() }).ToList();
         Hash(d with { Value = d.Value with { Sections = sections } }).Should().Be(baseline);
     }
@@ -90,7 +91,10 @@ public class ReconSnapshotHashTests
         var json = ReconSnapshotHash.SummaryJson(Dto());
         using var doc = JsonDocument.Parse(json);
         doc.RootElement.GetProperty("signoff").ValueKind.Should().Be(JsonValueKind.Null);
-        doc.RootElement.GetProperty("volume").GetProperty("closing").GetInt32().Should().Be(101);
-        json.Should().NotContain("Annual increment approved", "explanations live in their own table");
+        doc.RootElement.GetProperty("volume").GetProperty("closing").GetInt32().Should().Be(42);
+        var withExplanation = Dto();
+        var sections = withExplanation.Value.Sections.Select(x => x with { Items = x.Items.Select(i => i with { Explanation = "An explanation that must not be stored here" }).ToList() }).ToList();
+        ReconSnapshotHash.SummaryJson(withExplanation with { Value = withExplanation.Value with { Sections = sections } })
+            .Should().NotContain("An explanation that must not be stored here", "explanations live in their own table");
     }
 }

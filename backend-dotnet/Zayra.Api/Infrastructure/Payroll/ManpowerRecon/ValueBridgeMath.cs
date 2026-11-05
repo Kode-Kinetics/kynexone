@@ -21,14 +21,14 @@ public sealed class ValueBridgeInput
     /// <summary>Catalogue facts by component code, used when a line's Source alone does not decide its driver.</summary>
     public IReadOnlyDictionary<string, ComponentHint> Hints { get; init; } = new Dictionary<string, ComponentHint>();
     public ReconThresholds Thresholds { get; init; } = ReconThresholds.Default;
-    /// <summary>Written explanations by item code.</summary>
+    /// <summary>Written explanations by item key, <c>Kind:CODE</c> (see <see cref="ReconItemDto.ExplanationKey"/>).</summary>
     public IReadOnlyDictionary<string, string>? ItemExplanations { get; init; }
 }
 
 public sealed record ValueBridgeResult(
     IReadOnlyList<ReconValueSectionDto> Sections,
     ReconHeadlineDto Headline,
-    ReconTieDto Ties,
+    ReconTie Ties,
     IReadOnlyList<ReconCell> Cells,
     IReadOnlyList<string> Violations);
 
@@ -86,7 +86,7 @@ public static class ValueBridgeMath
 
             var priorTotal = prior.Sum(l => l.Amount);
             var currentTotal = current.Sum(l => l.Amount);
-            var item = BuildItem(key.Code, Label(prior, current, key.Code), priorTotal, currentTotal, itemCells, input);
+            var item = BuildItem(key.Kind, key.Code, Label(prior, current, key.Code), priorTotal, currentTotal, itemCells, input);
             var residual = item.Prior + item.Adds.Total + item.Exits.Total + item.Continuing.Total - item.Current;
             if (residual != 0m)
             {
@@ -98,14 +98,47 @@ public static class ValueBridgeMath
         }
 
         var sections = itemsByKind.Select(kv => new ReconValueSectionDto(kv.Key, Order(kv.Key, kv.Value))).ToList();
-        var gross = Sum(sections, ReconSectionKinds.Earning, "GROSS", "Gross pay", input.Thresholds);
-        var deductions = Sum(sections, ReconSectionKinds.Deduction, "DEDUCTIONS", "Employee deductions", input.Thresholds);
-        var employer = Sum(sections, ReconSectionKinds.Employer, "EMPLOYER", "Employer cost", input.Thresholds);
-        var net = Net(gross, deductions, input.Thresholds);
+        var gross = Sum(sections, ReconSectionKinds.Earning);
+        var deductions = Sum(sections, ReconSectionKinds.Deduction);
+        var employer = Sum(sections, ReconSectionKinds.Employer);
+        var net = Net(gross, deductions);
 
         return new ValueBridgeResult(
             sections, new ReconHeadlineDto(gross, deductions, net, employer),
-            new ReconTieDto(violations.Count == 0, maxResidual), cells, violations);
+            new ReconTie(violations.Count == 0, maxResidual), cells, violations);
+    }
+
+    /// <summary>
+    /// With no comparison run there is no bridge: each item shows what it is this month (prior zero, the bridge columns zero,
+    /// delta equal to current, nothing flagged), so a first run is still reviewable without inventing movements.
+    /// </summary>
+    public static ValueBridgeResult Composition(IReadOnlyList<ReconLine> current)
+    {
+        var zeroAdds = new ReconAddsDto(0, 0, 0, 0, 0);
+        var zeroExits = new ReconExitsDto(0, 0, 0, 0);
+        var zeroCont = new ReconContinuingDto(0, 0, 0, 0, 0, 0, 0, 0);
+        var itemsByKind = new Dictionary<string, List<ReconItemDto>>
+        {
+            [ReconSectionKinds.Earning] = new(), [ReconSectionKinds.Deduction] = new(), [ReconSectionKinds.Employer] = new(),
+        };
+        foreach (var g in current.GroupBy(l => (l.Kind, l.Code)))
+        {
+            var lines = g.ToList();
+            var total = lines.Sum(l => l.Amount);
+            itemsByKind[g.Key.Kind].Add(new ReconItemDto(g.Key.Code, Label(new List<ReconLine>(), lines, g.Key.Code), 0m,
+                zeroAdds, zeroExits, zeroCont, total, total, null, false, null));
+        }
+        var sections = itemsByKind.Select(kv => new ReconValueSectionDto(kv.Key, Order(kv.Key, kv.Value))).ToList();
+        ReconBridgeRowDto Total(string kind)
+        {
+            var current2 = sections.Single(s => s.Kind == kind).Items.Sum(i => i.Current);
+            return new ReconBridgeRowDto(0m, zeroAdds, zeroExits, zeroCont, current2, current2, null);
+        }
+        var gross = Total(ReconSectionKinds.Earning);
+        var deductions = Total(ReconSectionKinds.Deduction);
+        var net = new ReconBridgeRowDto(0m, zeroAdds, zeroExits, zeroCont, gross.Current - deductions.Current, gross.Current - deductions.Current, null);
+        return new ValueBridgeResult(sections, new ReconHeadlineDto(gross, deductions, net, Total(ReconSectionKinds.Employer)),
+            new ReconTie(true, 0m), Array.Empty<ReconCell>(), Array.Empty<string>());
     }
 
     // ── One employee's share of one item ─────────────────────────────────────────────────────────
@@ -206,7 +239,7 @@ public static class ValueBridgeMath
     // ── Items and headline ───────────────────────────────────────────────────────────────────────
 
     private static ReconItemDto BuildItem(
-        string code, string label, decimal prior, decimal current, List<ReconCell> cells, ValueBridgeInput input)
+        string kind, string code, string label, decimal prior, decimal current, List<ReconCell> cells, ValueBridgeInput input)
     {
         decimal Bucket(string group, string bucket) => cells.Where(c => c.Group == group && c.Bucket == bucket).Sum(c => c.Amount);
         var adds = new ReconAddsDto(
@@ -221,7 +254,7 @@ public static class ValueBridgeMath
         var delta = current - prior;
         var flagged = input.Thresholds.IsFlagged(prior, delta) || continuing.Other != 0m;
         string? explanation = null;
-        input.ItemExplanations?.TryGetValue(code, out explanation);
+        input.ItemExplanations?.TryGetValue(ReconItemDto.ExplanationKey(kind, code), out explanation);
         return new ReconItemDto(code, label, prior, adds, exits, continuing, current, delta,
             ReconThresholds.DeltaPct(prior, delta), flagged, explanation);
     }
@@ -241,23 +274,21 @@ public static class ValueBridgeMath
         return ix >= 0 ? ix : int.MaxValue;
     }
 
-    private static ReconItemDto Sum(
-        IReadOnlyList<ReconValueSectionDto> sections, string kind, string code, string label, ReconThresholds thresholds)
+    private static ReconBridgeRowDto Sum(IReadOnlyList<ReconValueSectionDto> sections, string kind)
     {
         var items = sections.Single(s => s.Kind == kind).Items;
-        return Combine(code, label, items.Sum(i => i.Prior), items.Sum(i => i.Current),
+        return Row(items.Sum(i => i.Prior), items.Sum(i => i.Current),
             new ReconAddsDto(items.Sum(i => i.Adds.NewJoiner), items.Sum(i => i.Adds.Rehire), items.Sum(i => i.Adds.LateJoiner),
                 items.Sum(i => i.Adds.Reinstated), items.Sum(i => i.Adds.TransferIn)),
             new ReconExitsDto(items.Sum(i => i.Exits.Leaver), items.Sum(i => i.Exits.TransferOut), items.Sum(i => i.Exits.NotPaid),
                 items.Sum(i => i.Exits.Unexplained)),
             new ReconContinuingDto(items.Sum(i => i.Continuing.Package), items.Sum(i => i.Continuing.Proration),
                 items.Sum(i => i.Continuing.Variable), items.Sum(i => i.Continuing.Arrears), items.Sum(i => i.Continuing.Attendance),
-                items.Sum(i => i.Continuing.Loans), items.Sum(i => i.Continuing.Statutory), items.Sum(i => i.Continuing.Other)),
-            thresholds);
+                items.Sum(i => i.Continuing.Loans), items.Sum(i => i.Continuing.Statutory), items.Sum(i => i.Continuing.Other)));
     }
 
-    private static ReconItemDto Net(ReconItemDto gross, ReconItemDto deductions, ReconThresholds thresholds) =>
-        Combine("NET", "Net pay", gross.Prior - deductions.Prior, gross.Current - deductions.Current,
+    private static ReconBridgeRowDto Net(ReconBridgeRowDto gross, ReconBridgeRowDto deductions) =>
+        Row(gross.Prior - deductions.Prior, gross.Current - deductions.Current,
             new ReconAddsDto(gross.Adds.NewJoiner - deductions.Adds.NewJoiner, gross.Adds.Rehire - deductions.Adds.Rehire,
                 gross.Adds.LateJoiner - deductions.Adds.LateJoiner, gross.Adds.Reinstated - deductions.Adds.Reinstated,
                 gross.Adds.TransferIn - deductions.Adds.TransferIn),
@@ -267,15 +298,12 @@ public static class ValueBridgeMath
                 gross.Continuing.Proration - deductions.Continuing.Proration, gross.Continuing.Variable - deductions.Continuing.Variable,
                 gross.Continuing.Arrears - deductions.Continuing.Arrears, gross.Continuing.Attendance - deductions.Continuing.Attendance,
                 gross.Continuing.Loans - deductions.Continuing.Loans, gross.Continuing.Statutory - deductions.Continuing.Statutory,
-                gross.Continuing.Other - deductions.Continuing.Other),
-            thresholds);
+                gross.Continuing.Other - deductions.Continuing.Other));
 
-    private static ReconItemDto Combine(
-        string code, string label, decimal prior, decimal current,
-        ReconAddsDto adds, ReconExitsDto exits, ReconContinuingDto continuing, ReconThresholds thresholds)
+    private static ReconBridgeRowDto Row(
+        decimal prior, decimal current, ReconAddsDto adds, ReconExitsDto exits, ReconContinuingDto continuing)
     {
         var delta = current - prior;
-        return new ReconItemDto(code, label, prior, adds, exits, continuing, current, delta,
-            ReconThresholds.DeltaPct(prior, delta), thresholds.IsFlagged(prior, delta), null);
+        return new ReconBridgeRowDto(prior, adds, exits, continuing, current, delta, ReconThresholds.DeltaPct(prior, delta));
     }
 }

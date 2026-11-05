@@ -4,11 +4,15 @@ namespace Zayra.Api.Infrastructure.Payroll.ManpowerRecon;
 
 public sealed record FsSettlementFact(
     Guid SettlementId, int EmployeeId, string EmployeeCode, string EmployeeName, string? GlPeriod, string Status,
-    DateOnly LastWorkingDay, decimal GrossPayable, decimal TotalDeductions);
+    DateOnly LastWorkingDay, decimal GrossPayable, decimal TotalDeductions)
+{
+    /// <summary>The offboarding this settlement settles; ties a leaver to its own settlement.</summary>
+    public Guid OffboardingId { get; init; }
+}
 
 public sealed record FsLineFact(Guid SettlementId, string ComponentCode, string LineType, decimal Amount, string Source);
 
-public sealed record FsLeaverFact(int EmployeeId, string EmployeeCode, string EmployeeName, bool FsMissing);
+public sealed record FsLeaverFact(int EmployeeId, string EmployeeCode, string EmployeeName, bool FsMissing, DateOnly? LastWorkingDay = null);
 
 public sealed class FinalSettlementBlockInput
 {
@@ -24,8 +28,12 @@ public sealed class FinalSettlementBlockInput
     public IReadOnlyList<FsLeaverFact> Leavers { get; init; } = Array.Empty<FsLeaverFact>();
 }
 
+/// <summary>Which cell a current-period settlement was counted in; the drill-down lists these.</summary>
+public sealed record FsPlacement(FsSettlementFact Settlement, string Cell);
+
 public sealed record FinalSettlementBlockResult(
-    ReconFinalSettlementDto Block, int AccruedCount, IReadOnlyList<ReconIssueDto> Issues);
+    ReconFinalSettlementDto Block, int AccruedCount, IReadOnlyList<ReconIssueDto> Issues, IReadOnlyList<FsPlacement> Placements,
+    IReadOnlyDictionary<string, decimal> GrossByCell, ReconTie LineTie);
 
 /// <summary>
 /// The final-settlement block of the reconciliation. Settlements are NOT headcount exits (the leaver already is one, and
@@ -35,9 +43,11 @@ public sealed record FinalSettlementBlockResult(
 public static class FinalSettlementBlock
 {
     public const string CellLeaverInBridge = "LEAVER_IN_BRIDGE";
-    public const string CellLeftEarlier = "LEFT_EARLIER_PERIOD";
-    public const string CellFinalWageInRun = "FINAL_WAGE_MONTH_IN_RUN";
+    public const string CellLeftEarlier = "LEFT_EARLIER";
+    public const string CellFinalWageInRun = "FINAL_WAGE_MONTH";
     public const string CellOther = "OTHER";
+
+    public static readonly string[] CellOrder = { CellLeaverInBridge, CellLeftEarlier, CellFinalWageInRun, CellOther };
 
     private static readonly string[] KnownComponents =
     {
@@ -56,6 +66,7 @@ public static class FinalSettlementBlock
         {
             [CellLeaverInBridge] = (0, 0m), [CellLeftEarlier] = (0, 0m), [CellFinalWageInRun] = (0, 0m), [CellOther] = (0, 0m),
         };
+        var placements = new List<FsPlacement>();
         foreach (var s in current)
         {
             var cell =
@@ -65,15 +76,18 @@ public static class FinalSettlementBlock
                 : CellOther;
             var (n, g) = counts[cell];
             counts[cell] = (n + 1, g + s.GrossPayable);
+            placements.Add(new FsPlacement(s, cell));
         }
-        var cells = new[] { CellLeaverInBridge, CellLeftEarlier, CellFinalWageInRun, CellOther }
-            .Select(name => new ReconFsCellDto(name, counts[name].Count, counts[name].Gross)).ToList();
+        var cells = CellOrder.Select(name => new ReconFsCellDto(name, counts[name].Count)).ToList();
+        var grossByCell = CellOrder.ToDictionary(name => name, name => counts[name].Gross);
 
         // Per component: prior period, current period, delta.
         decimal Sum(IEnumerable<FsSettlementFact> settlements, string code)
         {
             var ids = settlements.Select(s => s.SettlementId).ToHashSet();
-            return input.Lines.Where(l => ids.Contains(l.SettlementId) && l.ComponentCode == code).Sum(l => l.Amount);
+            // Earnings count as paid out (positive), deductions as taken back (negative).
+            return input.Lines.Where(l => ids.Contains(l.SettlementId) && l.ComponentCode == code)
+                .Sum(l => l.LineType == FinalSettlementLineTypes.Deduction ? -l.Amount : l.Amount);
         }
         var codes = KnownComponents.Concat(
                 input.Lines.Where(l => current.Concat(prior).Any(s => s.SettlementId == l.SettlementId))
@@ -104,17 +118,17 @@ public static class FinalSettlementBlock
             {
                 ok = false;
                 totalDifference += earnDiff + dedDiff;
-                issues.Add(new ReconIssueDto("settlement_lines_differ_from_header",
-                    $"The lines of the final settlement for {s.EmployeeCode} do not add up to its totals (difference {earnDiff + dedDiff:0.00}).",
-                    s.EmployeeId));
+                issues.Add(new ReconIssueDto("settlementLines",
+                    $"The lines of the final settlement for {s.EmployeeCode} do not add up to its totals (difference {earnDiff + dedDiff:0.00})."));
             }
         }
 
         var withoutFs = input.Leavers.Where(l => l.FsMissing)
-            .Select(l => new ReconLeaverWithoutFsDto(l.EmployeeId, l.EmployeeCode, l.EmployeeName)).ToList();
+            .Select(l => new ReconLeaverWithoutFsDto(l.EmployeeId, l.EmployeeCode, l.EmployeeName,
+                l.LastWorkingDay?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture))).ToList();
 
-        var block = new ReconFinalSettlementDto(cells, perComponent, withoutFs, new ReconTieDto(ok, totalDifference));
-        return new FinalSettlementBlockResult(block, current.Count, issues);
+        var block = new ReconFinalSettlementDto(cells, perComponent, withoutFs, ok);
+        return new FinalSettlementBlockResult(block, current.Count, issues, placements, grossByCell, new ReconTie(ok, totalDifference));
     }
 
     private static List<FsSettlementFact> Accrued(IReadOnlyList<FsSettlementFact> all, string period) =>

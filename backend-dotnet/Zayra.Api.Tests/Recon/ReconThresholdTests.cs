@@ -42,9 +42,9 @@ public class ReconThresholdTests
         T(5m, (decimal)min).IsFlagged((decimal)prior, (decimal)delta).Should().Be(flagged);
 
     [Fact]
-    public void DeltaPct_IsZeroWithoutAPrior_AndTwoDecimalsOtherwise()
+    public void DeltaPct_IsNullWithoutAPrior_AndTwoDecimalsOtherwise()
     {
-        ReconThresholds.DeltaPct(0m, 500m).Should().Be(0m);
+        ReconThresholds.DeltaPct(0m, 500m).Should().BeNull();
         ReconThresholds.DeltaPct(3m, 1m).Should().Be(33.33m);
         ReconThresholds.DeltaPct(-3m, 1m).Should().Be(-33.33m);
         ReconThresholds.DeltaPct(1000m, -50m).Should().Be(-5m);

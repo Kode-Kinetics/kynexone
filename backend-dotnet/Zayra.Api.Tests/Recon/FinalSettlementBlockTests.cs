@@ -30,7 +30,7 @@ public class FinalSettlementBlockTests
             Leavers = (leavers ?? Array.Empty<FsLeaverFact>()).ToList(),
         });
 
-    private static ReconFsCellDto Cell(FinalSettlementBlockResult r, string name) => r.Block.Cells.Single(c => c.Cell == name);
+    private static ReconFsCellDto Cell(FinalSettlementBlockResult r, string name) => r.Block.Cells.Single(c => c.Code == name);
 
     [Fact]
     public void EachAccruedSettlement_LandsInExactlyOneCell_ByPrecedence()
@@ -44,14 +44,14 @@ public class FinalSettlementBlockTests
         var r = Build(new[] { s1, s2, s3, s4, s5 }, Array.Empty<FsLineFact>(), cats, new HashSet<int> { 2, 5 });
 
         Cell(r, "LEAVER_IN_BRIDGE").Count.Should().Be(2);
-        Cell(r, "LEAVER_IN_BRIDGE").Gross.Should().Be(600m);
-        Cell(r, "FINAL_WAGE_MONTH_IN_RUN").Count.Should().Be(1);
-        Cell(r, "FINAL_WAGE_MONTH_IN_RUN").Gross.Should().Be(200m);
-        Cell(r, "LEFT_EARLIER_PERIOD").Count.Should().Be(1);
-        Cell(r, "LEFT_EARLIER_PERIOD").Gross.Should().Be(300m);
+        r.GrossByCell["LEAVER_IN_BRIDGE"].Should().Be(600m);
+        Cell(r, "FINAL_WAGE_MONTH").Count.Should().Be(1);
+        r.GrossByCell["FINAL_WAGE_MONTH"].Should().Be(200m);
+        Cell(r, "LEFT_EARLIER").Count.Should().Be(1);
+        r.GrossByCell["LEFT_EARLIER"].Should().Be(300m);
         Cell(r, "OTHER").Count.Should().Be(1);
-        Cell(r, "OTHER").Gross.Should().Be(400m);
-        r.Block.Cells.Select(c => c.Cell).Should().Equal("LEAVER_IN_BRIDGE", "LEFT_EARLIER_PERIOD", "FINAL_WAGE_MONTH_IN_RUN", "OTHER");
+        r.GrossByCell["OTHER"].Should().Be(400m);
+        r.Block.Cells.Select(c => c.Code).Should().Equal("LEAVER_IN_BRIDGE", "LEFT_EARLIER", "FINAL_WAGE_MONTH", "OTHER");
         r.AccruedCount.Should().Be(5);
         r.Block.Cells.Sum(c => c.Count).Should().Be(r.AccruedCount, "the count tie");
     }
@@ -91,7 +91,7 @@ public class FinalSettlementBlockTests
         comp.Single(c => c.Code == "EOSB_GRATUITY").Should().Be(new ReconFsComponentDto("EOSB_GRATUITY", 60m, 100m, 40m));
         comp.Single(c => c.Code == "LEAVE_ENCASHMENT").Should().Be(new ReconFsComponentDto("LEAVE_ENCASHMENT", 0m, 50m, 50m));
         comp.Single(c => c.Code == "NOTICE_PAY").Should().Be(new ReconFsComponentDto("NOTICE_PAY", 30m, 0m, -30m));
-        comp.Single(c => c.Code == "NOTICE_SHORTFALL").Should().Be(new ReconFsComponentDto("NOTICE_SHORTFALL", 0m, 10m, 10m));
+        comp.Single(c => c.Code == "NOTICE_SHORTFALL").Should().Be(new ReconFsComponentDto("NOTICE_SHORTFALL", 0m, -10m, -10m), "a deduction reads as money taken back");
         comp.Single(c => c.Code == "SETTLEMENT_OTHER").Should().Be(new ReconFsComponentDto("SETTLEMENT_OTHER", 0m, 0m, 0m));
     }
 
@@ -101,7 +101,7 @@ public class FinalSettlementBlockTests
         var cur = S(1, gross: 100m);
         var lines = new[] { Ln(cur, "EOSB_GRATUITY", 100m), Ln(cur, "LOAN_EMI", 40m, "Deduction", "Loan") };
         var r = Build(new[] { cur }, lines);
-        r.Block.PerComponent.Last().Should().Be(new ReconFsComponentDto("LOAN_EMI", 0m, 40m, 40m));
+        r.Block.PerComponent.Last().Should().Be(new ReconFsComponentDto("LOAN_EMI", 0m, -40m, -40m));
     }
 
     [Fact]
@@ -109,7 +109,7 @@ public class FinalSettlementBlockTests
     {
         var s = S(1, gross: 100m, deductions: 0m);
         var r = Build(new[] { s }, new[] { Ln(s, "EOSB_GRATUITY", 100m), Ln(s, "LOAN_EMI", 40m, "Deduction", "Loan") });
-        r.Block.Ties.Ok.Should().BeTrue();
+        r.Block.Ties.Should().BeTrue();
     }
 
     [Fact]
@@ -125,8 +125,8 @@ public class FinalSettlementBlockTests
     {
         var s = S(1, gross: 150m, deductions: 10m);
         var r = Build(new[] { s }, new[] { Ln(s, "EOSB_GRATUITY", 100m), Ln(s, "LEAVE_ENCASHMENT", 50m), Ln(s, "NOTICE_SHORTFALL", 10m, "Deduction") });
-        r.Block.Ties.Ok.Should().BeTrue();
-        r.Block.Ties.Difference.Should().Be(0m);
+        r.Block.Ties.Should().BeTrue();
+        r.LineTie.Difference.Should().Be(0m);
     }
 
     [Fact]
@@ -134,9 +134,9 @@ public class FinalSettlementBlockTests
     {
         var s = S(1, gross: 150m, deductions: 0m);
         var r = Build(new[] { s }, new[] { Ln(s, "EOSB_GRATUITY", 100m) });
-        r.Block.Ties.Ok.Should().BeFalse();
-        r.Block.Ties.Difference.Should().Be(50m);
-        r.Issues.Should().ContainSingle(i => i.Code == "settlement_lines_differ_from_header");
+        r.Block.Ties.Should().BeFalse();
+        r.LineTie.Difference.Should().Be(50m);
+        r.Issues.Should().ContainSingle(i => i.Code == "settlementLines");
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public class FinalSettlementBlockTests
     {
         var s = S(1, gross: 150m, deductions: 10m);
         var r = Build(new[] { s }, new[] { Ln(s, "EOSB_GRATUITY", 150m), Ln(s, "NOTICE_SHORTFALL", 4.995m, "Deduction"), Ln(s, "SETTLEMENT_DED_OTHER", 5.00m, "Deduction") });
-        r.Block.Ties.Ok.Should().BeTrue();
+        r.Block.Ties.Should().BeTrue();
     }
 
     [Fact]
@@ -152,19 +152,19 @@ public class FinalSettlementBlockTests
     {
         var leavers = new[]
         {
-            new FsLeaverFact(1, "E1", "A Leaver", FsMissing: true),
+            new FsLeaverFact(1, "E1", "A Leaver", FsMissing: true, LastWorkingDay: new DateOnly(2026, 9, 30)),
             new FsLeaverFact(2, "E2", "B Leaver", FsMissing: false),
         };
         var r = Build(Array.Empty<FsSettlementFact>(), Array.Empty<FsLineFact>(), leavers: leavers);
-        r.Block.LeaversWithoutFs.Should().Equal(new ReconLeaverWithoutFsDto(1, "E1", "A Leaver"));
+        r.Block.LeaversWithoutFs.Should().Equal(new ReconLeaverWithoutFsDto(1, "E1", "A Leaver", "2026-09-30"));
     }
 
     [Fact]
     public void AnEmptyBlock_StillHasAllFourCells_AndTies()
     {
         var r = Build(Array.Empty<FsSettlementFact>(), Array.Empty<FsLineFact>());
-        r.Block.Cells.Should().HaveCount(4).And.OnlyContain(c => c.Count == 0 && c.Gross == 0m);
-        r.Block.Ties.Ok.Should().BeTrue();
+        r.Block.Cells.Should().HaveCount(4).And.OnlyContain(c => c.Count == 0);
+        r.Block.Ties.Should().BeTrue();
         r.AccruedCount.Should().Be(0);
     }
 }

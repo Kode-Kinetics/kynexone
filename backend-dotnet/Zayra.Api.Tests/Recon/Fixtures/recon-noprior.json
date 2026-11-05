@@ -1,0 +1,546 @@
+{
+  "runId": "33333333-3333-4333-8333-333333333333",
+  "period": "2026-11",
+  "mode": "NoPrior",
+  "priorRunId": null,
+  "priorPeriod": null,
+  "priorNotFinal": false,
+  "priorVoided": false,
+  "currency": "SAR",
+  "processVersion": 3,
+  "snapshotHash": "sha256:7c1f0d8e5b2a49e3a6d4f1b0c9e8a7d6",
+  "scope": {
+    "level": "Organization",
+    "partial": false,
+    "canSignOff": true,
+    "reasons": []
+  },
+  "thresholds": {
+    "pct": 10,
+    "minAmount": 2500,
+    "source": "company"
+  },
+  "volume": {
+    "opening": 0,
+    "closing": 42,
+    "lines": [],
+    "ties": true,
+    "memo": {
+      "finalWageMonth": 1,
+      "offCycle": {
+        "prior": {
+          "count": 1,
+          "gross": 12000
+        },
+        "current": {
+          "count": 0,
+          "gross": 0
+        }
+      }
+    }
+  },
+  "value": {
+    "sections": [
+      {
+        "kind": "Earning",
+        "items": [
+          {
+            "code": "BASIC",
+            "label": "Basic salary",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 430600,
+            "delta": 430600,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "HOUSING",
+            "label": "Housing allowance",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 107650,
+            "delta": 107650,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "TRANSPORT",
+            "label": "Transport allowance",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 21195,
+            "delta": 21195,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "OVERTIME",
+            "label": "Overtime",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 13000,
+            "delta": 13000,
+            "deltaPct": null,
+            "flagged": false
+          }
+        ]
+      },
+      {
+        "kind": "Deduction",
+        "items": [
+          {
+            "code": "GOSI_EE",
+            "label": "GOSI (employee share)",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 40770,
+            "delta": 40770,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "LOAN_REPAY",
+            "label": "Loan repayment",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 4500,
+            "delta": 4500,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "ABSENCE_DED",
+            "label": "Absence deduction",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 1950,
+            "delta": 1950,
+            "deltaPct": null,
+            "flagged": false
+          }
+        ]
+      },
+      {
+        "kind": "Employer",
+        "items": [
+          {
+            "code": "GOSI_ER",
+            "label": "GOSI (employer share)",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 49350,
+            "delta": 49350,
+            "deltaPct": null,
+            "flagged": false
+          },
+          {
+            "code": "MEDICAL_INS",
+            "label": "Medical insurance",
+            "prior": 0,
+            "adds": {
+              "newJoiner": 0,
+              "rehire": 0,
+              "lateJoiner": 0,
+              "reinstated": 0,
+              "transferIn": 0
+            },
+            "exits": {
+              "leaver": 0,
+              "transferOut": 0,
+              "notPaid": 0,
+              "unexplained": 0
+            },
+            "continuing": {
+              "package": 0,
+              "proration": 0,
+              "variable": 0,
+              "arrears": 0,
+              "attendance": 0,
+              "loans": 0,
+              "statutory": 0,
+              "other": 0
+            },
+            "current": 20040,
+            "delta": 20040,
+            "deltaPct": null,
+            "flagged": false
+          }
+        ]
+      }
+    ],
+    "headline": {
+      "gross": {
+        "prior": 0,
+        "adds": {
+          "newJoiner": 0,
+          "rehire": 0,
+          "lateJoiner": 0,
+          "reinstated": 0,
+          "transferIn": 0
+        },
+        "exits": {
+          "leaver": 0,
+          "transferOut": 0,
+          "notPaid": 0,
+          "unexplained": 0
+        },
+        "continuing": {
+          "package": 0,
+          "proration": 0,
+          "variable": 0,
+          "arrears": 0,
+          "attendance": 0,
+          "loans": 0,
+          "statutory": 0,
+          "other": 0
+        },
+        "current": 572445,
+        "delta": 572445,
+        "deltaPct": null,
+        "flagged": false
+      },
+      "deductions": {
+        "prior": 0,
+        "adds": {
+          "newJoiner": 0,
+          "rehire": 0,
+          "lateJoiner": 0,
+          "reinstated": 0,
+          "transferIn": 0
+        },
+        "exits": {
+          "leaver": 0,
+          "transferOut": 0,
+          "notPaid": 0,
+          "unexplained": 0
+        },
+        "continuing": {
+          "package": 0,
+          "proration": 0,
+          "variable": 0,
+          "arrears": 0,
+          "attendance": 0,
+          "loans": 0,
+          "statutory": 0,
+          "other": 0
+        },
+        "current": 47220,
+        "delta": 47220,
+        "deltaPct": null,
+        "flagged": false
+      },
+      "net": {
+        "prior": 0,
+        "adds": {
+          "newJoiner": 0,
+          "rehire": 0,
+          "lateJoiner": 0,
+          "reinstated": 0,
+          "transferIn": 0
+        },
+        "exits": {
+          "leaver": 0,
+          "transferOut": 0,
+          "notPaid": 0,
+          "unexplained": 0
+        },
+        "continuing": {
+          "package": 0,
+          "proration": 0,
+          "variable": 0,
+          "arrears": 0,
+          "attendance": 0,
+          "loans": 0,
+          "statutory": 0,
+          "other": 0
+        },
+        "current": 525225,
+        "delta": 525225,
+        "deltaPct": null,
+        "flagged": false
+      },
+      "employer": {
+        "prior": 0,
+        "adds": {
+          "newJoiner": 0,
+          "rehire": 0,
+          "lateJoiner": 0,
+          "reinstated": 0,
+          "transferIn": 0
+        },
+        "exits": {
+          "leaver": 0,
+          "transferOut": 0,
+          "notPaid": 0,
+          "unexplained": 0
+        },
+        "continuing": {
+          "package": 0,
+          "proration": 0,
+          "variable": 0,
+          "arrears": 0,
+          "attendance": 0,
+          "loans": 0,
+          "statutory": 0,
+          "other": 0
+        },
+        "current": 69390,
+        "delta": 69390,
+        "deltaPct": null,
+        "flagged": false
+      }
+    },
+    "ties": true,
+    "registerDifference": 0
+  },
+  "finalSettlement": {
+    "cells": [
+      {
+        "code": "LEAVER_IN_BRIDGE",
+        "count": 1
+      },
+      {
+        "code": "LEFT_EARLIER",
+        "count": 0
+      },
+      {
+        "code": "FINAL_WAGE_MONTH",
+        "count": 1
+      },
+      {
+        "code": "OTHER",
+        "count": 0
+      }
+    ],
+    "perComponent": [
+      {
+        "code": "EOSB_GRATUITY",
+        "prior": 0,
+        "current": 82400,
+        "delta": 82400
+      },
+      {
+        "code": "LEAVE_ENCASHMENT",
+        "prior": 0,
+        "current": 14300,
+        "delta": 14300
+      },
+      {
+        "code": "NOTICE_PAY",
+        "prior": 0,
+        "current": 6000,
+        "delta": 6000
+      },
+      {
+        "code": "SETTLEMENT_OTHER",
+        "prior": 0,
+        "current": 0,
+        "delta": 0
+      },
+      {
+        "code": "NOTICE_SHORTFALL",
+        "prior": 0,
+        "current": -1500,
+        "delta": -1500
+      },
+      {
+        "code": "SETTLEMENT_DED_OTHER",
+        "prior": 0,
+        "current": -800,
+        "delta": -800
+      }
+    ],
+    "leaversWithoutFs": [
+      {
+        "employeeId": 1042,
+        "employeeCode": "E-1042",
+        "employeeName": "Hassan Al-Qahtani",
+        "lastWorkingDay": "2026-10-28"
+      }
+    ],
+    "ties": true
+  },
+  "integrity": {
+    "ok": true,
+    "issues": []
+  },
+  "signoff": null,
+  "lastRunPeriod": "2026-08"
+}

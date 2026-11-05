@@ -32,8 +32,8 @@ public class ValueBridgeMathTests
     private static ReconItemDto Item(ValueBridgeResult r, string kind, string code) =>
         r.Sections.Single(s => s.Kind == kind).Items.Single(i => i.Code == code);
 
-    private static void AssertTies(ReconItemDto i) =>
-        (i.Prior + i.Adds.Total + i.Exits.Total + i.Continuing.Total).Should().Be(i.Current, $"I1 for {i.Code}");
+    private static void AssertTies(ReconBridgeRowDto i) =>
+        (i.Prior + i.Adds.Total + i.Exits.Total + i.Continuing.Total).Should().Be(i.Current, $"I1 for {(i as ReconItemDto)?.Code ?? "a headline row"}");
 
     // ── The per-item bridge ──────────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ public class ValueBridgeMathTests
         tele.Prior.Should().Be(0);
         tele.Current.Should().Be(40);
         tele.Continuing.Package.Should().Be(40);
-        tele.DeltaPct.Should().Be(0);
+        tele.DeltaPct.Should().BeNull("a percentage of nothing is not a number");
         tele.Flagged.Should().BeTrue("with no prior only the minimum amount applies, and 40 > 10");
         AssertTies(tele);
     }
@@ -304,7 +304,7 @@ public class ValueBridgeMathTests
     {
         var cats = new Dictionary<int, ReconCategory> { [1] = ReconCategory.Continuing };
         var r = Build(new[] { L(1, E, "BASIC", 1000), L(1, E, "HOUSING", 250) }, new[] { L(1, E, "BASIC", 1100), L(1, E, "HOUSING", 252) }, cats,
-            explanations: new Dictionary<string, string> { ["BASIC"] = "Annual increment", ["HOUSING"] = "ignored: not flagged" });
+            explanations: new Dictionary<string, string> { ["Earning:BASIC"] = "Annual increment", ["Earning:HOUSING"] = "ignored: not flagged" });
         var basic = Item(r, E, "BASIC");
         basic.Flagged.Should().BeTrue();
         basic.Explanation.Should().Be("Annual increment");
@@ -333,6 +333,30 @@ public class ValueBridgeMathTests
         var r = Build(new[] { L(2, E, "BASIC", 100) }, new[] { L(2, E, "BASIC", 40) }, cats);
         r.Ties.Ok.Should().BeFalse();
         r.Violations.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void AnExplanationIsFiledUnderKindAndCode_SoADeductionAndAnEmployerCostSharingACodeStayApart()
+    {
+        var cats = new Dictionary<int, ReconCategory> { [1] = ReconCategory.Continuing };
+        var r = Build(
+            new[] { L(1, D, "GOSI", 100, "Statutory"), L(1, R, "GOSI", 100, "Statutory") },
+            new[] { L(1, D, "GOSI", 200, "Statutory"), L(1, R, "GOSI", 200, "Statutory") }, cats,
+            explanations: new Dictionary<string, string> { ["Deduction:GOSI"] = "Employee share rose", ["Employer:GOSI"] = "Employer share rose" });
+        Item(r, D, "GOSI").Explanation.Should().Be("Employee share rose");
+        Item(r, R, "GOSI").Explanation.Should().Be("Employer share rose");
+    }
+
+    [Fact]
+    public void WithNoComparisonRun_TheCompositionShowsCurrentOnly_WithDeltaEqualToCurrentAndNothingFlagged()
+    {
+        var r = ValueBridgeMath.Composition(new[] { L(1, E, "BASIC", 1000), L(1, E, "HOUSING", 250), L(1, D, "GOSI-EE", 90, "Statutory"), L(1, R, "GOSI-ER", 110, "Statutory") });
+        Item(r, E, "BASIC").Should().Match<ReconItemDto>(i => i.Prior == 0 && i.Current == 1000 && i.Delta == 1000 && i.DeltaPct == null && !i.Flagged);
+        r.Headline.Gross.Current.Should().Be(1250);
+        r.Headline.Net.Current.Should().Be(1160);
+        r.Headline.Employer.Current.Should().Be(110);
+        r.Cells.Should().BeEmpty();
+        r.Ties.Ok.Should().BeTrue();
     }
 
     [Fact]
