@@ -30,6 +30,10 @@ public sealed class CostCentreResolverSnapshot
     public CostCentreResolverSnapshot WithDepartment(ResolverDepartment department) =>
         new(TenantId, CompanyId, DefaultCostCenterId, CostCentres.Values, Departments.Values.Where(d => d.Id != department.Id).Append(department), Positions.Values);
 
+    /// <summary>A copy with one cost centre replaced (what the snapshot would look like after it is re-activated).</summary>
+    public CostCentreResolverSnapshot WithCostCentre(ResolverCostCentre costCentre) =>
+        new(TenantId, CompanyId, DefaultCostCenterId, CostCentres.Values.Where(c => c.Id != costCentre.Id).Append(costCentre), Departments.Values, Positions.Values);
+
     /// <summary>A copy with one position replaced.</summary>
     public CostCentreResolverSnapshot WithPosition(ResolverPosition position) =>
         new(TenantId, CompanyId, DefaultCostCenterId, CostCentres.Values, Departments.Values, Positions.Values.Where(p => p.Id != position.Id).Append(position));
