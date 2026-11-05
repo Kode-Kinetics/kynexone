@@ -26,6 +26,7 @@ import { learning } from './learning';
 import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { belowMinimum } from './belowMinimum';
+import { loanBatchApprover } from './loanBatchApprover';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -36,6 +37,7 @@ import { benefitPlanForm } from './benefitPlanForm';
 import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
+import { payrollRecon } from './payrollRecon';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
@@ -54,6 +56,7 @@ import { appChrome } from './appChrome';
 import { removalSafety } from './removalSafety';
 import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
+import { attendanceBulk } from './attendanceBulk';
 import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
 import { dailyD } from './dailyD';
@@ -82,6 +85,7 @@ const en: Dict = {
   ...companyStructure.en,
   ...appChrome.en,
   ...dailyA.en,
+  ...attendanceBulk.en,
   ...dailyB.en,
   ...dailyC.en,
   ...dailyD.en,
@@ -1557,6 +1561,8 @@ const en: Dict = {
   ...payrollAttendance.en,
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.en,
+  // Payroll's manpower + value reconciliation and its sign-off — see ./payrollRecon.
+  ...payrollRecon.en,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
@@ -1587,6 +1593,7 @@ const en: Dict = {
   ...engagement.en,
   ...glEosb.en,
   ...belowMinimum.en,
+  ...loanBatchApprover.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -1605,6 +1612,7 @@ const ar: Dict = {
   ...companyStructure.ar,
   ...appChrome.ar,
   ...dailyA.ar,
+  ...attendanceBulk.ar,
   ...dailyB.ar,
   ...dailyC.ar,
   ...dailyD.ar,
@@ -3081,6 +3089,7 @@ const ar: Dict = {
   ...payrollAttendance.ar,
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.ar,
+  ...payrollRecon.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
@@ -3106,6 +3115,7 @@ const ar: Dict = {
   ...engagement.ar,
   ...glEosb.ar,
   ...belowMinimum.ar,
+  ...loanBatchApprover.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

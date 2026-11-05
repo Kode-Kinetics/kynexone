@@ -410,7 +410,9 @@ public sealed class CompanySetupService
             Company: new CompanySetupCompany(company.LegalNameEn, B(company.LegalNameAr), B(company.TradeName), country, currency,
                 company.RegistrationNumber, B(company.WpsEmployerId), B(company.GosiEmployerId), B(company.UnifiedNationalNumber), B(company.TaxNumber),
                 B(company.QiwaEstablishmentId), B(company.EmailDomain), company.WorkEmailPattern, B(company.ErpCompanyCode), firstPayrollMonth,
-                CutoverStatus: cutover?.Status, Baseline: CompanySetupBaseline.Company(company, cutover)),
+                CutoverStatus: cutover?.Status, Baseline: CompanySetupBaseline.Company(company, cutover),
+                MigrationMode: CompanySetupBaseline.MigrationModeOf(cutover), PreviousSystem: CompanySetupBaseline.PreviousSystemOf(cutover),
+                CutoverPinned: await CutoverLockRule.IsPinnedAsync(_db, tenantId, companyId, cutover, ct)),
             Branches: branches,
             CostCentres: costCentres,
             Departments: departments,
@@ -597,9 +599,10 @@ public sealed class CompanySetupService
         // while payroll was Planned shows the first payroll month read-only once payroll has started.
         if (body.ExistingCompanyId is Guid target && body.Company is not null)
         {
-            var status = await ScopedBypass.TenantWide(_db.CompanyCutovers, row.TenantId, Why).AsNoTracking()
-                .Where(x => x.CompanyId == target).Select(x => x.Status).FirstOrDefaultAsync(ct);
-            body = body with { Company = body.Company with { CutoverStatus = status } };
+            var current = await ScopedBypass.TenantWide(_db.CompanyCutovers, row.TenantId, Why).AsNoTracking()
+                .Where(x => x.CompanyId == target).FirstOrDefaultAsync(ct);
+            body = body with { Company = body.Company with { CutoverStatus = current?.Status,
+                CutoverPinned = await CutoverLockRule.IsPinnedAsync(_db, row.TenantId, target, current, ct) } };
         }
         return new CompanySetupDraft(row.Id, row.Version, row.Step, row.Status, body, row.CreatedByUserId,
             names.GetValueOrDefault(row.CreatedByUserId, string.Empty), row.CreatedAtUtc, row.UpdatedAtUtc, row.ResultCompanyId,
@@ -1093,8 +1096,8 @@ public sealed class CompanySetupService
                 // The company form's own validation refused an edit the planner let through (it re-reads under its row
                 // lock). Nothing is written: the transaction rolls back and the user sees that service's reason.
                 refusal = CompanySetupOutcome<CompanySetupResult>.Fail(ex is EmailDomainRefusedException e ? e.Status : 422,
-                    ex is EmailDomainRefusedException r ? r.Code : ex is CompanyRegistrationNumberTakenException ? CompanySetupGates.CrTakenCode : "company_update_refused",
-                    ex.Message, field: ex is CompanyRegistrationNumberTakenException ? "company.registrationNumber" : null, step: 2, plan: plan);
+                    ex is CutoverRefusedException cr ? cr.Code : ex is EmailDomainRefusedException r ? r.Code : ex is CompanyRegistrationNumberTakenException ? CompanySetupGates.CrTakenCode : "company_update_refused",
+                    ex.Message, field: ex is CompanyRegistrationNumberTakenException ? "company.registrationNumber" : ex is CutoverRefusedException ? "company.firstPayrollMonth" : null, step: 2, plan: plan);
                 return;
             }
             // A writer that clears its change tracker for its own retries must not drop the draft this commit marks.
@@ -1298,25 +1301,55 @@ public sealed class CompanySetupService
             Audit(ruleCreated ? "organization.employee_id_rule_created" : "organization.employee_id_rule_updated", nameof(EmployeeIdRule), rule.Id, companyId, m.EmployeeIdRule);
         }
 
+        if (m.ExistingCompanyId is not null && m.CutoverAction != V.ActionUnchanged)
+        {
+            // Re-check under the per-company cost-accounting advisory lock: Approve and Lock take the SAME lock, so once we hold it no
+            // run can reach Approved/Locked until we commit, and the answer below cannot go stale before the write. (A run that is
+            // merely Processed does not take this lock; see the design doc's residual.) Same decision function as the plan.
+            await Zayra.Api.Infrastructure.Finance.CostAccountingGuards.AcquireCompanyLockAsync(_db, tenantId, companyId, ct);
+            var current = await _db.CompanyCutovers.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.CompanyId == companyId, ct);
+            if ((current is null) != (m.CutoverAction == V.ActionCreate) || (current is not null && current.Id != m.ExistingCutoverId))
+                throw new CutoverRefusedException("cutover_changed_elsewhere", "The company's cutover changed while the setup was being completed. Review it and try again.");
+            var recheck = await CutoverLockRule.EvaluateAsync(_db, tenantId, companyId, current, m.CutoverDate,
+                m.EffectiveSwitching, m.PreviousSystem, ct);
+            if (recheck.RefusalCode is { } code)
+                throw new CutoverRefusedException(code, CutoverLockRule.Words(code, current).En);
+        }
+
         if (m.CutoverAction == V.ActionCreate)
         {
+            // Switching: the company is already running payroll elsewhere, so the cutover governs from day one (Active) and carries the
+            // system being left. New: Planned, as before. PreviousSystem is validated and length-bound by the planner.
+            var switching = m.MigrationMode == V.MigrationSwitching;
             var cutover = new CompanyCutover
             {
-                TenantId = tenantId, CompanyId = companyId, CutoverDate = m.CutoverDate, Status = CutoverStatuses.Planned,
-                Notes = "Planned by the create-company wizard: the first payroll month.", CreatedBy = caller.UserId,
+                TenantId = tenantId, CompanyId = companyId, CutoverDate = m.CutoverDate,
+                Status = switching ? CutoverStatuses.Active : CutoverStatuses.Planned,
+                SourceSystem = switching ? m.PreviousSystem ?? string.Empty : string.Empty,
+                Notes = switching ? "Declared by the create-company wizard: the company is switching payroll from another system; go-live month."
+                    : "Planned by the create-company wizard: the first payroll month.",
+                CreatedBy = caller.UserId,
             };
             _db.CompanyCutovers.Add(cutover);
-            Audit("organization.company_cutover_planned", nameof(CompanyCutover), cutover.Id, companyId, new { cutoverDate = m.CutoverDate });
+            Audit(switching ? "organization.company_cutover_declared" : "organization.company_cutover_planned", nameof(CompanyCutover), cutover.Id, companyId,
+                new { cutoverDate = m.CutoverDate, status = cutover.Status, migrationMode = m.MigrationMode, previousSystem = switching ? m.PreviousSystem : null });
         }
         else if (m.CutoverAction == V.ActionUpdate && m.ExistingCutoverId is Guid cutoverId)
         {
-            // Addendum A4: only a cutover still Planned moves (the planner checked it under the setup lock).
-            var cutover = await _db.CompanyCutovers.SingleAsync(x => x.TenantId == tenantId && x.Id == cutoverId && x.Status == CutoverStatuses.Planned, ct);
+            // Status changes only by the explicit promotion (Planned -> Active, user chose switching, no run pins it). Date and source
+            // system move only as the plan decided (re-checked above).
+            var cutover = await _db.CompanyCutovers.SingleAsync(x => x.TenantId == tenantId && x.Id == cutoverId, ct);
             var previous = cutover.CutoverDate;
+            var previousSource = cutover.SourceSystem;
+            var fromStatus = cutover.Status;
             cutover.CutoverDate = m.CutoverDate;
+            if (m.CutoverSourceChange) cutover.SourceSystem = m.PreviousSystem ?? string.Empty;
+            if (m.PromoteCutover && CutoverStatuses.Governs(fromStatus) == false) cutover.Status = CutoverStatuses.Active;
             cutover.UpdatedAtUtc = at;
             cutover.UpdatedBy = caller.UserId;
-            Audit("organization.company_cutover_updated", nameof(CompanyCutover), cutover.Id, companyId, new { from = previous, cutoverDate = m.CutoverDate });
+            Audit(m.PromoteCutover ? "organization.company_cutover_activated" : "organization.company_cutover_updated", nameof(CompanyCutover), cutover.Id, companyId,
+                new { from = previous, cutoverDate = m.CutoverDate, fromStatus, toStatus = cutover.Status,
+                      previousSystemFrom = m.CutoverSourceChange ? previousSource : null, previousSystem = m.CutoverSourceChange ? m.PreviousSystem : null });
         }
 
         if (m.HolidayCalendar is not null)

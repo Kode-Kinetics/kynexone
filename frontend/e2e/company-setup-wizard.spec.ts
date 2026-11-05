@@ -39,6 +39,8 @@ interface BootOptions {
   cutoverStatus?: 'Planned' | 'Active' | 'Closed';
   /** Existing mode (A9): the head office was renamed to this in Setup after the prefill was read. */
   hqRenamedElsewhere?: string;
+  /** Existing mode: the saved cutover's mode, as the server derives it on the prefill. Absent = an older server that sends neither. */
+  prefillMigration?: { migrationMode: 'new' | 'switching'; previousSystem: string | null };
   /** Existing mode: Evostel was saved with no MOL number, before today's checks. */
   legacyMol?: boolean;
   /** Existing mode: the head office's Arabic name came from the old letter-by-letter auto-transliteration. */
@@ -165,7 +167,7 @@ class ContractServer {
       // As the backend sends it: the cutover status (A4) and, on each existing row and block, its baseline (A9).
       company: { legalNameEn: EVOSTEL.legalNameEn, legalNameAr: EVOSTEL.legalNameAr, tradeName: 'Evostel', countryCode: 'SA', currency: 'SAR', registrationNumber: '1010999888',
         molEstablishmentNumber: this.options.legacyMol ? '' : '7-7654321', qiwaEstablishmentId: '7-7654321', emailDomain: 'evostel.com', workEmailPattern: 'first.last', firstPayrollMonth: '2026-11',
-        cutoverStatus: this.options.cutoverStatus ?? 'Planned', baseline: { legalNameEn: EVOSTEL.legalNameEn, tradeName: 'Evostel', firstPayrollMonth: '2026-11' } },
+        cutoverStatus: this.options.cutoverStatus ?? 'Planned', cutoverPinned: (this.options.cutoverStatus ?? 'Planned') !== 'Planned', ...(this.options.prefillMigration ?? {}), baseline: { legalNameEn: EVOSTEL.legalNameEn, tradeName: 'Evostel', firstPayrollMonth: '2026-11' } },
       branches: [{ existingId: 'br-hq', code: 'HQ', nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: true,
         baseline: { nameEn: 'Head Office', nameAr: this.options.badArabic ? OLD_LETTER_BY_LETTER : 'المقر الرئيسي', city: 'Riyadh', timeZoneId: 'Asia/Riyadh', isHeadOffice: 'true' },
         locations: [{ existingId: 'loc-gate', code: 'GATE1', nameEn: 'Main gate', nameAr: '', latitude: 24.7, longitude: 46.7, radiusMeters: this.options.locationWithoutRadius ? null : 150,
@@ -2438,4 +2440,110 @@ test('Approvers: choosing an existing user lists only active Finance Approvers',
   await next(page, t);
   await expectStep(page, t, 'Review & create');
   await expect.poll(() => server.dryRuns.at(-1)?.payReviewer).toMatchObject({ mode: 'existing', existingUserId: 'u-fatima' });
+});
+
+// ── Go-live cutover: new company vs switching from another payroll or HR system ──────────────────────────────────
+
+test('a new company is the default and keeps the first-payroll-month wording and the past-month warning', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await openWizardFromCompanies(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  const group = page.getByRole('group', { name: t('Is this a new company or are you switching systems?') });
+  await expect(group.getByRole('radio', { name: new RegExp(t('New company')) })).toBeChecked();
+  await expect(page.getByLabel(t('Previous system (optional)'))).toHaveCount(0);
+  const month = page.getByLabel(t('First payroll month'));
+  await month.fill('2024-03');
+  await month.blur();
+  await expect(page.getByText(/is in the past\. You will need opening balances/)).toBeVisible();
+  await expect(page.getByTestId('bring-over-panel')).toHaveCount(0);
+});
+
+test('switching renames the month, drops the past-month warning, and lists what to bring over', async ({ page }) => {
+  const t = T('en');
+  await boot(page);
+  await openWizardFromCompanies(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await page.getByRole('radio', { name: new RegExp(t('Switching from another payroll or HR system')) }).check();
+  const month = page.getByLabel(t('Go-live month'));
+  await month.fill('2024-03');
+  await month.blur();
+  await expect(page.getByText(t('The first month KynexOne runs your payroll. Earlier months stay in your previous system and come over as opening balances.'))).toBeVisible();
+  await expect(page.getByText(/is in the past\. You will need opening balances/)).toHaveCount(0);
+  const panel = page.getByTestId('bring-over-panel');
+  await expect(panel).toContainText(t('Payroll year to date'));
+  await expect(panel).toContainText(t('The last WPS or Mudad month paid'));
+  await page.getByLabel(t('Previous system (optional)')).fill('Oracle HCM');
+  // Back to new: the previous system is dropped, never kept hidden.
+  await page.getByRole('radio', { name: new RegExp(t('New company')) }).check();
+  await expect(page.getByLabel(t('Previous system (optional)'))).toHaveCount(0);
+  await expect(page.getByLabel(t('First payroll month'))).toBeVisible();
+});
+
+test('a radio card answers the arrow keys and the previous system survives Save draft & exit', async ({ page }) => {
+  const t = T('en');
+  const { server } = await boot(page);
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  const newCard = page.getByRole('radio', { name: new RegExp(t('New company')) });
+  await newCard.focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('radio', { name: new RegExp(t('Switching from another payroll or HR system')) })).toBeChecked();
+  await page.getByLabel(t('Previous system (optional)')).fill('SAP SuccessFactors');
+  await page.getByLabel(t('Go-live month')).fill('2026-01');
+  await page.getByRole('button', { name: t('Save draft & exit'), exact: true }).click();
+  await expect(page.getByTestId('guided-setup-chooser')).toBeVisible();
+  const saved = [...server.drafts.values()].find(d => d.body.existingCompanyId === 'co-evostel')!.body.company;
+  expect(saved).toMatchObject({ migrationMode: 'switching', previousSystem: 'SAP SuccessFactors', firstPayrollMonth: '2026-01' });
+  await evostelRow(page).getByRole('link', { name: new RegExp(t('Resume setup')) }).click();
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByRole('radio', { name: new RegExp(t('Switching from another payroll or HR system')) })).toBeChecked();
+  await expect(page.getByLabel(t('Previous system (optional)'))).toHaveValue('SAP SuccessFactors');
+  await expect(page.getByLabel(t('Go-live month'))).toHaveValue('2026-01');
+});
+
+test('the review shows the mode, the previous system and the go-live month', async ({ page }) => {
+  const t = T('en');
+  await boot(page, { prefillMigration: { migrationMode: 'switching', previousSystem: 'Oracle HCM' } });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByLabel(t('Previous system (optional)'))).toHaveValue('Oracle HCM');
+  await toReview(page, t, true);
+  const review = page.getByTestId('review-cutover');
+  await expect(review).toContainText(t('Switching from another payroll or HR system'));
+  await expect(review).toContainText('Oracle HCM');
+  await expect(review).toContainText(t('Go-live month'));
+});
+
+test('once payroll has started the mode and previous system are read-only with the lock reason', async ({ page }) => {
+  const t = T('en');
+  await boot(page, { cutoverStatus: 'Active', prefillMigration: { migrationMode: 'switching', previousSystem: 'Oracle HCM' } });
+  await openEvostel(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await expect(page.getByRole('radio', { name: new RegExp(t('New company')) })).toBeDisabled();
+  await expect(page.getByRole('radio', { name: new RegExp(t('Switching from another payroll or HR system')) })).toBeChecked();
+  const previous = page.getByLabel(t('Previous system (optional)'));
+  await expect(previous).toHaveAttribute('readonly', '');
+  await expect(previous).toHaveValue('Oracle HCM');
+  await expect(page.getByLabel(t('Go-live month'))).toHaveAttribute('readonly', '');
+  await expect(page.getByText(t('Payroll has already started for this company, so this stays as it is.')).first()).toBeVisible();
+});
+
+test('Arabic renders the cutover choice right-to-left without sideways scroll', async ({ page }, info) => {
+  const t = T('ar');
+  await boot(page, { locale: 'ar' });
+  await openWizardFromCompanies(page, t);
+  await page.getByRole('button', { name: t('Start'), exact: true }).click();
+  await expectStep(page, t, 'Company details');
+  await page.getByRole('radio', { name: new RegExp(t('Switching from another payroll or HR system')) }).check();
+  await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  await expect(page.getByLabel(t('Go-live month'))).toBeVisible();
+  await expect(page.getByTestId('bring-over-panel')).toContainText(t('Leave balances'));
+  await contained(page);
+  await shot(page, info, 'ar-cutover-switching');
 });

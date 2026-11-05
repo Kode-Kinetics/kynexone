@@ -10014,6 +10014,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("date")
                         .HasColumnName("probation_start_date");
 
+                    b.Property<bool>("ProbationWaived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("probation_waived");
+
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
                         .HasColumnType("numeric(5,2)")
@@ -10206,13 +10210,13 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TenantId", "BankIbanBidx")
-                        .HasDatabaseName("ix_employees_bidx_bank_iban")
-                        .HasFilter("bank_iban_bidx IS NOT NULL");
-
                     b.HasIndex("TenantId")
                         .HasDatabaseName("ix_employees_nationality_review")
                         .HasFilter("nationality_mapping_state IN ('ProposedAuto','Unresolved') AND NOT is_deleted");
+
+                    b.HasIndex("TenantId", "BankIbanBidx")
+                        .HasDatabaseName("ix_employees_bidx_bank_iban")
+                        .HasFilter("bank_iban_bidx IS NOT NULL");
 
                     b.HasIndex("TenantId", "BorderNumber")
                         .HasDatabaseName("ix_employees_dup_border_number")
@@ -11667,6 +11671,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateOnly?>("ProbationEndDate")
                         .HasColumnType("date")
                         .HasColumnName("probation_end_date");
+
+                    b.Property<bool>("ProbationWaived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("probation_waived");
 
                     b.Property<decimal>("ProfileCompletenessScore")
                         .HasPrecision(5, 2)
@@ -21557,6 +21565,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("allowed_repayment_methods_json");
 
+                    b.Property<string>("BatchApproverMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasDefaultValue("SeparateApprover")
+                        .HasColumnName("batch_approver_mode");
+
                     b.Property<bool>("BlockDuringNotice")
                         .HasColumnType("boolean")
                         .HasColumnName("block_during_notice");
@@ -21651,6 +21667,13 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("require_probation_completed");
 
+                    b.Property<decimal>("SelfApprovalMaxAmount")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasDefaultValue(0m)
+                        .HasColumnName("self_approval_max_amount");
+
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
@@ -21677,6 +21700,8 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("loan_policies", null, t =>
                         {
+                            t.HasCheckConstraint("ck_loan_policies__batch_approver", "batch_approver_mode IN ('SeparateApprover','SingleOperator') AND self_approval_max_amount >= 0 AND (batch_approver_mode = 'SingleOperator' OR self_approval_max_amount = 0)");
+
                             t.HasCheckConstraint("ck_loan_policies__copied_from_only_on_switch", "copied_from_policy_id IS NULL OR created_by_offering_switch");
 
                             t.HasCheckConstraint("ck_loan_policies__min_installments", "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)");
@@ -27103,8 +27128,8 @@ namespace Zayra.Api.Migrations
                         .HasColumnName("requested_by");
 
                     b.Property<string>("Status")
-                        .IsRequired()
                         .IsConcurrencyToken()
+                        .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)")
                         .HasColumnName("status");
@@ -27211,6 +27236,12 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid?>("ParentRunId")
                         .HasColumnType("uuid")
                         .HasColumnName("parent_run_id");
+
+                    b.Property<int>("ProcessVersion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("process_version");
 
                     b.Property<DateTime?>("ProcessedAtUtc")
                         .HasColumnType("timestamp with time zone")
@@ -27502,6 +27533,161 @@ namespace Zayra.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("payroll_run_employee_selections", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRunReconExplanation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("scope");
+
+                    b.Property<Guid>("SignoffId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("signoff_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SignoffId");
+
+                    b.HasIndex("TenantId", "SignoffId", "Scope", "Key")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payroll_run_recon_explanations__signoff_scope_key");
+
+                    b.ToTable("payroll_run_recon_explanations", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_run_recon_explanations__scope", "\"scope\" IN ('Item','Employee')");
+                        });
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRunReconSignoff", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("notes");
+
+                    b.Property<Guid>("PayrollRunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payroll_run_id");
+
+                    b.Property<int?>("PriorProcessVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("prior_process_version");
+
+                    b.Property<Guid?>("PriorRunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("prior_run_id");
+
+                    b.Property<int>("ProcessVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("process_version");
+
+                    b.Property<DateTime>("SignedOffAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("signed_off_at_utc");
+
+                    b.Property<string>("SignedOffByName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("signed_off_by_name");
+
+                    b.Property<Guid?>("SignedOffByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("signed_off_by_user_id");
+
+                    b.Property<string>("SnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("snapshot_hash");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("snapshot_json");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("superseded_at_utc");
+
+                    b.Property<string>("SupersededReason")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("superseded_reason");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PayrollRunId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "PayrollRunId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payroll_run_recon_signoffs__run_active")
+                        .HasFilter("\"status\" = 'Active'");
+
+                    b.HasIndex("TenantId", "PayrollRunId", "SignedOffAtUtc")
+                        .HasDatabaseName("ix_payroll_run_recon_signoffs__run");
+
+                    b.ToTable("payroll_run_recon_signoffs", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_payroll_run_recon_signoffs__reason", "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged','InputsChanged')");
+
+                            t.HasCheckConstraint("ck_payroll_run_recon_signoffs__status", "\"status\" IN ('Active','Superseded')");
+
+                            t.HasCheckConstraint("ck_payroll_run_recon_signoffs__superseded_pair", "(\"status\" = 'Active' AND \"superseded_at_utc\" IS NULL AND \"superseded_reason\" IS NULL) OR (\"status\" = 'Superseded' AND \"superseded_at_utc\" IS NOT NULL AND \"superseded_reason\" IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.PayrollSlip", b =>
@@ -34720,6 +34906,24 @@ namespace Zayra.Api.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRunReconExplanation", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.PayrollRunReconSignoff", null)
+                        .WithMany("Explanations")
+                        .HasForeignKey("SignoffId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRunReconSignoff", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.PayrollRun", null)
+                        .WithMany()
+                        .HasForeignKey("PayrollRunId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.SuccessionCriticalPosition", b =>
                 {
                     b.HasOne("Zayra.Api.Models.Employee", null)
@@ -34889,6 +35093,11 @@ namespace Zayra.Api.Migrations
             modelBuilder.Entity("Zayra.Api.Models.ApprovalWorkflow", b =>
                 {
                     b.Navigation("Steps");
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayrollRunReconSignoff", b =>
+                {
+                    b.Navigation("Explanations");
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.Timesheet", b =>

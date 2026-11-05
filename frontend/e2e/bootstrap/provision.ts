@@ -27,7 +27,9 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { saudiNationalId, saudiIqama } from './saudiIds';
+import { assertImportClean, todayPunchTimes } from './seedPunches';
 import { ensurePayApprover, type PayApprover } from './payApprover';
+import { fetchReconTransport, signOffReconciliation } from './reconSignoff';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -997,10 +999,15 @@ async function ensureLeaveAndAttendance(
   // adds the missing day and duplicates nothing.
   const csvHeader = 'employeeCode,punchTimestamp,punchDirection';
   const importPunches = async (fileName: string, rows: string[]) =>
-    expectOk(await call('POST', '/api/attendance/events/import', {
-      token: adminToken, companyId: company.id,
-      body: { fileName, csvContent: [csvHeader, ...rows].join('\n') },
-    }), `import attendance punches (${fileName})`, [200, 201]);
+    {
+      const res = expectOk(await call('POST', '/api/attendance/events/import', {
+        token: adminToken, companyId: company.id,
+        body: { fileName, csvContent: [csvHeader, ...rows].join('\n') },
+      }), `import attendance punches (${fileName})`, [200, 201]);
+      // A refused row (a future time, an unknown code) is a 200 with failedRows > 0: check it, or the seed passes empty.
+      assertImportClean(res.body, `import attendance punches (${fileName})`);
+      return res;
+    }
   // No X-Company-Id here, deliberately. AttendanceController.Process refuses a tenant-wide
   // reprocess from a caller whose scope is not unrestricted, and pinning a company IS a narrowing —
   // so passing the header the other calls use turns the group admin into a 403.
@@ -1043,9 +1050,10 @@ async function ensureLeaveAndAttendance(
   // employee. A world whose every person is a missing-punch exception is a worse lie than an empty
   // tile. With both punches: Present, MissingPunch false, no exception.
   //
-  // These timestamps are ahead of the wall clock when the bootstrap runs early in the UTC day.
-  // Nothing rejects that — neither the import nor ValidateProcessRangeAsync looks at UtcNow — and
-  // the WorkDate a punch is filed under is its tenant-local date either way.
+  // The server refuses a punch more than five minutes in the future, so the instants come from
+  // todayPunchTimes(): the full day once it has happened, otherwise each instant pulled back to at most
+  // now minus 10 minutes with In still before Out (still Present, still no MissingPunch). In the first
+  // minutes of the UTC day there is nothing in the past to punch at, and today is simply not seeded.
   //
   // Everyone EXCEPT whoever is on approved leave today. Punching in the one person the /leave
   // module is simultaneously showing as "On Leave Today" is a self-contradiction a customer can
@@ -1059,12 +1067,13 @@ async function ensureLeaveAndAttendance(
     'GET', `/api/attendance/daily?from=${todayUtc}&to=${todayUtc}&page=1&pageSize=5`, { token: adminToken },
   )).body;
   let todayPunches = 0;
-  if (items(existingToday).length === 0) {
+  const todayTimes = todayPunchTimes(new Date());
+  if (items(existingToday).length === 0 && todayTimes) {
     const rows: string[] = [];
     for (const employee of active) {
       if (onLeaveToday.has(String(employee.employeeCode ?? ''))) continue;
-      rows.push(`${employee.employeeCode},${todayUtc}T05:00:00Z,In`);
-      rows.push(`${employee.employeeCode},${todayUtc}T14:00:00Z,Out`);
+      rows.push(`${employee.employeeCode},${todayTimes.inUtc},In`);
+      rows.push(`${employee.employeeCode},${todayTimes.outUtc},Out`);
       todayPunches += 2;
     }
     await importPunches('e2e-fixture-world-today.csv', rows);
@@ -1325,6 +1334,15 @@ async function ensurePayrollRuns(
   const makerToken = await requireTenantLogin(maker, fixture.slug);
   const checkerToken = await requireTenantLogin(checker, fixture.slug);
   const decision = { comments: 'e2e fixture world bootstrap', expectedExcludedCount: 0 };
+
+  // The API holds Approve until the run's reconciliation is signed off. The maker (an HR Manager, who neither created nor
+  // processed the run: the admin did) signs it, then approves; the maker-checker split on the approval itself is untouched.
+  try {
+    await signOffReconciliation(fetchReconTransport(API_BASE, makerToken), leadId);
+  } catch (error) {
+    console.log(`[bootstrap] ${fixture.slug}: the ${year}-${month} run's reconciliation was not signed off: ${(error as Error).message.slice(0, 300)}`);
+    return `${created.length} run(s) created; lead run stopped before sign-off`;
+  }
 
   const makerApproval = await call('POST', `/api/payroll/runs/${leadId}/approve`, { token: makerToken, body: decision });
   const checkerApproval = makerApproval.status === 200

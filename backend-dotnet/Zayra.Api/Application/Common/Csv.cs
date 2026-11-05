@@ -165,6 +165,18 @@ public static class Csv
     public static IReadOnlyList<string> SplitRow(string line) => ParseLine(line);
 
     /// <summary>
+    /// <see cref="SplitRow(string)"/> for a file whose cells are separated by something other than a comma: Excel in an Arabic or
+    /// European locale saves semicolons, and "Save as Text" saves tabs. Same RFC-4180 quoting, same BOM and formula-guard handling.
+    /// </summary>
+    public static IReadOnlyList<string> SplitRow(string line, char delimiter) => ParseLine(line, delimiter);
+
+    /// <summary>
+    /// The physical lines of a CSV text exactly as <see cref="Parse"/> reads them (BOM removed, any line ending), blank lines
+    /// INCLUDED, so a caller that reports problems can name the real line number of the file the user opened.
+    /// </summary>
+    public static IReadOnlyList<string> Lines(string content) => SplitLines(content);
+
+    /// <summary>
     /// U+FEFF, the UTF-8 byte-order mark, as the decoder leaves it at the start of the text.
     ///
     /// <para>It is Unicode category Cf (format), NOT whitespace, so <see cref="string.Trim()"/> does not
@@ -211,7 +223,7 @@ public static class Csv
     /// <summary>True when the line ends with a quoted cell still open (an odd number of quote characters).</summary>
     private static bool EndsInsideQuotes(string line) => line.Count(c => c == '"') % 2 == 1;
 
-    private static List<string> ParseLine(string line)
+    private static List<string> ParseLine(string line, char delimiter = ',')
     {
         // Also stripped per-line, not only per-file, because SplitRow is public: the employee header
         // validator slices the first physical line off the raw content itself and hands it here.
@@ -230,7 +242,7 @@ public static class Csv
                 else sb.Append(ch);
             }
             else if (ch == '"') inQuotes = true;
-            else if (ch == ',') { result.Add(Unescape(sb.ToString().Trim())); sb.Clear(); }
+            else if (ch == delimiter) { result.Add(Unescape(sb.ToString().Trim())); sb.Clear(); }
             else sb.Append(ch);
         }
         result.Add(Unescape(sb.ToString().Trim()));

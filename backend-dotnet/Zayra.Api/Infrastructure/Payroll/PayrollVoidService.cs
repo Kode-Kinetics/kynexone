@@ -751,6 +751,10 @@ public sealed class PayrollVoidService
             staleYtdRunIds,
         };
 
+        // A voided run's reconciliation review no longer describes anything that will be paid.
+        await ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
+            _db, tenantId, runId, ManpowerRecon.ReconSupersededReasons.Voided, actorId, ct);
+
         _db.PayrollAuditLogs.Add(new PayrollAuditLog
         {
             TenantId     = tenantId,

@@ -639,6 +639,9 @@ builder.Services.AddSingleton(Zayra.Api.Infrastructure.Payroll.PayrollRunProcess
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessJobHandler>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessor>();
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.PayrollRunProcessingService>();
+// Manpower + value reconciliation of a payroll run: the read-only bridge, and the sign-off that Approve requires.
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ManpowerRecon.ManpowerReconService>();
+builder.Services.AddScoped<Zayra.Api.Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Jobs.BackgroundJobWorker>();
 
 // D3 — data retention. EVERY SWITCH IS OFF BY DEFAULT and the defaults are the safe ones:

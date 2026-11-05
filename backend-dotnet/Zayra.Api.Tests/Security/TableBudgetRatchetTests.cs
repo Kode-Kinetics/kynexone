@@ -172,7 +172,14 @@ public class TableBudgetRatchetTests
         // P3 hire_templates (375 -> 376): per-company hire presets (match keys designation/grade/branch, non-pay defaults, checklist).
         // No existing table can carry it: onboarding_checklists has no match semantics and a different lifecycle, and the grade master
         // stays the only pay source (a template holds no money). Owner HR; kept for the life of the company (config, no personal data).
-        DeclaredDbSets().Should().HaveCount(381,
+        // Payroll manpower + value reconciliation sign-off (AddPayrollManpowerReconSignoff; owner Payroll Engineering). Two tables, 381 -> 383.
+        // PayrollRunReconSignoffs: the recorded review of a run's reconciliation against the prior month, the evidence a different person
+        // looked at the figures before approval. No existing table can carry it: payroll_approvals records an approval decision (level,
+        // decision, notes), not a review bound to a process version, a snapshot fingerprint and a comparison run, and it cannot hold
+        // "at most one Active per run" or the superseded history. PayrollRunReconExplanations: the written reason per flagged item or
+        // unpaid employee, which belongs to its sign-off and is deleted only with it. Retention: kept with the payroll run (84 months,
+        // class E in OWNERSHIP_AND_RETENTION.md); removed by whole-tenant erasure.
+        DeclaredDbSets().Should().HaveCount(383,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }

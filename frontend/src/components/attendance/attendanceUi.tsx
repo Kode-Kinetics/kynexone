@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { Activity, AlertTriangle } from 'lucide-react';
 
 // The small pieces the Attendance workspace and the attendance devices section of Setup both draw with.
 
@@ -37,4 +37,16 @@ export function Panel({ title, action, children }: { title: string; action?: str
 
 export function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400 dark:border-white/10 dark:text-slate-500">{text}</div>;
+}
+
+export function SectionTitle({ icon: Icon, title, subtitle }: { icon: typeof Activity; title: string; subtitle: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire"><Icon className="h-4 w-4" aria-hidden="true" /></span>
+      <div>
+        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
+        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
+      </div>
+    </div>
+  );
 }

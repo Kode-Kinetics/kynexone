@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
@@ -46,6 +47,15 @@ public partial class LoansController
                 || req.MinServiceMonths is < 0 or > 600 || req.MaxInstallments is < 1 or > 600 || req.MaxConcurrentLoans is < 1 or > 100
                 || req.CooldownMonthsAfterRepayment is < 0 or > 120)
                 return BadRequest("Policy limits are invalid. Use nonnegative monetary limits, 1–600 installments and 1–100 concurrent loans.");
+            if (!LoanBatchApproverModes.IsValid(req.BatchApproverMode) || req.SelfApprovalMaxAmount < 0 || req.SelfApprovalMaxAmount > 999999999999.99m
+                || decimal.Round(req.SelfApprovalMaxAmount, 2) != req.SelfApprovalMaxAmount
+                || (req.BatchApproverMode == LoanBatchApproverModes.SeparateApprover && req.SelfApprovalMaxAmount != 0))
+                return BadRequest("Choose a valid batch approver mode. A self-approval limit applies only to the single-operator mode.");
+            // The mode relaxes a Finance control, which HR must not be able to do. HR may keep the current setting or tighten it.
+            var current = await _db.Set<LoanPolicy>().AsNoTracking().Where(x => x.TenantId == tid && x.CompanyId == req.CompanyId && x.LoanTypeId == req.LoanTypeId && x.IsActive)
+                .Select(x => new { x.BatchApproverMode, x.SelfApprovalMaxAmount }).FirstOrDefaultAsync(ct);
+            if (!User.IsInRole("Admin") && RelaxesBatchApproval(current?.BatchApproverMode, current?.SelfApprovalMaxAmount ?? 0, req.BatchApproverMode, req.SelfApprovalMaxAmount))
+                return Forbid();
             if (req.MinInstallments < 1 || req.MinInstallments > req.MaxInstallments)
                 return BadRequest($"Set the shortest repayment between 1 and the longest repayment ({req.MaxInstallments} instalments).");
             if (req.AllowedEmploymentStatuses == null || req.AllowedEmploymentStatuses.Length == 0
@@ -75,9 +85,20 @@ public partial class LoansController
                 AllowedRepaymentFrequenciesJson = JsonSerializer.Serialize(req.AllowedRepaymentFrequencies ?? ["Monthly", "Weekly", "BiWeekly", "Quarterly"]),
                 CooldownMonthsAfterRepayment = req.CooldownMonthsAfterRepayment, AdditionalApprovalThreshold = req.AdditionalApprovalThreshold,
                 AdditionalApproverRole = "HR Director", AllowExceptions = req.AllowExceptions,
-                AllowEarlySettlement = req.AllowEarlySettlement, AllowRescheduling = req.AllowRescheduling, CreatedBy = GetUserId(),
+                AllowEarlySettlement = req.AllowEarlySettlement, AllowRescheduling = req.AllowRescheduling,
+                BatchApproverMode = req.BatchApproverMode, SelfApprovalMaxAmount = req.SelfApprovalMaxAmount, CreatedBy = GetUserId(),
                 IsOffered = req.IsOffered };
             _db.Set<LoanPolicy>().Add(policy);
+            var fromMode = current?.BatchApproverMode ?? LoanBatchApproverModes.SeparateApprover;
+            var fromCap = current?.SelfApprovalMaxAmount ?? 0;
+            if (fromMode != policy.BatchApproverMode || fromCap != policy.SelfApprovalMaxAmount)
+                _db.AuditLogs.Add(new AuditLog
+                {
+                    TenantId = tid, CompanyId = req.CompanyId, UserId = GetUserId(), Action = "loans.policy.batch_approver_changed",
+                    EntityName = "LoanPolicy", EntityId = policy.Id.ToString(), IpAddress = HttpContext?.Connection.RemoteIpAddress?.ToString(),
+                    CreatedAtUtc = DateTime.UtcNow,
+                    Metadata = JsonSerializer.Serialize(new { loanTypeId = req.LoanTypeId, policy.Version, from = fromMode, to = policy.BatchApproverMode, fromCap, toCap = policy.SelfApprovalMaxAmount }),
+                });
             await _db.SaveChangesAsync(ct);
             return Ok(ProjectPolicy(policy));
         }, ct);
@@ -129,6 +150,15 @@ public partial class LoansController
         limitBreakdowns = g.Limits.Select(x => includeSalary ? x : x with { SalaryBasisAmount = null }),
     };
 
+    /// <summary>True when the new setting lets a creator approve something the current one would not. No cap under SingleOperator is the widest.</summary>
+    private static bool RelaxesBatchApproval(string? currentMode, decimal currentCap, string newMode, decimal newCap)
+    {
+        if (newMode != LoanBatchApproverModes.SingleOperator) return false;
+        if (currentMode != LoanBatchApproverModes.SingleOperator) return true;
+        static decimal Reach(decimal cap) => cap == 0 ? decimal.MaxValue : cap;
+        return Reach(newCap) > Reach(currentCap);
+    }
+
     private static object ProjectPolicy(LoanPolicy p) => new { p.Id, p.CompanyId, p.LoanTypeId, p.Version, p.PolicyName,
         p.MaxAmount, p.MaxTotalOutstanding, p.MaxMultiplierOfSalary, p.MaxInstallmentPercentOfSalary, p.MinServiceMonths,
         p.MaxInstallments, p.MinInstallments, p.MaxConcurrentLoans, p.RequireProbationCompleted, p.BlockDuringNotice, p.BlockOnOverdue,
@@ -137,7 +167,7 @@ public partial class LoansController
         AllowedRepaymentMethods = JsonSerializer.Deserialize<string[]>(p.AllowedRepaymentMethodsJson),
         AllowedRepaymentFrequencies = JsonSerializer.Deserialize<string[]>(p.AllowedRepaymentFrequenciesJson),
         p.CooldownMonthsAfterRepayment, p.AdditionalApprovalThreshold, p.AdditionalApproverRole,
-        p.AllowExceptions, p.AllowEarlySettlement, p.AllowRescheduling, p.IsActive, p.CreatedAtUtc, p.IsOffered };
+        p.AllowExceptions, p.AllowEarlySettlement, p.AllowRescheduling, p.BatchApproverMode, p.SelfApprovalMaxAmount, p.IsActive, p.CreatedAtUtc, p.IsOffered };
 }
 
 public record LoanPolicyRequest(Guid CompanyId, Guid LoanTypeId, string PolicyName,
@@ -147,4 +177,7 @@ public record LoanPolicyRequest(Guid CompanyId, Guid LoanTypeId, string PolicyNa
     bool BlockOnOverdue = true, string[]? AllowedEmploymentStatuses = null, string[]? AllowedContractTypes = null,
     string[]? AllowedRepaymentMethods = null, int CooldownMonthsAfterRepayment = 0, decimal AdditionalApprovalThreshold = 0,
     string AdditionalApproverRole = "HR Director", bool AllowExceptions = false, bool AllowEarlySettlement = true, bool AllowRescheduling = false,
-    string[]? AllowedRepaymentFrequencies = null, bool IsOffered = true, int MinInstallments = 1);
+    string[]? AllowedRepaymentFrequencies = null, bool IsOffered = true, int MinInstallments = 1,
+    string BatchApproverMode = LoanBatchApproverModes.SeparateApprover, decimal SelfApprovalMaxAmount = 0);
+
+public record ApproveLoanBatchRequest(string? Reason);

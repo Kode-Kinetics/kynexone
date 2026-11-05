@@ -5,8 +5,11 @@ export const repaymentMethodLabels: Record<LoanRepaymentMethod, string> = {
 };
 
 export function loanErrorMessage(error: unknown, fallback: string): string {
-  const data = (error as { response?: { data?: unknown } })?.response?.data;
-  if (typeof data === 'string' && data.trim()) return data;
+  const response = (error as { response?: { data?: unknown; status?: number } })?.response;
+  const data = response?.data;
+  if (response?.status === 502 || response?.status === 503 || response?.status === 504) return 'The service is restarting or temporarily unavailable. Wait a minute and try again.';
+  // A proxy or host error page arrives as an HTML string; never show markup to the user.
+  if (typeof data === 'string' && data.trim() && !/^\s*<(!doctype|html)/i.test(data)) return data;
   if (data && typeof data === 'object') {
     const body = data as Record<string, unknown>;
     if (typeof body.detail === 'string') return body.detail;

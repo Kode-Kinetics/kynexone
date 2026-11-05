@@ -1029,6 +1029,9 @@ public sealed class PayrollRunProcessor
             // longer applies. Overrides are deliberately NOT carried across a re-Process — only across a
             // /validate, which is a read-model refresh of the same facts.
             _db.PayrollValidationOverrides.RemoveRange(Op(_db.PayrollValidationOverrides).Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
+            // The same goes for the reconciliation sign-off: it reviewed the figures this pass is about to replace.
+            await ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
+                _db, tenantId, id, ManpowerRecon.ReconSupersededReasons.Reprocessed, request.ActorUserId, cancellationToken);
 
         // Benefit execution is part of the payroll transaction and uses only frozen employee terms.
         // The employee locks also serialize receipt approvals and dated HR benefit changes.
@@ -1921,6 +1924,8 @@ public sealed class PayrollRunProcessor
         run.CompanyId ??= company.Id;
         run.Status = "Processed";
         run.ProcessedAtUtc = DateTime.UtcNow;
+        // One more pass of the figures. Never reset, so a sign-off made against an earlier pass can never read as current.
+        run.ProcessVersion++;
         run.ProcessedByUserId = request.ActorUserId;
         run.EmployeeCount = slips.Count;
         run.TotalGrossSalary = slips.Sum(s => s.GrossSalary);

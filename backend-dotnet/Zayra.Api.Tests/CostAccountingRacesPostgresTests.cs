@@ -52,6 +52,7 @@ public sealed class CostAccountingRacesPostgresTests
     private static async Task<IActionResult> ApproveOn(CostingLockKit k, Guid runId, ZayraDbContext? db = null)
     {
         await using var own = db is null ? k.K.NewContext() : null;
+        await ReconTestSupport.SignOffAsync(db ?? own!, runId);
         return await k.K.Payroll(db ?? own, k.ApproverId, "Admin").Approve(runId, new PayrollDecisionRequest("ok"), default);
     }
 

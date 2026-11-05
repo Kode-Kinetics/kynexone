@@ -132,7 +132,8 @@ CompanySetupDraftBody {
   company: { legalNameEn, legalNameAr?, tradeName?, countryCode, currency, registrationNumber,
     molEstablishmentNumber?, gosiEmployerId?, unifiedNationalNumber?, taxNumber?,
     qiwaEstablishmentId?, emailDomain?, workEmailPattern?, erpCompanyCode?,
-    firstPayrollMonth: "YYYY-MM" },
+    firstPayrollMonth: "YYYY-MM",   // the GO-LIVE month: the first month KynexOne runs payroll (see Addendum C)
+    migrationMode?: "new" | "switching", previousSystem?: string | null },
   branches: { code, nameEn, nameAr?, city, timeZoneId, isHeadOffice,
     locations: { code, nameEn, nameAr?, latitude?, longitude?, radiusMeters? }[] }[],
   costCentres: { code, nameEn, nameAr? }[],
@@ -238,10 +239,9 @@ Country and currency are read-only in existing mode, always (payroll, GOSI and b
 depend on them). Legal name EN/AR, trade name, CR, MOL, GOSI, 700, VAT, Qiwa, email domain/pattern
 and ERP code are editable and go through `UpdateCompanyAsync` with the same validations as create
 (SA MOL format, CR uniqueness excluding itself, email-domain claimability). The first payroll month
-is editable only while the cutover is still `Planned`; otherwise it is shown read-only. The prefill and every
+is locked only by a Locked payroll run (Addendum C; it was "editable only while Planned" before 2026-11-03). The prefill and every
 draft read send `company.cutoverStatus` (`"Planned" | "Active" | "Closed" | null`, the status *now*; ignored on
-input), so the screen locks the month up front with its reason; the planner's `first_payroll_month_locked` stays
-the backstop.
+input); the planner's `first_payroll_month_locked` is the authority.
 
 ### A5. Who may run it
 - New company: group-scope Admin/HR Manager only (unchanged).
@@ -405,3 +405,51 @@ tick, and rail progress.
 - Everything is off under `prefers-reduced-motion`.
 - No horizontal page scroll at phone width. Editable rows are a compact table when the column is at least 640px
   wide, and a stacked list below that.
+
+## Addendum C — established companies switching payroll (decided 2026-11-03, revised after review)
+
+`company.firstPayrollMonth` (same JSON name) now means the **go-live month**. Two new input fields and one read-only field,
+no schema change (`payroll_cutovers.SourceSystem` carries the previous system):
+
+- `migrationMode`: `"new" | "switching"`; absent/null = `"new"` on create, **"not supplied" on an existing company** (the database
+  value stands). Anything else is `migration_mode_invalid`. `switching` also needs the setup permission
+  (`migration_mode_needs_setup_permission`) on top of the controller's gate.
+- `previousSystem`: trimmed, at most 120 chars; control, line/paragraph-separator and Unicode format characters (bidi marks and
+  overrides U+200E/F, U+202A-E, U+2066-9, zero-width U+200B-D, BOM U+FEFF) are `previous_system_invalid`; too long is
+  `previous_system_too_long`. Stored only when switching. Null/blank = not supplied: **never clears** an existing SourceSystem.
+  Untrusted text: bound as a parameter / JSON only.
+- `cutoverPinned` (read-only, existing mode, prefill and every draft read; ignored on input): true when the cutover governs and
+  a pinning run exists, i.e. a go-live month change would be refused. The screen locks the month **only** on `true`.
+
+**Mode is derived from status only**: `switching` iff the cutover exists and is not `Planned` (Active/Closed). A source system on a
+Planned cutover does not make it switching.
+
+**Create.** `new`: cutover `Planned`. `switching`: `Active`, `SourceSystem = previousSystem ?? ""`, date = first of the month, audit
+`organization.company_cutover_declared`. For `switching` a past/current month is normal (no `first_payroll_month_past`). The
+window check is in **UTC**: January 2015 through the current UTC month + 12; outside is `first_payroll_month_out_of_range`
+(`CompanySetupPlanner.InGoLiveRange`; at 23:59 UTC on the last day of a month the old month still applies).
+
+**Existing company.** One decision function (`CutoverLockRule.EvaluateAsync`) serves the plan and the commit. A run is *pinning* unless
+it is `Draft`, `Voided` or `Cancelled` (Processed, PendingFinanceReview, Approved and Locked all pin).
+- Governing cutover (Active/Closed): the month, or the previous system, cannot change while a pinning run exists in or after the
+  earlier of the saved and proposed month (`first_payroll_month_locked`, `previous_system_locked`). Status never changes. `new`
+  on a governing cutover is a no-op (no demotion, no clearing).
+- Planned cutover: governs nothing, so the month moves freely (the importer counts a change only when the old cutover governs).
+  Choosing `switching` **promotes it to Active** (audit `organization.company_cutover_activated`: from/to status, actor,
+  previousSystem) only when no pinning run exists from its month on; otherwise `switching_blocked_by_runs` points to Setup >
+  Opening balances (the importer).
+- No cutover + switching: created Active; refused if later than an already-locked run (`CUTOVER_FIRST_DECLARATION_AFTER_LOCKED_RUN`).
+
+**Concurrency.** Inside the commit transaction the wizard takes the per-(tenant, company) cost-accounting advisory lock that
+Approve and Lock already take, re-reads the cutover and re-runs the decision before writing; a refusal rolls everything back.
+Residual race: moving a run to `Processed` (or creating one) does not take that lock, so a run processed in the instant between the
+re-check and the commit is not seen. The consequence is bounded: the run was a draft-grade Processed run, and Approve/Lock still
+validate YTD at their own time.
+
+**Safety of an Active cutover with no runs and no balances.** `PayrollYtdBasis.LoadAsync` then returns no prior slips, no carried
+balances and empty unresolved/pre-cutover sets, so Rule 14b raises nothing and totals equal the no-cutover case (test
+`An_Active_wizard_cutover_for_a_company_with_no_runs_…`). Rule 14b's ERROR fires only when there is NO governing cutover.
+
+**Readiness.** While the cutover governs, the checklist adds `migrateHistoryPayrollYtd`, `migrateHistoryLeave`, `migrateHistoryLoans`,
+`migrateHistoryEosb` (legal hire date / prior service start), each `done` once the company has matching carried rows, href
+`/setup?tab=openingBalances&companyId=<id>`. No reconciliation sign-off item: sign-offs are not persisted.

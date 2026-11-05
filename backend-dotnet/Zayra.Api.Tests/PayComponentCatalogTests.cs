@@ -546,6 +546,7 @@ public class PayComponentCatalogTests
             var errors = await db.PayrollValidationResults.AsNoTracking()
                 .Where(v => v.PayrollRunId == runId && v.Severity == "Error").Select(v => v.Code + ": " + v.Message).ToListAsync();
             Assert.True(errors.Count == 0, string.Join("\n", errors));
+            await ReconTestSupport.SignOffAsync(db, runId);
             var res = await PayComponentNetPayDefectTests.Build(db, tenantId, "payroll.approve")
                 .Approve(runId, new PayrollDecisionRequest("F2"), CancellationToken.None);
             if (res is ObjectResult { StatusCode: >= 400 } bad)
@@ -555,8 +556,11 @@ public class PayComponentCatalogTests
         {
             var status = await db.PayrollRuns.AsNoTracking().Where(r => r.Id == runId).Select(r => r.Status).SingleAsync();
             if (status == "PendingFinanceReview")
+            {
+                await ReconTestSupport.SignOffAsync(db, runId);
                 await PayComponentNetPayDefectTests.Build(db, tenantId, "payroll.approve")
                     .Approve(runId, new PayrollDecisionRequest("F2"), CancellationToken.None);
+            }
         }
         await using (var db = _fx.CreateDb())
         {

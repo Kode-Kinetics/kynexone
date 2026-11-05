@@ -33,7 +33,7 @@ export function planTemplate(
   if (defaults.employmentType) want.employmentType = defaults.employmentType;
   if (defaults.contractType) want.contractType = defaults.contractType;
   if (defaults.workLocation) want.workLocation = defaults.workLocation;
-  if (typeof defaults.probationDays === 'number' && defaults.probationDays > 0 && form.startDate) want.probationEndDate = addDays(form.startDate, defaults.probationDays);
+  if (typeof defaults.probationDays === 'number' && defaults.probationDays > 0 && form.startDate && !form.probationWaived) want.probationEndDate = addDays(form.startDate, defaults.probationDays);
   if (defaults.managerRule === 'department-head' && departmentHeadId != null) want.managerId = String(departmentHeadId);
 
   const patch: Partial<HireForm> = {};

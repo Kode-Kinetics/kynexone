@@ -30,6 +30,12 @@ test.describe('CD26/CD31 contract end and probation', () => {
     expect(buildCreateRequest({ ...base, probationEndDate: '2027-01-30' }, ctx).probationEndDate).toBe('2027-01-30');
     expect(buildCreateRequest(base, ctx).probationEndDate).toBeUndefined();
   });
+  test('"No probation" sends the flag and never a probation date', () => {
+    const waived = buildCreateRequest({ ...base, probationWaived: true, probationEndDate: '2027-01-30' }, ctx);
+    expect(waived.probationWaived).toBe(true);
+    expect(waived.probationEndDate).toBeUndefined();
+    expect(buildCreateRequest({ ...base, probationEndDate: '2027-01-30' }, ctx).probationWaived).toBeUndefined();
+  });
 });
 
 test.describe('CD30 statutory flags are never set from typing', () => {

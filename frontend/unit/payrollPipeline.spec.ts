@@ -92,6 +92,42 @@ test.describe('payroll pipeline stages', () => {
     expect(done.next).toMatchObject({ kind: 'goto', label: 'approve', tab: 'approvals', disabled: false });
   });
 
+  test('the review stage reads who signed the reconciliation off, not "this device"', () => {
+    const m = derivePipeline(base({ status: 'Processed', reviewedAtUtc: '2026-11-02T09:15:00Z', reviewedByName: 'Layla Al-Harbi' }));
+    const review = m.stages.find(s => s.key === 'review')!;
+    expect(review.state).toBe('done');
+    expect(review.whenUtc).toBe('2026-11-02T09:15:00Z');
+    expect(review.detail).toEqual({ id: 'signed_off', name: 'Layla Al-Harbi' });
+  });
+
+  test('a review time with no signer still counts, with no name claimed', () => {
+    const m = derivePipeline(base({ status: 'Processed', reviewedAtUtc: '2026-11-02T09:15:00Z' }));
+    expect(m.stages.find(s => s.key === 'review')!.detail).toEqual({ id: 'signed_off', name: null });
+  });
+
+  test('a sign-off given where it is not required is still shown as the review, with its signer', () => {
+    const m = derivePipeline(base({ status: 'Processed', reviewApplicable: false, reviewedAtUtc: '2026-11-02T09:15:00Z', reviewedByName: 'Layla Al-Harbi' }));
+    const review = m.stages.find(s => s.key === 'review')!;
+    expect(review.state).toBe('done');
+    expect(review.detail).toEqual({ id: 'signed_off', name: 'Layla Al-Harbi' });
+    expect(m.focus).toBe('approved');
+  });
+
+  test('a run the server does not gate (off-cycle) has no review to wait for, and says so', () => {
+    const m = derivePipeline(base({ status: 'Processed', reviewApplicable: false }));
+    const review = m.stages.find(s => s.key === 'review')!;
+    expect(review.state).toBe('done');
+    expect(review.detail).toEqual({ id: 'review_not_required' });
+    expect(m.focus).toBe('approved');
+    expect(m.next).toMatchObject({ kind: 'goto', label: 'approve' });
+  });
+
+  test('the stage reason names the sign-off, not a button on this device', () => {
+    const open = derivePipeline(base({ status: 'Processed' }));
+    expect(open.stages.find(s => s.key === 'approved')!.reason).toEqual({ id: 'needs_review' });
+    expect(open.stages.find(s => s.key === 'review')!.detail).toBeNull();
+  });
+
   test('without approve permission the stage is blocked and the reason is spoken', () => {
     const m = derivePipeline(base({ status: 'Processed', reviewedAtUtc: 'x', can: { process: true, approve: false, lock: true } }));
     expect(state(m, 'approved')).toBe('blocked');

@@ -444,10 +444,11 @@ public class SelfieReviewFixesTests : PlatformTestBase
         var at = DateTime.UtcNow.AddDays(-1).ToString("yyyy-MM-ddTHH:mm:ssZ");
         var csv = $"employeeCode,punchTimestamp,punchDirection,location,method\n{w.Colleague.EmployeeCode},{at},In,HQ,Geofence\n";
 
-        var batch = await service.ImportCsvAsync(w.TenantId, new ImportAttendanceRequest("p.csv", csv), new RequestContext("127.0.0.1", "t", null, w.TenantId), default);
+        var batch = await service.ImportCsvAsync(w.TenantId, new ImportAttendanceRequest("p.csv", csv), AttendanceBulkAuthority.Unrestricted, new RequestContext("127.0.0.1", "t", null, w.TenantId), default);
 
         Assert.Equal((1, 0), (batch.FailedRows, batch.ImportedRows));
         Assert.Contains(w.Db.AttendanceImportErrors, e => e.ErrorMessage.Contains("can only be recorded by a punch from the KynexOne app"));
+        Assert.Empty(w.Db.AttendanceRawEvents);
     }
 
     // ── Item 10: geofence ───────────────────────────────────────────────────────────────────────────────────

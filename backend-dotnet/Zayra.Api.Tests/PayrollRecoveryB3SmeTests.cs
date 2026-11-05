@@ -288,6 +288,7 @@ public class PayrollRecoveryB3SmeTests
         (await Payroll(db, tenantId, Maker).GeneratePayslips(runId, CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, runId);
         (await Payroll(db, tenantId, Checker).Approve(
             runId, new PayrollDecisionRequest("approved", null, expectedOverriddenCount), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
@@ -839,6 +840,7 @@ public class PayrollRecoveryB3SmeTests
             .Should().BeEmpty("the override must survive a re-validate");
 
         // The approver must ACKNOWLEDGE the count — an override nobody counts is not a control.
+        await ReconTestSupport.SignOffAsync(db, f.Run.Id);
         var unacknowledged = await Payroll(db, tid, Checker).Approve(
             f.Run.Id, new PayrollDecisionRequest("go"), CancellationToken.None);
         unacknowledged.Should().BeOfType<ConflictObjectResult>();
@@ -969,6 +971,7 @@ public class PayrollRecoveryB3SmeTests
 
         (await Payroll(db, tid, Maker).Process(replacement.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, replacement.Id);
         (await Payroll(db, tid, Checker).Approve(replacement.Id, new PayrollDecisionRequest("ok"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();

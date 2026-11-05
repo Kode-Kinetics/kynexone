@@ -64,6 +64,7 @@ import {
   apiLogin,
 } from './helpers';
 import { mainContentLength } from './group-company/helpers';
+import { requestReconTransport, signOffReconciliation } from './bootstrap/reconSignoff';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -322,6 +323,14 @@ test.describe('Payroll — run to WPS file', () => {
           content(maker).getByRole('button', { name: 'Approve — Final' }),
           'a maker must never be offered the final approval on a Processed run',
         ).toHaveCount(0);
+
+        // The API holds Approve until the run's reconciliation is signed off. The maker (who neither created nor processed
+        // the run: the admin did) signs it through the API first; the maker-checker split on the approval itself is untouched.
+        const signerToken = await apiLogin(request, INTELLIFLOW_HR_MGR.email, INTELLIFLOW_HR_MGR.password, INTELLIFLOW_SLUG);
+        expect(
+          await signOffReconciliation(requestReconTransport(request, signerToken), runId),
+          'the run must carry a reconciliation sign-off before the maker approves it',
+        ).toBe('signed');
 
         await makerControl.click();
 
