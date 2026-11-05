@@ -26,6 +26,7 @@ import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
 import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
 import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
 import { useLiveGrades } from '../../hooks/useLiveGrades';
+import { designationChoices } from '../../lib/employeeDesignationChoices';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -110,8 +111,8 @@ export function EmployeeEditFlow({
 
   const selectedDepartment = useMemo(() => departments.find((item) => item.nameEn === draft.form.department || item.code === draft.form.department), [departments, draft.form.department]);
   const departmentDesignations = useMemo(
-    () => selectedDepartment ? designations.filter((item) => item.departmentId === selectedDepartment.id) : designations,
-    [designations, selectedDepartment],
+    () => designationChoices(designations, { companyId: employee.companyId, departmentId: selectedDepartment?.id }),
+    [designations, employee.companyId, selectedDepartment],
   );
   const selectedDesignation = useMemo(
     () => departmentDesignations.find((item) => item.titleEn === draft.form.designation || item.code === draft.form.designation),
