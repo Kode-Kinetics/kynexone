@@ -9,7 +9,7 @@ const view = (key: string, value: string | null, extra: object = {}) => ({
   key, value, isSet: value != null, warningCode: null, warning: null, acknowledged: false,
   acknowledgedAtUtc: null, acknowledgedBy: null, acknowledgementNote: null, ...extra,
 });
-const KEYS = ['rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit', 'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base'];
+const KEYS = ['rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit', 'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base', 'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required'];
 const rules = (overrides: Record<string, object> = {}, extra: object = {}) => ({
   companyId: 'fixture-company',
   rules: KEYS.map(key => (overrides[key] ?? view(key, null))),
@@ -154,3 +154,55 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 1000 }, { name: 
     expect(overflow).toBeLessThanOrEqual(1);
   });
 }
+
+test('lists the reconciliation rules, and saves the thresholds without any acknowledgement', async ({ page }) => {
+  const puts: unknown[] = [];
+  await open(page, rules({ recon_variance_pct: view('recon_variance_pct', '8') }));
+  await page.route('**/api/payroll/company-rules', async route => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    puts.push(route.request().postDataJSON());
+    return route.fulfill({ json: rules() });
+  });
+  await expect(panel(page).getByTestId('payroll-rule-recon_variance_pct')).toContainText('8% of the prior amount', { timeout: 30_000 });
+  await expect(panel(page).getByTestId('payroll-rule-recon_variance_min_amount')).toContainText('Platform default');
+  await expect(panel(page).getByTestId('payroll-rule-recon_signoff_required')).toContainText('Reconciliation sign-off before approval');
+  await panel(page).getByRole('button', { name: 'Edit payroll rules' }).click();
+  await editor(page).getByLabel('Variance that needs an explanation (%)').fill('0.05');
+  await editor(page).getByRole('button', { name: 'Save changes' }).click();
+  await expect(editor(page).getByText('Enter a percentage between 0.1 and 100.')).toBeVisible();
+  expect(puts).toEqual([]);
+  await editor(page).getByLabel('Variance that needs an explanation (%)').fill('10');
+  await editor(page).getByLabel('Smallest change that needs an explanation').fill('250');
+  await editor(page).getByLabel('Reason (needed if the change lowers pay)').fill('Agreed with finance');
+  await editor(page).getByRole('button', { name: 'Save changes' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Payroll rules saved.' })).toBeVisible();
+  expect(puts).toEqual([{
+    companyId: 'fixture-company',
+    changes: [{ key: 'recon_variance_pct', value: '10' }, { key: 'recon_variance_min_amount', value: '250' }],
+    acknowledge: false, note: 'Agreed with finance',
+  }]);
+});
+
+test('turning the reconciliation sign-off off needs the recorded acknowledgement and is sent with its warning code', async ({ page }) => {
+  const puts: unknown[] = [];
+  await open(page);
+  await page.route('**/api/payroll/company-rules', async route => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    puts.push(route.request().postDataJSON());
+    return route.fulfill({ json: rules() });
+  });
+  await panel(page).getByRole('button', { name: 'Edit payroll rules' }).click();
+  await editor(page).getByLabel('Reconciliation sign-off before approval').selectOption('false');
+  await expect(editor(page)).toContainText('without a recorded manpower and value reconciliation sign-off');
+  const save = editor(page).getByRole('button', { name: 'Save changes' });
+  await expect(save).toBeDisabled();
+  await editor(page).getByLabel(/I understand the effect of these values/).check();
+  await editor(page).getByLabel('Reason (required)').fill('Reviewed offline by finance');
+  await save.click();
+  await page.getByRole('button', { name: 'Confirm and save' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Payroll rules saved.' })).toBeVisible();
+  expect(puts).toEqual([{
+    companyId: 'fixture-company', changes: [{ key: 'recon_signoff_required', value: 'false' }], acknowledge: true,
+    note: 'Reviewed offline by finance', acknowledgedWarnings: ['recon_signoff_required:RECON_SIGNOFF_OFF'],
+  }]);
+});

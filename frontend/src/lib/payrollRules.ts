@@ -5,17 +5,23 @@
  */
 export type PayrollRuleKey =
   | 'rest_day_work_mode' | 'rest_day_multiplier' | 'holiday_multiplier' | 'leave_cashout_on_exit'
-  | 'leave_cashout_basis' | 'max_probation_days' | 'proration_basis' | 'absence_deduction_base';
+  | 'leave_cashout_basis' | 'max_probation_days' | 'proration_basis' | 'absence_deduction_base'
+  | 'recon_variance_pct' | 'recon_variance_min_amount' | 'recon_signoff_required';
 
 export const PAYROLL_RULE_KEYS: readonly PayrollRuleKey[] = [
   'rest_day_work_mode', 'rest_day_multiplier', 'holiday_multiplier', 'leave_cashout_on_exit',
   'leave_cashout_basis', 'max_probation_days', 'proration_basis', 'absence_deduction_base',
+  'recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required',
 ];
 
 export const OVERTIME_FLOOR = 1.5;
 export const PROBATION_STATUTORY_DAYS = 90;
 export const PROBATION_EXTENDED_DAYS = 180;
 export const PROBATION_MAX_DAYS = 365;
+/** Server limits for the reconciliation thresholds (CompanyPayrollRules.Evaluate). */
+export const RECON_VARIANCE_PCT_MIN = 0.1;
+export const RECON_VARIANCE_PCT_MAX = 100;
+export const RECON_MIN_AMOUNT_MAX = 1_000_000_000;
 
 export interface PayrollRuleView {
   key: PayrollRuleKey;
@@ -41,6 +47,7 @@ export type PayrollRuleErrors = Partial<Record<PayrollRuleKey, string>>;
 export const EMPTY_RULE_FORM: PayrollRuleForm = {
   rest_day_work_mode: '', rest_day_multiplier: '', holiday_multiplier: '', leave_cashout_on_exit: '',
   leave_cashout_basis: '', max_probation_days: '', proration_basis: '', absence_deduction_base: '',
+  recon_variance_pct: '', recon_variance_min_amount: '', recon_signoff_required: '',
 };
 
 export function ruleFormFromViews(views: readonly PayrollRuleView[]): PayrollRuleForm {
@@ -55,7 +62,11 @@ const ONE_OF: Partial<Record<PayrollRuleKey, string[]>> = {
   proration_basis: ['Calendar30', 'CalendarActual'],
   absence_deduction_base: ['Basic', 'Gross'],
   leave_cashout_on_exit: ['true', 'false'],
+  recon_signoff_required: ['true', 'false'],
 };
+
+/** A plain invariant-culture decimal, as the server parses it (digits with an optional fraction; no sign, exponent or grouping). */
+const DECIMAL = /^\d+(\.\d+)?$|^\.\d+$/;
 
 export function validateRuleForm(form: PayrollRuleForm): PayrollRuleErrors {
   const errors: PayrollRuleErrors = {};
@@ -71,16 +82,24 @@ export function validateRuleForm(form: PayrollRuleForm): PayrollRuleErrors {
     if (key === 'max_probation_days') {
       if (!/^\d+$/.test(value) || Number(value) > PROBATION_MAX_DAYS) errors[key] = 'Enter a whole number of days from 0 to 365.';
     }
+    if (key === 'recon_variance_pct') {
+      const n = Number(value);
+      if (!DECIMAL.test(value) || n < RECON_VARIANCE_PCT_MIN || n > RECON_VARIANCE_PCT_MAX) errors[key] = 'Enter a percentage between 0.1 and 100.';
+    }
+    if (key === 'recon_variance_min_amount') {
+      if (!DECIMAL.test(value) || Number(value) > RECON_MIN_AMOUNT_MAX) errors[key] = 'Enter an amount of zero or more.';
+    }
   }
   return errors;
 }
 
 /** The warning code for a value below a statutory minimum, or null. Assumes the value passed validation. */
-export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | null {
+export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | 'RECON_SIGNOFF_OFF' | null {
   const value = raw.trim();
   if (value === '') return null;
   if ((key === 'rest_day_multiplier' || key === 'holiday_multiplier') && Number(value) < OVERTIME_FLOOR) return 'BELOW_OVERTIME_FLOOR';
   if (key === 'leave_cashout_on_exit' && value === 'false') return 'LEAVE_CASHOUT_OFF';
+  if (key === 'recon_signoff_required' && value === 'false') return 'RECON_SIGNOFF_OFF';
   if (key === 'max_probation_days') {
     const days = Number(value);
     if (days > PROBATION_EXTENDED_DAYS) return 'PROBATION_OVER_180';

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  EMPTY_RULE_FORM, acknowledgedWarningCodes, effectiveFromOk, todayIso, ruleFormFromViews, ruleFormToChanges, validateRuleForm, warningFor, warningsForForm,
+  EMPTY_RULE_FORM, PAYROLL_RULE_KEYS, acknowledgedWarningCodes, effectiveFromOk, todayIso, ruleFormFromViews, ruleFormToChanges, validateRuleForm, warningFor, warningsForForm,
   type PayrollRuleView,
 } from '../src/lib/payrollRules';
 import { payrollRules } from '../src/i18n/payrollRules';
@@ -77,4 +77,31 @@ test('the acknowledgement echoes only the warnings of the rules being changed no
 test('the probation warning copy has an Arabic translation', () => {
   expect(payrollRules.ar['Keep this probation and save']).toBeTruthy();
   expect(payrollRules.ar['Probation longer than this company allows']).toBeTruthy();
+});
+
+test('the reconciliation rules are legal keys with the server limits: pct 0.1 to 100, minimum amount 0 or more, sign-off true or false', () => {
+  expect(PAYROLL_RULE_KEYS).toEqual(expect.arrayContaining(['recon_variance_pct', 'recon_variance_min_amount', 'recon_signoff_required']));
+  expect(validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_pct: '0.1', recon_variance_min_amount: '0', recon_signoff_required: 'true' })).toEqual({});
+  expect(validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_pct: '100', recon_variance_min_amount: '1000000000' })).toEqual({});
+  const errors = validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_pct: '0.05', recon_variance_min_amount: '-1', recon_signoff_required: 'maybe' });
+  expect(Object.keys(errors).sort()).toEqual(['recon_signoff_required', 'recon_variance_min_amount', 'recon_variance_pct']);
+  expect(validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_pct: '100.1' })).toHaveProperty('recon_variance_pct');
+  expect(validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_pct: 'abc' })).toHaveProperty('recon_variance_pct');
+  expect(validateRuleForm({ ...EMPTY_RULE_FORM, recon_variance_min_amount: '1000000001' })).toHaveProperty('recon_variance_min_amount');
+});
+
+test('turning the reconciliation sign-off off warns (recorded acknowledgement) and is echoed as key:CODE', () => {
+  expect(warningFor('recon_signoff_required', 'true')).toBeNull();
+  expect(warningFor('recon_signoff_required', 'false')).toBe('RECON_SIGNOFF_OFF');
+  expect(warningFor('recon_variance_pct', '5')).toBeNull();
+  const form = { ...EMPTY_RULE_FORM, recon_signoff_required: 'false' };
+  expect(acknowledgedWarningCodes(form, EMPTY_RULE_FORM)).toEqual(['recon_signoff_required:RECON_SIGNOFF_OFF']);
+});
+
+test('the reconciliation rule copy has an Arabic translation', () => {
+  for (const key of [
+    'Variance that needs an explanation (%)', 'Smallest change that needs an explanation', 'Reconciliation sign-off before approval',
+    'Require the sign-off', 'Do not require the sign-off',
+    'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
+  ]) expect(payrollRules.ar[key], key).toBeTruthy();
 });
