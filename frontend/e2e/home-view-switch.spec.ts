@@ -18,6 +18,8 @@ const BASE_USER = {
 };
 const DUAL = { ...BASE_USER, roles: ['Employee', 'HR Manager'], employeeId: 7, permissions: ['ess.read', 'dashboard.read', 'employees.read', 'approvals.read'] };
 const ADMIN_NO_RECORD = { ...BASE_USER, roles: ['Admin'], permissions: ['ess.read', 'dashboard.read', 'employees.read'] };
+const ESS_ONLY_PORTAL = { ...DUAL, accessMode: 'ESSOnly' };
+const NO_DASHBOARD_PERMISSION = { ...DUAL, permissions: ['ess.read', 'employees.read'] };
 const COMPANY_ONLY = { ...BASE_USER, roles: ['Payroll Manager'], employeeId: 7, permissions: ['dashboard.read', 'employees.read'] };
 
 const ESS_DASHBOARD = {
@@ -119,6 +121,19 @@ test.describe('Home view switch', () => {
   test('a workforce-dashboard login without self-service sees no switch', async ({ page }) => {
     await open(page, COMPANY_ONLY);
     await expect(companyHeading(page)).toBeVisible({ timeout: 30_000 });
+    await expect(tablist(page)).toHaveCount(0);
+  });
+
+  test('a self-service-only portal login gets no switch even if a role grants the dashboard', async ({ page }) => {
+    await open(page, ESS_ONLY_PORTAL);
+    await expect(myDayHeading(page)).toBeVisible({ timeout: 30_000 });
+    await expect(companyHeading(page)).toHaveCount(0);
+    await expect(tablist(page)).toHaveCount(0);
+  });
+
+  test('without the dashboard permission there is no switch (the API would refuse the Company view)', async ({ page }) => {
+    await open(page, NO_DASHBOARD_PERMISSION);
+    await page.waitForTimeout(2500);
     await expect(tablist(page)).toHaveCount(0);
   });
 
