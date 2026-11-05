@@ -95,7 +95,9 @@ jobs:
           name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/backend-release
           if-no-files-found: error
-          retention-days: 3
+          # Production approval can legitimately wait through a long weekend; keep the exact
+          # attempt artifact available without retaining it for the longer test-evidence window.
+          retention-days: 7
 
   # ── Backend: fast unit lane (no Docker image pulls) ────────────────────────────
   backend-unit:

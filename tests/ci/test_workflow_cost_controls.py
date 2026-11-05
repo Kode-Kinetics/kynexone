@@ -36,6 +36,9 @@ class WorkflowCostControlTests(unittest.TestCase):
                 block = self.job_block(CI, job)
                 self.assertIn("backend-build-artifact.py restore", block)
 
+        build = self.job_block(CI, "backend-build")
+        self.assertIn("retention-days: 7", build)
+
     def test_codeql_cancels_superseded_prs_on_standard_runner(self):
         self.assertIn("runs-on: ubuntu-24.04", CODEQL)
         self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", CODEQL)
