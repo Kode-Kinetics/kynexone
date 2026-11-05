@@ -54,7 +54,7 @@ export function AttendanceHeatmap({ data }: { data: DashboardFull }) {
       </header>
 
       {!anyData ? (
-        <p className="rounded-xl border border-dashed border-[color:var(--wg-line-strong)] px-4 py-8 text-center text-body-sm text-slate-700 dark:text-slate-300">
+        <p className="rounded-xl border border-dashed border-[color:var(--wg-line-strong)] px-4 py-3 text-body-sm text-slate-700 dark:text-slate-300">
           {t('No attendance has been captured for any department in the last {days}. Once punches arrive from devices or the app, each department fills in here day by day.', { days: t('{count} days', { count: days.length }) })}
         </p>
       ) : asTable ? (
