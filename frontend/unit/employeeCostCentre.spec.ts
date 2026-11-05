@@ -7,10 +7,12 @@ import {
   NO_COST_CENTRE,
   costCentreErrorKind,
   costCentreOptions,
+  costCentreRefusalKey,
   createCostCentreFields,
   editCostCentreNeedsReason,
   editCostCentrePatch,
   needsDecision,
+  previewResolution,
   type EditCostCentreInput,
   isOverride,
   overridePatch,
@@ -384,5 +386,48 @@ test.describe('the server-resolved attribution wins over the inference when the 
 
   test('without it (an older response) the inference is unchanged', () => {
     expect(resolveCostCentre(base())).toMatchObject({ kind: 'parentDepartment', costCentreId: 'admin' });
+  });
+});
+
+test.describe('previewResolution: the preview endpoint\'s answer in the screen\'s terms', () => {
+  const dto = (over: Record<string, unknown>) => ({ costCentreId: 'hr', code: 'CC-HR', nameEn: 'Human Resources', nameAr: 'الموارد البشرية', source: 'Department', sourceName: 'Human Resources', sourceNameAr: 'الموارد البشرية', level: 'department', isOverride: false, invalidReason: null, ...over });
+
+  test('each source maps to its kind, with the source name in the reader\'s language', () => {
+    expect(previewResolution(dto({}), 'en')).toEqual({ kind: 'department', costCentreId: 'hr', sourceName: 'Human Resources' });
+    expect(previewResolution(dto({}), 'ar')).toEqual({ kind: 'department', costCentreId: 'hr', sourceName: 'الموارد البشرية' });
+    expect(previewResolution(dto({ sourceNameAr: null }), 'ar')).toMatchObject({ sourceName: 'Human Resources' });
+    expect(previewResolution(dto({ source: 'ParentDepartment', level: 'parentDepartment' }), 'en')).toMatchObject({ kind: 'parentDepartment' });
+    expect(previewResolution(dto({ source: 'Position', level: 'position', sourceName: 'Analyst' }), 'en')).toMatchObject({ kind: 'position', sourceName: 'Analyst' });
+    expect(previewResolution(dto({ source: 'CompanyDefault', level: 'company', sourceName: null }), 'en')).toEqual({ kind: 'companyDefault', costCentreId: 'hr' });
+    expect(previewResolution(dto({ source: 'Employee', level: 'employee', isOverride: true }), 'en')).toEqual({ kind: 'employee', costCentreId: 'hr' });
+  });
+
+  test('None is none; an invalid reason is invalid at its level and never carries a code the server did not send', () => {
+    expect(previewResolution(dto({ costCentreId: null, code: null, source: 'None', level: null }), 'en')).toEqual({ kind: 'none', costCentreId: null });
+    expect(previewResolution(dto({ costCentreId: null, code: null, nameEn: null, source: 'None', level: null, invalidReason: 'employee_cost_centre_invalid' }), 'en'))
+      .toEqual({ kind: 'invalid', costCentreId: null, level: 'employee', code: '' });
+    expect(previewResolution(dto({ costCentreId: null, code: 'OLD', source: 'Department', level: 'department', invalidReason: 'department_cost_centre_invalid' }), 'en'))
+      .toEqual({ kind: 'invalid', costCentreId: null, level: 'department', code: 'OLD' });
+    expect(previewResolution(dto({ costCentreId: null, code: null, source: 'None', level: null, invalidReason: 'parent_department_cost_centre_invalid' }), 'en')).toMatchObject({ level: 'parentDepartment' });
+    expect(previewResolution(dto({ costCentreId: null, code: null, source: 'None', level: null, invalidReason: 'company_cost_centre_invalid' }), 'en')).toMatchObject({ level: 'company' });
+  });
+});
+
+test.describe('costCentreRefusalKey: every cost-centre refusal in words, by code', () => {
+  const err = (status: number, code: string) => ({ response: { status, data: { error: code, message: 'server words' } } });
+  test('each code has its own sentence', () => {
+    expect(costCentreRefusalKey(err(422, 'cost_centre_inactive'))).toBe('This cost centre is inactive. Choose an active one.');
+    expect(costCentreRefusalKey(err(422, 'cost_centre_other_company'))).toBe('This cost centre belongs to another company. Choose one of this company’s cost centres.');
+    expect(costCentreRefusalKey(err(422, 'cost_centre_not_found'))).toBe('This cost centre no longer exists. Choose another.');
+    expect(costCentreRefusalKey(err(422, 'cost_centre_reason_required'))).toBe('Enter a reason for this change.');
+    expect(costCentreRefusalKey(err(422, 'cost_centre_decision_required'))).toBe('Choose whether to keep the override or follow the new department.');
+    expect(costCentreRefusalKey(err(409, 'cost_centre_state_changed'))).toMatch(/^Someone changed/);
+    expect(costCentreRefusalKey(err(422, 'reason_invalid_characters'))).toMatch(/not allowed/);
+    expect(costCentreRefusalKey(err(403, 'x'))).toBe('Only HR managers and admins can change this.');
+  });
+  test('anything else is left to the server sentence', () => {
+    expect(costCentreRefusalKey(err(409, 'locked_into_approved_run'))).toBeNull();
+    expect(costCentreRefusalKey(err(422, 'validation_failed'))).toBeNull();
+    expect(costCentreRefusalKey(new Error('network'))).toBeNull();
   });
 });

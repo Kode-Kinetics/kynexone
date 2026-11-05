@@ -49,7 +49,7 @@ function inlineEntries(): Record<'en' | 'ar', Record<string, string>> {
 }
 
 // Older catalogs already disagree with each other in places; this guard is for the catalogs below and any added to the list.
-const OWNED = ['onboardingP2.ts:', 'onboardingP3.ts:', 'onboardingP4.ts:'];
+const OWNED = ['onboardingP2.ts:', 'onboardingP3.ts:', 'onboardingP4.ts:', 'employeeCostCentreEdit.ts:'];
 
 test('an onboarding catalog never redefines a key another catalog or translations.ts already defines with different wording', async () => {
   const cats = await catalogs();

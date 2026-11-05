@@ -1,4 +1,5 @@
 import { apiErrorCode } from './glCostAccounting';
+import { msg } from '../i18n/translations';
 
 /**
  * Cost accounting v1 (WP-F), screen 6 and AM-30: where an employee's cost centre comes from, and the request shapes that
@@ -113,6 +114,36 @@ function inferCostCentre(input: ResolveInput, options: { ignoreOverride?: boolea
   return { kind: 'none', costCentreId: null };
 }
 
+/** The preview endpoint's DTO (api/employees EmployeeCostCentrePreview), restated here so this file stays free of the API client. */
+export interface PreviewLike {
+  costCentreId: string | null;
+  code: string | null;
+  source: string;
+  sourceName: string | null;
+  sourceNameAr: string | null;
+  level: string | null;
+  invalidReason: string | null;
+}
+
+const LEVEL_OF_REASON: Array<[string, SourceLevel]> = [
+  ['employee_', 'employee'], ['position_', 'position'], ['parent_department_', 'parentDepartment'], ['parentdepartment_', 'parentDepartment'],
+  ['department_', 'department'], ['company_', 'company'],
+];
+const LEVELS: ReadonlySet<string> = new Set(['employee', 'position', 'department', 'parentDepartment', 'company']);
+
+/** The preview endpoint's answer in the screen's terms. An unusable cost centre is `invalid` at its level, with only the code the server sent. */
+export function previewResolution(dto: PreviewLike, locale: string): Resolution {
+  if (dto.invalidReason) {
+    const reason = dto.invalidReason.toLowerCase();
+    const level = dto.level && LEVELS.has(dto.level) ? dto.level as SourceLevel : LEVEL_OF_REASON.find(([prefix]) => reason.startsWith(prefix))?.[1] ?? 'company';
+    return { kind: 'invalid', costCentreId: null, level, code: dto.code ?? '' };
+  }
+  const kind = KIND_OF_SOURCE[dto.source];
+  if (!kind || !dto.costCentreId) return { kind: 'none', costCentreId: null };
+  const sourceName = (locale === 'ar' && dto.sourceNameAr ? dto.sourceNameAr : dto.sourceName) ?? undefined;
+  return sourceName && kind !== 'employee' && kind !== 'companyDefault' ? { kind, costCentreId: dto.costCentreId, sourceName } : { kind, costCentreId: dto.costCentreId };
+}
+
 // ── Request shapes (AM-30) ───────────────────────────────────────────────────
 
 /** PUT /api/employees/{id}: setting or re-pointing the override. The reason is required (M-10) and audited. */
@@ -160,6 +191,29 @@ export function costCentreErrorKind(err: unknown): CostCentreErrorKind {
   if (status === 409 && code === 'cost_centre_state_changed') return 'stale';
   if (status === 403) return 'forbidden';
   return 'other';
+}
+
+const REFUSAL_BY_CODE: Record<string, string> = {
+  cost_centre_reason_required: msg('Enter a reason for this change.'),
+  reason_invalid_characters: msg('The reason contains characters that are not allowed. Remove them and try again.'),
+  cost_centre_decision_required: msg('Choose whether to keep the override or follow the new department.'),
+  cost_centre_decision_invalid: msg('Choose whether to keep the override or follow the new department.'),
+  cost_centre_inactive: msg('This cost centre is inactive. Choose an active one.'),
+  cost_centre_other_company: msg('This cost centre belongs to another company. Choose one of this company’s cost centres.'),
+  cost_centre_not_found: msg('This cost centre no longer exists. Choose another.'),
+  cost_centre_state_changed: msg('Someone changed this employee’s cost centre since you opened the form. Reload the employee and try again.'),
+};
+
+/**
+ * The words for a cost-centre refusal, by the server's code (a translation key; the caller runs it through t). Null when the
+ * code is not a cost-centre one, so the caller falls back to the server's own sentence. 403 is the permission sentence.
+ */
+export function costCentreRefusalKey(err: unknown): string | null {
+  const status = (err as { response?: { status?: number } } | null | undefined)?.response?.status;
+  const code = apiErrorCode(err);
+  if (code && REFUSAL_BY_CODE[code] && (status === 422 || status === 409 || status === 400)) return REFUSAL_BY_CODE[code];
+  if (status === 403) return msg('Only HR managers and admins can change this.');
+  return null;
 }
 
 // ── The edit flow (Wave A: D2 keep-or-follow on a transfer, D4 the dropdown) ─────────────
