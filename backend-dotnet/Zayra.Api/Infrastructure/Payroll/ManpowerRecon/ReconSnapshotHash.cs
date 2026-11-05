@@ -28,14 +28,25 @@ public static class ReconSnapshotHash
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
     }
 
-    /// <summary>The summary stored with a sign-off: the bridge as reviewed (with its stamp), with no sign-off and no explanation text, and no pay by employee.</summary>
+    /// <summary>The summary stored with a sign-off: the bridge as reviewed (with its stamp), with no sign-off, no explanation text, no pay by employee and no employee names.</summary>
     public static string SummaryJson(ReconDto dto) => Summary(dto).ToJsonString(Web);
 
     private static JsonObject Summary(ReconDto dto)
     {
         var node = JsonSerializer.SerializeToNode(dto with { Signoff = null }, Web)!.AsObject();
         StripExplanations(node);
+        StripNames(node);
         return node;
+    }
+
+    /// <summary>
+    /// The kept record names nobody: a leaver without a final settlement is held by id and code, and the live reading is where
+    /// the name is shown. Because the fingerprint is computed from the same summary, a name is not part of what was reviewed.
+    /// </summary>
+    private static void StripNames(JsonObject summary)
+    {
+        if (summary["finalSettlement"]?["leaversWithoutFs"] is JsonArray leavers)
+            foreach (var leaver in leavers.OfType<JsonObject>()) leaver.Remove("employeeName");
     }
 
     private static void StripExplanations(JsonNode? node)
