@@ -287,4 +287,83 @@ public sealed class AttendancePunchCsvTests
         file.Rows.Should().OnlyContain(r => r.Error == null);
         file.Rows.Select(r => r.PunchUtc!.Value.Hour).Should().Equal(5, 14);
     }
+
+    // ── header aliases are ranked by specificity ─────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("code,employeeCode,punchTimestamp,type,punchDirection", "WRONG,E-1,2026-06-16 09:00,Late,In")]
+    [InlineData("type,punchDirection,Employee Code,code,timestamp", "Late,In,E-1,WRONG,2026-06-16 09:00")]
+    [InlineData("employeeCode,code,punchTimestamp,punchDirection,type", "E-1,WRONG,2026-06-16 09:00,In,Late")]
+    [InlineData("code,empcode,datetime,punch time,timestamp,direction,in/out", "WRONG,E-1,NOPE,NOPE,2026-06-16 09:00,In,Late")]
+    public void AnExactColumnName_BeatsAGenericAlias_WhateverTheColumnOrder(string header, string data)
+    {
+        var row = Only(header + "\n" + data + "\n");
+
+        row.Error.Should().BeNull();
+        (row.EmployeeCode, row.Direction).Should().Be(("E-1", "In"));
+    }
+
+    // ── dates that cannot be real ────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("0001-01-01 08:00")]
+    [InlineData("0001-01-01T00:00:00Z")]
+    [InlineData("0001-01-01T00:00:00+03:00")]
+    [InlineData("1999-12-31 23:59")]
+    [InlineData("9999-12-31 23:59")]
+    [InlineData("9999-12-31T23:59:59-14:00")]
+    [InlineData("31/12/1999 08:00")]
+    public void ImplausibleYears_AreRefused_WithoutThrowing(string text)
+    {
+        var act = () => AttendancePunchCsv.TryParseTimestamp(text, Riyadh, out _, out _);
+
+        act.Should().NotThrow();
+        AttendancePunchCsv.TryParseTimestamp(text, Riyadh, out _, out var error).Should().BeFalse();
+        error.Should().Contain("year");
+    }
+
+    // ── row and echo limits ──────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ARowOver2000Characters_OrWithMoreThan20Columns_IsARowError_AndTheNextRowIsStillRead()
+    {
+        var longRow = "E-1,2026-06-16 09:00,In," + new string('x', 2000);
+        var wideRow = string.Join(",", Enumerable.Range(0, 21).Select(i => i switch { 0 => "E-2", 1 => "2026-06-16 09:00", 2 => "In", _ => "c" }));
+
+        var file = AttendancePunchCsv.Parse(longRow + "\n" + wideRow + "\nE-3,2026-06-16 09:00,In\n", Riyadh);
+
+        file.Rows[0].Error.Should().Contain("2,000");
+        file.Rows[1].Error.Should().Contain("20");
+        file.Rows[2].Error.Should().BeNull();
+        file.Rows.Select(r => r.RowNumber).Should().Equal(1, 2, 3);
+    }
+
+    [Fact]
+    public void ARowOfExactly2000CharactersAnd20Columns_IsFine()
+    {
+        var cells = new[] { "E-1", "2026-06-16 09:00", "In" }.Concat(Enumerable.Repeat("c", 16)).Concat(new[] { "" }).ToArray();   // 20 columns
+        var line = string.Join(",", cells);
+        line += new string('x', 2000 - line.Length);                                                                              // 2000 chars
+
+        var row = AttendancePunchCsv.Parse(line + "\n", Riyadh).Rows.Single();
+
+        line.Length.Should().Be(2000);
+        row.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public void EchoedInput_InAnErrorMessage_IsCappedAt60Characters()
+    {
+        var junk = new string('Z', 300);
+
+        var file = AttendancePunchCsv.Parse(
+            $"employeeCode,punchTimestamp,punchDirection\nE-1,{junk},In\nE-2,2026-06-16 09:00,{junk}\n", Riyadh);
+
+        foreach (var row in file.Rows)
+        {
+            row.Error.Should().NotContain(new string('Z', 61));
+            row.Error!.Length.Should().BeLessThan(400);
+            row.Error.Should().Contain(new string('Z', 60));
+        }
+    }
 }

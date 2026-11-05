@@ -42,14 +42,23 @@ public static class AttendancePunchCsv
     public const string ColumnLocation = "location";
     public const string ColumnMethod = "method";
 
-    private static readonly Dictionary<string, string> Aliases = new(StringComparer.Ordinal)
+    // name -> (canonical column, rank). A LOWER rank is a more specific name: when a header has both "code" and "employeeCode" the
+    // specific one wins whatever the column order, and the generic one is then just an extra column.
+    private static readonly Dictionary<string, (string Column, int Rank)> Aliases = new(StringComparer.Ordinal)
     {
-        ["employeecode"] = ColumnCode, ["empcode"] = ColumnCode, ["code"] = ColumnCode,
-        ["punchtimestamp"] = ColumnTimestamp, ["timestamp"] = ColumnTimestamp, ["datetime"] = ColumnTimestamp, ["punchtime"] = ColumnTimestamp,
-        ["punchdirection"] = ColumnDirection, ["direction"] = ColumnDirection, ["type"] = ColumnDirection, ["in/out"] = ColumnDirection,
-        ["location"] = ColumnLocation,
-        ["method"] = ColumnMethod, ["verificationmethod"] = ColumnMethod,
+        ["employeecode"] = (ColumnCode, 0), ["empcode"] = (ColumnCode, 1), ["code"] = (ColumnCode, 2),
+        ["punchtimestamp"] = (ColumnTimestamp, 0), ["timestamp"] = (ColumnTimestamp, 1), ["datetime"] = (ColumnTimestamp, 2), ["punchtime"] = (ColumnTimestamp, 3),
+        ["punchdirection"] = (ColumnDirection, 0), ["direction"] = (ColumnDirection, 1), ["type"] = (ColumnDirection, 2), ["in/out"] = (ColumnDirection, 3),
+        ["location"] = (ColumnLocation, 0),
+        ["verificationmethod"] = (ColumnMethod, 0), ["method"] = (ColumnMethod, 1),
     };
+
+    public const int MaxRowLength = 2000;
+    public const int MaxColumns = 20;
+    /// <summary>How much of a user's own text an error message may echo back.</summary>
+    internal const int MaxEchoLength = 60;
+
+    internal static string Echo(string text) => text.Length <= MaxEchoLength ? text : text[..MaxEchoLength] + "…";
 
     private static readonly string[] Positional = { ColumnCode, ColumnTimestamp, ColumnDirection, ColumnLocation, ColumnMethod };
 
@@ -99,9 +108,13 @@ public static class AttendancePunchCsv
         ParsedPunchRow Fail(string column, string message, IReadOnlyList<string>? cells = null) =>
             new(number, text, cells ?? Array.Empty<string>(), string.Empty, null, null, string.Empty, string.Empty, column, message);
 
+        if (text.Length > MaxRowLength)
+            return Fail(ColumnCode, $"This row is longer than {MaxRowLength.ToString("N0", CultureInfo.InvariantCulture)} characters, which a punch row never needs. Check for a missing line break or an unclosed quote.");
         if (text.Count(c => c == '"') % 2 == 1)
             return Fail(ColumnCode, "This row has a line break inside a quoted value, which a punch file can't carry. Put each punch on one line.");
         var cells = Csv.SplitRow(text, delimiter);
+        if (cells.Count > MaxColumns)
+            return Fail(ColumnCode, $"This row has {cells.Count} values; a punch row has at most {MaxColumns} columns.", Array.Empty<string>());
         if (header is not null && cells.Count > width)
             return Fail(ColumnCode, $"This row has {cells.Count} values but the header has {width}. If a value contains a comma, put it in quotes.", cells);
 
@@ -122,7 +135,7 @@ public static class AttendancePunchCsv
         if (directionText.Length == 0) return Fail(ColumnDirection, "The punch direction is missing. Use In, Out, BreakIn or BreakOut.", cells);
         var direction = ParseDirection(directionText);
         if (direction is null)
-            return Fail(ColumnDirection, $"'{directionText}' is not a punch direction. Use In, Out, BreakIn or BreakOut.", cells);
+            return Fail(ColumnDirection, $"'{Echo(directionText)}' is not a punch direction. Use In, Out, BreakIn or BreakOut.", cells);
 
         return new ParsedPunchRow(number, text, cells, code, utc, direction, Cell(ColumnLocation), Cell(ColumnMethod), null, null);
     }
@@ -131,10 +144,12 @@ public static class AttendancePunchCsv
     /// recognised column name).</summary>
     private static Dictionary<string, int>? ReadHeader(IReadOnlyList<string> cells)
     {
-        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        var best = new Dictionary<string, (int Index, int Rank)>(StringComparer.Ordinal);
         for (var i = 0; i < cells.Count; i++)
-            if (Aliases.TryGetValue(NormaliseName(cells[i]), out var column)) map.TryAdd(column, i);
-        return map.Count == 0 ? null : map;
+            if (Aliases.TryGetValue(NormaliseName(cells[i]), out var alias)
+                && (!best.TryGetValue(alias.Column, out var held) || alias.Rank < held.Rank))
+                best[alias.Column] = (i, alias.Rank);
+        return best.Count == 0 ? null : best.ToDictionary(kv => kv.Key, kv => kv.Value.Index, StringComparer.Ordinal);
     }
 
     /// <summary>Comma, semicolon or tab, whichever the first line uses most outside quotes (comma on a tie).</summary>
@@ -195,6 +210,12 @@ public static class AttendancePunchCsv
         utc = default;
         error = null;
         text = text.Trim();
+        // A year that cannot be a real punch date is refused BEFORE any date maths (a year-1 date underflows the work-date window).
+        if (PeekYear(text) is { } year && (year < MinYear || year > MaxYear))
+        {
+            error = $"The year {year} is not a plausible punch date. Punches are dated between {MinYear} and {MaxYear}.";
+            return false;
+        }
         if (IsExplicitZone(text))
         {
             if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.None, out var instant))
@@ -208,14 +229,36 @@ public static class AttendancePunchCsv
             local = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
             if (timeZone.IsInvalidTime(local))
             {
-                error = $"{text} does not exist in {timeZone.Id} (the clocks change at that time). Use a time just before or after it.";
+                error = $"{Echo(text)} does not exist in {timeZone.Id} (the clocks change at that time). Use a time just before or after it.";
                 return false;
             }
-            utc = DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(local, timeZone), DateTimeKind.Utc);
+            try { utc = DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(local, timeZone), DateTimeKind.Utc); }
+            catch (ArgumentException)
+            {
+                error = $"{Echo(text)} is outside the dates a punch can have.";
+                return false;
+            }
             return true;
         }
-        error = $"'{text}' is not a date and time this file can read. Write year-month-day with a 24-hour time, for example 2026-06-16 09:00, "
+        error = $"'{Echo(text)}' is not a date and time this file can read. Write year-month-day with a 24-hour time, for example 2026-06-16 09:00, "
               + "or day/month/year such as 16/06/2026 09:00.";
         return false;
+    }
+
+    private const int MinYear = 2000;
+    private const int MaxYear = 2100;
+
+    // The year as written, for either accepted shape (2026-06-16 ... or 16/06/2026 ...).
+    private static readonly Regex YearShape = new(@"^(?:(\d{4})-|\d{1,2}[/-]\d{1,2}[/-](\d{4}))", RegexOptions.Compiled | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+
+    private static int? PeekYear(string text)
+    {
+        try
+        {
+            var m = YearShape.Match(text);
+            if (!m.Success) return null;
+            return int.Parse(m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value, CultureInfo.InvariantCulture);
+        }
+        catch (RegexMatchTimeoutException) { return null; }
     }
 }
