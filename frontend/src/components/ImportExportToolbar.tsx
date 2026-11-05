@@ -278,6 +278,10 @@ export interface ImportExportToolbarProps {
    * permission key, e.g. `employees.bulk_import`). Defaults to true.
    */
   canImport?: boolean;
+  /** When set, every button stays visible but disabled, with this sentence as its tooltip (the person lacks the role or permission). */
+  blockedReason?: string;
+  /** Blocks only Import CSV (a write) while Export and the template, which are reads, stay available. Falls back to `blockedReason`. */
+  importBlockedReason?: string;
   /**
    * Opt-in: when provided, importing runs a pre-commit dry-run and a persistent results view
    * instead of the 5-second toast. Importers that omit this keep the original toast flow.
@@ -386,6 +390,8 @@ export function ImportExportToolbar({
   onDownloadTemplate,
   onImport,
   canImport = true,
+  blockedReason,
+  importBlockedReason,
   onPreview,
   onViewIncomplete,
   importHelp,
@@ -585,9 +591,9 @@ export function ImportExportToolbar({
         <button
           type="button"
           className={btnOutline}
-          disabled={exporting}
+          disabled={exporting || !!blockedReason}
           onClick={handleExport}
-          title={t('Export {entity} as CSV', { entity: t(entityName) })}
+          title={blockedReason ?? t('Export {entity} as CSV', { entity: t(entityName) })}
         >
           <Download className="h-3.5 w-3.5" />
           {exporting ? t('Exporting…') : t('Export')}
@@ -598,9 +604,9 @@ export function ImportExportToolbar({
       <button
         type="button"
         className={btnOutline}
-        disabled={templating}
+        disabled={templating || !!blockedReason}
         onClick={handleTemplate}
-        title={importHelp ? `${t('Download a blank CSV import template')}. ${t(importHelp)}` : t('Download a blank CSV import template')}
+        title={blockedReason ?? (importHelp ? `${t('Download a blank CSV import template')}. ${t(importHelp)}` : t('Download a blank CSV import template'))}
       >
         <FileUp className="h-3.5 w-3.5" />
         {templating ? t('Downloading…') : t('CSV import template')}
@@ -609,9 +615,9 @@ export function ImportExportToolbar({
       <button
         type="button"
         className={btnOutline}
-        disabled={importing || previewing}
+        disabled={importing || previewing || !!(importBlockedReason ?? blockedReason)}
         onClick={() => fileInputRef.current?.click()}
-        title={t('Import {entity} from CSV', { entity: t(entityName) })}
+        title={(importBlockedReason ?? blockedReason) ?? t('Import {entity} from CSV', { entity: t(entityName) })}
       >
         <Upload className="h-3.5 w-3.5" />
         {importing ? t('Importing…') : previewing ? t('Checking…') : t('Import CSV')}
