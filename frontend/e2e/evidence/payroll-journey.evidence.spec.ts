@@ -42,6 +42,7 @@ import type { SignedInPersona } from './fixture';
 import {
   INTELLIFLOW_ADMIN, INTELLIFLOW_FINANCE, INTELLIFLOW_HR_MGR, INTELLIFLOW_SLUG,
 } from '../world';
+import { signOffReconciliation, type ReconTransport } from '../bootstrap/reconSignoff';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -607,6 +608,13 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
             content(maker.page).getByRole('button', { name: 'Approve — Final' }),
             'a maker must never be offered the final approval on a Processed run',
           ).toHaveCount(0);
+          // The API holds Approve until the run's reconciliation is signed off. The maker, who neither created nor processed
+          // the run (the admin did), signs it through the API first; the maker-checker split on the approval itself is untouched.
+          const asMaker: ReconTransport = async (method, path, body) => {
+            const r = await ctx.api(method, path, { token: maker.token, data: body, recordId: runId });
+            return { status: r.status, body: r.json, text: r.text };
+          };
+          expect(await signOffReconciliation(asMaker, runId), 'the run must carry a reconciliation sign-off before the maker approves it').toBe('signed');
           await content(maker.page).getByRole('button', { name: 'Approve → Send to Finance' }).click();
           await expect(
             approvalCard(maker.page).getByText('Pending finance review', { exact: true }),

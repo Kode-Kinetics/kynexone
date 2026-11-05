@@ -28,6 +28,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { saudiNationalId, saudiIqama } from './saudiIds';
 import { ensurePayApprover, type PayApprover } from './payApprover';
+import { fetchReconTransport, signOffReconciliation } from './reconSignoff';
 import { assertDisposableHost } from '../disposable-host.guard';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import {
@@ -1325,6 +1326,15 @@ async function ensurePayrollRuns(
   const makerToken = await requireTenantLogin(maker, fixture.slug);
   const checkerToken = await requireTenantLogin(checker, fixture.slug);
   const decision = { comments: 'e2e fixture world bootstrap', expectedExcludedCount: 0 };
+
+  // The API holds Approve until the run's reconciliation is signed off. The maker (an HR Manager, who neither created nor
+  // processed the run: the admin did) signs it, then approves; the maker-checker split on the approval itself is untouched.
+  try {
+    await signOffReconciliation(fetchReconTransport(API_BASE, makerToken), leadId);
+  } catch (error) {
+    console.log(`[bootstrap] ${fixture.slug}: the ${year}-${month} run's reconciliation was not signed off: ${(error as Error).message.slice(0, 300)}`);
+    return `${created.length} run(s) created; lead run stopped before sign-off`;
+  }
 
   const makerApproval = await call('POST', `/api/payroll/runs/${leadId}/approve`, { token: makerToken, body: decision });
   const checkerApproval = makerApproval.status === 200

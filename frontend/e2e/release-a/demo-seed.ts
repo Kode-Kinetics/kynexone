@@ -30,6 +30,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { collectAllPages, pageItems, pageTotal } from '../paging';
 import { isPrivateHost } from '../preflight/rules';
+import { fetchReconTransport, signOffReconciliation } from '../bootstrap/reconSignoff';
 import {
   ASIF_ABSENCE_DATE, ASIF_LOAN, ASIF_TRAFFIC_FINE, COMPANIES, EMPLOYEES, ENTITLEMENT_MATRIX, GO_LIVE_CUTOVER,
   GRADES, GRADE_LOAN_LIMITS, LOAN_TYPES, MOHAMMED_DEPENDANTS, OVERTIME_POLICY, PAYROLL_MONTHS, PERSONAS, TENANT,
@@ -909,7 +910,11 @@ async function ensurePayroll(companyIds: Record<CompanyKey, string>, creds: Cred
           ok(res, `${label}: queue processing`, [202]);
           await awaitRunProcessed(id, payroll, label);
         }
-        else if (status === 'Processed') res = await call('POST', `/api/payroll/runs/${id}/approve`, { token: hr, body: { notes: 'Reviewed by HR', expectedExcludedCount: 0 } });
+        else if (status === 'Processed') {
+          // The API holds Approve until the reconciliation is signed off. HR neither created nor processed the run, so HR signs it.
+          await signOffReconciliation(fetchReconTransport(API_BASE, hr), id);
+          res = await call('POST', `/api/payroll/runs/${id}/approve`, { token: hr, body: { notes: 'Reviewed by HR', expectedExcludedCount: 0 } });
+        }
         else if (status === 'PendingFinanceReview') res = await call('POST', `/api/payroll/runs/${id}/approve`, { token: finance, body: { notes: 'Finance approval', expectedExcludedCount: 0 } });
         else if (status === 'Approved') res = await call('POST', `/api/payroll/runs/${id}/lock`, { token: finance });
         else break;
