@@ -21,7 +21,7 @@ const initialEmployee = {
 const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 const salaryBreakdown = { basicSalary: 7000, housingAllowance: 2000, transportAllowance: 300, foodAllowance: 100, mobileAllowance: 50, otherAllowance: 25, fixedDeduction: 10, currency: 'SAR', effectiveDate: '2026-10-01', salaryStructureCode: 'PACKAGE-TEST' };
 type EditBody = { effectiveDate: string; changes: Record<string, unknown> };
-interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean }
+interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean; designations?: unknown[] }
 
 async function boot(page: Page, options: BootOptions = {}) {
   let employee = { ...initialEmployee, ...(options.structuredSalary ? { salaryBreakdown: { ...salaryBreakdown, ...(options.salaryStructureCode ? { salaryStructureCode: options.salaryStructureCode } : {}) } } : options.legacySalaryWithNullPackage ? { salary: 7500, salaryBreakdown: null } : {}) };
@@ -58,7 +58,7 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/companies') return reply(paged([company]));
     if (path === '/api/branches') return reply(paged([{ id: 'edit-branch', companyId: company.id, nameEn: 'Riyadh', code: 'RYD', isActive: true }]));
     if (path === '/api/departments') return reply(paged([{ id: 'edit-department', nameEn: 'Operations', code: 'OPS', isActive: true }]));
-    if (path === '/api/designations') return reply(paged([{ id: 'edit-designation', titleEn: 'Specialist', code: 'SPEC', isActive: true }]));
+    if (path === '/api/designations') return reply(paged(options.designations ?? [{ id: 'edit-designation', titleEn: 'Specialist', code: 'SPEC', isActive: true }]));
     if (path === '/api/grades') return reply(paged([{ id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true }]));
     if (path === '/api/organization/cost-centers') return reply(paged([]));
     if (path === '/api/payroll/salary-structures') return reply([
@@ -309,6 +309,25 @@ test('the grade dropdown follows Setup changes while the edit form is open', asy
   await page.evaluate(() => window.dispatchEvent(new Event('kynexone:grades-changed')));
   // G5 was retired, G7 added; the employee's current value stays selectable.
   await expect(gradeSelect.locator('option')).toHaveText(['Select', 'Professional', 'G7']);
+  expect(errors).toEqual([]);
+});
+
+test('the designation list offers company-wide designations, not only ones tied to the chosen department', async ({ page }) => {
+  const row = (id: string, titleEn: string, extra: Record<string, unknown> = {}) => ({ id, titleEn, code: id.toUpperCase(), isActive: true, companyId: company.id, ...extra });
+  const { dialog, errors } = await boot(page, {
+    designations: [
+      row('specialist', 'Specialist'),
+      row('ops-lead', 'Operations Lead', { departmentId: 'edit-department' }),
+      row('director', 'Director'),
+      row('hr-manager', 'HR Manager', { departmentId: 'another-department' }),
+      row('stranger', 'Other Company Role', { companyId: 'another-company' }),
+      row('retired', 'Retired Role', { isActive: false }),
+    ],
+  });
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  const designationSelect = dialog.getByRole('combobox', { name: 'Designation', exact: true });
+  // Department Operations: its own, plus the company-wide ones. Not another department's, another company's, or a retired one.
+  await expect(designationSelect.locator('option')).toHaveText(['Select', 'Specialist', 'Operations Lead', 'Director']);
   expect(errors).toEqual([]);
 });
 
