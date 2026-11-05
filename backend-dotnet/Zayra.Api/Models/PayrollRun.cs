@@ -66,6 +66,11 @@ public class PayrollRun : ITenantOwned, ICompanyScopedOperational
     public Guid? ProcessedByUserId { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ProcessedAtUtc { get; set; }
+    /// <summary>
+    /// Counts every Process of this run and is never reset (not even by a reopen), so a reconciliation sign-off signed against
+    /// an earlier pass can never be mistaken for one that reviewed the current figures.
+    /// </summary>
+    public int ProcessVersion { get; set; }
     public DateTime? LockedAtUtc { get; set; }
     public string ErpPostingStatus { get; set; } = ErpPostingStatuses.NotReady;
     public DateTime? ErpPostingStatusChangedAtUtc { get; set; }

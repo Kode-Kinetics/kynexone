@@ -59,6 +59,8 @@ export type CompanyAdminMode = 'invite' | 'existing' | 'groupOnly';
 export type Baseline = Record<string, string | null>;
 export interface WithBaseline { baseline?: Baseline | null }
 
+export type MigrationMode = 'new' | 'switching';
+
 export interface CompanySetupCompany extends WithBaseline {
   legalNameEn: string;
   legalNameAr?: string;
@@ -74,13 +76,22 @@ export interface CompanySetupCompany extends WithBaseline {
   emailDomain?: string;
   workEmailPattern?: string;
   erpCompanyCode?: string;
-  /** "YYYY-MM" */
+  /**
+   * "YYYY-MM": the go-live month, the first month KynexOne runs payroll. (JSON name kept; for a switching company
+   * earlier months stay in the previous system and arrive as opening balances.)
+   */
   firstPayrollMonth: string;
+  /** 'new' = has not run payroll before; 'switching' = moving from another system. Absent (older draft or server) = 'new'. */
+  migrationMode?: MigrationMode;
+  /** Switching only, free text, at most 120 characters. */
+  previousSystem?: string | null;
   /**
    * Existing mode (A4), server-written on the prefill and on every draft read: the company's cutover status now.
    * Anything but "Planned" shows the first payroll month read-only up front; null = no cutover yet. Ignored on input.
    */
   cutoverStatus?: 'Planned' | 'Active' | 'Closed' | null;
+  /** Existing mode, server-written: true once the go-live month, mode and previous system can no longer change. Absent = not locked here. */
+  cutoverPinned?: boolean;
 }
 
 /**

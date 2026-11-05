@@ -167,6 +167,7 @@ public class OpeningBalanceCutoverTests
         var processed = await Payroll(db, tenantId, Maker).Process(runId, CancellationToken.None);
         processed.Should().BeOfType<OkObjectResult>($"Process must succeed — got {Describe(processed)}");
         db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(db, runId);
         var approved = await Payroll(db, tenantId, Checker, "checker")
             .Approve(runId, new PayrollDecisionRequest("ok", null), CancellationToken.None);
         approved.Should().BeOfType<OkObjectResult>($"Approve must succeed — got {Describe(approved)}");

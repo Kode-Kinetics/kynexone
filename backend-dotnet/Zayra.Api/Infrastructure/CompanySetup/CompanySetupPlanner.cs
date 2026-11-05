@@ -77,6 +77,16 @@ public sealed class CompanySetupPlanModel
     /// <summary>create | update | unchanged. Update only while the existing cutover is Planned (Addendum A4).</summary>
     public string CutoverAction { get; init; } = V.ActionCreate;
     public Guid? ExistingCutoverId { get; init; }
+    /// <summary>"new" | "switching" (validated). Switching creates the cutover Active; an existing cutover's status never changes.</summary>
+    public string MigrationMode { get; init; } = V.MigrationNew;
+    /// <summary>Trimmed, validated; null unless switching and named. What the cutover's SourceSystem is created with / changed to.</summary>
+    public string? PreviousSystem { get; init; }
+    /// <summary>Existing mode: the user explicitly changed the previous system and no locked run pins the boundary.</summary>
+    public bool CutoverSourceChange { get; init; }
+    /// <summary>Existing mode: a Planned cutover becomes Active (the user chose switching and no run pins it).</summary>
+    public bool PromoteCutover { get; init; }
+    /// <summary>Switching chosen, or the existing cutover already governs: what the commit-time re-check evaluates with.</summary>
+    public bool EffectiveSwitching { get; init; }
     public DraftHolidayCalendar? HolidayCalendar { get; init; }
     public required IReadOnlySet<string> MissingLeaveDefaults { get; init; }
     /// <summary>Non-null when the tenant-default GCC row for <see cref="Country"/> must be created (Decision 11).</summary>
@@ -411,6 +421,48 @@ public sealed class CompanySetupPlanner
         }
         if (!TryParseMonth(co.FirstPayrollMonth, out var cutoverDate))
             c.Problem(2, "firstPayrollMonth", "month_invalid", "Choose the first payroll month (YYYY-MM).", "اختر أول شهر للرواتب.");
+
+        // Go-live mode. Absent = "new" (older drafts and API callers); the vocabulary is exact. previousSystem is untrusted free
+        // text: trimmed, bounded, no control characters; it is only ever bound as a parameter or serialised as JSON, never
+        // concatenated into SQL or a log line.
+        var migrationMode = V.MigrationNew;
+        var modeRaw = Clean(co.MigrationMode);
+        if (modeRaw.Length > 0)
+        {
+            if (modeRaw is V.MigrationNew or V.MigrationSwitching) migrationMode = modeRaw;
+            else c.Problem(2, "migrationMode", "migration_mode_invalid", "Choose whether this is a new company or one switching payroll from another system.",
+                "اختر ما إذا كانت الشركة جديدة أم تنقل الرواتب من نظام آخر.");
+        }
+        var switching = migrationMode == V.MigrationSwitching;
+        var previousSystem = Clean(co.PreviousSystem);
+        var previousSystemOk = true;
+        if (previousSystem.Length > V.PreviousSystemMaxLength)
+        {
+            previousSystemOk = false;
+            c.Problem(2, "previousSystem", "previous_system_too_long", $"The previous system's name is at most {V.PreviousSystemMaxLength} characters.",
+                $"اسم النظام السابق لا يتجاوز {V.PreviousSystemMaxLength} حرفاً.");
+        }
+        else if (previousSystem.Any(IsUnsafePreviousSystemChar))
+        {
+            previousSystemOk = false;
+            c.Problem(2, "previousSystem", "previous_system_invalid", "The previous system's name cannot contain control, line-break, direction-override or zero-width characters.",
+                "اسم النظام السابق لا يمكن أن يحتوي على أحرف تحكم أو فواصل أسطر.");
+        }
+        if (switching && !Holds("organization.setup.apply"))
+            c.Problem(2, "migrationMode", "migration_mode_needs_setup_permission",
+                "Only a user with the organization setup permission can set up a company that is switching payroll from another system.",
+                "يمكن فقط للمستخدم الذي يملك صلاحية إعداد المنظمة إعداد شركة تنقل الرواتب من نظام آخر.");
+        if (switching && cutoverDate != default && (ex?.Cutover is null || ex.Cutover.CutoverDate != cutoverDate))
+        {
+            if (!InGoLiveRange(cutoverDate, DateTime.UtcNow))
+                c.Problem(2, "firstPayrollMonth", "first_payroll_month_out_of_range",
+                    "The go-live month must be between January 2015 and 12 months from now (UTC).",
+                    "يجب أن يكون شهر بدء التشغيل بين يناير 2015 وبعد 12 شهراً من الآن (بالتوقيت العالمي).");
+        }
+        // An existing governing cutover is switching whatever the body says ('new' there is a no-op); a null/blank previous system
+        // is "not supplied" and never clears.
+        var effectiveSwitching = switching || (ex?.Cutover is { } govern && CutoverStatuses.Governs(govern.Status));
+        var plannedPrevious = effectiveSwitching && previousSystemOk && previousSystem.Length > 0 ? previousSystem : null;
 
         if (emailDomain.Length > 0 && domainChanged && !Holds(CompanyEmailDomainRules.SecurityPermission))
             c.Problem(2, "emailDomain", CompanyEmailDomainRules.NeedsSecurityAdminCode, CompanyEmailDomainRules.NeedsSecurityAdminMessage);
@@ -1124,30 +1176,39 @@ public sealed class CompanySetupPlanner
         else c.Item(Areas.EmployeeIdRule, prefix, "Employee numbering for this company", V.ActionCreate, labelAr: "ترقيم الموظفين لهذه الشركة");
 
         var cutoverAction = V.ActionCreate;
+        var cutoverSourceChange = false;
+        var cutoverPromote = false;
         if (cutoverDate != default)
         {
-            var cutoverLabel = "Planned payroll start (first day of the first payroll month)";
-            const string cutoverLabelAr = "بداية الرواتب المخططة (أول يوم من أول شهر رواتب)";
+            var cutoverLabel = effectiveSwitching ? "Payroll go-live (first day of the first month KynexOne runs payroll)" : "Planned payroll start (first day of the first payroll month)";
+            var cutoverLabelAr = effectiveSwitching ? "بدء تشغيل الرواتب (أول يوم من أول شهر تشغّل فيه كاينكس وان الرواتب)" : "بداية الرواتب المخططة (أول يوم من أول شهر رواتب)";
             var cutoverCode = cutoverDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-            if (ex?.Cutover is { } cutover)
+            var evaluation = await CutoverLockRule.EvaluateAsync(_db, tenantId, ex?.Company.Id ?? Guid.Empty, ex?.Cutover, cutoverDate,
+                effectiveSwitching && previousSystemOk, plannedPrevious, ct);
+            cutoverAction = evaluation.Action;
+            cutoverSourceChange = evaluation.SourceChange;
+            cutoverPromote = evaluation.Promote;
+            if (evaluation.RefusalCode is { } refusal)
             {
-                if (cutover.CutoverDate == cutoverDate) cutoverAction = V.ActionUnchanged;
-                else if (cutover.Status == CutoverStatuses.Planned) cutoverAction = V.ActionUpdate;
-                else
-                {
-                    cutoverAction = V.ActionConflict;
-                    // Addendum A4: editable only while the cutover is still Planned.
-                    c.Problem(2, "firstPayrollMonth", "first_payroll_month_locked",
-                        $"Payroll for this company started on {cutover.CutoverDate:yyyy-MM-dd} (cutover {cutover.Status.ToLowerInvariant()}), so the first payroll month can no longer change.",
-                        "بدأت رواتب هذه الشركة، لذا لا يمكن تغيير أول شهر للرواتب.");
-                }
-                if (cutoverAction != V.ActionConflict)
-                    c.Item(Areas.Cutover, cutoverCode, cutoverLabel, cutoverAction,
-                        cutoverAction == V.ActionUpdate ? $"Changes: from {cutover.CutoverDate:yyyy-MM-dd}." : null, cutoverLabelAr);
+                var (en, ar) = CutoverLockRule.Words(refusal, ex?.Cutover);
+                if (refusal == CutoverStatuses.FirstDeclarationTooLateCode)
+                    (en, ar) = ($"A go-live of {cutoverDate:yyyy-MM-dd} is later than payroll that is already locked. Choose an earlier month.",
+                        "شهر بدء التشغيل لاحق لمسير رواتب مقفل. اختر شهراً أقدم.");
+                var field = refusal == V.PreviousSystemLockedCode ? "previousSystem" : "firstPayrollMonth";
+                c.Problem(2, field, refusal, en, ar);
+            }
+            else if (ex?.Cutover is { } existingCutover)
+            {
+                var changes = new List<string>();
+                if (cutoverPromote) changes.Add($"status {existingCutover.Status} → {CutoverStatuses.Active}");
+                if (existingCutover.CutoverDate != cutoverDate) changes.Add($"from {existingCutover.CutoverDate:yyyy-MM-dd}");
+                if (cutoverSourceChange) changes.Add("previous system");
+                c.Item(Areas.Cutover, cutoverCode, cutoverLabel, cutoverAction,
+                    cutoverAction == V.ActionUpdate ? $"Changes: {string.Join(", ", changes)}." : null, cutoverLabelAr);
             }
             else c.Item(Areas.Cutover, cutoverCode, cutoverLabel, V.ActionCreate, labelAr: cutoverLabelAr);
             var today = DateOnly.FromDateTime(DateTime.UtcNow);
-            if (cutoverAction is V.ActionCreate or V.ActionUpdate && cutoverDate < new DateOnly(today.Year, today.Month, 1))
+            if (!effectiveSwitching && cutoverAction is V.ActionCreate or V.ActionUpdate && cutoverDate < new DateOnly(today.Year, today.Month, 1))
                 c.Warn(5, "company.firstPayrollMonth", "first_payroll_month_past", "The first payroll month is in the past. Opening balances will be needed for the months before it.");
         }
 
@@ -1354,6 +1415,11 @@ public sealed class CompanySetupPlanner
             CutoverDate = cutoverDate,
             CutoverAction = cutoverAction,
             ExistingCutoverId = ex?.Cutover?.Id,
+            MigrationMode = migrationMode,
+            PreviousSystem = plannedPrevious,
+            CutoverSourceChange = cutoverSourceChange,
+            PromoteCutover = cutoverPromote,
+            EffectiveSwitching = effectiveSwitching,
             HolidayCalendar = holidayCalendar,
             MissingLeaveDefaults = missingLeave,
             NewGccDefault = newGccDefault,
@@ -1406,7 +1472,7 @@ public sealed class CompanySetupPlanner
         // Company (step 2). Country and currency are locked (A4), so they are not part of the comparison.
         var co = body.Company;
         var stored = ex.Company;
-        var take = Merge(2, "company", "Company", "الشركة", co.Baseline, CompanySetupBaseline.Company(co), CompanySetupBaseline.Company(stored, ex.Cutover));
+        var take = Merge(2, "company", "Company", "الشركة", co.Baseline, CompanySetupBaseline.Company(co), CompanySetupBaseline.Company(stored, ex.Cutover), area: "company");
         string? Pick(string key, string? mine, string? theirs) => take.Contains(key) ? theirs : mine;
         co = co with
         {
@@ -1424,6 +1490,11 @@ public sealed class CompanySetupPlanner
             ErpCompanyCode = Pick("erpCompanyCode", co.ErpCompanyCode, stored.ErpCompanyCode),
             FirstPayrollMonth = take.Contains("firstPayrollMonth") && ex.Cutover is { } cut
                 ? cut.CutoverDate.ToString("yyyy-MM", CultureInfo.InvariantCulture) : co.FirstPayrollMonth,
+            // Null/blank = "not supplied" (an older caller, or a cleared box): the database value stands, the wizard never clears these.
+            MigrationMode = take.Contains("migrationMode") || string.IsNullOrWhiteSpace(co.MigrationMode)
+                ? CompanySetupBaseline.MigrationModeOf(ex.Cutover) : co.MigrationMode,
+            PreviousSystem = take.Contains("previousSystem") || string.IsNullOrWhiteSpace(co.PreviousSystem)
+                ? CompanySetupBaseline.PreviousSystemOf(ex.Cutover) : co.PreviousSystem,
         };
 
         // Branches and their locations (step 3): existing rows only; a new row has nothing to compare with.
@@ -1884,6 +1955,17 @@ public sealed class CompanySetupPlanner
     public static bool Blocks(Problem p, string section) =>
         p.Step == 1 || p.Field == section || p.Field.StartsWith(section + ".", StringComparison.Ordinal)
         || p.Code is "link_to_removed_row" or "removal_unknown";
+
+    /// <summary>The go-live window, in UTC: January 2015 through the current UTC month plus 12.</summary>
+    internal static bool InGoLiveRange(DateOnly firstOfMonth, DateTime utcNow)
+    {
+        var today = DateOnly.FromDateTime(utcNow);
+        var thisMonth = new DateOnly(today.Year, today.Month, 1);
+        return firstOfMonth >= new DateOnly(2015, 1, 1) && firstOfMonth <= thisMonth.AddMonths(12);
+    }
+
+    private static bool IsUnsafePreviousSystemChar(char ch) =>
+        char.IsControl(ch) || CharUnicodeInfo.GetUnicodeCategory(ch) is UnicodeCategory.Format or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator;
 
     internal static bool TryParseMonth(string? value, out DateOnly firstDay)
     {

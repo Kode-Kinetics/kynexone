@@ -30,6 +30,10 @@ public static class EmployeeFieldErrors
     public const string DobOutOfRange = "dob_out_of_range";
     public const string JoiningOutOfRange = "joining_out_of_range";
     public const string ProbationOrder = "probation_order";
+    /// <summary>Field <c>confirmationDate</c>: a confirmation cannot come before the joining date.</summary>
+    public const string ConfirmationBeforeJoining = "confirmation_before_joining";
+    /// <summary>Field <c>probationEndDate</c>: "no probation" was ticked, so no probation dates may be sent with it.</summary>
+    public const string ProbationWaivedWithDates = "probation_waived_with_dates";
     public const string NegativeAmount = "negative_amount";
     public const string AmountOverflow = "amount_overflow";
     public const string IbanInvalid = "iban_invalid";

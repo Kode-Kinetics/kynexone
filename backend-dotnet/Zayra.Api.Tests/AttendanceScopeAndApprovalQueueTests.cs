@@ -149,24 +149,29 @@ public class AttendanceScopeAndApprovalQueueTests
         Assert.Empty(db.AttendanceRawEvents);
     }
 
+    // The whole-file 403 for an out-of-scope row was replaced by a per-row error (attendance bulk operations): the rest of the
+    // file proceeds, the out-of-scope row reads exactly like an unknown code, and NOTHING is written for it.
     [Fact]
-    public async Task Import_ForbidsCsvWithResolvedEmployeeOutsideCallerScope()
+    public async Task Import_ReportsAnOutOfScopeRowAsARowError_AndWritesNothingForIt()
     {
         await using var db = CreateDb();
         var tenantId = Guid.NewGuid();
         var allowed = await AddEmployee(db, tenantId, "E-100");
-        await AddEmployee(db, tenantId, "E-200");
+        var outOfScope = await AddEmployee(db, tenantId, "E-200");
         var controller = CreateAttendanceController(db, tenantId, new FixedScope(allowed.Id));
 
         var result = await controller.Import(
             new ImportAttendanceRequest(
                 "attendance.csv",
-                "employeeCode,punchTimestamp,punchDirection\nE-200,2026-07-17T08:00:00Z,In"),
+                "employeeCode,punchTimestamp,punchDirection\nE-200,2026-07-17T08:00:00Z,In\nE-100,2026-07-17T08:00:00Z,In\nE-NOPE,2026-07-17T08:00:00Z,In"),
             CancellationToken.None);
 
-        Assert.IsType<ForbidResult>(result.Result);
-        Assert.Empty(db.AttendanceRawEvents);
-        Assert.Empty(db.AttendanceImportBatches);
+        var dto = Assert.IsType<AttendanceImportResult>(result.Value);
+        Assert.Equal((1, 2), (dto.ImportedRows, dto.FailedRows));
+        Assert.Equal(new[] { 2, 4 }, dto.Errors.Select(e => e.RowNumber));
+        Assert.Single(dto.Errors.Select(e => e.Message).Distinct());   // E-200 reads exactly like the unknown E-NOPE
+        Assert.DoesNotContain(db.AttendanceRawEvents, e => e.EmployeeId == outOfScope.Id);
+        Assert.Equal(allowed.Id, Assert.Single(db.AttendanceRawEvents).EmployeeId);
     }
 
     [Fact]

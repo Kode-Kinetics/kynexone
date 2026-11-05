@@ -27,6 +27,15 @@ public static class CompanySetupVocabulary
     /// or turns it off (in use); the plan's <c>reason</c> says which one it will be.</summary>
     public const string ActionRemove = "remove";
 
+    /// <summary>Company.migrationMode: a brand-new company (its first payroll month is Planned) …</summary>
+    public const string MigrationNew = "new";
+    /// <summary>… or an established company switching payroll from another system (go-live month is Active from the start).</summary>
+    public const string MigrationSwitching = "switching";
+    public const int PreviousSystemMaxLength = 120;
+    public const string SwitchingBlockedByRunsCode = "switching_blocked_by_runs";
+    public const string FirstPayrollMonthLockedCode = "first_payroll_month_locked";
+    public const string PreviousSystemLockedCode = "previous_system_locked";
+
     public const string ReadinessDone = "done";
     public const string ReadinessTodo = "todo";
     public const string ReadinessRecommended = "recommended";
@@ -189,7 +198,8 @@ public sealed record CompanySetupCompany(
     string? EmailDomain,
     string? WorkEmailPattern,
     string? ErpCompanyCode,
-    /// <summary>"YYYY-MM". Its first day becomes the company's Planned cutover.</summary>
+    /// <summary>"YYYY-MM": the go-live month, the first month KynexOne runs payroll. Its first day becomes the company's cutover
+    /// date: Planned for a new company, Active when <see cref="MigrationMode"/> is "switching".</summary>
     string FirstPayrollMonth,
     /// <summary>Existing mode, read-only (Addendum A4): the company's cutover status today — "Planned", "Active",
     /// "Closed", or null when it has none. Server-written on prefill and on every draft read; ignored on input (the
@@ -199,7 +209,19 @@ public sealed record CompanySetupCompany(
     /// <summary>Addendum A9: the field values the existing-mode prefill read this from (opaque; carried back unchanged).
     /// The planner compares draft, baseline and database per field, so an edit made elsewhere since is never overwritten.</summary>
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    Dictionary<string, string?>? Baseline = null);
+    Dictionary<string, string?>? Baseline = null,
+    /// <summary>"new" | "switching" (absent/null = "new", so older drafts and API callers keep working). Switching = an
+    /// established company moving payroll over from another system. Existing mode: derived from the company's cutover
+    /// (switching when it is not Planned or names a source system); never changes an existing cutover's status.</summary>
+    string? MigrationMode = null,
+    /// <summary>The system being left (trimmed, at most 120 characters, no control characters). Stored on the cutover's
+    /// SourceSystem only when switching; null otherwise.</summary>
+    string? PreviousSystem = null,
+    /// <summary>Existing mode, read-only, server-written on prefill and every draft read (ignored on input): true when the go-live
+    /// month can no longer change because the company's cutover governs payroll AND a payroll run that is not Draft, Voided or
+    /// Cancelled exists at or after it. The screen locks the month only on <c>true</c>.</summary>
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    bool? CutoverPinned = null);
 
 public sealed record CompanySetupBranch(
     string Code,

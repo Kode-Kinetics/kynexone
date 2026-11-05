@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { loanGovernanceApi, type LoanPolicy, type LoanPolicyInput } from '../../api/loanGovernance';
 import type { LoanType } from '../../api/loans';
 import { companiesApi, type CompanyDto } from '../../api/organization';
+import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { loanErrorMessage, repaymentMethodLabels } from '../../lib/loanWorkflow';
 import { Modal } from '../Modal';
@@ -20,6 +21,7 @@ const defaults: LoanPolicyInput = {
   allowedRepaymentFrequencies: ['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'],
   maxConcurrentLoans: 1, cooldownMonthsAfterRepayment: 0, additionalApprovalThreshold: 0,
   additionalApproverRole: 'HR Director', allowExceptions: false, allowEarlySettlement: true, allowRescheduling: false, isActive: true,
+  batchApproverMode: 'SeparateApprover', selfApprovalMaxAmount: 0,
 };
 const numericFields = [
   ['maxAmount', 'Maximum loan amount'], ['maxTotalOutstanding', 'Maximum total exposure'],
@@ -38,6 +40,8 @@ const checks = [
 
 export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanTypes: LoanType[]; onGradeLimitedChanged: (loanTypeId: string, gradeLimited: boolean) => void }) {
   const t = useT();
+  const { user } = useAuth();
+  const isAdmin = user?.roles.includes('Admin') ?? false;
   const { companies: accessibleCompanies, selectedCompanyId } = useCompany();
   const [companies, setCompanies] = useState<Pick<CompanyDto, 'id' | 'legalNameEn'>[]>(accessibleCompanies.map(c => ({ id: c.id, legalNameEn: c.name })));
   const [companyId, setCompanyId] = useState(selectedCompanyId ?? accessibleCompanies[0]?.id ?? '');
@@ -66,22 +70,42 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
     companiesApi.listAll().then(items => { setCompanies(items); setCompanyId(current => current || items[0]?.id || ''); }).catch(() => {});
   }, [accessibleCompanies.length]);
   const save = async () => {
+    if (!approverReady) return;
     if (!form.companyId || !form.loanTypeId || !form.policyName.trim() || !form.allowedRepaymentMethods.length) { setError('Choose a company, loan type, policy name and at least one repayment method.'); return; }
     const shortest = form.minInstallments ?? 1;
     if (!Number.isInteger(shortest) || shortest < 1 || shortest > form.maxInstallments) { setError(t('The shortest repayment cannot be longer than the longest repayment.')); return; }
     setSaving(true); setError('');
-    try { const policy = await loanGovernanceApi.createPolicy({ ...form, companyId: form.companyId || companyId, additionalApproverRole: 'HR Director', allowedContractTypes: contractTypesText.split(',').map(value => value.trim()).filter(Boolean) }); setOpen(false); setNotice(`Policy version ${policy.version} created. Existing applications retain their policy version.`); await load(); }
+    try { const policy = await loanGovernanceApi.createPolicy({ ...form, companyId: form.companyId || companyId, additionalApproverRole: 'HR Director', selfApprovalMaxAmount: form.batchApproverMode === 'SingleOperator' ? form.selfApprovalMaxAmount ?? 0 : 0, allowedContractTypes: contractTypesText.split(',').map(value => value.trim()).filter(Boolean) }); setOpen(false); setNotice(`Policy version ${policy.version} created. Existing applications retain their policy version.`); await load(); }
     catch (e) { setError(loanErrorMessage(e, 'Unable to create policy version.')); }
     finally { setSaving(false); }
   };
-  const begin = (policy?: LoanPolicy) => { setForm(policy ? { ...policy, companyId } : { ...defaults, companyId, loanTypeId: typeId || loanTypes[0]?.id || '' }); setContractTypesText(policy?.allowedContractTypes.join(', ') ?? ''); setError(''); setOpen(true); };
+  // A new version starts from the ACTIVE version's batch-approver setting for the company and loan type chosen in the form,
+  // so publishing other terms never silently rewrites it. It is fetched for that pair, not read from the table: the table
+  // holds only the filtered type, and an old row's setting may be stale. Publishing waits until it has arrived.
+  const approverKey = `${form.companyId}|${form.loanTypeId}`;
+  const [approverFor, setApproverFor] = useState('');
+  useEffect(() => {
+    if (!open || !form.companyId || !form.loanTypeId || approverFor === approverKey) return;
+    let live = true;
+    loanGovernanceApi.policies({ companyId: form.companyId, loanTypeId: form.loanTypeId })
+      .then(list => {
+        if (!live) return;
+        const active = list.find(p => p.isActive && p.loanTypeId === form.loanTypeId);
+        setForm(f => ({ ...f, batchApproverMode: active?.batchApproverMode ?? 'SeparateApprover', selfApprovalMaxAmount: active?.selfApprovalMaxAmount ?? 0 }));
+        setApproverFor(approverKey);
+      })
+      .catch(e => { if (live) setError(loanErrorMessage(e, t("Could not load this loan type's current payment-batch approver setting. Close the form and try again."))); });
+    return () => { live = false; };
+  }, [open, approverKey, approverFor, form.companyId, form.loanTypeId, t]);
+  const approverReady = approverFor === approverKey;
+  const begin = (policy?: LoanPolicy) => { const loanTypeId = typeId || loanTypes[0]?.id || ''; setApproverFor(''); setForm(policy ? { ...policy, companyId } : { ...defaults, companyId, loanTypeId }); setContractTypesText(policy?.allowedContractTypes.join(', ') ?? ''); setError(''); setOpen(true); };
   return <div className="space-y-4">
     <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="font-semibold">Company loan policy versions</h2><p className="text-sm text-slate-500">Eligibility is checked before application and payment. Each change creates a new version; existing versions remain in history.</p></div><button className="btn-primary" onClick={() => begin()} disabled={!companyId}>New Policy Version</button></div>
     {error && !open && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700">{notice}</p>}
     <div className="flex flex-wrap gap-3"><label className="text-sm">Company<select className="select ms-2" value={companyId} onChange={e => setCompanyId(e.target.value)}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label><label className="text-sm">Loan type<select className="select ms-2" value={typeId} onChange={e => setTypeId(e.target.value)}><option value="">All types</option>{loanTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}</select></label></div>
     <div className="surface overflow-x-auto"><table className="w-full text-sm"><thead><tr>{['Policy', 'Type', 'Version', 'Limits', 'Approval route', 'Status', ''].map((label, i) => <th key={i} className="p-3 text-start text-xs text-slate-500">{label}</th>)}</tr></thead><tbody>{loadError != null ? <LoadFailedRow colSpan={7} error={loadError} onRetry={() => { void load(); }} /> : policies.length === 0 ? <tr><td colSpan={7} className="p-6 text-center text-slate-500">No policy versions for this selection.</td></tr> : policies.map(policy => <tr key={policy.id} className="border-t border-slate-100 dark:border-white/10"><td className="p-3">{policy.policyName}</td><td className="p-3">{loanTypes.find(type => type.id === policy.loanTypeId)?.nameEn ?? policy.loanTypeId}</td><td className="p-3">v{policy.version}</td><td className="p-3">{policy.maxInstallments} installments · {policy.maxConcurrentLoans} concurrent</td><td className="p-3">HR Manager{policy.additionalApprovalThreshold > 0 ? ` → ${policy.additionalApproverRole} above ${policy.additionalApprovalThreshold.toLocaleString()}` : ''}</td><td className="p-3">{policy.isActive ? 'Active' : 'Inactive'}</td><td className="p-3"><button className="text-sapphire" onClick={() => begin(policy)}>Review / New Version</button></td></tr>)}</tbody></table></div>
-    <Modal isOpen={open} title="New Company Loan Policy Version" size="lg" onClose={() => !saving && setOpen(false)} footer={<><button className="btn-secondary" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="btn-primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Create Policy Version'}</button></>}>
+    <Modal isOpen={open} title="New Company Loan Policy Version" size="lg" onClose={() => !saving && setOpen(false)} footer={<><button className="btn-secondary" disabled={saving} onClick={() => setOpen(false)}>Cancel</button><button className="btn-primary" disabled={saving || !approverReady} onClick={save}>{saving ? 'Saving…' : 'Create Policy Version'}</button></>}>
       <div className="space-y-4">{error && <p role="alert" className="text-sm text-red-600">{error}</p>}<p className="text-sm text-slate-500">Amount limits use the employee company currency. Zero monetary or salary limits mean no additional limit; zero additional approval threshold disables the extra approval. Publishing makes this the active version.</p>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label className="text-sm">Company<select className="select mt-1 w-full" value={form.companyId} onChange={e => setForm(f => ({ ...f, companyId: e.target.value }))}><option value="">Select company</option>{companies.map(c => <option key={c.id} value={c.id}>{c.legalNameEn}</option>)}</select></label>
@@ -95,6 +119,15 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
         <fieldset><legend className="mb-2 text-sm font-semibold">Allowed repayment methods</legend><div className="flex flex-wrap gap-3">{Object.entries(repaymentMethodLabels).map(([value, label]) => <label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowedRepaymentMethods.includes(value)} onChange={e => setForm(f => ({ ...f, allowedRepaymentMethods: e.target.checked ? [...f.allowedRepaymentMethods, value] : f.allowedRepaymentMethods.filter(method => method !== value) }))} />{label}</label>)}</div></fieldset>
         <fieldset><legend className="mb-2 text-sm font-semibold">Allowed repayment frequencies</legend><div className="flex flex-wrap gap-3">{['Monthly', 'Weekly', 'BiWeekly', 'Quarterly'].map(value => <label key={value} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowedRepaymentFrequencies.includes(value)} onChange={e => setForm(f => ({ ...f, allowedRepaymentFrequencies: e.target.checked ? [...f.allowedRepaymentFrequencies, value] : f.allowedRepaymentFrequencies.filter(frequency => frequency !== value) }))} />{value}</label>)}</div></fieldset>
         <div className="grid gap-2 sm:grid-cols-2">{checks.map(([key, label]) => <label key={key} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.checked }))} />{label}</label>)}</div>
+        <fieldset className="space-y-2" disabled={!isAdmin}><legend className="mb-1 text-sm font-semibold">{t('Who approves loan payment batches')}</legend>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="text-sm">{t('Approval of payment batches')}<select className="select mt-1 w-full" value={form.batchApproverMode ?? 'SeparateApprover'} onChange={e => setForm(f => ({ ...f, batchApproverMode: e.target.value as LoanPolicyInput['batchApproverMode'], selfApprovalMaxAmount: e.target.value === 'SingleOperator' ? f.selfApprovalMaxAmount ?? 0 : 0 }))}>
+              <option value="SeparateApprover">{t('A different Finance user approves (recommended)')}</option>
+              <option value="SingleOperator">{t('The Finance user who prepared it may approve it, with a recorded reason')}</option></select></label>
+            {form.batchApproverMode === 'SingleOperator' && <label className="text-sm">{t('Largest batch one person may approve alone')}<input type="number" min={0} step="0.01" className="input mt-1 w-full" value={form.selfApprovalMaxAmount ?? 0} onChange={e => setForm(f => ({ ...f, selfApprovalMaxAmount: Number(e.target.value) }))} /></label>}
+          </div>
+          <p className="text-xs text-slate-500">{t(isAdmin ? 'Zero means no limit; larger batches still need a second approver. Every self-approval is audited. An employee can never approve a batch that pays their own loan.' : 'Only an Admin can change this setting. It is kept as it is when you publish a new version.')}</p>
+        </fieldset>
         <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={form.isOffered !== false} onChange={e => setForm(f => ({ ...f, isOffered: e.target.checked }))} />{t("Offered to this company's employees")}</label>
       </div>
     </Modal>

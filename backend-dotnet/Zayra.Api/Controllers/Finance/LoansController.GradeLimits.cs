@@ -356,6 +356,8 @@ public partial class LoansController
             next.CreatedAtUtc = DateTime.UtcNow; next.CreatedBy = GetUserId();
             // OFF writes a switch stub that remembers what it shadowed; ON (from an edited or company-owned policy)
             // writes an ordinary company version — the company keeps its own terms.
+            // Who approves payment batches is an Admin decision per company: a group policy's setting never carries into one.
+            if (basis.CompanyId != req.CompanyId) { next.BatchApproverMode = LoanBatchApproverModes.SeparateApprover; next.SelfApprovalMaxAmount = 0; }
             next.CreatedByOfferingSwitch = !req.Offered;
             next.CopiedFromPolicyId = req.Offered ? null : current?.Id;
             if (string.IsNullOrWhiteSpace(next.PolicyName)) next.PolicyName = type.NameEn;

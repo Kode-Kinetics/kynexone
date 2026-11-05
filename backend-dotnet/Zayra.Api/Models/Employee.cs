@@ -85,6 +85,8 @@ public class Employee : INullableTenantOwned, ICompanyScopedOperational
     public DateTime JoiningDate { get; set; }
     public DateOnly? ConfirmationDate { get; set; }
     public DateOnly? ProbationStartDate { get; set; }
+    /// <summary>Hired with no probation (an exception ticked at hire). No probation dates; confirmed from the joining date.</summary>
+    public bool ProbationWaived { get; set; }
     public string ContractType { get; set; } = string.Empty;
     public string EmploymentType { get; set; } = string.Empty;
     public string JobTitle { get; set; } = string.Empty;

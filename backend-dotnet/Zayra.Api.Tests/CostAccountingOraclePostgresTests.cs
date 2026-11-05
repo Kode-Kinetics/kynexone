@@ -281,6 +281,7 @@ public sealed class CostAccountingOraclePostgresTests
     {
         await using var w = await BlockerWorldAsync(preset: false, defaultCc: false);
         w.K.Db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(w.K.Db, w.Reg1.Id);
         (await w.K.Payroll(w.K.ApproverId).Approve(w.Reg1.Id, new PayrollDecisionRequest("ok", ExpectedUncostedCount: 1), default)).Should().BeOfType<OkObjectResult>();
         var res = await w.K.LockAsync(w.Reg1.Id);
         res.Should().BeOfType<OkObjectResult>(Json(res).ToString());

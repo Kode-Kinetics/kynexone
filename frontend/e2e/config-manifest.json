@@ -133,6 +133,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.loans-live.config.ts": {
+      "disposition": "manual-stack",
+      "reason": "Live loan batch-approver journey (browser -> API -> Postgres) after the preflight + bootstrap configs; its spec is also collected by the root chromium project in Browser Pilot, this config is the focused run against a local disposable stack."
+    },
     "playwright.loans.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."

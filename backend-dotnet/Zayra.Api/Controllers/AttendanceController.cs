@@ -261,21 +261,83 @@ public class AttendanceController : ControllerBase
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
+    /// <summary>
+    /// The CSV template for the punch import: the header and one worked example, built through <see cref="Csv.Template(IReadOnlyList{string}, IReadOnlyList{string})"/>
+    /// so a mismatched example is refused at source (ImportTemplateShapeTests covers it). The example's code is a placeholder: the action
+    /// reads no database or user, which is what lets that test call it without a service graph.
+    /// </summary>
+    [HttpGet("events/import-template")]
+    [HasPermission("attendance.bulk_import")]
+    public IActionResult ImportTemplate() =>
+        CsvDownload.Result(Csv.Template(AttendancePunchCsv.TemplateHeaders, AttendancePunchCsv.TemplateExample), "attendance_punches_import_template.csv");
+
+    /// <summary>The dry run of <see cref="Import"/>: the same reading and judging, and NOTHING is written.</summary>
+    [HttpPost("events/import-preview")]
+    [HasPermission("attendance.bulk_import")]
+    [RequestSizeLimit(MaxBulkRequestBytes)]
+    public Task<ActionResult<AttendanceImportResult>> ImportPreview(ImportAttendanceRequest request, CancellationToken ct) =>
+        RunImportAsync(request, commit: false, ct);
+
+    /// <summary>
+    /// Imports a punch file. A row for the importer's OWN record, or for an employee outside their data scope (or not active, or
+    /// unknown: all read alike), is a ROW error: nothing is written for it and the rest of the file proceeds. This replaced an opaque
+    /// whole-file 403.
+    /// </summary>
     [HttpPost("events/import")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
-    [AllowEntityReturn("Flat entity — no navigation properties. Fields: FileName, Source, Status, TotalRows, ImportedRows, FailedRows, CreatedAtUtc. No salary, bank/IBAN, passport, national-ID, medical, or disciplinary data.")]
-    public async Task<ActionResult<AttendanceImportBatch>> Import(ImportAttendanceRequest request, CancellationToken ct)
-    {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if (!scope.IsUnrestricted && await HasOutOfScopeImportRowAsync(RequireTenant(), request, scope, ct))
-            return Forbid();
-        // An import carries caller-chosen timestamps; a row for the importer's own record would let them write
-        // their own attendance. Refuse the file rather than silently dropping the row.
-        var self = await CallerEmployeeResolver.ResolveAsync(_db, User, RequireTenant(), ct);
-        if (self is int ownId && await ImportHasRowForEmployeeAsync(RequireTenant(), request, ownId, ct))
-            return Forbid();
+    [RequestSizeLimit(MaxBulkRequestBytes)]
+    public Task<ActionResult<AttendanceImportResult>> Import(ImportAttendanceRequest request, CancellationToken ct) =>
+        RunImportAsync(request, commit: true, ct);
 
-        return await _attendance.ImportCsvAsync(RequireTenant(), request, Context(), ct);
+    /// <summary>The largest body a punch-file import, its preview or a mass entry accepts (about 5,000 rows at their longest is far below it).</summary>
+    public const int MaxBulkRequestBytes = 2_000_000;
+
+    private async Task<ActionResult<AttendanceImportResult>> RunImportAsync(ImportAttendanceRequest request, bool commit, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var authority = await BulkAuthorityAsync(tenantId, ct);
+        try
+        {
+            return commit
+                ? await _attendance.ImportCsvAsync(tenantId, request, authority, Context(), ct)
+                : await _attendance.PreviewImportAsync(tenantId, request, authority, Context(), ct);
+        }
+        catch (AttendanceBusyException ex) { return Conflict(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// Mass entry: the same In (+ Out) for a SELECTION of employees over a date range. An explicit selection is a deliberate act, unlike a
+    /// file: ONE id outside the caller's data scope refuses the whole request (403) and nothing is written. The caller's own id, a
+    /// payroll-locked day, a future day or an inactive employee is refused per item. Needs a reason; every punch keeps it.
+    /// </summary>
+    [HttpPost("events/bulk-entry")]
+    [HasPermission("attendance.write")]
+    [Authorize(Policy = HasPermissionAttribute.PolicyPrefix + "attendance.bulk_import")]
+    [RequestSizeLimit(MaxBulkRequestBytes)]
+    public async Task<ActionResult<BulkAttendanceEntryResult>> BulkEntry(BulkAttendanceEntryRequest request, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var ids = (request.EmployeeIds ?? Array.Empty<int>()).Distinct().ToList();
+        if (ids.Count == 0) return BadRequest(new { message = "Choose at least one employee." });
+        if (ids.Count > AttendanceService.BulkMaxEmployees)
+            return BadRequest(new { message = $"Mass entry is limited to {AttendanceService.BulkMaxEmployees} employees at a time and this selection has {ids.Count}. Split it into smaller groups." });
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        if (!ids.All(scope.CanAccessEmployee)) return Forbid();
+        var authority = new AttendanceBulkAuthority(scope.IsUnrestricted ? null : scope.AllowedEmployeeIds,
+            await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct));
+        try { return await _attendance.BulkEntryAsync(tenantId, request, authority, Context(), ct); }
+        catch (AttendanceRefusalException ex) { return BadRequest(ex.Refusal.Body); }
+        catch (AttendanceBusyException ex) { return Conflict(new { message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Who is writing, for the bulk routine: the caller's data scope and their own employee record, which no bulk path may write a punch for.</summary>
+    private async Task<AttendanceBulkAuthority> BulkAuthorityAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        return new AttendanceBulkAuthority(scope.IsUnrestricted ? null : scope.AllowedEmployeeIds,
+            await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct));
     }
 
     /// <summary>
@@ -358,12 +420,47 @@ public class AttendanceController : ControllerBase
     [Authorize(Roles = "Admin,HR Director,HR Manager,HR Officer")]
     public async Task<ActionResult<int>> Process(ProcessAttendanceRequest request, CancellationToken ct)
     {
-        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
-        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
-            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
-            return Forbid();
-        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request, Context(), ct)); }
+        var (refusal, targets, _) = await ResolveProcessTargetsAsync(request, ct);
+        if (refusal is not null) return refusal;
+        try { return Ok(await _attendance.ProcessAsync(RequireTenant(), request with { EmployeeId = null, EmployeeIds = targets }, Context(), ct)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+    }
+
+    /// <summary>Active (queued or running) background processing runs one user, and one company, may have at a time.</summary>
+    public const int MaxActiveProcessingJobsPerUser = 3;
+    public const int MaxActiveProcessingJobsPerTenant = 10;
+
+    /// <summary>The most employees one explicit processing selection may name.</summary>
+    public const int MaxProcessSelection = 2000;
+
+    /// <summary>
+    /// Who a processing request targets, decided ONCE for <see cref="Process"/> and <see cref="ProcessInBackground"/> so the queue is
+    /// never a wider door than the synchronous endpoint.
+    /// <list type="bullet">
+    /// <item>Named employees (<c>EmployeeId</c> and/or <c>EmployeeIds</c>): EVERY one must be in the caller's data scope, else 403.
+    /// An empty <c>EmployeeIds</c> list with nobody else named is a 400, never "everyone".</item>
+    /// <item>Nobody named ("all employees"): allowed to an unrestricted scope and to an Organization-level scope (a company-limited
+    /// HR user's scope is Organization level with an explicit set, which is why "all" used to be a 403); a Team, Department,
+    /// DirectReports or Own scope is refused.</item>
+    /// </list>
+    /// <c>Targets</c> is the COMPLETE set to process: null only for an unrestricted "all"; otherwise the named ids, or exactly the
+    /// scope's allowed ids (an empty list processes nobody).
+    /// </summary>
+    private async Task<(ActionResult? Refusal, IReadOnlyList<int>? Targets, DataScope? Scope)> ResolveProcessTargetsAsync(ProcessAttendanceRequest request, CancellationToken ct)
+    {
+        var named = (request.EmployeeIds ?? Array.Empty<int>()).ToList();
+        if (request.EmployeeId is int one) named.Add(one);
+        named = named.Distinct().ToList();
+        if (named.Count == 0 && request.EmployeeIds is not null)
+            return (BadRequest(new { message = "Choose at least one employee, or choose all employees." }), null, null);
+        if (named.Count > MaxProcessSelection)
+            return (BadRequest(new { message = $"A selection may name at most {MaxProcessSelection:N0} employees and this one names {named.Count:N0}. Process the rest in a second run, or choose all employees." }), null, null);
+
+        var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
+        if (named.Count > 0)
+            return named.All(scope.CanAccessEmployee) ? (null, named.OrderBy(x => x).ToList(), scope) : (Forbid(), null, scope);
+        if (!scope.IsUnrestricted && scope.Level != DataScopeLevel.Organization) return (Forbid(), null, scope);
+        return (null, scope.AllowedEmployeeIds?.Distinct().OrderBy(x => x).ToList(), scope);
     }
 
     /// <summary>
@@ -389,33 +486,43 @@ public class AttendanceController : ControllerBase
         CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
-        if ((!request.EmployeeId.HasValue && !scope.IsUnrestricted)
-            || (request.EmployeeId.HasValue && !scope.CanAccessEmployee(request.EmployeeId.Value)))
-            return Forbid();
+        var (refusal, targets, scope) = await ResolveProcessTargetsAsync(request, ct);
+        if (refusal is not null) return refusal;
         try { await _attendance.ValidateProcessRangeAsync(tenantId, request.FromDate, request.ToDate, ct); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         if (idempotencyKey is { Length: > 200 }) return BadRequest(new { message = "Idempotency-Key is limited to 200 characters." });
 
         var entityScope = this.GetEntityScope();
         var payload = new Infrastructure.Attendance.AttendanceProcessingJobPayload(
-            request.FromDate, request.ToDate, request.EmployeeId,
+            request.FromDate, request.ToDate, EmployeeId: null,
             GroupScope: entityScope.IsGroupLevel,
             CompanyIds: entityScope.IsGroupLevel ? Array.Empty<Guid>() : entityScope.AccessibleCompanyIds.ToArray(),
             RequestedByUserId: GetUserId(),
             IpAddress: HttpContext.Connection.RemoteIpAddress?.ToString(),
-            UserAgent: Request.Headers.UserAgent.ToString());
-        // A caller with a restricted data scope (a Mobile-mode employee, a Supervisor) gets ONE active job per
-        // employee: a fresh Idempotency-Key or date range per request would otherwise let them queue jobs
-        // without limit. A later request returns the queued/running job until it finishes.
-        var key = !scope.IsUnrestricted
-            ? $"scoped:{request.EmployeeId}:{GetUserId()}"
+            UserAgent: Request.Headers.UserAgent.ToString(),
+            EmployeeIds: targets);
+        // Every key carries the logical request: range + target set + company scope. A caller with a restricted data scope is
+        // also keyed by themselves and cannot choose their own key, so a fresh Idempotency-Key per request does not queue
+        // more jobs, and two callers never receive each other's job. The key used to ignore the range for them, so a
+        // second range returned the FIRST range's job without saying so.
+        var logical = Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload);
+        var key = !scope!.IsUnrestricted
+            ? $"scoped:{GetUserId()}:{logical}"
             : string.IsNullOrWhiteSpace(idempotencyKey)
-                ? Infrastructure.Attendance.AttendanceProcessingJobHandler.DefaultIdempotencyKey(payload)
-                : "client:" + idempotencyKey.Trim();
+                ? logical
+                : $"client:{Infrastructure.Attendance.AttendanceProcessingJobHandler.Digest(idempotencyKey.Trim())}:{logical}";
 
-        var result = await jobs.EnqueueAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
-            key, payload, GetUserId(), ct);
+        // A flood guard: an identical request for a job that is still active is not a new job and is never refused, but a new
+        // one needs room under the per-user and per-tenant limits of ACTIVE (queued or running) runs. The store counts and
+        // enqueues atomically, so concurrent requests with different ranges cannot all slip under the limit together.
+        var admission = await jobs.EnqueueWithinLimitsAsync(tenantId, Infrastructure.Attendance.AttendanceProcessingJobHandler.JobType,
+            key, payload, GetUserId(), MaxActiveProcessingJobsPerUser, MaxActiveProcessingJobsPerTenant, ct);
+        if (admission.Admission == Infrastructure.Jobs.BackgroundJobAdmission.UserLimitReached)
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"You already have {MaxActiveProcessingJobsPerUser} attendance processing runs in progress. Wait for one to finish, then start the next." });
+        if (admission.Admission == Infrastructure.Jobs.BackgroundJobAdmission.TenantLimitReached)
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = $"Your company already has {MaxActiveProcessingJobsPerTenant} attendance processing runs in progress. Try again when one has finished." });
+
+        var result = admission.Enqueued!;
         if (!result.Created) Response.Headers["X-Job-Deduplicated"] = "true";
         return Accepted($"/api/jobs/{result.Job.Id}",
             new Infrastructure.Jobs.BackgroundJobEnqueueResponse(result.Job.Id, result.Job.Status, !result.Created, $"/api/jobs/{result.Job.Id}"));
@@ -885,31 +992,6 @@ public class AttendanceController : ControllerBase
 
     private RequestContext Context() => new(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(), GetUserId(), RequireTenant());
     private Guid? GetUserId() => Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub"), out var id) ? id : null;
-
-    private Task<bool> HasOutOfScopeImportRowAsync(Guid tenantId, ImportAttendanceRequest request, DataScope scope, CancellationToken ct)
-        => AnyImportRowAsync(tenantId, request, employeeId => !scope.CanAccessEmployee(employeeId), ct);
-
-    private Task<bool> ImportHasRowForEmployeeAsync(Guid tenantId, ImportAttendanceRequest request, int employeeId, CancellationToken ct)
-        => AnyImportRowAsync(tenantId, request, id => id == employeeId, ct);
-
-    /// <summary>Whether any data row of the CSV resolves to an employee matching <paramref name="match"/>.</summary>
-    private async Task<bool> AnyImportRowAsync(Guid tenantId, ImportAttendanceRequest request, Func<int, bool> match, CancellationToken ct)
-    {
-        var rows = request.CsvContent.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var rowNumber = 0;
-        foreach (var row in rows)
-        {
-            rowNumber++;
-            if (rowNumber == 1 && row.Contains("employee", StringComparison.OrdinalIgnoreCase)) continue;
-            var cells = row.Split(',').Select(x => x.Trim()).ToArray();
-            if (cells.Length < 3 || !DateTime.TryParse(cells[1], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
-                continue;
-            var employeeId = await ResolveAttendanceEmployeeIdAsync(tenantId, null, cells[0], ct);
-            if (employeeId is not null && match(employeeId.Value))
-                return true;
-        }
-        return false;
-    }
 
     private Task<int?> ResolveAttendanceEmployeeIdAsync(Guid tenantId, int? employeeId, string? employeeCode, CancellationToken ct)
     {
