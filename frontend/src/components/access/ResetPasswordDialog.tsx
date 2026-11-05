@@ -104,11 +104,15 @@ export function ResetPasswordDialog({ user, onClose, onChanged }: {
       setCopied(false);
       onChanged();
     } catch (err) {
-      // The link goes by email and is refused for anyone with no working login yet: steer to the manual route.
+      // The server's refusal says exactly what is wrong with this account, so it stays. The emailed link is the
+      // method that fails when email is the problem: point at the manual route without claiming it will work
+      // (it refuses the same accounts with its own reason when it cannot).
       if (method === 'link' && (err as { response?: { status?: number } } | null)?.response?.status === 400) {
-        setMethod('temporary');
-        setError(t('A reset link cannot be sent to this person. Set a temporary password instead and hand it to them in person.'));
-        return;
+        const reason = messageOf(err);
+        if (reason) {
+          setError(`${reason} ${t('If email cannot reach them, choose "Set a temporary password" instead and hand it over in person.')}`);
+          return;
+        }
       }
       setError(refusal(err, method === 'link'
         ? t('The reset link could not be sent. Try again in a moment.')
