@@ -155,7 +155,7 @@ for (const viewport of [{ name: 'desktop', width: 1440, height: 1000 }, { name: 
   });
 }
 
-test('lists the reconciliation rules, and saves the thresholds without any acknowledgement', async ({ page }) => {
+test('lists the reconciliation rules; changing the thresholds needs the recorded acknowledgement and is sent with its warning codes', async ({ page }) => {
   const puts: unknown[] = [];
   await open(page, rules({ recon_variance_pct: view('recon_variance_pct', '8') }));
   await page.route('**/api/payroll/company-rules', async route => {
@@ -173,13 +173,18 @@ test('lists the reconciliation rules, and saves the thresholds without any ackno
   expect(puts).toEqual([]);
   await editor(page).getByLabel('Variance that needs an explanation (%)').fill('10');
   await editor(page).getByLabel('Smallest change that needs an explanation').fill('250');
-  await editor(page).getByLabel('Reason (needed if the change lowers pay)').fill('Agreed with finance');
-  await editor(page).getByRole('button', { name: 'Save changes' }).click();
+  const save = editor(page).getByRole('button', { name: 'Save changes' });
+  await expect(save).toBeDisabled();
+  await editor(page).getByLabel(/I understand the effect of these values/).check();
+  await editor(page).getByLabel('Reason (required)').fill('Agreed with finance');
+  await save.click();
+  await page.getByRole('button', { name: 'Confirm and save' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Payroll rules saved.' })).toBeVisible();
   expect(puts).toEqual([{
     companyId: 'fixture-company',
     changes: [{ key: 'recon_variance_pct', value: '10' }, { key: 'recon_variance_min_amount', value: '250' }],
-    acknowledge: false, note: 'Agreed with finance',
+    acknowledge: true, note: 'Agreed with finance',
+    acknowledgedWarnings: ['recon_variance_min_amount:RECON_THRESHOLD_CHANGED', 'recon_variance_pct:RECON_THRESHOLD_CHANGED'],
   }]);
 });
 

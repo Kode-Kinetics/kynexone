@@ -84,6 +84,7 @@ const ar: Record<string, string> = {
   'Changes of at least {n}': 'التغيّرات التي تبلغ {n} فأكثر',
   'Enter a percentage between 0.1 and 100.': 'أدخل نسبة بين 0.1 و100.',
   'Enter an amount of zero or more.': 'أدخل مبلغًا يساوي صفرًا أو أكثر.',
+  'Any change to this setting changes how closely payroll is reviewed. It needs a second person\'s approval and is recorded against the person who confirms it.': 'أي تغيير في هذا الإعداد يغيّر مدى دقة مراجعة الرواتب. ويحتاج إلى موافقة شخص ثانٍ ويُسجَّل باسم من يؤكده.',
   'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.': 'إيقاف ذلك يتيح اعتماد مسير الرواتب دون مصادقة مسجّلة على مطابقة القوى العاملة والقيم. ويُسجَّل باسم من يؤكده.',
   'Save these rules?': 'حفظ هذه القواعد؟',
   'These rules lower a payroll control. They will be saved with your name and the time.': 'تخفّض هذه القواعد إحدى ضوابط الرواتب. ستُحفظ باسمك وبوقت الحفظ.',

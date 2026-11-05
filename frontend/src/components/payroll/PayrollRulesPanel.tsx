@@ -36,6 +36,7 @@ const WARNING_TEXT: Record<string, string> = {
   LEAVE_CASHOUT_OFF: 'Saudi law pays out accrued, untaken annual leave when employment ends (Art. 111). Turning this off withholds that pay, and is recorded against the person who confirms it.',
   PROBATION_OVER_90: 'This is longer than the 90-day statutory probation (Art. 53). Up to 180 days needs the employee’s written agreement. It is recorded against the person who confirms it.',
   PROBATION_OVER_180: 'This is longer than the 180-day statutory maximum even with written agreement (Art. 53). It is recorded against the person who confirms it.',
+  RECON_THRESHOLD_CHANGED: 'Any change to this setting changes how closely payroll is reviewed. It needs a second person\'s approval and is recorded against the person who confirms it.',
   RECON_SIGNOFF_OFF: 'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
 };
 
@@ -300,7 +301,7 @@ function RulesEditor({ views, companyId, onDirty, onCancel, onConfirm, onSaved }
   const warnings = changedWarnings(form, initial);
   const changes = ruleFormToChanges(form, initial);
   // The sign-off switch is the company's own control, not a statutory minimum: its confirmation says so.
-  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF');
+  const statutory = warnings.some(w => w.code !== 'RECON_SIGNOFF_OFF' && w.code !== 'RECON_THRESHOLD_CHANGED');
   useEffect(() => { onDirty(changes.length > 0); return () => onDirty(false); }, [changes.length, onDirty]);
 
   const set = (key: PayrollRuleKey, value: string) => {

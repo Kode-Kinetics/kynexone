@@ -94,12 +94,15 @@ export function validateRuleForm(form: PayrollRuleForm): PayrollRuleErrors {
 }
 
 /** The warning code for a value below a statutory minimum, or null. Assumes the value passed validation. */
-export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | 'RECON_SIGNOFF_OFF' | null {
+export function warningFor(key: PayrollRuleKey, raw: string): 'BELOW_OVERTIME_FLOOR' | 'LEAVE_CASHOUT_OFF' | 'PROBATION_OVER_90' | 'PROBATION_OVER_180' | 'RECON_SIGNOFF_OFF' | 'RECON_THRESHOLD_CHANGED' | null {
   const value = raw.trim();
   if (value === '') return null;
   if ((key === 'rest_day_multiplier' || key === 'holiday_multiplier') && Number(value) < OVERTIME_FLOOR) return 'BELOW_OVERTIME_FLOOR';
   if (key === 'leave_cashout_on_exit' && value === 'false') return 'LEAVE_CASHOUT_OFF';
   if (key === 'recon_signoff_required' && value === 'false') return 'RECON_SIGNOFF_OFF';
+  // A threshold is warned about only once it is a legal number: an illegal one is refused with its own message first.
+  if (key === 'recon_variance_pct' && DECIMAL.test(value) && Number(value) >= RECON_VARIANCE_PCT_MIN && Number(value) <= RECON_VARIANCE_PCT_MAX) return 'RECON_THRESHOLD_CHANGED';
+  if (key === 'recon_variance_min_amount' && DECIMAL.test(value) && Number(value) <= RECON_MIN_AMOUNT_MAX) return 'RECON_THRESHOLD_CHANGED';
   if (key === 'max_probation_days') {
     const days = Number(value);
     if (days > PROBATION_EXTENDED_DAYS) return 'PROBATION_OVER_180';
@@ -130,8 +133,14 @@ export function acknowledgedWarningCodes(form: PayrollRuleForm, initial: Payroll
 
 /** The warnings raised by the rules being CHANGED now (an unchanged, previously confirmed value raises none). */
 export function changedWarnings(form: PayrollRuleForm, initial: PayrollRuleForm): { key: PayrollRuleKey; code: string }[] {
-  const changed = new Set(ruleFormToChanges(form, initial).map(c => c.key));
-  return warningsForForm(form).filter(w => changed.has(w.key));
+  const changes = ruleFormToChanges(form, initial);
+  const changed = new Set(changes.map(c => c.key));
+  const out = warningsForForm(form).filter(w => changed.has(w.key));
+  // A threshold cleared back to the platform default is still a change to how closely payroll is reviewed.
+  for (const c of changes) {
+    if (c.value === null && (c.key === 'recon_variance_pct' || c.key === 'recon_variance_min_amount')) out.push({ key: c.key, code: 'RECON_THRESHOLD_CHANGED' });
+  }
+  return out;
 }
 
 /** The server's message in the user's language when it sent both (the "no eligible approver" refusal). */

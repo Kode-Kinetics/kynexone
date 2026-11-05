@@ -39,12 +39,34 @@ public class ReconCompanyRulesTests
         off!.Code.Should().Be(CompanyPayrollRules.WarnReconSignoffOff);
     }
 
+    [Fact]
+    public void TurningTheSignoffOff_CannotLowerAnyonesPay() =>
+        CompanyPayrollRules.LowersPay("recon_signoff_required", "true", "false").Should().BeFalse();
+
     [Theory]
-    [InlineData("recon_variance_pct", "1", "50")]
-    [InlineData("recon_variance_min_amount", "0", "1000")]
-    [InlineData("recon_signoff_required", "true", "false")]
-    public void ChangingThem_CannotLowerAnyonesPay_SoNoSecondApproverIsNeeded(string key, string from, string to) =>
-        CompanyPayrollRules.LowersPay(key, from, to).Should().BeFalse();
+    [InlineData("recon_variance_pct", "5")]
+    [InlineData("recon_variance_pct", "50")]
+    [InlineData("recon_variance_pct", "0.1")]
+    [InlineData("recon_variance_min_amount", "0")]
+    [InlineData("recon_variance_min_amount", "1000")]
+    public void SettingEitherThreshold_RaisesTheThresholdWarning_WhateverTheValue(string key, string value)
+    {
+        var warning = CompanyPayrollRules.Evaluate(key, value).Warning;
+        warning.Should().NotBeNull("any change to when a movement needs an explanation needs a second person and an acknowledgement");
+        warning!.Code.Should().Be(CompanyPayrollRules.WarnReconThresholdChanged);
+        warning.Key.Should().Be(key);
+    }
+
+    [Theory]
+    [InlineData("recon_variance_pct")]
+    [InlineData("recon_variance_min_amount")]
+    public void ClearingEitherThresholdBackToTheDefault_RaisesTheSameWarning(string key)
+    {
+        var (errors, warnings) = CompanyPayrollRules.Validate(new[] { new PayrollRuleChange(key, null) });
+        errors.Should().BeEmpty();
+        warnings.Should().ContainSingle(w => w.Code == CompanyPayrollRules.WarnReconThresholdChanged);
+        CompanyPayrollRules.WarningCodesFor(new[] { new PayrollRuleChange(key, null) }).Should().Equal($"{key}:RECON_THRESHOLD_CHANGED");
+    }
 
     private static (ZayraDbContext Db, Guid Tenant, Guid Company) NewDb() =>
         (new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options), Guid.NewGuid(), Guid.NewGuid());
@@ -72,7 +94,8 @@ public class ReconCompanyRulesTests
     {
         var (db, tenant, company) = NewDb();
         var changes = new[] { new PayrollRuleChange("recon_variance_pct", "7.5"), new PayrollRuleChange("recon_variance_min_amount", "250") };
-        var result = await CompanyPayrollRules.SaveAsync(db, tenant, company, Guid.NewGuid(), changes, false, null, DateTime.UtcNow, default);
+        var result = await CompanyPayrollRules.SaveAsync(db, tenant, company, Guid.NewGuid(), changes, true, "Agreed with finance", DateTime.UtcNow, default,
+            acknowledgedWarnings: CompanyPayrollRules.WarningCodesFor(changes).ToList());
         result.Saved.Should().BeTrue(string.Join("; ", result.Errors));
 
         var values = await CompanyPayrollRules.ResolveReconAsync(db, tenant, company, default);
@@ -94,8 +117,10 @@ public class ReconCompanyRulesTests
     {
         var (db, tenant, company) = NewDb();
         var tomorrow = CompanyPayrollRules.Today().AddDays(1);
+        var change = new[] { new PayrollRuleChange("recon_variance_pct", "20") };
         var result = await CompanyPayrollRules.SaveAsync(db, tenant, company, Guid.NewGuid(),
-            new[] { new PayrollRuleChange("recon_variance_pct", "20") }, false, null, DateTime.UtcNow, default, effectiveFrom: tomorrow);
+            change, true, "Agreed with finance", DateTime.UtcNow, default, effectiveFrom: tomorrow,
+            acknowledgedWarnings: CompanyPayrollRules.WarningCodesFor(change).ToList());
         result.Saved.Should().BeTrue();
         (await CompanyPayrollRules.ResolveReconAsync(db, tenant, company, default)).VariancePct.Should().BeNull();
         (await CompanyPayrollRules.ResolveReconAsync(db, tenant, company, default, tomorrow)).VariancePct.Should().Be("20");

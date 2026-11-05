@@ -93,15 +93,29 @@ test('the reconciliation rules are legal keys with the server limits: pct 0.1 to
 test('turning the reconciliation sign-off off warns (recorded acknowledgement) and is echoed as key:CODE', () => {
   expect(warningFor('recon_signoff_required', 'true')).toBeNull();
   expect(warningFor('recon_signoff_required', 'false')).toBe('RECON_SIGNOFF_OFF');
-  expect(warningFor('recon_variance_pct', '5')).toBeNull();
   const form = { ...EMPTY_RULE_FORM, recon_signoff_required: 'false' };
   expect(acknowledgedWarningCodes(form, EMPTY_RULE_FORM)).toEqual(['recon_signoff_required:RECON_SIGNOFF_OFF']);
+});
+
+test('any change to a reconciliation threshold warns (second person plus acknowledgement), including clearing it to the default', () => {
+  expect(warningFor('recon_variance_pct', '5')).toBe('RECON_THRESHOLD_CHANGED');
+  expect(warningFor('recon_variance_min_amount', '0')).toBe('RECON_THRESHOLD_CHANGED');
+  expect(warningFor('recon_variance_pct', '')).toBeNull();
+  expect(warningFor('recon_variance_pct', '0.05')).toBeNull();
+  expect(warningFor('recon_variance_min_amount', '-1')).toBeNull();
+  const raised = { ...EMPTY_RULE_FORM, recon_variance_pct: '10', recon_variance_min_amount: '250' };
+  expect(acknowledgedWarningCodes(raised, EMPTY_RULE_FORM)).toEqual(['recon_variance_min_amount:RECON_THRESHOLD_CHANGED', 'recon_variance_pct:RECON_THRESHOLD_CHANGED']);
+  // An unchanged, previously confirmed threshold raises nothing; clearing a saved one is a change.
+  const saved = { ...EMPTY_RULE_FORM, recon_variance_pct: '8' };
+  expect(acknowledgedWarningCodes(saved, saved)).toEqual([]);
+  expect(acknowledgedWarningCodes(EMPTY_RULE_FORM, saved)).toEqual(['recon_variance_pct:RECON_THRESHOLD_CHANGED']);
 });
 
 test('the reconciliation rule copy has an Arabic translation', () => {
   for (const key of [
     'Variance that needs an explanation (%)', 'Smallest change that needs an explanation', 'Reconciliation sign-off before approval',
     'Require the sign-off', 'Do not require the sign-off',
+    "Any change to this setting changes how closely payroll is reviewed. It needs a second person's approval and is recorded against the person who confirms it.",
     'Turning this off lets a payroll run be approved without a recorded manpower and value reconciliation sign-off. It is recorded against the person who confirms it.',
   ]) expect(payrollRules.ar[key], key).toBeTruthy();
 });
