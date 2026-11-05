@@ -700,19 +700,34 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
             var nameEn = (req.NameEn ?? string.Empty).Trim();
             var nameAr = (req.NameAr ?? string.Empty).Trim();
-            if (nameEn.Length == 0) return Bad("name_required", "Give the benefit a name.");
+            // Either language will do: an admin who works in Arabic names it in Arabic. The other name falls back to the given one.
+            if (nameEn.Length == 0 && nameAr.Length == 0) return Bad("name_required", "Give the benefit a name.");
             if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
             if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
-            var code = CustomCodeFor(nameEn);
-            if (code is null) return Bad("name_needs_english", "Give the benefit an English name using letters or digits. An Arabic name can be added next to it.");
+            if (nameEn.Length == 0) nameEn = nameAr;
+            if (nameAr.Length == 0) nameAr = nameEn;
+            var shown = nameEn;
+
+            // One name, one benefit: a name already used by a benefit the customer added (in either language) is refused, and a
+            // removed one with the same name comes back instead of a second row.
+            var custom = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefits the customer added, removed ones too, to keep names unique.")
+                .Where(x => x.CompanyId == null && x.ComponentType == PayComponentTypes.Benefit && x.Code.StartsWith(EntitlementComponentRules.CustomPrefix))
+                .ToListAsync(ct);
+            bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+            var named = custom.Where(x => Same(x.NameEn, nameEn) || Same(x.NameAr, nameAr) || Same(x.NameEn, nameAr) || Same(x.NameAr, nameEn)).ToList();
+            if (named.Any(x => !x.IsDeleted))
+                return Conflict("benefit_exists", $"A benefit called \"{shown}\" already exists. Choose a different name.");
+
+            // The code comes from the English letters and digits of the name; a name with none (Arabic only) gets a short unique code.
+            var code = named.FirstOrDefault()?.Code ?? CustomCodeFor(nameEn) ?? CustomCodeFor(nameAr)
+                ?? EntitlementComponentRules.CustomPrefix + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
 
             // The code is unique across everything in the tenant's pay catalogue, not just the benefits: a clash would put two meanings on one code.
             var clash = await ScopedBypass.TenantWide(db.PayComponents, tid, "A new benefit code must not collide with any pay component code of the tenant.")
                 .AsNoTracking().Where(x => x.Code == code && x.ComponentType != PayComponentTypes.Benefit).AnyAsync(ct);
-            var sameType = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefit's own row, if it was added or removed before.")
-                .Where(x => x.Code == code && x.ComponentType == PayComponentTypes.Benefit && x.CompanyId == null).ToListAsync(ct);
+            var sameType = custom.Where(x => x.Code == code).ToList();
             if (clash || sameType.Any(x => !x.IsDeleted))
-                return Conflict("benefit_exists", $"A benefit called \"{nameEn}\" already exists. Choose a different name.");
+                return Conflict("benefit_exists", $"A benefit called \"{shown}\" already exists. Choose a different name.");
 
             await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tid, ct);
             var row = sameType.FirstOrDefault();   // a removed one with the same name comes back, so the unique key is never broken

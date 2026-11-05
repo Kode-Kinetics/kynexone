@@ -73,7 +73,7 @@ export const SETUP_SETTING_SECTIONS: readonly SetupSettingSection[] = [
 export const SETUP_SECTION_ORDER: readonly SetupSectionId[] = [
   'openingBalances',
   'companies', 'branches', 'locations', 'costCenters', 'departments',
-  'grades', 'designations', 'establishment',
+  'grades', 'gradeBenefits', 'designations', 'establishment',
   'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'attendanceDevices', 'overtimePolicies', 'leaveTypes', 'leavePolicies', 'holidayCalendars',
   'benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payslipTemplates', 'payrollRules', 'bankWps',
   'onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy', 'notificationTemplates',
@@ -217,7 +217,6 @@ const GROUP_ROUTES: Readonly<Record<SetupAreaId, readonly ((nav: DestinationNavi
     nav => route('timeLeave', 'leave', 'Leave requests and balances', '/leave', 'operations', 'mixed', nav),
   ],
   payBenefits: [
-    nav => route('payBenefits', 'gradeBenefits', 'Benefits by grade', '/benefits/by-grade', 'settings', 'mixed', nav),
     nav => route('payBenefits', 'merit', 'Merit planning and benchmarks', '/compensation', 'settings', 'mixed', nav),
     nav => route('payBenefits', 'payroll', 'Payroll and salary structures', '/payroll', 'settings', 'mixed', nav),
     nav => route('payBenefits', 'benefits', 'Benefit enrolments', '/benefits', 'operations', 'mixed', nav),

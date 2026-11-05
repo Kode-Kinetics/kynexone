@@ -16,6 +16,7 @@ import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
   inputFromDraft, markRestNotOffered, monthStarts, periodChoiceKeys, sameDraft, summarise, tierKeys, type CellDraft, type SummaryPart,
+  draftStorageKey, guideProgress, restoreDrafts, savedFrom, type SavedDrafts, gridToCsv, importGrid, type GridImport,
 } from '../../lib/entitlementMatrix';
 
 const valueTypeKeys: Record<string, string> = {
@@ -35,7 +36,24 @@ type Drafts = Record<string, CellDraft>;
  * (housing, transport, medical) can't be marked "Not offered" or skipped, and say why. Publishing is future-dated and
  * never edits a value in place; the impact line says who it reaches now and who at their next contract year.
  */
-export function EntitlementMatrix({ companies }: { companies: { id: string; name: string }[] }) {
+/** Reads the edits kept in this browser for one scope; never throws (private mode, full storage, a damaged entry). */
+function readSaved(key: string): SavedDrafts | null {
+  try { const raw = window.localStorage.getItem(key); return raw ? JSON.parse(raw) as SavedDrafts : null; } catch { return null; }
+}
+function writeSaved(key: string, saved: SavedDrafts) {
+  try {
+    if (Object.keys(saved).length === 0) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, JSON.stringify(saved));
+  } catch { /* storage unavailable: the edits still live on the page */ }
+}
+
+/**
+ * `embedded`: shown as a Setup section, whose header already names it. `onDirtyChange`: unpublished edits, for Setup's
+ * leave guard.
+ */
+export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }: {
+  companies: { id: string; name: string }[]; embedded?: boolean; onDirtyChange?: (dirty: boolean) => void;
+}) {
   const { t, locale } = useLocale();
   const { hasPermission } = useAuth();
   const canManage = hasPermission('entitlements.manage');
@@ -57,7 +75,10 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   const [serverErrors, setServerErrors] = useState<MatrixCellError[]>([]);
   const [notice, setNotice] = useState('');
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const requestSeq = useRef(0);
+  // The browser key the edits on screen are kept under: the scope and date of the grid that is loaded.
+  const storageKey = useRef<string | null>(null);
 
   useEffect(() => { if (!isGroupScope && !companyId && companies[0]) setCompanyId(companies[0].id); }, [isGroupScope, companyId, companies]);
 
@@ -75,12 +96,15 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   const componentName = (c: MatrixComponent) => localName(locale, c.nameEn, c.nameAr);
   const gradeName = (g: MatrixGrade) => localName(locale, g.name, g.nameAr) || g.code;
 
-  const apply = useCallback((m: Matrix) => {
+  const apply = useCallback((m: Matrix, saved?: SavedDrafts | null) => {
     const next: Drafts = {};
     for (const c of m.components) for (const g of m.grades) {
       next[cellKey(g.id, c.code)] = draftFromCell(c, g.id, m.cells.find(x => x.gradeId === g.id && x.componentCode === c.code));
     }
-    setMatrix(m); setOriginal(next); setDrafts(next); setServerErrors([]);
+    // Unpublished edits come back after a reload or a new benefit, as long as the value each one started from is unchanged.
+    const kept = restoreDrafts(next, saved);
+    setMatrix(m); setOriginal(next); setDrafts(kept.drafts); setServerErrors([]);
+    return kept.restored;
     // Editing the grid as of a later date publishes from that date by default (an earlier date would sit under it).
     const floor = m.asOf > m.today ? m.asOf : m.today;
     setEffectiveFrom(current => (current && current >= floor ? current : floor));
@@ -94,7 +118,9 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
       const m = await entitlementsApi.matrix({ companyId: companyId || undefined, asOf: date || undefined });
       if (seq !== requestSeq.current) return;
       if (!m || !Array.isArray(m.grades)) throw new Error('Unexpected matrix response');
-      apply(m);
+      const key = draftStorageKey(companyId, date ?? null);
+      storageKey.current = key;
+      if (apply(m, readSaved(key)) > 0) setNotice(t('Your unpublished changes were kept. Publish them, or discard them.'));
     } catch (e) {
       if (seq !== requestSeq.current) return;
       setMatrix(null); setLoadError(loanErrorMessage(e, t('Unable to load benefits by grade.')));
@@ -106,7 +132,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
     const list = matrix?.components ?? [];
     return [...groupOrder.flatMap(group => list.filter(c => c.group === group && !c.isLoanFacility)), ...list.filter(c => c.isLoanFacility)];
   }, [matrix]);
-  const grades = matrix?.grades ?? [];
+  const grades = useMemo(() => matrix?.grades ?? [], [matrix]);
   const offering = (code: string): MatrixOffering | undefined => matrix?.offerings.find(o => o.componentCode === code);
   const changed = useMemo(() => Object.values(drafts).filter(d => original[cellKey(d.gradeId, d.componentCode)] && !sameDraft(d, original[cellKey(d.gradeId, d.componentCode)])), [drafts, original]);
   const componentOf = useCallback((code: string) => matrix?.components.find(c => c.code === code), [matrix]);
@@ -117,6 +143,29 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   const openGaps = [...gapKeys].filter(k => drafts[k]?.state === 'unset').length;
   // A new benefit is a row for the whole group, so it is added from the group view by someone who can reach every company.
   const canAddBenefit = canManage && !companyId && isGroupScope;
+  const dirty = changed.length > 0;
+
+  // Every edit is kept in the browser as it is made, so nothing typed is lost to a reload or a new benefit.
+  useEffect(() => { if (matrix && storageKey.current) writeSaved(storageKey.current, savedFrom(drafts, original)); }, [drafts, original, matrix]);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
+  // The step strip: how many grade values are set, and the next one to set, in the order the grid shows them.
+  const skippedHere = useCallback((code: string) => matrix?.offerings.find(o => o.componentCode === code)?.mode === 'Skipped', [matrix]);
+  const scheduledKeys = useMemo(() => new Set(scheduled.keys()), [scheduled]);
+  const progress = useMemo(() => guideProgress(components, grades, drafts, scheduledKeys, skippedHere), [components, grades, drafts, scheduledKeys, skippedHere]);
+  const nextAfter = (key: string | null) => guideProgress(components, grades, drafts, scheduledKeys, skippedHere, key).nextKey;
+  const nothingPublished = !!matrix && matrix.cells.length === 0;
+  const nextLabel = (key: string) => {
+    const [gradeId, code] = key.split('|');
+    const c = componentOf(code); const g = grades.find(x => x.id === gradeId);
+    return c && g ? fillTemplate(t('{benefit} for {grade}'), { benefit: componentName(c), grade: gradeName(g) }) : '';
+  };
   const firstScheduled = [...scheduled.values()].sort()[0];
   const openCell = (key: string) => {
     // A statutory floor can only be offered: opening an empty one starts from its lawful minimum.
@@ -145,6 +194,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
     setPublishing(true);
     try {
       const result = await entitlementsApi.publish({ companyId: companyId || null, effectiveFrom, cells: changed.map(inputFromDraft) });
+      if (storageKey.current) writeSaved(storageKey.current, {});
       if (result.matrix) apply(result.matrix); else await load(effectiveFrom);
       setAsOf(matrix && effectiveFrom > matrix.today ? effectiveFrom : null);
       setEditing(null);
@@ -157,7 +207,10 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
     } finally { setPublishing(false); }
   };
 
-  const discard = () => { setDrafts(original); setEditing(null); setServerErrors([]); setError(''); };
+  const discard = () => {
+    if (storageKey.current) writeSaved(storageKey.current, {});
+    setDrafts(original); setEditing(null); setServerErrors([]); setError(''); setNotice('');
+  };
 
   const companyLabel = companyId ? companies.find(c => c.id === companyId)?.name ?? '' : t('All companies (group default)');
   const editingDraft = editing ? drafts[editing] : null;
@@ -168,7 +221,9 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
   return <section className="space-y-4" aria-labelledby="benefits-matrix-heading">
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 id="benefits-matrix-heading" className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Benefits by grade')}</h1>
+        {embedded
+          ? <h2 id="benefits-matrix-heading" className="sr-only">{t('Benefits by grade')}</h2>
+          : <h1 id="benefits-matrix-heading" className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Benefits by grade')}</h1>}
         <p className="max-w-3xl text-xs text-slate-500 dark:text-slate-400">{t('Set every benefit by grade in one place: housing, transport, tickets, medical cover, education and per diem.')}</p>
       </div>
       <label className="text-sm text-slate-700 dark:text-slate-200">{t('Applies to')}
@@ -178,12 +233,11 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
         </select>
       </label>
       {canAddBenefit && <div className="flex flex-col items-end gap-1">
-        <button type="button" className="btn-secondary" aria-expanded={adding} disabled={changed.length > 0 || loading || !matrix}
+        <button type="button" className="btn-secondary" aria-expanded={adding} disabled={loading || !matrix}
           onClick={() => setAdding(open => !open)}>{t('Add a benefit')}</button>
-        {changed.length > 0 && <p className="max-w-[16rem] text-caption text-slate-500">{t('Publish or discard your changes first, then add a benefit.')}</p>}
       </div>}
     </div>
-    {adding && canAddBenefit && changed.length === 0 && <AddBenefitPanel
+    {adding && canAddBenefit && <AddBenefitPanel
       onClose={() => setAdding(false)}
       onAdded={async name => { setAdding(false); setNotice(fillTemplate(t('{benefit} was added. Set its value for each grade, then publish.'), { benefit: name })); await load(asOf); }} />}
     <p className="text-xs text-slate-500 dark:text-slate-400">{t(companyId
@@ -200,7 +254,8 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
     {loading ? <div className="h-40 animate-pulse rounded-2xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" aria-label={t('Loading benefits by grade')} />
       : loadError ? <div role="alert" className="space-y-2 text-sm"><p className="text-red-600">{loadError}</p><button type="button" className="btn-secondary" onClick={() => void load()}>{t('Try again')}</button></div>
       : !matrix ? null
-      : grades.length === 0 ? <p className="rounded-2xl border border-dashed border-slate-300 p-6 text-sm text-slate-500 dark:border-white/15">{t('No active grades yet. Add grades in Setup, then set their benefits here.')}</p>
+      : grades.length === 0 ? <p className="rounded-2xl border border-dashed border-slate-300 p-6 text-sm text-slate-500 dark:border-white/15">{t('No active grades yet. Add grades in Setup, then set their benefits here.')}{' '}
+        <Link href="/setup?tab=grades" className="font-semibold text-sapphire underline">{t('Open Grades')}</Link></p>
       : <>
         {scheduled.size > 0 && firstScheduled && <div role="status" className="rounded-xl border border-sapphire/30 bg-sapphire/5 p-3 text-sm text-slate-700 dark:text-slate-200">
           <p className="font-semibold">{fillTemplate(t('{count} published value(s) start later, the first on {date}.'), { count: scheduled.size, date: firstScheduled })}</p>
@@ -209,17 +264,39 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
               {fillTemplate(t('Show the values from {date}'), { date: firstScheduled })}
             </button></p>
         </div>}
-        {openGaps > 0 && <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
-          <p className="font-semibold">{fillTemplate(t('{count} grade value(s) still need setting.'), { count: openGaps })}</p>
-          <p className="text-xs">{t('Employees in those grades have no package for that benefit until it has a value, or is marked Not offered. They are outlined in amber below.')}</p>
-        </div>}
+        <GuideStrip progress={progress} changes={changed.length} canManage={canManage} canAddBenefit={canAddBenefit}
+          nextLabel={progress.nextKey ? nextLabel(progress.nextKey) : ''}
+          onNext={() => progress.nextKey && openCell(progress.nextKey)} onAddBenefit={() => setAdding(true)} />
+        {openGaps > 0 && (nothingPublished
+          ? <div role="status" className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-200">
+            <p className="font-semibold">{t('Nothing is set yet.')}</p>
+            <p className="text-xs">{t('Give each grade a value for each benefit, or mark it Not offered. Press Set next value to go through them in order, then publish.')}</p>
+          </div>
+          : <div role="status" className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+            <p className="font-semibold">{fillTemplate(t('{count} grade value(s) still need setting.'), { count: openGaps })}</p>
+            <p className="text-xs">{t('Employees in those grades have no package for that benefit until it has a value, or is marked Not offered. They are outlined in amber below.')}</p>
+          </div>)}
 
-        <div className="surface overflow-x-auto rounded-2xl">
+        <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => downloadCsv(gridToCsv(components, grades, drafts), companyId)}>{t('Export to Excel (CSV)')}</button>
+          {canManage && <button type="button" className="btn-secondary h-8 px-3 text-xs" aria-expanded={importing} onClick={() => setImporting(open => !open)}>{t('Import from Excel')}</button>}
+        </div>
+        {importing && canManage && <ImportPanel components={components} grades={grades} onClose={() => setImporting(false)}
+          onApply={result => {
+            setDrafts(list => {
+              const next = { ...list };
+              for (const { key, patch } of result.patches) if (next[key]) next[key] = { ...next[key], ...patch };
+              return next;
+            });
+            setImporting(false);
+            setNotice(fillTemplate(t('{count} value(s) were added to the grid. Review them, then publish.'), { count: result.patches.length }));
+          }} />}
+        <div className="surface max-h-[75vh] overflow-auto rounded-2xl">
           <table className="w-full min-w-[720px] text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
-                <th scope="col" className="sticky start-0 z-10 bg-white p-3 text-start text-xs font-semibold text-slate-500 dark:bg-slate-900">{t('Benefit')}</th>
-                {grades.map(g => <th key={g.id} scope="col" className="p-3 text-start text-xs font-semibold text-slate-600 dark:text-slate-300">
+                <th scope="col" className="sticky start-0 top-0 z-30 bg-white p-3 text-start text-xs font-semibold text-slate-500 dark:bg-slate-900">{t('Benefit')}</th>
+                {grades.map(g => <th key={g.id} scope="col" className="sticky top-0 z-20 bg-white p-3 text-start text-xs font-semibold text-slate-600 dark:bg-slate-900 dark:text-slate-300">
                   {gradeName(g)}<span className="block font-normal text-slate-400">{g.code}</span>
                 </th>)}
               </tr>
@@ -233,7 +310,7 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
                 </th></tr>
                 {rows.map(c => <MatrixRow key={c.code} component={c} grades={grades} drafts={drafts} original={original} gapKeys={gapKeys}
                   offering={offering(c.code)} companyView={!!companyId} canManage={canManage} today={matrix.today} companyId={companyId}
-                  canRemove={canAddBenefit && changed.length === 0} onRemoved={name => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); }}
+                  canRemove={canAddBenefit} onRemoved={name => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); }}
                   onEdit={openCell} onMarkRest={() => setDrafts(list => markRestNotOffered(list, grades, c, new Set(scheduled.keys())))} onOfferingChanged={() => void load(asOf)}
                   say={say} money={money} reasonText={reasonText} componentName={componentName} serverError={serverError} editing={editing} cellByKey={cellByKey} scheduled={scheduled} />)}
               </tbody>;
@@ -250,11 +327,16 @@ export function EntitlementMatrix({ companies }: { companies: { id: string; name
           onSameForAll={() => setDrafts(list => applySameForAll(list, grades, editingDraft.componentCode, editingDraft.gradeId))}
           onUpward={() => setDrafts(list => applyFromGradeUpward(list, grades, editingDraft.componentCode, editingDraft.gradeId))}
           onReset={() => update(editing!, original[editing!] ?? blankDraft(editingComponent, editingDraft.gradeId))}
+          onNext={nextAfter(editing) ? () => openCell(nextAfter(editing)!) : undefined}
           onClose={() => setEditing(null)} />}
 
         {canManage && <div className="surface flex flex-wrap items-end justify-between gap-3 rounded-2xl p-3">
           <div className="max-w-xl space-y-1 text-xs text-slate-500 dark:text-slate-400">
             <p>{fillTemplate(t('Publishing for: {scope}. Values are never edited in place: the value in force ends the day before and the new one starts.'), { scope: companyLabel })}</p>
+            {changed.length > 0 && effectiveFrom && <p className="font-medium text-slate-700 dark:text-slate-200">
+              {fillTemplate(t('You are changing {count} value(s) for {grades} grade(s), starting {date}.'),
+                { count: changed.length, grades: new Set(changed.map(d => d.gradeId)).size, date: effectiveFrom })}
+            </p>}
             {changed.length > 0 && impact && <p role="status" className="font-medium text-slate-700 dark:text-slate-200">
               {fillTemplate(t('Reaches {now} employee(s) on that date and {later} at their next contract year.'), { now: impact.affectedNow, later: impact.affectedAtRenewal })}
               {(impact.superseded ?? 0) > 0 && <span className="block font-normal">{fillTemplate(t('{count} value(s) that have not started yet will be replaced on their start date.'), { count: impact.superseded ?? 0 })}</span>}
@@ -330,10 +412,12 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
         : 'border-slate-200 dark:border-white/10';
       return <td key={g.id} className="p-2">
         <button type="button" disabled={c.isLoanFacility || skipped} aria-pressed={editing === key}
-          aria-label={fillTemplate(t('{benefit} for {grade}: {value}'), { benefit: componentName(c), grade: g.code, value: summary })}
+          aria-label={fillTemplate(t('{benefit} for {grade}: {value}'), { benefit: componentName(c), grade: g.code,
+            value: [summary, gap && !dirty ? t('Needs a value') : '', dirty ? t('Changed — not published yet') : ''].filter(Boolean).join(', ') })}
           onClick={() => onEdit(key)}
           className={`w-full min-w-[120px] rounded-lg border px-2 py-1.5 text-start text-xs transition hover:border-sapphire disabled:cursor-default disabled:hover:border-slate-200 ${tone}`}>
-          <span className={d.state === 'notOffered' || d.state === 'unset' ? 'text-slate-500' : 'text-slate-800 dark:text-slate-100'}>{summary}</span>
+          <bdi className={d.state === 'notOffered' || d.state === 'unset' ? 'text-slate-500' : 'text-slate-800 dark:text-slate-100'}>{summary}</bdi>
+          {gap && !dirty && <span className="mt-0.5 block text-caption font-semibold text-amber-700 dark:text-amber-300">{t('Needs a value')}</span>}
           {companyView && !dirty && cellByKey.get(key) && <span className="mt-0.5 block text-caption text-slate-400">{t(cellByKey.get(key)!.isCompanyOverride ? 'This company' : 'Group default')}</span>}
           {dirty && <span className="mt-0.5 block text-caption font-semibold text-sapphire">{t('Changed — not published yet')}</span>}
           {problem && <span className="mt-0.5 block text-caption text-red-600">{problem === FLOOR_PROBLEM ? reasonText(c.floorReason, 'title') : t(problem)}</span>}
@@ -355,20 +439,107 @@ function loanSummary(cell: MatrixCell | undefined, money: (n: number) => string,
   return owed ? fillTemplate(t('Eligible, at most {owed} owed'), owed) : t('Eligible');
 }
 
+/** Downloads the grid as a CSV file Excel opens (UTF-8 with a byte-order mark, so Arabic names survive). */
+function downloadCsv(csv: string, scope: string) {
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `benefits-by-grade-${scope || 'group'}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/** Paste cells copied from Excel, or choose a CSV file; check what can be read, then put it in the grid unpublished. */
+function ImportPanel({ components, grades, onApply, onClose }: {
+  components: MatrixComponent[]; grades: MatrixGrade[]; onApply: (result: GridImport) => void; onClose: () => void;
+}) {
+  const { t } = useLocale();
+  const [text, setText] = useState('');
+  const result = useMemo(() => (text.trim() ? importGrid(text, components, grades) : null), [text, components, grades]);
+  const readFile = async (file: File | undefined) => { if (file) setText(await file.text()); };
+  return <section aria-labelledby="import-grid-heading" className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
+    <div>
+      <h2 id="import-grid-heading" className="font-semibold text-slate-800 dark:text-slate-100">{t('Import from Excel')}</h2>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{t('Copy the cells in Excel, with the grade codes in the first row and the benefits in the first column, and paste them here. Or choose a CSV file exported from this screen.')}</p>
+      <p className="text-xs text-slate-500 dark:text-slate-400">{t('Write an amount (1500), a percentage of basic (25%), In kind, a count (2x), a class of cover (B) or Not offered. Nothing is published until you press Publish.')}</p>
+    </div>
+    <label className="block text-sm">{t('Pasted cells')}
+      <textarea className="input mt-1 h-32 w-full font-mono text-xs" dir="ltr" value={text} onChange={e => setText(e.target.value)} />
+    </label>
+    <label className="block text-sm">{t('Or choose a CSV file')}
+      <input type="file" accept=".csv,.txt,text/csv" className="mt-1 block text-xs" onChange={e => void readFile(e.target.files?.[0])} />
+    </label>
+    {result && <div className="space-y-1 text-sm" aria-live="polite">
+      <p className="font-medium text-slate-700 dark:text-slate-200">{fillTemplate(t('{count} value(s) can be added to the grid.'), { count: result.patches.length })}</p>
+      {result.errors.length > 0 && <>
+        <p className="text-red-600">{fillTemplate(t('{count} value(s) could not be read and will be left out. They are listed below.'), { count: result.errors.length })}</p>
+        <ul className="max-h-40 list-disc overflow-auto ps-5 text-xs text-red-700 dark:text-red-300">
+          {result.errors.slice(0, 50).map(e => <li key={`${e.row}-${e.column}`}>
+            {fillTemplate(t('Row {row}, column {column} ({benefit} {grade}): {problem}'), { row: e.row, column: e.column, benefit: e.benefit, grade: e.grade, problem: t(e.message) })}
+          </li>)}
+        </ul>
+      </>}
+    </div>}
+    <div className="flex flex-wrap gap-2">
+      <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!result || result.patches.length === 0} onClick={() => result && onApply(result)}>{t('Put these values in the grid')}</button>
+      <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onClose}>{t('Cancel')}</button>
+    </div>
+  </section>;
+}
+
+/**
+ * The guided path through the grid: ① grades, ② the benefits on offer, ③ a value for every grade, ④ review and publish.
+ * Every step stays a status the admin can act on, never a gate: they can work in any order.
+ */
+function GuideStrip({ progress, changes, canManage, canAddBenefit, nextLabel, onNext, onAddBenefit }: {
+  progress: { total: number; set: number; nextKey: string | null }; changes: number; canManage: boolean; canAddBenefit: boolean;
+  nextLabel: string; onNext: () => void; onAddBenefit: () => void;
+}) {
+  const { t } = useLocale();
+  const valuesDone = progress.total > 0 && progress.set === progress.total;
+  const current = !valuesDone ? 3 : changes > 0 ? 4 : 0;
+  const steps: { n: number; label: string; detail: string; done: boolean }[] = [
+    { n: 1, label: t('Grades'), detail: t('Ready'), done: true },
+    { n: 2, label: t('Choose benefits'), detail: t('Add or turn off benefits'), done: true },
+    { n: 3, label: t('Set values'), detail: fillTemplate(t('{set} of {total} set'), { set: progress.set, total: progress.total }), done: valuesDone },
+    { n: 4, label: t('Review & publish'), detail: changes > 0 ? fillTemplate(t('{count} change(s) to publish'), { count: changes }) : t('Nothing waiting'), done: valuesDone && changes === 0 },
+  ];
+  return <nav aria-label={t('Steps to set benefits by grade')} className="surface rounded-2xl p-3">
+    <ol className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+      {steps.map(step => <li key={step.n} aria-current={step.n === current ? 'step' : undefined}
+        className={`flex items-center gap-2 ${step.n === current ? 'font-semibold text-sapphire' : 'text-slate-700 dark:text-slate-200'}`}>
+        <span aria-hidden="true" className={`grid h-6 w-6 place-items-center rounded-full text-xs ${step.done ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200' : step.n === current ? 'bg-sapphire text-white' : 'bg-slate-100 text-slate-600 dark:bg-white/10 dark:text-slate-300'}`}>
+          {step.done ? '✓' : step.n}
+        </span>
+        <span>{step.label}<span className="block text-caption font-normal text-slate-500 dark:text-slate-400">{step.detail}</span></span>
+      </li>)}
+    </ol>
+    {canManage && <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-sm dark:border-white/10" aria-live="polite">
+      {progress.nextKey
+        ? <>
+          <span className="text-slate-700 dark:text-slate-200">{fillTemplate(t('Next: {item}'), { item: nextLabel })}</span>
+          <button type="button" className="btn-primary h-8 px-3 text-xs" onClick={onNext}>{t('Set next value')}</button>
+        </>
+        : <span className="text-slate-700 dark:text-slate-200">{t(changes > 0 ? 'Every grade has a value. Review the changes below, then publish.' : 'Every grade has a value.')}</span>}
+      {canAddBenefit && <button type="button" className="text-xs text-sapphire underline" onClick={onAddBenefit}>{t('Add a benefit')}</button>}
+    </div>}
+  </nav>;
+}
+
 /** Adds a benefit of the customer's own to the grid: a name, in English (it makes the code) and optionally Arabic. */
 function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Promise<void>; onClose: () => void }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const [nameEn, setNameEn] = useState('');
   const [nameAr, setNameAr] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!nameEn.trim()) { setError(t('Give the benefit a name.')); return; }
+    if (!nameEn.trim() && !nameAr.trim()) { setError(t('Give the benefit a name.')); return; }
     setBusy(true); setError('');
     try {
-      const added = await entitlementsApi.addBenefit({ nameEn: nameEn.trim(), nameAr: nameAr.trim() || null });
-      await onAdded(added.nameEn);
+      const added = await entitlementsApi.addBenefit({ nameEn: nameEn.trim() || null, nameAr: nameAr.trim() || null });
+      await onAdded(localName(locale, added.nameEn, added.nameAr));
     } catch (err) { setError(loanErrorMessage(err, t('Unable to add the benefit.'))); setBusy(false); }
   };
   return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
@@ -378,10 +549,11 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('It is recorded in each employee’s package and is not paid through payroll. For a monthly cash allowance, use Other allowances.')}</p>
     </div>
     <div className="grid gap-3 sm:grid-cols-2">
+      <p className="text-xs text-slate-500 sm:col-span-2 dark:text-slate-400">{t('Enter the name in English, Arabic or both.')}</p>
       <label className="text-sm">{t('Benefit name (English)')}
-        <input className="input mt-1 w-full" maxLength={100} required value={nameEn} onChange={e => setNameEn(e.target.value)} />
+        <input className="input mt-1 w-full" maxLength={100} dir="ltr" value={nameEn} onChange={e => setNameEn(e.target.value)} />
       </label>
-      <label className="text-sm">{t('Benefit name (Arabic, optional)')}
+      <label className="text-sm">{t('Benefit name (Arabic)')}
         <input className="input mt-1 w-full" maxLength={100} dir="rtl" value={nameAr} onChange={e => setNameAr(e.target.value)} />
       </label>
     </div>
@@ -451,11 +623,13 @@ function OfferingSwitch({ code, name, companyId, offering, today, onChanged }: {
 }
 
 function CellEditor({ draft: d, component: c, grade, companyView, hasCompanyValue, currency, readOnly, reasonText, componentName, gradeName, serverError,
-  onChange, onSameForAll, onUpward, onReset, onClose }: {
+  onChange, onSameForAll, onUpward, onReset, onNext, onClose }: {
   draft: CellDraft; component: MatrixComponent; grade: MatrixGrade; grades: MatrixGrade[]; companyView: boolean; hasCompanyValue: boolean;
   currency: string; readOnly: boolean; reasonText: (r: BlockReason | null | undefined, field: 'title' | 'why' | 'fix') => string;
   componentName: (c: MatrixComponent) => string; gradeName: (g: MatrixGrade) => string; serverError?: MatrixCellError;
   onChange: (patch: Partial<CellDraft>) => void; onSameForAll: () => void; onUpward: () => void; onReset: () => void; onClose: () => void;
+  /** Keeps this value and opens the next grade value still to set; absent when none is left. */
+  onNext?: () => void;
 }) {
   const { t, locale } = useLocale();
   const problem = draftProblem(d, c);
@@ -474,7 +648,10 @@ function CellEditor({ draft: d, component: c, grade, companyView, hasCompanyValu
         <h2 id="cell-editor-heading" className="font-semibold text-slate-800 dark:text-slate-100">{componentName(c)} — {gradeName(grade)}</h2>
         <p className="text-xs text-slate-500">{t(groupKeys[c.group])}</p>
       </div>
-      <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onClose}>{t('Done editing')}</button>
+      <div className="flex flex-wrap gap-2">
+        {onNext && !readOnly && <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!!problem} onClick={onNext}>{t('Save & next')}</button>}
+        <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={onClose}>{t('Done editing')}</button>
+      </div>
     </div>
     {c.isFloor && <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs dark:border-white/10 dark:bg-white/[0.03]">
       <p className="font-semibold">{reasonText(c.floorReason, 'title')}</p>

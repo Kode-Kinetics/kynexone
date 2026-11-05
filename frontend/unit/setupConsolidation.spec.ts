@@ -21,6 +21,9 @@ const everyone: SetupModuleAccess = {
   verdictForPath: () => ({ allowed: true }),
   flagStatus: 'ready',
 };
+/** Everything on, except the flag that retires this one section (a Release A tenant no longer sees Benefit plans); the
+ * retirement itself is pinned in 'a_retired_section_closes_when_its_replacement_flag_is_on'. */
+const live = (item: SetupModuleSection): SetupModuleAccess => ({ ...everyone, isFeatureEnabled: key => key !== item.hiddenWhenFeatureKey });
 const section = (id: string): SetupModuleSection => {
   const found = SETUP_MODULE_SECTIONS.find(item => item.id === id);
   expect(found, `Missing Setup section ${id}`).toBeDefined();
@@ -32,6 +35,7 @@ test('the_moved_screens_and_their_groups_are_exactly_these', () => {
   for (const item of SETUP_MODULE_SECTIONS) (byGroup[item.group] ??= []).push(item.id);
   expect(byGroup).toEqual({
     getStarted: ['openingBalances'],
+    jobsHeadcount: ['gradeBenefits'],
     timeLeave: ['leaveTypes', 'leavePolicies', 'holidayCalendars', 'shiftDefinitions', 'shiftPolicy', 'attendanceRules', 'overtimePolicies', 'attendanceDevices'],
     payBenefits: ['benefitPlans', 'loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes', 'payrollRules', 'payslipTemplates', 'bankWps'],
     talentServices: ['onboardingChecklists', 'onboardingChecklistTemplates', 'hireTemplates', 'performanceScorecards', 'letterTemplates', 'engagementPrivacy'],
@@ -60,24 +64,36 @@ test('every_section_is_named_described_and_unique_across_setup', () => {
 
 test('a_section_needs_one_of_its_permissions', () => {
   for (const item of SETUP_MODULE_SECTIONS) {
-    expect(moduleSectionAvailable(item, { ...everyone, hasPermission: () => false }), item.id).toBe(false);
-    expect(moduleSectionAvailable(item, { ...everyone, hasPermission: key => key === item.permissions[0] }), item.id).toBe(true);
+    expect(moduleSectionAvailable(item, { ...live(item), hasPermission: () => false }), item.id).toBe(false);
+    expect(moduleSectionAvailable(item, { ...live(item), hasPermission: key => key === item.permissions[0] }), item.id).toBe(true);
   }
 });
 
 test('a_section_with_roles_needs_one_of_them', () => {
   for (const item of SETUP_MODULE_SECTIONS.filter(entry => entry.roles?.length)) {
-    expect(moduleSectionAvailable(item, { ...everyone, hasRole: () => false }), item.id).toBe(false);
-    expect(moduleSectionAvailable(item, { ...everyone, hasRole: role => role === item.roles![0] }), item.id).toBe(true);
+    expect(moduleSectionAvailable(item, { ...live(item), hasRole: () => false }), item.id).toBe(false);
+    expect(moduleSectionAvailable(item, { ...live(item), hasRole: role => role === item.roles![0] }), item.id).toBe(true);
   }
+});
+
+test('a_retired_section_closes_when_its_replacement_flag_is_on', () => {
+  // A Release A tenant sets its benefits in Benefits by grade (under Grades), so Benefit plans leaves Setup for it.
+  expect(section('benefitPlans').hiddenWhenFeatureKey).toBe('release_a');
+  expect(moduleSectionAvailable(section('benefitPlans'), { ...everyone, isFeatureEnabled: () => true })).toBe(false);
+  expect(moduleSectionAvailable(section('benefitPlans'), { ...everyone, isFeatureEnabled: key => key !== 'release_a' })).toBe(true);
+  // ...and Benefits by grade opens there, for the people who can read it, only with Release A on.
+  const grid = section('gradeBenefits');
+  expect([grid.group, grid.featureKey, grid.modulePath, ...grid.permissions]).toEqual(['jobsHeadcount', 'release_a', '/benefits/by-grade', 'entitlements.read']);
+  expect(moduleSectionAvailable(grid, { ...everyone, isFeatureEnabled: () => true })).toBe(true);
+  expect(moduleSectionAvailable(grid, { ...everyone, isFeatureEnabled: () => false })).toBe(false);
 });
 
 test('a_section_follows_its_modules_switch_and_feature_flag', () => {
   for (const item of SETUP_MODULE_SECTIONS) {
-    expect(moduleSectionAvailable(item, { ...everyone, verdictForPath: path => ({ allowed: path !== item.modulePath }) }), item.id).toBe(false);
-    expect(moduleSectionAvailable(item, { ...everyone, flagStatus: 'loading' }), item.id).toBe(false);
+    expect(moduleSectionAvailable(item, { ...live(item), verdictForPath: path => ({ allowed: path !== item.modulePath }) }), item.id).toBe(false);
+    expect(moduleSectionAvailable(item, { ...live(item), flagStatus: 'loading' }), item.id).toBe(false);
     if (item.featureKey) {
-      expect(moduleSectionAvailable(item, { ...everyone, isFeatureEnabled: key => key !== item.featureKey }), item.id).toBe(false);
+      expect(moduleSectionAvailable(item, { ...live(item), isFeatureEnabled: key => key !== item.featureKey }), item.id).toBe(false);
     }
   }
 });

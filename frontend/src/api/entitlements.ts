@@ -83,7 +83,7 @@ export const entitlementsApi = {
   publish: (body: { companyId: string | null; effectiveFrom: string; cells: MatrixCellInput[] }, dryRun = false) =>
     client.put<PublishMatrixResult>('/api/entitlements/matrix', body, { params: dryRun ? { dryRun: true } : undefined }).then(r => r.data),
   /** Adds a benefit of the customer's own (needs access to every company). Returns it as a grid row. */
-  addBenefit: (body: { nameEn: string; nameAr?: string | null }) =>
+  addBenefit: (body: { nameEn?: string | null; nameAr?: string | null }) =>
     client.post<MatrixComponent>('/api/entitlements/components', body).then(r => r.data),
   /** Removes a benefit the customer added and nobody has used yet (409 benefit_in_use otherwise). */
   removeBenefit: (code: string) =>

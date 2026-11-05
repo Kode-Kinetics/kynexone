@@ -665,6 +665,25 @@ public class EntitlementMatrixTests
     }
 
     [Fact]
+    public async Task ABenefitNamedOnlyInArabic_GetsAShortCode_AndKeepsItsNameUnique()
+    {
+        await using var h = await H.Create();
+        Status(await h.AddBenefit(null, "بدل الجوال")).Should().Be(200);
+        var row = await h.Db.PayComponents.SingleAsync(x => x.NameAr == "بدل الجوال");
+        row.Code.Should().MatchRegex("^BEN_[0-9A-F]{8}$");
+        row.NameEn.Should().Be("بدل الجوال", "the English view shows the only name there is");
+        (await h.Read(null, Today)).Components.Single(c => c.Code == row.Code).IsCustom.Should().BeTrue();
+
+        Error(await h.AddBenefit(null, " بدل الجوال ")).Should().Be("benefit_exists");
+        Error(await h.AddBenefit("Phone", "بدل الجوال")).Should().Be("benefit_exists", "the Arabic name is already used");
+
+        // Removed and added again under the same name: the same row and code come back.
+        Status(await h.RemoveBenefit(row.Code)).Should().Be(200);
+        Status(await h.AddBenefit(null, "بدل الجوال")).Should().Be(200);
+        (await h.Db.PayComponents.Where(x => x.NameAr == "بدل الجوال").Select(x => x.Code).ToListAsync()).Should().Equal(row.Code);
+    }
+
+    [Fact]
     public async Task ABenefitWithoutAnArabicName_UsesItsEnglishName()
     {
         await using var h = await H.Create();
@@ -728,7 +747,7 @@ public class EntitlementMatrixTests
     {
         await using var h = await H.Create();
         Error(await h.AddBenefit("  ", null)).Should().Be("name_required");
-        Error(await h.AddBenefit("بدل الجوال", "بدل الجوال")).Should().Be("name_needs_english");
+        Error(await h.AddBenefit(null, "  ")).Should().Be("name_required");
         Error(await h.AddBenefit(new string('x', 101), null)).Should().Be("name_too_long");
         Error(await h.AddBenefit("Bad\u0007name", null)).Should().Be("name_invalid");
 

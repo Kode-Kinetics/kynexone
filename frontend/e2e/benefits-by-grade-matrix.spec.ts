@@ -140,10 +140,10 @@ for (const locale of ['en', 'ar'] as const) {
 
       await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Parking');
-      await page.getByLabel(say(locale, 'Benefit name (Arabic, optional)')).fill('موقف');
+      await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('موقف');
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
 
-      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit: 'Parking' }))).toBeVisible();
+      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit: locale === 'ar' ? 'موقف' : 'Parking' }))).toBeVisible();
       expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: { nameEn: 'Parking', nameAr: 'موقف' } });
       await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
       // Every grade is a gap until it has a value, so the new benefit can't be silently missing from a package.
