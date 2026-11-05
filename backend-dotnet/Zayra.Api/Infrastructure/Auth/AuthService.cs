@@ -456,6 +456,9 @@ public class AuthService : IAuthService
             user.PasswordHash = passwordHash;
             user.MustChangePassword = true;
             user.LastPasswordChangedAt = setAtUtc;
+            var emailConfirmedByAdmin = invitation is not null || !user.IsEmailConfirmed;
+            // Sign-in refuses an unconfirmed email, so a temporary password is useless unless the administrator vouches for it.
+            user.IsEmailConfirmed = true;
             if (invitation is not null)
             {
                 // Same end state as accepting the invitation (AcceptInvitationAsync), except the password must still be
@@ -492,7 +495,7 @@ public class AuthService : IAuthService
                 "User",
                 user.Id.ToString(),
                 context with { TenantId = tenantId },
-                System.Text.Json.JsonSerializer.Serialize(new { reason, mustChangePassword = true, sessionsRevoked = true, failureLockoutCleared, completedInvitation = invitation is not null, emailConfirmedByAdmin = invitation is not null })));
+                System.Text.Json.JsonSerializer.Serialize(new { reason, mustChangePassword = true, sessionsRevoked = true, failureLockoutCleared, completedInvitation = invitation is not null, emailConfirmedByAdmin })));
             await _db.SaveChangesAsync(ct);
             changed = user;
         }

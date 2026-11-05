@@ -90,6 +90,25 @@ public sealed class AdminSetTemporaryPasswordTests
     }
 
     [Fact]
+    public async Task ATemporaryPassword_ForALoginWhoseEmailWasNeverConfirmed_IsAllowed_AndTheAdminVouchesForIt()
+    {
+        await using var db = CreateDb();
+        var w = await SeedAsync(db);
+        var target = await db.Users.SingleAsync(x => x.Id == w.TargetId);
+        target.IsEmailConfirmed = false;
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, w, w.AdminId).AdminResetPassword(w.TargetId, new AdminResetPasswordRequest(Temporary, Reason), default);
+
+        result.Should().BeOfType<OkObjectResult>();
+        var user = await db.Users.AsNoTracking().SingleAsync(x => x.Id == w.TargetId);
+        user.IsEmailConfirmed.Should().BeTrue("sign-in refuses unconfirmed email, and the administrator vouches for it");
+        user.MustChangePassword.Should().BeTrue();
+        (await db.AuditLogs.AsNoTracking().SingleAsync(x => x.Action == "access.admin_password_reset"))
+            .Metadata.Should().Contain("emailConfirmedByAdmin\":true");
+    }
+
+    [Fact]
     public async Task ATemporaryPassword_ForAnInvitedLogin_IsRefusedUnlessThePlatformSwitchedItOn()
     {
         await using var db = CreateDb();

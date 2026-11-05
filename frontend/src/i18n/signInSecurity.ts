@@ -156,6 +156,7 @@ Object.assign(ar, {
     "سيُسجَّل خروج {name} من كل الأجهزة، وسيُعدّ التحقق بخطوتين من جديد عند تسجيل الدخول التالي. وستتوقف متصفحاته الموثوقة ورموزه الاحتياطية عن العمل.",
   "For example, a lost or replaced phone. It is kept in the audit log.": "مثل فقدان الهاتف أو استبداله. يُحفظ السبب في سجل التدقيق.",
   "Enter a reason of 3 to 500 characters.": "أدخل سببًا يتراوح بين 3 و500 حرف.",
+  "If email cannot reach them, choose \"Set a temporary password\" instead and hand it over in person.": "إذا تعذّر وصول البريد إليه، فاختر «تعيين كلمة مرور مؤقتة» وسلّمها له مباشرة.",
   "Resetting…": "جارٍ إعادة التعيين…",
   "Two-step sign-in reset for {name}": "تمت إعادة تعيين التحقق بخطوتين لـ {name}",
   "You can't reset your own two-step sign-in. Ask another administrator to do it.":
