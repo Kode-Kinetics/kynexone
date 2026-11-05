@@ -55,6 +55,8 @@ export const SERVER_CODE_KEYS: Record<string, string> = {
   dob_out_of_range: 'Date of birth cannot be more than 100 years ago.',
   joining_out_of_range: 'The start date is outside the allowed range.',
   probation_order: 'The probation end date must be after the probation start date.',
+  confirmation_before_joining: 'The confirmation date cannot be before the joining date.',
+  probation_waived_with_dates: 'Remove the probation end date, or untick "No probation".',
   negative_amount: 'Amount cannot be negative.',
   amount_overflow: 'Enter an amount of 9,999,999,999.99 or less.',
   iban_invalid: 'This IBAN is not valid. Check the digits and length.',

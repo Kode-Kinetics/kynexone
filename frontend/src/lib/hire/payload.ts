@@ -11,6 +11,8 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   payrollProfile?: Omit<NonNullable<EmployeeCreateRequest['payrollProfile']>, 'wpsEligible' | 'eosbEligible'> & { wpsEligible?: boolean; eosbEligible?: boolean };
   nationalityCode?: string;
   contractEndDate?: string;
+  /** "No probation" exception: no probation dates are stored and the employee is confirmed from the start date. */
+  probationWaived?: boolean;
   duplicateOverrideReason?: string;
   /** Sent with duplicateOverrideReason when an authorised user confirms "this is a different person"; the server refuses a strong match otherwise. */
   acknowledgeDuplicate?: boolean;
@@ -85,7 +87,8 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     employmentType: opt(form.employmentType),
     contractType: opt(form.contractType),
     contractEndDate: isFixedTerm(form.contractType) ? opt(form.contractEndDate) : undefined,
-    probationEndDate: opt(form.probationEndDate),
+    probationEndDate: form.probationWaived ? undefined : opt(form.probationEndDate),
+    probationWaived: form.probationWaived ? true : undefined,
     workEmail: composeWorkEmail(form.workEmail),
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),

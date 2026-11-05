@@ -32,6 +32,7 @@ public class EmployeeDraft : ITenantOwned
     public DateOnly? ContractStartDate { get; set; }
     public DateOnly? ContractEndDate { get; set; }
     public DateOnly? ProbationEndDate { get; set; }
+    public bool ProbationWaived { get; set; }
     public string PayrollProfileCode { get; set; } = string.Empty;
     public decimal? Salary { get; set; }
     // Immutable acceptance witness; null JSON explicitly means no retained legacy snapshot.

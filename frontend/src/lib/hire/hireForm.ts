@@ -33,6 +33,8 @@ export interface HireForm {
   contractType: string;
   contractEndDate: string;
   probationEndDate: string;
+  /** Exception: this hire has no probation. Clears the probation end date; the server confirms them from the start date. */
+  probationWaived: boolean;
   workLocation: string;
   iban: string;
   molId: string;
@@ -47,7 +49,7 @@ export function emptyHireForm(): HireForm {
     englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', managerId: '',
     employeeCode: '', manualCode: false, workEmail: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
     nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
-    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', workLocation: '', iban: '', molId: '',
+    personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', probationWaived: false, workLocation: '', iban: '', molId: '',
     basic: '', housing: '', transport: '', other: '',
   };
 }

@@ -58,8 +58,13 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
         </FieldShell>
         <DateField field="contractEndDate" label={t('Contract end date')} value={form.contractEndDate} disabled={!fixed} hint={fixed ? undefined : t('Choose a fixed-term contract type to set an end date.')}
           onChange={v => set('contractEndDate', v)} onBlur={() => blur('contractEndDate')} error={errorFor('contractEndDate')} />
-        <DateField field="probationEndDate" label={t('Probation end date')} hint={t('More than 180 days after the start date needs a reason when you save.')}
+        <DateField field="probationEndDate" label={t('Probation end date')} disabled={form.probationWaived}
+          hint={form.probationWaived ? t('No probation: confirmed from the start date.') : t('More than 180 days after the start date needs a reason when you save.')}
           value={form.probationEndDate} onChange={v => set('probationEndDate', v)} onBlur={() => blur('probationEndDate')} error={errorFor('probationEndDate')} />
+        <label className="flex items-center gap-2 self-end pb-2 text-sm text-slate-700 dark:text-slate-200">
+          <input type="checkbox" data-testid="probation-waived" checked={form.probationWaived}
+            onChange={e => { set('probationWaived', e.target.checked); if (e.target.checked) set('probationEndDate', ''); }} />{t('No probation (exception)')}
+        </label>
         <FieldShell field="workLocation" label={t('Work location')}>
           {p => <input {...p} value={form.workLocation} onChange={e => set('workLocation', e.target.value)} className={inputClass} />}
         </FieldShell>

@@ -1682,9 +1682,11 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.ContractType = Clean(request.ContractType);
         employee.JoiningDate = UtcDate(request.JoiningDate)
             ?? (employee.JoiningDate == default ? DateTime.UtcNow.Date : DateTime.SpecifyKind(employee.JoiningDate.Date, DateTimeKind.Utc));
-        employee.ConfirmationDate = request.ConfirmationDate;
-        employee.ProbationStartDate = request.ProbationStartDate;
-        employee.ProbationEndDate = request.ProbationEndDate;
+        // "No probation" exception: no probation dates, and the employee counts as confirmed from the joining date.
+        employee.ProbationWaived = request.ProbationWaived;
+        employee.ConfirmationDate = request.ProbationWaived ? request.ConfirmationDate ?? DateOnly.FromDateTime(employee.JoiningDate) : request.ConfirmationDate;
+        employee.ProbationStartDate = request.ProbationWaived ? null : request.ProbationStartDate;
+        employee.ProbationEndDate = request.ProbationWaived ? null : request.ProbationEndDate;
         employee.ContractEndDate = request.ContractEndDate ?? (Zayra.Api.Application.Employees.Onboarding.ContractRules.IsFixedTerm(employee.ContractType) ? employee.ContractEndDate : null);   // CD26
         employee.NoticePeriodDays = request.NoticePeriodDays;
         employee.WorkLocation = Clean(request.WorkLocation);

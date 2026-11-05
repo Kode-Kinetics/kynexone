@@ -124,7 +124,8 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
         <Row label={t('Employment type')} value={choice(lookups.refs.employmentType, EMPLOYMENT_FALLBACK, form.employmentType)} />
         <Row label={t('Contract type')} value={choice(lookups.refs.contractType, CONTRACT_FALLBACK, form.contractType)} />
         {form.contractEndDate && dateRow('contractEndDate', t('Contract end date'), form.contractEndDate)}
-        {form.probationEndDate && dateRow('probationEndDate', t('Probation end date'), form.probationEndDate)}
+        {form.probationWaived && <Row label={t('Probation')} value={t('No probation')} />}
+        {!form.probationWaived && form.probationEndDate && dateRow('probationEndDate', t('Probation end date'), form.probationEndDate)}
         <Row label={t('IBAN')} value={form.iban.trim() ? normalizeIban(form.iban) : ''} ltr />
         {bank && <Row label={t('Bank')} value={bank} />}
         <Row label={t('Basic salary')} value={money(form.basic)} ltr />
