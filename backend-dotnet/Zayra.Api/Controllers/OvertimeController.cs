@@ -911,9 +911,13 @@ public class OvertimeController : ControllerBase
         // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)
         // and any non-default tenant.
         var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
+        // The holiday question is answered by the SAME function attendance and payroll use (active calendars,
+        // company-wide or the employing company's). This method used to read PublicHolidays directly, so a date on an
+        // inactive or a sister company's calendar was a 2.0× holiday here, stamped as ApprovedMultiplier, and paid
+        // at 2.0 by a payroll run that itself considered it an ordinary 1.5× day.
         var dayCategory = OvertimeStatutoryCalculator.DayCategory(
             request.WorkDate,
-            await IsPublicHoliday(tenantId, request.WorkDate, ct),
+            await IsPublicHoliday(tenantId, employee?.CompanyId, request.WorkDate, ct),
             workWeek.IsWeekend(request.WorkDate.DayOfWeek));
 
         // ── The statutory context: the SAME rule keys, fallbacks and arithmetic the payroll run
@@ -1024,8 +1028,8 @@ public class OvertimeController : ControllerBase
         return (cc ?? string.Empty, company?.Jurisdiction ?? string.Empty);
     }
 
-    private Task<bool> IsPublicHoliday(Guid tenantId, DateOnly date, CancellationToken ct) =>
-        _db.PublicHolidays.AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
+    private async Task<bool> IsPublicHoliday(Guid tenantId, Guid? companyId, DateOnly date, CancellationToken ct) =>
+        (await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, companyId, date, date, ct)).Contains(date);
 
     private async Task<decimal> ResolveRegularDayDefaultMultiplierAsync(Guid tenantId, CancellationToken ct)
     {
