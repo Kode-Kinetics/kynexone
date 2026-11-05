@@ -80,10 +80,9 @@ public sealed class ReconSignoffLifecycleService
         if (await ProcessingIsLiveAsync(tenantId, run.Id, ct))
             return new ReconActionResult(409, new { error = "run_processing", message = "The run is being processed. Wait for it to finish, then review the new figures." });
 
-        var partial = caller.DataScope.Level != Application.Common.DataScopeLevel.Organization && caller.DataScope.AllowedEmployeeIds is not null;
-        if (partial)
+        if (RequiresOrganizationScope(caller))
             return new ReconActionResult(403, new { error = "signoff_requires_organization_scope", message = "A reconciliation can only be signed off by someone who can see the whole run, not a department or team." });
-        if (caller.UserId is { } uid && (run.CreatedByUserId == uid || run.ProcessedByUserId == uid))
+        if (caller.UserId is { } uid && IsMaker(run, uid))
             return new ReconActionResult(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot sign off its reconciliation. A different reviewer is required (maker-checker policy)." });
 
         if (await _db.PayrollRunReconSignoffs.AnyAsync(s => s.TenantId == tenantId && s.PayrollRunId == run.Id && s.Status == ReconSignoffStatuses.Active, ct))
@@ -180,6 +179,11 @@ public sealed class ReconSignoffLifecycleService
             if (run is null || !caller.EntityScope.CanAccessCompany(run.CompanyId)) return new ReconActionResult(404, null);
             if (run.Status is not ("Processed" or "PendingFinanceReview"))
                 return new ReconActionResult(400, new { error = "run_not_signable", message = "A sign-off can only be withdrawn while the run is waiting for approval.", status = run.Status });
+            // Withdrawing is as much a decision about the figures as signing them, so it needs the same breadth of view and a different person.
+            if (RequiresOrganizationScope(caller))
+                return new ReconActionResult(403, new { error = "signoff_requires_organization_scope", message = "A sign-off can only be withdrawn by someone who can see the whole run, not a department or team." });
+            if (caller.UserId is { } who && IsMaker(run, who))
+                return new ReconActionResult(403, new { error = "maker_checker_violation", message = "The user who created or processed this run cannot withdraw its reconciliation sign-off. A different reviewer is required (maker-checker policy)." });
             var reason = req.Reason?.Trim() ?? string.Empty;
             if (reason.Length < PayrollValidationOverridePolicy.MinimumReasonLength)
                 return new ReconActionResult(400, new
@@ -237,6 +241,11 @@ public sealed class ReconSignoffLifecycleService
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────────────────────────
+
+    private static bool RequiresOrganizationScope(ReconCaller caller) =>
+        caller.DataScope.Level != Application.Common.DataScopeLevel.Organization && caller.DataScope.AllowedEmployeeIds is not null;
+
+    private static bool IsMaker(PayrollRun run, Guid userId) => run.CreatedByUserId == userId || run.ProcessedByUserId == userId;
 
     private Task<bool> ProcessingIsLiveAsync(Guid tenantId, Guid runId, CancellationToken ct)
     {
