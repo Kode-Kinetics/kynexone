@@ -47,8 +47,7 @@ internal static class AdminPasswordSetGuard
         if (!user.IsActive || user.Status is "Deactivated" or "Suspended")
             throw new InvalidOperationException(
                 "This account is not active. Restore access first, then set a temporary password.");
-        if (!user.IsEmailConfirmed)
-            throw new InvalidOperationException(
-                "This person's email address is not confirmed yet, so they could not sign in with a temporary password.");
+        // An unconfirmed email is not a reason to refuse: this path exists for people whose email is not working. The
+        // administrator vouches for the address (the service confirms it and the audit records that they did).
     }
 }
