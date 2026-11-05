@@ -2722,6 +2722,15 @@ public partial class PayrollController : ControllerBase
                 message = $"Only Draft runs can be deleted. A '{run.Status}' run must be voided instead to preserve the financial audit trail.",
             });
 
+        // A run that was reviewed, then sent back or reopened to Draft, keeps its sign-off history as the record of what was
+        // looked at. That history is not removed with the run, so the run stays and is voided instead.
+        if (await _db.PayrollRunReconSignoffs.AnyAsync(x => x.TenantId == tenantId && x.PayrollRunId == id, cancellationToken))
+            return Conflict(new
+            {
+                error   = "run_has_review_history",
+                message = "This run has reconciliation review history that must be kept. It cannot be deleted; void it instead.",
+            });
+
         // Defensive cleanup — a Draft run should have no children, but remove any stragglers.
         _db.PayrollSlips.RemoveRange(_db.PayrollSlips.Where(s => s.TenantId == tenantId && s.RunId == id));
         _db.PayrollRunEmployees.RemoveRange(_db.PayrollRunEmployees.Where(x => x.TenantId == tenantId && x.PayrollRunId == id));
