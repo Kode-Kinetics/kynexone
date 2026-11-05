@@ -876,12 +876,16 @@ export const platformApi = {
   getTenantSecurityPolicy: (tenantId: string) =>
     platform.get<TenantSecurityPolicy>(`/api/platform/tenants/${tenantId}/security-policy`).then(r => r.data),
 
-  updateTenantSecurityPolicy: (tenantId: string, body: Partial<TenantSecurityPolicy>) =>
+  updateTenantSecurityPolicy: (tenantId: string, body: Partial<TenantSecurityPolicy> & { reason: string }) =>
     platform.put(`/api/platform/tenants/${tenantId}/security-policy`, body),
 
   /** Who must use two-step sign-in and how long a trusted browser lasts. A reason is required to move to 'Optional'. */
   updateTenantInvitationHandover: (tenantId: string, body: { enabled: boolean; reason?: string }) =>
     platform.put<{ allowAdminInvitationHandover: boolean }>(`/api/platform/tenants/${tenantId}/invitation-handover`, body).then(r => r.data),
+  getPlatformPrivilegedMfaEnforcement: () =>
+    platform.get<{ platformPrivilegedMfaEnforceFromUtc: string | null }>('/api/platform/security/privileged-mfa-enforcement').then(r => r.data),
+  setPlatformPrivilegedMfaEnforcement: (body: { enforceFromUtc: string; reason: string }) =>
+    platform.put<{ platformPrivilegedMfaEnforceFromUtc: string | null }>('/api/platform/security/privileged-mfa-enforcement', body).then(r => r.data),
   setTenantPrivilegedMfaEnforcement: (tenantId: string, body: { enforceFromUtc: string | null; reason: string }) =>
     platform.put<{ privilegedMfaEnforceFromUtc: string | null; platformPrivilegedMfaEnforceFromUtc: string | null }>(
       `/api/platform/tenants/${tenantId}/privileged-mfa-enforcement`, body).then(r => r.data),
@@ -897,6 +901,9 @@ export const platformApi = {
   createTeamMember: (body: { email: string; fullName?: string; password: string; role?: string }) =>
     platform.post<PlatformTeamMember>('/api/platform/team', body).then(r => r.data),
 
+  /** Owner only: clears another operator's lost authenticator. No body; they enrol a new one at next sign-in. */
+  resetTeamMfa: (id: string) =>
+    platform.post<{ id: string; mfaReset: boolean }>(`/api/platform/team/${id}/reset-mfa`).then(r => r.data),
   updateTeamMember: (id: string, body: { role?: string; isActive?: boolean; fullName?: string }) =>
     platform.patch<PlatformTeamMember>(`/api/platform/team/${id}`, body).then(r => r.data),
 
