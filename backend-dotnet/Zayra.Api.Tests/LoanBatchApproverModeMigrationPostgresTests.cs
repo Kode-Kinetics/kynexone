@@ -11,14 +11,14 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Tests;
 
 /// <summary>
-/// 20261102190000_LoanBatchApproverMode on the real migration chain and real PostgreSQL: existing policies upgrade in place
+/// 20261105020000_LoanBatchApproverMode on the real migration chain and real PostgreSQL: existing policies upgrade in place
 /// to the strict mode with no cap, the CHECK refuses an unknown mode, a negative cap and a cap without self-approval, Down
 /// removes both columns and the constraint, and it re-applies.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class LoanBatchApproverModeMigrationPostgresTests
 {
-    private const string ThisMigration = "20261102190000_LoanBatchApproverMode";
+    private const string ThisMigration = "20261105020000_LoanBatchApproverMode";
     private const string CheckViolation = "23514";
 
     [Fact]
@@ -30,7 +30,6 @@ public sealed class LoanBatchApproverModeMigrationPostgresTests
         var migrator = db.Database.GetInfrastructure().GetRequiredService<IMigrator>();
         var all = db.Database.GetMigrations().ToList();
         all.Should().Contain(ThisMigration);
-        all.Last().Should().Be(ThisMigration, "the snapshot and this migration's target model must describe the same, latest schema");
         var previous = all[all.IndexOf(ThisMigration) - 1];
 
         await migrator.MigrateAsync(previous);

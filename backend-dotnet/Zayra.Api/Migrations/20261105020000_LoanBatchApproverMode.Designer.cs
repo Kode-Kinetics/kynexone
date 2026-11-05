@@ -12,7 +12,7 @@ using Zayra.Api.Data;
 namespace Zayra.Api.Migrations
 {
     [DbContext(typeof(ZayraDbContext))]
-    [Migration("20261102190000_LoanBatchApproverMode")]
+    [Migration("20261105020000_LoanBatchApproverMode")]
     partial class LoanBatchApproverMode
     {
         /// <inheritdoc />
@@ -22054,7 +22054,8 @@ namespace Zayra.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("TenantId", "Code")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("NOT is_deleted");
 
                     b.HasIndex("TenantId", "IsActive");
 
