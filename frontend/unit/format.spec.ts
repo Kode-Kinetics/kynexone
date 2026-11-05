@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { createFormatter, dateLocale, numberLocale } from '../src/lib/format';
+import { createFormatter, dateLocale, numberLocale, spellOutHijriMonths } from '../src/lib/format';
 import { formatMessage, messageArgs } from '../src/i18n/message';
 import { translate } from '../src/i18n/translations';
 
@@ -99,6 +99,20 @@ test.describe('lib/format', () => {
     expect(createFormatter({ locale: 'en', timeZone: 'UTC', dateFormat: 'MM/DD/YYYY' }).date(d, 'short')).toBe('01/05/2026');
     expect(createFormatter({ locale: 'en', timeZone: 'UTC', dateFormat: 'YYYY-MM-DD' }).date(d, 'short')).toBe('2026-01-05');
     expect(createFormatter({ locale: 'ar', timeZone: 'UTC', dateFormat: 'DD/MM/YYYY' }).date(d, 'short')).toBe('05/01/2026');
+  });
+
+  test('English Hijri dates spell out the months Intl abbreviates with a stray numeral', () => {
+    const f = createFormatter({ locale: 'en', timeZone: 'Asia/Riyadh' });
+    // 2 Nov 2026 is 21 Jumada I 1448 (Umm al-Qura): the month must not read "Jumada I 1448".
+    const out = f.hijri(new Date(Date.UTC(2026, 10, 2, 12)), 'long');
+    expect(out).toContain('Jumada al-Awwal');
+    expect(out).not.toMatch(/Jumada I\b/);
+    expect(spellOutHijriMonths('3 Rabi\u02BB II 1448 AH')).toBe('3 Rabi\u02BB al-Thani 1448 AH');
+    expect(spellOutHijriMonths('1 Jumada II 1448')).toBe('1 Jumada al-Thani 1448');
+    expect(spellOutHijriMonths('1 Ramadan 1448')).toBe('1 Ramadan 1448');
+    // Arabic output is untouched: it has its own month names.
+    const ar = createFormatter({ locale: 'ar', timeZone: 'Asia/Riyadh' }).hijri(new Date(Date.UTC(2026, 10, 2, 12)), 'long');
+    expect(ar).not.toContain('al-');
   });
 
   test('a Hijri tenant leads with Umm al-Qura and shows Gregorian alongside when dual dates are on', () => {
