@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { expect, test, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
@@ -8,7 +10,7 @@ import AxeBuilder from '@axe-core/playwright';
  * Proves, against route-intercepted payloads:
  *   - the deep link ?tab=&run= (select, replace-not-push, graceful fallbacks)
  *   - the stage list (ordered list, one aria-current step, blocked stages say why)
- *   - the Review stop point (Approve is not the next action before it)
+ *   - the Review stop point (Approve is not the next action before the server holds an Active reconciliation sign-off)
  *   - the lock summary in the app's confirm dialog (figures, change against the previous run, currency)
  *   - processing as a background job (progress, success reload, failure with retry)
  *   - dark-mode tables (header and totals bands are dark, axe finds nothing serious)
@@ -42,6 +44,8 @@ type Mock = {
   onLock?: () => void;
   onProcess?: () => void;
   overview?: unknown;
+  /** The reconciliation the server returns for the run (e2e/fixtures/recon-*.json). */
+  recon?: unknown;
 };
 
 async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark' } = {}) {
@@ -80,6 +84,7 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
       if (tail === 'process' && req.method() === 'POST') { opts.onProcess?.(); return json({ runId: m[1], jobId: 'job-1', status: 'Queued' }, 202); }
       if (tail === 'lock' && req.method() === 'POST') { opts.onLock?.(); return json({ ...RUNS[0], status: 'Locked', lockedAtUtc: '2026-10-27T08:00:00Z' }); }
       if (tail === 'slips') return json({ items: [], total: 0, page: 1, pageSize: 100 });
+      if (tail === 'recon' && req.method() === 'GET') return opts.recon ? json(opts.recon) : json({ error: 'not_mocked' }, 404);
     }
     if (p === '/api/payroll/reports/reconciliation') return json({ runId: RUN_PROCESSED, period: '2026-11', priorPeriod: '2026-10', currentHeadcount: 40, priorHeadcount: 38, joinerCount: 3, leaverCount: 1, currentTotalGross: 100000, priorTotalGross: 95000, currentTotalNet: 90000, priorTotalNet: 86000, flaggedVariances: 0, variances: [] });
     return json([]);
@@ -88,6 +93,7 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
   await expect(page.getByRole('heading', { name: 'Payroll Management' })).toBeVisible({ timeout: 30_000 });
 }
 
+const recon = (name: string) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8'));
 const stages = (page: Page) => page.getByTestId('pipeline-stages').locator('> li');
 
 test.describe('payroll deep link', () => {
@@ -144,14 +150,28 @@ test.describe('payroll run pipeline', () => {
     await expect(page.getByRole('tab', { name: 'Validation', exact: true })).toHaveAttribute('aria-selected', 'true');
   });
 
-  test('Review is a stop point: Approve is only the next step after the review is marked complete', async ({ page }) => {
-    await open(page, `/payroll?tab=runs&run=${RUN_PROCESSED}`);
+  test('Review is a stop point: Approve is only the next step once the server holds an Active reconciliation sign-off', async ({ page }) => {
+    await open(page, `/payroll?tab=runs&run=${RUN_PROCESSED}`, { recon: recon('recon-full.json') });
     await expect(page.getByTestId('pipeline-next-title')).toHaveText('Review the results');
-    await expect(page.getByTestId('stage-reason-approved')).toContainText('mark it complete');
+    await expect(page.getByTestId('stage-reason-approved')).toContainText('sign off');
     await expect(page.getByTestId('run-review')).toBeVisible();
-    await expect(page.getByTestId('review-row-gross')).toContainText('SAR');
-    await page.getByTestId('review-complete-button').click();
+    await expect(page.getByTestId('recon-headline-gross')).toHaveCount(0); // Volume is the first tab
+    await page.getByRole('tab', { name: 'Value', exact: true }).click();
+    await expect(page.getByTestId('recon-headline-gross')).toContainText('SAR');
+    // The old device-only "mark complete" button is gone.
+    await expect(page.getByTestId('review-complete-button')).toHaveCount(0);
+  });
+
+  test('a review "marked" in this browser by an older version no longer counts', async ({ page }) => {
+    await page.addInitScript((id) => { localStorage.setItem(`kynexone.payrollReview.${id}.2026-10-02T08:00:00Z`, '2026-10-02T09:00:00Z'); }, RUN_PROCESSED);
+    await open(page, `/payroll?tab=runs&run=${RUN_PROCESSED}`, { recon: recon('recon-full.json') });
+    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Review the results');
+  });
+
+  test('with an Active sign-off the review stage is done, names the signer, and Approve is next', async ({ page }) => {
+    await open(page, `/payroll?tab=runs&run=${RUN_PROCESSED}`, { recon: recon('recon-signed.json') });
     await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
+    await expect(page.getByTestId('pipeline-stages').locator('[data-stage="review"]')).toContainText('Signed off by Layla Al-Harbi');
     await expect(page.getByTestId('pipeline-stages').locator('[aria-current="step"]')).toHaveAttribute('data-stage', 'approved');
   });
 

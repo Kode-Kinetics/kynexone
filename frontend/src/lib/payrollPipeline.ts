@@ -9,9 +9,9 @@
  *   Processed        run.status = "Processed"                   (POST /runs/{id}/process, now a background job)
  *   Validated        NOT a status. Validation results are written by Process and refreshed by /validate;
  *                    "validated" means the run has no unresolved Error result (Approve and Lock both refuse otherwise)
- *   Review           NOT a status and not enforced by the server: a stop point. The reviewer opens the results
- *                    (prior-period comparison, employees with issues) and marks the review complete before
- *                    Approve is offered as the next action. Recorded on this device only.
+ *   Review           NOT a status: the manpower + value reconciliation against the prior month. It is done when
+ *                    the server holds an ACTIVE sign-off for this processing of the run (the server refuses
+ *                    Approve without one). Off-cycle runs are not gated, so they have no review to wait for.
  *   Approved         "Processed" -> "PendingFinanceReview" (payroll review) -> "Approved" (finance decision)
  *   Locked           run.status = "Locked"                      (posts the GL journal)
  *   Paid / Exported  run.status = "Paid" or a payment batch whose bank file has been generated or later
@@ -56,7 +56,7 @@ export interface PipelineStage {
   /** Why the stage is not (yet) done, in words. Set on blocked AND upcoming stages. */
   reason: Reason | null;
   /** Extra facts: the payment batch status, the approval level, overrides. */
-  detail: { id: 'batch'; label: string; number: string } | { id: 'payroll_review' } | { id: 'overrides'; count: number } | { id: 'this_device' } | null;
+  detail: { id: 'batch'; label: string; number: string } | { id: 'payroll_review' } | { id: 'overrides'; count: number } | { id: 'signed_off'; name: string | null } | { id: 'review_not_required' } | null;
 }
 
 export type NextActionKind = 'process' | 'retry' | 'goto' | 'review' | 'lock' | 'none';
@@ -89,8 +89,12 @@ export interface PipelineInput {
   approvals: PayrollApproval[] | null;
   batches: PayrollPaymentBatch[] | null;
   prechecks: Prechecks | null;
-  /** When this device completed the review stop point for this processing of the run; null = not yet. */
+  /** When the reconciliation was signed off (an Active server sign-off for this processing of the run); null = not yet. */
   reviewedAtUtc: string | null;
+  /** Who signed it off, when the server said. */
+  reviewedByName?: string | null;
+  /** False for a run the server does not gate (off-cycle): there is no review to wait for. Default true. */
+  reviewApplicable?: boolean;
   can: { process: boolean; approve: boolean; lock: boolean };
   /** False when the company currency cannot be confirmed: Lock is withheld, as Approve is. */
   currencyConfirmed: boolean;
@@ -182,7 +186,8 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
   const review = at('review');
   if (phase >= 2) review.state = 'done';
   else if (phase === 1 && validated.state === 'done') {
-    if (input.reviewedAtUtc) { review.state = 'done'; review.whenUtc = input.reviewedAtUtc; review.detail = { id: 'this_device' }; }
+    if (input.reviewApplicable === false) { review.state = 'done'; review.detail = { id: 'review_not_required' }; }
+    else if (input.reviewedAtUtc) { review.state = 'done'; review.whenUtc = input.reviewedAtUtc; review.detail = { id: 'signed_off', name: input.reviewedByName ?? null }; }
     else { review.state = 'current'; review.reason = { id: 'needs_review' }; }
   } else review.reason = { id: phase === 0 ? 'needs_process' : 'needs_validation' };
 

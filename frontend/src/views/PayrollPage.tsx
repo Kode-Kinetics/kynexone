@@ -32,6 +32,7 @@ import { SecondApproverNotice } from '../components/SecondApproverNotice';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
+import { parseReconError } from '../lib/payrollRecon';
 import { useFormat } from '../hooks/useFormat';
 import { useLocale } from '../contexts/LocaleContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -2006,13 +2007,17 @@ function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval
   );
 }
 
-function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
+function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReconNotReviewed }: {
   selectedRunId?: string;
   isAdmin: boolean;
   isFinance: boolean;
   isHROrPayroll: boolean;
+  /** Approve was refused because the reconciliation has no current sign-off: the page reopens the review. */
+  onReconNotReviewed?: () => void;
 }) {
   const { hasPermission } = useAuth();
+  const t = useT();
+  const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [approvals, setApprovals] = useState<PayrollApproval[]>([]);
@@ -2084,7 +2089,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
 
   const handleApprove = async () => {
     if (!runId) return;
-    setSaving(true); setError('');
+    setSaving(true); setError(''); setReconNotice('');
     try {
       // Only send a count the approver has actually affirmed. Echoing the server's own number back
       // unconditionally would satisfy the check while acknowledging nothing.
@@ -2105,6 +2110,17 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
       refreshGate(runId);
     } catch (e: unknown) {
       const data = (e as { response?: { data?: { message?: string; error?: string } } })?.response?.data;
+      // No current sign-off on the reconciliation: say why, and send the user back to the review stage.
+      const recon = parseReconError(e);
+      if (recon.code === 'reconciliation_not_reviewed') {
+        setReconNotice(recon.reason === 'Stale'
+          ? t('The reconciliation was signed off on an earlier processing of this run, so that sign-off no longer counts. Review the run again and sign it off.')
+          : recon.reason === 'PriorChanged'
+            ? t('The month this run was compared with has changed since the reconciliation was signed off. Review it again and sign it off.')
+            : t('The reconciliation has not been signed off. Review the run and sign it off before approving.'));
+        onReconNotReviewed?.();
+        return;
+      }
       // A 409 here means the run moved under the approver — re-read the counts so the next attempt
       // acknowledges the truth rather than a stale number.
       if (data?.error === 'uncosted_not_acknowledged') void uncosted.refresh();
@@ -2263,6 +2279,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll }: {
               <Field label="Notes / Comments">
                 <textarea aria-label="Approval notes" className={inp} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional comments for the record…" />
               </Field>
+              {reconNotice && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400" data-testid="approve-reconciliation-notice">{reconNotice}</p>}
               {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
               <div className="flex flex-wrap gap-2">
                 <button
@@ -3780,6 +3797,9 @@ export function PayrollPage() {
   // Bumped when a run changes outside the tab that shows it (the pipeline processed or locked it).
   const [runsVersion, setRunsVersion] = useState(0);
   const bumpRuns = React.useCallback(() => setRunsVersion(v => v + 1), []);
+  // Approve refused for want of a current reconciliation sign-off: re-read the run and reopen the review.
+  const [reviewRequest, setReviewRequest] = useState(0);
+  const reconNotReviewed = React.useCallback(() => { setRunsVersion(v => v + 1); setReviewRequest(n => n + 1); }, []);
 
   // URL -> state: a link followed while the page is open (or Back/Forward) selects what it names.
   const queryString = searchParams?.toString() ?? '';
@@ -3811,7 +3831,7 @@ export function PayrollPage() {
       case 'employee-salary': return <EmployeeSalaryTab />;
       case 'runs':            return <RunsTab onSelectRun={handleSelectRun} focusRunId={contextRunId} onFocusRun={selectRunId} version={runsVersion} onRunsChanged={bumpRuns} />;
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} />;
-      case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} />;
+      case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab />;
       case 'bank-wps':        return <BankWpsTab />;
       case 'payment-tracking': return <PaymentTrackingTab />;
@@ -3846,6 +3866,7 @@ export function PayrollPage() {
         onNavigate={navigateTab}
         version={runsVersion}
         onRunsChanged={bumpRuns}
+        reviewRequestKey={reviewRequest}
       />
 
       <RovingTabList
