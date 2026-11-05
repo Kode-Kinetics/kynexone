@@ -110,6 +110,8 @@ export interface LoanPaymentBatch {
   createdBy?: string;
   createdByName?: string;
   createdAtUtc: string;
+  /** Draft only: the company's loan policy lets the creator approve this batch alone, with a recorded reason. */
+  selfApprovalAllowed?: boolean;
   paidDate?: string;
   paymentReference?: string;
 }
@@ -311,7 +313,7 @@ export const loanPaymentBatchesApi = {
   list: () => client.get<LoanPaymentBatch[]>('/api/finance/loans/payment-batches').then(r => r.data),
   get: (id: string) => client.get<LoanPaymentBatch>(`/api/finance/loans/payment-batches/${id}`).then(r => r.data),
   create: (loanIds: string[]) => client.post<LoanPaymentBatch>('/api/finance/loans/payment-batches', { loanIds }).then(r => r.data),
-  approve: (id: string) => client.patch(`/api/finance/loans/payment-batches/${id}/approve`).then(r => r.data),
+  approve: (id: string, reason?: string) => client.patch(`/api/finance/loans/payment-batches/${id}/approve`, reason ? { reason } : {}).then(r => r.data),
   cancel: (id: string) => client.patch(`/api/finance/loans/payment-batches/${id}/cancel`).then(r => r.data),
   lineOutcome: (id: string, lineId: string, body: { outcome: 'Paid' | 'Failed' | 'Cancelled'; reference?: string; paidDate?: string; paymentMethod?: string; repaymentStartDate?: string; reason?: string }) => client.patch(`/api/finance/loans/payment-batches/${id}/lines/${lineId}/outcome`, body).then(r => r.data),
   confirmPaid: (id: string, body: { paidDate: string; reference: string; repaymentStartDate?: string }) => client.patch(`/api/finance/loans/payment-batches/${id}/confirm-paid`, body).then(r => r.data),

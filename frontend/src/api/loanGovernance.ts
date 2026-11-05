@@ -4,6 +4,10 @@ import type { LoanRepaymentMethod } from './loans';
 
 export interface LoanPolicyInput {
   companyId: string; loanTypeId: string; policyName: string;
+  /** Whether a loan payment batch needs an approver other than its creator. Absent (an older API) = SeparateApprover. */
+  batchApproverMode?: 'SeparateApprover' | 'SingleOperator';
+  /** Under SingleOperator, the largest batch one person may approve alone. 0 = no limit. */
+  selfApprovalMaxAmount?: number;
   maxAmount: number; maxTotalOutstanding: number; maxMultiplierOfSalary: number;
   maxInstallmentPercentOfSalary: number; minServiceMonths: number; maxInstallments: number;
   /** Shortest repayment, in instalments (1..maxInstallments). 1 (or absent, from an older API) = no minimum. */

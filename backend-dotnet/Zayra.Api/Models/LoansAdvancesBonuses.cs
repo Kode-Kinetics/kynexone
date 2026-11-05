@@ -50,6 +50,22 @@ public static class LoanTypeSql
     public const string MinInstallmentsCheck = "min_installments >= 1 AND (min_installments = 1 OR min_installments <= max_installments)";
 }
 
+/// <summary>How a company approves loan payment batches. Whatever the mode, a borrower never approves a batch paying their own loan.</summary>
+public static class LoanBatchApproverModes
+{
+    public const string SeparateApprover = "SeparateApprover";
+    public const string SingleOperator = "SingleOperator";
+    public static bool IsValid(string? mode) => mode is SeparateApprover or SingleOperator;
+}
+
+public static class LoanPolicySql
+{
+    /// <summary>A known mode, a nonnegative cap, and a cap only where self-approval exists. Every existing row (mode
+    /// SeparateApprover, cap 0) satisfies it.</summary>
+    public const string BatchApproverCheck =
+        "batch_approver_mode IN ('SeparateApprover','SingleOperator') AND self_approval_max_amount >= 0 AND (batch_approver_mode = 'SingleOperator' OR self_approval_max_amount = 0)";
+}
+
 public class LoanPolicy : ITenantOwned, ICompanyScoped
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -82,6 +98,16 @@ public class LoanPolicy : ITenantOwned, ICompanyScoped
     public int CooldownMonthsAfterRepayment { get; set; }
     public bool AllowEarlySettlement { get; set; } = true;
     public bool AllowRescheduling { get; set; }
+
+    /// <summary>Whether a loan payment batch needs an approver other than its creator
+    /// (<see cref="LoanBatchApproverModes"/>). The default keeps every existing policy strict. Only an Admin may relax it.
+    /// Database CHECK: <see cref="LoanPolicySql.BatchApproverCheck"/>.</summary>
+    public string BatchApproverMode { get; set; } = LoanBatchApproverModes.SeparateApprover;
+
+    /// <summary>Under SingleOperator, the largest batch total the creator may approve alone; 0 means no limit. Larger
+    /// batches still need a separate approver. Must be 0 under SeparateApprover.</summary>
+    public decimal SelfApprovalMaxAmount { get; set; }
+
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public Guid? CreatedBy { get; set; }

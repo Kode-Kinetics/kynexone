@@ -26,6 +26,7 @@ import { learning } from './learning';
 import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { belowMinimum } from './belowMinimum';
+import { loanBatchApprover } from './loanBatchApprover';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -1587,6 +1588,7 @@ const en: Dict = {
   ...engagement.en,
   ...glEosb.en,
   ...belowMinimum.en,
+  ...loanBatchApprover.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -3106,6 +3108,7 @@ const ar: Dict = {
   ...engagement.ar,
   ...glEosb.ar,
   ...belowMinimum.ar,
+  ...loanBatchApprover.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 
