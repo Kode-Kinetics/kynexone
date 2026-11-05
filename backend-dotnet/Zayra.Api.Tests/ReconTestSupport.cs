@@ -17,10 +17,16 @@ internal static class ReconTestSupport
         var run = await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == runId);
         if (!PayrollRunTypes.IsPeriodOwning(run.RunType)) return; // off-cycle runs are not gated
         if (await db.PayrollRunReconSignoffs.AnyAsync(s => s.PayrollRunId == runId && s.Status == ReconSignoffStatuses.Active)) return;
+        // The approval gate compares the sign-off's hash with the figures as they stand, so record the real one.
+        var caller = new ReconCaller(null, "Test reviewer", true, Zayra.Api.Application.Common.EntityScopeContext.GroupLevel,
+            new Zayra.Api.Application.Common.DataScope { Level = Zayra.Api.Application.Common.DataScopeLevel.Organization, AllowedEmployeeIds = null });
+        var built = await new ManpowerReconService(db).BuildAsync(run.TenantId, runId, caller, null, CancellationToken.None);
+        var build = built.Build!;
         db.PayrollRunReconSignoffs.Add(new PayrollRunReconSignoff
         {
             TenantId = run.TenantId, CompanyId = run.CompanyId, PayrollRunId = runId, ProcessVersion = run.ProcessVersion,
-            SnapshotHash = new string('0', 64), SnapshotJson = "{}", SignedOffByUserId = Guid.NewGuid(), SignedOffByName = "Test reviewer",
+            PriorRunId = build.Prior?.Id, PriorProcessVersion = build.PriorProcessVersion,
+            SnapshotHash = build.SnapshotHash, SnapshotJson = "{}", SignedOffByUserId = Guid.NewGuid(), SignedOffByName = "Test reviewer",
             Status = ReconSignoffStatuses.Active,
         });
         await db.SaveChangesAsync();

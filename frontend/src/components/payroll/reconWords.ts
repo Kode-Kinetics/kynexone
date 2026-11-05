@@ -101,6 +101,7 @@ export function supersededText(t: T, reason: SignoffSupersededReason | null | un
     case 'Voided': return t('The earlier sign-off by {name} no longer counts: the run was voided.', { name });
     case 'Withdrawn': return t('The earlier sign-off by {name} was withdrawn.', { name });
     case 'PriorChanged': return t('The earlier sign-off by {name} no longer counts: the month it was compared with changed.', { name });
+    case 'InputsChanged': return t('The earlier sign-off by {name} no longer counts: figures it was based on changed after the review.', { name });
     default: return t('The earlier sign-off by {name} no longer counts.', { name });
   }
 }

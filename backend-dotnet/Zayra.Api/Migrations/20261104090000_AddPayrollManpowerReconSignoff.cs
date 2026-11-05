@@ -42,7 +42,7 @@ namespace Zayra.Api.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_payroll_run_recon_signoffs", x => x.id);
-                    table.CheckConstraint("ck_payroll_run_recon_signoffs__reason", "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged')");
+                    table.CheckConstraint("ck_payroll_run_recon_signoffs__reason", "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged','InputsChanged')");
                     table.CheckConstraint("ck_payroll_run_recon_signoffs__status", "\"status\" IN ('Active','Superseded')");
                     table.CheckConstraint("ck_payroll_run_recon_signoffs__superseded_pair", "(\"status\" = 'Active' AND \"superseded_at_utc\" IS NULL AND \"superseded_reason\" IS NULL) OR (\"status\" = 'Superseded' AND \"superseded_at_utc\" IS NOT NULL AND \"superseded_reason\" IS NOT NULL)");
                     table.ForeignKey(

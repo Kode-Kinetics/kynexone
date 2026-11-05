@@ -1906,10 +1906,16 @@ public partial class PayrollController : ControllerBase
         var reconGate = await Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.CheckAsync(_db, tenantId, run, cancellationToken);
         if (reconGate.Blocked)
         {
-            if (reconGate.Reason == Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.PriorChanged)
+            var retireAs = reconGate.Reason switch
+            {
+                Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.PriorChanged => Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.PriorChanged,
+                Infrastructure.Payroll.ManpowerRecon.ReconApprovalGate.Changed => Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.InputsChanged,
+                _ => null,
+            };
+            if (retireAs is not null)
             {
                 await Infrastructure.Payroll.ManpowerRecon.ReconSignoffLifecycleService.SupersedeActiveAsync(
-                    _db, tenantId, id, Infrastructure.Payroll.ManpowerRecon.ReconSupersededReasons.PriorChanged, GetUserId(), cancellationToken);
+                    _db, tenantId, id, retireAs, GetUserId(), cancellationToken);
                 await _db.SaveChangesAsync(cancellationToken);
             }
             return Conflict(new

@@ -106,7 +106,7 @@ public class ManpowerReconSignoffPostgresTests
     [Theory]
     [InlineData("Active", "Reprocessed", false)]        // an Active row cannot carry a superseded reason
     [InlineData("Superseded", null, true)]               // a Superseded row must say why
-    [InlineData("Superseded", "Because", true)]          // and the reason must be one of the six
+    [InlineData("Superseded", "Because", true)]          // and the reason must be one of the seven
     [InlineData("Pending", null, false)]                 // and the status one of two
     public async Task TheChecks_RefuseAnIncoherentStatusReasonOrPair(string status, string? reason, bool stamped)
     {
@@ -218,6 +218,45 @@ public class ManpowerReconSignoffPostgresTests
         var stored = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync(x => x.PayrollRunId == s.Current.Id);
         stored.Status.Should().Be("Superseded");
         stored.SupersededReason.Should().Be("PriorChanged");
+    }
+
+    [Fact]
+    public async Task ASettlementCancelledAfterTheSignoff_BlocksApproval_AsChanged_AndTheDatabaseAcceptsTheNewReason()
+    {
+        var s = await NewScenarioAsync(_fx);
+        // A leaver whose final settlement is accrued to this month: part of what the reviewer signs.
+        await using (var seed = _fx.CreateDb())
+        {
+            var leaver = new Employee { TenantId = s.TenantId, CompanyId = s.Kit.CompanyId, EmployeeCode = "P3", FullName = "Employee Three", Status = "Offboarded", JoiningDate = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Utc) };
+            seed.Employees.Add(leaver);
+            await seed.SaveChangesAsync();
+            seed.PayrollSlips.Add(new PayrollSlip { TenantId = s.TenantId, CompanyId = s.Kit.CompanyId, RunId = s.Prior.Id, EmployeeId = leaver.Id, EmployeeCode = "P3", EmployeeName = "Employee Three", BasicSalary = 500m, GrossSalary = 500m, NetSalary = 500m, IsFinalWageMonth = true });
+            seed.PayrollEarnings.Add(new PayrollEarning { TenantId = s.TenantId, PayrollRunId = s.Prior.Id, EmployeeId = leaver.Id, ComponentCode = "BASIC", ComponentName = "Basic salary", Amount = 500m, Source = "Salary" });
+            var offboarding = new EmployeeOffboarding { TenantId = s.TenantId, CompanyId = s.Kit.CompanyId, EmployeeId = leaver.Id, EmployeeCode = "P3", LastWorkingDay = new DateOnly(2026, 9, 30), Status = "InProgress" };
+            seed.EmployeeOffboardings.Add(offboarding);
+            var settlement = new EmployeeFinalSettlement
+            {
+                TenantId = s.TenantId, CompanyId = s.Kit.CompanyId, EmployeeId = leaver.Id, EmployeeCode = "P3", EmployeeName = "Employee Three", OffboardingId = offboarding.Id,
+                LastWorkingDay = new DateOnly(2026, 9, 30), Status = "Approved", GlPeriod = "2026-10", GrossPayable = 900m, TotalDeductions = 0m,
+            };
+            seed.EmployeeFinalSettlements.Add(settlement);
+            seed.FinalSettlementLines.Add(new FinalSettlementLine { TenantId = s.TenantId, SettlementId = settlement.Id, ComponentCode = "EOSB_GRATUITY", LineType = "Earning", Amount = 900m });
+            await seed.SaveChangesAsync();
+        }
+        StatusOf(await SignAsync(s)).Should().Be(201);
+
+        await using (var change = _fx.CreateDb())
+            await change.Database.ExecuteSqlInterpolatedAsync($"UPDATE employee_final_settlements SET status = 'Cancelled' WHERE tenant_id = {s.TenantId}");
+
+        var res = await s.Payroll("Admin").Approve(s.Current.Id, new PayrollDecisionRequest("ok", ExpectedExcludedCount: 1), default);
+        StatusOf(res).Should().Be(409);
+        ErrorOf(res).Should().Be("reconciliation_not_reviewed");
+        ReconHarness.Json(((ObjectResult)res).Value).GetProperty("reason").GetString().Should().Be("Changed");
+        await using var check = _fx.CreateDb();
+        var stored = await check.PayrollRunReconSignoffs.AsNoTracking().SingleAsync(x => x.PayrollRunId == s.Current.Id);
+        stored.Status.Should().Be("Superseded");
+        stored.SupersededReason.Should().Be("InputsChanged");
+        (await check.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == s.Current.Id)).Status.Should().Be("Processed");
     }
 
     // ── Sign-off against the row lock ────────────────────────────────────────────────────────────

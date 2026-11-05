@@ -2951,7 +2951,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             {
                 t.HasCheckConstraint("ck_payroll_run_recon_signoffs__status", "\"status\" IN ('Active','Superseded')");
                 t.HasCheckConstraint("ck_payroll_run_recon_signoffs__reason",
-                    "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged')");
+                    "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged','InputsChanged')");
                 t.HasCheckConstraint("ck_payroll_run_recon_signoffs__superseded_pair",
                     "(\"status\" = 'Active' AND \"superseded_at_utc\" IS NULL AND \"superseded_reason\" IS NULL) " +
                     "OR (\"status\" = 'Superseded' AND \"superseded_at_utc\" IS NOT NULL AND \"superseded_reason\" IS NOT NULL)");

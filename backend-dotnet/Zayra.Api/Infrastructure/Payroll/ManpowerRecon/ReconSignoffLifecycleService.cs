@@ -266,13 +266,17 @@ public sealed class ReconSignoffLifecycleService
 /// <summary>
 /// The Approve-time check: a period-owning run needs an Active sign-off for its CURRENT process version (and an unchanged
 /// comparison run), unless the company turned the requirement off, in which case the approval is let through and recorded as
-/// approved without one. Nothing recomputes the bridge here; the sign-off already froze what was reviewed.
+/// approved without one. Beyond the version stamps, the bridge is rebuilt for the run (as a caller who sees the whole run, as
+/// the sign-off required) and its fingerprint compared with the one that was signed, so a change to anything the bridge reads
+/// (a final settlement, an offboarding, a hold-out selection, an employee's status or company, the thresholds) since the review
+/// is caught even though the run was not processed again.
 /// </summary>
 public static class ReconApprovalGate
 {
     public const string Missing = "Missing";
     public const string Stale = "Stale";
     public const string PriorChanged = "PriorChanged";
+    public const string Changed = "Changed";
 
     public sealed record Result(bool Blocked, bool Waived, string? Reason, int ProcessVersion, int? SignedVersion);
 
@@ -292,6 +296,15 @@ public static class ReconApprovalGate
         {
             var prior = await db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(r => r.TenantId == tenantId && r.Id == priorId, ct);
             if (prior is null || prior.Status == "Voided" || prior.ProcessVersion != active.PriorProcessVersion) reason = PriorChanged;
+        }
+        if (reason is null && active is not null)
+        {
+            var wholeRun = new ReconCaller(null, "approval check", false, Application.Common.EntityScopeContext.GroupLevel,
+                new Application.Common.DataScope { Level = Application.Common.DataScopeLevel.Organization, AllowedEmployeeIds = null });
+            var built = await new ManpowerReconService(db).BuildAsync(tenantId, run.Id, wholeRun, active.PriorRunId, ct);
+            if (built.Status != ReconBuildStatus.Ok
+                || !string.Equals(built.Build!.SnapshotHash, active.SnapshotHash, StringComparison.OrdinalIgnoreCase))
+                reason = Changed;
         }
 
         if (reason is null) return new Result(false, false, null, run.ProcessVersion, active?.ProcessVersion);

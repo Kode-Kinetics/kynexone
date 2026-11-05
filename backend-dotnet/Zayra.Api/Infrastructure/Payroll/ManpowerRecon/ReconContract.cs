@@ -170,6 +170,7 @@ public static class ReconSupersededReasons
     public const string Voided = "Voided";
     public const string Withdrawn = "Withdrawn";
     public const string PriorChanged = "PriorChanged";
+    public const string InputsChanged = "InputsChanged";
 }
 
 /// <summary>The scope reasons the screen words. Only these strings are produced.</summary>

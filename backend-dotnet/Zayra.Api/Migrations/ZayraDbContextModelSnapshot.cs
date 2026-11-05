@@ -27656,7 +27656,7 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("payroll_run_recon_signoffs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_payroll_run_recon_signoffs__reason", "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged')");
+                            t.HasCheckConstraint("ck_payroll_run_recon_signoffs__reason", "\"superseded_reason\" IS NULL OR \"superseded_reason\" IN ('Reprocessed','Reopened','SentBack','Voided','Withdrawn','PriorChanged','InputsChanged')");
 
                             t.HasCheckConstraint("ck_payroll_run_recon_signoffs__status", "\"status\" IN ('Active','Superseded')");
 

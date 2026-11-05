@@ -229,7 +229,7 @@ export interface ReconError {
   status: number | null;
   message: string | null;
   /** reconciliation_not_reviewed: why the sign-off does not count. */
-  reason: 'Missing' | 'Stale' | 'PriorChanged' | null;
+  reason: 'Missing' | 'Stale' | 'PriorChanged' | 'Changed' | null;
   processVersion: number | null;
   signedVersion: number | null;
   /** variance_explanation_required: the explanations still missing. */
@@ -241,7 +241,7 @@ export function parseReconError(err: unknown): ReconError {
   const data = (e?.response?.data && typeof e.response.data === 'object') ? e.response.data : {};
   const raw = typeof data.error === 'string' ? data.error : typeof data.code === 'string' ? data.code : '';
   const code = (RECON_ERROR_CODES as readonly string[]).includes(raw) ? raw as ReconErrorCode : 'unknown';
-  const reason = data.reason === 'Missing' || data.reason === 'Stale' || data.reason === 'PriorChanged' ? data.reason : null;
+  const reason = data.reason === 'Missing' || data.reason === 'Stale' || data.reason === 'PriorChanged' || data.reason === 'Changed' ? data.reason : null;
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   return {
     code,

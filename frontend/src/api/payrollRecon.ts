@@ -113,7 +113,7 @@ export interface ReconFinalSettlement {
 
 export interface ReconIssue { code?: string; message?: string }
 
-export type SignoffSupersededReason = 'Reprocessed' | 'Reopened' | 'SentBack' | 'Voided' | 'Withdrawn' | 'PriorChanged';
+export type SignoffSupersededReason = 'Reprocessed' | 'Reopened' | 'SentBack' | 'Voided' | 'Withdrawn' | 'PriorChanged' | 'InputsChanged';
 
 export interface SignoffDto {
   id: string;

@@ -2117,7 +2117,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
           ? t('The reconciliation was signed off on an earlier processing of this run, so that sign-off no longer counts. Review the run again and sign it off.')
           : recon.reason === 'PriorChanged'
             ? t('The month this run was compared with has changed since the reconciliation was signed off. Review it again and sign it off.')
-            : t('The reconciliation has not been signed off. Review the run and sign it off before approving.'));
+            : recon.reason === 'Changed'
+              ? t('Figures the reconciliation was based on have changed since it was signed off. Review it again and sign it off.')
+              : t('The reconciliation has not been signed off. Review the run and sign it off before approving.'));
         onReconNotReviewed?.();
         return;
       }
