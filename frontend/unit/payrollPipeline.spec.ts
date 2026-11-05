@@ -105,6 +105,14 @@ test.describe('payroll pipeline stages', () => {
     expect(m.stages.find(s => s.key === 'review')!.detail).toEqual({ id: 'signed_off', name: null });
   });
 
+  test('a sign-off given where it is not required is still shown as the review, with its signer', () => {
+    const m = derivePipeline(base({ status: 'Processed', reviewApplicable: false, reviewedAtUtc: '2026-11-02T09:15:00Z', reviewedByName: 'Layla Al-Harbi' }));
+    const review = m.stages.find(s => s.key === 'review')!;
+    expect(review.state).toBe('done');
+    expect(review.detail).toEqual({ id: 'signed_off', name: 'Layla Al-Harbi' });
+    expect(m.focus).toBe('approved');
+  });
+
   test('a run the server does not gate (off-cycle) has no review to wait for, and says so', () => {
     const m = derivePipeline(base({ status: 'Processed', reviewApplicable: false }));
     const review = m.stages.find(s => s.key === 'review')!;

@@ -159,6 +159,11 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
           ? t('Amounts are in {currency}. Open a line’s breakdown to see what joiners added, what leavers took away and what moved among continuing staff.', { currency: cur })
           : t('Amounts are in {currency}. There is no prior month, so this shows how this month’s pay is made up.', { currency: cur })}
       </p>
+      {full && (
+        <p className="text-meta text-fg-muted" data-testid="recon-flag-explanation">
+          {t('A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.', { pct: fmt.percent(recon.thresholds.pct, 1), amount: fmt.money(recon.thresholds.minAmount, cur) })}
+        </p>
+      )}
       <Table caption={t('Value bridge from {prior} to {current}', { prior: period(recon.priorPeriod), current: period(recon.period) })} density="compact" data-testid="recon-value-table">
         <thead>
           <tr>

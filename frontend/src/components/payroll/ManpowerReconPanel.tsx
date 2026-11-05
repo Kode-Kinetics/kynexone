@@ -137,8 +137,9 @@ export function ManpowerReconPanel({ run, candidates, recon, state, error, reloa
           {recon.mode === 'NoPrior' && (
             <p role="status" className="rounded-lg border border-line bg-surface px-3 py-2 text-body-sm text-fg-muted" data-testid="recon-noprior">
               {recon.lastRunPeriod
-                ? t('There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.', { period: period(recon.period), last: period(recon.lastRunPeriod) })
-                : t('There is no earlier run to compare with. This shows the closing headcount and how pay is made up. A sign-off is still required.')}
+                ? t('There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up.', { period: period(recon.period), last: period(recon.lastRunPeriod) })
+                : t('There is no earlier run to compare with. This shows the closing headcount and how pay is made up.')}
+              {recon.signoffRequired !== false && ` ${t('A sign-off is still required.')}`}
               {recon.priorVoided && ` ${t('The run for the month before was voided and has not been replaced.')}`}
             </p>
           )}

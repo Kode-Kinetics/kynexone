@@ -171,7 +171,9 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
           <div className="space-y-2 rounded-lg border border-line p-3">
             <label className="block text-body-sm font-medium text-fg" htmlFor="recon-withdraw-reason">{t('Reason for withdrawing')}</label>
             <Textarea id="recon-withdraw-reason" rows={2} className="w-full max-w-2xl" value={withdrawReason} onChange={e => setWithdrawReason(e.target.value)} aria-describedby="recon-withdraw-hint" />
-            <p id="recon-withdraw-hint" className="text-meta text-fg-muted">{t('At least {min} characters. Approve is withheld until the reconciliation is signed off again.', { min: MIN_EXPLANATION_LENGTH })}</p>
+            <p id="recon-withdraw-hint" className="text-meta text-fg-muted">{recon.signoffRequired !== false
+              ? t('At least {min} characters. Approve is withheld until the reconciliation is signed off again.', { min: MIN_EXPLANATION_LENGTH })
+              : t('At least {min} characters. The reason is kept with the withdrawal.', { min: MIN_EXPLANATION_LENGTH })}</p>
             {withdrawError && <p role="alert" className="text-body-sm text-danger-fg">{withdrawError}</p>}
             <div className="flex gap-2">
               <Button size="sm" variant="danger" busy={withdrawBusy} disabled={withdrawReason.trim().length < MIN_EXPLANATION_LENGTH} onClick={withdraw} data-testid="recon-withdraw-confirm">{t('Withdraw sign-off')}</Button>
@@ -192,7 +194,9 @@ export function ReconSignoffForm({ runId, runStatus, recon, mayApprove, priorRun
       <p className="text-body-sm text-fg-muted">
         {recon.mode === 'NoPrior'
           ? t('There is no prior month to explain movement against. Sign off to confirm you have read this month’s headcount and pay composition.')
-          : t('Signing off records that you read this reconciliation against the prior month and explained what moved. Approve is withheld until it is signed.')}
+          : recon.signoffRequired !== false
+            ? t('Signing off records that you read this reconciliation against the prior month and explained what moved. Approve is withheld until it is signed.')
+            : t('Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.')}
       </p>
 
       {items.length > 0 && (

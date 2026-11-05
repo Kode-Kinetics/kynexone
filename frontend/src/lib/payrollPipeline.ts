@@ -93,7 +93,7 @@ export interface PipelineInput {
   reviewedAtUtc: string | null;
   /** Who signed it off, when the server said. */
   reviewedByName?: string | null;
-  /** False for a run the server does not gate (off-cycle): there is no review to wait for. Default true. */
+  /** False when the run is not held at Review: an off-cycle run (the server does not gate it) or a company whose rule does not require the sign-off. Default true. */
   reviewApplicable?: boolean;
   can: { process: boolean; approve: boolean; lock: boolean };
   /** False when the company currency cannot be confirmed: Lock is withheld, as Approve is. */
@@ -186,8 +186,8 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
   const review = at('review');
   if (phase >= 2) review.state = 'done';
   else if (phase === 1 && validated.state === 'done') {
-    if (input.reviewApplicable === false) { review.state = 'done'; review.detail = { id: 'review_not_required' }; }
-    else if (input.reviewedAtUtc) { review.state = 'done'; review.whenUtc = input.reviewedAtUtc; review.detail = { id: 'signed_off', name: input.reviewedByName ?? null }; }
+    if (input.reviewedAtUtc) { review.state = 'done'; review.whenUtc = input.reviewedAtUtc; review.detail = { id: 'signed_off', name: input.reviewedByName ?? null }; }
+    else if (input.reviewApplicable === false) { review.state = 'done'; review.detail = { id: 'review_not_required' }; }
     else { review.state = 'current'; review.reason = { id: 'needs_review' }; }
   } else review.reason = { id: phase === 0 ? 'needs_process' : 'needs_validation' };
 

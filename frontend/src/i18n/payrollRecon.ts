@@ -110,8 +110,8 @@ const en: Record<string, string> = {
   'The reconciliation could not be loaded. {reason}': 'The reconciliation could not be loaded. {reason}',
   'This is an off-cycle run. Only monthly runs are reconciled against the prior month, so there is nothing to sign off before approving it.': 'This is an off-cycle run. Only monthly runs are reconciled against the prior month, so there is nothing to sign off before approving it.',
   'You can see only part of the company, so every figure here is a partial view. It is labelled partial when exported and cannot be signed off.': 'You can see only part of the company, so every figure here is a partial view. It is labelled partial when exported and cannot be signed off.',
-  'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.': 'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.',
-  'There is no earlier run to compare with. This shows the closing headcount and how pay is made up. A sign-off is still required.': 'There is no earlier run to compare with. This shows the closing headcount and how pay is made up. A sign-off is still required.',
+  'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up.': 'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up.',
+  'There is no earlier run to compare with. This shows the closing headcount and how pay is made up.': 'There is no earlier run to compare with. This shows the closing headcount and how pay is made up.',
   'The run for the month before was voided and has not been replaced.': 'The run for the month before was voided and has not been replaced.',
   'The prior month’s run is not approved yet, so its figures may still change.': 'The prior month’s run is not approved yet, so its figures may still change.',
   'Integrity checks failed, so this reconciliation cannot be signed off.': 'Integrity checks failed, so this reconciliation cannot be signed off.',
@@ -185,6 +185,12 @@ const en: Record<string, string> = {
   'The reconciliation was signed off on an earlier processing of this run, so that sign-off no longer counts. Review the run again and sign it off.': 'The reconciliation was signed off on an earlier processing of this run, so that sign-off no longer counts. Review the run again and sign it off.',
   'The month this run was compared with has changed since the reconciliation was signed off. Review it again and sign it off.': 'The month this run was compared with has changed since the reconciliation was signed off. Review it again and sign it off.',
   'The reconciliation has not been signed off. Review the run and sign it off before approving.': 'The reconciliation has not been signed off. Review the run and sign it off before approving.',
+  'A sign-off is still required.': 'A sign-off is still required.',
+  'Read how this run moved from the prior month and explain what moved. Your company does not require a sign-off before Approve, so Approve is not held for it. You can still sign the reconciliation off.': 'Read how this run moved from the prior month and explain what moved. Your company does not require a sign-off before Approve, so Approve is not held for it. You can still sign the reconciliation off.',
+  'The sign-off is optional for this company. It is kept by the server if you give it.': 'The sign-off is optional for this company. It is kept by the server if you give it.',
+  'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.': 'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.',
+  'At least {min} characters. The reason is kept with the withdrawal.': 'At least {min} characters. The reason is kept with the withdrawal.',
+  'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.': 'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.',
 };
 
 const ar: Record<string, string> = {
@@ -296,8 +302,8 @@ const ar: Record<string, string> = {
   'The reconciliation could not be loaded. {reason}': 'تعذّر تحميل المطابقة. {reason}',
   'This is an off-cycle run. Only monthly runs are reconciled against the prior month, so there is nothing to sign off before approving it.': 'هذا مسير خارج الدورة. لا تُجرى المطابقة مع الشهر السابق إلا للمسيرات الشهرية، فلا شيء للمصادقة عليه قبل اعتماده.',
   'You can see only part of the company, so every figure here is a partial view. It is labelled partial when exported and cannot be signed off.': 'ترى جزءًا فقط من الشركة، لذلك فكل رقم هنا عرض جزئي. يُوسَم بأنه جزئي عند التصدير ولا يمكن المصادقة عليه.',
-  'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up. A sign-off is still required.': 'لا يوجد مسير للشهر السابق لـ{period}؛ وآخر مسير كان {last}. يعرض هذا عدد الموظفين في النهاية وتكوّن الرواتب. ما زالت المصادقة مطلوبة.',
-  'There is no earlier run to compare with. This shows the closing headcount and how pay is made up. A sign-off is still required.': 'لا يوجد مسير سابق للمقارنة. يعرض هذا عدد الموظفين في النهاية وتكوّن الرواتب. ما زالت المصادقة مطلوبة.',
+  'There is no run for the month before {period}; the last run was {last}. This shows the closing headcount and how pay is made up.': 'لا يوجد مسير للشهر السابق لـ{period}؛ وآخر مسير كان {last}. يعرض هذا عدد الموظفين في النهاية وتكوّن الرواتب.',
+  'There is no earlier run to compare with. This shows the closing headcount and how pay is made up.': 'لا يوجد مسير سابق للمقارنة. يعرض هذا عدد الموظفين في النهاية وتكوّن الرواتب.',
   'The run for the month before was voided and has not been replaced.': 'أُلغي مسير الشهر السابق ولم يُستبدل.',
   'The prior month’s run is not approved yet, so its figures may still change.': 'لم يُعتمد مسير الشهر السابق بعد، لذا قد تتغيّر أرقامه.',
   'Integrity checks failed, so this reconciliation cannot be signed off.': 'فشلت فحوص السلامة، فلا يمكن المصادقة على هذه المطابقة.',
@@ -371,6 +377,12 @@ const ar: Record<string, string> = {
   'The reconciliation was signed off on an earlier processing of this run, so that sign-off no longer counts. Review the run again and sign it off.': 'جرت المصادقة على المطابقة عند معالجة سابقة لهذا المسير، فلم تعد نافذة. راجع المسير من جديد وصادق عليه.',
   'The month this run was compared with has changed since the reconciliation was signed off. Review it again and sign it off.': 'تغيّر الشهر الذي قورن به هذا المسير بعد المصادقة على المطابقة. راجعه من جديد وصادق عليه.',
   'The reconciliation has not been signed off. Review the run and sign it off before approving.': 'لم تتم المصادقة على المطابقة. راجع المسير وصادق عليها قبل الاعتماد.',
+  'A sign-off is still required.': 'ما زالت المصادقة مطلوبة.',
+  'Read how this run moved from the prior month and explain what moved. Your company does not require a sign-off before Approve, so Approve is not held for it. You can still sign the reconciliation off.': 'اقرأ كيف تغيّر هذا المسير عن الشهر السابق وفسّر ما تغيّر. لا تشترط شركتك المصادقة قبل الاعتماد، لذا لا يُمنع الاعتماد بسببها. ويمكنك مع ذلك المصادقة على المطابقة.',
+  'The sign-off is optional for this company. It is kept by the server if you give it.': 'المصادقة اختيارية لدى هذه الشركة. وتُحفظ لدى الخادم إن أجريتها.',
+  'Signing off records that you read this reconciliation against the prior month and explained what moved. Your company does not require it before Approve.': 'تسجّل المصادقة أنك قرأت هذه المطابقة مقابل الشهر السابق وفسّرت ما تغيّر. لا تشترط شركتك ذلك قبل الاعتماد.',
+  'At least {min} characters. The reason is kept with the withdrawal.': '{min} أحرف على الأقل. يُحفظ السبب مع السحب.',
+  'A “Review” flag is raised when a line’s total change, including joiners and leavers, is more than {pct} of its prior amount or {amount}, whichever is larger. The employees you confirm at sign-off are counted on their own pay change, among continuing staff only.': 'تُوسَم البنود بعلامة «مراجعة» عندما يزيد التغيّر الإجمالي للبند، بما فيه المنضمون والمغادرون، على {pct} من مبلغه السابق أو على {amount}، أيهما أكبر. أما الموظفون الذين تؤكدهم عند المصادقة فيُحتسبون بحسب تغيّر أجر كل منهم، ضمن الموظفين المستمرين فقط.',
 };
 
 export const payrollRecon = { en, ar };

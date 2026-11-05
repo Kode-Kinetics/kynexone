@@ -195,6 +195,16 @@ test.describe('value bridge', () => {
     await expect(page.getByTestId('recon-register-difference')).toContainText('0.00');
   });
 
+  test('says what a Review flag is raised on, with the thresholds of the company', async ({ page }) => {
+    await boot(page);
+    await openTab(page, 'Value');
+    const note = page.getByTestId('recon-flag-explanation');
+    await expect(note).toContainText('total change, including joiners and leavers');
+    await expect(note).toContainText('10.0%');
+    await expect(note).toContainText('2,500.00');
+    await expect(note).toContainText('continuing staff only');
+  });
+
   test('a row opens its breakdown into joiners, leavers and what moved among continuing staff', async ({ page }) => {
     await boot(page);
     await openTab(page, 'Value');
@@ -425,6 +435,32 @@ test.describe('scope, prior month and failures', () => {
     await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
     expect(s.reconCalls).toBe(0);
     await expect(page.getByTestId('pipeline-stages').locator('[data-stage="review"]')).toContainText('No reconciliation sign-off is needed');
+  });
+
+  test('a company that does not require the sign-off: the reconciliation is still shown, but the run is not held at Review', async ({ page }) => {
+    const s = await boot(page, { recon: 'recon-signoff-optional.json' });
+    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
+    await expect(page.getByTestId('pipeline-stages').locator('[data-stage="review"]')).toContainText('No reconciliation sign-off is needed');
+    await expect(page.getByTestId('pipeline-stages').locator('[aria-current="step"]')).toHaveAttribute('data-stage', 'approved');
+    expect(s.reconCalls).toBeGreaterThan(0);
+    // The review stage still opens the reconciliation, and says Approve is not held for it.
+    await page.getByTestId('pipeline-stages').getByRole('button', { name: 'Review', exact: true }).click();
+    await expect(panel(page)).toBeVisible();
+    await expect(page.getByTestId('recon-volume-opening')).toContainText('40');
+    await expect(page.getByTestId('recon-volume-ties')).toContainText('The bridge ties');
+    await expect(page.getByTestId('run-review')).toContainText('does not require a sign-off');
+    await expect(page.getByTestId('recon-flag-Earning-OVERTIME')).toHaveCount(0);
+    await openTab(page, 'Value');
+    await expect(page.getByTestId('recon-flag-Earning-OVERTIME')).toBeVisible();
+    // It can still be signed off voluntarily, and then the review stage names the signer.
+    await openTab(page, 'Sign-off');
+    await expect(page.getByTestId('recon-signoff-button')).toBeDisabled();
+    await expect(page.getByTestId('recon-signoff-blocker')).toContainText('written reason');
+  });
+
+  test('a company that requires the sign-off still holds the run at Review', async ({ page }) => {
+    await boot(page, { recon: 'recon-full.json' });
+    await expect(page.getByTestId('pipeline-next-title')).toHaveText('Review the results');
   });
 
   test('a failed load is an error with Retry, never an empty bridge', async ({ page }) => {

@@ -20,7 +20,7 @@ const ISSUES_SHOWN = 10;
  * The sign-off is kept by the server; Approve is refused without it, so this stage is done only when the
  * server says so.
  */
-export function RunReviewPanel({ run, results, recon, reconState, reconError, reloadRecon, candidates, priorRunId, onPriorRunChange, mayApprove, reviewedAtUtc, reviewedByName, onOpenValidation, onSignedOff }: {
+export function RunReviewPanel({ run, results, recon, reconState, reconError, reloadRecon, candidates, priorRunId, onPriorRunChange, mayApprove, signoffRequired, reviewedAtUtc, reviewedByName, onOpenValidation, onSignedOff }: {
   run: PayrollRun;
   results: PayrollValidationResult[] | null;
   recon: ReconDto | null;
@@ -31,6 +31,8 @@ export function RunReviewPanel({ run, results, recon, reconState, reconError, re
   priorRunId: string | null;
   onPriorRunChange: (id: string | null) => void;
   mayApprove: boolean;
+  /** False when the company's rule does not hold Approve for the sign-off: the review is shown, never waited for. */
+  signoffRequired: boolean;
   /** When the Active server sign-off was given; null = not signed off. */
   reviewedAtUtc: string | null;
   reviewedByName: string | null;
@@ -68,7 +70,9 @@ export function RunReviewPanel({ run, results, recon, reconState, reconError, re
     <section aria-labelledby={`review-${run.id}`} className="space-y-4 rounded-lg border border-line bg-surface-sunken p-4" data-testid="run-review">
       <div>
         <h3 id={`review-${run.id}`} className="text-h4 font-semibold text-fg">{t('Review before approval')}</h3>
-        <p className="mt-0.5 text-body-sm text-fg-muted">{t('Read how this run moved from the prior month, explain what moved, then sign the reconciliation off. Approve is offered once it is signed off.')}</p>
+        <p className="mt-0.5 text-body-sm text-fg-muted">{signoffRequired
+          ? t('Read how this run moved from the prior month, explain what moved, then sign the reconciliation off. Approve is offered once it is signed off.')
+          : t('Read how this run moved from the prior month and explain what moved. Your company does not require a sign-off before Approve, so Approve is not held for it. You can still sign the reconciliation off.')}</p>
       </div>
 
       <ManpowerReconPanel
@@ -132,8 +136,10 @@ export function RunReviewPanel({ run, results, recon, reconState, reconError, re
           </p>
         ) : (
           <>
-            <Button variant="primary" onClick={() => setTab('signoff')} data-testid="review-go-to-signoff">{t('Go to sign-off')}</Button>
-            <p className="text-meta text-fg-muted">{t('The sign-off is kept by the server. Approve is refused until the reconciliation is signed off for this version of the run.')}</p>
+            <Button variant={signoffRequired ? 'primary' : 'secondary'} onClick={() => setTab('signoff')} data-testid="review-go-to-signoff">{t('Go to sign-off')}</Button>
+            <p className="text-meta text-fg-muted">{signoffRequired
+              ? t('The sign-off is kept by the server. Approve is refused until the reconciliation is signed off for this version of the run.')
+              : t('The sign-off is optional for this company. It is kept by the server if you give it.')}</p>
           </>
         )}
       </div>

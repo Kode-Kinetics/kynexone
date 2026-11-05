@@ -17,7 +17,7 @@ import {
   attentionFor, derivePipeline, sortByAttention,
   type AttentionKind, type NextAction, type PipelineStage, type Reason, type StageKey,
 } from '../../lib/payrollPipeline';
-import { isPeriodOwning, priorRunCandidates, reviewFromSignoff } from '../../lib/payrollRecon';
+import { isPeriodOwning, priorRunCandidates, reviewFromSignoff, reviewIsRequired } from '../../lib/payrollRecon';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { EnumLabel } from '../EnumLabel';
 import { Button } from '../ui/Button';
@@ -81,6 +81,10 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const awaitingApproval = run?.status === 'Processed' || run?.status === 'PendingFinanceReview';
   const recon = useRunRecon(runId, { enabled: !!run && periodOwning && (awaitingApproval || reviewOpen), priorRunId, version });
   const review = reviewFromSignoff(recon.recon?.signoff);
+  // A company can switch the sign-off requirement off: the reconciliation is still shown, but the run is not held at Review.
+  // Until the reconciliation has been read the sign-off is taken as required.
+  const holdAtReview = reviewIsRequired(run?.runType, recon.recon);
+  const signoffRequired = recon.recon?.signoffRequired !== false;
 
   // Approve was refused for want of a current sign-off: show the review again.
   const handledReviewRequest = useRef(reviewRequestKey);
@@ -119,10 +123,10 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
     prechecks: data.prechecks,
     reviewedAtUtc: review?.reviewedAtUtc ?? null,
     reviewedByName: review?.reviewedByName ?? null,
-    reviewApplicable: periodOwning,
+    reviewApplicable: holdAtReview,
     can,
     currencyConfirmed: currency === null || currency.status !== 'unavailable',
-  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, review?.reviewedAtUtc, review?.reviewedByName, periodOwning, can.process, can.approve, can.lock, currency]); // eslint-disable-line react-hooks/exhaustive-deps
+  }) : null), [run, processing.status, data.openErrors, data.overrideCount, data.approvals, batches, data.prechecks, review?.reviewedAtUtc, review?.reviewedByName, holdAtReview, can.process, can.approve, can.lock, currency]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Polite announcements: when the stage that needs attention changes, or the job changes state. Never per progress tick.
   const announceKey = model && run ? `${run.id}|${model.focus}|${model.stages.find(s => s.key === model.focus)?.state}|${processing.status?.status ?? ''}` : '';
@@ -325,6 +329,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                 priorRunId={priorRunId}
                 onPriorRunChange={setPriorRunId}
                 mayApprove={can.approve}
+                signoffRequired={signoffRequired}
                 reviewedAtUtc={review?.reviewedAtUtc ?? null}
                 reviewedByName={review?.reviewedByName ?? null}
                 onOpenValidation={() => onNavigate('validation')}

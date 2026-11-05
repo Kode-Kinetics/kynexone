@@ -13,8 +13,8 @@ namespace Zayra.Api.Tests.Recon;
 /// </summary>
 public class ReconContractShapeTests
 {
-    /// <summary>The only property the API emits that the frontend fixtures do not carry: whether the company's rule requires a sign-off.</summary>
-    private static readonly string[] ServerOnly = { "$.signoffRequired" };
+    /// <summary>Properties the API emits that the frontend fixtures do not carry. None: the fixtures carry every field the API sends.</summary>
+    private static readonly string[] ServerOnly = Array.Empty<string>();
 
     /// <summary>Properties the frontend's first-run fixture carries on the headline rows that no screen reads and the API does not send.</summary>
     private static readonly string[] FixtureOnly =
@@ -28,7 +28,7 @@ public class ReconContractShapeTests
 
     internal static string FixtureText(string name = "recon-full") => File.ReadAllText(FixturePath(name));
 
-    public static IEnumerable<object[]> Fixtures => new[] { "recon-full", "recon-flagged", "recon-signed", "recon-noprior", "recon-partial" }
+    public static IEnumerable<object[]> Fixtures => new[] { "recon-full", "recon-flagged", "recon-signed", "recon-noprior", "recon-partial", "recon-signoff-optional" }
         .Select(n => new object[] { n });
 
     /// <summary>Structural diff of two JSON documents: names, nesting, kinds, and numbers by value.</summary>
@@ -89,7 +89,7 @@ public class ReconContractShapeTests
         var root = JsonNode.Parse(FixtureText())!.AsObject();
         root.Select(p => p.Key).Should().Equal(
             "runId", "period", "mode", "priorRunId", "priorPeriod", "priorNotFinal", "priorVoided", "currency", "processVersion", "snapshotHash",
-            "scope", "thresholds", "volume", "value", "finalSettlement", "integrity", "signoff");
+            "signoffRequired", "scope", "thresholds", "volume", "value", "finalSettlement", "integrity", "signoff");
         root["volume"]!.AsObject().Select(p => p.Key).Should().Equal("opening", "closing", "lines", "ties", "memo");
         root["value"]!.AsObject().Select(p => p.Key).Should().Equal("sections", "headline", "ties", "registerDifference");
         root["value"]!["headline"]!.AsObject().Select(p => p.Key).Should().Equal("gross", "deductions", "net", "employer");
@@ -98,6 +98,23 @@ public class ReconContractShapeTests
         item.Select(p => p.Key).Should().Equal("code", "label", "prior", "adds", "exits", "continuing", "current", "delta", "deltaPct", "flagged");
         root["value"]!["headline"]!["gross"]!.AsObject().Select(p => p.Key).Should().Equal(
             "prior", "adds", "exits", "continuing", "current", "delta", "deltaPct");
+    }
+
+    [Fact]
+    public void TheFixtures_CarryWhetherTheSignoffIsRequired_AndOneVariantSaysItIsNot()
+    {
+        foreach (var name in new[] { "recon-full", "recon-flagged", "recon-signed", "recon-noprior", "recon-partial" })
+            Read(name).SignoffRequired.Should().BeTrue(name);
+        Read("recon-signoff-optional").SignoffRequired.Should().BeFalse();
+    }
+
+    [Fact]
+    public void TheFrontendAndBackendFixtureCopies_AreByteIdentical()
+    {
+        var frontend = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "frontend", "e2e", "fixtures"));
+        if (!Directory.Exists(frontend)) return; // a build that ships without the frontend checkout has nothing to compare with
+        foreach (var path in Directory.GetFiles(frontend, "recon-*.json"))
+            File.ReadAllBytes(FixturePath(Path.GetFileNameWithoutExtension(path))).Should().Equal(File.ReadAllBytes(path), Path.GetFileName(path));
     }
 
     [Fact]

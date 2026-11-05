@@ -141,6 +141,12 @@ export interface ReconDto {
    */
   processVersion?: number;
   snapshotHash?: string;
+  /**
+   * Whether the company's rule holds Approve until the reconciliation is signed off. False = the company
+   * switched the requirement off (a recorded choice): the reconciliation is still shown, but Approve is not held for it.
+   * Absent is read as required.
+   */
+  signoffRequired?: boolean;
   scope: ReconScope;
   thresholds: ReconThresholds;
   volume: ReconVolume;

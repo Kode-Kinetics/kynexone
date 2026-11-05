@@ -9,6 +9,7 @@
   "currency": "SAR",
   "processVersion": 3,
   "snapshotHash": "sha256:7c1f0d8e5b2a49e3a6d4f1b0c9e8a7d6",
+  "signoffRequired": true,
   "scope": {
     "level": "Organization",
     "partial": false,

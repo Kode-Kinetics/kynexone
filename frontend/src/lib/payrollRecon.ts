@@ -273,6 +273,13 @@ export function offCycleSummary(v: ReconOffCycleMemo | number | null | undefined
 /** Regular and Replacement runs own their pay period; off-cycle runs sit inside one. */
 export const isPeriodOwning = (runType: string | null | undefined): boolean => runType === 'Regular' || runType === 'Replacement';
 
+/**
+ * True when the pipeline must hold the run at Review: a period-owning run, in a company whose rule requires the sign-off.
+ * It fails closed: until the reconciliation is read, or if the server did not say, the sign-off is required.
+ */
+export const reviewIsRequired = (runType: string | null | undefined, recon: Pick<ReconDto, 'signoffRequired'> | null | undefined): boolean =>
+  isPeriodOwning(runType) && recon?.signoffRequired !== false;
+
 type Candidate = { id: string; companyId: string | null; year: number; month: number; status: string; runType: string };
 
 /**

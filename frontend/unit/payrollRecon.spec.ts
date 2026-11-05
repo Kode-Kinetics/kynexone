@@ -6,7 +6,7 @@ import {
   MIN_EXPLANATION_LENGTH, activeSignoff, buildSignoffRequest, categoryOfKey, drillParams, employeeReasonCategories,
   explanationId, flaggedItems, itemKey, missingExplanations, normalizeCells, offCycleSummary, parseReconError,
   requiredExplanations, reviewFromSignoff, rowTies, signedAmount, signoffGate, tiesOk, valueTieIssues, volumeMovement,
-  volumeTies, reconTrusted, isPeriodOwning, priorRunCandidates, parseRecon, parsePeriod, amountText,
+  volumeTies, reconTrusted, isPeriodOwning, reviewIsRequired, priorRunCandidates, parseRecon, parsePeriod, amountText,
 } from '../src/lib/payrollRecon';
 
 const fixture = (name: string): ReconDto => JSON.parse(fs.readFileSync(path.join(__dirname, '../e2e/fixtures', name), 'utf8')) as ReconDto;
@@ -264,6 +264,31 @@ test.describe('review is done only on an Active server sign-off', () => {
     expect(reviewFromSignoff(signoff())).toEqual({ reviewedAtUtc: '2026-11-02T09:15:00Z', reviewedByName: 'Layla Al-Harbi' });
     expect(reviewFromSignoff(signoff({ status: 'Superseded' }))).toBeNull();
     expect(reviewFromSignoff(null)).toBeNull();
+  });
+});
+
+test.describe('a company that switches the sign-off requirement off', () => {
+  test('every shared fixture states whether the sign-off is required, and one variant says it is not', () => {
+    for (const name of ['recon-full.json', 'recon-flagged.json', 'recon-partial.json', 'recon-signed.json', 'recon-noprior.json', 'recon-signoff-optional.json']) {
+      expect(typeof fixture(name).signoffRequired, name).toBe('boolean');
+    }
+    expect(FULL().signoffRequired).toBe(true);
+    expect(fixture('recon-signoff-optional.json').signoffRequired).toBe(false);
+    expect(reconTrusted(fixture('recon-signoff-optional.json'))).toBe(true);
+  });
+
+  test('the review is waited for only on a period-owning run whose company requires the sign-off', () => {
+    expect(reviewIsRequired('Regular', FULL())).toBe(true);
+    expect(reviewIsRequired('Replacement', FULL())).toBe(true);
+    expect(reviewIsRequired('Regular', fixture('recon-signoff-optional.json'))).toBe(false);
+    expect(reviewIsRequired('OffCycle', FULL())).toBe(false);
+  });
+
+  test('until the reconciliation is read, or when the flag is missing, the review is still required (fail closed)', () => {
+    expect(reviewIsRequired('Regular', null)).toBe(true);
+    expect(reviewIsRequired('Regular', undefined)).toBe(true);
+    expect(reviewIsRequired('Regular', { ...FULL(), signoffRequired: undefined })).toBe(true);
+    expect(reviewIsRequired(undefined, FULL())).toBe(false);
   });
 });
 
