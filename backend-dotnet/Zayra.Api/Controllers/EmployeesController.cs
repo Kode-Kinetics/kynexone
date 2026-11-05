@@ -130,7 +130,7 @@ public class EmployeesController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
 
         if (scope.IsUnrestricted && entityScope.IsGroupLevel)
-            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, access, page, pageSize, cancellationToken));
+            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, access, page, pageSize, cancellationToken, CanViewSensitive()));
 
         // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
         // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
@@ -145,16 +145,9 @@ public class EmployeesController : ControllerBase
             var accessibleIds = entityScope.AccessibleCompanyIds;
             query = query.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
         }
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            // Predicate MUST match the group-level list (EmployeeManagementService.SearchAsync) AND the
-            // bulk resolver (ResolveTargetIdsAsync) column-for-column, otherwise a scoped user's
-            // "select all matching + search" resolves a broader set than this list shows.
-            var term = search.Trim();
-            query = query.Where(e => e.EmployeeCode.Contains(term) || e.FullName.Contains(term)
-                || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
-                || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
-        }
+        // ONE predicate for the group-level list, this list and the bulk resolver (ResolveTargetIdsAsync), so a scoped user's
+        // "select all matching + search" resolves exactly the set this list shows.
+        query = EmployeeSearch.Apply(query, _db.Branches, search, CanViewSensitive());
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
         // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
@@ -4805,13 +4798,7 @@ public class EmployeesController : ControllerBase
         else
         {
             var f = req.Filter ?? new BulkSelectAllFilter(null, null, null, null, null);
-            if (!string.IsNullOrWhiteSpace(f.Search))
-            {
-                var term = f.Search.Trim();
-                query = query.Where(e => e.EmployeeCode.Contains(term) || e.FullName.Contains(term)
-                    || e.EnglishName.Contains(term) || e.ArabicName.Contains(term)
-                    || (e.WorkEmail != null && e.WorkEmail.Contains(term)));
-            }
+            query = EmployeeSearch.Apply(query, _db.Branches, f.Search, CanViewSensitive());
             if (!string.IsNullOrWhiteSpace(f.Status)) query = query.Where(e => e.Status == f.Status);
             query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, f.Readiness, f.ImportBatchId, f.GapType);
             query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, EmployeeAccessStates.ParseFilter(f.Access), ct);
