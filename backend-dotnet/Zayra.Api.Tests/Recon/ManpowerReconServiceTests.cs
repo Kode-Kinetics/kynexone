@@ -212,6 +212,46 @@ public class ManpowerReconServiceTests
     }
 
     [Fact]
+    public async Task AnOlderComparisonRun_BringsItsOwnPeriodsFinalSettlements_IntoThePriorColumn()
+    {
+        var k = await Kit.CreateAsync();
+        var august = k.AddRun(2026, 8, "Locked");
+        k.AddEmployee(1); k.AddSlip(august, 1, 1000); k.AddSlip(k.Current, 1, 1000);
+        var settlement = new EmployeeFinalSettlement
+        {
+            TenantId = k.TenantId, CompanyId = k.CompanyId, EmployeeId = 40, EmployeeCode = "E40", EmployeeName = "Employee 40",
+            LastWorkingDay = new DateOnly(2026, 7, 31), Status = "Approved", GlPeriod = "2026-08", GrossPayable = 3000m, TotalDeductions = 0m,
+        };
+        k.Db.EmployeeFinalSettlements.Add(settlement);
+        k.Db.FinalSettlementLines.Add(new FinalSettlementLine { TenantId = k.TenantId, SettlementId = settlement.Id, ComponentCode = "EOSB_GRATUITY", LineType = "Earning", Amount = 3000m });
+        await k.Db.SaveChangesAsync();
+
+        var fs = (await k.Build(priorOverride: august.Id)).Build!.Dto.FinalSettlement;
+        fs.PerComponent.Single(c => c.Code == "EOSB_GRATUITY").Should().Be(new ReconFsComponentDto("EOSB_GRATUITY", 3000m, 0m, -3000m),
+            "October is compared with August, so August's settlements are the prior figures");
+    }
+
+    [Fact]
+    public async Task AnOlderComparisonRun_StillSeesTheSettlementOfALeaverWhoLeftInBetween()
+    {
+        var k = await Kit.CreateAsync();
+        var august = k.AddRun(2026, 8, "Locked");
+        k.AddEmployee(1); k.AddSlip(august, 1, 1000); k.AddSlip(k.Current, 1, 1000);
+        k.AddEmployee(2, status: "Terminated"); k.AddSlip(august, 2, 900);
+        var offboarding = new EmployeeOffboarding { TenantId = k.TenantId, CompanyId = k.CompanyId, EmployeeId = 2, EmployeeCode = "E2", LastWorkingDay = new DateOnly(2026, 9, 15), Status = "Completed" };
+        k.Db.EmployeeOffboardings.Add(offboarding);
+        k.Db.EmployeeFinalSettlements.Add(new EmployeeFinalSettlement
+        {
+            TenantId = k.TenantId, CompanyId = k.CompanyId, EmployeeId = 2, EmployeeCode = "E2", EmployeeName = "Employee 2", OffboardingId = offboarding.Id,
+            LastWorkingDay = new DateOnly(2026, 9, 15), Status = "Approved", GlPeriod = "2026-09", GrossPayable = 2000m, TotalDeductions = 0m,
+        });
+        await k.Db.SaveChangesAsync();
+
+        var dto = (await k.Build(priorOverride: august.Id)).Build!.Dto;
+        dto.FinalSettlement.LeaversWithoutFs.Should().BeEmpty("E2's settlement accrued in September, between the two runs compared");
+    }
+
+    [Fact]
     public async Task PackageAndProration_AreSplitUsingTheSlipWitnesses()
     {
         var k = await Kit.CreateAsync();

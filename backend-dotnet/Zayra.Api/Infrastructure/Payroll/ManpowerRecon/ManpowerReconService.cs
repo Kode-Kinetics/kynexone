@@ -128,7 +128,7 @@ public sealed class ManpowerReconService
         var offboardings = await _db.EmployeeOffboardings.AsNoTracking()
             .Where(o => o.TenantId == tenantId && allIds.Contains(o.EmployeeId) && o.Status != "Cancelled")
             .ToListAsync(ct);
-        var settlements = await LoadSettlementsAsync(tenantId, run, caller.DataScope, ct);
+        var settlements = await LoadSettlementsAsync(tenantId, run, prior, caller.DataScope, ct);
         var accruedByEmployee = settlements.Where(s => FinalSettlementStatuses.HasAccrued(s.Status))
             .GroupBy(s => s.EmployeeId).ToDictionary(g => g.Key, g => g.Select(s => s.OffboardingId).ToHashSet());
         var newIds = allIds.Where(id => currentByEmp.ContainsKey(id) && !priorByEmp.ContainsKey(id)).ToList();
@@ -431,10 +431,18 @@ public sealed class ManpowerReconService
         return ids.ToHashSet();
     }
 
-    private async Task<List<FsSettlementFact>> LoadSettlementsAsync(Guid tenantId, PayrollRun run, DataScope scope, CancellationToken ct)
+    /// <summary>
+    /// The settlements accrued in every period from the comparison run's (which a reviewer may have chosen further back than
+    /// last month) through this run's, and never fewer than this period and the one before: the prior column needs the
+    /// comparison period's, and a leaver who left in between is matched to a settlement accrued in any of those months.
+    /// </summary>
+    private async Task<List<FsSettlementFact>> LoadSettlementsAsync(Guid tenantId, PayrollRun run, PayrollRun? prior, DataScope scope, CancellationToken ct)
     {
-        var (py, pm) = run.Month == 1 ? (run.Year - 1, 12) : (run.Year, run.Month - 1);
-        var periods = new[] { $"{run.Year}-{run.Month:D2}", $"{py}-{pm:D2}" };
+        var to = new DateOnly(run.Year, run.Month, 1);
+        var from = to.AddMonths(-1);
+        if (prior is not null && new DateOnly(prior.Year, prior.Month, 1) is var p && p < from) from = p;
+        var periods = new List<string>();
+        for (var m = from; m <= to; m = m.AddMonths(1)) periods.Add($"{m.Year}-{m.Month:D2}");
         var query = _db.EmployeeFinalSettlements.AsNoTracking()
             .Where(s => s.TenantId == tenantId && s.CompanyId == run.CompanyId && s.GlPeriod != null && periods.Contains(s.GlPeriod));
         if (scope.Level != DataScopeLevel.Organization && scope.AllowedEmployeeIds is { } allowed)
