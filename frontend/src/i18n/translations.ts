@@ -52,6 +52,7 @@ import { payrollRules } from './payrollRules';
 import { gradePackage } from './gradePackage';
 import { appChrome } from './appChrome';
 import { removalSafety } from './removalSafety';
+import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
 import { attendanceBulk } from './attendanceBulk';
 import { dailyB } from './dailyB';
@@ -79,6 +80,7 @@ const en: Dict = {
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
+  ...companyStructure.en,
   ...appChrome.en,
   ...dailyA.en,
   ...attendanceBulk.en,
@@ -958,6 +960,10 @@ const en: Dict = {
   'Recorded on attendance. Dashed months had nothing captured.': 'Recorded on attendance. Dashed months had nothing captured.',
   'Saudization': 'Saudization',
   'Latest Nitaqat snapshot': 'Latest Nitaqat snapshot',
+  'Band not calculated': 'Band not calculated',
+  'No Nitaqat snapshot has been calculated yet': 'No Nitaqat snapshot has been calculated yet',
+  'My day': 'My day',
+  'Home view': 'Home view',
   '{saudi} of {total} Saudi': '{saudi} of {total} Saudi',
   'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}, not recorded {unknown}': 'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}, not recorded {unknown}',
   'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}': 'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}',
@@ -1597,6 +1603,7 @@ const en: Dict = {
 const ar: Dict = {
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
+  ...companyStructure.ar,
   ...appChrome.ar,
   ...dailyA.ar,
   ...attendanceBulk.ar,
@@ -2476,6 +2483,10 @@ const ar: Dict = {
   'Recorded on attendance. Dashed months had nothing captured.': 'مسجّلة في الحضور. الأشهر المتقطعة لم يُسجَّل فيها شيء.',
   'Saudization': 'السعودة',
   'Latest Nitaqat snapshot': 'أحدث بيانات نطاقات',
+  'Band not calculated': 'لم يُحتسب النطاق',
+  'No Nitaqat snapshot has been calculated yet': 'لم تُحتسب بيانات نطاقات بعد',
+  'My day': 'يومي',
+  'Home view': 'عرض الصفحة الرئيسية',
   '{saudi} of {total} Saudi': 'سعوديون: {saudi} من أصل {total}',
   'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}, not recorded {unknown}': 'توزيع الجنسيات: سعوديون {saudi}، غير سعوديين {nonSaudi}، غير مسجّلة {unknown}',
   'Nationality mix: Saudi {saudi}, non-Saudi {nonSaudi}': 'توزيع الجنسيات: سعوديون {saudi}، غير سعوديين {nonSaudi}',

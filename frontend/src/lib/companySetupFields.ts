@@ -132,6 +132,14 @@ export function timeZoneOffset(zone: string, at: Date = new Date()): string {
   } catch { return ''; }
 }
 
+/** Every IANA zone this browser supports (so a branch can sit in Paris or Singapore), without the shortlist; empty on engines without Intl.supportedValuesOf. */
+export function otherTimeZones(shortlist: readonly string[]): string[] {
+  try {
+    const all = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('timeZone') ?? [];
+    return all.filter(zone => !shortlist.includes(zone));
+  } catch { return []; }
+}
+
 // ── Branches and locations ───────────────────────────────────────────────────
 
 /**

@@ -8,8 +8,10 @@ import { useT } from '../../hooks/useT';
 type Action = { label: string; onSelect: () => void; disabled?: boolean; destructive?: boolean };
 
 /** The portal keeps the menu outside the table's scrolling/clipping container. */
-export function CompanyRowActions({ companyName, onEdit, actions }: {
+export function CompanyRowActions({ companyName, onEdit, actions, blockedReason }: {
   companyName: string; onEdit: () => void; actions: Action[];
+  /** Disables Edit and More actions and says why (the role or permission that is missing). */
+  blockedReason?: string;
 }) {
   const t = useT();
   const id = useId();
@@ -62,11 +64,11 @@ export function CompanyRowActions({ companyName, onEdit, actions }: {
   };
 
   return <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center">
-    <button type="button" onClick={onEdit} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs">
+    <button type="button" onClick={onEdit} disabled={!!blockedReason} title={blockedReason} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50">
       <Pencil className="h-3 w-3" aria-hidden="true" /> {t('Edit')}
     </button>
-    <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
-      aria-label={`${t('More actions')}: ${companyName}`} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs"
+    <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} disabled={!!blockedReason} title={blockedReason} aria-controls={open ? id : undefined}
+      aria-label={`${t('More actions')}: ${companyName}`} className="btn-secondary min-h-9 whitespace-nowrap px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
       onClick={() => { lastItem.current = false; setOpen(value => !value); }}
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
