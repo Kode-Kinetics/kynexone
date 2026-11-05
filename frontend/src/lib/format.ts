@@ -42,6 +42,14 @@ function asAppLocale(locale: string | null | undefined): AppLocale {
 
 /** BCP-47 tag for numbers: Latin digits in every language. English uses en-US so compact
  *  notation reads "1.2M" (en-GB prints "1.2m"). */
+/**
+ * English Intl names two Hijri months "Rabi\u02BB I/II" and "Jumada I/II", which read as a stray
+ * letter beside the year ("22 Jumada I 1448"). The traditional names say what they mean.
+ */
+export function spellOutHijriMonths(text: string): string {
+  return text.replace(/\b(Rabi[\u02BB'\u2019]?|Jumada) (II|I)(?=\s|$)/g, (_m, month: string, n: string) => `${month} al-${n === 'I' ? 'Awwal' : 'Thani'}`);
+}
+
 export function numberLocale(locale: string): string {
   const l = asAppLocale(locale);
   return l === 'en' ? 'en-US' : `${BASE[l]}-u-nu-latn`;
@@ -186,7 +194,10 @@ export function createFormatter(settings: FormatSettings) {
     const parsed = toDate(d);
     if (!parsed) return '—';
     const { date, dateOnly } = parsed;
-    const fmt = (opts: Intl.DateTimeFormatOptions) => dtf(opts, cal, dateOnly).format(date);
+    const fmt = (opts: Intl.DateTimeFormatOptions) => {
+      const out = dtf(opts, cal, dateOnly).format(date);
+      return cal === 'islamic-umalqura' && locale === 'en' ? spellOutHijriMonths(out) : out;
+    };
     const pattern = settings.dateFormat?.trim();
     switch (style) {
       case 'short':

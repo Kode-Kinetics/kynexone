@@ -128,6 +128,10 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
         <span className="text-sm font-semibold text-slate-900 dark:text-white">{t('Overtime hours')}</span>
       </span>
       <span className="text-[28px] [.kx-dense_&]:text-[24px] font-semibold leading-none tracking-tight tabular-nums text-slate-900 dark:text-white">{t('{count} h', { count: Math.round(s.overtimeHours) })} <span className="text-body-sm font-medium text-slate-600 dark:text-slate-400">{t('Month to date')}</span></span>
+      {otPts.length === 0 ? (
+        <span className="text-xs text-slate-600 dark:text-slate-400">{t('No attendance has been captured in these months, so there is nothing to chart yet.')}</span>
+      ) : (
+        <>
       <span className="flex items-end gap-1.5" role="img" aria-label={ot.map((p) => p.v == null
         ? t('{month}: no attendance captured', { month: f.period(p.m) })
         : t('{month}: {count, plural, one {# hour} other {# hours}}', { month: f.period(p.m), count: Math.round(p.v) })).join(', ')}>
@@ -143,6 +147,8 @@ export function KpiRow({ data, hour, asOf, dense = false }: { data: DashboardFul
         ))}
       </span>
       <span className="text-xs text-slate-600 dark:text-slate-400 [.kx-dense_&]:hidden">{t('Recorded on attendance. Dashed months had nothing captured.')}</span>
+        </>
+      )}
     </Link>
   );
 

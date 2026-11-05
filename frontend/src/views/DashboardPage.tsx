@@ -25,6 +25,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useAuth } from '../contexts/AuthContext';
+import { isEmployeeOnly } from '../lib/homePath';
 import { useWorkforceFindings } from '../hooks/useWorkforceFindings';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { resolvePayrollRunCurrency, resolvePayrollRunsCurrency } from '../lib/payrollCurrency';
@@ -184,7 +185,7 @@ function CompanyDashboard() {
       <div className="min-w-0">
         <h1 className="text-[32px] font-semibold leading-[1.1] tracking-[-0.025em] text-slate-950 dark:text-white">{t('HR Command Center')}</h1>
         <p className="mt-1 text-body-sm text-slate-600 dark:text-slate-400">
-          {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}. </span>}
+          {companyName && <span className="font-medium text-slate-900 dark:text-white">{companyName}<span aria-hidden className="mx-1.5 text-slate-400">·</span></span>}
           {clock.primary}{clock.secondary ? ` (${clock.secondary})` : ''}, <span className="tabular-nums">{clock.time}</span>
         </p>
       </div>
@@ -297,7 +298,10 @@ export function DashboardPage() {
   const { user } = useAuth();
   // "My day" needs an employee record linked to this login; an admin without one has no personal
   // view to show, and the self-service page would only answer with an error.
-  const canSeeBoth = !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
+  // A self-service-only login (lib/homePath.ts decides who that is, including the ESSOnly portal) gets
+  // no switch; it stays on its own view even if a role also grants the workforce dashboard.
+  const employeeOnly = isEmployeeOnly(user) && user?.employeeId != null;
+  const canSeeBoth = !isEmployeeOnly(user) && !!user?.permissions.includes('ess.read') && !!user?.permissions.includes('dashboard.read') && user?.employeeId != null;
   const storageKey = `kx.home-view.${user?.id ?? 'anon'}`;
   // Unknown until the browser's remembered choice is read, so the wrong view never mounts first
   // (it would flash, and fire the other view's requests for nothing).
@@ -314,6 +318,7 @@ export function DashboardPage() {
     try { window.localStorage.setItem(storageKey, v); } catch { /* private mode */ }
   };
 
+  if (employeeOnly) return <EmployeeSelfServicePage />;
   if (!canSeeBoth) return <CompanyDashboard />;
 
   const labels: Record<HomeView, string> = { me: t('My day'), company: t('Company') };
