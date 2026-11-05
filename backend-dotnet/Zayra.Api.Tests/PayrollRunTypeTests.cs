@@ -722,6 +722,7 @@ public class PayrollRunTypeTests
         //    because maker-checker forbids the processor from approving their own run — and that is
         //    exactly the point: the approver is not the person who set the exclusion.
         var approver = MakeCtrl(db, tenantId, "approver");
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var unack = await approver.Approve(run.Id, new PayrollDecisionRequest("looks fine"), CancellationToken.None);
         unack.Should().BeOfType<ConflictObjectResult>();
         unack.As<ConflictObjectResult>().Value!.ToString().Should().Contain("excluded_employees_not_acknowledged");
@@ -759,6 +760,7 @@ public class PayrollRunTypeTests
             .AnyAsync(v => v.PayrollRunId == run.Id && v.Code == "MISSING_SALARY_STRUCTURE" && v.EmployeeId == b.Id))
             .Should().BeFalse("an excluded employee must not raise a blocking error for the run that excluded them");
 
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         (await MakeCtrl(db, tenantId, "approver").Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedExcludedCount: 1), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
     }

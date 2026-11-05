@@ -86,7 +86,10 @@ public sealed class JournalExportEmployeeIdentifiersPostgresTests
         // June: the monthly EOSB provision movement, per employee, through the real Approve and Lock.
         var june = await k.SeedRunAsync(new[] { E(Marker1, "BASIC", 8000m), E(Marker2, "BASIC", 8000m) }, Array.Empty<(string, string, string, decimal, bool)>(), month: 6);
         await using (var db = k.K.NewContext())
+        {
+            await ReconTestSupport.SignOffAsync(db, june.Id);
             (await Ksa(db, k.TenantId, k.ApproverId).Approve(june.Id, new PayrollDecisionRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        }
         await using (var db = k.K.NewContext())
             (await Ksa(db, k.TenantId, k.LockerId).Lock(june.Id, default)).Should().BeOfType<OkObjectResult>();
 

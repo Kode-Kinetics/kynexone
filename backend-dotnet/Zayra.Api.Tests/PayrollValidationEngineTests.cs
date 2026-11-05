@@ -638,10 +638,11 @@ public class PayrollValidationEngineTests
         });
         await db.SaveChangesAsync();
 
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tid, "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest(null), CancellationToken.None);
 
-        result.Should().NotBeOfType<UnprocessableEntityObjectResult>("Warning-only runs must be approvable");
+        result.Should().BeOfType<OkObjectResult>("Warning-only runs must be approvable");
     }
 
     [Fact]
@@ -664,10 +665,11 @@ public class PayrollValidationEngineTests
         err.IsResolved = true;
         await db.SaveChangesAsync();
 
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         var ctrl   = MakeCtrl(db, tid, "Admin");
         var result = await ctrl.Approve(run.Id, new PayrollDecisionRequest(null), CancellationToken.None);
 
-        result.Should().NotBeOfType<UnprocessableEntityObjectResult>("resolved errors must not block approval");
+        result.Should().BeOfType<OkObjectResult>("resolved errors must not block approval");
     }
 
     // ─────────────────────────────────────────────────────────────────────────

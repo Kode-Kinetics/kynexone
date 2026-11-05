@@ -149,6 +149,8 @@ internal sealed class CostingLockKit : IAsyncDisposable
     public async Task<IActionResult> ApproveAsync(Guid runId, Guid? as_ = null)
     {
         Db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(Db, runId);
+        Db.ChangeTracker.Clear();
         return await Payroll(as_ ?? ApproverId).Approve(runId, new PayrollDecisionRequest("ok"), default);
     }
 

@@ -84,7 +84,10 @@ public sealed class EosbCostedLockPostgresTests
     private static async Task<IActionResult> ApproveThenLockAsync(CostingLockKit k, Guid runId)
     {
         await using (var db = k.K.NewContext())
+        {
+            await ReconTestSupport.SignOffAsync(db, runId);
             (await Ksa(db, k.TenantId, k.ApproverId).Approve(runId, new PayrollDecisionRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        }
         await using var lockDb = k.K.NewContext();
         return await Ksa(lockDb, k.TenantId, k.LockerId).Lock(runId, default);
     }
