@@ -207,9 +207,11 @@ public class AdvancesController : ControllerBase
                 return BadRequest($"At least {policy.MinServiceMonths} completed service month(s) are required before a salary advance.");
 
             var currentYear = now.Year;
+            // A rejected request never paid anything, so it does not use up the year's allowance; a typo that was
+            // refused used to lock the employee out of advances for the rest of the year.
             var advancesThisYear = await _db.SalaryAdvances.CountAsync(
                 x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
-                     && x.CreatedAtUtc.Year == currentYear, ct);
+                     && x.Status != "Rejected" && x.CreatedAtUtc.Year == currentYear, ct);
             if (advancesThisYear >= policy.MaxAdvancesPerYear)
                 return BadRequest($"Employee has already used {advancesThisYear} advance(s) this year. Maximum allowed is {policy.MaxAdvancesPerYear}.");
 
