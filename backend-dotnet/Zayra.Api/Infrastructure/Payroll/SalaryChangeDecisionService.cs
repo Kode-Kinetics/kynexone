@@ -248,6 +248,16 @@ public sealed class SalaryChangeDecisionService
             // new package, and a grade whose range changed (or an employee moved to another grade) is checked again here.
             if (employee.Status is EmployeeStatuses.Terminated or EmployeeStatuses.Exited or EmployeeStatuses.Archived)
                 return new ConflictObjectResult(new { error = "salary_change_stale", message = $"The employee is now {employee.Status}, so this package cannot be applied. Reject it." });
+            // Another writer's row for this employee and date is detected FIRST, before any check that could refuse the decision on its own terms (consent,
+            // allowances, grade range): after a retried attempt (a transient failure such as a deadlock) the rival's row is "the record in force", and judging this
+            // change against it would hold the row as "lowers pay" instead of refusing the whole decision as the conflict it is.
+            var raceKey = (change.EmployeeId, change.EffectiveDate);
+            var activeNow = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == change.EmployeeId && x.IsActive && x.EffectiveDate == change.EffectiveDate)
+                    .Select(x => x.Id).ToListAsync(ct)).ToHashSet();
+            if (_seenSalaryRows.TryGetValue(raceKey, out var seenBefore) && !seenBefore.SetEquals(activeNow))
+                throw new SalaryImportRaceException(raceKey);
+            _seenSalaryRows[raceKey] = activeNow;
             // The customer-defined cash allowances the new record will carry, resolved NOW against what is live and in force: stated lines are checked
             // again (a definition removed or switched off since the proposal refuses the approval), and a proposal that did not mention allowances
             // carries the current record's lines — read before the replaced row is switched off below. Nothing is written for a refused decision.
