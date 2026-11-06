@@ -1235,6 +1235,19 @@ public class CashAllowanceFinanceControlsTests
         log.Should().NotContain(l => l.Scope == EntitlementMatrixService.LockScope, "the long-running Process must not hold the lock every matrix write waits on");
     }
 
+    [Fact]
+    public async Task ClosingAGlPeriod_TakesTheMatrixLock_OnTheTenantKey()
+    {
+        await using var w = await NewWorld();
+        var claims = new List<Claim> { new("tenant_id", w.Tid.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new(ClaimTypes.Name, "finance"), new("permission", "finance.gl.manage") };
+        var gl = new FinanceGlController(w.Db) { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) } } };
+        var log = Record();
+        try { (await gl.ClosePeriod("2026-06", null, new GlPeriodActionRequest("month-end"), CancellationToken.None)).Should().BeOfType<OkObjectResult>(); }
+        finally { Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = null; }
+
+        log.Should().Contain((EntitlementMatrixService.LockScope, w.Tid, w.Tid), "a closed period makes the month committed, so it is taken under the lock a correction holds");
+    }
+
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
 
     [Fact]
