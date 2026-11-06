@@ -1,36 +1,28 @@
-import { serializePeopleDirectoryState, type PeopleDirectoryState } from './peopleRoutes';
-
 /**
  * The Saudi Compliance action centre receives its "Fix" link from the server. Three of them are
- * `/people?filter=<name>`, but the People list has no `filter` key (it parses `readiness`,
- * `gapType`, `status`, ...), so the user used to land on the full unfiltered list while the card
- * said "complete the missing fields for each blocked employee".
+ * `/people?filter=<name>`, but the People list has no `filter` key, so the user used to land on the unfiltered list while
+ * the card promised "complete the missing fields for each blocked employee".
  *
- * Each server filter is mapped onto the closest directory filter that exists. The readiness filter
- * is the server's own worklist of employees whose required details are incomplete:
- *   qiwa_blocked      -> readiness=Blocked    (missing a field the activation gate requires: ID, DOB, job title)
- *   missing_iban      -> readiness=NotReady   (pay details are incomplete; NotReady = anything not Ready)
- *   missing_gosi_ref  -> readiness=NotReady   (GOSI reference / salary structure are pay-readiness items)
- * `gapType` is not used: it filters import gaps (e.g. "bank details to verify"), which is a different
- * population from "IBAN missing or invalid". An unknown filter name is dropped rather than carried
- * to a page that ignores it. The server may later send readiness directly; that passes through.
+ * No existing directory filter selects the people the card counts: `readiness=Blocked` is the activation gate (Active
+ * employees are rarely Blocked) and `readiness=NotReady` is a superset of "IBAN missing or GOSI reference missing". A
+ * filter that selects a different population is worse than none, so the dead key is dropped and the link opens the People
+ * list, labelled for what it is (`complianceActionLabel`). A real filter needs the backend:
+ * GET /api/employees?gap=qiwa_blocked|missing_iban|missing_gosi_ref.
  */
-const PEOPLE_FILTERS: Readonly<Record<string, PeopleDirectoryState>> = {
-  qiwa_blocked: { readiness: 'Blocked' },
-  missing_iban: { readiness: 'NotReady' },
-  missing_gosi_ref: { readiness: 'NotReady' },
-};
+export const COMPLIANCE_PEOPLE_LABEL = 'Open People: incomplete records are marked';
 
 export function resolveComplianceRoute(route: string): string {
   const [pathAndQuery, hash] = route.split('#');
   const [pathname, query = ''] = pathAndQuery.split('?');
   if (pathname !== '/people') return route;
   const params = new URLSearchParams(query);
-  const name = params.get('filter');
-  if (name === null) return route;
+  if (!params.has('filter')) return route;
   params.delete('filter');
-  const mapped = PEOPLE_FILTERS[name];
-  if (mapped) for (const [key, value] of serializePeopleDirectoryState(mapped)) if (!params.has(key)) params.set(key, value);
   const q = params.toString();
   return `${pathname}${q ? `?${q}` : ''}${hash ? `#${hash}` : ''}`;
+}
+
+/** The English label (a translation key): People links say what they open; everything else keeps "Fix". */
+export function complianceActionLabel(route: string): string {
+  return route.split(/[?#]/)[0] === '/people' ? COMPLIANCE_PEOPLE_LABEL : 'Fix';
 }

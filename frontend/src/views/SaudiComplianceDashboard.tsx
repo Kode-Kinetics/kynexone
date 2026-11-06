@@ -10,7 +10,7 @@ import {
 import client from '../api/client';
 import { useLocale } from '../contexts/LocaleContext';
 import { pluralize } from '../lib/plural';
-import { resolveComplianceRoute } from '../lib/complianceRoutes';
+import { complianceActionLabel, resolveComplianceRoute } from '../lib/complianceRoutes';
 import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
@@ -360,6 +360,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
 // ── Action center ─────────────────────────────────────────────────────────────
 
 function ActionCenter({ items }: { items: ActionItem[] }) {
+  const { t } = useLocale();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   if (items.length === 0) {
@@ -420,7 +421,7 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
                     href={resolveComplianceRoute(item.route)}
                     className="flex items-center gap-1 rounded-lg border border-sapphire/30 px-2.5 py-1 text-xs font-semibold text-sapphire hover:bg-sapphire/5 dark:border-cyanAccent/30 dark:text-cyanAccent dark:hover:bg-cyanAccent/5"
                   >
-                    Fix <ExternalLink className="h-3 w-3" />
+                    {t(complianceActionLabel(item.route))} <ExternalLink className="h-3 w-3" />
                   </Link>
                 )}
               </div>

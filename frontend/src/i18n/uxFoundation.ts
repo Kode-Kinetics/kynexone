@@ -5,6 +5,10 @@
  * English is the key; whole sentences with {placeholders}, never fragments.
  */
 const ar: Record<string, string> = {
+  // Saudi Compliance action centre
+  'Open People: incomplete records are marked': 'فتح الموظفين: السجلات الناقصة معلَّمة',
+  'Fix': 'معالجة',
+
   // Empty states
   'Clear filters': 'مسح عوامل التصفية',
   'Access is given by your HR administrator.': 'يمنح مسؤول الموارد البشرية الصلاحية.',

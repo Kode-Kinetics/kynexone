@@ -176,6 +176,16 @@ test('server-supplied links resolve to a page, and to a People filter the page u
   expect(bad).toEqual([]);
 });
 
+test('server-supplied People links carry NO readiness or gap filter until the backend exposes ?gap=', () => {
+  // `readiness=Blocked` is the activation gate and `NotReady` a superset, so neither selects the population the card counts.
+  // Backend ask: GET /api/employees?gap=qiwa_blocked|missing_iban|missing_gosi_ref, then map the three links onto it.
+  const people = serverLinks().map(l => resolveComplianceRoute(l.href)).filter(h => split(h).pathname === '/people');
+  expect(people.length).toBeGreaterThanOrEqual(3);
+  for (const href of people) {
+    expect(href, href).not.toMatch(/[?&](readiness|gapType|filter|gap)=/);
+  }
+});
+
 test('the Saudi Compliance action centre applies that resolver to every server link', () => {
   const src = fs.readFileSync(path.join(FRONTEND_ROOT, 'src/views/SaudiComplianceDashboard.tsx'), 'utf8');
   expect(src).toContain('resolveComplianceRoute(item.route)');
