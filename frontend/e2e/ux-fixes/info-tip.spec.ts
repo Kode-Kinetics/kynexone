@@ -1,0 +1,58 @@
+import { expect, test } from '@playwright/test';
+import { ALL_PERMISSIONS, boot, type Persona } from '../setup-consolidation/fixture';
+
+/**
+ * The `i` (Screen Standard 3b) in a real browser: opens on hover and keyboard focus, stays open while the pointer is on
+ * it (WCAG 1.4.13), Esc dismisses it and nothing else, and the developer key is shown only to the Setup permission.
+ */
+const withoutSetup: Persona = { roles: ['Admin'], permissions: ALL_PERMISSIONS.filter(p => p !== 'security.manage') };
+const withSetup: Persona = { roles: ['Admin'], permissions: ALL_PERMISSIONS };
+const open = async (page: Parameters<typeof boot>[0], persona: Persona, locale: 'en' | 'ar' = 'en') => {
+  await boot(page, { persona, url: '/leave', locale });
+  await page.getByRole('tab', { name: /Apply Leave|تقديم/ }).or(page.getByRole('button', { name: /Apply Leave/ })).first().click();
+};
+
+test('keyboard focus opens the popover, Esc dismisses it, focus stays on the icon', async ({ page }) => {
+  await open(page, withoutSetup);
+  const icon = page.getByRole('button', { name: 'About Leave Type *' });
+  await icon.focus();
+  const tip = page.getByRole('tooltip').filter({ hasText: 'The category of leave' });
+  await expect(tip).toBeVisible();
+  await expect(icon).toHaveAttribute('aria-expanded', 'true');
+  await page.keyboard.press('Escape');
+  await expect(tip).toBeHidden();
+  await expect(icon).toBeFocused();
+});
+
+test('the popover stays open while the pointer moves onto it', async ({ page }) => {
+  await open(page, withoutSetup);
+  const icon = page.getByRole('button', { name: 'About Leave Type *' });
+  await icon.hover();
+  const tip = page.getByRole('tooltip').filter({ hasText: 'The category of leave' });
+  await expect(tip).toBeVisible();
+  await tip.hover();
+  await expect(tip).toBeVisible();
+  await page.mouse.move(2, 2);
+  await expect(tip).toBeHidden();
+});
+
+test('an ordinary user never sees the developer key; the Setup permission holder does', async ({ page }) => {
+  await open(page, withoutSetup);
+  await page.getByRole('button', { name: 'About Leave Type *' }).focus();
+  await expect(page.getByRole('tooltip').filter({ hasText: 'The category of leave' })).toBeVisible();
+  await expect(page.getByText(/key:/i)).toHaveCount(0);
+  await expect(page.getByText('leave.leave_type')).toHaveCount(0);
+});
+
+test('the Setup permission holder sees the field key', async ({ page }) => {
+  await open(page, withSetup);
+  await page.getByRole('button', { name: 'About Leave Type *' }).focus();
+  await expect(page.getByText('leave.leave_type')).toBeVisible();
+});
+
+test('the hit area is 24 px on a mouse (44 px on a coarse pointer, by the media rule)', async ({ page }) => {
+  await open(page, withoutSetup);
+  const box = await page.getByRole('button', { name: 'About Leave Type *' }).boundingBox();
+  expect(box?.width).toBe(24);
+  expect(box?.height).toBe(24);
+});

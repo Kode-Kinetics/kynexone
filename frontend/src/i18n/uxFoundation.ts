@@ -5,6 +5,11 @@
  * English is the key; whole sentences with {placeholders}, never fragments.
  */
 const ar: Record<string, string> = {
+  // The `i` (InfoTip)
+  'About {field}': 'حول {field}',
+  'More information': 'مزيد من المعلومات',
+  'Field key': 'مفتاح الحقل',
+
   // ConfirmDialog (tiers 2 and 3)
   'What will change': 'ما الذي سيتغير',
   '(required)': '(مطلوب)',

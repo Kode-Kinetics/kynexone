@@ -1,43 +1,96 @@
 'use client';
 
 import { Info } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useOptionalAuth } from '../contexts/AuthContext';
 import { useHelpTexts } from '../contexts/HelpTextContext';
+import { useLocale } from '../contexts/LocaleContext';
+import { canSeeFieldKey, flipsAtViewportEdge, resolveInfoText } from '../lib/infoTip';
 
 /**
- * Small "i" info icon with a hover/focus tooltip, used next to form field
- * labels to explain what the field is for and what input is expected.
+ * The `i`: a short explanation next to a form field label (Screen Standard 3b).
  *
- * `text` is the built-in default. When a `fieldKey` is given and the tenant
- * admin has saved a custom help text for that key (Setup → Field help text),
- * the custom text replaces the default — letting each company describe the
- * field per its own policies.
+ * `text` is the built-in default and a translation key (English is the key), so Arabic is written natively in
+ * i18n and never falls back to English. When a `fieldKey` is given and the tenant admin saved a custom text for
+ * it (Setup, Field help text) that text replaces the default, so each company can describe the field per its own policy.
  *
- * Usage: <label>Joining date <InfoTip fieldKey="employees.joining_date" text="First working day…" /></label>
+ * Behaviour: a real button; the popover opens on hover, keyboard focus and tap, stays open while it is hovered
+ * (WCAG 1.4.13: it is a child of the hover target, with no gap) and Esc dismisses it without moving focus. It is
+ * anchored to the inline-start edge of the icon and flips at the viewport edge. The icon is 24 px, 44 on coarse
+ * pointers. The developer field key is shown only to holders of the Setup permission.
+ *
+ * Usage: <InfoTip label="Joining date" fieldKey="employees.joining_date" text="First working day. ..." />
  */
-export function InfoTip({ text, fieldKey, className = '' }: { text: string; fieldKey?: string; className?: string }) {
+export function InfoTip({ text, fieldKey, label, className = '' }: { text: string; fieldKey?: string; label?: string; className?: string }) {
+  const { t, dir } = useLocale();
   const { overrides } = useHelpTexts();
-  const shown = (fieldKey && overrides[fieldKey]) || text;
+  const auth = useOptionalAuth();
+  const shown = resolveInfoText(text, fieldKey ? overrides[fieldKey] : undefined, t);
+  const showKey = canSeeFieldKey(auth ? auth.hasPermission : null, fieldKey);
+
+  const id = useId();
+  const [hover, setHover] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [flipped, setFlipped] = useState(false);
+  const popover = useRef<HTMLSpanElement>(null);
+  const open = (hover || focused || pinned) && !dismissed;
+
+  // Esc dismisses the popover, and only the popover: the capture listener runs before a dialog's own Escape handler.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.stopPropagation();
+      setDismissed(true);
+      setPinned(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [open]);
+
+  // Flip at the viewport edge: measure where it would sit when anchored to the inline-start edge.
+  useLayoutEffect(() => {
+    if (!open || !popover.current) return;
+    setFlipped(false);
+    const rect = popover.current.getBoundingClientRect();
+    setFlipped(flipsAtViewportEdge(rect, window.innerWidth, dir));
+  }, [open, dir]);
+
+  const name = label ? t('About {field}', { field: label }) : t('More information');
+  const reopen = () => setDismissed(false);
 
   return (
-    <span className={`group relative inline-flex align-middle ${className}`}>
+    <span
+      role="presentation"
+      className={`relative inline-flex align-middle ${className}`.trim()}
+      onMouseEnter={() => { reopen(); setHover(true); }}
+      onMouseLeave={() => { setHover(false); setPinned(false); reopen(); }}
+    >
       <button
         type="button"
-        tabIndex={0}
-        aria-label={`Field info: ${shown}`}
-        className="inline-flex cursor-help items-center justify-center rounded-full text-slate-400 hover:text-sapphire focus:text-sapphire focus:outline-none dark:text-slate-500 dark:hover:text-cyanAccent"
-        onClick={e => e.preventDefault()}
+        aria-label={name}
+        aria-describedby={id}
+        aria-expanded={open}
+        className="inline-flex h-6 w-6 cursor-help items-center justify-center rounded-full text-fg-subtle transition-colors duration-fast hover:text-primary-fg focus-visible:text-primary-fg [@media(pointer:coarse)]:-my-2.5 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
+        onFocus={() => { reopen(); setFocused(true); }}
+        onBlur={() => { setFocused(false); setPinned(false); }}
+        onClick={event => { event.preventDefault(); setPinned(value => !value); reopen(); }}
       >
-        <Info className="h-3.5 w-3.5" />
+        <Info className="h-3.5 w-3.5" aria-hidden />
       </button>
       <span
+        ref={popover}
+        id={id}
         role="tooltip"
-        className="pointer-events-none invisible absolute bottom-full left-1/2 z-50 mb-1.5 w-56 -translate-x-1/2 rounded-lg bg-slate-900 px-3 py-2 text-start text-xs font-normal normal-case leading-snug tracking-normal text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100 dark:bg-slate-800 dark:ring-1 dark:ring-white/10"
+        hidden={!open}
+        className={`absolute top-full z-50 w-max max-w-[280px] pt-1.5 text-start text-body-sm font-normal normal-case leading-snug tracking-normal ${flipped ? 'end-0' : 'start-0'}`}
       >
-        {shown}
-        {fieldKey && (
-          <span className="mt-1 block font-mono text-caption text-slate-400">key: {fieldKey}</span>
-        )}
-        <span className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-slate-900 dark:border-t-slate-800" />
+        <span className="block rounded-lg border border-line bg-surface-overlay px-3 py-2 text-fg shadow-e2">
+          {shown}
+          {showKey && <span className="mt-1 block font-mono text-caption text-fg-subtle"><bdi>{t('Field key')}: {fieldKey}</bdi></span>}
+        </span>
       </span>
     </span>
   );
