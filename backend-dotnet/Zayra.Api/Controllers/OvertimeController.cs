@@ -910,14 +910,17 @@ public class OvertimeController : ControllerBase
         // Weekend categorisation is config-driven (WorkWeekService): the employee's company
         // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)
         // and any non-default tenant.
-        var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
+        // A legacy employee has no company stamp; payroll resolves the tenant's single active company for them, so
+        // every company-specific lookup below must use that same company or approval and pay disagree.
+        var companyId = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, employee?.CompanyId, ct);
+        var workWeek = await _workWeek.ResolveAsync(tenantId, companyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
         // The holiday question is answered by the SAME function attendance and payroll use (active calendars,
         // company-wide or the employing company's). This method used to read PublicHolidays directly, so a date on an
         // inactive or a sister company's calendar was a 2.0× holiday here, stamped as ApprovedMultiplier, and paid
         // at 2.0 by a payroll run that itself considered it an ordinary 1.5× day.
         var dayCategory = OvertimeStatutoryCalculator.DayCategory(
             request.WorkDate,
-            await IsPublicHoliday(tenantId, employee?.CompanyId, request.WorkDate, ct),
+            await IsPublicHoliday(tenantId, companyId, request.WorkDate, ct),
             workWeek.IsWeekend(request.WorkDate.DayOfWeek));
 
         // ── The statutory context: the SAME rule keys, fallbacks and arithmetic the payroll run
@@ -925,8 +928,8 @@ public class OvertimeController : ControllerBase
         //    Before this, the controller computed basic ÷ StandardMonthlyHours × policy-multiplier
         //    and never read a statutory rule, so it reported 112.50 for the canonical 60/40 Saudi
         //    overtime hour that payroll paid at 162.50 (Art. 107: hourly WAGE + 50% of BASIC).
-        var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, employee?.CompanyId, employee?.CountryCode, ct);
-        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct, companyId: employee?.CompanyId);
+        var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, companyId, employee?.CountryCode, ct);
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct, companyId: companyId);
 
         // The divisor: the same rule payroll applies — statutory hours unless the policy is more generous.
         var standardMonthlyHours = OvertimeStatutoryContextResolver.EffectiveMonthlyHours(policy.StandardMonthlyHours, otContext.StandardMonthlyHoursOverride);

@@ -670,8 +670,13 @@ public static class PayrollValidationEngine
         // ── Rule 11b: approved overtime from an EARLIER period that no run has paid ─────────────────
         // ERROR (overridable with a written reason). The run pays only the impacts whose work date falls
         // inside its own period, so overtime approved after that period's run locked stayed
-        // "PendingPayroll" for ever and nobody was told. Until prior-period overtime is paid as arrears,
-        // the run names it and refuses to approve past it silently.
+        // "PendingPayroll" for ever and nobody was told. The run names it and refuses to approve past it
+        // silently.
+        //
+        // The text deliberately does NOT point at a payroll adjustment: nothing moves the overtime impact out
+        // of PendingPayroll or links it to an adjustment, so paying it that way leaves the impact open to be
+        // paid again. The settlement path is the overtime record; an override is for overtime already settled
+        // outside payroll, and carries the written basis.
         foreach (var byEmp in ctx.PriorPeriodUnpaidOvertime.GroupBy(x => x.EmployeeId))
         {
             empById.TryGetValue(byEmp.Key, out var otEmp);
@@ -679,8 +684,8 @@ public static class PayrollValidationEngine
             var dates = string.Join(", ", byEmp.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")));
             Err(PriorPeriodOvertimeUnpaid,
                 $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
-                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime. " +
-                "Pay it through a payroll adjustment (arrears) in this run, or override with a written basis if it was settled outside payroll.",
+                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it. " +
+                "Settle it through the overtime record. If it was already settled outside payroll, override this error with a written basis.",
                 byEmp.Key);
         }
 
