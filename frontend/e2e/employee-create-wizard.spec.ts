@@ -261,14 +261,14 @@ test('department selection follows its cost center (named in the first option) a
   const costCenter = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
   // "Follow department" is the first option and the default: the person inherits, nothing is copied into the request.
   await expect(costCenter).toHaveValue('');
-  await expect(costCenter.locator('option:checked')).toHaveText('Follow department (OPS — Operations cost center)');
+  await expect(costCenter.locator('option:checked')).toHaveText('Follow department · OPS — Operations cost center');
   await department.selectOption('department-finance');
   await expect(managerSelect).toHaveValue(String(otherManager.id));
   await expect(managerSelect.locator('option')).toHaveText(['Select', `${otherManager.fullName} (${otherManager.employeeCode})`]);
   await expect(costCenter).toHaveValue('');
-  await expect(costCenter.locator('option:checked')).toHaveText('Follow department (FIN — Finance cost center)');
+  await expect(costCenter.locator('option:checked')).toHaveText('Follow department · FIN — Finance cost center');
   // No "None": following the department is the only way to have no override.
-  await expect(costCenter.locator('option')).toHaveText(['Follow department (FIN — Finance cost center)', 'OPS — Operations cost center']);
+  await expect(costCenter.locator('option')).toHaveText(['Follow department · FIN — Finance cost center', 'OPS — Operations cost center']);
   await evidence(page, info, 'department-manager-cost-center');
   expect(errors).toEqual([]);
 });
@@ -1045,7 +1045,7 @@ test('Wave A: following the department sends no cost centre and no reason (the s
   await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
   await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
-  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('Follow department (OPS — Operations cost center)');
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('Follow department · OPS — Operations cost center');
   await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
   await finishCreated(dialog);
   expect(creates[0]).not.toHaveProperty('costCenterId');
@@ -1061,7 +1061,7 @@ test('Wave A: only the chosen company\'s cost centres are offered, and a company
   await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
   await expandOptional(dialog, 'More employment details');
   const select = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
-  await expect(select.locator('option')).toHaveText(['Follow department (OPS — Operations cost center)', 'FIN — Finance cost center']);
+  await expect(select.locator('option')).toHaveText(['Follow department · OPS — Operations cost center', 'FIN — Finance cost center']);
   await select.selectOption('cost-finance');
   await dialog.getByTestId('cc-create-reason').fill('Cross-charged');
   const refetch = page.waitForResponse(r => r.url().includes('/api/organization/cost-centers') && r.url().includes('companyId=company-other'));
@@ -1101,5 +1101,5 @@ test('Wave A: Arabic shows the Arabic cost-centre names; the code stays first', 
   const details = dialog.locator('details').filter({ has: page.getByTestId('cc-create-select') });
   if (await details.getAttribute('open') === null) await details.locator('summary').click();
   const select = dialog.getByTestId('cc-create-select');
-  await expect(select.locator('option')).toHaveText(['اتباع القسم (OPS — مركز العمليات)', 'FIN — مركز المالية']);
+  await expect(select.locator('option')).toHaveText(['اتباع القسم · OPS — مركز العمليات', 'FIN — مركز المالية']);
 });

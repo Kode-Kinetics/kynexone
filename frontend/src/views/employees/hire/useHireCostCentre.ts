@@ -13,7 +13,7 @@ export interface HireCostCentre {
   options: CostCentreOption[];
   /** What following the department gives is not known (no department yet, or the answer is on its way). */
   followPending: boolean;
-  /** The choice in words, for Review and the read-only view: "CODE — name" or "Follow department (CODE — name)". */
+  /** The choice in words, for Review and the read-only view: "CODE — name" or "Follow department · CODE — name". */
   label: string;
   departmentCostCentreId: string;
   /** A resumed draft already holds an override, so following again must send the explicit None. */
@@ -62,7 +62,7 @@ export function useHireCostCentre({ form, departments, draftId, hadOverride, can
     }
     const options = costCentreOptions(list, form.companyId, locale, follow ?? { id: null, code: '', name: '' });
     const chosen = form.costCenterId ? options.find((o) => o.value === form.costCenterId) : null;
-    const label = chosen ? chosen.label : follow ? t('Follow department ({code})', { code: `${follow.code} — ${follow.name}` }) : t('Follow department');
+    const label = chosen ? chosen.label : follow ? t('Follow department · {code}', { code: `${follow.code} — ${follow.name}` }) : t('Follow department');
     return { canManage, options, followPending: !follow, label, departmentCostCentreId, hadOverride, loadFailed: company.status === 'error', reload: company.reload };
   }, [canManage, company.list, company.reload, company.status, departmentCostCentreId, departments, form.companyId, form.costCenterId, form.departmentId, hadOverride, locale, preview.state, t]);
 }

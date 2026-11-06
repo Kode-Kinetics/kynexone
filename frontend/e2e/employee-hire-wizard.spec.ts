@@ -499,10 +499,10 @@ test.describe('cost centre', () => {
     await basics(page);
     await page.getByLabel('Department').selectOption({ label: 'Operations' });
     await expect(costCentre(page)).toHaveValue('');
-    await expect(costCentre(page).locator('option')).toHaveText(['Follow department (OPS — Operations)', 'FIN — Finance']);
+    await expect(costCentre(page).locator('option')).toHaveText(['Follow department · OPS — Operations', 'FIN — Finance']);
     await expect(page.locator('#hire-costCenterReason')).toHaveCount(0);
     await next(page); await next(page); await next(page);
-    await expect(page.getByText('Follow department (OPS — Operations)')).toBeVisible();
+    await expect(page.getByText('Follow department · OPS — Operations')).toBeVisible();
     await page.getByRole('button', { name: 'Create employee draft' }).click();
     await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
     expect(api.creates[0].body).not.toHaveProperty('costCenterId');
@@ -550,7 +550,7 @@ test.describe('cost centre', () => {
     await page.getByLabel('Department').selectOption({ label: 'Finance' });
     await expect(costCentre(page)).toHaveCount(0);
     const readOnly = page.getByTestId('hire-cost-centre-readonly');
-    await expect(readOnly).toContainText('Follow department (FIN — Finance)');
+    await expect(readOnly).toContainText('Follow department · FIN — Finance');
     await expect(readOnly).toContainText('Only HR managers and admins can change this.');
     await next(page); await next(page); await next(page);
     await page.getByRole('button', { name: 'Create employee draft' }).click();
@@ -561,6 +561,6 @@ test.describe('cost centre', () => {
   test('Arabic: the Arabic cost-centre names, the code first', async ({ page }) => {
     await bootHire(page, { permissions: MANAGE, org: ccOrg, locale: 'ar' });
     await page.locator('#hire-departmentId').selectOption('dept-1');
-    await expect(page.locator('#hire-costCenterId option')).toHaveText(['اتباع القسم (OPS — العمليات)', 'FIN — المالية']);
+    await expect(page.locator('#hire-costCenterId option')).toHaveText(['اتباع القسم · OPS — العمليات', 'FIN — المالية']);
   });
 });

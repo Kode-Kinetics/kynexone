@@ -8,6 +8,7 @@ import {
   costCentreOptions,
   editCostCentreNeedsReason,
   editCostCentrePatch,
+  departmentMoves,
   needsDecision,
   patchCostCentreCode,
   previewResolution,
@@ -75,7 +76,8 @@ export function useEditCostCentre({ employee, departments, costCentres, departme
   const overrideId = isOverride ? employee.costCenterId ?? resolution?.costCenterId ?? null : null;
 
   const selectedDepartment = departments.find((d) => d.nameEn === departmentValue || d.code === departmentValue) ?? null;
-  const departmentChanged = departmentValue !== originalDepartmentValue;
+  // By id, so a decision is never sent where the server sees no move (422 cost_centre_decision_invalid).
+  const departmentChanged = departmentMoves({ formValue: departmentValue, originalValue: originalDepartmentValue, selectedId: selectedDepartment?.id ?? null, currentId: employee.departmentId ?? null });
   const departmentLabel = selectedDepartment ? nameIn(locale, selectedDepartment.nameEn, selectedDepartment.nameAr) : departmentValue;
 
   // The plain preview needs only employees.read; a hypothetical department needs employees.write and is only asked by a

@@ -49,6 +49,8 @@ interface Options {
   refusal?: { status: number; body: unknown };
   /** Holds the preview for this department until released. */
   holdPreviewFor?: string;
+  /** The first preview for this department answers 429 rate_limited with Retry-After: 1 (the backend as built). */
+  rateLimitOnceFor?: string;
 }
 
 async function boot(page: Page, options: Options = {}) {
@@ -62,6 +64,7 @@ async function boot(page: Page, options: Options = {}) {
     writes: [] as Array<{ body: any }>,
     previews: [] as string[],
     held: null as null | { route: Route; release: () => Promise<void> },
+    rateLimited: false,
   };
   const departmentId = options.nothing ? 'qa-empty' : 'qa-finance';
   const resolution = options.override
@@ -84,7 +87,11 @@ async function boot(page: Page, options: Options = {}) {
       state.previews.push(url.search);
       const dept = url.searchParams.get('departmentId') ?? departmentId;
       const body = PREVIEW[dept];
-      if (!body) return reply({ error: 'department_not_found', message: 'Department not found.' }, 404);
+      if (!body) return reply({ error: 'department_not_found', code: 'department_not_found', message: 'Department not found.', messageAr: 'القسم غير موجود.' }, 404);
+      if (options.rateLimitOnceFor === dept && !state.rateLimited) {
+        state.rateLimited = true;
+        return route.fulfill({ status: 429, headers: { 'Retry-After': '1' }, json: { error: 'rate_limited' } });
+      }
       if (options.holdPreviewFor === dept && !state.held) {
         await new Promise<void>((resolve) => { state.held = { route, release: async () => { await route.fulfill({ json: body }).catch(() => undefined); resolve(); } }; });
         return;
@@ -148,12 +155,12 @@ test('the cost centre is a dropdown pre-selected to the resolved value, with whe
   await open(page);
   const select = page.getByRole('combobox', { name: 'Cost center', exact: true });
   await expect(select).toBeEnabled();
-  await expect(select.locator('option:checked')).toHaveText('Follow department (ADMIN — Administration)');
+  await expect(select.locator('option:checked')).toHaveText('Follow department · ADMIN — Administration');
   await expect(tid(page, 'cc-edit-source')).toHaveText('Inherited from QA Finance');
   await expect(page.getByText('Managed on the Employment tab of the profile, with a reason.')).toHaveCount(0);
   await expect(page.getByText('STALE-CACHE')).toHaveCount(0);
   const options = await select.locator('option').allTextContents();
-  expect(options).toEqual(['Follow department (ADMIN — Administration)', 'SALES — Sales', 'CC-HR — Human Resources']);
+  expect(options).toEqual(['Follow department · ADMIN — Administration', 'SALES — Sales', 'CC-HR — Human Resources']);
   // Only the employee's company's departments are offered.
   const departmentOptions = await page.getByRole('combobox', { name: 'Department', exact: true }).locator('option').allTextContents();
   expect(departmentOptions).not.toContain('UAE Department');
@@ -167,7 +174,7 @@ test('nothing resolves: the line says so and links to Setup → Company structur
   await open(page);
   const link = tid(page, 'cc-edit-source').getByRole('link', { name: 'No cost centre: add one in Setup → Company structure' });
   await expect(link).toHaveAttribute('href', '/setup?tab=costCenters');
-  await expect(page.getByRole('combobox', { name: 'Cost center', exact: true }).locator('option:checked')).toHaveText('Follow department (no cost centre)');
+  await expect(page.getByRole('combobox', { name: 'Cost center', exact: true }).locator('option:checked')).toHaveText('Follow department · no cost centre');
 });
 
 test('an override shows as the selected cost centre with the override line', async ({ page }) => {
@@ -177,7 +184,7 @@ test('an override shows as the selected cost centre with the override line', asy
   await expect(select).toHaveValue('cc-sales');
   await expect(tid(page, 'cc-edit-source')).toHaveText('Override: set for this employee');
   // The follow option names what removing the override returns to (the no-parameter preview).
-  await expect(select.locator('option').first()).toHaveText('Follow department (ADMIN — Administration)');
+  await expect(select.locator('option').first()).toHaveText('Follow department · ADMIN — Administration');
 });
 
 // ═════════════════════════════ Choosing in the dropdown ═════════════════════════════
@@ -230,7 +237,7 @@ test('a department change asks the server and shows the new resolved cost centre
   const line = tid(page, 'cc-edit-preview');
   await expect(line).toHaveAttribute('aria-live', 'polite');
   await expect(line).toHaveText('Will follow Human Resources → CC-HR');
-  await expect(page.getByRole('combobox', { name: 'Cost center', exact: true }).locator('option:checked')).toHaveText('Follow department (CC-HR — Human Resources)');
+  await expect(page.getByRole('combobox', { name: 'Cost center', exact: true }).locator('option:checked')).toHaveText('Follow department · CC-HR — Human Resources');
   await expect(tid(page, 'cc-edit-decision')).toHaveCount(0);
   await shot(page, info, 'cc-edit-en-department-change');
   const body = await saveFromReview(page);
@@ -328,6 +335,33 @@ test('409 cost_centre_state_changed says someone else changed it', async ({ page
   await page.getByRole('textbox', { name: /^Reason/ }).fill('r');
   await saveFromReview(page);
   await expect(tid(page, 'cc-edit-error')).toHaveText('Someone changed this employee’s cost centre since you opened the form. Reload the employee and try again.');
+});
+
+test('429 rate_limited on the preview is a brief "trying again" line, then the answer, never an error', async ({ page }) => {
+  await boot(page, { rateLimitOnceFor: 'qa-hr' });
+  await open(page);
+  const limited = page.waitForResponse((r) => isPreview('qa-hr')(r.request()) && r.status() === 429);
+  await page.getByRole('combobox', { name: 'Department', exact: true }).selectOption({ label: 'Human Resources' });
+  await limited;
+  await expect(tid(page, 'cc-edit-preview')).toHaveText('Checking too often. Trying again in a moment…');
+  await expect(tid(page, 'cc-edit-error')).toHaveCount(0);
+  // The hook asks again by itself after Retry-After.
+  await page.waitForResponse((r) => isPreview('qa-hr')(r.request()) && r.status() === 200);
+  await expect(tid(page, 'cc-edit-preview')).toHaveText('Will follow Human Resources → CC-HR');
+});
+
+test('Arabic: a keep refusal the server sends without messageAr is shown in the Arabic catalog words', async ({ page }) => {
+  await boot(page, { locale: 'ar', override: true, refusal: { status: 422, body: { error: 'cost_centre_inactive', code: 'cost_centre_inactive', message: 'The cost centre is inactive.' } } });
+  await open(page);
+  await changeDepartment(page, 'Human Resources', 'qa-hr');
+  await page.getByRole('radio', { name: 'الإبقاء على SALES (استثناء)' }).check();
+  await page.getByRole('textbox', { name: /^السبب/ }).fill('سبب');
+  await page.getByRole('button', { name: /^الخطوة 6:/ }).click();
+  const put = page.waitForRequest((r) => r.url().endsWith('/api/employees/901') && r.method() === 'PUT');
+  await page.getByRole('button', { name: 'حفظ التعديلات', exact: true }).click();
+  expect((await put).postDataJSON()).toMatchObject({ costCenterDecision: 'keep', expectedCostCenterOverrideId: 'cc-sales' });
+  await expect(tid(page, 'cc-edit-error')).toHaveText('مركز التكلفة هذا غير نشط. اختر مركزًا نشطًا.');
+  await expect(page.getByText('The cost centre is inactive.')).toHaveCount(0);
 });
 
 // ═════════════════════════════ Without organization.costcenter.manage ═════════════════════════════

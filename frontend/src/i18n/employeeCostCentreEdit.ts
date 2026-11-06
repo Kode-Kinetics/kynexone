@@ -17,8 +17,8 @@ const ar: Record<string, string> = {
   'No cost centre: add one in Setup → Company structure': 'لا يوجد مركز تكلفة: أضِف مركزًا من الإعداد ← هيكل الشركة',
 
   // ── The dropdown ──
-  'Follow department ({code})': 'اتباع القسم ({code})',
-  'Follow department (no cost centre)': 'اتباع القسم (بلا مركز تكلفة)',
+  'Follow department · {code}': 'اتباع القسم · {code}',
+  'Follow department · no cost centre': 'اتباع القسم · بلا مركز تكلفة',
   'Follow department': 'اتباع القسم',
   'Why this person has a different cost centre. Recorded in the audit log.': 'سبب اختلاف مركز تكلفة هذا الموظف. يُسجَّل في سجل التدقيق.',
   'Why this person goes back to the department’s cost centre. Recorded in the audit log.': 'سبب عودة هذا الموظف إلى مركز تكلفة القسم. يُسجَّل في سجل التدقيق.',
@@ -36,7 +36,7 @@ const ar: Record<string, string> = {
   'This employee has a cost centre override. What happens to it after the move?': 'لهذا الموظف مركز تكلفة استثنائي. ماذا يحدث له بعد النقل؟',
   'Keep {code} (override)': 'الإبقاء على {code} (استثناء)',
   'Follow {department} → {code}': 'اتباع {department} ← {code}',
-  'Follow {department} (no cost centre)': 'اتباع {department} (بلا مركز تكلفة)',
+  'Follow {department} · no cost centre': 'اتباع {department} · بلا مركز تكلفة',
   'Choose whether to keep the override or follow the new department.': 'اختر الإبقاء على الاستثناء أو اتباع القسم الجديد.',
 
   // ── Review ──
@@ -52,6 +52,8 @@ const ar: Record<string, string> = {
   'This cost centre no longer exists. Choose another.': 'مركز التكلفة هذا لم يعد موجودًا. اختر مركزًا آخر.',
   'Someone changed this employee’s cost centre since you opened the form. Reload the employee and try again.': 'غيّر شخص آخر مركز تكلفة هذا الموظف منذ فتحت النموذج. أعد تحميل بيانات الموظف وحاول مرة أخرى.',
   'The reason contains characters that are not allowed. Remove them and try again.': 'يحتوي السبب على أحرف غير مسموح بها. احذفها وحاول مرة أخرى.',
+  'The reason is too long. Use 500 characters or fewer.': 'السبب طويل جدًا. استخدم 500 حرف أو أقل.',
+  'Checking too often. Trying again in a moment…': 'عدد كبير من عمليات التحقق. ستُعاد المحاولة بعد قليل…',
   'The cost centre could not be saved. Review it and try again.': 'تعذّر حفظ مركز التكلفة. راجعه وحاول مرة أخرى.',
   'Changing the department of someone with a cost centre override needs a decision. Open Edit employee to choose.': 'تغيير قسم موظف له مركز تكلفة استثنائي يحتاج إلى قرار. افتح تعديل الموظف للاختيار.',
   'Open Edit employee': 'فتح تعديل الموظف',

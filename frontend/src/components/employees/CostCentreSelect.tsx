@@ -24,7 +24,7 @@ export function CostCentreSelect({ id, value, onChange, options, placeholder, ex
   className?: string;
 }) {
   const { t } = useLocale();
-  const followLabel = (o: CostCentreOption) => (followPending ? t('Follow department') : o.label ? t('Follow department ({code})', { code: o.label }) : t('Follow department (no cost centre)'));
+  const followLabel = (o: CostCentreOption) => (followPending ? t('Follow department') : o.label ? t('Follow department · {code}', { code: o.label }) : t('Follow department · no cost centre'));
   const showExtra = !!extra && extra.value !== '' && !options.some((o) => o.value === extra.value);
   return (
     <select

@@ -196,6 +196,7 @@ export function costCentreErrorKind(err: unknown): CostCentreErrorKind {
 const REFUSAL_BY_CODE: Record<string, string> = {
   cost_centre_reason_required: msg('Enter a reason for this change.'),
   reason_invalid_characters: msg('The reason contains characters that are not allowed. Remove them and try again.'),
+  reason_too_long: msg('The reason is too long. Use 500 characters or fewer.'),
   cost_centre_decision_required: msg('Choose whether to keep the override or follow the new department.'),
   cost_centre_decision_invalid: msg('Choose whether to keep the override or follow the new department.'),
   cost_centre_inactive: msg('This cost centre is inactive. Choose an active one.'),
@@ -214,6 +215,42 @@ export function costCentreRefusalKey(err: unknown): string | null {
   if (code && REFUSAL_BY_CODE[code] && (status === 422 || status === 409 || status === 400)) return REFUSAL_BY_CODE[code];
   if (status === 403) return msg('Only HR managers and admins can change this.');
   return null;
+}
+
+// ── The preview endpoint's refusals (backend as built) ─────────────────────────
+
+export type PreviewFailure =
+  | { kind: 'rateLimited'; retryAfterSeconds: number }
+  | { kind: 'departmentNotFound' }
+  | { kind: 'positionNotFound' }
+  | { kind: 'error' };
+
+/**
+ * What a failed preview means for the screen. 429 {error:"rate_limited"} + Retry-After is a short wait (bounded 1–30 s, 2 s when
+ * the header is missing), shown as "try again", never as an error. 404 department_not_found / position_not_found carry their code;
+ * a 404 for the employee itself has an empty body and is a plain error, like anything else.
+ */
+export function previewFailure(err: unknown): PreviewFailure {
+  const response = (err as { response?: { status?: number; headers?: Record<string, unknown> } } | null | undefined)?.response;
+  if (response?.status === 429) {
+    const raw = Number(response.headers?.['retry-after']);
+    return { kind: 'rateLimited', retryAfterSeconds: Number.isFinite(raw) && raw > 0 ? Math.min(30, Math.max(1, Math.ceil(raw))) : 2 };
+  }
+  const code = apiErrorCode(err);
+  if (response?.status === 404 && code === 'department_not_found') return { kind: 'departmentNotFound' };
+  if (response?.status === 404 && code === 'position_not_found') return { kind: 'positionNotFound' };
+  return { kind: 'error' };
+}
+
+/**
+ * Whether the department in the form is a move the server will see. Judged by id when both are known (a department saved under
+ * its code but shown by its name is not a move), so a keep/drop decision is never sent where the server finds nothing to decide.
+ */
+export function departmentMoves(input: { formValue: string; originalValue: string; selectedId: string | null; currentId: string | null }): boolean {
+  if (input.formValue === input.originalValue) return false;
+  if (!input.formValue.trim()) return true;
+  if (input.selectedId && input.currentId) return input.selectedId !== input.currentId;
+  return true;
 }
 
 // ── The edit flow (Wave A: D2 keep-or-follow on a transfer, D4 the dropdown) ─────────────

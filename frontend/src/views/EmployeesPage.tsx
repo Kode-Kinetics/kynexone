@@ -581,7 +581,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const createCostCentreLabel = (() => {
     const chosen = form.costCenterId ? createCostCentreOptions.find((o) => o.value === form.costCenterId) : null;
     if (chosen) return chosen.label;
-    return createFollow ? t('Follow department ({code})', { code: `${createFollow.code} — ${createFollow.name}` }) : t('Follow department');
+    return createFollow ? t('Follow department · {code}', { code: `${createFollow.code} — ${createFollow.name}` }) : t('Follow department');
   })();
   const selectedFormCompany = useMemo(
     () => companies.find((item) => item.id === form.companyId) ?? defaultCompany,

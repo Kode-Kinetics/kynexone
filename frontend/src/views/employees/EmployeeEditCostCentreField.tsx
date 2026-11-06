@@ -4,8 +4,7 @@ import { useEffect, useId, useRef } from 'react';
 import { Lock, RotateCcw } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
 import { msg } from '../../i18n/translations';
-import { apiErrorCode } from '../../lib/glCostAccounting';
-import { previewResolution } from '../../lib/employeeCostCentre';
+import { previewFailure, previewResolution } from '../../lib/employeeCostCentre';
 import { BdiMessage } from '../../components/BdiMessage';
 import { CostCentreSelect } from '../../components/employees/CostCentreSelect';
 import { CostCentreInvalidSentence, CostCentreSourceLine } from '../../components/employees/CostCentreSourceLine';
@@ -59,8 +58,9 @@ export function EmployeeEditCostCentreField({ cc, label, intent, onIntent, alert
   const livePreview = (() => {
     if (!cc.departmentChanged || !cc.canManage) return null;
     const state = cc.departmentPreview;
+    if (state.status === 'rateLimited') return <span data-testid="cc-edit-preview-wait">{t('Checking too often. Trying again in a moment…')}</span>;
     if (state.status === 'error') {
-      if (apiErrorCode(state.error) === 'department_not_found') return <span>{t('This department is not in the employee’s company.')}</span>;
+      if (previewFailure(state.error).kind === 'departmentNotFound') return <span>{t('This department is not in the employee’s company.')}</span>;
       return (
         <span className="inline-flex flex-wrap items-center gap-2">
           <span>{t('The cost centre for the new department could not be checked. It is worked out again when you save.')}</span>
@@ -134,7 +134,7 @@ export function EmployeeEditCostCentreField({ cc, label, intent, onIntent, alert
               ? <span>{t('Follow department')}</span>
               : followCode
                 ? <BdiMessage message={msg('Follow {department} → {code}')} values={{ department, code: followCode }} />
-                : <BdiMessage message={msg('Follow {department} (no cost centre)')} values={{ department }} />}
+                : <BdiMessage message={msg('Follow {department} · no cost centre')} values={{ department }} />}
           </label>
         </fieldset>
       )}

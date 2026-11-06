@@ -6,11 +6,14 @@ import { emptyHireForm, rebaseHireCompany } from '../src/lib/hire/hireForm';
 import { buildCreateRequest } from '../src/lib/hire/payload';
 import { validateHire } from '../src/lib/hire/hireValidation';
 import { serverFieldToForm } from '../src/lib/hire/serverFields';
+import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   NO_COST_CENTRE,
   costCentreErrorKind,
   costCentreOptions,
   costCentreRefusalKey,
+  departmentMoves,
+  previewFailure,
   createCostCentreFields,
   editCostCentreNeedsReason,
   editCostCentrePatch,
@@ -465,5 +468,69 @@ test.describe('the hire wizard sends the cost centre like the create form (Wave 
   test('server field names land on the cost-centre fields', () => {
     expect(serverFieldToForm('costCenterId')).toBe('costCenterId');
     expect(serverFieldToForm('costCenterReason')).toBe('costCenterReason');
+  });
+});
+
+test.describe('backend as built (Wave A reconciliation)', () => {
+  test('keep errors arrive as {error, code, message} with NO messageAr: the words come from the EN/AR catalog, never the English server text', () => {
+    const cases: Array<[string, string]> = [
+      ['cost_centre_inactive', 'This cost centre is inactive. Choose an active one.'],
+      ['cost_centre_other_company', 'This cost centre belongs to another company. Choose one of this company’s cost centres.'],
+      ['cost_centre_not_found', 'This cost centre no longer exists. Choose another.'],
+    ];
+    for (const [code, key] of cases) {
+      const err = { response: { status: 422, data: { error: code, code, message: 'English only from the server' } } };
+      expect(costCentreErrorKind(err)).toBe('ref');
+      expect(costCentreRefusalKey(err)).toBe(key);
+      const ar = LOCALE_DICTS.ar[key];
+      expect(ar, key).toBeTruthy();
+      expect(ar).not.toBe(key);
+    }
+  });
+
+  test('reason_too_long is a real code: a reason problem with its own words in both languages', () => {
+    const err = { response: { status: 422, data: { error: 'reason_too_long', code: 'reason_too_long', message: 'x' } } };
+    expect(costCentreErrorKind(err)).toBe('reason');
+    const key = costCentreRefusalKey(err)!;
+    expect(key).toBe('The reason is too long. Use 500 characters or fewer.');
+    expect(LOCALE_DICTS.ar[key]).toBeTruthy();
+  });
+
+  test('preview 429 {error:"rate_limited"} with Retry-After is a brief "try again" state, not an error', () => {
+    const err = { response: { status: 429, headers: { 'retry-after': '3' }, data: { error: 'rate_limited' } } };
+    expect(previewFailure(err)).toEqual({ kind: 'rateLimited', retryAfterSeconds: 3 });
+    // A missing or silly Retry-After still waits a sane, bounded time.
+    expect(previewFailure({ response: { status: 429, headers: {}, data: { error: 'rate_limited' } } })).toEqual({ kind: 'rateLimited', retryAfterSeconds: 2 });
+    expect(previewFailure({ response: { status: 429, headers: { 'retry-after': '900' }, data: {} } })).toEqual({ kind: 'rateLimited', retryAfterSeconds: 30 });
+  });
+
+  test('preview 404: department/position not found carry their code; an employee 404 has an EMPTY body and is a plain error', () => {
+    expect(previewFailure({ response: { status: 404, data: { error: 'department_not_found', code: 'department_not_found', message: 'x', messageAr: 'y' } } })).toEqual({ kind: 'departmentNotFound' });
+    expect(previewFailure({ response: { status: 404, data: { error: 'position_not_found', code: 'position_not_found', message: 'x', messageAr: 'y' } } })).toEqual({ kind: 'positionNotFound' });
+    expect(previewFailure({ response: { status: 404, data: '' } })).toEqual({ kind: 'error' });
+    expect(previewFailure(new Error('network'))).toEqual({ kind: 'error' });
+  });
+
+  test('a department move is judged by id, so a decision is never sent where the server sees no move (422 cost_centre_decision_invalid)', () => {
+    // Same department, saved under its code but shown by its English name: not a move.
+    expect(departmentMoves({ formValue: 'QA Finance', originalValue: 'QA-FIN', selectedId: 'qa-finance', currentId: 'qa-finance' })).toBe(false);
+    expect(departmentMoves({ formValue: 'QA Finance', originalValue: 'QA Finance', selectedId: 'qa-finance', currentId: 'qa-finance' })).toBe(false);
+    // Renamed department (same id): the employee still carries the old name; re-picking it under its new name is not a move.
+    expect(departmentMoves({ formValue: 'Finance & Accounts', originalValue: 'Finance', selectedId: 'qa-finance', currentId: 'qa-finance' })).toBe(false);
+    expect(departmentMoves({ formValue: 'Human Resources', originalValue: 'QA Finance', selectedId: 'qa-hr', currentId: 'qa-finance' })).toBe(true);
+    // Cleared: the server counts a blank department as a move.
+    expect(departmentMoves({ formValue: '', originalValue: 'QA Finance', selectedId: null, currentId: 'qa-finance' })).toBe(true);
+    // An unknown value that differs (no id to compare): a move only if the text changed.
+    expect(departmentMoves({ formValue: 'Legacy', originalValue: 'Legacy', selectedId: null, currentId: 'qa-finance' })).toBe(false);
+  });
+
+  test('the UI can never send a decision where there is nothing to decide', () => {
+    const decided = { reason: 'r', decision: 'keep' as const };
+    expect(editCostCentrePatch(edit({ ...decided, isOverride: false, departmentChanged: true }))).not.toHaveProperty('costCenterDecision');
+    expect(editCostCentrePatch(edit({ ...decided, isOverride: true, overrideId: 'sales', departmentChanged: false }))).not.toHaveProperty('costCenterDecision');
+    for (const choice of ['', 'ops', 'admin']) {
+      const patch = editCostCentrePatch(edit({ ...decided, isOverride: true, overrideId: 'sales', departmentChanged: true, choice }));
+      expect(patch).not.toHaveProperty('costCenterDecision');
+    }
   });
 });

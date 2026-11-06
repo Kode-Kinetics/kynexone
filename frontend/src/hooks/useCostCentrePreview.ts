@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { employeesApi, type EmployeeCostCentrePreview } from '../api/employees';
+import { previewFailure } from '../lib/employeeCostCentre';
 
 export interface CostCentrePreviewParams { departmentId?: string; positionId?: string; costCenterId?: string }
 
@@ -9,6 +10,8 @@ export type CostCentrePreviewState =
   | { status: 'idle' }
   | { status: 'loading' }
   | { status: 'ready'; data: EmployeeCostCentrePreview }
+  /** 429: the server asked us to wait; the hook asks again by itself after Retry-After. Not an error. */
+  | { status: 'rateLimited'; retryAfterSeconds: number }
   | { status: 'error'; error: unknown };
 
 /**
@@ -32,14 +35,25 @@ export function useCostCentrePreview(employeeId: number, params: CostCentrePrevi
     const [id, departmentId, positionId, costCenterId] = JSON.parse(key) as [number, string, string, string];
     setState({ status: 'loading' });
     const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       employeesApi.costCentrePreview(id, { departmentId, positionId, costCenterId }, controller.signal).then(
         (data) => { if (mine === sequence.current) setState({ status: 'ready', data }); },
-        (error) => { if (mine === sequence.current && !controller.signal.aborted) setState({ status: 'error', error }); },
+        (error) => {
+          if (mine !== sequence.current || controller.signal.aborted) return;
+          const failure = previewFailure(error);
+          if (failure.kind === 'rateLimited') {
+            setState({ status: 'rateLimited', retryAfterSeconds: failure.retryAfterSeconds });
+            retryTimer = setTimeout(() => { if (mine === sequence.current) setAttempt((n) => n + 1); }, failure.retryAfterSeconds * 1000);
+            return;
+          }
+          setState({ status: 'error', error });
+        },
       );
     }, debounceMs);
     return () => {
       clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
       controller.abort();
     };
   }, [key, attempt, debounceMs]);
