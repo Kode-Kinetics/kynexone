@@ -60,6 +60,9 @@ public class PayrollApprovalRelaxationTests
         var run = new PayrollRun { TenantId = tenantId, Year = 2026, Month = 6, Status = "Processed", ProcessedByUserId = processor, CreatedByUserId = processor };
         db.PayrollRuns.Add(run);
         await db.SaveChangesAsync();
+        // Approve is gated on a manpower/value reconciliation sign-off for the run's current figures (PR #319); these tests are
+        // about the approval-level relaxations, so record that sign-off the way the other approve tests do.
+        await ReconTestSupport.SignOffAsync(db, run.Id);
         return run;
     }
 
