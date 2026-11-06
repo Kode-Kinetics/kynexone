@@ -2,7 +2,12 @@ import client from './client';
 import type { EmployeeDetail } from './employees';
 import type { HireCreateRequest } from '../lib/hire/payload';
 
-export interface HireDraftSaved { updatedAtUtc: string; readiness?: { blockers?: string[]; warnings?: string[] } }
+export interface HireDraftSaved {
+  updatedAtUtc: string;
+  readiness?: { blockers?: string[]; warnings?: string[] };
+  /** Whether the saved record holds a cost-centre override, when the server reports it (the wizard infers it otherwise). */
+  costCenterIsOverride?: boolean;
+}
 import type { SaBank } from '../lib/hire/iban';
 import { normaliseReviewItems, type ReviewItem } from '../lib/hire/reviewLabels';
 

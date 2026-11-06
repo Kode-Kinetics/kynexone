@@ -1,7 +1,7 @@
-using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
@@ -28,20 +28,22 @@ internal static class OrgWriteRules
     public static bool MayDecideFunctionalClass(ControllerBase c) => c.User.HasPermission(FunctionalClassManage);
 
     /// <summary>
-    /// Whether an employee patch (the "Changes" dictionary of a PUT or a change request) would move where the person's cost goes: it names a
-    /// department or cost centre that differs (ignoring case and padding) from the one on the record. Clearing a cost centre counts.
+    /// Wave A D1: whether an employee patch moves where the person's cost goes, judged on the SERVER's state: a department change (by id), a
+    /// keep/drop decision, or a prepared cost centre that would set, re-point or remove the override (the override flag and stored id). Never the
+    /// cached <c>Employee.CostCenter</c> string or the cached department name: both go stale, and comparing with them let a caller without the
+    /// permission pin an override by echoing the cached code.
     /// </summary>
-    public static bool MovesEmployeeAttribution(Employee employee, IReadOnlyDictionary<string, JsonElement> changes)
-    {
-        static string Text(JsonElement e) => e.ValueKind == JsonValueKind.String ? (e.GetString() ?? string.Empty).Trim() : string.Empty;
-        foreach (var (key, value) in changes)
-        {
-            var current = key switch { "department" => employee.Department, "costCenter" => employee.CostCenter, _ => null };
-            if (current is null && key is not ("department" or "costCenter")) continue;
-            if (!string.Equals(Text(value), (current ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
-    }
+    public static bool MovesEmployeeAttribution(Employee employee, EmployeeOrgFieldResolver.PreparedAttribution prepared) =>
+        prepared.DepartmentMoves || prepared.Decision is not null
+        || (prepared.CostCentre is { } costCentre && EmployeeOrgFieldResolver.ChangesOverride(employee, costCentre));
+
+    /// <summary>
+    /// The form doors' twin (the hire-draft autosave): a <c>costCenterId</c> moves attribution unless it is a no-op, i.e. null (no change), the
+    /// stored id again, or <see cref="Guid.Empty"/> ("None") on someone with no override. Mirrors EmployeeManagementService.ApplyCostCentreAsync.
+    /// </summary>
+    public static bool FormMovesEmployeeAttribution(Employee employee, Guid? requestedCostCenterId) =>
+        requestedCostCenterId is Guid requested
+        && !(requested == Guid.Empty ? !employee.CostCenterIsOverride : requested == employee.CostCenterId);
 
     /// <summary>Tenant-wide master data (departments, designations, grades, company lifecycle):
     /// a group grant is required.</summary>

@@ -93,7 +93,8 @@ public static class EmployeeChangeApplier
                 case "emergencyContactPhone": employee.EmergencyContactPhone = value.GetString() ?? employee.EmergencyContactPhone; break;
                 case "contractType": employee.ContractType = value.GetString() ?? employee.ContractType; break;
                 case "grade": employee.Grade = value.GetString() ?? employee.Grade; break;
-                case "costCenter": employee.CostCenter = value.GetString() ?? employee.CostCenter; break;
+                // Overwritten with the RESOLVED code by EmployeeOrgFieldResolver once the patch is applied (Wave A D3); never read back.
+                case "costCenter": if (value.GetString() is { } costCentreCode) employee.CostCenter = costCentreCode; break;
                 case "salary": employee.Salary = value.GetDecimal(); break;
                 case "bankName": employee.BankName = value.GetString() ?? employee.BankName; break;
                 case "bankIban": employee.BankIban = value.GetString() ?? employee.BankIban; break;
@@ -175,13 +176,15 @@ public static class EmployeeChangeApplier
         ZayraDbContext db, Guid tenantId, Employee employee, IReadOnlyDictionary<string, JsonElement> changes,
         Guid? actorUserId, CancellationToken ct)
     {
-        // A "costCenter" code is resolved and validated first, so a refused patch has touched nothing.
-        var costCentre = await EmployeeOrgFieldResolver.PrepareCostCentreAsync(db, tenantId, employee, changes, ct);
+        // A "costCenter" code is resolved and validated first, so a refused patch has touched nothing. Wave A D2: no approval path carries a
+        // keep/drop decision, so moving someone who has their own cost centre fails closed here (422 cost_centre_decision_required) rather than
+        // dropping the override silently; that decision is made on the employee PUT by someone holding organization.costcenter.manage.
+        var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, decision: null, expectedOverrideId: null, ct);
         var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
         var unknown = Apply(employee, changes);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
-        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct, costCentre);
+        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, attribution, ct);
         await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(db, tenantId, employee, attributionBefore, ct);
         await EmployeeOrgFieldResolver.StageAttributionAuditAsync(db, tenantId, employee, attributionBefore, actorUserId, ct);
         await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);

@@ -24,7 +24,8 @@ export function buildEmployeeEditSnapshot(
   const snapshot: EmployeeEditDraft = {};
 
   for (const field of fields) {
-    let raw = source[field.key];
+    // D3: the cached `costCenter` string is written inconsistently by the server; the resolution is what payroll costs to.
+    let raw = field.key === 'costCenter' ? employee.costCentreResolution?.code ?? '' : source[field.key];
     if (field.key.startsWith('salaryBreakdown.')) {
       const key = field.key.slice('salaryBreakdown.'.length) as keyof EmployeeSalaryBreakdownRequest;
       raw = employee.salaryBreakdown?.[key];
@@ -63,8 +64,8 @@ export function buildEmployeeEditChanges(
       throw new Error(`The employee field "${key}" is no longer available. Reopen the employee and try again.`);
     }
     if (key.startsWith('salaryBreakdown.')) continue;
-    // AM-30: attribution is changed only through the cost-centre field's Override and Remove dialogs, which carry a reason.
-    // A department change already moves the person to the new department's cost centre on the server.
+    // Wave A: the cost centre never travels as a plain field. The edit flow sends it from its own intent (a code + reason,
+    // or a keep/drop decision when an override meets a department change); the snapshot value is display-only.
     if (key === 'costCenter') continue;
     const value = form[key].trim();
     if (field.type === 'number') {

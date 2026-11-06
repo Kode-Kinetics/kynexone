@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, Info, Lock } from 'lucide-react';
+import { ChevronDown, Info, Lock } from 'lucide-react';
 import { employeesApi, type EmployeeDetail } from '../../api/employees';
 import { costCentersApi, departmentsApi, positionsApi, type CostCenterDto, type DepartmentDto, type PositionDto } from '../../api/organization';
 import { financeGlApi } from '../../api/financeGl';
@@ -10,6 +10,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { describeApiError } from '../../lib/apiError';
 import {
   costCentreErrorKind,
+  costCentreOptions,
   isOverride,
   overridePatch,
   removeOverridePatch,
@@ -23,6 +24,8 @@ import { msg } from '../../i18n/translations';
 import { BdiMessage } from '../BdiMessage';
 import { Modal } from '../Modal';
 import { FieldError, LoadError } from '../gl/glUi';
+import { CostCentreSourceLine } from './CostCentreSourceLine';
+import { CostCentreSelect } from './CostCentreSelect';
 
 /**
  * Screen 6: the employee's cost centre on Employment. Shows the value with where it comes from as text, a "Why" disclosure
@@ -129,27 +132,6 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
       default: return <BdiMessage message={msg('Replaces the company default cost centre: {code}. Applies from the next Lock; locked runs do not change.')} values={{ code }} />;
     }
   };
-  const invalidSentence = (level: SourceLevel, code: string): React.ReactNode => {
-    switch (level) {
-      case 'employee': return <BdiMessage message={msg('The employee cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
-      case 'position': return <BdiMessage message={msg('The position cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
-      case 'department': return <BdiMessage message={msg('The department cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
-      case 'parentDepartment': return <BdiMessage message={msg('The parent department cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
-      default: return <BdiMessage message={msg('The company default cost centre {code} is inactive, deleted or in another company.')} values={{ code }} />;
-    }
-  };
-  const chipText = (r: Resolution): string => {
-    switch (r.kind) {
-      case 'employee': return t('Set for this employee (override)');
-      case 'department': return t('From department: {name}', { name: r.sourceName ?? '' });
-      case 'parentDepartment': return t('From parent department: {name}', { name: r.sourceName ?? '' });
-      case 'position': return t('From position: {name}', { name: r.sourceName ?? '' });
-      case 'companyDefault': return t('Company default');
-      case 'none': return t('No cost centre');
-      default: return '';
-    }
-  };
-
   const current = ccById(resolution.costCentreId);
   const invalidCode = resolution.kind === 'invalid' ? resolution.code : null;
   const inheritedCc = ccById(inherited.costCentreId);
@@ -157,7 +139,7 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
     : resolution.kind === 'companyDefault' ? 'company'
     : resolution.kind === 'none' || resolution.kind === 'unknown' ? null : resolution.kind;
 
-  const optionList = data.costCentres.filter((c) => c.isActive && c.companyId === companyId);
+  const optionList = costCentreOptions(data.costCentres, companyId, locale, null);
   const locked = !!lockedMessage;
 
   const closeDialog = () => {
@@ -203,27 +185,14 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
   const valueNode = current
     ? <><bdi dir="ltr">{current.code}</bdi> — <bdi dir="auto">{ccName(current)}</bdi></>
     : invalidCode ? <bdi dir="ltr">{invalidCode}</bdi>
-    : resolution.kind === 'unknown' && employee.costCenter ? <bdi dir="ltr">{employee.costCenter}</bdi>
     : <span aria-hidden="true">—</span>;
-
-  const chip = chipText(resolution);
 
   return (
     <div role="group" aria-labelledby={labelId} data-testid="cc-emp-field" className="space-y-2">
       <p id={labelId} className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Cost centre')}</p>
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]">
         <span data-testid="cc-emp-value" className="font-medium text-slate-900 dark:text-white">{valueNode}</span>
-        {resolution.kind === 'invalid' ? (
-          <span data-testid="cc-emp-invalid-chip" className="inline-flex items-start gap-1 rounded-full bg-rose-50 px-2 py-0.5 text-xs font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>{invalidSentence(resolution.level, resolution.code)}</span>
-          </span>
-        ) : chip ? (
-          <span data-testid="cc-emp-source" className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${resolution.kind === 'none' ? 'bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300' : resolution.kind === 'employee' ? 'bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-300' : 'bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-200'}`}>
-            {resolution.kind === 'none' && <AlertTriangle className="h-3.5 w-3.5" aria-hidden />}
-            {chip}
-          </span>
-        ) : null}
+        <CostCentreSourceLine resolution={resolution} variant="chip" testId="cc-emp-source" invalidTestId="cc-emp-invalid-chip" />
       </div>
 
       {data.costingOn === false && (
@@ -290,10 +259,7 @@ export function EmployeeCostCentreField({ employee, onChanged }: { employee: Emp
           </p>
           <div>
             <label htmlFor={`${labelId}-select`} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Cost centre')} <span className="text-rose-500" aria-hidden>*</span></label>
-            <select id={`${labelId}-select`} data-testid="cc-emp-override-select" value={pick} onChange={(e) => setPick(e.target.value)} className="select w-full" dir="auto">
-              <option value="">{t('Select')}</option>
-              {optionList.map((c) => <option key={c.id} value={c.id}>{c.code} — {ccName(c)}</option>)}
-            </select>
+            <CostCentreSelect id={`${labelId}-select`} testId="cc-emp-override-select" value={pick} onChange={setPick} options={optionList} placeholder={t('Select')} />
           </div>
           <div>
             <label htmlFor={`${labelId}-reason`} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Reason')} <span className="text-rose-500" aria-hidden>*</span></label>

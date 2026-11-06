@@ -3,6 +3,7 @@ import type { EmployeeListItem } from '@/src/api/employees';
 import type { EmployeeReferenceLists } from '@/src/hooks/useReferenceLists';
 import type { HireForm } from '@/src/lib/hire/hireForm';
 import type { SaBank } from '@/src/lib/hire/iban';
+import type { HireCostCentre } from './useHireCostCentre';
 
 export interface Lookups {
   companies: CompanyDto[];
@@ -28,4 +29,6 @@ export interface StepProps {
   singleCompany: boolean;
   /** The SAMA bank list, or null when it could not be loaded. */
   banks: SaBank[] | null;
+  /** Wave A: the cost centre (dropdown, follow option, its words for Review). */
+  costCentre?: HireCostCentre;
 }

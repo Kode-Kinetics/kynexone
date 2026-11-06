@@ -42,6 +42,8 @@ public sealed class TenantUserRateLimiter : IDisposable
         // The scoped pay approval view (OD4): reading a package shows bank details, so reads are capped too.
         new("pay-approval-read", 30, 200, TimeSpan.FromMinutes(1)),
         new("pay-approval-decide", 10, 60, TimeSpan.FromMinutes(1)),
+        // The read-only cost-centre preview the edit form calls (debounced) as the department changes.
+        new("cost-centre-preview", 60, 600, TimeSpan.FromMinutes(1)),
     ];
 
     private readonly Dictionary<string, PartitionedRateLimiter<(string Tenant, string User)>> _limiters = new(StringComparer.Ordinal);
