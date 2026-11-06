@@ -82,7 +82,10 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
 
   if (blank(form.companyId)) add('companyId', 'Choose the employing company.');
   // Wave A: a cost centre other than the department's is an override, and the server needs the reason for it (audited).
-  const costCentreReasonDue = blank(form.costCenterId) ? !!ctx.hadOverride || !!ctx.overrideId : form.costCenterId !== ctx.departmentCostCentreId && form.costCenterId !== ctx.overrideId;
+  const holdsOverride = !!ctx.hadOverride || !!ctx.overrideId;
+  const costCentreReasonDue = holdsOverride
+    ? form.costCenterId !== ctx.overrideId || !ctx.overrideId
+    : !blank(form.costCenterId) && form.costCenterId !== ctx.departmentCostCentreId;
   if (costCentreReasonDue && blank(form.costCenterReason)) add('costCenterReason', 'Enter a reason for this change.');
 
   const { min, max } = startDateRange(ctx.today);

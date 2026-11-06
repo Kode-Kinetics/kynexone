@@ -168,16 +168,20 @@ export function createCostCentreFields(input: { canManage: boolean; chosenId: st
   const { chosenId, departmentCostCentreId } = input;
   // The override the saved record already holds, picked again: no change.
   if (chosenId && input.overrideId && chosenId === input.overrideId) return {};
-  if (!chosenId) return input.hadOverride ? { costCenterId: NO_COST_CENTRE, costCenterReason: input.reason.trim() } : {};
-  if (chosenId === departmentCostCentreId) return { costCenterId: chosenId };
+  const holdsOverride = !!input.hadOverride || !!input.overrideId;
+  if (!chosenId) return holdsOverride ? { costCenterId: NO_COST_CENTRE, costCenterReason: input.reason.trim() } : {};
+  // A plain copy only when no override is held; otherwise moving off the override is audited and needs the reason.
+  if (chosenId === departmentCostCentreId && !holdsOverride) return { costCenterId: chosenId };
   return { costCenterId: chosenId, costCenterReason: input.reason.trim() };
 }
 
 /** True when the create form's choice changes an override (a cost centre that is not the department's, or following the department while the saved record holds one), so a reason is due. */
 export function createNeedsReason(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; hadOverride?: boolean; overrideId?: string | null }): boolean {
   if (!input.canManage) return false;
-  if (!input.chosenId) return !!input.hadOverride || !!input.overrideId;
-  return input.chosenId !== input.departmentCostCentreId && input.chosenId !== input.overrideId;
+  const holdsOverride = !!input.hadOverride || !!input.overrideId;
+  // While an override is held, any choice but that same override changes it: reason due.
+  if (holdsOverride) return input.chosenId !== input.overrideId || !input.overrideId;
+  return !!input.chosenId && input.chosenId !== input.departmentCostCentreId;
 }
 
 /**

@@ -570,3 +570,24 @@ test.describe('hire draft: whether the server holds an override after each creat
     expect(validateHire(form(), vctx).filter((i) => i.field === 'costCenterReason')).toEqual([]);
   });
 });
+
+test.describe('hire draft holding an override: any choice but that same override needs a reason (re-review)', () => {
+  const vctx = { today: '2026-11-05', companyCountry: 'SA', departmentCostCentreId: 'ops', hadOverride: true, overrideId: 'sales' };
+  const form = (over: Record<string, unknown> = {}) => ({ ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'co', departmentId: 'd1', ...over });
+
+  test('picking the department\'s own cost centre (offered when it is not the follow choice) is a change: reason required and sent', () => {
+    expect(createNeedsReason({ canManage: true, chosenId: 'ops', departmentCostCentreId: 'ops', hadOverride: true, overrideId: 'sales' })).toBe(true);
+    expect(createCostCentreFields({ canManage: true, chosenId: 'ops', departmentCostCentreId: 'ops', reason: ' Back ', hadOverride: true, overrideId: 'sales' })).toEqual({ costCenterId: 'ops', costCenterReason: 'Back' });
+    expect(validateHire(form({ costCenterId: 'ops' }), vctx)).toContainEqual({ field: 'costCenterReason', step: 1, key: 'Enter a reason for this change.' });
+    expect(buildCreateRequest(form({ costCenterId: 'ops', costCenterReason: 'Back' }), { companyCountry: 'SA', currency: 'SAR', costCentre: { canManage: true, departmentCostCentreId: 'ops', overrideId: 'sales' } }))
+      .toMatchObject({ costCenterId: 'ops', costCenterReason: 'Back' });
+  });
+  test('only re-picking the held override is free of a reason', () => {
+    expect(createNeedsReason({ canManage: true, chosenId: 'sales', departmentCostCentreId: 'ops', hadOverride: true, overrideId: 'sales' })).toBe(false);
+    expect(validateHire(form({ costCenterId: 'sales' }), vctx).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+  });
+  test('without an override the department\'s own cost centre stays a plain copy (unchanged)', () => {
+    expect(createNeedsReason({ canManage: true, chosenId: 'ops', departmentCostCentreId: 'ops' })).toBe(false);
+    expect(createCostCentreFields({ canManage: true, chosenId: 'ops', departmentCostCentreId: 'ops', reason: '' })).toEqual({ costCenterId: 'ops' });
+  });
+});

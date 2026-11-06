@@ -70,7 +70,8 @@ export function useHireCostCentre({ form, departments, draftId, overrideId, canM
     const label = chosen ? chosen.label
       : hadOverride ? (follow ? t('Removes the override and follows the department · {code}', { code: followCode }) : t('Removes the override and follows the department'))
       : follow ? t('Follow department · {code}', { code: followCode }) : t('Follow department');
-    const reasonDue = canManage && (form.costCenterId ? form.costCenterId !== departmentCostCentreId && form.costCenterId !== overrideId : hadOverride);
+    // While an override is held, any choice but re-picking that same override changes it; otherwise only a non-department pick.
+    const reasonDue = canManage && (hadOverride ? form.costCenterId !== overrideId : !!form.costCenterId && form.costCenterId !== departmentCostCentreId);
     return { canManage, options, followPending: !follow, label, departmentCostCentreId, hadOverride, reasonDue, loadFailed: company.status === 'error', reload: company.reload };
   }, [canManage, company.list, company.reload, company.status, departmentCostCentreId, departments, form.companyId, form.costCenterId, form.departmentId, hadOverride, locale, overrideId, preview.state, t]);
 }
