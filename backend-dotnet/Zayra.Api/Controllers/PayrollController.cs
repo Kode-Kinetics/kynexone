@@ -320,6 +320,21 @@ public partial class PayrollController : ControllerBase
     public async Task<IActionResult> AssignEmployeeSalary(EmployeeSalaryStructureRequest req, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
+        // A proposal that NAMES an allowance is staged under the tenant lock that removing an allowance holds (Benefits by grade), taken first and held to the
+        // commit, so the allowance cannot be removed between the check that it is live and the staged change becoming visible to the remove guard. The lock is
+        // the only one taken here and it is taken first, so it cannot deadlock with the matrix writers (they take no other lock after it). A proposal that names
+        // none (nearly all of them) is staged exactly as before. The pay-approval cover re-check runs AFTER the commit either way.
+        var result = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(req.Allowances)
+            ? await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.SerializeAsync(_db, Zayra.Api.Infrastructure.Entitlements.EntitlementMatrixService.LockScope,
+                tenantId, tenantId, () => StageEmployeeSalaryAsync(req, cancellationToken), cancellationToken)
+            : await StageEmployeeSalaryAsync(req, cancellationToken);
+        await SyncPayApprovalAsync(cancellationToken);
+        return result;
+    }
+
+    private async Task<IActionResult> StageEmployeeSalaryAsync(EmployeeSalaryStructureRequest req, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
         // M3: reject zero/negative basic salary at assignment time
         if (req.BasicSalary <= 0)
             return BadRequest(new { message = "Basic salary must be greater than zero." });
@@ -352,7 +367,8 @@ public partial class PayrollController : ControllerBase
         // The customer-defined monthly cash allowances this salary pays: stated lines are validated against the live definitions; a salary that does
         // not mention allowances carries the current ones forward when Finance approves (so a basic-only change never drops one).
         var allowanceLines = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
-            _db, tenantId, employee.Id, req.EffectiveDate, req.BasicSalary, req.Allowances, cancellationToken);
+            _db, tenantId, employee.Id, req.EffectiveDate, req.BasicSalary, req.Allowances, cancellationToken,
+            slotsGross: req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance);
         if (allowanceLines.Problem is { } allowanceProblem)
             return StatusCode(allowanceProblem.Status, new { error = allowanceProblem.Code, code = allowanceProblem.Code, message = allowanceProblem.Message });
         if (employee.GradeId.HasValue)
@@ -379,7 +395,6 @@ public partial class PayrollController : ControllerBase
                 : new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate, allowances = allowanceLines.Lines }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await NotePaySubmittedAsync(req.EmployeeId, cancellationToken);
-        await SyncPayApprovalAsync(cancellationToken);
         var allowanceViews = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], cancellationToken);
         return Accepted($"/api/payroll/salary-changes/{change.Id}", SalaryChangeDto.Project(change, allowanceViews.GetValueOrDefault(change.Id)));
     }
@@ -5210,7 +5225,10 @@ public partial class PayrollController : ControllerBase
         // deleted, and out-of-scope employees in one shot.
         query = query.Where(x => _db.Employees.Any(e => e.Id == x.EmployeeId));
         var structs = await query.OrderByDescending(x => x.EffectiveDate).ToListAsync(cancellationToken);
-        return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true)).ToList());
+        // Each record's allowance lines, named, so the Assign Salary screen has the current lines without reading the employee (employees.sensitive).
+        // Shown exactly where the slot amounts are (the projection below gates both on the same flag).
+        var linesByRecord = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamedByRecordAsync(_db, tenantId, structs.Select(s => s.Id).ToList(), cancellationToken);
+        return Ok(structs.Select(s => SalaryStructureAssignmentDto.Project(s, true, linesByRecord.GetValueOrDefault(s.Id))).ToList());
     }
 
     [HttpGet("payment-batches")]

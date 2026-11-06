@@ -219,7 +219,8 @@ public sealed class SalaryChangeDecisionService
             try { statedLines = SalaryAllowanceLines.Deserialize(change.AllowancesJson); }
             catch (JsonException)
             { return new ConflictObjectResult(new { error = "salary_change_stale", message = "This change's allowance lines cannot be read. Reject it and propose it again." }); }
-            var allowanceLines = await SalaryAllowanceLines.ResolveForProposalAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, change.BasicSalary, statedLines, ct);
+            var allowanceLines = await SalaryAllowanceLines.ResolveForProposalAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, change.BasicSalary, statedLines, ct,
+                slotsGross: change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance);
             if (allowanceLines.Problem is { } allowanceProblem)
                 return new ConflictObjectResult(new
                 {

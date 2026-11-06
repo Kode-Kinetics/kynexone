@@ -937,6 +937,27 @@ public sealed class PayrollRunProcessor
         }
         var arrearsByEmp = arrears.Settled.GroupBy(l => l.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
 
+        // ── Back pay for a customer-defined cash allowance ───────────────────────────────────────────
+        // An ARREARS_ALW_* line settles an allowance that was in force in a locked period, which is NOT necessarily on the salary record in force
+        // now (a one-off keyed backdated, then a later record without it). Its definition is therefore loaded for every such code, not only for the
+        // codes on current records — and a removed or switched-off definition still counts, because the expense it posts to does not go away.
+        // Nothing below posts such a line to a fallback account: a code with no definition or no GL driver refuses the run.
+        var arrearsAllowanceCodes = arrears.Settled
+            .Select(l => PayrollArrearsComponents.SourceComponent(l.ComponentCode))
+            .Where(c => Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(c))
+            .Distinct().ToList();
+        var arrearsAllowanceDefinitions = arrearsAllowanceCodes.Count == 0
+            ? new Dictionary<string, PayComponent>(StringComparer.Ordinal)
+            : (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
+                    "Payroll pass: the tenant-wide definition (name and GL driver) of each cash allowance a back-pay line settles, removed or switched-off definitions included.")
+                .AsNoTracking()
+                .Where(c => c.CompanyId == null && arrearsAllowanceCodes.Contains(c.Code)
+                         && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage)
+                .ToListAsync(cancellationToken))
+                .GroupBy(c => c.Code, StringComparer.Ordinal)
+                // A live definition wins over a removed one of the same code (the unique key counts removed rows, so this is only defensive).
+                .ToDictionary(g => g.Key, g => g.OrderBy(c => c.IsDeleted).ThenByDescending(c => c.IsActive).First(), StringComparer.Ordinal);
+
         // ── POD-B3 HANDOFF: the 1420 receivable a prior void recognised ──────────────────────────────
         // Explicit per-run flag, default OFF: recovering an overpayment out of someone's salary is an act
         // the operator chooses, never a side effect of re-running a month.
@@ -1866,7 +1887,24 @@ public sealed class PayrollRunProcessor
             {
                 if (line.Amount <= 0m) continue;
                 // Back pay for a customer-defined cash allowance is named after it and posts to ITS GL driver (the definition's own), never EARN:OTHER.
-                cashAllowanceDefinitions.TryGetValue(PayrollArrearsComponents.SourceComponent(line.ComponentCode), out var arrearsAllowance);
+                PayComponent? arrearsAllowance = null;
+                if (Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(PayrollArrearsComponents.SourceComponent(line.ComponentCode)))
+                {
+                    var allowanceCode = PayrollArrearsComponents.SourceComponent(line.ComponentCode);
+                    // Same refusal as a current line: an allowance with no definition, or a definition with no GL driver, would post to a fallback
+                    // account nobody chose. Refuse the run and say whose back pay it is.
+                    if (!arrearsAllowanceDefinitions.TryGetValue(allowanceCode, out arrearsAllowance) || string.IsNullOrWhiteSpace(arrearsAllowance.GlDriverKey))
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_definition_invalid",
+                            message = $"{e.FullName} ({e.EmployeeCode}) is owed back pay ({line.ComponentCode}, {line.CoveredYear}-{line.CoveredMonth:D2}) for the monthly allowance {allowanceCode}, but " +
+                                      (arrearsAllowance is null
+                                          ? "that allowance no longer exists in Benefits by grade."
+                                          : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                      " Nothing was saved. Restore the allowance, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = line.ComponentCode,
+                        });
+                }
                 AddEarning(tenantId, id, e.Id, line.ComponentCode,
                     $"Arrears — {arrearsAllowance?.NameEn ?? PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
                     line.Amount, "Arrears", glDriverKey: string.IsNullOrWhiteSpace(arrearsAllowance?.GlDriverKey) ? null : arrearsAllowance!.GlDriverKey);

@@ -1,8 +1,10 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Entitlements;
+using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Payroll;
@@ -20,8 +22,12 @@ public sealed record AllowanceResolution(IReadOnlyList<ResolvedAllowanceLine> Li
     public decimal Total => Lines.Sum(l => l.Amount);
 }
 
-/// <summary>A line as an approver sees it: with its names, and the amount it comes to.</summary>
-public sealed record SalaryAllowanceLineView(string Code, string? NameEn, string? NameAr, string Basis, decimal? Rate, decimal Amount);
+/// <summary>A line as an approver sees it: with its names, and the amount it comes to; and, so Finance can see what approving it does, the GL
+/// driver (and its label) the expense posts to and whether it raises the end-of-service liability (with the reason when it does not).
+/// A line whose definition is gone has no driver and no end-of-service answer (null), never a guess.</summary>
+public sealed record SalaryAllowanceLineView(
+    string Code, string? NameEn, string? NameAr, string Basis, decimal? Rate, decimal Amount,
+    string? GlDriverKey = null, string? GlDriverLabel = null, bool? EosbIncluded = null, string? EosbExclusionReason = null);
 
 /// <summary>What the approval screen shows of a salary change's allowances: the lines on the salary record in force now, the lines the
 /// change would leave, and whether those were carried forward because the proposal did not mention allowances.</summary>
@@ -46,8 +52,17 @@ public sealed record EosbCashAllowance(string Code, decimal Amount);
 public static class SalaryAllowanceLines
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-    // numeric(14,2)
-    private const decimal MaxAmount = 999_999_999_999.99m;
+    /// <summary>The most one line, or the whole monthly pay (the salary components plus every allowance line), may come to: payslips.OtherAllowances and
+    /// payslips.GrossSalary are numeric(12,2), and employee salary is too. The salary-package limits elsewhere are the same figure.</summary>
+    public const decimal ColumnLimit = 9_999_999_999.99m;
+
+    private static string Money(decimal amount) => amount.ToString("N2", CultureInfo.InvariantCulture);
+
+    /// <summary>The refusal for a whole monthly pay (<paramref name="slotsGross"/> plus the lines) that no payslip column could hold; null when it fits.</summary>
+    public static AllowanceProblem? CheckWholePay(decimal slotsGross, decimal linesTotal) =>
+        slotsGross + linesTotal > ColumnLimit
+            ? Bad($"The whole monthly pay (the salary components plus the allowance lines) comes to {Money(slotsGross + linesTotal)}, which is more than the {Money(ColumnLimit)} a payslip can hold. Lower the amounts.")
+            : null;
 
     /// <summary>A percentage's amount: rate × basic, to the halala, half away from zero — as the grade grid rounds it.</summary>
     public static decimal PercentAmount(decimal rate, decimal basic) => Math.Round(rate * basic, 2, MidpointRounding.AwayFromZero);
@@ -64,7 +79,7 @@ public static class SalaryAllowanceLines
     /// something on this basic.
     /// </summary>
     public static async Task<(List<ResolvedAllowanceLine> Lines, AllowanceProblem? Problem)> ValidateAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct, decimal slotsGross = 0m)
     {
         var resolved = new List<ResolvedAllowanceLine>();
         if (proposed is null || proposed.Count == 0) return (resolved, null);
@@ -72,6 +87,8 @@ public static class SalaryAllowanceLines
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var line in proposed)
         {
+            // A null entry ("allowances": [null]) is a malformed request, not a server fault.
+            if (line is null) return (resolved, Bad("Every allowance line needs the allowance it is for."));
             var code = (line.Code ?? string.Empty).Trim().ToUpperInvariant();
             if (code.Length == 0) return (resolved, Bad("Every allowance line needs the allowance it is for."));
             if (!EntitlementComponentRules.IsAllowance(code))
@@ -88,8 +105,10 @@ public static class SalaryAllowanceLines
                 if (line.Rate is not null) return (resolved, Bad($"{code}: a fixed amount has no percentage. Remove the rate, or make it a percentage of basic."));
                 if (line.Amount is not decimal amount || amount <= 0m)
                     return (resolved, Bad($"{code}: the monthly amount must be greater than zero. To stop paying it, remove the line."));
-                if (amount > MaxAmount || decimal.Round(amount, 2) != amount)
-                    return (resolved, Bad($"{code}: the monthly amount must have at most two decimal places and be a realistic figure."));
+                if (decimal.Round(amount, 2) != amount)
+                    return (resolved, Bad($"{code}: the monthly amount must have at most two decimal places."));
+                if (amount > ColumnLimit)
+                    return (resolved, Bad($"{code}: the monthly amount cannot be more than {Money(ColumnLimit)}."));
                 resolved.Add(new ResolvedAllowanceLine(code, basis, null, amount));
             }
             else
@@ -106,6 +125,9 @@ public static class SalaryAllowanceLines
         var definitions = await LiveDefinitionCodesAsync(db, tenantId, seen.ToList(), ct);
         foreach (var line in resolved.Where(l => !definitions.Contains(l.Code)))
             return (resolved, Unknown($"{line.Code} is not a monthly cash allowance that is in use: it was removed or switched off in Benefits by grade. Take the line off this salary, or restore the allowance first."));
+
+        // The payslip columns hold at most the limit, so the whole pay is checked here, where every path that stages or applies lines passes.
+        if (CheckWholePay(slotsGross, resolved.Sum(l => l.Amount)) is { } tooMuch) return (resolved, tooMuch);
 
         resolved.Sort((a, b) => string.CompareOrdinal(a.Code, b.Code));
         return (resolved, null);
@@ -130,11 +152,12 @@ public static class SalaryAllowanceLines
     /// <summary>
     /// The lines a salary proposal comes to for <paramref name="employeeId"/> from <paramref name="effectiveDate"/> on a proposed
     /// <paramref name="basic"/>. <paramref name="stated"/> null carries the salary record in force's lines forward (a percentage
-    /// re-worked on the new basic); a list (even empty) is exactly those lines, validated.
+    /// re-worked on the new basic); a list (even empty) is exactly those lines, validated. <paramref name="slotsGross"/> is the salary
+    /// components' total (everything but the fixed deduction), so the whole pay is held to the payslip column limit.
     /// </summary>
     public static async Task<AllowanceResolution> ResolveForProposalAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, DateOnly effectiveDate, decimal basic,
-        IReadOnlyList<SalaryAllowanceLine>? stated, CancellationToken ct)
+        IReadOnlyList<SalaryAllowanceLine>? stated, CancellationToken ct, decimal slotsGross = 0m)
     {
         var carried = stated is null;
         IReadOnlyList<SalaryAllowanceLine> lines;
@@ -146,7 +169,7 @@ public static class SalaryAllowanceLines
             lines = current.Lines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
         }
         if (lines.Count == 0) return new AllowanceResolution([], carried, null);
-        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct);
+        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct, slotsGross);
         if (problem is not null && carried)
             problem = problem with { Message = "This employee's current salary carries an allowance that cannot be carried over. " + problem.Message };
         return new AllowanceResolution(resolved, carried, problem);
@@ -191,12 +214,80 @@ public static class SalaryAllowanceLines
         return xs.Zip(ys).All(p => p.First.Code == p.Second.Code && p.First.Basis == p.Second.Basis && p.First.Rate == p.Second.Rate && p.First.Amount == p.Second.Amount);
     }
 
-    /// <summary>Whether a staged change names <paramref name="code"/> (for the guard on removing an allowance that a pending change proposes).</summary>
-    public static bool Names(string? json, string code)
+    /// <summary>
+    /// Whether a staged salary change's lines name <paramref name="code"/>, for the guard on removing an allowance that a pending change
+    /// proposes. <c>null</c> = the JSON cannot be read (or has an entry that is not a line): the guard FAILS CLOSED on that and refuses the
+    /// remove, because reading it as "not named" would let an allowance that a waiting change still names be removed.
+    /// </summary>
+    public static bool? Names(string? json, string code)
     {
-        try { return Deserialize(json)?.Any(l => string.Equals(l.Code, code, StringComparison.OrdinalIgnoreCase)) == true; }
-        catch (JsonException) { return false; }
+        List<SalaryAllowanceLine>? lines;
+        try { lines = Deserialize(json); }
+        catch (JsonException) { return null; }
+        if (lines is null) return false;
+        var named = false;
+        foreach (var line in lines)
+        {
+            if (line is null) return null;
+            if (string.Equals((line.Code ?? string.Empty).Trim(), code, StringComparison.OrdinalIgnoreCase)) named = true;
+        }
+        return named;
     }
+
+    /// <summary>
+    /// Whether an Approvals employee change (<see cref="EmployeeChangeRequest.ProposedChangesJson"/>) proposes a salary package whose
+    /// <c>allowances</c> name <paramref name="code"/>. Same contract as <see cref="Names"/>: <c>null</c> = cannot be read, fail closed.
+    /// A change with no salary package, or a package that does not state allowances, names nothing.
+    /// </summary>
+    public static bool? ChangeNames(string? proposedChangesJson, string code)
+    {
+        if (string.IsNullOrWhiteSpace(proposedChangesJson)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(proposedChangesJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+            var named = false;
+            var unreadable = false;
+            foreach (var field in document.RootElement.EnumerateObject())
+            {
+                if (!string.Equals(field.Name, EmployeeSalaryBreakdownKey, StringComparison.OrdinalIgnoreCase)) continue;
+                if (field.Value.ValueKind != JsonValueKind.Object) continue;     // a non-package value states no lines (and would never apply)
+                foreach (var inner in field.Value.EnumerateObject())
+                {
+                    if (!string.Equals(inner.Name, "allowances", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (inner.Value.ValueKind == JsonValueKind.Null) continue;
+                    if (inner.Value.ValueKind != JsonValueKind.Array) { unreadable = true; continue; }
+                    foreach (var element in inner.Value.EnumerateArray())
+                    {
+                        if (element.ValueKind != JsonValueKind.Object) { unreadable = true; continue; }
+                        foreach (var property in element.EnumerateObject())
+                            if (string.Equals(property.Name, "code", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.String
+                                && string.Equals(property.Value.GetString()?.Trim(), code, StringComparison.OrdinalIgnoreCase))
+                                named = true;
+                    }
+                }
+            }
+            return named ? true : unreadable ? null : false;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private const string EmployeeSalaryBreakdownKey = "salaryBreakdown";
+
+    // ── The tenant lock a stage shares with a remove ────────────────────────────────────────────
+
+    /// <summary>
+    /// Takes the tenant lock <c>RemoveBenefitAsync</c> (and every other Benefits by grade write) holds, so staging a proposal that NAMES
+    /// an allowance and removing that allowance cannot interleave: whichever takes the lock second sees the other's committed result. It
+    /// is a transaction-scoped advisory lock, so the caller must already be inside a transaction (the Postgres guard refuses otherwise)
+    /// and must call this BEFORE it validates the lines against the live definitions. Only a proposal that states lines needs it; one
+    /// that states none (or only carries lines already on a salary record, which the remove guard already refuses on) takes no lock.
+    /// </summary>
+    public static Task LockForStagingAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) =>
+        FinanceDecisionSerializer.AcquireAsync(db, EntitlementMatrixService.LockScope, tenantId, tenantId, ct);
+
+    /// <summary>True when a proposal's lines name at least one allowance (so staging it must take <see cref="LockForStagingAsync"/>).</summary>
+    public static bool NamesAny(IReadOnlyList<SalaryAllowanceLine>? stated) => stated is { Count: > 0 };
 
     // ── Reads for display, payroll helpers and end of service ───────────────────────────────────
 
@@ -226,15 +317,12 @@ public static class SalaryAllowanceLines
             staged[c.Id] = lines;
             if (lines is not null) foreach (var l in lines) if (!string.IsNullOrWhiteSpace(l.Code)) codes.Add(l.Code.Trim().ToUpperInvariant());
         }
-        var names = codes.Count == 0 ? new Dictionary<string, (string En, string Ar)>(StringComparer.Ordinal)
-            : (await ScopedBypass.TenantWide(db.PayComponents, tenantId, "The approval screen names each allowance line, removed definitions included.")
-                .AsNoTracking().Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && codes.Contains(c.Code))
-                .Select(c => new { c.Code, c.NameEn, c.NameAr }).ToListAsync(ct))
-                .GroupBy(c => c.Code, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => (En: g.First().NameEn, Ar: g.First().NameAr), StringComparer.Ordinal);
+        var definitions = await DefinitionFactsAsync(db, tenantId, codes, ct);
 
         SalaryAllowanceLineView View(string code, string basis, decimal? rate, decimal amount) =>
-            names.TryGetValue(code, out var n) ? new(code, n.En, n.Ar, basis, rate, amount) : new(code, null, null, basis, rate, amount);
+            definitions.TryGetValue(code, out var d)
+                ? new(code, d.NameEn, d.NameAr, basis, rate, amount, d.GlDriverKey, d.GlDriverLabel, d.EosbIncluded, d.EosbExclusionReason)
+                : new(code, null, null, basis, rate, amount);
 
         foreach (var c in changes)
         {
@@ -262,6 +350,56 @@ public static class SalaryAllowanceLines
             views[c.Id] = new SalaryAllowanceView(currentViews, proposed, carried);
         }
         return views;
+    }
+
+    /// <summary>What the approval screen and the read screens know about each allowance code: its names, the GL driver it posts to (with that driver's
+    /// label) and its end-of-service answer. Removed definitions are included (a line on an old record still has to be shown); a code with no definition is absent.</summary>
+    private sealed record DefinitionFacts(string NameEn, string NameAr, string? GlDriverKey, string? GlDriverLabel, bool EosbIncluded, string? EosbExclusionReason);
+
+    private static async Task<Dictionary<string, DefinitionFacts>> DefinitionFactsAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+    {
+        var result = new Dictionary<string, DefinitionFacts>(StringComparer.Ordinal);
+        if (codes.Count == 0) return result;
+        var rows = (await ScopedBypass.TenantWide(db.PayComponents, tenantId, "Screens that show a cash allowance line name it, say where it posts and whether it counts in end of service, removed definitions included.")
+                .AsNoTracking().Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && codes.Contains(c.Code))
+                .Select(c => new { c.Code, c.NameEn, c.NameAr, c.GlDriverKey, c.EosbIncluded, c.EosbExclusionReason }).ToListAsync(ct))
+            .GroupBy(c => c.Code, StringComparer.Ordinal).Select(g => g.First()).ToList();
+        var driverKeys = rows.Where(r => !string.IsNullOrWhiteSpace(r.GlDriverKey)).Select(r => r.GlDriverKey!).Distinct().ToList();
+        var labels = driverKeys.Count == 0 ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : (await ScopedBypass.TenantWide(db.GlDrivers, tenantId, "The label of the tenant-wide GL driver a cash allowance posts to, shown beside its key.")
+                    .AsNoTracking().Where(g => g.CompanyId == null && driverKeys.Contains(g.Key)).Select(g => new { g.Key, g.Label }).ToListAsync(ct))
+                .GroupBy(g => g.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First().Label, StringComparer.Ordinal);
+        foreach (var r in rows)
+        {
+            // The tenant's own driver row, else the built-in earning catalogue; null when neither knows the key.
+            string? label = null;
+            if (!string.IsNullOrWhiteSpace(r.GlDriverKey))
+                label = labels.TryGetValue(r.GlDriverKey!, out var own) && !string.IsNullOrWhiteSpace(own) ? own
+                    : PayrollGlCatalog.Drivers.FirstOrDefault(d => d.Key == r.GlDriverKey)?.Label;
+            result[r.Code] = new DefinitionFacts(r.NameEn, r.NameAr, string.IsNullOrWhiteSpace(r.GlDriverKey) ? null : r.GlDriverKey, label, r.EosbIncluded, r.EosbExclusionReason);
+        }
+        return result;
+    }
+
+    /// <summary>The same lines with their English and Arabic names filled in (for a screen that may not read the catalogue); a line whose definition is gone keeps no name.</summary>
+    public static async Task<List<SalaryAllowanceLine>> NamedAsync(ZayraDbContext db, Guid tenantId, IEnumerable<SalaryAllowanceLine> lines, CancellationToken ct)
+    {
+        var list = lines.Where(l => l is not null).ToList();
+        var codes = list.Select(l => (l.Code ?? string.Empty).Trim().ToUpperInvariant()).Where(c => c.Length > 0).Distinct().ToList();
+        var facts = await DefinitionFactsAsync(db, tenantId, codes, ct);
+        return list.Select(l => facts.TryGetValue((l.Code ?? string.Empty).Trim().ToUpperInvariant(), out var d) ? l with { NameEn = d.NameEn, NameAr = d.NameAr } : l).ToList();
+    }
+
+    /// <summary>Each salary record's allowance lines (named), by record id; a record with none is absent.</summary>
+    public static async Task<Dictionary<Guid, List<SalaryAllowanceLine>>> NamedByRecordAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, CancellationToken ct)
+    {
+        var rows = await LoadAsync(db, tenantId, salaryIds, ct);
+        var all = rows.SelectMany(g => g).ToList();
+        var facts = await DefinitionFactsAsync(db, tenantId, all.Select(r => r.Code).Distinct().ToList(), ct);
+        return rows.ToDictionary(g => g.Key, g => g.OrderBy(r => r.Code, StringComparer.Ordinal)
+            .Select(r => facts.TryGetValue(r.Code, out var d) ? new SalaryAllowanceLine(r.Code, r.Basis, r.Rate, r.Amount, d.NameEn, d.NameAr)
+                                                             : new SalaryAllowanceLine(r.Code, r.Basis, r.Rate, r.Amount)).ToList());
     }
 
     /// <summary>All allowance rows of the given salary records, by record.</summary>

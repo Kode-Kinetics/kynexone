@@ -3970,8 +3970,11 @@ public class EmployeesController : ControllerBase
         // Work-email and draft entitlement edits commit atomically with their audit/default rows.
         // Placement edits also serialize with activation and individual benefit writers.
         var placementEdit = request.Changes.Keys.Any(k => k is "grade" or "joiningDate");
+        // A salary package that states allowance lines is staged under the tenant lock a remove of an allowance holds, which only means something
+        // inside a transaction: so such an edit takes the transaction branch too.
+        var namesAllowances = EmployeeSalaryBreakdownChanges.StatesAllowanceLines(request.Changes);
         if (!_db.Database.IsRelational()
-            || (!placementEdit && !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))))
+            || (!placementEdit && !namesAllowances && !request.Changes.Keys.Any(k => string.Equals(k, "workEmail", StringComparison.OrdinalIgnoreCase))))
             return await UpdateEmployeeCoreAsync(id, request, cancellationToken);
 
         IActionResult? result = null;
@@ -4065,6 +4068,11 @@ public class EmployeesController : ControllerBase
                 if (key == "salaryCurrency" && (value.GetString() is not { Length: 3 } currency || !currency.All(c => c is >= 'A' and <= 'Z')))
                     throw new InvalidOperationException("Salary currency must be a three-letter uppercase currency code.");
             }
+            // Naming an allowance takes the tenant lock a remove of it holds, BEFORE the lines are checked against the live definitions and held to the
+            // commit (the wrapper above). Taken after the employee-level locks this request already holds and before anything else is locked, in the
+            // same position for every stager; the matrix writers take no lock after it, so it cannot form a cycle with them.
+            if (_db.Database.IsRelational() && EmployeeSalaryBreakdownChanges.StatesAllowanceLines(request.Changes))
+                await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(_db, tenantId, cancellationToken);
             await EmployeeSalaryBreakdownChanges.ValidateAsync(_db, employee, request.Changes, cancellationToken);
             if (request.Changes.TryGetValue(EmployeeSalaryBreakdownChanges.Key, out var package))
             {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Contracts;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -899,14 +900,36 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             // otherwise be asked to approve a line whose definition no longer exists). The staged lines are JSON, so they are read here and
             // compared in memory: a text search inside jsonb does not translate safely across providers.
             var onSalary = cash && await db.EmployeeSalaryAllowances.AnyAsync(x => x.TenantId == tid && x.Code == code, ct);
-            var inPendingChange = cash && (await ScopedBypass.TenantWide(db.SalaryChangeRequests, tid,
+            // Every place a proposal can name the allowance is read, and an unreadable one FAILS CLOSED: a salary change HR proposed, and a salary
+            // package in an Approvals employee change (pending, or approved and waiting for its effective date). Staging takes this same lock
+            // (SalaryAllowanceLines.LockForStagingAsync), so nothing is staged between this read and the removal below.
+            var named = false;
+            var unreadable = false;
+            if (cash)
+            {
+                var stagedLines = await ScopedBypass.TenantWide(db.SalaryChangeRequests, tid,
                         "A cash allowance a pending salary change names can't be removed; the guard reads every company's pending changes.")
                     .AsNoTracking()
                     .Where(x => x.Status == SalaryChangeRequest.Pending && x.AllowancesJson != null)
-                    .Select(x => x.AllowancesJson).ToListAsync(ct))
-                .Any(json => Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Names(json, code));
-            if (inPendingChange)
+                    .Select(x => x.AllowancesJson).ToListAsync(ct);
+                foreach (var json in stagedLines)
+                {
+                    var names = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Names(json, code);
+                    if (names is null) unreadable = true; else if (names == true) named = true;
+                }
+                var stagedChanges = await db.EmployeeChangeRequests.AsNoTracking()
+                    .Where(x => x.TenantId == tid && (x.Status == EmployeeChangeStatuses.PendingApproval || x.Status == EmployeeChangeStatuses.ApprovedPendingEffectiveDate))
+                    .Select(x => x.ProposedChangesJson).ToListAsync(ct);
+                foreach (var json in stagedChanges)
+                {
+                    var names = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ChangeNames(json, code);
+                    if (names is null) unreadable = true; else if (names == true) named = true;
+                }
+            }
+            if (named)
                 return Conflict("benefit_in_use", "A salary change that is waiting for approval still includes this allowance, so it can't be removed. Decide or withdraw that change first.");
+            if (unreadable)
+                return Conflict("allowance_lines_unreadable", "A salary change that is waiting for approval has allowance lines that cannot be read, so it can't be checked against this allowance. Nothing was removed. Decide or withdraw that change first.");
             if (hasValues || inPackages || onSalary)
                 return Conflict("benefit_in_use", "This benefit already has values for grades or is in employees' packages or salaries, so it can't be removed. Set it to Not offered for every grade instead.");
             foreach (var row in rows)

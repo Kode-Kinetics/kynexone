@@ -442,6 +442,107 @@ public class CashAllowancePayrollTests
         Mx.Status(await h.Remove(Code)).Should().Be(200);
     }
 
+    // ══ The remove guard also reads Approvals' employee changes, and fails closed ═══════════════
+
+    private static EmployeeChangeRequest ProfileEditNaming(Guid tid, int employeeId, string status, string proposedJson) => new()
+    {
+        TenantId = tid, EmployeeId = employeeId, RequestedByUserId = Guid.NewGuid(), Status = status, SensitiveFields = "salaryBreakdown",
+        EffectiveDate = new DateOnly(2026, 11, 1), ProposedChangesJson = proposedJson,
+    };
+
+    private const string PackageNamingCar =
+        "{\"salaryBreakdown\":{\"basicSalary\":10000,\"housingAllowance\":0,\"transportAllowance\":0,\"foodAllowance\":0,\"mobileAllowance\":0,\"otherAllowance\":0," +
+        "\"fixedDeduction\":0,\"effectiveDate\":\"2026-11-01\",\"currency\":\"SAR\",\"allowances\":[{\"code\":\"alw_car\",\"basis\":\"Amount\",\"amount\":500}]}}";
+
+    [Theory]
+    [InlineData("PendingApproval", true)]
+    [InlineData("ApprovedPendingEffectiveDate", true)]
+    [InlineData("Rejected", false)]
+    [InlineData("Cancelled", false)]
+    [InlineData("ApprovedApplied", false)]
+    public async Task AnAllowanceAnApprovalsEmployeeChangeProposes_CannotBeRemoved_UntilItIsDecided(string status, bool blocks)
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 1, status, PackageNamingCar));
+        await h.Db.SaveChangesAsync();
+
+        var result = await h.Remove(Code);
+
+        if (blocks)
+        {
+            Mx.Error(result).Should().Be("benefit_in_use");
+            Mx.Describe(result).Should().Contain("waiting for approval");
+            (await h.Db.PayComponents.SingleAsync(x => x.Code == Code)).IsDeleted.Should().BeFalse();
+        }
+        else Mx.Status(result).Should().Be(200);
+    }
+
+    [Fact]
+    public async Task AnEmployeeChangeThatStatesNoAllowances_OrNamesAnotherOne_BlocksNothing()
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        const string noLines = "{\"salaryBreakdown\":{\"basicSalary\":10000,\"housingAllowance\":0,\"transportAllowance\":0,\"foodAllowance\":0,\"mobileAllowance\":0,\"otherAllowance\":0,\"fixedDeduction\":0,\"effectiveDate\":\"2026-11-01\",\"currency\":\"SAR\"}}";
+        h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 1, "PendingApproval", noLines));
+        h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 2, "PendingApproval", PackageNamingCar.Replace("alw_car", "ALW_OTHER")));
+        h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 3, "PendingApproval", "{\"bankIban\":\"SA4420000001234567891234\"}"));
+        await h.Db.SaveChangesAsync();
+
+        Mx.Status(await h.Remove(Code)).Should().Be(200);
+    }
+
+    [Theory]
+    [InlineData("salary")]
+    [InlineData("employee")]
+    public async Task UnreadableStagedLines_RefuseTheRemove_FailClosed_RatherThanReadAsNotNamed(string where)
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        if (where == "salary")
+            h.Db.SalaryChangeRequests.Add(new SalaryChangeRequest
+            {
+                TenantId = h.Tid, CompanyId = h.Facility.Id, EmployeeId = 1, EmployeeCode = "E1", EmployeeName = "E", SalaryStructureId = Guid.NewGuid(),
+                BasicSalary = 10_000m, EffectiveDate = new DateOnly(2026, 11, 1), Currency = "SAR", Status = SalaryChangeRequest.Pending, AllowancesJson = "{not json",
+            });
+        else
+            h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 1, "PendingApproval", "{\"salaryBreakdown\":{\"allowances\":[null]}}"));
+        await h.Db.SaveChangesAsync();
+
+        var refused = await h.Remove(Code);
+
+        Mx.Error(refused).Should().Be("allowance_lines_unreadable");
+        Mx.Status(refused).Should().Be(409);
+        Mx.Describe(refused).Should().Contain("cannot be read");
+        (await h.Db.PayComponents.SingleAsync(x => x.Code == Code)).IsDeleted.Should().BeFalse("nothing is removed on a guess");
+    }
+
+    [Fact]
+    public async Task AnEmployeeChangeWithUnparseableJson_RefusesTheRemove_FailClosed()
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        h.Db.EmployeeChangeRequests.Add(ProfileEditNaming(h.Tid, 1, "PendingApproval", "{truncated"));
+        await h.Db.SaveChangesAsync();
+
+        Mx.Error(await h.Remove(Code)).Should().Be("allowance_lines_unreadable");
+    }
+
+    [Fact]
+    public async Task OnlyACashAllowanceRemove_ReadsTheStagedLines_SoAPlainBenefitIsNotBlockedByAnUnreadableOne()
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.Add(new CreateBenefitRequest("Gym", null))).Should().Be(200);
+        h.Db.SalaryChangeRequests.Add(new SalaryChangeRequest
+        {
+            TenantId = h.Tid, CompanyId = h.Facility.Id, EmployeeId = 1, EmployeeCode = "E1", EmployeeName = "E", SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, EffectiveDate = new DateOnly(2026, 11, 1), Currency = "SAR", Status = SalaryChangeRequest.Pending, AllowancesJson = "{not json",
+        });
+        await h.Db.SaveChangesAsync();
+
+        Mx.Status(await h.Remove("BEN_GYM")).Should().Be(200);
+    }
+
     // ══ Least-privilege GL driver list for "Add a benefit → cash allowance" ═════════════════════
 
     [Fact]

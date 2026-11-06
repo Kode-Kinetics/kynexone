@@ -70,8 +70,10 @@ public static class EmployeeChangeDetail
             string? after;
             if (string.Equals(key, EmployeeSalaryBreakdownChanges.Key, StringComparison.OrdinalIgnoreCase))
             {
-                before = FormatPackage(await EmployeeSalaryBreakdownChanges.ReadLatestAsync(db, employee, ct), employee.Salary);
-                after = ReadPackage(proposed[key]);
+                // The package as a person approving it must see it: the six slots AND the customer-defined cash allowance lines, with a gross that counts
+                // them, on both sides. (Masked below under the same rule as every other pay field, so the lines are as hidden as the slots.)
+                var latest = await EmployeeSalaryBreakdownChanges.ReadLatestAsync(db, employee, ct);
+                (before, after) = await FormatPackagesAsync(db, change.TenantId, employee, latest, proposed[key], ct);
             }
             else
             {
@@ -130,13 +132,62 @@ public static class EmployeeChangeDetail
         _ => value.GetRawText(),
     };
 
-    private static string? ReadPackage(JsonElement value)
+    /// <summary>A line as the card prints it: its names (when the definition is known), basis, rate and the amount it comes to.</summary>
+    private sealed record CardLine(string Code, string? NameEn, string? NameAr, string Basis, decimal? Rate, decimal Amount);
+
+    /// <summary>
+    /// The "on file" and "proposed" texts of a salary package. A proposal that states <c>allowances</c> shows exactly those lines. A proposal that does
+    /// not mention them (a merit-style package) keeps the lines on the salary record in force on its date, so the card says they are carried forward
+    /// and shows a percentage line re-worked on the proposed basic, with the gross that follows. An unreadable proposal is shown as it was sent.
+    /// </summary>
+    private static async Task<(string? Before, string? After)> FormatPackagesAsync(
+        ZayraDbContext db, Guid tenantId, Employee employee, EmployeeSalaryBreakdownRequest? latest, JsonElement proposedValue, CancellationToken ct)
     {
-        try { return FormatPackage(EmployeeSalaryBreakdownChanges.Read(value), null); }
-        catch (InvalidOperationException) { return Display(value); }
+        EmployeeSalaryBreakdownRequest? package = null;
+        try { package = EmployeeSalaryBreakdownChanges.Read(proposedValue); }
+        catch (InvalidOperationException) { /* shown as sent, below */ }
+
+        var carried = false;
+        List<(string? Code, string? Basis, decimal? Rate, decimal? Amount)> proposedLines = [];
+        if (package is not null)
+        {
+            if (package.Allowances is not null)
+                proposedLines = package.Allowances.Where(l => l is not null).Select(l => (l.Code, l.Basis, l.Rate, l.Amount)).ToList();
+            else if (package.EffectiveDate is { } date)
+            {
+                var (_, inForce) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.InForceAsync(db, tenantId, employee.Id, date, ct);
+                carried = inForce.Count > 0;
+                proposedLines = inForce.Select(l => ((string?)l.Code, (string?)l.Basis, l.Rate, (decimal?)l.Amount)).ToList();
+            }
+        }
+        var onFileLines = (latest?.Allowances ?? []).Where(l => l is not null).Select(l => (l.Code, l.Basis, l.Rate, l.Amount)).ToList();
+
+        var codes = onFileLines.Concat(proposedLines).Select(l => (l.Code ?? string.Empty).Trim().ToUpperInvariant()).Where(c => c.Length > 0).Distinct().ToList();
+        var named = codes.Count == 0 ? new Dictionary<string, (string En, string Ar)>(StringComparer.Ordinal)
+            : (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(db.PayComponents, tenantId, "The approval card names each allowance line, removed definitions included.")
+                    .AsNoTracking().Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && codes.Contains(c.Code))
+                    .Select(c => new { c.Code, c.NameEn, c.NameAr }).ToListAsync(ct))
+                .GroupBy(c => c.Code, StringComparer.Ordinal).ToDictionary(g => g.Key, g => (En: g.First().NameEn, Ar: g.First().NameAr), StringComparer.Ordinal);
+
+        List<CardLine> Card(IEnumerable<(string? Code, string? Basis, decimal? Rate, decimal? Amount)> lines, decimal basic) => lines
+            .Select(l =>
+            {
+                var code = (l.Code ?? string.Empty).Trim().ToUpperInvariant();
+                var percent = string.Equals(l.Basis?.Trim(), Zayra.Api.Models.AllowanceBases.PercentOfBasic, StringComparison.OrdinalIgnoreCase);
+                var amount = percent ? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.PercentAmount(l.Rate.GetValueOrDefault(), basic) : l.Amount.GetValueOrDefault();
+                named.TryGetValue(code, out var n);
+                return new CardLine(code.Length == 0 ? "?" : code, n.En, n.Ar, percent ? Zayra.Api.Models.AllowanceBases.PercentOfBasic : Zayra.Api.Models.AllowanceBases.Amount, percent ? l.Rate : null, amount);
+            })
+            .OrderBy(l => l.Code, StringComparer.Ordinal).ToList();
+
+        var before = FormatPackage(latest, employee.Salary, Card(onFileLines, latest?.BasicSalary.GetValueOrDefault() ?? 0m), carried: false);
+        var after = package is null
+            ? Display(proposedValue)
+            : FormatPackage(package, null, Card(proposedLines, package.BasicSalary.GetValueOrDefault()), carried);
+        return (before, after);
     }
 
-    private static string? FormatPackage(EmployeeSalaryBreakdownRequest? package, decimal? fallbackGross)
+    private static string? FormatPackage(EmployeeSalaryBreakdownRequest? package, decimal? fallbackGross, IReadOnlyList<CardLine>? lines = null, bool carried = false)
     {
         if (package is null)
             return fallbackGross is > 0m ? $"Gross {Amount(fallbackGross.Value)}" : null;
@@ -147,10 +198,24 @@ public static class EmployeeChangeDetail
         Add("food", package.FoodAllowance);
         Add("mobile", package.MobileAllowance);
         Add("other", package.OtherAllowance);
+        foreach (var line in lines ?? [])
+            parts.Add($"allowance {LineName(line)} {(line.Basis == Zayra.Api.Models.AllowanceBases.PercentOfBasic ? $"{(line.Rate.GetValueOrDefault() * 100m).ToString("0.##", CultureInfo.InvariantCulture)}% of basic = " : string.Empty)}{Amount(line.Amount)}");
         Add("fixed deduction", package.FixedDeduction);
         var currency = string.IsNullOrWhiteSpace(package.Currency) ? string.Empty : " " + package.Currency.Trim();
         var from = package.EffectiveDate is { } date ? $", from {date:yyyy-MM-dd}" : string.Empty;
-        return $"{string.Join(", ", parts)} (gross {Amount(EmployeeSalaryBreakdownChanges.Gross(package))}{currency}){from}";
+        var note = carried && lines is { Count: > 0 } ? " [the current allowances are carried forward; a percentage is worked out on the new basic]" : string.Empty;
+        // The gross is the whole pay: the slots and every allowance line.
+        var gross = EmployeeSalaryBreakdownChanges.Gross(package) + (lines?.Sum(l => l.Amount) ?? 0m);
+        return $"{string.Join(", ", parts)}{note} (gross {Amount(gross)}{currency}){from}";
+    }
+
+    /// <summary>"Car allowance / سيارة (ALW_CAR)": the English name, the Arabic name when there is one that differs, and the code (the only thing a removed definition leaves).</summary>
+    private static string LineName(CardLine line)
+    {
+        var names = new List<string>();
+        if (!string.IsNullOrWhiteSpace(line.NameEn)) names.Add(line.NameEn.Trim());
+        if (!string.IsNullOrWhiteSpace(line.NameAr) && !string.Equals(line.NameAr.Trim(), line.NameEn?.Trim(), StringComparison.Ordinal)) names.Add(line.NameAr.Trim());
+        return names.Count == 0 ? line.Code : $"{string.Join(" / ", names)} ({line.Code})";
     }
 
     private static string Amount(decimal? amount) => (amount ?? 0m).ToString("#,0.##", CultureInfo.InvariantCulture);

@@ -16,6 +16,7 @@ public static class EmployeeSalaryBreakdownChanges
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     // Employee.Salary is numeric(12,2), narrower than each salary assignment component.
     private const decimal MaximumGrossSalary = 9999999999.99m;
+    private const string Plain = "0.############################";
     private static readonly string[] AmountKeys = ["basicSalary", "housingAllowance", "transportAllowance", "foodAllowance", "mobileAllowance", "otherAllowance", "fixedDeduction"];
 
     public static EmployeeSalaryBreakdownRequest Read(JsonElement value)
@@ -40,10 +41,25 @@ public static class EmployeeSalaryBreakdownChanges
             throw new InvalidOperationException("Allowances must be a list of lines, each with a code, a basis and an amount or a rate.");
         var salary = value.Deserialize<EmployeeSalaryBreakdownRequest>(Json)!;
         if (salary.BasicSalary <= 0) throw new InvalidOperationException("Basic salary must be greater than zero.");
-        if (Gross(salary) > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
+        // The whole pay, the allowance lines this package states included (a percentage worked on its own basic): carried lines are added once they are resolved.
+        if (Gross(salary) + StatedLinesTotal(salary) > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
         if (salary.FixedDeduction > Gross(salary)) throw new InvalidOperationException("Fixed deduction cannot exceed the gross salary.");
         return salary;
     }
+
+    /// <summary>True when the change set proposes a salary package that states at least one allowance line (even a malformed one): staging it names an allowance, so
+    /// it must be staged under the tenant lock a remove of that allowance holds (<c>SalaryAllowanceLines.LockForStagingAsync</c>).</summary>
+    public static bool StatesAllowanceLines(IReadOnlyDictionary<string, JsonElement> changes) =>
+        changes.TryGetValue(Key, out var package) && package.ValueKind == JsonValueKind.Object
+        && package.TryGetProperty("allowances", out var lines) && lines.ValueKind == JsonValueKind.Array && lines.GetArrayLength() > 0;
+
+    /// <summary>What the lines a package states come to, for the limit check only (full validation is <c>SalaryAllowanceLines.ValidateAsync</c>): a fixed amount as
+    /// stated, a percentage as rate × basic. A line that is not a line, or states nothing usable, counts as nothing here and is refused by the full validation.</summary>
+    private static decimal StatedLinesTotal(EmployeeSalaryBreakdownRequest salary) =>
+        (salary.Allowances ?? []).Where(l => l is not null).Sum(l =>
+            string.Equals(l.Basis?.Trim(), Zayra.Api.Models.AllowanceBases.PercentOfBasic, StringComparison.OrdinalIgnoreCase)
+                ? l.Rate is decimal rate && rate > 0m && rate <= 1m ? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.PercentAmount(rate, salary.BasicSalary.GetValueOrDefault()) : 0m
+                : l.Amount is decimal amount && amount > 0m ? amount : 0m);
 
     public static decimal Gross(EmployeeSalaryBreakdownRequest salary) =>
         salary.BasicSalary.GetValueOrDefault() + salary.HousingAllowance.GetValueOrDefault() + salary.TransportAllowance.GetValueOrDefault()
@@ -60,10 +76,11 @@ public static class EmployeeSalaryBreakdownChanges
         // does not mention them carries the current ones, so the grade range below is checked on the whole pay.
         var allowances = employee.TenantId is Guid allowanceTenant
             ? await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
-                db, allowanceTenant, employee.Id, salary.EffectiveDate!.Value, salary.BasicSalary!.Value, salary.Allowances, ct)
+                db, allowanceTenant, employee.Id, salary.EffectiveDate!.Value, salary.BasicSalary!.Value, salary.Allowances, ct, slotsGross: Gross(salary))
             : new Zayra.Api.Infrastructure.Payroll.AllowanceResolution([], false, null);
         if (allowances.Problem is { } allowanceProblem) throw new InvalidOperationException(allowanceProblem.Message);
         var wholePay = Gross(salary) + allowances.Total;
+        if (wholePay > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
         if (grade is not null && ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary)))
             throw new InvalidOperationException($"Salary package is outside grade {grade.Code}'s salary range.");
         // Refused at submit, not at approval, by the same rule the writer applies: an unknown or inactive named
@@ -117,6 +134,17 @@ public static class EmployeeSalaryBreakdownChanges
                 ? lines[r.assignment.Id].OrderBy(l => l.Code, StringComparer.Ordinal).Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Amount)).ToList()
                 : null)).ToList();
     }
+
+    /// <summary>
+    /// The allowance lines of every record in the live schedule, in schedule order: per record the lines sorted by code, each as (code, basis, rate, amount),
+    /// figures without trailing zeros (as <see cref="EmployeeChangeBaseline"/> writes every other decimal) so a decimal scale is not a change. A record with none is <c>[]</c>. Sealed under its OWN baseline key (<see cref="EmployeeChangeBaseline"/>),
+    /// never inside <see cref="CanonicalSchedule"/>, so the schedule text of every baseline sealed before allowances existed stays byte-identical and still verifies.
+    /// </summary>
+    public static string CanonicalAllowances(IEnumerable<EmployeeSalaryBreakdownRequest> schedule) => JsonSerializer.Serialize(schedule.Select(s =>
+        (s.Allowances ?? []).Where(l => l is not null).OrderBy(l => l.Code, StringComparer.Ordinal).Select(l => new[]
+        {
+            l.Code ?? "", l.Basis ?? "", l.Rate?.ToString(Plain, CultureInfo.InvariantCulture) ?? "", l.Amount?.ToString(Plain, CultureInfo.InvariantCulture) ?? "",
+        }).ToList()));
 
     // The whole live schedule is baselined: an edit to a different effective date must not be hidden by the latest row.
     public static string CanonicalSchedule(IEnumerable<EmployeeSalaryBreakdownRequest> schedule) => JsonSerializer.Serialize(schedule.Select(s => new[]

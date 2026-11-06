@@ -121,6 +121,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
             CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
         };
+        // The allowance lines carry their names, so the screen that shows them needs no access to the benefit catalogue.
+        if (detail.SalaryBreakdown?.Allowances is { Count: > 0 } onFile)
+            detail = detail with { SalaryBreakdown = detail.SalaryBreakdown with { Allowances = await SalaryAllowanceLines.NamedAsync(_db, tenantId, onFile, cancellationToken) } };
         // A new hire's first package waits for Finance as a pending request: no salary row exists yet, but the pay HR typed must not look
         // lost when the draft is reopened. It is shown (marked Pending, never as approved pay) to exactly the callers who see applied pay.
         if (includeSensitive && detail.SalaryBreakdown is null
@@ -128,9 +131,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             var structureCode = await _db.SalaryStructures.AsNoTracking()
                 .Where(s => s.TenantId == tenantId && s.Id == pending.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+            // Staged lines that cannot be read are shown as "not stated", never as lines and never as an error: a corrupt staged package must not
+            // make the whole employee page fail (the approver still sees, and can reject, the change itself).
+            List<SalaryAllowanceLine>? stagedLines;
+            try { stagedLines = SalaryAllowanceLines.Deserialize(pending.AllowancesJson); }
+            catch (JsonException) { stagedLines = null; }
+            if (stagedLines is { Count: > 0 }) stagedLines = await SalaryAllowanceLines.NamedAsync(_db, tenantId, stagedLines, cancellationToken);
             var staged = new EmployeeSalaryBreakdownRequest(pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
                 pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency,
-                SalaryAllowanceLines.Deserialize(pending.AllowancesJson));
+                stagedLines);
             detail = detail with
             {
                 SalaryBreakdown = staged,

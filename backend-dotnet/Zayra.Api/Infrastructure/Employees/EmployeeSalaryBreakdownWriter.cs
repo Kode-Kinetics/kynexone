@@ -59,7 +59,7 @@ public static class EmployeeSalaryBreakdownWriter
         // allowances — the current record's, carried forward (read BEFORE the replaced row is switched off, so a same-date record's own lines
         // are what is carried). A change of basic never drops an allowance; an explicit empty list removes them.
         var allowanceLines = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
-            db, employee.TenantId.Value, employee.Id, effectiveDate, salary.BasicSalary ?? 0m, request?.Allowances, cancellationToken);
+            db, employee.TenantId.Value, employee.Id, effectiveDate, salary.BasicSalary ?? 0m, request?.Allowances, cancellationToken, slotsGross: GrossSalary(salary));
         if (allowanceLines.Problem is { } allowanceProblem) throw new InvalidOperationException(allowanceProblem.Message);
         foreach (var prior in replaced) prior.IsActive = false;
 
@@ -112,8 +112,12 @@ public static class EmployeeSalaryBreakdownWriter
         string? allowancesJson = null;
         if (request?.Allowances is not null)
         {
+            // Naming an allowance takes the tenant lock a remove of it holds (the caller's transaction, before the lines are checked against the live
+            // definitions), so the allowance cannot be removed between this check and the commit of the staged package.
+            if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(request.Allowances))
+                await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
             var (resolvedLines, problem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
-                db, employee.TenantId.Value, request.Allowances, salary.BasicSalary ?? 0m, cancellationToken);
+                db, employee.TenantId.Value, request.Allowances, salary.BasicSalary ?? 0m, cancellationToken, GrossSalary(salary));
             if (problem is not null) throw new InvalidOperationException(problem.Message);
             allowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(resolvedLines);
         }
@@ -145,8 +149,10 @@ public static class EmployeeSalaryBreakdownWriter
             && Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Deserialize(carriedFrom.AllowancesJson) is { } carriedLines)
         {
             var asStated = carriedLines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
+            if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(asStated))
+                await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
             var (keptLines, keptProblem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
-                db, employee.TenantId.Value, asStated, change.BasicSalary, cancellationToken);
+                db, employee.TenantId.Value, asStated, change.BasicSalary, cancellationToken, GrossSalary(salary));
             if (keptProblem is not null) throw new InvalidOperationException(keptProblem.Message);
             change.AllowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(keptLines);
         }
