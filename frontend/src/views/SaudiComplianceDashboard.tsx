@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   ShieldCheck, AlertTriangle, CheckCircle, XCircle, RefreshCw, Banknote,
   FileWarning, Users, Wifi, TrendingUp, ExternalLink, Info,
@@ -9,6 +10,7 @@ import {
 import client from '../api/client';
 import { useLocale } from '../contexts/LocaleContext';
 import { pluralize } from '../lib/plural';
+import { resolveComplianceRoute } from '../lib/complianceRoutes';
 import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
@@ -414,12 +416,12 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
                   {expanded === item.id ? 'Less' : 'More'}
                 </button>
                 {item.route && item.canAct && (
-                  <a
-                    href={item.route}
+                  <Link
+                    href={resolveComplianceRoute(item.route)}
                     className="flex items-center gap-1 rounded-lg border border-sapphire/30 px-2.5 py-1 text-xs font-semibold text-sapphire hover:bg-sapphire/5 dark:border-cyanAccent/30 dark:text-cyanAccent dark:hover:bg-cyanAccent/5"
                   >
                     Fix <ExternalLink className="h-3 w-3" />
-                  </a>
+                  </Link>
                 )}
               </div>
             </div>

@@ -1301,11 +1301,10 @@ export function ShiftsPage() {
       {/* Shift definitions and the rostering policy are Setup sections; the roster is this page. */}
       {isEmployee && (
         <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
-          <button type="button"
-            className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
-
+          {/* A label, not a button: there is no sibling view to switch to. */}
+          <h2 className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
             {t('My Schedule')}
-          </button>
+          </h2>
         </div>
       )}
 
