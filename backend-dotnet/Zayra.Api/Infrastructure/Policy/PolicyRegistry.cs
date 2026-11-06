@@ -38,6 +38,13 @@ public static class PolicyRegistry
     /// <summary>Error code for a value that is well-formed but removes something a policy may never relax.</summary>
     public const string CodeFloorViolated = "policy_floor_violated";
 
+    /// <summary>Longest raw Csv value, in characters.</summary>
+    public const int CsvMaxLength = 2000;
+    /// <summary>Most tokens a Csv value may carry.</summary>
+    public const int CsvMaxTokens = 100;
+    private static readonly System.Text.RegularExpressions.Regex CsvToken =
+        new("^[a-z0-9_.-]+$", System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled);
+
     /// <summary>
     /// Fields whose profile change is ALWAYS approval-gated, whatever list a tenant stores: pay, bank account and the two
     /// identity numbers. The list may be cleared down to these, never below. Spelled as the policy spells them.
@@ -107,7 +114,33 @@ public static class PolicyRegistry
                 error = $"Value must be one of: {string.Join(", ", def.AllowedValues)}.";
                 return false;
             case PolicyValueType.Csv:
+                if (raw.Length > CsvMaxLength)
+                {
+                    error = $"Value must be at most {CsvMaxLength} characters.";
+                    return false;
+                }
                 var tokens = ParseCsv(raw);
+                if (tokens.Count > CsvMaxTokens)
+                {
+                    error = $"Value must have at most {CsvMaxTokens} tokens.";
+                    return false;
+                }
+                var badToken = tokens.FirstOrDefault(t => !CsvToken.IsMatch(t));
+                if (badToken is not null)
+                {
+                    error = $"'{badToken}' is not a valid token: use lowercase letters, digits, '_', '-' and '.' only.";
+                    return false;
+                }
+                if (def.AllowedValues.Count > 0)
+                {
+                    var allowed = def.AllowedValues.Select(a => a.ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+                    var outsider = tokens.FirstOrDefault(t => !allowed.Contains(t));
+                    if (outsider is not null)
+                    {
+                        error = $"'{outsider}' is not an allowed value. Allowed: {string.Join(", ", def.AllowedValues)}.";
+                        return false;
+                    }
+                }
                 IReadOnlyList<string> floorMissing = def.Key == EmployeesProfileChangeApprovalFields ? MissingFloor(tokens) : [];
                 normalised = string.Join(',', tokens);
                 if (floorMissing.Count > 0)
