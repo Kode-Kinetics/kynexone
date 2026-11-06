@@ -124,9 +124,12 @@ public sealed class ESignController(ZayraDbContext db, PolicySigningService sign
         if (doc is null) return Err(404, EsignProblemCodes.NotFound);
         if (await db.EmployeePolicyAcknowledgements.AsNoTracking().AnyAsync(a => a.TenantId == tenantId && a.EmployeeId == id && a.PolicyId == documentId, ct)) return Err(409, EsignProblemCodes.AlreadySigned);
         if (RestrictedEmployeeDocumentTypes.IsRestricted(doc.DocumentType) || string.Equals(doc.DocumentType, EsignConstants.DocumentType, StringComparison.OrdinalIgnoreCase)
-            || EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) || !ScanStatuses.IsServable(doc.ScanStatus)
+            || !ScanStatuses.IsServable(doc.ScanStatus)
             || !string.Equals(doc.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase))
             return Err(422, EsignProblemCodes.DocumentNotSignable);
+        // A protected category (identity, payroll, contract) decides WHO may handle the document, not whether it can be signed:
+        // an employment contract is exactly what HR sends out. The requester needs employees.sensitive, as for reading it.
+        if (EmployeeDocumentDto.IsSensitiveDocument(doc.DocumentType, doc.DocumentCategory) && !User.HasPermission("employees.sensitive")) return Forbid();
         var bytes = await ReadAsync(tenantId, doc, ct);
         if (bytes is null || bytes.Length < PdfMagic.Length || !bytes.AsSpan(0, PdfMagic.Length).SequenceEqual(PdfMagic)) return Err(422, EsignProblemCodes.DocumentNotSignable);
         var now = DateTime.UtcNow;
