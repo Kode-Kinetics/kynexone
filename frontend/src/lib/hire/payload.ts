@@ -3,6 +3,7 @@ import type { HireForm } from './hireForm';
 import { parseMobile } from './phone';
 import { normalizeDigits } from './saudiId';
 import { normalizeIban } from './iban';
+import { createCostCentreFields } from '../employeeCostCentre';
 
 export interface AcknowledgedWarning { code: string; reason: string }
 /** The create request plus the additive fields of 40-ARCHITECTURE 3.2. */
@@ -20,7 +21,14 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
   hireTemplateId?: string;
 };
-export interface PayloadContext { companyCountry: string; currency: string; /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */ emailDomain?: string }
+export interface PayloadContext {
+  companyCountry: string;
+  currency: string;
+  /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */
+  emailDomain?: string;
+  /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
+  costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean };
+}
 export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string; hireTemplateId?: string }
 
 const ID_FIELD: Record<string, string> = { nationalId: 'id_number', iqama: 'iqama_number', border: 'border_number', passport: 'passport_number', gccId: 'civil_id' };
@@ -99,6 +107,9 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     duplicateOverrideReason: extras.duplicateOverrideReason,
     hireTemplateId: extras.hireTemplateId,
     acknowledgeDuplicate: extras.duplicateOverrideReason?.trim() ? true : undefined,
+    ...(ctx.costCentre
+      ? createCostCentreFields({ canManage: ctx.costCentre.canManage, chosenId: form.costCenterId, departmentCostCentreId: ctx.costCentre.departmentCostCentreId, reason: form.costCenterReason, hadOverride: ctx.costCentre.hadOverride })
+      : {}),
   };
   if (form.idChecksumOverrideReason.trim() && body.acknowledgedWarnings === undefined && !blank(form.idNumber)) {
     body.acknowledgedWarnings = [{ code: 'id_checksum_invalid', reason: form.idChecksumOverrideReason.trim() }];

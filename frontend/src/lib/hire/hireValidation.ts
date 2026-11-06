@@ -25,10 +25,12 @@ export interface ValidationContext {
   companyCountry: string;
   /** Set when the chosen designation belongs to a grade. */
   designationGrade?: { gradeId: string; gradeCode: string };
+  /** The chosen department's own cost centre: choosing it is a plain copy, so no reason is due. */
+  departmentCostCentreId?: string;
 }
 
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
-  englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmail: 1,
+  englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmail: 1, costCenterId: 1, costCenterReason: 1,
   nationalityCode: 2, dob: 2, mobileNational: 2, personalEmail: 2, arabicName: 2, preferredName: 2,
   idNumber: 3, idExpiry: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, contractEndDate: 3,
 };
@@ -75,6 +77,8 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
   }
 
   if (blank(form.companyId)) add('companyId', 'Choose the employing company.');
+  // Wave A: a cost centre other than the department's is an override, and the server needs the reason for it (audited).
+  if (!blank(form.costCenterId) && form.costCenterId !== ctx.departmentCostCentreId && blank(form.costCenterReason)) add('costCenterReason', 'Enter a reason for this change.');
 
   const { min, max } = startDateRange(ctx.today);
   // CD21: a missing start date or designation/grade is an activation need (see activationNeeds), never an error here.

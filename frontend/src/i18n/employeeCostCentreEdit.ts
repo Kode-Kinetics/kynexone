@@ -44,6 +44,7 @@ const ar: Record<string, string> = {
   'Keeps {code} (override). Reason: {reason}': 'يبقى {code} (استثناء). السبب: {reason}',
   'Follows {department}: {code}. Reason: {reason}': 'يتبع {department}: {code}. السبب: {reason}',
   'Follows {department}: {code}': 'يتبع {department}: {code}',
+  '{choice}. Reason: {reason}': '{choice}. السبب: {reason}',
 
   // ── Refusals, in words, by code ──
   'This cost centre is inactive. Choose an active one.': 'مركز التكلفة هذا غير نشط. اختر مركزًا نشطًا.',

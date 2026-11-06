@@ -61,6 +61,8 @@ export interface HireMockOptions {
     designations?: Array<Record<string, any>>;
     grades?: Array<Record<string, any>>;
     managers?: Array<Record<string, any>>;
+    /** Cost centres (Wave A); GET /api/organization/cost-centers answers only the asked company's. */
+    costCentres?: Array<Record<string, any>>;
   };
   /** Hold a company's hire-template list response so stale choices can be tested deterministically. */
   holdHireTemplatesForCompany?: Record<string, Promise<void>>;
@@ -134,7 +136,10 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/departments') return reply(paged(departments));
     if (p === '/api/designations') return reply(paged(designations));
     if (p === '/api/grades') return reply(paged(grades));
-    if (p === '/api/organization/cost-centers') return reply(paged([]));
+    if (p === '/api/organization/cost-centers') {
+      const wanted = url.searchParams.get('companyId');
+      return reply(paged((options.org?.costCentres ?? []).filter(c => !wanted || c.companyId === wanted)));
+    }
     if (p === '/api/admin/master-data/values') return reply([]);
     // The real endpoint's rows ({ iso2, nameEn, nameAr, class }), not a shape invented for the mock.
     if (p === '/api/reference/nationalities') return reply(nationalitiesFixture);

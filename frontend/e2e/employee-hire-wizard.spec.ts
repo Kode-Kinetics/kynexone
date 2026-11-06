@@ -476,3 +476,91 @@ test.describe('screenshots', () => {
     });
   }
 });
+
+// ═════ Wave A (D5): the cost centre, with the create form's rules ═════
+test.describe('cost centre', () => {
+  const MANAGE = ['employees.read', 'employees.write', 'employees.override_validation', 'organization.costcenter.manage'];
+  const ccOrg = {
+    departments: [
+      { id: 'dept-1', branchId: 'branch-1', code: 'OPS', nameEn: 'Operations', costCenterId: 'cc-ops', isActive: true },
+      { id: 'dept-2', branchId: 'branch-1', code: 'FIN', nameEn: 'Finance', costCenterId: 'cc-fin', isActive: true },
+    ],
+    costCentres: [
+      { id: 'cc-ops', companyId: 'company-hire', code: 'OPS', name: 'Operations', nameAr: 'العمليات', isActive: true },
+      { id: 'cc-fin', companyId: 'company-hire', code: 'FIN', name: 'Finance', nameAr: 'المالية', isActive: true },
+      { id: 'cc-old', companyId: 'company-hire', code: 'OLD', name: 'Retired', isActive: false },
+      { id: 'cc-other', companyId: 'company-other', code: 'OTHER', name: 'Other company', isActive: true },
+    ],
+  };
+  const costCentre = (page: Page) => page.getByRole('combobox', { name: 'Cost center', exact: true });
+
+  test('follows the department by default (named in the first option) and the create sends no cost centre', async ({ page }) => {
+    const api = await bootHire(page, { permissions: MANAGE, org: ccOrg });
+    await basics(page);
+    await page.getByLabel('Department').selectOption({ label: 'Operations' });
+    await expect(costCentre(page)).toHaveValue('');
+    await expect(costCentre(page).locator('option')).toHaveText(['Follow department (OPS — Operations)', 'FIN — Finance']);
+    await expect(page.locator('#hire-costCenterReason')).toHaveCount(0);
+    await next(page); await next(page); await next(page);
+    await expect(page.getByText('Follow department (OPS — Operations)')).toBeVisible();
+    await page.getByRole('button', { name: 'Create employee draft' }).click();
+    await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
+    expect(api.creates[0].body).not.toHaveProperty('costCenterId');
+    expect(api.creates[0].body).not.toHaveProperty('costCenterReason');
+  });
+
+  test('a different cost centre needs a reason before Next; the create carries it; Review shows both', async ({ page }) => {
+    const api = await bootHire(page, { permissions: MANAGE, org: ccOrg });
+    await basics(page);
+    await page.getByLabel('Department').selectOption({ label: 'Operations' });
+    await costCentre(page).selectOption('cc-fin');
+    await next(page);
+    await expect(heading(page, STEPS[0])).toBeVisible();
+    await expect(page.locator('#hire-costCenterReason-error')).toHaveText('Enter a reason for this change.');
+    await page.locator('#hire-costCenterReason').fill(' Cross-charged ');
+    await next(page); await next(page); await next(page);
+    await expect(page.getByText('FIN — Finance. Reason: Cross-charged')).toBeVisible();
+    await page.getByRole('button', { name: 'Create employee draft' }).click();
+    await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
+    expect(api.creates[0].body).toMatchObject({ departmentId: 'dept-1', costCenterId: 'cc-fin', costCenterReason: 'Cross-charged' });
+  });
+
+  test('a department change and a company change both start the cost centre over', async ({ page }) => {
+    await bootHire(page, { permissions: MANAGE, org: ccOrg, multipleCompanies: true });
+    await page.getByLabel('English full name').fill('Alex Morgan');
+    await page.locator('#hire-companyId').selectOption('company-hire');
+    await page.getByLabel('Department').selectOption({ label: 'Operations' });
+    await costCentre(page).selectOption('cc-fin');
+    await page.locator('#hire-costCenterReason').fill('Project');
+    await page.getByLabel('Department').selectOption({ label: 'Finance' });
+    await expect(costCentre(page)).toHaveValue('');
+    await expect(page.locator('#hire-costCenterReason')).toHaveCount(0);
+    await costCentre(page).selectOption('cc-ops');
+    await page.locator('#hire-costCenterReason').fill('Project');
+    const refetch = page.waitForResponse(r => r.url().includes('/api/organization/cost-centers') && r.url().includes('companyId=company-other'));
+    await page.locator('#hire-companyId').selectOption('company-other');
+    await refetch;
+    await expect(costCentre(page)).toHaveValue('');
+    await expect(costCentre(page).locator('option')).toHaveText(['Follow department', 'OTHER — Other company']);
+  });
+
+  test('without organization.costcenter.manage: the value read-only with who can change it, and nothing is sent', async ({ page }) => {
+    const api = await bootHire(page, { org: ccOrg });
+    await basics(page);
+    await page.getByLabel('Department').selectOption({ label: 'Finance' });
+    await expect(costCentre(page)).toHaveCount(0);
+    const readOnly = page.getByTestId('hire-cost-centre-readonly');
+    await expect(readOnly).toContainText('Follow department (FIN — Finance)');
+    await expect(readOnly).toContainText('Only HR managers and admins can change this.');
+    await next(page); await next(page); await next(page);
+    await page.getByRole('button', { name: 'Create employee draft' }).click();
+    await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
+    expect(api.creates[0].body).not.toHaveProperty('costCenterId');
+  });
+
+  test('Arabic: the Arabic cost-centre names, the code first', async ({ page }) => {
+    await bootHire(page, { permissions: MANAGE, org: ccOrg, locale: 'ar' });
+    await page.locator('#hire-departmentId').selectOption('dept-1');
+    await expect(page.locator('#hire-costCenterId option')).toHaveText(['اتباع القسم (OPS — العمليات)', 'FIN — المالية']);
+  });
+});

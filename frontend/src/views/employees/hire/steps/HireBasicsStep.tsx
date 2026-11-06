@@ -7,8 +7,10 @@ import type { StepProps } from '../types';
 import { TemplatePicker, type AppliedTemplate } from '../TemplatePicker';
 import { useHireTemplate } from '../useHireTemplate';
 import type { HireTemplate } from '@/src/api/onboardingTemplates';
+import { CostCentreSelect } from '@/src/components/employees/CostCentreSelect';
+import { Lock } from 'lucide-react';
 
-export function HireBasicsStep({ form, set, errorFor, blur, lookups, singleCompany, onNameBlur, onCompanyChange, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
+export function HireBasicsStep({ form, set, errorFor, blur, lookups, singleCompany, costCentre, onNameBlur, onCompanyChange, applied, onApplyTemplate, onUndoTemplate }: StepProps & {
   onNameBlur: () => void;
   onCompanyChange: (companyId: string) => void;
   applied?: AppliedTemplate | null;
@@ -76,12 +78,43 @@ export function HireBasicsStep({ form, set, errorFor, blur, lookups, singleCompa
       </FieldShell>
       <FieldShell field="departmentId" label={t('Department')}>
         {p => (
-          <select {...p} value={form.departmentId} onChange={e => set('departmentId', e.target.value)} className={select}>
+          <select {...p} value={form.departmentId} onChange={e => { set('departmentId', e.target.value); set('costCenterId', ''); set('costCenterReason', ''); }} className={select}>
             <option value="">{t('Not chosen')}</option>
             {departments.map(d => <option key={d.id} value={d.id}>{ar && d.nameAr ? d.nameAr : d.nameEn}</option>)}
           </select>
         )}
       </FieldShell>
+      {costCentre && (costCentre.canManage ? (
+        <>
+          <FieldShell field="costCenterId" label={t('Cost center')} error={errorFor('costCenterId')}>
+            {p => (
+              <CostCentreSelect
+                id={p.id}
+                testId="hire-cost-centre"
+                value={form.costCenterId}
+                onChange={v => { set('costCenterId', v); if (!v) set('costCenterReason', ''); blur('costCenterId'); }}
+                options={costCentre.options}
+                followPending={costCentre.followPending}
+                describedBy={p['aria-describedby']}
+                invalid={!!p['aria-invalid']}
+                className={select}
+              />
+            )}
+          </FieldShell>
+          {form.costCenterId && form.costCenterId !== costCentre.departmentCostCentreId && (
+            <FieldShell field="costCenterReason" label={t('Reason')} required error={errorFor('costCenterReason')} hint={t('Why this person has a different cost centre. Recorded in the audit log.')}>
+              {p => <input {...p} value={form.costCenterReason} maxLength={500} onChange={e => set('costCenterReason', e.target.value)} onBlur={() => blur('costCenterReason')} className={inputClass} />}
+            </FieldShell>
+          )}
+          {costCentre.loadFailed && <p role="alert" className="text-xs text-rose-600 dark:text-rose-400 sm:col-span-2">{t('The cost centres could not be loaded.')} <button type="button" onClick={costCentre.reload} className="font-semibold underline">{t('Retry')}</button></p>}
+        </>
+      ) : (
+        <div className="min-w-0" data-testid="hire-cost-centre-readonly">
+          <p className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Cost center')}</p>
+          <p className="mt-1.5 rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700 dark:bg-white/5 dark:text-slate-300"><bdi dir="auto">{costCentre.label}</bdi></p>
+          <p role="note" className="mt-1 flex items-start gap-1.5 text-xs text-slate-500"><Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{t('Only HR managers and admins can change this.')}</p>
+        </div>
+      ))}
       <FieldShell field="managerId" label={t('Line manager')} hint={t('Only active employees you can assign are listed.')}>
         {p => (
           <select {...p} value={form.managerId} onChange={e => set('managerId', e.target.value)} className={select}>

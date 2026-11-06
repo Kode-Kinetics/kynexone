@@ -3,6 +3,9 @@ import type { EmployeeDetail } from '../src/api/employees';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot } from '../src/lib/employeeEditDraft';
 import { LOCAL_FIELD_CATALOG } from '../src/api/employeeFieldCatalog';
 import { emptyHireForm, rebaseHireCompany } from '../src/lib/hire/hireForm';
+import { buildCreateRequest } from '../src/lib/hire/payload';
+import { validateHire } from '../src/lib/hire/hireValidation';
+import { serverFieldToForm } from '../src/lib/hire/serverFields';
 import {
   NO_COST_CENTRE,
   costCentreErrorKind,
@@ -429,5 +432,38 @@ test.describe('costCentreRefusalKey: every cost-centre refusal in words, by code
     expect(costCentreRefusalKey(err(409, 'locked_into_approved_run'))).toBeNull();
     expect(costCentreRefusalKey(err(422, 'validation_failed'))).toBeNull();
     expect(costCentreRefusalKey(new Error('network'))).toBeNull();
+  });
+});
+
+test.describe('the hire wizard sends the cost centre like the create form (Wave A, D5)', () => {
+  const form = (over: Record<string, unknown> = {}) => ({ ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'co', departmentId: 'd1', ...over });
+  const ctx = (over: Record<string, unknown> = {}) => ({ companyCountry: 'SA', currency: 'SAR', costCentre: { canManage: true, departmentCostCentreId: 'ops', ...over } });
+
+  test('follow the department (nothing chosen) sends nothing', () => {
+    const body = buildCreateRequest(form(), ctx());
+    expect(body).not.toHaveProperty('costCenterId');
+    expect(body).not.toHaveProperty('costCenterReason');
+  });
+  test('a different cost centre is an override with the trimmed reason', () => {
+    expect(buildCreateRequest(form({ costCenterId: 'sales', costCenterReason: ' Project ' }), ctx())).toMatchObject({ costCenterId: 'sales', costCenterReason: 'Project' });
+  });
+  test('a saved draft that had an override, following again: the explicit None', () => {
+    expect(buildCreateRequest(form(), ctx({ hadOverride: true }))).toMatchObject({ costCenterId: NO_COST_CENTRE });
+  });
+  test('without the permission, or without the context, nothing about the cost centre is sent', () => {
+    expect(buildCreateRequest(form({ costCenterId: 'sales', costCenterReason: 'x' }), ctx({ canManage: false }))).not.toHaveProperty('costCenterId');
+    expect(buildCreateRequest(form({ costCenterId: 'sales', costCenterReason: 'x' }), { companyCountry: 'SA', currency: 'SAR' })).not.toHaveProperty('costCenterId');
+  });
+  test('validation: a chosen cost centre needs a reason, on the first step', () => {
+    const vctx = { today: '2026-11-05', companyCountry: 'SA' };
+    expect(validateHire(form({ costCenterId: 'sales' }), vctx)).toContainEqual({ field: 'costCenterReason', step: 1, key: 'Enter a reason for this change.' });
+    expect(validateHire(form({ costCenterId: 'sales', costCenterReason: 'Project' }), vctx).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+    expect(validateHire(form(), vctx).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+    // The department's own cost centre is a plain copy (no reason).
+    expect(validateHire(form({ costCenterId: 'ops' }), { ...vctx, departmentCostCentreId: 'ops' }).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+  });
+  test('server field names land on the cost-centre fields', () => {
+    expect(serverFieldToForm('costCenterId')).toBe('costCenterId');
+    expect(serverFieldToForm('costCenterReason')).toBe('costCenterReason');
   });
 });
