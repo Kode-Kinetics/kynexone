@@ -81,6 +81,12 @@ export interface LegacyImportResult {
 /** What the customer adds: a contract benefit (default) or a monthly cash allowance paid in salary. */
 export type BenefitKind = 'Contract' | 'Cash';
 
+/** GET /api/entitlements/components/cash-gl-drivers. `reasonCode` is null when usable. */
+export interface CashGlDriver {
+  key: string; label: string; labelAr: string | null; usable: boolean;
+  reasonCode: 'reserved' | 'employer_pair' | 'unmapped' | 'protected_account' | null; reason: string | null;
+}
+
 /** `glDriverKey` is required for Cash; `eosbExclusionReason` for Cash with `eosbIncluded` false. GOSI and WPS are fixed by the server. */
 export interface CreateBenefitBody {
   nameEn?: string | null; nameAr?: string | null; kind: BenefitKind;
@@ -93,6 +99,10 @@ export const entitlementsApi = {
   publish: (body: { companyId: string | null; effectiveFrom: string; cells: MatrixCellInput[] }, dryRun = false) =>
     client.put<PublishMatrixResult>('/api/entitlements/matrix', body, { params: dryRun ? { dryRun: true } : undefined }).then(r => r.data),
   /** Adds a benefit of the customer's own (needs access to every company). Returns it as a grid row. */
+  /** The earning GL accounts a cash allowance may post to, each judged by the same rule the add applies. Needs only entitlements.manage:
+   *  key, label and the verdict, never account numbers. */
+  cashGlDrivers: () =>
+    client.get<CashGlDriver[]>('/api/entitlements/components/cash-gl-drivers').then(r => r.data),
   addBenefit: (body: CreateBenefitBody) =>
     client.post<MatrixComponent>('/api/entitlements/components', body).then(r => r.data),
   /** Removes a benefit the customer added and nobody has used yet (409 benefit_in_use otherwise). */

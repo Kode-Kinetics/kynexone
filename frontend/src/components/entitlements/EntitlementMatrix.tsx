@@ -9,13 +9,12 @@ import {
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { financeGlApi } from '../../api/financeGl';
 import { LegacyImportPanel } from './LegacyImportPanel';
 import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
-  EOSB_REASON_MAX, addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, earningDriverChoices, isCashAllowance,
+  EOSB_REASON_MAX, addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, cashGlChoices, isCashAllowance,
   type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type GlChoice, type ServerProblem,
 } from '../../lib/cashAllowance';
 import {
@@ -560,17 +559,15 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
     if (!cash) return;
     let live = true;
     setGl({ status: 'loading' });
-    void Promise.allSettled([financeGlApi.listDrivers(null), financeGlApi.resolve(null)]).then(([drivers, resolved]) => {
+    entitlementsApi.cashGlDrivers().then(rows => {
       if (!live) return;
-      if (drivers.status === 'rejected' || !Array.isArray(drivers.value)) {
-        const status = drivers.status === 'rejected' ? (drivers.reason as { response?: { status?: number } })?.response?.status : undefined;
-        setGl({ status: 'error', forbidden: status === 403 });
-        return;
-      }
-      setGl({ status: 'ready', choices: earningDriverChoices(drivers.value, resolved.status === 'fulfilled' && Array.isArray(resolved.value?.rows) ? resolved.value.rows : null) });
+      setGl(Array.isArray(rows) ? { status: 'ready', choices: cashGlChoices(rows, locale) } : { status: 'error', forbidden: false });
+    }, (err: unknown) => {
+      if (!live) return;
+      setGl({ status: 'error', forbidden: (err as { response?: { status?: number } })?.response?.status === 403 });
     });
     return () => { live = false; };
-  }, [cash, glAttempt]);
+  }, [cash, glAttempt, locale]);
 
   useEffect(() => {
     if (!focus) return;
@@ -601,8 +598,7 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
   const nameError = shown('name'); const glError = shown('glDriver'); const reasonError = shown('eosbReason');
   const generalError = server?.field === 'general' ? server.message ?? '' : '';
   const choiceLabel = (c: GlChoice) => {
-    const named = `${c.label}${c.account ? ` (\u2066${c.account}\u2069)` : ''}`;
-    return c.usable ? named : fillTemplate(t('{account} — no usable account'), { account: named });
+    return c.usable ? c.label : fillTemplate(t(c.reasonKey ?? '{account} — no usable account'), { account: c.label });
   };
 
   return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" noValidate className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">

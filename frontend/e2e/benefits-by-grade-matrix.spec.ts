@@ -181,17 +181,8 @@ for (const locale of ['en', 'ar'] as const) {
         offerings: [...groupMatrix.offerings, { componentCode: 'ALW_PHONE', mode: 'Group', offered: true, skippedFrom: null, changesOn: null, canBeSkipped: false }],
         gaps: [...groupMatrix.gaps, ...groupMatrix.grades.map((g: { id: string }) => ({ gradeId: g.id, componentCode: 'ALW_PHONE', scheduledFrom: null }))],
       };
-      const driver = (key: string, label: string, category = 'Earning') => ({
-        id: key, companyId: null, key, label, category, postingSide: 'DR', accountType: 'Expense', defaultCode: '5200', defaultName: 'Expense',
-        matchSource: null, matchMode: 'Exact', matchComponentCode: null, emitsEmployerExpensePair: false, pairedExpenseDriverKey: null,
-        isSystem: false, isActive: true, sortOrder: 1, inherited: false,
-      });
       let exists = false; let attempts = 0;
       const calls: { method: string; path: string; body: any }[] = [];
-      await page.route('**/api/finance/gl/drivers', route => route.fulfill({ json: [
-        driver('EARN:PHONE', 'Phone allowances'), driver('DED:LOAN', 'Loan deduction', 'Deduction')] }));
-      await page.route('**/api/finance/gl/resolve', route => route.fulfill({ json: { companyId: null, rows: [{
-        driverKey: 'EARN:PHONE', label: 'Phone allowances', category: 'Earning', side: 'DR', account: { id: 'a1', code: '5210', name: 'Phone expense' }, source: 'GroupMapping', problem: null }] } }));
       await page.route('**/api/entitlements/**', route => {
         const request = route.request(); const p = new URL(request.url()).pathname;
         if (p === '/api/entitlements/components' && request.method() === 'POST') {
@@ -207,6 +198,10 @@ for (const locale of ['en', 'ar'] as const) {
           return route.fulfill({ json: { removed: 'ALW_PHONE' } });
         }
         if (p === '/api/entitlements/matrix' && request.method() === 'GET') return route.fulfill({ json: exists ? withPhone : groupMatrix });
+        // The HR-safe list: the server's verdict on each earning account, never the chart itself.
+        if (p === '/api/entitlements/components/cash-gl-drivers' && request.method() === 'GET') return route.fulfill({ json: [
+          { key: 'EARN:PHONE', label: 'Phone allowances', labelAr: null, usable: true, reasonCode: null, reason: null },
+          { key: 'EARN:BASIC', label: 'Basic salary', labelAr: null, usable: false, reasonCode: 'reserved', reason: 'Reserved for payroll lines.' }] });
         return route.fallback();
       });
       const benefit = (locale === 'ar' ? phone.nameAr : phone.nameEn) as string;
@@ -235,6 +230,9 @@ for (const locale of ['en', 'ar'] as const) {
       expect(calls).toHaveLength(0);
 
       // Leaving it out of end of service needs a reason.
+      // An account the server refuses is listed with its reason but cannot be chosen.
+      await expect(glSelect.locator('option[value="EARN:BASIC"]')).toBeDisabled();
+      await expect(glSelect.locator('option[value="EARN:BASIC"]')).toContainText('Basic salary');
       await glSelect.selectOption('EARN:PHONE');
       await page.getByRole('radio', { name: say(locale, 'No, leave it out') }).check();
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
@@ -280,8 +278,7 @@ for (const locale of ['en', 'ar'] as const) {
 
     test('add a cash allowance with no GL account set up: a calm message and a link, no empty list', async ({ page }) => {
       const { errors } = await boot(page, locale);
-      await page.route('**/api/finance/gl/drivers', route => route.fulfill({ json: [] }));
-      await page.route('**/api/finance/gl/resolve', route => route.fulfill({ json: { companyId: null, rows: [] } }));
+      await page.route('**/api/entitlements/components/cash-gl-drivers', route => route.fulfill({ json: [] }));
       await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
       await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
       await expect(page.getByText(say(locale, 'No GL account is set up for earnings yet. Set one up in Payroll accounting, then come back to add this allowance.'))).toBeVisible();

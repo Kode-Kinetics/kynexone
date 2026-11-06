@@ -1,5 +1,4 @@
-import type { BenefitKind, CreateBenefitBody, MatrixComponent } from '../api/entitlements';
-import type { GlDriver, GlResolveRow } from '../api/financeGl';
+import type { BenefitKind, CashGlDriver, CreateBenefitBody, MatrixComponent } from '../api/entitlements';
 
 /**
  * Adding a benefit in Benefits by grade: a contract benefit (recorded on the package, not paid) or a monthly cash
@@ -82,28 +81,29 @@ export function benefitServerProblem(err: unknown, fallbackMessage: string | nul
 
 export interface GlChoice {
   key: string; label: string;
-  /** "4101 Salaries" when the screen could read where it posts, else null. */
-  account: string | null;
-  /** False when it posts nowhere usable (inactive, or an account missing from the chart). */
+  /** False when the server would refuse it for a cash allowance; `reasonKey` (an i18n template with {account}) says why. */
   usable: boolean;
+  reasonKey: string | null;
 }
 
-const DEAD_ENDS = new Set(['NotInChart', 'InactiveAccount', 'InactiveDriver']);
+/** Why an account cannot carry a cash allowance, per the server's reason code (i18n keys). */
+const reasonKeys: Record<string, string> = {
+  reserved: '{account} — kept for payroll’s own lines',
+  employer_pair: '{account} — an employer cost account',
+  unmapped: '{account} — not mapped to an account yet',
+  protected_account: '{account} — posts to a protected account',
+};
 
 /**
- * The GL accounts a cash allowance may post to: the active Earning drivers that are not an employer-expense pair, the same
- * list the pay component rules accept, in the order Payroll accounting shows them. `resolved` (where each posts) is optional: without it every one is offered and the
- * server decides. The server still checks every company, so a usable choice can be refused with its own sentence.
+ * The GL accounts a cash allowance may post to, from GET /api/entitlements/components/cash-gl-drivers: the server judges each one by
+ * exactly the rule the add applies, so the list needs no finance permission and no second guess here. In the server's order; the
+ * Arabic label when there is one and the screen is in Arabic.
  */
-export function earningDriverChoices(drivers: readonly GlDriver[], resolved: readonly GlResolveRow[] | null): GlChoice[] {
-  const where = new Map((resolved ?? []).map(r => [r.driverKey, r]));
-  return drivers
-    .filter(d => d.category === 'Earning' && d.isActive && !d.emitsEmployerExpensePair)
-    .map(d => {
-      const row = where.get(d.key);
-      const code = row?.account?.code?.trim() ?? '';
-      const account = row && code ? `${code} ${row.account.name ?? ''}`.trim() : null;
-      const dead = !!row && (DEAD_ENDS.has(String(row.problem ?? '')) || code === '' || code === '9999');
-      return { key: d.key, label: d.label, account, usable: !dead };
-    });
+export function cashGlChoices(rows: readonly CashGlDriver[], locale: string): GlChoice[] {
+  return rows.map(r => ({
+    key: r.key,
+    label: (locale.startsWith('ar') && r.labelAr?.trim()) || r.label,
+    usable: r.usable,
+    reasonKey: r.usable ? null : reasonKeys[r.reasonCode ?? ''] ?? '{account} — no usable account',
+  }));
 }

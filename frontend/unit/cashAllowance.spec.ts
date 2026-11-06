@@ -1,9 +1,8 @@
 import { expect, test } from '@playwright/test';
-import type { MatrixComponent } from '../src/api/entitlements';
-import type { GlDriver, GlResolveRow } from '../src/api/financeGl';
+import type { CashGlDriver, MatrixComponent } from '../src/api/entitlements';
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
-  addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, earningDriverChoices, isCashAllowance, type AddBenefitForm,
+  addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, cashGlChoices, isCashAllowance, type AddBenefitForm,
 } from '../src/lib/cashAllowance';
 import { blankDraft, draftProblem, inputFromDraft, summarise } from '../src/lib/entitlementMatrix';
 
@@ -64,39 +63,32 @@ test('each server refusal is said next to the field it belongs to', () => {
   expect(benefitServerProblem(new Error('Network Error'), 'Unable to add the benefit.')).toEqual({ field: 'general', message: 'Unable to add the benefit.' });
 });
 
-const driver = (over: Partial<GlDriver>): GlDriver => ({
-  id: over.key ?? 'd', companyId: null, key: 'EARN:BONUS', label: 'Bonus', category: 'Earning', postingSide: 'DR', accountType: 'Expense',
-  defaultCode: '5200', defaultName: 'Bonus expense', matchSource: null, matchMode: 'Exact', matchComponentCode: null,
-  emitsEmployerExpensePair: false, pairedExpenseDriverKey: null, isSystem: true, isActive: true, sortOrder: 1, inherited: false, ...over,
-});
-const where = (key: string, code: string, problem: string | null = null): GlResolveRow => ({
-  driverKey: key, label: key, category: 'Earning', side: 'DR', account: { id: null, code, name: 'Account' }, source: 'GroupMapping', problem,
+const row = (over: Partial<CashGlDriver>): CashGlDriver => ({ key: 'EARN:BONUS', label: 'Bonus', labelAr: null, usable: true, reasonCode: null, reason: null, ...over });
+
+test('the GL choices are the server\u2019s verdicts, in its order; a refused one keeps its reason', () => {
+  const choices = cashGlChoices([
+    row({ key: 'EARN:PHONE', label: 'Phone allowance' }),
+    row({ key: 'EARN:BASIC', label: 'Basic salary', usable: false, reasonCode: 'reserved', reason: 'Reserved' }),
+    row({ key: 'EARN:GOSI_ER', label: 'Employer GOSI', usable: false, reasonCode: 'employer_pair', reason: 'Employer' }),
+    row({ key: 'EARN:X', label: 'X', usable: false, reasonCode: 'unmapped', reason: 'Unmapped' }),
+    row({ key: 'EARN:Y', label: 'Y', usable: false, reasonCode: 'protected_account', reason: 'Protected' }),
+  ], 'en');
+  expect(choices.map(c => [c.key, c.usable])).toEqual([['EARN:PHONE', true], ['EARN:BASIC', false], ['EARN:GOSI_ER', false], ['EARN:X', false], ['EARN:Y', false]]);
+  expect(choices.map(c => c.reasonKey)).toEqual([null,
+    '{account} — kept for payroll’s own lines', '{account} — an employer cost account',
+    '{account} — not mapped to an account yet', '{account} — posts to a protected account']);
 });
 
-test('only active Earning drivers that are not an employer expense pair are offered, in the server order', () => {
-  const choices = earningDriverChoices([
-    driver({ key: 'EARN:OTHER', label: 'Other earnings' }),
-    driver({ key: 'DED:LOAN', label: 'Loan deduction', category: 'Deduction' }),
-    driver({ key: 'EARN:OLD', label: 'Old', isActive: false }),
-    driver({ key: 'EARN:GOSI_ER', label: 'Employer GOSI', emitsEmployerExpensePair: true }),
-    driver({ key: 'EARN:BONUS', label: 'Bonus' }),
-  ], null);
-  expect(choices.map(c => c.key)).toEqual(['EARN:OTHER', 'EARN:BONUS']);
-  // Where it posts could not be read: everything is offered and the server decides.
-  expect(choices.every(c => c.usable && c.account === null)).toBe(true);
+test('an unknown refusal code falls back to the general sentence; Arabic labels are used in Arabic', () => {
+  expect(cashGlChoices([row({ usable: false, reasonCode: null })], 'en')[0].reasonKey).toBe('{account} — no usable account');
+  expect(cashGlChoices([row({ label: 'Phone', labelAr: 'بدل هاتف' })], 'ar')[0].label).toBe('بدل هاتف');
+  expect(cashGlChoices([row({ label: 'Phone', labelAr: ' ' })], 'ar')[0].label).toBe('Phone');
+  expect(cashGlChoices([row({ label: 'Phone', labelAr: 'بدل هاتف' })], 'en')[0].label).toBe('Phone');
 });
 
-test('a driver that posts nowhere usable is shown but cannot be chosen; a mapped one names its account', () => {
-  const choices = earningDriverChoices(
-    [driver({ key: 'EARN:A', label: 'A' }), driver({ key: 'EARN:B', label: 'B' }), driver({ key: 'EARN:C', label: 'C' }), driver({ key: 'EARN:D', label: 'D' })],
-    [where('EARN:A', '4101'), where('EARN:B', '9999'), where('EARN:C', '4300', 'NotInChart'), where('EARN:D', '4400', 'Unmapped')]);
-  expect(choices.map(c => [c.key, c.usable])).toEqual([['EARN:A', true], ['EARN:B', false], ['EARN:C', false], ['EARN:D', true]]);
-  expect(choices[0].account).toBe('4101 Account');
-});
-
-test('a tenant with no earning driver mapped gets an empty list, which the form turns into a message and a link', () => {
-  expect(earningDriverChoices([], null)).toEqual([]);
-  expect(earningDriverChoices([driver({ key: 'EARN:A' })], [where('EARN:A', '9999')]).filter(c => c.usable)).toEqual([]);
+test('a tenant with no earning account gets an empty list, which the form turns into a message and a link', () => {
+  expect(cashGlChoices([], 'en')).toEqual([]);
+  expect(cashGlChoices([row({ usable: false, reasonCode: 'unmapped' })], 'en').filter(c => c.usable)).toEqual([]);
 });
 
 const ALW: MatrixComponent = {
