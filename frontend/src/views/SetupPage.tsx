@@ -95,7 +95,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { SETUP_RELATED_SECTIONS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, unavailableSectionRedirect, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
+import { SETUP_RELATED_SECTIONS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, inNavigationOrder, resolveSetupArea, setupNavigationModel, unavailableSectionRedirect, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
 import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
 import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
@@ -2619,7 +2619,7 @@ export function SetupPage() {
   // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
   const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status });
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
-  const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
+  const visibleTabs = inNavigationOrder(tabs, navigationModel.settings);
   const tabParam = searchParams?.get('tab');
   // A reader opens on their first section: someone who only configures a module (loans, users, the workspace) lands
   // on that module's settings, not on a Companies list they cannot read.

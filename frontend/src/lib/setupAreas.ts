@@ -88,6 +88,14 @@ export function inSetupOrder<T extends { id: string }>(sections: readonly T[]): 
   return sections.map((section, index) => ({ section, index })).sort((a, b) => rank(a.section.id) - rank(b.section.id) || a.index - b.index).map(x => x.section);
 }
 
+/** Puts the entries a page has for sections (e.g. with icons) into the navigation model's order, dropping the ones the model does not list.
+ * Setup's menu must follow this order, not the order the two catalogues happen to be concatenated in, or a module section
+ * (Benefits by grade) would sink below every setting of its group instead of sitting where SETUP_SECTION_ORDER puts it. */
+export function inNavigationOrder<T extends { id: string }>(entries: readonly T[], navigation: readonly { id: string }[]): T[] {
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
+  return navigation.flatMap(section => { const entry = byId.get(section.id); return entry ? [entry] : []; });
+}
+
 const settingLabel = (id: SetupSettingId) => SETUP_SETTING_SECTIONS.find(section => section.id === id)!.label;
 
 /** The settings a company-scoped group administrator owns: everything else is shared by the whole tenant. Departments, designations

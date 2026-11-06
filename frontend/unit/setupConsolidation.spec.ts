@@ -5,7 +5,7 @@ import {
 import { SETUP_LEGACY_PATHS, SETUP_LEGACY_ROUTES, legacySetupHref } from '../src/lib/setupLegacyRoutes';
 import { NextRequest } from 'next/server';
 import { config, middleware } from '../middleware';
-import { SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, setupHasEntries, setupNavigationModel } from '../src/lib/setupAreas';
+import { SETUP_AREAS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, inNavigationOrder, setupHasEntries, setupNavigationModel } from '../src/lib/setupAreas';
 import { navigationItems } from '../src/routes/navigation';
 
 /**
@@ -261,4 +261,16 @@ test('every_section_label_and_description_has_an_arabic_translation', async () =
   const missing = SETUP_MODULE_SECTIONS.flatMap(section => [section.label, section.description])
     .filter(text => translate('ar', text) === text);
   expect(missing, 'Setup sections shown in English to an Arabic user').toEqual([]);
+});
+
+test('the_menu_lists_benefits_by_grade_directly_below_grades_under_release_a', () => {
+  // SetupPage builds its entries as settings followed by module sections; the menu must still follow the navigation model's order.
+  const entries = [...SETUP_SETTING_SECTIONS, ...SETUP_MODULE_SECTIONS];
+  const model = setupNavigationModel({ ...everyone, isCompanyScopedGroup: false, policyIntake: false });
+  const menu = inNavigationOrder(entries, model.settings).filter(item => item.group === 'jobsHeadcount').map(item => item.id);
+  expect(menu.slice(0, 3)).toEqual(['grades', 'gradeBenefits', 'designations']);
+  // Without Release A the section is not in the model, so it is not in the menu either.
+  const without = setupNavigationModel({ ...everyone, isFeatureEnabled: key => key !== 'release_a', isCompanyScopedGroup: false, policyIntake: false });
+  expect(inNavigationOrder(entries, without.settings).map(item => item.id)).not.toContain('gradeBenefits');
+  expect(inNavigationOrder(entries, without.settings).map(item => item.id)).toContain('benefitPlans');
 });
