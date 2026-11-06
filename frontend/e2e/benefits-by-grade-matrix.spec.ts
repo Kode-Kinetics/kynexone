@@ -28,8 +28,13 @@ const say = (locale: Locale, key: string, values: Record<string, string | number
 const gradeId = (code: string) => groupMatrix.grades.find((g: { code: string }) => g.code === code).id as string;
 const component = (code: string) => groupMatrix.components.find((c: { code: string }) => c.code === code);
 const benefitName = (locale: Locale, code: string) => (locale === 'ar' ? component(code).nameAr : component(code).nameEn) as string;
-const cellButton = (page: Page, locale: Locale, code: string, grade: string) =>
-  page.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit: benefitName(locale, code), grade, value: '' })}`) });
+const cellNamed = (page: Page, locale: Locale, benefit: string, grade: string) =>
+  page.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit, grade, value: '' })}`) });
+const cellButton = (page: Page, locale: Locale, code: string, grade: string) => cellNamed(page, locale, benefitName(locale, code), grade);
+
+// The toolbar button (it carries aria-expanded); the step strip also offers an "Add a benefit" link-style button as a shortcut.
+const addBenefitButton = (page: Page, locale: Locale) =>
+  page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).and(page.locator('[aria-expanded]'));
 
 async function shot(page: Page, name: string) {
   const dir = process.env.R1_SCREENSHOT_DIR ?? test.info().outputDir;
@@ -86,11 +91,11 @@ for (const locale of ['en', 'ar'] as const) {
       const { errors, publishes } = await boot(page, locale);
       await cellButton(page, locale, 'HOUSING', 'G3').click();
       await page.getByLabel(say(locale, 'Percent of basic salary')).fill('35');
-      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
       await cellButton(page, locale, 'PER_DIEM', 'G5').click();
       await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check();
       await page.getByLabel(say(locale, 'Amount ({currency})', { currency: groupMatrix.currency })).fill('500');
-      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
       await page.getByLabel(say(locale, 'Effective from')).fill('2026-11-01');
 
       await expect(page.getByText(say(locale, 'Reaches {now} employee(s) on that date and {later} at their next contract year.',
@@ -138,7 +143,7 @@ for (const locale of ['en', 'ar'] as const) {
       });
       const benefit = (locale === 'ar' ? parking.nameAr : parking.nameEn) as string;
 
-      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await addBenefitButton(page, locale).click();
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Parking');
       await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('موقف');
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
@@ -151,10 +156,12 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(page.getByText(say(locale, '{count} grade value(s) still need setting.', { count: withParking.gaps.length }))).toBeVisible();
 
       // Its cell offers what a contract benefit allows, and a count reads "number of items", not tickets.
-      await cellButton(page, locale, 'BEN_PARKING', 'G1').click();
+      // The added benefit is not in the published fixture, so its cell is found by the name just created.
+      await cellNamed(page, locale, benefit, 'G1').click();
+      await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check(); // the value type is chosen once the grade gets it
       await expect(page.getByRole('option', { name: say(locale, 'Number of items') })).toHaveCount(1);
       await expect(page.getByRole('option', { name: say(locale, 'Number of tickets') })).toHaveCount(0);
-      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
       await shot(page, `add-benefit-${locale}`);
 
       // Unused, so it can be removed again.
@@ -206,7 +213,7 @@ for (const locale of ['en', 'ar'] as const) {
       });
       const benefit = (locale === 'ar' ? phone.nameAr : phone.nameEn) as string;
 
-      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await addBenefitButton(page, locale).click();
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Phone allowance');
       await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('بدل هاتف');
 
@@ -218,7 +225,7 @@ for (const locale of ['en', 'ar'] as const) {
       const glSelect = page.getByLabel(say(locale, 'GL account for this allowance (required)'));
       await expect(glSelect).toBeVisible();
       // Only earning accounts are offered; GOSI and WPS are stated, not editable.
-      await expect(glSelect.getByRole('option')).toHaveCount(2);
+      await expect(glSelect.getByRole('option')).toHaveCount(3); // Choose an account + the server's two earning accounts (one is listed but cannot be chosen)
       await expect(page.getByText(say(locale, 'No — GOSI is calculated on basic + housing only'))).toBeVisible();
       await expect(page.getByText(say(locale, 'Yes — paid in the salary transfer'))).toBeVisible();
       await expect(page.getByText(say(locale, 'Each employee’s amount is set on their salary and approved by Finance before it’s paid.'))).toBeVisible();
@@ -262,17 +269,17 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
       await expect(page.getByText(say(locale, 'Paid in salary'), { exact: true })).toBeVisible();
       await expect(page.getByRole('button', { name: say(locale, 'Skip for this company') })).toHaveCount(0);
-      await cellButton(page, locale, 'ALW_PHONE', 'G1').click();
+      await cellNamed(page, locale, benefit, 'G1').click();
       await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check();
       // The server's rule decides what is on offer: an amount or a percentage of basic, monthly, nothing else.
       const editor = page.getByRole('dialog');
       await expect(editor.getByRole('option', { name: say(locale, 'Fixed amount') })).toHaveCount(1);
       await expect(editor.getByRole('option', { name: say(locale, '% of basic salary') })).toHaveCount(1);
-      await expect(editor.getByRole('option')).toHaveCount(2);
+      await expect(editor.getByLabel(say(locale, 'How it is given')).getByRole('option')).toHaveCount(2); // the Conditions selects below have options of their own
       await expect(editor.getByLabel(say(locale, 'Resets'))).toHaveCount(0);
       await page.getByLabel(say(locale, 'Amount ({currency})', { currency: groupMatrix.currency })).fill('350');
       await expect(page.getByRole('button', { name: say(locale, 'Save & next') })).toBeEnabled();
-      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
       await shot(page, `add-cash-allowance-${locale}`);
 
       // Remove works as for a contract benefit.
@@ -286,7 +293,7 @@ for (const locale of ['en', 'ar'] as const) {
     test('add a cash allowance with no GL account set up: a calm message and a link, no empty list', async ({ page }) => {
       const { errors } = await boot(page, locale);
       await page.route('**/api/entitlements/components/cash-gl-drivers', route => route.fulfill({ json: [] }));
-      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await addBenefitButton(page, locale).click();
       await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
       await expect(page.getByText(say(locale, 'No GL account is set up for earnings yet. Set one up in Payroll accounting, then come back to add this allowance.'))).toBeVisible();
       await expect(page.getByRole('link', { name: say(locale, 'Open Payroll accounting') })).toHaveAttribute('href', '/setup?tab=glMapping');

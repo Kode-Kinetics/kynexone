@@ -68,6 +68,14 @@ async function boot(page: Page, locale: Locale, permissions: string[], matrix: (
   return { errors, calls };
 }
 
+// The toolbar button (it carries aria-expanded); the step strip also offers an "Add a benefit" link-style button as a shortcut.
+const addBenefitButton = (page: Page, locale: Locale) =>
+  page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).and(page.locator('[aria-expanded]'));
+// Any grade's cell for a benefit: the label is "{benefit} for {grade}: {value}" in the locale's word order, so the grade and value are matched, not left empty.
+const cellOfAnyGrade = (locale: Locale, benefit: string) => {
+  const marks = say(locale, '{benefit} for {grade}: {value}', { benefit: 'BENEFIT_MARK', grade: 'GRADE_MARK', value: 'VALUE_MARK' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${marks.replace('BENEFIT_MARK', benefit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).replace('GRADE_MARK', '.+').replace('VALUE_MARK', '.*')}$`);
+};
 const name = (locale: Locale, c: { nameEn: string; nameAr: string }) => (locale === 'ar' ? c.nameAr : c.nameEn);
 
 for (const locale of ['en', 'ar'] as const) {
@@ -79,7 +87,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(row.getByTestId('waiting-for-finance')).toHaveText(say(locale, 'Waiting for Finance'));
       await expect(row.getByTestId('waiting-for-finance').locator('svg')).toHaveCount(1);
       // Its grade cells cannot be opened; nobody without the Finance permission is offered Confirm, and is told who can.
-      await expect(row.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit: name(locale, waiting), grade: '', value: '' })}`) }).first()).toBeDisabled();
+      await expect(row.getByRole('button', { name: cellOfAnyGrade(locale, name(locale, waiting)) }).first()).toBeDisabled();
       await expect(row.getByRole('button', { name: say(locale, 'Confirm') })).toHaveCount(0);
       await expect(row.getByText(say(locale, 'Finance must confirm it before it can be used.'))).toBeVisible();
       await expect(page.getByTestId('guide-waiting-for-finance')).toContainText(name(locale, waiting));
@@ -171,7 +179,7 @@ for (const locale of ['en', 'ar'] as const) {
         exists = true;
         return route.fulfill({ json: { ...waiting, warnings: [{ code: 'reimbursive_name', message: 'The name sounds like a reimbursement; check whether it counts toward end of service pay.' }] } });
       });
-      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await addBenefitButton(page, locale).click();
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Phone');
       await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
       await page.getByLabel(say(locale, 'GL account for this allowance (required)')).selectOption('EARN:PHONE');
