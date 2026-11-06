@@ -408,9 +408,20 @@ public class OvertimeController : ControllerBase
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         if (req.EndTimeUtc <= req.StartTimeUtc) return BadRequest(new { message = "End time must be after start time." });
         if (string.IsNullOrWhiteSpace(req.Reason)) return BadRequest(new { message = "A reason is required." });
-        var policy = req.OvertimePolicyId.HasValue
-            ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
+        // The policy is decided HERE, from the employee, because payroll pays under the policy stored on the request.
+        // Self-service (no overtime.write) never chooses one: a client-supplied id is ignored, so an employee cannot file
+        // under a generous policy written for another grade or branch. Overtime administration may name one, but only a
+        // policy that applies to this employee (same tenant, active, branch/department/grade unset or matching).
+        var activePolicies = _db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted);
+        OvertimePolicy? policy;
+        if (req.OvertimePolicyId.HasValue && User.HasPermission("overtime.write"))
+        {
+            policy = await activePolicies.FirstOrDefaultAsync(x => x.Id == req.OvertimePolicyId, ct);
+            if (policy is null || !OvertimePolicyDefault.Applies(policy, employee.BranchId, employee.DepartmentId, employee.GradeId))
+                return UnprocessableEntity(new { code = "overtime_policy_not_applicable", message = "That overtime policy does not apply to this employee's branch, department and grade." });
+        }
+        else
+            policy = await OvertimePolicyDefault.ForEmployee(activePolicies, employee.BranchId, employee.DepartmentId, employee.GradeId).FirstOrDefaultAsync(ct);
         if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         if (req.OvertimeTypeId.HasValue && !await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeTypeId && x.IsActive, ct))
             return BadRequest(new { message = "Overtime type not found or inactive." });
@@ -515,13 +526,19 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         if (req.FromDate > req.ToDate || req.ToDate.DayNumber - req.FromDate.DayNumber > 366)
             return BadRequest(new { message = "Attendance detection range must be between 1 and 367 days." });
-        // The policy is RESOLVED, exactly as the manual door resolves it: by id within this tenant,
-        // active and not deleted, else the tenant's active default. Without this the limits below
-        // would have nothing to apply, and the id on the request was never checked at all.
-        var policy = req.OvertimePolicyId.HasValue
-            ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
-        if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
+        // The policy is RESOLVED per employee, as the manual door resolves it: it must apply to the employee's branch,
+        // department and grade. A policy named on the request is a preference for the employees it applies to; it is never
+        // stamped on an employee it does not apply to (they get the policy that does). An id that is not an active policy of
+        // this tenant is refused outright, as it always was.
+        var activePolicies = _db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted);
+        OvertimePolicy? preferred = null;
+        if (req.OvertimePolicyId.HasValue)
+        {
+            preferred = await activePolicies.FirstOrDefaultAsync(x => x.Id == req.OvertimePolicyId, ct);
+            if (preferred is null) return BadRequest(new { message = "An active overtime policy is required." });
+        }
+        else if (!await activePolicies.AnyAsync(ct))
+            return BadRequest(new { message = "An active overtime policy is required." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var dailyQuery = _db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate >= req.FromDate && x.WorkDate <= req.ToDate && x.OvertimeMinutes > 0);
@@ -531,6 +548,23 @@ public class OvertimeController : ControllerBase
             // never displaced by a later one depending on how the database felt about returning rows.
             .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate)
             .ToListAsync(ct);
+        // Branch / department / grade of the employees in range, to decide which policy applies to each.
+        var rangeEmployeeIds = daily.Select(x => x.EmployeeId).Distinct().ToList();
+        var employeeScopes = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && rangeEmployeeIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.BranchId, x.DepartmentId, x.GradeId })
+            .ToDictionaryAsync(x => x.Id, ct);
+        var policyByEmployee = new Dictionary<int, OvertimePolicy?>();
+        async Task<OvertimePolicy?> PolicyForAsync(int employeeId)
+        {
+            if (policyByEmployee.TryGetValue(employeeId, out var known)) return known;
+            employeeScopes.TryGetValue(employeeId, out var sc);
+            OvertimePolicy? resolved = preferred is not null && OvertimePolicyDefault.Applies(preferred, sc?.BranchId, sc?.DepartmentId, sc?.GradeId)
+                ? preferred
+                : await OvertimePolicyDefault.ForEmployee(activePolicies, sc?.BranchId, sc?.DepartmentId, sc?.GradeId).FirstOrDefaultAsync(ct);
+            policyByEmployee[employeeId] = resolved;
+            return resolved;
+        }
         var created = new List<OvertimeRequest>();
         var exceptions = new List<AttendanceException>();
         // Minutes already committed against each employee's monthly cap, including the requests this
@@ -541,6 +575,9 @@ public class OvertimeController : ControllerBase
         {
             var exists = await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate && x.Source == "Attendance", ct);
             if (exists) continue;
+            // No active policy applies to this employee: there is nothing to price or limit the overtime under, so none is raised.
+            var policy = await PolicyForAsync(record.EmployeeId);
+            if (policy is null) continue;
 
             var monthKey = (record.EmployeeId, record.WorkDate.Year, record.WorkDate.Month);
             if (!monthToDate.TryGetValue(monthKey, out var consumed))
