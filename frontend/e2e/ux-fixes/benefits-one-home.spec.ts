@@ -24,3 +24,14 @@ test('/benefits tells someone without entitlements.read what they cannot see and
   await expect(door).toContainText('HR administrator');
   await expect(page.getByRole('link', { name: 'Open Benefits by grade' })).toHaveCount(0);
 });
+
+// Benefits by grade exists only for tenants with Release A switched on (the sidebar entry is gated the same way).
+for (const [name, persona] of [['a reader', reader], ['someone without entitlements.read', noEntitlements]] as const) {
+  test(`a tenant without Release A: /benefits shows no Benefits by grade door at all, for ${name}`, async ({ page }) => {
+    await boot(page, { persona, url: '/benefits', disabledKeys: ['release_a'] });
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-benefits-door]')).toHaveCount(0);
+    await expect(page.getByText("You can't see Benefits by grade")).toHaveCount(0);
+    await expect(page.locator('a[href="/benefits/by-grade"]')).toHaveCount(0);
+  });
+}

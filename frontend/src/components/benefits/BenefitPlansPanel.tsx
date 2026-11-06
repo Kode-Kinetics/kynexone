@@ -538,7 +538,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
           </label>
         </div>
         {releaseA
-          ? <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-white/5 dark:text-slate-300" data-testid="plan-payment-in-benefits-by-grade">{t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+          ? <div className="rounded-lg bg-slate-50 p-3 dark:bg-white/5" data-testid="plan-payment-in-benefits-by-grade"><BenefitsByGradeDoor intro={t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} /></div>
           : <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />}
         {editing && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Code and company scope identify the plan to existing enrolments and cannot be changed.')}</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">

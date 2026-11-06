@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useAuth } from '../../contexts/AuthContext';
 import { useT } from '../../hooks/useT';
 import { EmptyState } from '../ui/EmptyState';
+import { useReleaseA } from '../../lib/releaseA';
 
 /**
  * The one door to Benefits by grade (/benefits/by-grade), the home for what each grade receives. Every other
@@ -17,7 +18,11 @@ import { EmptyState } from '../ui/EmptyState';
 export function BenefitsByGradeDoor({ intro, variant = 'inline', className = '' }: { intro: string; variant?: 'inline' | 'panel'; className?: string }) {
   const t = useT();
   const { hasPermission } = useAuth();
+  const releaseA = useReleaseA();
   const allowed = hasPermission('entitlements.read');
+  // Benefits by grade exists only for a Release A tenant (the sidebar entry is gated the same way): anywhere else there is
+  // nothing to open, and a restricted panel would announce a screen the tenant does not have.
+  if (!releaseA) return null;
   if (allowed) {
     return variant === 'panel'
       ? (
