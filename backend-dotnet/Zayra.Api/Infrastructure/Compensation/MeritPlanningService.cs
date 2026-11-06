@@ -773,14 +773,11 @@ public sealed partial class MeritPlanningService(
             var reversedBasic = row.BasicSalary - l.ProratedIncreasePay;
             var package = MeritLineCalculator.Package(row, code, reversedBasic, request.EffectiveDate, row.Currency);
             // A reversal takes back an award the employee had already agreed to the pay before: it is a correction, not a new reduction, so it needs no
-            // written agreement while it lands no lower than the package in force before the award. Landing below that is a reduction like any other
-            // and carries the reference the caller supplies (or is refused without one).
-            var consentReference = SalaryReductions.CleanReference(request.ReductionConsentReference);
-            if (consentReference is null && await RestoresPreAwardPayAsync(c.TenantId, employee, l, package, request.EffectiveDate, ct))
-                consentReference = ReversalReferencePrefix + awardId.ToString("D");
-            if (consentReference is not null)
-                package = MeritLineCalculator.Package(row, code, reversedBasic, request.EffectiveDate, row.Currency, consentReference);
-            await ValidatePackageAsync(employee, package, ct);
+            // written agreement while it lowers nothing below the package in force before the award (judged in ValidateAsync against that record, here and again
+            // when the change is applied). Landing below it is a reduction like any other and carries the reference the caller supplies, or is refused.
+            if (SalaryReductions.CleanReference(request.ReductionConsentReference) is { } suppliedReference)
+                package = MeritLineCalculator.Package(row, code, reversedBasic, request.EffectiveDate, row.Currency, suppliedReference);
+            await ValidatePackageAsync(employee, package, ct, l.SalaryRowId);
             var reversalTitle = Truncate($"Merit award reversal - {employee.EmployeeCode} {employee.FullName} ({c.Name}): {reason}", 240);
             // Routed BEFORE the change row is written: a reversal nobody could decide is refused with nothing saved,
             // not left as a PendingApproval change with no approval behind it.
@@ -827,47 +824,9 @@ public sealed partial class MeritPlanningService(
             changeId, EmployeeChangeStatuses.PendingApproval);
     }
 
-    /// <summary>The reference a reversal that only restores the pre-award package carries in place of a consent reference, followed by the award's change id.
-    /// It is the audit trail for why a pay reduction needed no signed agreement, and it is what lets the same package pass the rule again when it is applied.</summary>
-    internal const string ReversalReferencePrefix = "merit-award-reversal:";
-
-    /// <summary>
-    /// True when the reversal package lowers pay (against the record in force on its effective date) but never takes any lowered item below what that item was in
-    /// the salary record the award was planned against (the pre-award package, <see cref="CompWorksheetLine.SalaryRowId"/>). A raised fixed deduction, or a
-    /// pre-award package that cannot be found, is not a restoration.
-    /// </summary>
-    private async Task<bool> RestoresPreAwardPayAsync(Guid tenantId, Employee employee, CompWorksheetLine line, IReadOnlyDictionary<string, JsonElement> package,
-        DateOnly effectiveDate, CancellationToken ct)
+    private async Task ValidatePackageAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> package, CancellationToken ct, Guid? restoresSalaryRowId = null)
     {
-        if (line.SalaryRowId is not Guid preAwardRowId) return false;
-        EmployeeSalaryBreakdownRequest proposed;
-        try { proposed = EmployeeSalaryBreakdownChanges.Read(package[EmployeeSalaryBreakdownChanges.Key]); }
-        catch (InvalidOperationException) { return false; }   // an unreadable package is refused by the validator with its own message
-        var reduction = await SalaryReductions.EvaluateAsync(db, tenantId, employee.Id, effectiveDate,
-            new PaySlots(proposed.BasicSalary!.Value, proposed.HousingAllowance!.Value, proposed.TransportAllowance!.Value, proposed.FoodAllowance!.Value,
-                proposed.MobileAllowance!.Value, proposed.OtherAllowance!.Value, proposed.FixedDeduction.GetValueOrDefault()), null, ct);
-        if (!reduction.IsReduction) return false;
-        var before = await db.EmployeeSalaryStructures.AsNoTracking().FirstOrDefaultAsync(s => s.TenantId == tenantId && s.Id == preAwardRowId, ct);
-        if (before is null) return false;
-        var beforeLines = (await db.EmployeeSalaryAllowances.AsNoTracking().Where(a => a.TenantId == tenantId && a.SalaryStructureId == preAwardRowId).ToListAsync(ct))
-            .GroupBy(a => a.Code, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(a => a.Amount), StringComparer.Ordinal);
-        var beforeSlots = new Dictionary<string, decimal>(StringComparer.Ordinal)
-        {
-            ["BASIC"] = before.BasicSalary, ["HOUSING"] = before.HousingAllowance, ["TRANSPORT"] = before.TransportAllowance,
-            ["FOOD"] = before.FoodAllowance, ["MOBILE"] = before.MobileAllowance, ["OTHER"] = before.OtherAllowance,
-        };
-        foreach (var item in reduction.Items)
-        {
-            if (item.Item == SalaryReductions.FixedDeductionItem) return false;
-            var floor = beforeSlots.TryGetValue(item.Item, out var slot) ? slot : beforeLines.GetValueOrDefault(item.Item);
-            if (item.To < floor) return false;
-        }
-        return true;
-    }
-
-    private async Task ValidatePackageAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> package, CancellationToken ct)
-    {
-        try { await EmployeeSalaryBreakdownChanges.ValidateAsync(db, employee, package, ct); }
+        try { await EmployeeSalaryBreakdownChanges.ValidateAsync(db, employee, package, ct, restoresSalaryRowId); }
         catch (InvalidOperationException ex) { throw new CompRuleException("invalid_package", ex.Message); }
     }
 

@@ -69,7 +69,11 @@ public static class EmployeeSalaryBreakdownChanges
         salary.BasicSalary.GetValueOrDefault() + salary.HousingAllowance.GetValueOrDefault() + salary.TransportAllowance.GetValueOrDefault()
         + salary.FoodAllowance.GetValueOrDefault() + salary.MobileAllowance.GetValueOrDefault() + salary.OtherAllowance.GetValueOrDefault();
 
-    public static async Task ValidateAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
+    /// <param name="restoresSalaryRowId">Set only by the merit-award reversal path (the salary record the award was planned against, found server-side from the
+    /// reversal link on the award line, never from the package): the reduction rule is then judged against that pre-award record, and the reversal needs no
+    /// consent reference while it lowers nothing below it.</param>
+    public static async Task ValidateAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct,
+        Guid? restoresSalaryRowId = null)
     {
         if (!changes.TryGetValue(Key, out var value)) return;
         if (changes.ContainsKey("salary")) throw new InvalidOperationException("Submit the salary breakdown or the legacy salary total, not both.");
@@ -91,7 +95,9 @@ public static class EmployeeSalaryBreakdownChanges
                 new Zayra.Api.Infrastructure.Payroll.PaySlots(salary.BasicSalary!.Value, salary.HousingAllowance!.Value, salary.TransportAllowance!.Value,
                     salary.FoodAllowance!.Value, salary.MobileAllowance!.Value, salary.OtherAllowance!.Value, salary.FixedDeduction.GetValueOrDefault()),
                 allowances.Lines, ct);
-            if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, salary.ReductionConsentReference) is { } noConsent)
+            if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, salary.ReductionConsentReference) is { } noConsent
+                && !(restoresSalaryRowId is Guid preAwardRow
+                     && await Zayra.Api.Infrastructure.Compensation.MeritAwardReversals.RestoresPreAwardPayAsync(db, reductionTenant, preAwardRow, reduction, ct)))
                 throw new InvalidOperationException(noConsent.Message);
         }
         var wholePay = Gross(salary) + allowances.Total;
@@ -119,10 +125,14 @@ public static class EmployeeSalaryBreakdownChanges
             + "Request the change as a governed salary change with a different effective date (approved in Approvals), or through the contract renewal workflow.");
     }
 
-    public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct)
+    public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct,
+        Guid? changeRequestId = null)
     {
         if (!changes.TryGetValue(Key, out var value)) return;
-        await ValidateAsync(db, employee, changes, ct);
+        // Whether this change is a merit-award reversal is read from the server-held link on the award line, not from anything the change carries.
+        var restores = changeRequestId is Guid id && employee.TenantId is Guid tenantId
+            ? await Zayra.Api.Infrastructure.Compensation.MeritAwardReversals.PreAwardRowAsync(db, tenantId, employee.Id, id, ct) : null;
+        await ValidateAsync(db, employee, changes, ct, restores);
         await EmployeeSalaryBreakdownWriter.ApplyAsync(db, employee, Read(value), new RequestContext(null, null, actorId, employee.TenantId), ct);
     }
 

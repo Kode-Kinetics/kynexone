@@ -329,6 +329,35 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
         }
     }
 
+    [Fact]
+    public async Task OnlyARealReversalIsJudgedAgainstThePreAwardPay_AnOrdinaryChangeCannotClaimIt()
+    {
+        var w = await SeedAsync(fx);
+        var applied = await AppliedAsync(fx, w);
+        Guid a1Change;
+        await using (var db = fx.CreateDb())
+            a1Change = (await db.CompWorksheetLines.SingleAsync(l => l.CycleId == applied.Id && l.EmployeeId == w.E["A1"] && l.ChangeRequestId != null)).ChangeRequestId!.Value;
+        (await RunJobAsync(fx, w.Tenant, a1Change, Effective)).Outcome.Should().Be(EffectiveChangeOutcome.Applied);
+        await using var db2 = fx.CreateDb();
+        var employee = await db2.Employees.SingleAsync(e => e.Id == w.E["A1"]);
+        var row = await db2.EmployeeSalaryStructures.AsNoTracking().Where(s => s.EmployeeId == w.E["A1"] && s.IsActive).OrderByDescending(s => s.EffectiveDate).FirstAsync();
+        // The same package a reversal would stage: basic back to the pre-award 6,000.
+        var package = MeritLineCalculator.Package(row, null, 6000m, Effective.AddMonths(1), row.Currency);
+
+        // An ordinary change (any change id with no reversal link) is a plain reduction at apply.
+        await FluentActions.Invoking(() => EmployeeSalaryBreakdownChanges.ApplyAsync(db2, employee, package, w.UserHr, default, Guid.NewGuid()))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*written agreement*");
+        await FluentActions.Invoking(() => EmployeeSalaryBreakdownChanges.ValidateAsync(db2, employee, package, default))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*written agreement*");
+
+        // A client cannot name an origin: the package has no such field, so it is refused outright.
+        var forged = JsonSerializer.Deserialize<Dictionary<string, object?>>(package["salaryBreakdown"].GetRawText())!;
+        forged["origin"] = "MeritAwardReversal"; forged["restoresSalaryRowId"] = row.Id;
+        var forgedPackage = new Dictionary<string, JsonElement> { ["salaryBreakdown"] = JsonSerializer.SerializeToElement(forged) };
+        await FluentActions.Invoking(() => EmployeeSalaryBreakdownChanges.ValidateAsync(db2, employee, forgedPackage, default))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*unrecognised field*");
+    }
+
     // ───────────── P2-12: concurrency ─────────────
 
     [Fact]

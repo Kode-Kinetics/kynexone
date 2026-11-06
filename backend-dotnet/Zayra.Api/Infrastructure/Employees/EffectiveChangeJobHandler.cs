@@ -361,7 +361,7 @@ public sealed class EffectiveChangeJobHandler : IBackgroundJobHandler
         var priorPay = await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.LiveFingerprintAsync(db, tenantId, employee.Id, ct);
         try
         {
-            unknown = await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, tenantId, employee, changes, change.ApprovedByUserId, ct);
+            unknown = await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, tenantId, employee, changes, change.ApprovedByUserId, ct, change.Id);
         }
         catch (InvalidOperationException ex)
         {
