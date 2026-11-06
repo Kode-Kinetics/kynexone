@@ -29,7 +29,7 @@ import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { SecondApproverNotice } from '../components/SecondApproverNotice';
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
 import { useConfirm } from '../components/ui/useConfirm';
@@ -123,15 +123,6 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
         </div>
         <div className="p-6">{children}</div>
       </div>
-    </div>
-  );
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  return (
-    <div>
-      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">{label}{info && <InfoTip text={info} fieldKey={infoKey} />}</label>
-      {children}
     </div>
   );
 }

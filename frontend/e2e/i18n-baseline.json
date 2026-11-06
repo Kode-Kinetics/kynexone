@@ -152,11 +152,11 @@
     }
   ],
   "totals": {
-    "hardcoded": 3918,
+    "hardcoded": 3917,
     "rawStatus": 51,
     "locale": 186,
     "icons": 0,
-    "files": 120
+    "files": 119
   },
   "fragmentKeys": [
     ", ",
@@ -369,9 +369,6 @@
     },
     "src/components/ImportExportToolbar.tsx": {
       "hardcoded": 34
-    },
-    "src/components/InfoTip.tsx": {
-      "hardcoded": 1
     },
     "src/components/LoginMarketing.tsx": {
       "hardcoded": 5,

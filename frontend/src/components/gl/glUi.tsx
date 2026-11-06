@@ -1,6 +1,7 @@
 'use client';
 
-import { cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Field as SharedField, type FieldProps } from '../ui/Field';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { useT } from '../../hooks/useT';
 import { describeApiError } from '../../lib/apiError';
@@ -11,41 +12,12 @@ import { pickServerMessage } from '../../lib/glCostAccounting';
 
 export type Translator = ReturnType<typeof useT>;
 
-/** A label bound to its control: the child gets the generated id unless it already has one. */
-export function Field({
-  label,
-  required,
-  hint,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  hint?: ReactNode;
-  children: ReactNode;
-}) {
-  const t = useT();
-  const generated = useId();
-  const hintId = `${generated}-hint`;
-  let controlId = generated;
-  let control = children;
-  if (isValidElement(children)) {
-    const el = children as ReactElement<{ id?: string; 'aria-describedby'?: string }>;
-    controlId = el.props.id ?? generated;
-    control = cloneElement(el, { id: controlId, ...(hint ? { 'aria-describedby': hintId } : {}) });
-  }
-  return (
-    <div>
-      <label htmlFor={controlId} className="mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label} {required && <span className="text-rose-500" title={t('Required')}>*</span>}
-      </label>
-      {control}
-      {hint && (
-        <p id={hintId} className="mt-1 text-caption leading-snug text-slate-500 dark:text-slate-400">
-          {hint}
-        </p>
-      )}
-    </div>
-  );
+/**
+ * A label bound to its control. The one shared Field (components/ui/Field) at the 14 px form size; `required` and
+ * `hint` behave as before, and `info` / `infoKey` / `noInfo` / `error` are available here too.
+ */
+export function Field(props: Omit<FieldProps, 'size'>) {
+  return <SharedField size="md" {...props} />;
 }
 
 export function FieldError({ error, testId }: { error: string; testId?: string }) {

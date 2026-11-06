@@ -5,7 +5,7 @@ import {
   acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
   type FloorCheck,
 } from '../lib/belowMinimum';
-import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
@@ -29,7 +29,7 @@ import type {
   LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard,
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
@@ -145,29 +145,6 @@ function Modal({ title, onClose, children, wide }: {
   title: string; onClose: () => void; children: React.ReactNode; wide?: boolean;
 }) {
   return <SharedModal isOpen title={title} onClose={onClose} size={wide ? 'wizard' : 'md'}>{children}</SharedModal>;
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  const generatedId = useId();
-  let controlId = generatedId;
-  let associated = false;
-  const associateControl = (nodes: ReactNode): ReactNode => Children.map(nodes, node => {
-    if (!isValidElement(node)) return node;
-    const element = node as ReactElement<{ id?: string; children?: ReactNode }>;
-    if (!associated && typeof element.type === 'string' && ['input', 'select', 'textarea'].includes(element.type)) {
-      associated = true;
-      controlId = element.props.id ?? generatedId;
-      return cloneElement(element, { id: controlId });
-    }
-    return element.props.children ? cloneElement(element, {}, associateControl(element.props.children)) : element;
-  });
-  const controls = associateControl(children);
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"><label htmlFor={controlId}>{label}</label>{info && <InfoTip text={info} fieldKey={infoKey} />}</div>
-      {controls}
-    </div>
-  );
 }
 
 const inp = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
