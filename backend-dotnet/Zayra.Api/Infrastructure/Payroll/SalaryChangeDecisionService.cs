@@ -228,6 +228,17 @@ public sealed class SalaryChangeDecisionService
                     message = allowanceProblem.Message + " Reject this change, or fix the allowance and approve again.",
                     code = allowanceProblem.Code,
                 });
+            // Lowering pay needs the employee's written agreement, and whether this IS a reduction is judged against the record in force NOW (it can have
+            // moved since the proposal): a change that was fine when staged, or staged by a path with no reference, is refused here if it lowers the pay.
+            var reduction = await SalaryReductions.EvaluateAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, PaySlots.Of(change), allowanceLines.Lines, ct);
+            if (SalaryReductions.RequireConsent(reduction, change.ReductionConsentReference) is { } noConsent)
+                return new ConflictObjectResult(new
+                {
+                    error = "salary_change_stale",
+                    message = noConsent.Message + " Reject this change, or propose it again with the reference.",
+                    code = noConsent.Code,
+                    reducedItems = reduction.Items,
+                });
             if (employee.GradeId.HasValue)
             {
                 var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
@@ -287,7 +298,11 @@ public sealed class SalaryChangeDecisionService
                 await EmployeeSalaryBreakdownWriter.ApplyFirstPackageEffectsAsync(_db, employee, structure, change, ct);
             }
             Audit(tenantId, actor, "payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(),
-                allowanceLines.Lines.Count == 0
+                reduction.IsReduction
+                    ? new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId,
+                        allowances = allowanceLines.Lines, allowancesCarriedForward = allowanceLines.Carried,
+                        isReduction = true, reducedItems = reduction.Items, reductionConsentReference = change.ReductionConsentReference }
+                    : allowanceLines.Lines.Count == 0
                     ? new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId }
                     : (object)new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId,
                         allowances = allowanceLines.Lines, allowancesCarriedForward = allowanceLines.Carried });

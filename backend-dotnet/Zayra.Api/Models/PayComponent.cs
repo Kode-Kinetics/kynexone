@@ -79,6 +79,18 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     /// <see cref="EosbIncluded"/> is false on one; null everywhere else.</summary>
     public string? EosbExclusionReason { get; set; }
 
+    /// <summary>Why the allowance is left out of the end-of-service wage, as a category (<see cref="EosbExclusionCategories"/>); the note is
+    /// <see cref="EosbExclusionReason"/>. Set only on a cash allowance that is excluded (CHECK ck_pay_components__eosb_exclusion_category).</summary>
+    public string? EosbExclusionCategory { get; set; }
+
+    /// <summary>When Finance confirmed this customer-defined cash allowance (its GL driver and end-of-service setting). Null on a <c>ALW_*</c> row
+    /// = "pending Finance": it shows in the grid but cannot take grade values nor go on a salary. Null on every other row (not used there).</summary>
+    public DateTime? FinanceConfirmedAtUtc { get; set; }
+
+    /// <summary>The Finance approver who confirmed it. Never the person who added it (maker is not checker), unless the person who added it
+    /// already held the Finance permission, in which case it is confirmed at creation by that person.</summary>
+    public Guid? FinanceConfirmedByUserId { get; set; }
+
     /// <summary>Ties the emitted line to a gl_drivers Key. NULL ⇒ the existing EarningDriverKey/
     /// DeductionDriverKey source+code routing is used unchanged (the day-one seeds set this only for
     /// documentation parity; GL routing still keys on the persisted line Source+Code).</summary>
@@ -148,6 +160,20 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     /// (CHECK ck_pay_components__floor_always_offered). Loans keep <c>loan_policies.is_offered</c>.
     /// </summary>
     public bool IsOffered { get; set; } = true;
+}
+
+/// <summary>Value set of <c>pay_components.eosb_exclusion_category</c> (CHECK ck_pay_components__eosb_exclusion_category).</summary>
+public static class EosbExclusionCategories
+{
+    public const string Reimbursement = "Reimbursement";
+    public const string Discretionary = "Discretionary";
+    public const string NonRecurring = "NonRecurring";
+    public const string Other = "Other";
+    public static readonly string[] All = [Reimbursement, Discretionary, NonRecurring, Other];
+
+    /// <summary>The canonical spelling of <paramref name="value"/> (case-insensitive), or null when it is not a category.</summary>
+    public static string? Normalize(string? value) =>
+        All.FirstOrDefault(c => string.Equals(c, (value ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase));
 }
 
 public static class PayComponentTypes

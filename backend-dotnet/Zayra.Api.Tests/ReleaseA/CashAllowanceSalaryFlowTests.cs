@@ -71,7 +71,7 @@ public class CashAllowanceSalaryFlowTests
         db.PayComponents.Add(new PayComponent
         {
             TenantId = tid, CompanyId = null, Code = code, NameEn = name, NameAr = name + " ar", ComponentType = PayComponentTypes.Earning,
-            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+            CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
             GlDriverKey = driver, GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = eosb, DisplayOrder = 9100,
         });
         await db.SaveChangesAsync();
@@ -95,12 +95,12 @@ public class CashAllowanceSalaryFlowTests
     private static SalaryAllowanceLine Amt(string code, decimal amount) => new(code, AllowanceBases.Amount, null, amount);
     private static SalaryAllowanceLine Pct(string code, decimal rate) => new(code, AllowanceBases.PercentOfBasic, rate, null);
 
-    private static EmployeeSalaryStructureRequest Package(World w, Employee e, decimal basic, string date, IReadOnlyList<SalaryAllowanceLine>? lines) =>
-        new(e.Id, w.StructureId, basic, 2_000m, 1_000m, 0m, 0m, 0m, 0m, DateOnly.Parse(date), "SAR", lines);
+    private static EmployeeSalaryStructureRequest Package(World w, Employee e, decimal basic, string date, IReadOnlyList<SalaryAllowanceLine>? lines, string? consent = null) =>
+        new(e.Id, w.StructureId, basic, 2_000m, 1_000m, 0m, 0m, 0m, 0m, DateOnly.Parse(date), "SAR", lines, consent);
 
-    private static async Task<SalaryChangeRequest> ProposeAsync(World w, Employee e, decimal basic, string date, IReadOnlyList<SalaryAllowanceLine>? lines)
+    private static async Task<SalaryChangeRequest> ProposeAsync(World w, Employee e, decimal basic, string date, IReadOnlyList<SalaryAllowanceLine>? lines, string? consent = null)
     {
-        var result = await Hr(w).AssignEmployeeSalary(Package(w, e, basic, date, lines), CancellationToken.None);
+        var result = await Hr(w).AssignEmployeeSalary(Package(w, e, basic, date, lines, consent), CancellationToken.None);
         result.Should().BeOfType<AcceptedResult>(Describe(result));
         w.Db.ChangeTracker.Clear();
         return await w.Db.SalaryChangeRequests.AsNoTracking().OrderByDescending(x => x.RequestedAtUtc).FirstAsync(x => x.EmployeeId == e.Id);
@@ -220,7 +220,10 @@ public class CashAllowanceSalaryFlowTests
         await GiveAsync(w, w.A, Car, 500m);
         await GiveAsync(w, w.A, Phone, 200m);
 
-        var change = await ProposeAsync(w, w.A, 12_000m, "2026-03-01", lines: []);
+        // Removing a line lowers the employee's pay items, so it needs the employee's written agreement (wave D): refused without a reference.
+        (await Hr(w).AssignEmployeeSalary(Package(w, w.A, 12_000m, "2026-03-01", []), CancellationToken.None)).Should().BeOfType<ObjectResult>()
+            .Which.StatusCode.Should().Be(400);
+        var change = await ProposeAsync(w, w.A, 12_000m, "2026-03-01", lines: [], consent: "AMEND-REMOVE-ALLOWANCES");
         change.AllowancesJson.Should().NotBeNull();
         SalaryAllowanceLines.Deserialize(change.AllowancesJson).Should().BeEmpty();
         await ApproveAsync(w, change.Id);
@@ -238,7 +241,8 @@ public class CashAllowanceSalaryFlowTests
         await GiveAsync(w, w.A, Car, 500m);
         await GiveAsync(w, w.A, Phone, 200m);
 
-        var change = await ProposeAsync(w, w.A, 12_000m, "2026-03-01", [Amt(Phone, 250m)]);
+        // The Car line is dropped, which lowers a pay item: the employee's written agreement is cited (wave D).
+        var change = await ProposeAsync(w, w.A, 12_000m, "2026-03-01", [Amt(Phone, 250m)], consent: "AMEND-DROP-CAR");
         await ApproveAsync(w, change.Id);
 
         (await LatestLinesAsync(w, w.A)).Select(l => (l.Code, l.Amount)).Should().Equal((Phone, 250m));

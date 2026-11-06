@@ -164,7 +164,7 @@ public class CashAllowanceEosbWageTests
         w.Db.PayComponents.Add(new PayComponent
         {
             TenantId = w.Tid, CompanyId = null, Code = Car, NameEn = "Car allowance", NameAr = "car", ComponentType = PayComponentTypes.Earning,
-            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+            CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
             GlDriverKey = "EARN:CAR", GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = eosbAllowance, DisplayOrder = 9100,
         });
         // The shipped catalogue flags BASIC and HOUSING; this company flags BASIC only (or, when asked, nothing at all).

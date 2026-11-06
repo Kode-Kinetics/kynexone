@@ -91,7 +91,9 @@ public record EmployeeSalaryBreakdownRequest(
     DateOnly? EffectiveDate,
     string? Currency,
     // Monthly cash allowances (ALW_*): null = not mentioned (carried forward from the current salary record, or filled from the grade for a first package).
-    IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? Allowances = null);
+    IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? Allowances = null,
+    // The employee's written agreement to a reduction (a reference, up to 200 characters). Required when this package lowers the pay against the record in force.
+    string? ReductionConsentReference = null);
 
 public record EmployeeComplianceRecordRequest(
     [Required, MaxLength(10)] string CountryCode,

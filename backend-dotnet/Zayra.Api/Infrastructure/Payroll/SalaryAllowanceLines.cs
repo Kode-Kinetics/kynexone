@@ -27,14 +27,22 @@ public sealed record AllowanceResolution(IReadOnlyList<ResolvedAllowanceLine> Li
 /// A line whose definition is gone has no driver and no end-of-service answer (null), never a guess.</summary>
 public sealed record SalaryAllowanceLineView(
     string Code, string? NameEn, string? NameAr, string Basis, decimal? Rate, decimal Amount,
-    string? GlDriverKey = null, string? GlDriverLabel = null, bool? EosbIncluded = null, string? EosbExclusionReason = null);
+    string? GlDriverKey = null, string? GlDriverLabel = null, bool? EosbIncluded = null, string? EosbExclusionReason = null, string? EosbExclusionCategory = null);
 
 /// <summary>What the approval screen shows of a salary change's allowances: the lines on the salary record in force now, the lines the
 /// change would leave, and whether those were carried forward because the proposal did not mention allowances.</summary>
-public sealed record SalaryAllowanceView(IReadOnlyList<SalaryAllowanceLineView> Current, IReadOnlyList<SalaryAllowanceLineView> Proposed, bool CarriedForward)
+/// <param name="Insight">What the change does to the employee's pay against the record in force: whether it is a reduction (and what goes down), the
+/// monthly pay before and after, and whether it changes the contract wage. Null where it was not worked out.</param>
+public sealed record SalaryAllowanceView(IReadOnlyList<SalaryAllowanceLineView> Current, IReadOnlyList<SalaryAllowanceLineView> Proposed, bool CarriedForward,
+    SalaryChangeInsight? Insight = null)
 {
     public static readonly SalaryAllowanceView None = new([], [], false);
 }
+
+/// <summary>The approver's view of a salary change against the record in force. <c>CurrentMonthlyPay</c> and <c>ProposedMonthlyPay</c> count the six slots and every
+/// allowance line (not the fixed deduction); both are 0 when nothing is in force.</summary>
+public sealed record SalaryChangeInsight(
+    bool IsReduction, IReadOnlyList<ReducedItem> ReducedItems, decimal CurrentMonthlyPay, decimal ProposedMonthlyPay, bool ChangesContractWage);
 
 /// <summary>A cash allowance line that counts in the end-of-service wage.</summary>
 public sealed record EosbCashAllowance(string Code, decimal Amount);
@@ -122,9 +130,10 @@ public static class SalaryAllowanceLines
             }
         }
 
-        var definitions = await LiveDefinitionCodesAsync(db, tenantId, seen.ToList(), ct);
-        foreach (var line in resolved.Where(l => !definitions.Contains(l.Code)))
-            return (resolved, Unknown($"{line.Code} is not a monthly cash allowance that is in use: it was removed or switched off in Benefits by grade. Take the line off this salary, or restore the allowance first."));
+        var faults = await DefinitionFaultsAsync(db, tenantId, seen.ToList(), ct);
+        foreach (var line in resolved)
+            if (faults.TryGetValue(line.Code, out var fault))
+                return (resolved, FaultProblem(line.Code, fault));
 
         // The payslip columns hold at most the limit, so the whole pay is checked here, where every path that stages or applies lines passes.
         if (CheckWholePay(slotsGross, resolved.Sum(l => l.Amount)) is { } tooMuch) return (resolved, tooMuch);
@@ -133,18 +142,40 @@ public static class SalaryAllowanceLines
         return (resolved, null);
     }
 
-    /// <summary>The codes among <paramref name="codes"/> that are a live tenant-wide cash allowance definition.</summary>
+    /// <summary>Today, for "live from today on". The tenant's own calendar differs from UTC by hours; a definition version always ends on the last day of a
+    /// month, so the difference can only matter in the first hours of a month.</summary>
+    private static DateOnly Today() => DateOnly.FromDateTime(DateTime.UtcNow);
+
+    /// <summary>
+    /// Why each of <paramref name="codes"/> cannot go on a salary line today (absent = it can): no definition that is switched on, not removed, and in
+    /// effect today or later; a definition Finance has not confirmed; or one with no GL driver. A salary line is only ever put on a CONFIRMED definition.
+    /// </summary>
+    public static async Task<Dictionary<string, AllowanceDefinitionFault>> DefinitionFaultsAsync(
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+    {
+        var result = new Dictionary<string, AllowanceDefinitionFault>(StringComparer.Ordinal);
+        if (codes.Count == 0) return result;
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
+        var today = Today();
+        foreach (var code in codes)
+            if (CashAllowanceDefinitions.SalaryLineFault(versions[code], today) is { } fault) result[code] = fault;
+        return result;
+    }
+
+    /// <summary>The refusal for a line whose definition cannot be used (see <see cref="DefinitionFaultsAsync"/>).</summary>
+    public static AllowanceProblem FaultProblem(string code, AllowanceDefinitionFault fault) => fault switch
+    {
+        AllowanceDefinitionFault.NotConfirmed => new("salary_allowance_pending_finance",
+            $"{code} is waiting for Finance to confirm it, so it can't be put on a salary yet. Ask a Finance approver to confirm it in Benefits by grade.", 422),
+        AllowanceDefinitionFault.NoGlDriver => Unknown($"{code} has no GL driver, so its expense has nowhere to post. Ask Finance to correct it in Benefits by grade."),
+        _ => Unknown($"{code} is not a monthly cash allowance that is in use: it was removed or switched off in Benefits by grade. Take the line off this salary, or restore the allowance first."),
+    };
+
+    /// <summary>The codes among <paramref name="codes"/> that can go on a salary today: a live, Finance-confirmed tenant-wide cash allowance definition.</summary>
     public static async Task<HashSet<string>> LiveDefinitionCodesAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
     {
-        if (codes.Count == 0) return [];
-        var found = await ScopedBypass.TenantWide(db.PayComponents, tenantId,
-                "A salary proposal's allowance lines name tenant-wide cash allowance definitions; a company row never defines one.")
-            .AsNoTracking()
-            .Where(c => c.CompanyId == null && c.IsActive && !c.IsDeleted && c.ComponentType == PayComponentTypes.Earning
-                     && c.CalcMethod == PayComponentCalcMethods.GradePackage && codes.Contains(c.Code))
-            .Select(c => c.Code)
-            .ToListAsync(ct);
-        return found.ToHashSet(StringComparer.Ordinal);
+        var faults = await DefinitionFaultsAsync(db, tenantId, codes, ct);
+        return codes.Where(c => !faults.ContainsKey(c)).ToHashSet(StringComparer.Ordinal);
     }
 
     // ── Resolution of a proposal (explicit, or carried forward) ─────────────────────────────────
@@ -309,7 +340,7 @@ public static class SalaryAllowanceLines
         var employeeIds = changes.Select(c => c.EmployeeId).Distinct().ToList();
         var records = await db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && employeeIds.Contains(x.EmployeeId))
-            .Select(x => new { x.Id, x.EmployeeId, x.EffectiveDate, x.CreatedAtUtc })
+            .Select(x => new { x.Id, x.EmployeeId, x.EffectiveDate, x.CreatedAtUtc, x.BasicSalary, x.HousingAllowance, x.TransportAllowance, x.FoodAllowance, x.MobileAllowance, x.OtherAllowance })
             .ToListAsync(ct);
         var appliedIds = changes.Where(c => c.AppliedAssignmentId.HasValue).Select(c => c.AppliedAssignmentId!.Value).ToList();
         var recordIds = records.Select(r => r.Id).Concat(appliedIds).Distinct().ToList();
@@ -330,7 +361,7 @@ public static class SalaryAllowanceLines
 
         SalaryAllowanceLineView View(string code, string basis, decimal? rate, decimal amount) =>
             definitions.TryGetValue(code, out var d)
-                ? new(code, d.NameEn, d.NameAr, basis, rate, amount, d.GlDriverKey, d.GlDriverLabel, d.EosbIncluded, d.EosbExclusionReason)
+                ? new(code, d.NameEn, d.NameAr, basis, rate, amount, d.GlDriverKey, d.GlDriverLabel, d.EosbIncluded, d.EosbExclusionReason, d.EosbExclusionCategory)
                 : new(code, null, null, basis, rate, amount);
 
         foreach (var c in changes)
@@ -356,23 +387,41 @@ public static class SalaryAllowanceLines
                     r.Basis == AllowanceBases.PercentOfBasic && r.Rate is decimal rate ? PercentAmount(rate, c.BasicSalary) : r.Amount)).ToList();
             }
             else proposed = [];
-            views[c.Id] = new SalaryAllowanceView(currentViews, proposed, carried);
+
+            // What the change does to the pay: against the record in force for its date, the lines it leaves (those it states; the applied ones when approved;
+            // otherwise the current ones carried, a percentage re-worked on its basic). Worked out here every time, never stored, so it follows the record in force.
+            ReductionResult reduction;
+            if (current is null) reduction = ReductionResult.None;
+            else
+            {
+                IReadOnlyCollection<(string Code, decimal Amount)> after =
+                    (c.Status == SalaryChangeRequest.Approved && c.AppliedAssignmentId is not null) || staged[c.Id] is not null
+                        ? proposed.Select(l => (l.Code, l.Amount)).ToList()
+                        : SalaryReductions.CarriedLines(currentRows, c.BasicSalary);
+                reduction = SalaryReductions.Compare(
+                    new PaySlots(current.BasicSalary, current.HousingAllowance, current.TransportAllowance, current.FoodAllowance, current.MobileAllowance, current.OtherAllowance),
+                    currentRows.Select(r => (r.Code, r.Amount)).ToList(), PaySlots.Of(c), after);
+            }
+            views[c.Id] = new SalaryAllowanceView(currentViews, proposed, carried,
+                new SalaryChangeInsight(reduction.IsReduction, reduction.Items, reduction.CurrentTotal, reduction.ProposedTotal, reduction.ChangesContractWage));
         }
         return views;
     }
 
     /// <summary>What the approval screen and the read screens know about each allowance code: its names, the GL driver it posts to (with that driver's
     /// label) and its end-of-service answer. Removed definitions are included (a line on an old record still has to be shown); a code with no definition is absent.</summary>
-    private sealed record DefinitionFacts(string NameEn, string NameAr, string? GlDriverKey, string? GlDriverLabel, bool EosbIncluded, string? EosbExclusionReason);
+    private sealed record DefinitionFacts(string NameEn, string NameAr, string? GlDriverKey, string? GlDriverLabel, bool EosbIncluded, string? EosbExclusionReason,
+        string? EosbExclusionCategory = null);
 
     private static async Task<Dictionary<string, DefinitionFacts>> DefinitionFactsAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
     {
         var result = new Dictionary<string, DefinitionFacts>(StringComparer.Ordinal);
         if (codes.Count == 0) return result;
-        var rows = (await ScopedBypass.TenantWide(db.PayComponents, tenantId, "Screens that show a cash allowance line name it, say where it posts and whether it counts in end of service, removed definitions included.")
-                .AsNoTracking().Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && codes.Contains(c.Code))
-                .Select(c => new { c.Code, c.NameEn, c.NameAr, c.GlDriverKey, c.EosbIncluded, c.EosbExclusionReason }).ToListAsync(ct))
-            .GroupBy(c => c.Code, StringComparer.Ordinal).Select(g => g.First()).ToList();
+        // The version a screen shows is the one in effect today (else the latest): names are the same in every version, the GL driver and the
+        // end-of-service answer are the current ones. A removed definition still names its lines.
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true);
+        var today = Today();
+        var rows = codes.Select(code => CashAllowanceDefinitions.Current(versions[code], today)).Where(c => c is not null).Select(c => c!).ToList();
         var driverKeys = rows.Where(r => !string.IsNullOrWhiteSpace(r.GlDriverKey)).Select(r => r.GlDriverKey!).Distinct().ToList();
         var labels = driverKeys.Count == 0 ? new Dictionary<string, string>(StringComparer.Ordinal)
             : (await ScopedBypass.TenantWide(db.GlDrivers, tenantId, "The label of the tenant-wide GL driver a cash allowance posts to, shown beside its key.")
@@ -385,7 +434,7 @@ public static class SalaryAllowanceLines
             if (!string.IsNullOrWhiteSpace(r.GlDriverKey))
                 label = labels.TryGetValue(r.GlDriverKey!, out var own) && !string.IsNullOrWhiteSpace(own) ? own
                     : PayrollGlCatalog.Drivers.FirstOrDefault(d => d.Key == r.GlDriverKey)?.Label;
-            result[r.Code] = new DefinitionFacts(r.NameEn, r.NameAr, string.IsNullOrWhiteSpace(r.GlDriverKey) ? null : r.GlDriverKey, label, r.EosbIncluded, r.EosbExclusionReason);
+            result[r.Code] = new DefinitionFacts(r.NameEn, r.NameAr, string.IsNullOrWhiteSpace(r.GlDriverKey) ? null : r.GlDriverKey, label, r.EosbIncluded, r.EosbExclusionReason, r.EosbExclusionCategory);
         }
         return result;
     }
@@ -419,21 +468,19 @@ public static class SalaryAllowanceLines
             .Where(x => x.TenantId == tenantId && salaryIds.Contains(x.SalaryStructureId)).ToListAsync(ct)).ToLookup(x => x.SalaryStructureId);
     }
 
-    /// <summary>The lines of each salary record whose definition counts in the end-of-service wage, by record. A line whose definition
-    /// is gone is left out: it cannot be known to count.</summary>
+    /// <summary>The lines of each salary record whose definition counts in the end-of-service wage, by record, on the definition version in effect on
+    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). A line whose definition is gone is left out: it cannot be known to count.</summary>
     public static async Task<Dictionary<Guid, List<EosbCashAllowance>>> EosbIncludedAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, DateOnly asOf, CancellationToken ct)
     {
         var result = new Dictionary<Guid, List<EosbCashAllowance>>();
         var rows = await LoadAsync(db, tenantId, salaryIds, ct);
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
-        var counted = (await ScopedBypass.TenantWide(db.PayComponents, tenantId,
-                "End of service reads which cash allowance definitions count in the last wage; the definition is tenant-wide.")
-            .AsNoTracking()
-            .Where(c => c.CompanyId == null && !c.IsDeleted && c.EosbIncluded && c.ComponentType == PayComponentTypes.Earning
-                     && c.CalcMethod == PayComponentCalcMethods.GradePackage && codes.Contains(c.Code))
-            .Select(c => c.Code).ToListAsync(ct)).ToHashSet(StringComparer.Ordinal);
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
+        var counted = codes.Where(code => versions[code]
+                .Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault()?.EosbIncluded == true)
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var group in rows)
         {
             var lines = group.Where(r => counted.Contains(r.Code)).OrderBy(r => r.Code, StringComparer.Ordinal)

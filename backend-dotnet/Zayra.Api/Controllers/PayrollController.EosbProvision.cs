@@ -103,7 +103,7 @@ public partial class PayrollController
         var components = await LoadPayComponentsAsync(tenantId, companyId, periodStart, ct);
         // The cash allowances on each salary record in force whose definition counts in the end-of-service wage (none for most tenants).
         var eosbCashAllowances = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.EosbIncludedAsync(
-            _db, tenantId, salaries.Values.Select(x => x.Id).ToList(), ct);
+            _db, tenantId, salaries.Values.Select(x => x.Id).ToList(), periodStart, ct);
         var carriedStarts = (await _db.EmployeeEosbOpeningBalances.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && employeeIds.Contains(x.EmployeeId) && x.PriorServiceStartDate != null)
                 .Select(x => new { x.EmployeeId, x.AsAtDate, x.PriorServiceStartDate })

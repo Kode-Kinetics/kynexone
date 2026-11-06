@@ -22,7 +22,7 @@ public static class EmployeeSalaryBreakdownChanges
     public static EmployeeSalaryBreakdownRequest Read(JsonElement value)
     {
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Salary breakdown must be a complete object.");
-        var allowed = AmountKeys.Concat(["salaryStructureCode", "effectiveDate", "currency", "allowances"]).ToHashSet(StringComparer.Ordinal);
+        var allowed = AmountKeys.Concat(["salaryStructureCode", "effectiveDate", "currency", "allowances", "reductionConsentReference"]).ToHashSet(StringComparer.Ordinal);
         if (value.EnumerateObject().Any(p => !allowed.Contains(p.Name))) throw new InvalidOperationException("Salary breakdown contains an unrecognised field.");
         foreach (var key in AmountKeys)
             if (!value.TryGetProperty(key, out var amount) || amount.ValueKind != JsonValueKind.Number || !amount.TryGetDecimal(out var number)
@@ -39,7 +39,11 @@ public static class EmployeeSalaryBreakdownChanges
             throw new InvalidOperationException("Salary structure code must be text of 80 characters or fewer.");
         if (value.TryGetProperty("allowances", out var allowanceLines) && allowanceLines.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
             throw new InvalidOperationException("Allowances must be a list of lines, each with a code, a basis and an amount or a rate.");
+        if (value.TryGetProperty("reductionConsentReference", out var consent) && consent.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            throw new InvalidOperationException("The consent reference must be text.");
         var salary = value.Deserialize<EmployeeSalaryBreakdownRequest>(Json)!;
+        if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.CheckReference(salary.ReductionConsentReference) is { } badReference)
+            throw new InvalidOperationException(badReference.Message);
         if (salary.BasicSalary <= 0) throw new InvalidOperationException("Basic salary must be greater than zero.");
         // The whole pay, the allowance lines this package states included (a percentage worked on its own basic): carried lines are added once they are resolved.
         if (Gross(salary) + StatedLinesTotal(salary) > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
@@ -79,6 +83,17 @@ public static class EmployeeSalaryBreakdownChanges
                 db, allowanceTenant, employee.Id, salary.EffectiveDate!.Value, salary.BasicSalary!.Value, salary.Allowances, ct, slotsGross: Gross(salary))
             : new Zayra.Api.Infrastructure.Payroll.AllowanceResolution([], false, null);
         if (allowances.Problem is { } allowanceProblem) throw new InvalidOperationException(allowanceProblem.Message);
+        // Lowering pay needs the employee's written agreement. Judged against the record in force when this runs — at submit AND again when the package is
+        // applied (an approved change calls this again), so a change that was fine when proposed is refused if the pay it would lower has moved.
+        if (employee.TenantId is Guid reductionTenant)
+        {
+            var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(db, reductionTenant, employee.Id, salary.EffectiveDate!.Value,
+                new Zayra.Api.Infrastructure.Payroll.PaySlots(salary.BasicSalary!.Value, salary.HousingAllowance!.Value, salary.TransportAllowance!.Value,
+                    salary.FoodAllowance!.Value, salary.MobileAllowance!.Value, salary.OtherAllowance!.Value),
+                allowances.Lines, ct);
+            if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, salary.ReductionConsentReference) is { } noConsent)
+                throw new InvalidOperationException(noConsent.Message);
+        }
         var wholePay = Gross(salary) + allowances.Total;
         if (wholePay > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
         if (grade is not null && ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary)))

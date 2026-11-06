@@ -108,6 +108,30 @@ public sealed class EntitlementMatrixController : ControllerBase
     public async Task<IActionResult> CashGlDrivers([FromServices] EntitlementMatrixService matrix, CancellationToken ct) =>
         this.GetTenantId() is not Guid tid ? Unauthorized() : Ok(await matrix.CashGlDriversAsync(tid, ct));
 
+    /// <summary>
+    /// POST /api/entitlements/components/{code}/confirm — Finance confirms a monthly cash allowance that someone without the Finance permission added
+    /// ("pending Finance"). Body (all optional): <c>{ glDriverKey?, eosbIncluded?, eosbExclusionCategory?, eosbExclusionReason? }</c>; left out, it is confirmed
+    /// as entered, and Finance may change the GL driver or the end-of-service setting in the same action. The person who added it can never confirm it
+    /// (403 <c>maker_cannot_confirm</c>). Audited. 200 returns the component; 409 <c>already_confirmed</c> / <c>not_a_cash_allowance</c>.
+    /// </summary>
+    [HttpPost("components/{code}/confirm")]
+    [HasPermission("payroll.approve")]
+    public async Task<IActionResult> ConfirmBenefit([FromServices] EntitlementMatrixService matrix, string code, [FromBody] ConfirmAllowanceRequest? req,
+        CancellationToken ct) =>
+        this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.ConfirmBenefitAsync(Actor(), code, req ?? new ConfirmAllowanceRequest(), ct));
+
+    /// <summary>
+    /// POST /api/entitlements/components/{code}/correct — Finance changes a confirmed cash allowance's GL driver and/or end-of-service setting from the first
+    /// day of a month (<c>effectiveFrom</c>), never earlier than the first payroll month no company has approved or locked. A new effective-dated version is
+    /// written; the old one is closed the day before. Body: <c>{ effectiveFrom, reason, glDriverKey?, eosbIncluded?, eosbExclusionCategory?, eosbExclusionReason? }</c>.
+    /// Audited with the old and new values and the reason.
+    /// </summary>
+    [HttpPost("components/{code}/correct")]
+    [HasPermission("payroll.approve")]
+    public async Task<IActionResult> CorrectBenefit([FromServices] EntitlementMatrixService matrix, string code, [FromBody] CorrectAllowanceRequest req,
+        CancellationToken ct) =>
+        this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.CorrectBenefitAsync(Actor(), code, req, ct));
+
     /// <summary>POST /api/entitlements/components/{code}/remove — removes a benefit the customer added and nobody has used yet.</summary>
     [HttpPost("components/{code}/remove")]
     [HasPermission("entitlements.manage")]
@@ -126,7 +150,10 @@ public sealed class EntitlementMatrixController : ControllerBase
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.ImportLegacyAsync(Actor(), effectiveFrom, commit, ct));
 
     private MatrixActor Actor() => new(this.GetTenantId()!.Value, this.GetUserId(), this.GetEntityScope(),
-        HttpContext?.Connection.RemoteIpAddress?.ToString());
+        HttpContext?.Connection.RemoteIpAddress?.ToString(), User.HasPermission(FinancePermission));
+
+    /// <summary>The permission that makes someone "Finance" for cash allowances: the one that approves a salary change and a payroll run.</summary>
+    public const string FinancePermission = "payroll.approve";
 
     private ObjectResult Result(MatrixResult result) => StatusCode(result.Status, result.Body);
 }

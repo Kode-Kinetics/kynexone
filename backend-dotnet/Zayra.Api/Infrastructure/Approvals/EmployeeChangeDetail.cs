@@ -181,9 +181,24 @@ public static class EmployeeChangeDetail
             .OrderBy(l => l.Code, StringComparer.Ordinal).ToList();
 
         var before = FormatPackage(latest, employee.Salary, Card(onFileLines, latest?.BasicSalary.GetValueOrDefault() ?? 0m), carried: false);
+        var proposedCard = package is null ? [] : Card(proposedLines, package.BasicSalary.GetValueOrDefault());
         var after = package is null
             ? Display(proposedValue)
-            : FormatPackage(package, null, Card(proposedLines, package.BasicSalary.GetValueOrDefault()), carried);
+            : FormatPackage(package, null, proposedCard, carried);
+        // The approver must see when this lowers the employee's pay, and the written agreement it cites.
+        if (package is not null && after is not null && package.EffectiveDate is { } effective && package.BasicSalary is { } basic)
+        {
+            var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(db, tenantId, employee.Id, effective,
+                new Zayra.Api.Infrastructure.Payroll.PaySlots(basic, package.HousingAllowance.GetValueOrDefault(), package.TransportAllowance.GetValueOrDefault(),
+                    package.FoodAllowance.GetValueOrDefault(), package.MobileAllowance.GetValueOrDefault(), package.OtherAllowance.GetValueOrDefault()),
+                proposedCard.Select(l => new Zayra.Api.Infrastructure.Payroll.ResolvedAllowanceLine(l.Code, l.Basis, l.Rate, l.Amount)).ToList(), ct);
+            if (reduction.IsReduction)
+            {
+                var reference = Zayra.Api.Infrastructure.Payroll.SalaryReductions.CleanReference(package.ReductionConsentReference);
+                var down = string.Join(", ", reduction.Items.Select(i => i.To == 0m ? $"{i.Item} removed" : $"{i.Item} {Amount(i.From)} to {Amount(i.To)}"));
+                after += $" [lowers the employee's pay: {down}; written agreement: {(reference is null ? "none given" : reference)}]";
+            }
+        }
         return (before, after);
     }
 

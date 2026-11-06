@@ -811,16 +811,12 @@ public sealed class PayrollRunProcessor
                     .ToListAsync(cancellationToken))
             .ToLookup(x => x.SalaryStructureId);
         var cashAllowanceCodes = cashAllowancesByRecord.SelectMany(g => g).Select(x => x.Code).Distinct().ToList();
-        var cashAllowanceDefinitions = cashAllowanceCodes.Count == 0
-            ? new Dictionary<string, PayComponent>(StringComparer.Ordinal)
-            : (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
-                    "Payroll pass: the tenant-wide definition (name and GL driver) of each cash allowance an employee's salary record carries.")
-                .AsNoTracking()
-                .Where(c => c.CompanyId == null && c.IsActive && !c.IsDeleted && cashAllowanceCodes.Contains(c.Code)
-                         && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage)
-                .ToListAsync(cancellationToken))
-                .GroupBy(c => c.Code, StringComparer.Ordinal)
-                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        // The definition VERSION in effect for the period start (a Finance correction of the GL driver applies from a month on): every employee's line in
+        // this run posts to the driver the definition has for this period.
+        var cashAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, cashAllowanceCodes, cancellationToken);
+        var cashAllowanceDefinitions = cashAllowanceCodes
+            .Select(code => CashAllowanceDefinitions.InEffect(cashAllowanceVersions[code], periodStart))
+            .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
 
         // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
         // Everything from here to the transaction is INERT for a run with no joiner, no leaver and no
@@ -946,17 +942,15 @@ public sealed class PayrollRunProcessor
             .Select(l => PayrollArrearsComponents.SourceComponent(l.ComponentCode))
             .Where(c => Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(c))
             .Distinct().ToList();
-        var arrearsAllowanceDefinitions = arrearsAllowanceCodes.Count == 0
-            ? new Dictionary<string, PayComponent>(StringComparer.Ordinal)
-            : (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
-                    "Payroll pass: the tenant-wide definition (name and GL driver) of each cash allowance a back-pay line settles, removed or switched-off definitions included.")
-                .AsNoTracking()
-                .Where(c => c.CompanyId == null && arrearsAllowanceCodes.Contains(c.Code)
-                         && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage)
-                .ToListAsync(cancellationToken))
-                .GroupBy(c => c.Code, StringComparer.Ordinal)
-                // A live definition wins over a removed one of the same code (the unique key counts removed rows, so this is only defensive).
-                .ToDictionary(g => g.Key, g => g.OrderBy(c => c.IsDeleted).ThenByDescending(c => c.IsActive).First(), StringComparer.Ordinal);
+        // Which version of the definition: the one in effect for THIS run's period — back pay posts in the current period's journal, so it goes to the
+        // GL driver the definition has now. (The covered period's end-of-service flag is irrelevant: arrears never feed the end-of-service wage.) A live
+        // definition wins over a removed one, and a version in effect over one that is not.
+        var arrearsAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, arrearsAllowanceCodes, cancellationToken, includeRemoved: true);
+        var arrearsAllowanceDefinitions = arrearsAllowanceCodes
+            .Select(code => arrearsAllowanceVersions[code]
+                .OrderByDescending(c => !c.IsDeleted && c.IsInEffect(periodStart)).ThenBy(c => c.IsDeleted).ThenByDescending(c => c.IsActive)
+                .ThenByDescending(c => c.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault())
+            .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
 
         // ── POD-B3 HANDOFF: the 1420 receivable a prior void recognised ──────────────────────────────
         // Explicit per-run flag, default OFF: recovering an overpayment out of someone's salary is an act

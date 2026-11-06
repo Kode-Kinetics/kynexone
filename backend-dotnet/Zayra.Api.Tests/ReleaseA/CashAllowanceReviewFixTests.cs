@@ -72,7 +72,7 @@ public partial class CashAllowanceReviewFixTests
         db.PayComponents.Add(new PayComponent
         {
             TenantId = tid, CompanyId = null, Code = code, NameEn = name, NameAr = name + " ar", ComponentType = PayComponentTypes.Earning,
-            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+            CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
             GlDriverKey = driver, GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = eosb, EosbExclusionReason = eosbReason, DisplayOrder = 9100,
         });
         await db.SaveChangesAsync();
@@ -585,7 +585,7 @@ public partial class CashAllowanceReviewFixTests
         foreach (var (code, key) in new[] { ("ALW_MISC", "EARN:OTHER"), ("ALW_ODD", "EARN:NOWHERE") })
             w.Db.PayComponents.Add(new PayComponent
             {
-                TenantId = w.Tid, CompanyId = null, Code = code, NameEn = code, NameAr = code, ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.GradePackage,
+                TenantId = w.Tid, CompanyId = null, Code = code, NameEn = code, NameAr = code, ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow,
                 EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None, GlDriverKey = key, EosbIncluded = true, DisplayOrder = 9100,
             });
         await w.Db.SaveChangesAsync();

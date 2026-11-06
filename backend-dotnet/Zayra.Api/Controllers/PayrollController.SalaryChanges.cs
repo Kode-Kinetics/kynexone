@@ -42,13 +42,21 @@ public partial class PayrollController
             CurrentAllowances = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).Current,
             ProposedAllowances = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).Proposed,
             AllowancesCarriedForward = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).CarriedForward,
+            // Against the salary record in force (worked out when read, never stored): a change that lowers the pay or any one item needs the employee's
+            // written agreement (reductionConsentReference); one that changes any pay item or allowance line changes the contract wage (amend it on Qiwa).
+            IsReduction = allowances?.Insight?.IsReduction ?? false,
+            ReductionConsentReference = c.ReductionConsentReference,
+            ReducedItems = allowances?.Insight?.ReducedItems ?? (IReadOnlyList<Zayra.Api.Infrastructure.Payroll.ReducedItem>)[],
+            CurrentMonthlyPay = allowances?.Insight?.CurrentMonthlyPay ?? 0m,
+            ProposedMonthlyPay = allowances?.Insight?.ProposedMonthlyPay ?? 0m,
+            ChangesContractWage = allowances?.Insight?.ChangesContractWage ?? false,
         };
     }
 
     /// <summary>Stages a validated change as Pending. An older pending change for the same employee and date is superseded.</summary>
     private async Task<SalaryChangeRequest> StageSalaryChangeAsync(
         Guid tenantId, Employee employee, Guid structureId, EmployeeSalaryStructureRequest req, string source, Guid? batchId, CancellationToken ct,
-        string? allowancesJson = null)
+        string? allowancesJson = null, string? reductionConsentReference = null)
     {
         var superseded = await _db.SalaryChangeRequests
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.EffectiveDate == req.EffectiveDate && x.Status == SalaryChangeRequest.Pending)
@@ -79,6 +87,7 @@ public partial class PayrollController
             Currency = req.Currency ?? string.Empty, PreviousBasicSalary = previous,
             // null = the change does not mention allowances (carried forward on approval); "[]" = remove them all; otherwise exactly these lines.
             AllowancesJson = allowancesJson,
+            ReductionConsentReference = Zayra.Api.Infrastructure.Payroll.SalaryReductions.CleanReference(reductionConsentReference),
             RequestedByUserId = GetUserId(), RequestedByName = GetUserName(),
         };
         _db.SalaryChangeRequests.Add(change);

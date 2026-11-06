@@ -40,7 +40,7 @@ public sealed class CashAllowanceStagingLockPostgresTests
             seed.PayComponents.Add(new PayComponent
             {
                 TenantId = tid, CompanyId = null, Code = "ALW_CAR", NameEn = "Car allowance", NameAr = "بدل سيارة", ComponentType = PayComponentTypes.Earning,
-                CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+                CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
                 GlDriverKey = "EARN:CAR", GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = true, DisplayOrder = 9100,
             });
             await seed.SaveChangesAsync();

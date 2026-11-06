@@ -371,6 +371,14 @@ public partial class PayrollController : ControllerBase
             slotsGross: req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance);
         if (allowanceLines.Problem is { } allowanceProblem)
             return StatusCode(allowanceProblem.Status, new { error = allowanceProblem.Code, code = allowanceProblem.Code, message = allowanceProblem.Message });
+        // Lowering an employee's pay (the whole monthly pay, or any single pay item or allowance line) needs their written agreement: a reference to it.
+        if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.CheckReference(req.ReductionConsentReference) is { } badReference)
+            return StatusCode(badReference.Status, new { error = badReference.Code, code = badReference.Code, message = badReference.Message });
+        var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(_db, tenantId, employee.Id, req.EffectiveDate,
+            new Zayra.Api.Infrastructure.Payroll.PaySlots(req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.FoodAllowance, req.MobileAllowance, req.OtherAllowance),
+            allowanceLines.Lines, cancellationToken);
+        if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, req.ReductionConsentReference) is { } noConsent)
+            return StatusCode(noConsent.Status, new { error = noConsent.Code, code = noConsent.Code, message = noConsent.Message, reducedItems = reduction.Items });
         if (employee.GradeId.HasValue)
         {
             var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, cancellationToken);
@@ -388,11 +396,15 @@ public partial class PayrollController : ControllerBase
             new EmployeeSalaryStructureRequest(req.EmployeeId, structure.Id, req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.FoodAllowance,
                 req.MobileAllowance, req.OtherAllowance, req.FixedDeduction, req.EffectiveDate, assignmentCurrency),
             "Manual", null, cancellationToken,
-            allowancesJson: req.Allowances is null ? null : Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(allowanceLines.Lines));
+            allowancesJson: req.Allowances is null ? null : Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(allowanceLines.Lines),
+            reductionConsentReference: req.ReductionConsentReference);
         await PayrollAudit("payroll.employee_salary.change_requested", "SalaryChangeRequest", change.Id.ToString(),
-            req.Allowances is null
-                ? (object)new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate }
-                : new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate, allowances = allowanceLines.Lines }, cancellationToken);
+            reduction.IsReduction
+                ? new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate, allowances = req.Allowances is null ? null : allowanceLines.Lines,
+                        isReduction = true, reducedItems = reduction.Items, reductionConsentReference = change.ReductionConsentReference }
+                : req.Allowances is null
+                    ? (object)new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate }
+                    : new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate, allowances = allowanceLines.Lines }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await NotePaySubmittedAsync(req.EmployeeId, cancellationToken);
         var allowanceViews = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], cancellationToken);
@@ -5741,9 +5753,11 @@ public partial class PayrollController : ControllerBase
     {
         // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
+        var wageMonth = new DateOnly(today.Year, today.Month, 1);
+        var components = await LoadPayComponentsAsync(tenantId, companyId, wageMonth, ct);
+        // The cash allowances' end-of-service answer is the definition version in effect for that same month (a Finance correction applies from a month on).
         var cashAllowances = salary is null ? null
-            : (await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.EosbIncludedAsync(_db, tenantId, [salary.Id], ct)).GetValueOrDefault(salary.Id);
+            : (await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.EosbIncludedAsync(_db, tenantId, [salary.Id], wageMonth, ct)).GetValueOrDefault(salary.Id);
         return EosbWageBasisFrom(components, salary, employee, cashAllowances);
     }
 
@@ -8990,12 +9004,18 @@ public partial class PayrollController : ControllerBase
         var completedSteps = steps.Count(s => s.Complete);
         var prerequisites = await BuildPaymentPrerequisitesAsync(
             tenantId, companyId, activeEmployeeQuery, targetYear, targetMonth, targetPeriodEnd, cancellationToken);
-        var isReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80;
+        // Cash allowance lines whose definition the run could not use (missing, not confirmed by Finance, no GL driver): listed now, not at the run's 422.
+        var cashAllowanceIssues = await Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitions.ReadinessIssuesAsync(_db, tenantId,
+            (await activeEmployeeQuery.AsNoTracking().Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.CompanyId }).ToListAsync(cancellationToken))
+                .Select(e => (e.Id, e.EmployeeCode, e.FullName, e.CompanyId)).ToList(),
+            new DateOnly(targetYear, targetMonth, 1), targetPeriodEnd, cancellationToken);
+        var isReadyForProcessing = hasComponents && hasStructures && coveragePercent >= 80 && cashAllowanceIssues.Count == 0;
         return Ok(new
         {
             Year = targetYear,
             Month = targetMonth,
             CompanyId = companyId,
+            CashAllowanceIssues = cashAllowanceIssues,
             CompletionPercent = Math.Round(completedSteps * 100.0 / steps.Length, 0),
             IsReadyForProcessing = isReadyForProcessing,
             TotalActiveEmployees = totalActive,
@@ -9195,6 +9215,16 @@ public partial class PayrollController : ControllerBase
             if (assignmentError is not null)
             { errors.Add($"Row {rowNum}: {assignmentError}"); skipped++; continue; }
 
+            // Lowering pay needs the employee's written agreement: an optional ReductionConsentReference column carries its reference. A row that lowers the
+            // monthly pay (or any pay item or allowance line the employee has now) without one is not staged.
+            var consentReference = row.GetValueOrDefault("ReductionConsentReference", string.Empty);
+            if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.CheckReference(consentReference) is { } badReference)
+            { errors.Add($"Row {rowNum}: {badReference.Message}"); skipped++; continue; }
+            var rowReduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(_db, tenantId, employee.Id, effectiveDate,
+                new Zayra.Api.Infrastructure.Payroll.PaySlots(basic, housing, transport, food, mobile, other), null, cancellationToken);
+            if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(rowReduction, consentReference) is { } noConsent)
+            { errors.Add($"Row {rowNum}: {noConsent.Message}"); skipped++; continue; }
+
             var gross = basic + housing + transport + food + mobile + other - deduction;
             if (employee.GradeId.HasValue)
             {
@@ -9210,7 +9240,8 @@ public partial class PayrollController : ControllerBase
             if (plannedRows.TryGetValue((employee.Id, effectiveDate), out var firstRow))
             { errors.Add($"Row {rowNum}: duplicates row {firstRow} (same employee and effective date {effectiveDate:yyyy-MM-dd}); this row was not applied."); skipped++; continue; }
             plannedRows[(employee.Id, effectiveDate)] = rowNum;
-            planned.Add(new PlannedSalaryRow(rowNum, employee.Id, employee.EmployeeCode, structure.Id, basic, housing, transport, food, mobile, other, deduction, effectiveDate, currency));
+            planned.Add(new PlannedSalaryRow(rowNum, employee.Id, employee.EmployeeCode, structure.Id, basic, housing, transport, food, mobile, other, deduction, effectiveDate, currency,
+                Zayra.Api.Infrastructure.Payroll.SalaryReductions.CleanReference(consentReference)));
         }
 
         // Nothing in the file is applied here. Each valid row becomes a pending change; Finance decides the file
@@ -9231,7 +9262,7 @@ public partial class PayrollController : ControllerBase
             await StageSalaryChangeAsync(tenantId, subjectEmployee, row.StructureId,
                 new EmployeeSalaryStructureRequest(row.EmployeeId, row.StructureId, row.Basic, row.Housing, row.Transport, row.Food, row.Mobile, row.Other,
                     row.Deduction, row.EffectiveDate, row.Currency),
-                "Import", batchId, cancellationToken);
+                "Import", batchId, cancellationToken, reductionConsentReference: row.ConsentReference);
             pending++;
         }
         if (pending > 0)
@@ -9247,7 +9278,7 @@ public partial class PayrollController : ControllerBase
     }
 
     private sealed record PlannedSalaryRow(int RowNum, int EmployeeId, string EmployeeCode, Guid StructureId, decimal Basic, decimal Housing, decimal Transport,
-        decimal Food, decimal Mobile, decimal Other, decimal Deduction, DateOnly EffectiveDate, string Currency);
+        decimal Food, decimal Mobile, decimal Other, decimal Deduction, DateOnly EffectiveDate, string Currency, string? ConsentReference = null);
 
     /// <summary>The (employee, date) of a 23P01 on the one-active-salary-row-per-date guard, or null for anything else.
     /// Postgres reports it as "Key (tenant_id, employee_id, effective_date)=(…, 12, 2026-01-01) conflicts with existing key (…)".</summary>
@@ -9816,8 +9847,10 @@ public record SalaryComponentRequest(string Code, string Name, string ComponentT
 /// package structure, or DIRECT without a grade.</param>
 /// <param name="Allowances">The monthly cash allowances (ALW_*) this salary pays beyond the slots above. Null = not mentioned: the new record carries the
 /// current record's lines forward (a percentage re-worked on this basic). An empty list removes them all.</param>
+/// <param name="ReductionConsentReference">The employee's written agreement to a reduction (up to 200 characters, e.g. the signed amendment or the Qiwa request
+/// number). Required when this salary lowers the whole monthly pay or any single pay item or allowance line against the record in force; otherwise ignored.</param>
 public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency,
-    IReadOnlyList<SalaryAllowanceLine>? Allowances = null);
+    IReadOnlyList<SalaryAllowanceLine>? Allowances = null, string? ReductionConsentReference = null);
 // POD-B2 (M5b) — ExpectedExcludedCount is an ACKNOWLEDGEMENT, not a warning. Approve refuses with 409
 // when the run holds deliberate exclusions and the approver's expectation does not match the resolved
 // count, so the person signing off cannot miss a hold-out buried among dozens of routine warnings.

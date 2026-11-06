@@ -2416,6 +2416,15 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                     "entitlement_class IN ('None','QiwaWage','Contractual','Facility')");
                 t.HasCheckConstraint("ck_pay_components__statutory_floor",
                     "statutory_floor IN ('None','Housing','Transport','Medical','Art40')");
+                // A cash allowance left out of the end-of-service wage says why, as a category plus a note ("Other" must carry the note).
+                // The CHECKs avoid IS DISTINCT FROM / regexes so the SQLite and InMemory test schemas stay valid.
+                t.HasCheckConstraint("ck_pay_components__eosb_exclusion_category",
+                    "eosb_exclusion_category IS NULL OR (eosb_exclusion_category IN ('Reimbursement','Discretionary','NonRecurring','Other') AND NOT eosb_included)");
+                t.HasCheckConstraint("ck_pay_components__eosb_exclusion_other_note",
+                    "eosb_exclusion_category <> 'Other' OR (eosb_exclusion_reason IS NOT NULL AND length(trim(eosb_exclusion_reason)) > 0)");
+                // A confirmer always has a confirmation time (a row confirmed by the migration's backfill has the time and no person).
+                t.HasCheckConstraint("ck_pay_components__finance_confirmation",
+                    "finance_confirmed_by_user_id IS NULL OR finance_confirmed_at_utc IS NOT NULL");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.EntitlementClass).HasMaxLength(20).HasDefaultValue(PayEntitlementClasses.None);
@@ -2439,6 +2448,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.GlDriverKey).HasMaxLength(80);
             entity.Property(x => x.FormulaExpression).HasMaxLength(1024);
             entity.Property(x => x.EosbExclusionReason).HasMaxLength(500);
+            entity.Property(x => x.EosbExclusionCategory).HasMaxLength(20);
             entity.Property(x => x.Value).HasPrecision(18, 4);
         });
 
@@ -2872,7 +2882,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         modelBuilder.Entity<EmployeeSalaryStructure>(entity => { entity.ToTable("employee_salary_structures"); entity.HasKey(x => x.Id); entity.Property(x => x.BasicSalary).HasPrecision(14,2); entity.Property(x => x.HousingAllowance).HasPrecision(14,2); entity.Property(x => x.TransportAllowance).HasPrecision(14,2); entity.Property(x => x.FoodAllowance).HasPrecision(14,2); entity.Property(x => x.MobileAllowance).HasPrecision(14,2); entity.Property(x => x.OtherAllowance).HasPrecision(14,2); entity.Property(x => x.FixedDeduction).HasPrecision(14,2); entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsActive }); });
         modelBuilder.Entity<SalaryChangeRequest>(entity =>
         {
-            entity.ToTable("salary_change_requests");
+            entity.ToTable("salary_change_requests", t => t.HasCheckConstraint("ck_salary_change_requests__reduction_consent_reference",
+                "reduction_consent_reference IS NULL OR length(trim(reduction_consent_reference)) > 0"));
             entity.HasKey(x => x.Id);
             foreach (var m in new[] { nameof(SalaryChangeRequest.BasicSalary), nameof(SalaryChangeRequest.HousingAllowance), nameof(SalaryChangeRequest.TransportAllowance),
                 nameof(SalaryChangeRequest.FoodAllowance), nameof(SalaryChangeRequest.MobileAllowance), nameof(SalaryChangeRequest.OtherAllowance), nameof(SalaryChangeRequest.FixedDeduction) })
@@ -2885,6 +2896,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Currency).HasMaxLength(10);
             // The proposed cash-allowance lines (EmployeeSalaryAllowance shape). Staging only: nobody queries inside it.
             entity.Property(x => x.AllowancesJson).HasColumnType("jsonb");
+            entity.Property(x => x.ReductionConsentReference).HasMaxLength(200);
             entity.Property(x => x.RequestedByName).HasMaxLength(200);
             entity.Property(x => x.DecidedByName).HasMaxLength(200);
             entity.Property(x => x.DecisionNote).HasMaxLength(1000);

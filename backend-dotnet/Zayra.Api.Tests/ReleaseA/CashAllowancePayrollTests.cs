@@ -615,7 +615,7 @@ public class CashAllowancePayrollTests
         db.PayComponents.Add(new PayComponent
         {
             TenantId = seed.TenantId, CompanyId = null, Code = Code, NameEn = "Car allowance", NameAr = "بدل سيارة", ComponentType = PayComponentTypes.Earning,
-            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, GlDriverKey = Driver,
+            CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, GlDriverKey = Driver,
         });
         await db.SaveChangesAsync();
 
@@ -676,7 +676,7 @@ public class CashAllowancePayrollTests
         db.PayComponents.Add(new PayComponent
         {
             TenantId = tid, CompanyId = null, Code = code, NameEn = name, NameAr = name, ComponentType = PayComponentTypes.Earning,
-            CalcMethod = PayComponentCalcMethods.GradePackage, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
+            CalcMethod = PayComponentCalcMethods.GradePackage, FinanceConfirmedAtUtc = DateTime.UtcNow, EntitlementClass = PayEntitlementClasses.QiwaWage, StatutoryFloor = PayStatutoryFloors.None,
             GlDriverKey = driver, GosiSubject = false, WpsIncluded = true, IsTaxable = false, EosbIncluded = true, DisplayOrder = 9100,
         });
         await db.SaveChangesAsync();
@@ -742,6 +742,8 @@ public class CashAllowancePayrollTests
             var claims = new List<Claim>
             {
                 new("tenant_id", Tid.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new(ClaimTypes.Role, "HR Director"),
+                // Holds the Finance permission, so a cash allowance these tests add is confirmed at creation (the pending-Finance path has its own tests).
+                new("permission", "payroll.approve"),
             };
             if (companyScope != null)
                 claims.Add(new Claim(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = companyScope })));
