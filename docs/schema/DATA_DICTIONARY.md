@@ -817,6 +817,16 @@ the live bridge uses the `ITenantOwned` / `ICompanyScoped` query filters.
 - **Lifecycle** — written only by `IEntitlementWriter` (freeze at activation, renewal Apply, holdover carry); closed at the term's end.
 - **Retention** `S` — labour-law evidence of what was agreed for each term.
 
+### `employee_salary_allowances` — customer-defined monthly cash allowances (live bridge, migration `20261105235049_CashAllowances`)
+- **Purpose** — the monthly cash allowances (`ALW_*` pay components added in Benefits by grade) one salary record pays, beyond the four fixed slots on `employee_salary_structures`. The live-bridge forerunner of the deferred `employee_salary_components`: QiwaWage cash still lives only on the salary record.
+- **Tier** T · **Domain** Payroll · **RLS** shape (a) (live bridge: the `ITenantOwned` query filter)
+- **Keys** — `salary_structure_id`, `code` (an `ALW_*` pay component code, ≤ 64), `basis` (`Amount`/`PercentOfBasic`), `rate` (numeric 7,4, only for `PercentOfBasic`), `amount` (numeric 14,2, the monthly amount; for a percent, rate × basic at approval)
+- **Rel** — `(tenant, salary_structure_id) → employee_salary_structures (tenant_id, id)` (N:1, RESTRICT). `code` names a tenant-wide `pay_components` row by value: the payroll run refuses (422) a line whose definition is missing or has no GL driver.
+- **Constraint** — UNIQUE (tenant, salary_structure_id, code); CHECKs `basis` value set, `rate_pair` (rate ⇔ PercentOfBasic), `rate_range` (0 < rate ≤ 1), `amount_positive`.
+- **Lifecycle** — written with its salary record (a new record carries its own lines; a line is never edited in place). Read by the payroll run: one earning line per allowance, prorated like OTHER_ALLOWANCES, outside the GOSI input, on the definition's own GL driver; none on a supplemental run.
+- **Columns added alongside** — `pay_components.eosb_exclusion_reason` (why an allowance is left out of the end-of-service wage; required when `eosb_included` is false for an `ALW_*` row) and `salary_change_requests.allowances_json` (jsonb, the proposed lines while a salary change awaits Finance; staging only, the approved lines land relationally here).
+- **Retention** `S` — the basis of a paid wage, with its salary record.
+
 ### `employee_contracts` — the Release A renewal chain (live bridge columns)
 - **Purpose** — each term's place in the Article 55 chain, per employer: `renewed_from_contract_id` (UNIQUE per tenant), `renewal_number` (renewals before this term; 0 = the original), `chain_started_on`, `worker_nationality_class` (the single source Release A reads for Saudi / NonSaudi), `auto_renew`, `non_renewal_notice_days`, `provisional_basis` (holdover), and `chain_source` (R0b, `20261007000200_ReleaseAContractChainSource`).
 - **`chain_source`** — NULL while unstamped; `Derived` when the chain census or the activation stamp derived the number from the contract rows; `Recorded` when HR confirmed it (`POST ~/api/contracts/{id}/chain/confirm`). Correcting an earlier term re-derives the later `Derived` terms; a `Recorded` term is never overwritten.
