@@ -166,6 +166,130 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    test('add a monthly cash allowance: asks for the GL account and end of service reason, says each refusal at its field, then shows it in the Wage group', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const phone = {
+        code: 'ALW_PHONE', nameEn: 'Phone allowance', nameAr: 'بدل هاتف', class: 'QiwaWage', floor: 'None', group: 'Wage',
+        allowedValueTypes: ['Amount', 'PercentOfBasic'], allowedCoverageTiers: [], allowedDependantScopes: ['None'],
+        allowedLimitPeriods: ['Monthly'], defaultLimitPeriod: 'Monthly', isFloor: false, canBeSkipped: false, isLoanFacility: false,
+        floorReason: null, isCustom: true,
+      };
+      const withPhone = {
+        ...groupMatrix,
+        components: [...groupMatrix.components, phone],
+        // A cash allowance is wage: the server never lets a company skip it.
+        offerings: [...groupMatrix.offerings, { componentCode: 'ALW_PHONE', mode: 'Group', offered: true, skippedFrom: null, changesOn: null, canBeSkipped: false }],
+        gaps: [...groupMatrix.gaps, ...groupMatrix.grades.map((g: { id: string }) => ({ gradeId: g.id, componentCode: 'ALW_PHONE', scheduledFrom: null }))],
+      };
+      const driver = (key: string, label: string, category = 'Earning') => ({
+        id: key, companyId: null, key, label, category, postingSide: 'DR', accountType: 'Expense', defaultCode: '5200', defaultName: 'Expense',
+        matchSource: null, matchMode: 'Exact', matchComponentCode: null, emitsEmployerExpensePair: false, pairedExpenseDriverKey: null,
+        isSystem: false, isActive: true, sortOrder: 1, inherited: false,
+      });
+      let exists = false; let attempts = 0;
+      const calls: { method: string; path: string; body: any }[] = [];
+      await page.route('**/api/finance/gl/drivers', route => route.fulfill({ json: [
+        driver('EARN:PHONE', 'Phone allowances'), driver('DED:LOAN', 'Loan deduction', 'Deduction')] }));
+      await page.route('**/api/finance/gl/resolve', route => route.fulfill({ json: { companyId: null, rows: [{
+        driverKey: 'EARN:PHONE', label: 'Phone allowances', category: 'Earning', side: 'DR', account: { id: 'a1', code: '5210', name: 'Phone expense' }, source: 'GroupMapping', problem: null }] } }));
+      await page.route('**/api/entitlements/**', route => {
+        const request = route.request(); const p = new URL(request.url()).pathname;
+        if (p === '/api/entitlements/components' && request.method() === 'POST') {
+          calls.push({ method: 'POST', path: p, body: request.postDataJSON() });
+          // The first send is refused the way the server refuses an unmapped GL driver; the second goes through.
+          if (++attempts === 1) return route.fulfill({ status: 400, json: { error: 'gl_driver_invalid', message: "GL driver 'EARN:PHONE' resolves to no account in company Logistics (Unmapped)." } });
+          exists = true;
+          return route.fulfill({ json: phone });
+        }
+        if (p === '/api/entitlements/components/ALW_PHONE/remove' && request.method() === 'POST') {
+          calls.push({ method: 'POST', path: p, body: null });
+          exists = false;
+          return route.fulfill({ json: { removed: 'ALW_PHONE' } });
+        }
+        if (p === '/api/entitlements/matrix' && request.method() === 'GET') return route.fulfill({ json: exists ? withPhone : groupMatrix });
+        return route.fallback();
+      });
+      const benefit = (locale === 'ar' ? phone.nameAr : phone.nameEn) as string;
+
+      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Phone allowance');
+      await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('بدل هاتف');
+
+      // The default is a contract benefit: no pay questions are asked.
+      await expect(page.getByRole('radio', { name: say(locale, 'No, it’s a contract benefit (recorded on the employee’s package, not paid in salary)') })).toBeChecked();
+      await expect(page.getByTestId('cash-allowance-fields')).toHaveCount(0);
+
+      await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
+      const glSelect = page.getByLabel(say(locale, 'GL account for this allowance (required)'));
+      await expect(glSelect).toBeVisible();
+      // Only earning accounts are offered; GOSI and WPS are stated, not editable.
+      await expect(glSelect.getByRole('option')).toHaveCount(2);
+      await expect(page.getByText(say(locale, 'No — GOSI is calculated on basic + housing only'))).toBeVisible();
+      await expect(page.getByText(say(locale, 'Yes — paid in the salary transfer'))).toBeVisible();
+      await expect(page.getByText(say(locale, 'Each employee’s amount is set on their salary and approved by Finance before it’s paid.'))).toBeVisible();
+
+      // Nothing is sent without the GL account, and the message sits at the field.
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await expect(page.getByText(say(locale, 'Choose the GL account this allowance posts to.'))).toBeVisible();
+      await expect(glSelect).toBeFocused();
+      expect(calls).toHaveLength(0);
+
+      // Leaving it out of end of service needs a reason.
+      await glSelect.selectOption('EARN:PHONE');
+      await page.getByRole('radio', { name: say(locale, 'No, leave it out') }).check();
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await expect(page.getByText(say(locale, 'Say why this allowance is left out of end of service pay.'))).toBeVisible();
+      expect(calls).toHaveLength(0);
+      await page.getByLabel(say(locale, 'Why is it left out? (required)')).fill('A reimbursement, not wage');
+
+      // The server's refusal of the GL account is shown at the GL field, and the form stays open with what was typed.
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await expect(page.locator('#add-benefit-gl-error')).toContainText('EARN:PHONE');
+      await expect(page.getByLabel(say(locale, 'Benefit name (English)'))).toHaveValue('Phone allowance');
+      expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: {
+        nameEn: 'Phone allowance', nameAr: 'بدل هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: false, eosbExclusionReason: 'A reimbursement, not wage' } });
+
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit }))).toBeVisible();
+      expect(calls).toHaveLength(2);
+
+      // It is a Wage row, added by the customer and paid in salary, with no company skip control.
+      await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
+      await expect(page.getByText(say(locale, 'Paid in salary'), { exact: true })).toBeVisible();
+      await expect(page.getByRole('button', { name: say(locale, 'Skip for this company') })).toHaveCount(0);
+      await cellButton(page, locale, 'ALW_PHONE', 'G1').click();
+      await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check();
+      // The server's rule decides what is on offer: an amount or a percentage of basic, monthly, nothing else.
+      const editor = page.getByRole('dialog');
+      await expect(editor.getByRole('option', { name: say(locale, 'Fixed amount') })).toHaveCount(1);
+      await expect(editor.getByRole('option', { name: say(locale, '% of basic salary') })).toHaveCount(1);
+      await expect(editor.getByRole('option')).toHaveCount(2);
+      await expect(editor.getByLabel(say(locale, 'Resets'))).toHaveCount(0);
+      await page.getByLabel(say(locale, 'Amount ({currency})', { currency: groupMatrix.currency })).fill('350');
+      await expect(page.getByRole('button', { name: say(locale, 'Save & next') })).toBeEnabled();
+      await page.getByRole('button', { name: say(locale, 'Done editing') }).click();
+      await shot(page, `add-cash-allowance-${locale}`);
+
+      // Remove works as for a contract benefit.
+      await page.getByRole('button', { name: say(locale, 'Remove benefit'), exact: true }).click();
+      await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
+      await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
+      expect(calls[2]).toMatchObject({ path: '/api/entitlements/components/ALW_PHONE/remove' });
+      expect(errors).toEqual([]);
+    });
+
+    test('add a cash allowance with no GL account set up: a calm message and a link, no empty list', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      await page.route('**/api/finance/gl/drivers', route => route.fulfill({ json: [] }));
+      await page.route('**/api/finance/gl/resolve', route => route.fulfill({ json: { companyId: null, rows: [] } }));
+      await page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).click();
+      await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
+      await expect(page.getByText(say(locale, 'No GL account is set up for earnings yet. Set one up in Payroll accounting, then come back to add this allowance.'))).toBeVisible();
+      await expect(page.getByRole('link', { name: say(locale, 'Open Payroll accounting') })).toHaveAttribute('href', '/setup?tab=glMapping');
+      await expect(page.getByLabel(say(locale, 'GL account for this allowance (required)'))).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('import review: every old line says what happens to it, and nothing is guessed', async ({ page }) => {
       const { errors } = await boot(page, locale);
       await page.getByText(say(locale, 'Bring in the old grade pay scales')).click();

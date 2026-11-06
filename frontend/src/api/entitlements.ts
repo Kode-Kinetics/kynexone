@@ -22,7 +22,8 @@ export interface MatrixComponent {
   allowedValueTypes: MatrixValueType[]; allowedCoverageTiers: string[]; allowedDependantScopes: DependantScope[];
   allowedLimitPeriods: string[]; defaultLimitPeriod: string | null;
   isFloor: boolean; canBeSkipped: boolean; isLoanFacility: boolean; floorReason: BlockReason | null;
-  /** A benefit the customer added themselves: a non-paying contract benefit, removable until it has a value. */
+  /** A benefit the customer added themselves, removable until it is used: a non-paying contract benefit (BEN_) or a
+   * monthly cash allowance paid in salary (ALW_, in the Wage group). */
   isCustom?: boolean;
 }
 
@@ -77,13 +78,22 @@ export interface LegacyImportResult {
   committed: boolean; effectiveFrom: string; toImport: number; skipped: number; imported: number; items: LegacyImportItem[];
 }
 
+/** What the customer adds: a contract benefit (default) or a monthly cash allowance paid in salary. */
+export type BenefitKind = 'Contract' | 'Cash';
+
+/** `glDriverKey` is required for Cash; `eosbExclusionReason` for Cash with `eosbIncluded` false. GOSI and WPS are fixed by the server. */
+export interface CreateBenefitBody {
+  nameEn?: string | null; nameAr?: string | null; kind: BenefitKind;
+  glDriverKey?: string | null; eosbIncluded?: boolean; eosbExclusionReason?: string | null;
+}
+
 export const entitlementsApi = {
   matrix: (params: { companyId?: string; asOf?: string }, signal?: AbortSignal) =>
     client.get<EntitlementMatrix>('/api/entitlements/matrix', { params, signal }).then(r => r.data),
   publish: (body: { companyId: string | null; effectiveFrom: string; cells: MatrixCellInput[] }, dryRun = false) =>
     client.put<PublishMatrixResult>('/api/entitlements/matrix', body, { params: dryRun ? { dryRun: true } : undefined }).then(r => r.data),
   /** Adds a benefit of the customer's own (needs access to every company). Returns it as a grid row. */
-  addBenefit: (body: { nameEn?: string | null; nameAr?: string | null }) =>
+  addBenefit: (body: CreateBenefitBody) =>
     client.post<MatrixComponent>('/api/entitlements/components', body).then(r => r.data),
   /** Removes a benefit the customer added and nobody has used yet (409 benefit_in_use otherwise). */
   removeBenefit: (code: string) =>

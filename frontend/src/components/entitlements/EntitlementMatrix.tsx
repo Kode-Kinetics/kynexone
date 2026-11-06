@@ -9,10 +9,15 @@ import {
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { financeGlApi } from '../../api/financeGl';
 import { LegacyImportPanel } from './LegacyImportPanel';
 import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
+import {
+  EOSB_REASON_MAX, addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, earningDriverChoices, isCashAllowance,
+  type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type GlChoice, type ServerProblem,
+} from '../../lib/cashAllowance';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
   inputFromDraft, markRestNotOffered, monthStarts, periodChoiceKeys, sameDraft, summarise, tierKeys, type CellDraft, type SummaryPart,
@@ -382,6 +387,7 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
         <p className="text-slate-500 dark:text-slate-400">{reasonText(c.floorReason, 'why')}</p>
       </details>}
       {c.isCustom && <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">{t('Added by you')}</span>}
+      {isCashAllowance(c) && <span className="ms-1 mt-1 inline-block rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-caption font-semibold text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">{t('Paid in salary')}</span>}
       {c.isCustom && canRemove && <RemoveBenefit code={c.code} name={componentName(c)} onRemoved={onRemoved} />}
       {companyView && offering && offering.mode !== 'Group' && !c.isLoanFacility && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-caption font-semibold ${
         offering.mode === 'Skipped' ? 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'
@@ -526,38 +532,159 @@ function GuideStrip({ progress, changes, canManage, canAddBenefit, nextLabel, on
   </nav>;
 }
 
-/** Adds a benefit of the customer's own to the grid: a name, in English (it makes the code) and optionally Arabic. */
+/** The GL accounts a cash allowance may post to, read once when the admin first says it is paid in salary. */
+type GlState = { status: 'idle' | 'loading' } | { status: 'ready'; choices: GlChoice[] } | { status: 'error'; forbidden: boolean };
+
+/**
+ * Adds a benefit of the customer's own to the grid: a name (English, Arabic or both), then whether it is paid in the monthly
+ * salary. A contract benefit is only recorded on the package; a monthly cash allowance needs the GL account its expense posts
+ * to and an end of service choice. GOSI and WPS are shown as fixed. What the server refuses is said next to its field.
+ */
 function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Promise<void>; onClose: () => void }) {
   const { t, locale } = useLocale();
-  const [nameEn, setNameEn] = useState('');
-  const [nameAr, setNameAr] = useState('');
+  const [form, setForm] = useState<AddBenefitForm>(blankAddBenefit);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [problems, setProblems] = useState<AddBenefitProblems>({});
+  const [server, setServer] = useState<ServerProblem | null>(null);
+  const [gl, setGl] = useState<GlState>({ status: 'idle' });
+  const [glAttempt, setGlAttempt] = useState(0);
+  const [focus, setFocus] = useState<{ field: AddBenefitField; n: number } | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const glRef = useRef<HTMLSelectElement>(null);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
+  const cash = form.kind === 'Cash';
+  const set = (patch: Partial<AddBenefitForm>) => { setForm(f => ({ ...f, ...patch })); setServer(null); setProblems({}); };
+
+  // The GL accounts are read when they are first needed: a contract benefit never asks for them.
+  useEffect(() => {
+    if (!cash) return;
+    let live = true;
+    setGl({ status: 'loading' });
+    void Promise.allSettled([financeGlApi.listDrivers(null), financeGlApi.resolve(null)]).then(([drivers, resolved]) => {
+      if (!live) return;
+      if (drivers.status === 'rejected' || !Array.isArray(drivers.value)) {
+        const status = drivers.status === 'rejected' ? (drivers.reason as { response?: { status?: number } })?.response?.status : undefined;
+        setGl({ status: 'error', forbidden: status === 403 });
+        return;
+      }
+      setGl({ status: 'ready', choices: earningDriverChoices(drivers.value, resolved.status === 'fulfilled' && Array.isArray(resolved.value?.rows) ? resolved.value.rows : null) });
+    });
+    return () => { live = false; };
+  }, [cash, glAttempt]);
+
+  useEffect(() => {
+    if (!focus) return;
+    ({ name: nameRef, glDriver: glRef, eosbReason: reasonRef })[focus.field].current?.focus();
+  }, [focus]);
+  const ask = (field: AddBenefitField) => setFocus(f => ({ field, n: (f?.n ?? 0) + 1 }));
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!nameEn.trim() && !nameAr.trim()) { setError(t('Give the benefit a name.')); return; }
-    setBusy(true); setError('');
+    const found = addBenefitProblems(form);
+    setProblems(found); setServer(null);
+    const first = (['name', 'glDriver', 'eosbReason'] as const).find(f => found[f]);
+    if (first) { ask(first); return; }
+    setBusy(true);
     try {
-      const added = await entitlementsApi.addBenefit({ nameEn: nameEn.trim() || null, nameAr: nameAr.trim() || null });
+      const added = await entitlementsApi.addBenefit(addBenefitRequest(form));
       await onAdded(localName(locale, added.nameEn, added.nameAr));
-    } catch (err) { setError(loanErrorMessage(err, t('Unable to add the benefit.'))); setBusy(false); }
+    } catch (err) {
+      const refused = benefitServerProblem(err, t('Unable to add the benefit.'));
+      setServer(refused); setBusy(false);
+      if (refused.field !== 'general') ask(refused.field);
+    }
   };
-  return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
+
+  const choices = gl.status === 'ready' ? gl.choices : [];
+  const usable = choices.filter(c => c.usable);
+  const shown = (field: AddBenefitField) => (server?.field === field ? (server.key ? t(server.key) : server.message ?? '') : '') || (problems[field] ? t(problems[field]!) : '');
+  const nameError = shown('name'); const glError = shown('glDriver'); const reasonError = shown('eosbReason');
+  const generalError = server?.field === 'general' ? server.message ?? '' : '';
+  const choiceLabel = (c: GlChoice) => {
+    const named = `${c.label}${c.account ? ` (\u2066${c.account}\u2069)` : ''}`;
+    return c.usable ? named : fillTemplate(t('{account} — no usable account'), { account: named });
+  };
+
+  return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" noValidate className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
     <div>
       <h2 id="add-benefit-heading" className="font-semibold text-slate-800 dark:text-slate-100">{t('Add a benefit')}</h2>
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('It is added for every grade and company. Set its value for each grade in the grid, then publish.')}</p>
-      <p className="text-xs text-slate-500 dark:text-slate-400">{t('It is recorded in each employee’s package and is not paid through payroll. For a monthly cash allowance, use Other allowances.')}</p>
     </div>
     <div className="grid gap-3 sm:grid-cols-2">
       <p className="text-xs text-slate-500 sm:col-span-2 dark:text-slate-400">{t('Enter the name in English, Arabic or both.')}</p>
       <label className="text-sm">{t('Benefit name (English)')}
-        <input className="input mt-1 w-full" maxLength={100} dir="ltr" value={nameEn} onChange={e => setNameEn(e.target.value)} />
+        <input ref={nameRef} className="input mt-1 w-full" maxLength={100} dir="ltr" value={form.nameEn} aria-invalid={!!nameError} aria-describedby={nameError ? 'add-benefit-name-error' : undefined}
+          onChange={e => set({ nameEn: e.target.value })} />
       </label>
       <label className="text-sm">{t('Benefit name (Arabic)')}
-        <input className="input mt-1 w-full" maxLength={100} dir="rtl" value={nameAr} onChange={e => setNameAr(e.target.value)} />
+        <input className="input mt-1 w-full" maxLength={100} dir="rtl" value={form.nameAr} aria-invalid={!!nameError} aria-describedby={nameError ? 'add-benefit-name-error' : undefined}
+          onChange={e => set({ nameAr: e.target.value })} />
       </label>
+      {nameError && <p id="add-benefit-name-error" role="alert" className="text-sm text-red-600 sm:col-span-2">{nameError}</p>}
     </div>
-    {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium text-slate-800 dark:text-slate-100">{t('Is it paid in the monthly salary?')}</legend>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="radio" name="benefit-kind" className="mt-1" checked={!cash} onChange={() => set({ kind: 'Contract' })} />
+        <span>{t('No, it’s a contract benefit (recorded on the employee’s package, not paid in salary)')}</span>
+      </label>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="radio" name="benefit-kind" className="mt-1" checked={cash} onChange={() => set({ kind: 'Cash' })} />
+        <span>{t('Yes, a monthly cash allowance paid in the salary')}</span>
+      </label>
+    </fieldset>
+
+    {cash && <div className="space-y-3 rounded-xl border border-slate-200 p-3 dark:border-white/10" data-testid="cash-allowance-fields">
+      <div className="text-sm">
+        <label htmlFor="add-benefit-gl">{t('GL account for this allowance (required)')}</label>
+        {gl.status === 'ready' && usable.length > 0 && <select id="add-benefit-gl" ref={glRef} className="select mt-1 w-full" required aria-required="true" value={form.glDriverKey}
+          aria-invalid={!!glError} aria-describedby={`add-benefit-gl-help${glError ? ' add-benefit-gl-error' : ''}`} onChange={e => set({ glDriverKey: e.target.value })}>
+          <option value="">{t('Choose an account')}</option>
+          {choices.map(c => <option key={c.key} value={c.key} disabled={!c.usable}>{choiceLabel(c)}</option>)}
+        </select>}
+        <p id="add-benefit-gl-help" className="mt-1 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+          {gl.status === 'idle' || gl.status === 'loading' ? t('Loading the GL accounts…')
+            : gl.status === 'error' ? <>{gl.forbidden
+              ? t('You don’t have access to the GL accounts. Ask someone in Finance to add this allowance, or to give you access.')
+              : t('The GL accounts could not be loaded.')}{' '}
+              {!gl.forbidden && <button type="button" className="text-sapphire underline" onClick={() => setGlAttempt(n => n + 1)}>{t('Try again')}</button>}</>
+            : usable.length === 0 ? <>{t('No GL account is set up for earnings yet. Set one up in Payroll accounting, then come back to add this allowance.')}{' '}
+              <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire underline">{t('Open Payroll accounting')}</Link></>
+            : t('The allowance’s expense is posted to this account in the payroll journal.')}
+        </p>
+        {glError && <p id="add-benefit-gl-error" role="alert" className="mt-1 text-sm text-red-600">{glError}</p>}
+      </div>
+
+      <dl className="grid gap-2 text-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('GOSI (social insurance)')} <span className="font-normal text-slate-500">· {t('Fixed')}</span></dt>
+          <dd className="text-slate-800 dark:text-slate-100">{t('No — GOSI is calculated on basic + housing only')}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold text-slate-600 dark:text-slate-300">{t('WPS (salary transfer)')} <span className="font-normal text-slate-500">· {t('Fixed')}</span></dt>
+          <dd className="text-slate-800 dark:text-slate-100">{t('Yes — paid in the salary transfer')}</dd>
+        </div>
+      </dl>
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-slate-800 dark:text-slate-100">{t('Does it count toward end of service pay?')}</legend>
+        <div className="flex flex-wrap gap-4 text-sm">
+          <label className="flex items-center gap-1.5"><input type="radio" name="benefit-eosb" checked={form.eosbIncluded} onChange={() => set({ eosbIncluded: true })} />{t('Yes, include it')}</label>
+          <label className="flex items-center gap-1.5"><input type="radio" name="benefit-eosb" checked={!form.eosbIncluded} onChange={() => set({ eosbIncluded: false })} />{t('No, leave it out')}</label>
+        </div>
+        {!form.eosbIncluded && <label className="block text-sm">{t('Why is it left out? (required)')}
+          <textarea ref={reasonRef} className="input mt-1 h-20 w-full" maxLength={EOSB_REASON_MAX} required aria-required="true" value={form.eosbReason}
+            dir={locale === 'ar' ? 'rtl' : 'ltr'} aria-invalid={!!reasonError} aria-describedby={reasonError ? 'add-benefit-reason-error' : undefined}
+            onChange={e => set({ eosbReason: e.target.value })} />
+        </label>}
+        {reasonError && <p id="add-benefit-reason-error" role="alert" className="text-sm text-red-600">{reasonError}</p>}
+      </fieldset>
+
+      <p className="text-xs text-slate-500 dark:text-slate-400">{t('Each employee’s amount is set on their salary and approved by Finance before it’s paid.')}</p>
+    </div>}
+
+    {generalError && <p role="alert" className="text-sm text-red-600">{generalError}</p>}
     <div className="flex flex-wrap gap-2">
       <button type="submit" className="btn-primary h-8 px-3 text-xs" disabled={busy}>{t('Add benefit')}</button>
       <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={busy} onClick={onClose}>{t('Cancel')}</button>
