@@ -16,8 +16,10 @@ export interface HireCostCentre {
   /** The choice in words, for Review and the read-only view: "CODE — name" or "Follow department · CODE — name". */
   label: string;
   departmentCostCentreId: string;
-  /** A resumed draft already holds an override, so following again must send the explicit None. */
+  /** The saved draft holds an override (known after every create and save), so following must send the explicit None. */
   hadOverride: boolean;
+  /** The choice changes an override (a different cost centre, or following while one is held): a reason is required. */
+  reasonDue: boolean;
   loadFailed: boolean;
   reload: () => void;
 }
@@ -27,11 +29,12 @@ export interface HireCostCentre {
  * department" first. Before the draft exists the follow option is worked out from the lists (accepted deviation: no
  * company-level preview); once the draft has an id the server's preview answers for the chosen department.
  */
-export function useHireCostCentre({ form, departments, draftId, hadOverride, canManage, locale, t }: {
+export function useHireCostCentre({ form, departments, draftId, overrideId, canManage, locale, t }: {
   form: HireForm;
   departments: DepartmentDto[];
   draftId: number | null;
-  hadOverride: boolean;
+  /** The override the saved draft holds (null = none). */
+  overrideId: string | null;
   canManage: boolean;
   locale: string;
   t: (key: string, params?: Record<string, string | number>) => string;
@@ -40,6 +43,7 @@ export function useHireCostCentre({ form, departments, draftId, hadOverride, can
   const preview = useCostCentrePreview(draftId ?? 0, draftId && canManage && form.departmentId ? { departmentId: form.departmentId } : null);
   const department = departments.find((d) => d.id === form.departmentId);
   const departmentCostCentreId = department?.costCenterId ?? '';
+  const hadOverride = !!overrideId;
 
   return useMemo(() => {
     const list = company.list;
@@ -62,7 +66,11 @@ export function useHireCostCentre({ form, departments, draftId, hadOverride, can
     }
     const options = costCentreOptions(list, form.companyId, locale, follow ?? { id: null, code: '', name: '' });
     const chosen = form.costCenterId ? options.find((o) => o.value === form.costCenterId) : null;
-    const label = chosen ? chosen.label : follow ? t('Follow department · {code}', { code: `${follow.code} — ${follow.name}` }) : t('Follow department');
-    return { canManage, options, followPending: !follow, label, departmentCostCentreId, hadOverride, loadFailed: company.status === 'error', reload: company.reload };
-  }, [canManage, company.list, company.reload, company.status, departmentCostCentreId, departments, form.companyId, form.costCenterId, form.departmentId, hadOverride, locale, preview.state, t]);
+    const followCode = follow ? `${follow.code} — ${follow.name}` : '';
+    const label = chosen ? chosen.label
+      : hadOverride ? (follow ? t('Removes the override and follows the department · {code}', { code: followCode }) : t('Removes the override and follows the department'))
+      : follow ? t('Follow department · {code}', { code: followCode }) : t('Follow department');
+    const reasonDue = canManage && (form.costCenterId ? form.costCenterId !== departmentCostCentreId && form.costCenterId !== overrideId : hadOverride);
+    return { canManage, options, followPending: !follow, label, departmentCostCentreId, hadOverride, reasonDue, loadFailed: company.status === 'error', reload: company.reload };
+  }, [canManage, company.list, company.reload, company.status, departmentCostCentreId, departments, form.companyId, form.costCenterId, form.departmentId, hadOverride, locale, overrideId, preview.state, t]);
 }

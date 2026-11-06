@@ -544,6 +544,57 @@ test.describe('cost centre', () => {
     await expect(costCentre(page).locator('option')).toHaveText(['Follow department', 'OTHER — Other company']);
   });
 
+  test('B1: a draft saved WITH an override, then "Follow department": a reason is required and the PUT sends Guid.Empty with it; Review says the override is removed', async ({ page }) => {
+    let releasePut!: () => void;
+    const holdPut = new Promise<void>(resolve => { releasePut = resolve; });
+    const api = await bootHire(page, { permissions: MANAGE, org: ccOrg, holdPut });
+    await basics(page);
+    await page.getByLabel('Department').selectOption({ label: 'Operations' });
+    await costCentre(page).selectOption('cc-fin');
+    await page.locator('#hire-costCenterReason').fill('Cross-charged');
+    const created = page.waitForRequest(r => r.url().endsWith('/api/employees') && r.method() === 'POST');
+    await saveDraft(page);
+    expect((await created).postDataJSON()).toMatchObject({ costCenterId: 'cc-fin', costCenterReason: 'Cross-charged' });
+    await expect(page).toHaveURL(/draft=901/);
+    // The saved override, picked again, is no change: no reason is asked.
+    await expect(page.locator('#hire-costCenterReason')).toHaveCount(0);
+
+    await costCentre(page).selectOption('');
+    const reason = page.locator('#hire-costCenterReason');
+    await expect(reason).toBeVisible();
+    await expect(reason).toHaveValue('');
+    // Nothing is saved without the reason, and Next stays on Hire basics.
+    await next(page);
+    await expect(heading(page, STEPS[0])).toBeVisible();
+    await expect(page.locator('#hire-costCenterReason-error')).toHaveText('Enter a reason for this change.');
+    expect(api.puts).toHaveLength(0);
+
+    const put = page.waitForRequest(r => /\/api\/employees\/901\/hire-draft$/.test(r.url()) && r.method() === 'PUT');
+    await reason.fill('Back to the department');
+    const body = (await put).postDataJSON().request;
+    expect(body).toMatchObject({ costCenterId: '00000000-0000-0000-0000-000000000000', costCenterReason: 'Back to the department' });
+    await next(page); await next(page); await next(page);
+    await expect(page.getByText('Removes the override and follows the department · OPS — Operations. Reason: Back to the department')).toBeVisible();
+    releasePut();
+  });
+
+  test('B1: changing the department of a draft saved with an override removes it, with a reason', async ({ page }) => {
+    const api = await bootHire(page, { permissions: MANAGE, org: ccOrg });
+    await basics(page);
+    await page.getByLabel('Department').selectOption({ label: 'Operations' });
+    await costCentre(page).selectOption('cc-fin');
+    await page.locator('#hire-costCenterReason').fill('Cross-charged');
+    await saveDraft(page);
+    await expect(page).toHaveURL(/draft=901/);
+    await page.getByLabel('Department').selectOption({ label: 'Finance' });
+    await expect(costCentre(page)).toHaveValue('');
+    await expect(page.locator('#hire-costCenterReason')).toBeVisible();
+    const put = page.waitForRequest(r => /\/api\/employees\/901\/hire-draft$/.test(r.url()) && r.method() === 'PUT');
+    await page.locator('#hire-costCenterReason').fill('Moved to finance');
+    expect((await put).postDataJSON().request).toMatchObject({ departmentId: 'dept-2', costCenterId: '00000000-0000-0000-0000-000000000000', costCenterReason: 'Moved to finance' });
+    expect(api.puts.every(p => p.request.costCenterId !== undefined)).toBe(true);
+  });
+
   test('without organization.costcenter.manage: the value read-only with who can change it, and nothing is sent', async ({ page }) => {
     const api = await bootHire(page, { org: ccOrg });
     await basics(page);

@@ -27,6 +27,10 @@ export interface ValidationContext {
   designationGrade?: { gradeId: string; gradeCode: string };
   /** The chosen department's own cost centre: choosing it is a plain copy, so no reason is due. */
   departmentCostCentreId?: string;
+  /** The saved draft holds a cost-centre override: following the department removes it, which needs a reason. */
+  hadOverride?: boolean;
+  /** That override's id: picking it again is no change. */
+  overrideId?: string | null;
 }
 
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
@@ -78,7 +82,8 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
 
   if (blank(form.companyId)) add('companyId', 'Choose the employing company.');
   // Wave A: a cost centre other than the department's is an override, and the server needs the reason for it (audited).
-  if (!blank(form.costCenterId) && form.costCenterId !== ctx.departmentCostCentreId && blank(form.costCenterReason)) add('costCenterReason', 'Enter a reason for this change.');
+  const costCentreReasonDue = blank(form.costCenterId) ? !!ctx.hadOverride || !!ctx.overrideId : form.costCenterId !== ctx.departmentCostCentreId && form.costCenterId !== ctx.overrideId;
+  if (costCentreReasonDue && blank(form.costCenterReason)) add('costCenterReason', 'Enter a reason for this change.');
 
   const { min, max } = startDateRange(ctx.today);
   // CD21: a missing start date or designation/grade is an activation need (see activationNeeds), never an error here.

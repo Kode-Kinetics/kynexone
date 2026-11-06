@@ -27,7 +27,7 @@ export interface PayloadContext {
   /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */
   emailDomain?: string;
   /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
-  costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean };
+  costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean; /** The override the saved draft holds (null = none). */ overrideId?: string | null };
 }
 export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string; hireTemplateId?: string }
 
@@ -108,7 +108,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     hireTemplateId: extras.hireTemplateId,
     acknowledgeDuplicate: extras.duplicateOverrideReason?.trim() ? true : undefined,
     ...(ctx.costCentre
-      ? createCostCentreFields({ canManage: ctx.costCentre.canManage, chosenId: form.costCenterId, departmentCostCentreId: ctx.costCentre.departmentCostCentreId, reason: form.costCenterReason, hadOverride: ctx.costCentre.hadOverride })
+      ? createCostCentreFields({ canManage: ctx.costCentre.canManage, chosenId: form.costCenterId, departmentCostCentreId: ctx.costCentre.departmentCostCentreId, reason: form.costCenterReason, hadOverride: ctx.costCentre.hadOverride || !!ctx.costCentre.overrideId, overrideId: ctx.costCentre.overrideId })
       : {}),
   };
   if (form.idChecksumOverrideReason.trim() && body.acknowledgedWarnings === undefined && !blank(form.idNumber)) {

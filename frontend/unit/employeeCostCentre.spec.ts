@@ -12,6 +12,8 @@ import {
   costCentreErrorKind,
   costCentreOptions,
   costCentreRefusalKey,
+  createNeedsReason,
+  overrideAfterSave,
   departmentMoves,
   previewFailure,
   createCostCentreFields,
@@ -148,9 +150,9 @@ test.describe('the AM-30 request shapes', () => {
     expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: '' })).toEqual({});
   });
 
-  test('create (a saved hire draft): following the department again where an override exists sends the explicit None', () => {
-    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: '', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE });
-    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: '', reason: '', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE });
+  test('create (a saved hire draft): following the department again where an override exists sends the explicit None WITH the reason (the server requires one to remove an override)', () => {
+    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', reason: ' Back to the department ', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE, costCenterReason: 'Back to the department' });
+    expect(createCostCentreFields({ canManage: true, chosenId: '', departmentCostCentreId: '', reason: 'r', hadOverride: true })).toEqual({ costCenterId: NO_COST_CENTRE, costCenterReason: 'r' });
     expect(createCostCentreFields({ canManage: false, chosenId: '', departmentCostCentreId: '', reason: '', hadOverride: true })).toEqual({});
   });
 });
@@ -451,7 +453,7 @@ test.describe('the hire wizard sends the cost centre like the create form (Wave 
     expect(buildCreateRequest(form({ costCenterId: 'sales', costCenterReason: ' Project ' }), ctx())).toMatchObject({ costCenterId: 'sales', costCenterReason: 'Project' });
   });
   test('a saved draft that had an override, following again: the explicit None', () => {
-    expect(buildCreateRequest(form(), ctx({ hadOverride: true }))).toMatchObject({ costCenterId: NO_COST_CENTRE });
+    expect(buildCreateRequest(form({ costCenterReason: ' Back ' }), ctx({ hadOverride: true }))).toMatchObject({ costCenterId: NO_COST_CENTRE, costCenterReason: 'Back' });
   });
   test('without the permission, or without the context, nothing about the cost centre is sent', () => {
     expect(buildCreateRequest(form({ costCenterId: 'sales', costCenterReason: 'x' }), ctx({ canManage: false }))).not.toHaveProperty('costCenterId');
@@ -532,5 +534,39 @@ test.describe('backend as built (Wave A reconciliation)', () => {
       const patch = editCostCentrePatch(edit({ ...decided, isOverride: true, overrideId: 'sales', departmentChanged: true, choice }));
       expect(patch).not.toHaveProperty('costCenterDecision');
     }
+  });
+});
+
+test.describe('hire draft: whether the server holds an override after each create and save (B1)', () => {
+  const vctx = { today: '2026-11-05', companyCountry: 'SA', departmentCostCentreId: 'ops' };
+  const form = (over: Record<string, unknown> = {}) => ({ ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'co', departmentId: 'd1', ...over });
+
+  test('the server flag wins when the response carries it (its id when it sends one)', () => {
+    expect(overrideAfterSave({ previous: null, sentCostCenterId: 'sales', serverFlag: true, serverCostCenterId: 'sales', departmentCostCentreId: 'ops' })).toBe('sales');
+    expect(overrideAfterSave({ previous: 'sales', sentCostCenterId: undefined, serverFlag: true, serverCostCenterId: undefined, departmentCostCentreId: 'ops' })).toBe('sales');
+    expect(overrideAfterSave({ previous: 'sales', sentCostCenterId: 'hr', serverFlag: false, departmentCostCentreId: 'ops' })).toBeNull();
+  });
+  test('without it, what was sent decides: an id other than the department\'s = that override; None or the department\'s own = none; nothing sent = unchanged', () => {
+    expect(overrideAfterSave({ previous: null, sentCostCenterId: 'sales', serverFlag: undefined, departmentCostCentreId: 'ops' })).toBe('sales');
+    expect(overrideAfterSave({ previous: 'sales', sentCostCenterId: NO_COST_CENTRE, serverFlag: null, departmentCostCentreId: 'ops' })).toBeNull();
+    expect(overrideAfterSave({ previous: 'sales', sentCostCenterId: 'ops', serverFlag: undefined, departmentCostCentreId: 'ops' })).toBeNull();
+    expect(overrideAfterSave({ previous: 'sales', sentCostCenterId: undefined, serverFlag: undefined, departmentCostCentreId: 'ops' })).toBe('sales');
+    expect(overrideAfterSave({ previous: null, sentCostCenterId: undefined, serverFlag: undefined, departmentCostCentreId: 'ops' })).toBeNull();
+  });
+  test('re-picking the override the draft already holds is no change: nothing sent, no reason due', () => {
+    expect(createCostCentreFields({ canManage: true, chosenId: 'sales', departmentCostCentreId: 'ops', reason: '', hadOverride: true, overrideId: 'sales' })).toEqual({});
+    expect(createNeedsReason({ canManage: true, chosenId: 'sales', departmentCostCentreId: 'ops', hadOverride: true, overrideId: 'sales' })).toBe(false);
+    expect(validateHire(form({ costCenterId: 'sales' }), { ...vctx, hadOverride: true, overrideId: 'sales' }).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+    expect(buildCreateRequest(form({ costCenterId: 'sales' }), { companyCountry: 'SA', currency: 'SAR', costCentre: { canManage: true, departmentCostCentreId: 'ops', overrideId: 'sales' } })).not.toHaveProperty('costCenterId');
+    // Re-pointing it to another one is a change with a reason.
+    expect(createCostCentreFields({ canManage: true, chosenId: 'hr', departmentCostCentreId: 'ops', reason: 'r', hadOverride: true, overrideId: 'sales' })).toEqual({ costCenterId: 'hr', costCenterReason: 'r' });
+  });
+  test('following the department while an override is held needs a reason (create form rule and hire validation)', () => {
+    expect(createNeedsReason({ canManage: true, chosenId: '', departmentCostCentreId: 'ops', hadOverride: true })).toBe(true);
+    expect(createNeedsReason({ canManage: true, chosenId: '', departmentCostCentreId: 'ops' })).toBe(false);
+    expect(createNeedsReason({ canManage: false, chosenId: '', departmentCostCentreId: 'ops', hadOverride: true })).toBe(false);
+    expect(validateHire(form(), { ...vctx, hadOverride: true })).toContainEqual({ field: 'costCenterReason', step: 1, key: 'Enter a reason for this change.' });
+    expect(validateHire(form({ costCenterReason: 'Back' }), { ...vctx, hadOverride: true }).filter((i) => i.field === 'costCenterReason')).toEqual([]);
+    expect(validateHire(form(), vctx).filter((i) => i.field === 'costCenterReason')).toEqual([]);
   });
 });

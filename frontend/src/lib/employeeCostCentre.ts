@@ -158,21 +158,47 @@ export function removeOverridePatch(reason: string) {
 
 /**
  * The create form's cost-centre fields. A user without organization.costcenter.manage sends none (the server refuses any,
- * 403). Nothing chosen is "Follow department": nothing is sent and the person inherits. On a saved hire draft that already
- * has an override (`hadOverride`), following again sends the explicit None (Guid.Empty) so the server removes it. The
- * department's own cost centre is a plain copy and needs no reason; a different one is an override and carries one.
+ * 403). Nothing chosen is "Follow department": nothing is sent and the person inherits. On a saved hire draft whose server
+ * record holds an override (`hadOverride`), following again sends the explicit None (Guid.Empty) WITH the reason, because
+ * removing an override is audited and the server requires one. The department's own cost centre is a plain copy and needs no
+ * reason; a different one is an override and carries one.
  */
-export function createCostCentreFields(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; reason: string; hadOverride?: boolean }): { costCenterId?: string; costCenterReason?: string } {
+export function createCostCentreFields(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; reason: string; hadOverride?: boolean; overrideId?: string | null }): { costCenterId?: string; costCenterReason?: string } {
   if (!input.canManage) return {};
   const { chosenId, departmentCostCentreId } = input;
-  if (!chosenId) return input.hadOverride ? { costCenterId: NO_COST_CENTRE } : {};
+  // The override the saved record already holds, picked again: no change.
+  if (chosenId && input.overrideId && chosenId === input.overrideId) return {};
+  if (!chosenId) return input.hadOverride ? { costCenterId: NO_COST_CENTRE, costCenterReason: input.reason.trim() } : {};
   if (chosenId === departmentCostCentreId) return { costCenterId: chosenId };
   return { costCenterId: chosenId, costCenterReason: input.reason.trim() };
 }
 
-/** True when the create form's choice is an override (a cost centre that is not the department's), so a reason is due. */
-export function createNeedsReason(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string }): boolean {
-  return input.canManage && !!input.chosenId && input.chosenId !== input.departmentCostCentreId;
+/** True when the create form's choice changes an override (a cost centre that is not the department's, or following the department while the saved record holds one), so a reason is due. */
+export function createNeedsReason(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; hadOverride?: boolean; overrideId?: string | null }): boolean {
+  if (!input.canManage) return false;
+  if (!input.chosenId) return !!input.hadOverride || !!input.overrideId;
+  return input.chosenId !== input.departmentCostCentreId && input.chosenId !== input.overrideId;
+}
+
+/**
+ * Whether the server holds an override for a hire draft after a create or save. The response's own flag wins; without one, the
+ * request decides: an id other than the department's = override, Guid.Empty or the department's own = none, nothing sent =
+ * unchanged. Recomputed after EVERY save, so "Follow department" later sends the explicit None (with a reason) when it must.
+ */
+export function overrideAfterSave(input: {
+  /** The override id held before this save (null = none). */
+  previous: string | null;
+  sentCostCenterId: string | undefined;
+  serverFlag: boolean | null | undefined;
+  serverCostCenterId?: string | null;
+  departmentCostCentreId: string;
+}): string | null {
+  const sent = input.sentCostCenterId;
+  const sentOverride = sent !== undefined && sent !== NO_COST_CENTRE && sent !== input.departmentCostCentreId ? sent : null;
+  if (input.serverFlag === false) return null;
+  if (input.serverFlag === true) return input.serverCostCenterId ?? sentOverride ?? input.previous;
+  if (sent === undefined) return input.previous;
+  return sentOverride;
 }
 
 // ── Refusals ─────────────────────────────────────────────────────────────────

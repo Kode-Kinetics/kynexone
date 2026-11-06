@@ -101,8 +101,8 @@ export function HireBasicsStep({ form, set, errorFor, blur, lookups, singleCompa
               />
             )}
           </FieldShell>
-          {form.costCenterId && form.costCenterId !== costCentre.departmentCostCentreId && (
-            <FieldShell field="costCenterReason" label={t('Reason')} required error={errorFor('costCenterReason')} hint={t('Why this person has a different cost centre. Recorded in the audit log.')}>
+          {costCentre.reasonDue && (
+            <FieldShell field="costCenterReason" label={t('Reason')} required error={errorFor('costCenterReason')} hint={form.costCenterId ? t('Why this person has a different cost centre. Recorded in the audit log.') : t('Why this person goes back to the department’s cost centre. Recorded in the audit log.')}>
               {p => <input {...p} value={form.costCenterReason} maxLength={500} onChange={e => set('costCenterReason', e.target.value)} onBlur={() => blur('costCenterReason')} className={inputClass} />}
             </FieldShell>
           )}

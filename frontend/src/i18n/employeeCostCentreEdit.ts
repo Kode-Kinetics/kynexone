@@ -45,6 +45,8 @@ const ar: Record<string, string> = {
   'Follows {department}: {code}. Reason: {reason}': 'يتبع {department}: {code}. السبب: {reason}',
   'Follows {department}: {code}': 'يتبع {department}: {code}',
   '{choice}. Reason: {reason}': '{choice}. السبب: {reason}',
+  'Removes the override and follows the department · {code}': 'إزالة الاستثناء واتباع القسم · {code}',
+  'Removes the override and follows the department': 'إزالة الاستثناء واتباع القسم',
 
   // ── Refusals, in words, by code ──
   'This cost centre is inactive. Choose an active one.': 'مركز التكلفة هذا غير نشط. اختر مركزًا نشطًا.',

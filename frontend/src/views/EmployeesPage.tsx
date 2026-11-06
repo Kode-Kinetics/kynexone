@@ -29,7 +29,7 @@ import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
-import { costCentreOptions, costCentreRefusalKey, createCostCentreFields, createNeedsReason, resolveCostCentre } from '../lib/employeeCostCentre';
+import { costCentreErrorKind, costCentreOptions, costCentreRefusalKey, createCostCentreFields, createNeedsReason, resolveCostCentre } from '../lib/employeeCostCentre';
 import { useCompanyCostCentres } from '../hooks/useCompanyCostCentres';
 import { CostCentreSelect } from '../components/employees/CostCentreSelect';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
@@ -1940,11 +1940,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       const emailProblem = workEmailProblemKey(workEmailErrorCode(e));
       if (emailProblem) { setEditNotice(t(emailProblem)); return; }
-      // Wave A: a department change for someone with a cost-centre override needs keep-or-follow, which only Edit employee asks.
+      // Wave A: a cost-centre refusal in words. Only a missing keep-or-follow decision (which only Edit employee asks) gets the
+      // link there; a plain 403 is the permission sentence and nothing more.
       const costCentreKey = costCentreRefusalKey(e);
       if (costCentreKey) {
         setEditNotice(t(costCentreKey));
-        setEditCostCentreRefused(true);
+        setEditCostCentreRefused(costCentreErrorKind(e) === 'decision');
         return;
       }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;

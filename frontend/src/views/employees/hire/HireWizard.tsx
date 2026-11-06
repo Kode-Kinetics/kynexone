@@ -41,7 +41,7 @@ import { issueText } from './issueText';
 import type { Lookups, StepProps } from './types';
 import { normalizeCountryCode } from '@/src/api/employeeFieldCatalog';
 import { useHireCostCentre } from './useHireCostCentre';
-import { costCentreErrorKind, costCentreRefusalKey } from '@/src/lib/employeeCostCentre';
+import { costCentreErrorKind, costCentreRefusalKey, overrideAfterSave } from '@/src/lib/employeeCostCentre';
 
 const STEP_LABELS = ['Hire basics', 'Person and contact', 'Job, pay and documents', 'Review and create'] as const;
 type Step = 1 | 2 | 3 | 4;
@@ -98,8 +98,9 @@ export function HireWizard() {
   const [, setTick] = useState(0);
   // P3: the hire template applied on step 1, and the fields the person has filled themselves (a template never overwrites those).
   const [applied, setApplied] = useState<AppliedTemplate | null>(null);
-  // Wave A: a resumed draft that already holds a cost-centre override (following again then sends the explicit None).
-  const [draftHadOverride, setDraftHadOverride] = useState(false);
+  // Wave A / B1: the override the saved draft holds (null = none), recomputed after every create and save and on reopen.
+  // Following the department while one is held sends the explicit None with a reason; re-picking it is no change.
+  const [draftOverrideId, setDraftOverrideId] = useState<string | null>(null);
   const editedRef = useRef<Set<keyof HireForm>>(new Set());
 
   const busyRef = useRef(false);
@@ -114,12 +115,12 @@ export function HireWizard() {
   const currency = company?.defaultCurrency || 'SAR';
   const activeCompanies = lookups.companies.filter(c => c.isActive);
   const costCentre = useHireCostCentre({
-    form, departments: lookups.departments, draftId: draft?.id ?? null, hadOverride: draftHadOverride,
+    form, departments: lookups.departments, draftId: draft?.id ?? null, overrideId: draftOverrideId,
     canManage: hasPermission('organization.costcenter.manage'), locale, t,
   });
   const costCentreCtx = useMemo(
-    () => ({ canManage: costCentre.canManage, departmentCostCentreId: costCentre.departmentCostCentreId, hadOverride: costCentre.hadOverride }),
-    [costCentre.canManage, costCentre.departmentCostCentreId, costCentre.hadOverride],
+    () => ({ canManage: costCentre.canManage, departmentCostCentreId: costCentre.departmentCostCentreId, overrideId: draftOverrideId }),
+    [costCentre.canManage, costCentre.departmentCostCentreId, draftOverrideId],
   );
   const singleCompany = activeCompanies.length === 1;
 
@@ -144,7 +145,7 @@ export function HireWizard() {
             const co = companies.find(c => c.id === d.companyId);
             const hydrated = formFromEmployee(d, { emailDomain: co?.emailDomain || undefined, companyCountry: normalizeCountryCode(co?.countryCode) || 'SA', timeZone: zone, countryOptions: nationalityOptions.current });
             initial.current = hydrated;
-            setDraftHadOverride(hydrated.costCenterId !== '');
+            setDraftOverrideId(d.costCenterIsOverride && d.costCenterId ? d.costCenterId : null);
             setForm(hydrated);
             setSavedForm(hydrated);
             setDraft({ id: d.id, name: d.englishName || d.fullName || hydrated.englishName });
@@ -174,7 +175,10 @@ export function HireWizard() {
     const grade = g ? lookups.grades.find(x => x.id === g) : undefined;
     return grade ? { gradeId: grade.id, gradeCode: grade.code } : undefined;
   }, [lookups, form.designationId]);
-  const ctx = useMemo(() => ({ today, emailDomain: company?.emailDomain || undefined, companyCountry, designationGrade, departmentCostCentreId: costCentre.departmentCostCentreId }), [today, company, companyCountry, designationGrade, costCentre.departmentCostCentreId]);
+  const ctx = useMemo(
+    () => ({ today, emailDomain: company?.emailDomain || undefined, companyCountry, designationGrade, departmentCostCentreId: costCentre.departmentCostCentreId, overrideId: costCentre.canManage ? draftOverrideId : null }),
+    [today, company, companyCountry, designationGrade, costCentre.departmentCostCentreId, costCentre.canManage, draftOverrideId],
+  );
   const issues = useMemo(() => {
     const local = validateHire(form, ctx, 'create');
     return [...local, ...serverIssues.filter(s => !local.some(l => l.field === s.field))];
@@ -263,7 +267,10 @@ export function HireWizard() {
       delayMs: 1200,
       save: async ({ form: f }, base) => {
         const l = latest.current;
-        const res = await employeeHireApi.saveDraft(l.draft!.id, base, buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain, costCentre: l.costCentre }, { acknowledgedWarnings: l.acks, hireTemplateId: l.hireTemplateId }));
+        const sent = buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain, costCentre: l.costCentre }, { acknowledgedWarnings: l.acks, hireTemplateId: l.hireTemplateId });
+        const res = await employeeHireApi.saveDraft(l.draft!.id, base, sent);
+        // B1: after EVERY save, whether the record now holds an override (the server's flag, else what was sent).
+        setDraftOverrideId(prev => overrideAfterSave({ previous: prev, sentCostCenterId: sent.costCenterId, serverFlag: res.costCenterIsOverride, departmentCostCentreId: l.costCentre.departmentCostCentreId }));
         setSavedForm(f);
         return res;
       },
@@ -360,6 +367,7 @@ export function HireWizard() {
       const all = extraAcks ?? acks;
       const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined, costCentre: costCentreCtx }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined, hireTemplateId: applied?.template.id });
       const res = await employeeHireApi.create(body, keyRef.current);
+      setDraftOverrideId(prev => overrideAfterSave({ previous: prev, sentCostCenterId: body.costCenterId, serverFlag: res.costCenterIsOverride, serverCostCenterId: res.costCenterId, departmentCostCentreId: costCentreCtx.departmentCostCentreId }));
       const version = res.updatedAtUtc ?? (res as { createdAtUtc?: string }).createdAtUtc ?? '';
       flushSync(() => { setDraft({ id: res.id, name: res.englishName || res.fullName || form.englishName.trim() }); setSavedForm(form); setAcks(all); });
       autosave.current!.adopt(version);
