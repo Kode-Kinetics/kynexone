@@ -13975,6 +13975,60 @@ namespace Zayra.Api.Migrations
                     b.ToTable("employee_risk_scores", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryAllowance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(14, 2)
+                        .HasColumnType("numeric(14,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("Basis")
+                        .IsRequired()
+                        .HasMaxLength(14)
+                        .HasColumnType("character varying(14)")
+                        .HasColumnName("basis");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("code");
+
+                    b.Property<decimal?>("Rate")
+                        .HasPrecision(7, 4)
+                        .HasColumnType("numeric(7,4)")
+                        .HasColumnName("rate");
+
+                    b.Property<Guid>("SalaryStructureId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("salary_structure_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "SalaryStructureId", "Code")
+                        .IsUnique();
+
+                    b.ToTable("employee_salary_allowances", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_salary_allowances__amount_positive", "amount > 0");
+
+                            t.HasCheckConstraint("ck_employee_salary_allowances__basis", "basis IN ('Amount','PercentOfBasic')");
+
+                            t.HasCheckConstraint("ck_employee_salary_allowances__rate_pair", "(basis = 'PercentOfBasic') = (rate IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_employee_salary_allowances__rate_range", "rate IS NULL OR (rate > 0 AND rate <= 1)");
+                        });
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryStructure", b =>
                 {
                     b.Property<Guid>("Id")
@@ -26004,6 +26058,11 @@ namespace Zayra.Api.Migrations
                         .HasDefaultValue("None")
                         .HasColumnName("entitlement_class");
 
+                    b.Property<string>("EosbExclusionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("eosb_exclusion_reason");
+
                     b.Property<bool>("EosbIncluded")
                         .HasColumnType("boolean")
                         .HasColumnName("eosb_included");
@@ -30714,6 +30773,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("AllowancesJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("allowances_json");
+
                     b.Property<Guid?>("AppliedAssignmentId")
                         .HasColumnType("uuid")
                         .HasColumnName("applied_assignment_id");
@@ -34284,6 +34347,16 @@ namespace Zayra.Api.Migrations
                         .HasForeignKey("CertificateDocumentId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_epa__certificate_document");
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryAllowance", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.EmployeeSalaryStructure", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "SalaryStructureId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeSalaryStructure", b =>

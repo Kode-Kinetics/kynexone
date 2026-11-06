@@ -90,8 +90,19 @@ public sealed class MatrixCellInput
 
 public sealed record PublishMatrixRequest(Guid? CompanyId, DateOnly EffectiveFrom, List<MatrixCellInput>? Cells);
 
-/// <summary>A benefit the customer adds to Benefits by grade. The English name is required (it makes the code); Arabic is optional.</summary>
-public sealed record CreateBenefitRequest(string? NameEn, string? NameAr);
+/// <summary>What a benefit the customer adds is: a non-paying contract benefit (<c>BEN_*</c>) or a monthly cash allowance paid in salary (<c>ALW_*</c>).</summary>
+public static class BenefitKinds
+{
+    public const string Contract = "Contract";
+    public const string Cash = "Cash";
+}
+
+/// <summary>A benefit the customer adds to Benefits by grade. The English name is required (it makes the code); Arabic is optional.
+/// <paramref name="Kind"/> is <see cref="BenefitKinds.Contract"/> (the default) or <see cref="BenefitKinds.Cash"/>. A cash allowance also needs the
+/// GL driver its expense posts to, and — when it is left out of the end-of-service wage — the reason.</summary>
+public sealed record CreateBenefitRequest(
+    string? NameEn, string? NameAr, string? Kind = BenefitKinds.Contract, string? GlDriverKey = null,
+    bool EosbIncluded = true, string? EosbExclusionReason = null);
 
 public sealed record SetOfferingRequest(Guid CompanyId, string ComponentCode, bool Offered, DateOnly EffectiveFrom);
 

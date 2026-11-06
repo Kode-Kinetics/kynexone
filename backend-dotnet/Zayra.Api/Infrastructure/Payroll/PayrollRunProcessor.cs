@@ -799,6 +799,29 @@ public sealed class PayrollRunProcessor
             ? await LoadPayComponentsAsync(tenantId, company.Id, periodStart, cancellationToken)
             : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
 
+        // ── Customer-defined monthly cash allowances (ALW_*) ─────────────────────────────────────────
+        // The money is the employee's own approved salary lines (employee_salary_allowances on the salary record in force), never the
+        // catalogue: the ALW_ definition is a grade-package row the engine emits nothing for. Loaded once, read-only, so safe across an
+        // execution-strategy retry. A tenant with no rows loads an empty lookup and nothing below moves.
+        var salaryRecordIds = salaryAssignments.Select(x => x.Id).Distinct().ToList();
+        var cashAllowancesByRecord = (salaryRecordIds.Count == 0
+                ? new List<EmployeeSalaryAllowance>()
+                : await _db.EmployeeSalaryAllowances.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && salaryRecordIds.Contains(x.SalaryStructureId))
+                    .ToListAsync(cancellationToken))
+            .ToLookup(x => x.SalaryStructureId);
+        var cashAllowanceCodes = cashAllowancesByRecord.SelectMany(g => g).Select(x => x.Code).Distinct().ToList();
+        var cashAllowanceDefinitions = cashAllowanceCodes.Count == 0
+            ? new Dictionary<string, PayComponent>(StringComparer.Ordinal)
+            : (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
+                    "Payroll pass: the tenant-wide definition (name and GL driver) of each cash allowance an employee's salary record carries.")
+                .AsNoTracking()
+                .Where(c => c.CompanyId == null && c.IsActive && !c.IsDeleted && cashAllowanceCodes.Contains(c.Code)
+                         && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage)
+                .ToListAsync(cancellationToken))
+                .GroupBy(c => c.Code, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
         // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
         // Everything from here to the transaction is INERT for a run with no joiner, no leaver and no
         // backdated salary change: prorationByEmp is all 1.0, the arrears engine returns zero lines, and
@@ -1124,6 +1147,34 @@ public sealed class PayrollRunProcessor
             var transport = policy.Prorates(ProratedComponentCodes.Transport)       ? proratedPkg.Transport       : fullTransport;
             var otherAllowances = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? proratedPkg.OtherAllowances : fullOther;
             var gross = basic + housing + transport + otherAllowances;
+            // ── Customer-defined cash allowances: the salary record's own lines, prorated exactly as OTHER_ALLOWANCES is ────────
+            // Kept OUT of `gross`, `otherAllowances` and the statutory input on purpose: `gross` is the base PercentOfGross components
+            // follow and `otherAllowances` is a slot of the covered-wage input, and neither may move for an allowance. They join the slip
+            // aggregates and net below, exactly as configured earnings do. A supplemental run pays no recurring wage, so none.
+            var cashAllowances = new List<(string Code, string Name, decimal Amount, string GlDriverKey, bool Taxable)>();
+            if (includesRecurringPay && salary is not null)
+                foreach (var allowance in cashAllowancesByRecord[salary.Id].OrderBy(x => x.Code, StringComparer.Ordinal))
+                {
+                    // A line with no live definition, or a definition with no GL driver, is corrupt data: paying it would post to a fallback
+                    // account (EARN:OTHER) nobody chose. Refuse the run and say whose line it is.
+                    if (!cashAllowanceDefinitions.TryGetValue(allowance.Code, out var definition) || string.IsNullOrWhiteSpace(definition.GlDriverKey))
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_definition_invalid",
+                            message = $"{e.FullName} ({e.EmployeeCode}) has the monthly allowance {allowance.Code} on their salary, but " +
+                                      (definition is null
+                                          ? "that allowance no longer exists in Benefits by grade."
+                                          : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                      " Nothing was saved. Restore the allowance or remove the line from the salary, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = allowance.Code,
+                        });
+                    var amount = policy.Prorates(ProratedComponentCodes.OtherAllowances)
+                        ? ProrationCalculator.ApplyScalar(allowance.Amount, factor) : allowance.Amount;
+                    if (amount > 0m)
+                        cashAllowances.Add((allowance.Code, definition.NameEn, amount, definition.GlDriverKey!, definition.IsTaxable));
+                }
+            var cashAllowanceTotal = cashAllowances.Sum(x => x.Amount);
+            var cashAllowanceTaxable = cashAllowances.Where(x => x.Taxable).Sum(x => x.Amount);
             var fixedDeduction = policy.Prorates(ProratedComponentCodes.FixedDeduction)
                 ? ProrationCalculator.ApplyScalar(fullFixedDeduction, factor)
                 : fullFixedDeduction;
@@ -1310,7 +1361,7 @@ public sealed class PayrollRunProcessor
                         factor)
                     : basic;
                 // F2 — a configured earning flagged IsTaxable is taxable income. 0 for every tenant without one.
-                taxableBase += configuredTaxableEarnings + benefitTaxableEarnings;
+                taxableBase += configuredTaxableEarnings + benefitTaxableEarnings + cashAllowanceTaxable;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
@@ -1478,7 +1529,7 @@ public sealed class PayrollRunProcessor
                                      + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
                                      + settlementDeductionTotal + configuredDeductions;
             var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
-                                  + settlementEarningTotal + configuredEarnings;
+                                  + settlementEarningTotal + configuredEarnings + cashAllowanceTotal;
             var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
 
             var loanTakenById = new Dictionary<Guid, decimal>();
@@ -1640,14 +1691,14 @@ public sealed class PayrollRunProcessor
                 // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
                 // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
                 // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -1792,6 +1843,13 @@ public sealed class PayrollRunProcessor
                         line.Amount, line.Source, isEmployerContribution: line.IsEmployerContribution,
                         glDriverKey: line.GlDriverKey);
             }
+
+            // ── Customer-defined cash allowances: ONE earning line each, emitted OUTSIDE both branches ──────────────────────────
+            // Like arrears and settlements, neither the legacy block nor the component engine owns them, so the two stay identical. Each
+            // line carries its definition's own GL driver (never the EARN:OTHER fallback), so the expense lands where the customer chose.
+            foreach (var allowance in cashAllowances)
+                AddEarning(tenantId, id, e.Id, allowance.Code, allowance.Name,
+                    allowance.Amount, "Salary", glDriverKey: allowance.GlDriverKey);
 
             // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
             // Emitted OUTSIDE both branches, exactly like POD-B1b's bonus withholding, so the legacy

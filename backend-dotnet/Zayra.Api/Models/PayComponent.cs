@@ -75,6 +75,10 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     public bool WpsIncluded { get; set; } = true;
     public bool EosbIncluded { get; set; }
 
+    /// <summary>Why a customer-defined cash allowance (<c>ALW_*</c>) is left out of the end-of-service wage. Required when
+    /// <see cref="EosbIncluded"/> is false on one; null everywhere else.</summary>
+    public string? EosbExclusionReason { get; set; }
+
     /// <summary>Ties the emitted line to a gl_drivers Key. NULL ⇒ the existing EarningDriverKey/
     /// DeductionDriverKey source+code routing is used unchanged (the day-one seeds set this only for
     /// documentation parity; GL routing still keys on the persisted line Source+Code).</summary>

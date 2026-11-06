@@ -90,19 +90,19 @@ public class BonusLifecycleGlTests
 
     // Σ over EVERY posted line (bonus module + payroll), regardless of journal. A contra is a real
     // posting; IsReversed is an audit link, not a balance exclusion.
-    private static async Task<List<FinanceGlEntry>> AllGl(ZayraDbContext db, Guid tenantId) =>
+    internal static async Task<List<FinanceGlEntry>> AllGl(ZayraDbContext db, Guid tenantId) =>
         await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.TenantId == tenantId).ToListAsync();
 
-    private static decimal Debits(IEnumerable<FinanceGlEntry> gl, string acct) =>
+    internal static decimal Debits(IEnumerable<FinanceGlEntry> gl, string acct) =>
         gl.Where(l => l.DebitAccount.Contains(acct)).Sum(l => l.Amount);
-    private static decimal Credits(IEnumerable<FinanceGlEntry> gl, string acct) =>
+    internal static decimal Credits(IEnumerable<FinanceGlEntry> gl, string acct) =>
         gl.Where(l => l.CreditAccount.Contains(acct)).Sum(l => l.Amount);
     /// <summary>Carrying balance of a liability: Σ credits − Σ debits. Zero ⇒ fully cleared.</summary>
     private static decimal NetLiability(IEnumerable<FinanceGlEntry> gl, string acct) =>
         Credits(gl, acct) - Debits(gl, acct);
 
-    private static void AssertBalanced(IEnumerable<FinanceGlEntry> gl)
+    internal static void AssertBalanced(IEnumerable<FinanceGlEntry> gl)
     {
         var list = gl.ToList();
         var dr = list.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
@@ -218,7 +218,7 @@ public class BonusLifecycleGlTests
         return batch;
     }
 
-    private static async Task LockRun(ZayraDbContext db, PayrollController ctrl, PayrollRun run)
+    internal static async Task LockRun(ZayraDbContext db, PayrollController ctrl, PayrollRun run)
     {
         (await ctrl.Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         var tracked = await db.PayrollRuns.FirstAsync(r => r.Id == run.Id);

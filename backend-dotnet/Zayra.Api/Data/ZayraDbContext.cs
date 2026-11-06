@@ -1336,6 +1336,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<SalaryStructure> SalaryStructures => Set<SalaryStructure>();
     public DbSet<SalaryComponent> SalaryComponents => Set<SalaryComponent>();
     public DbSet<EmployeeSalaryStructure> EmployeeSalaryStructures => Set<EmployeeSalaryStructure>();
+    public DbSet<EmployeeSalaryAllowance> EmployeeSalaryAllowances => Set<EmployeeSalaryAllowance>();
     public DbSet<SalaryChangeRequest> SalaryChangeRequests => Set<SalaryChangeRequest>();
     public DbSet<LeaveBalanceAdjustmentRequest> LeaveBalanceAdjustmentRequests => Set<LeaveBalanceAdjustmentRequest>();
     public DbSet<PayrollGroup> PayrollGroups => Set<PayrollGroup>();
@@ -2437,6 +2438,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.ProviderKey).HasMaxLength(64);
             entity.Property(x => x.GlDriverKey).HasMaxLength(80);
             entity.Property(x => x.FormulaExpression).HasMaxLength(1024);
+            entity.Property(x => x.EosbExclusionReason).HasMaxLength(500);
             entity.Property(x => x.Value).HasPrecision(18, 4);
         });
 
@@ -2881,6 +2883,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.EmployeeCode).HasMaxLength(60);
             entity.Property(x => x.EmployeeName).HasMaxLength(200);
             entity.Property(x => x.Currency).HasMaxLength(10);
+            // The proposed cash-allowance lines (EmployeeSalaryAllowance shape). Staging only: nobody queries inside it.
+            entity.Property(x => x.AllowancesJson).HasColumnType("jsonb");
             entity.Property(x => x.RequestedByName).HasMaxLength(200);
             entity.Property(x => x.DecidedByName).HasMaxLength(200);
             entity.Property(x => x.DecisionNote).HasMaxLength(1000);

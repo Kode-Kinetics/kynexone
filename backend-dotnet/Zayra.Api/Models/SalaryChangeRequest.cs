@@ -31,6 +31,9 @@ public class SalaryChangeRequest : ITenantOwned, ICompanyScopedOperational
     public decimal MobileAllowance { get; set; }
     public decimal OtherAllowance { get; set; }
     public decimal FixedDeduction { get; set; }
+    /// <summary>The proposed customer-defined cash allowances (<see cref="EmployeeSalaryAllowance"/> lines) as JSON, or null when the change proposes none.
+    /// Staging only: they become <c>employee_salary_allowances</c> rows when Finance approves.</summary>
+    public string? AllowancesJson { get; set; }
     public DateOnly EffectiveDate { get; set; }
     public string Currency { get; set; } = string.Empty;
     /// <summary>The employee's active basic salary when the change was proposed, so the approver sees the movement.</summary>
