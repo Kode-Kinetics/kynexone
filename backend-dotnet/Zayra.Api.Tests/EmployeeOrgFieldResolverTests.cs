@@ -13,15 +13,19 @@ public class EmployeeOrgFieldResolverTests
     public async Task DepartmentChange_AppliesDepartmentCostCenterAndDefaultManager()
     {
         var tenantId = Guid.NewGuid();
+        // Wave A D3: the cached code is the RESOLVED one, which is resolved within the employee's company.
+        var companyId = Guid.NewGuid();
         var costCenter = new CostCenter
         {
             TenantId = tenantId,
+            CompanyId = companyId,
             Code = "QA-OPS-CC-18",
             Name = "QA Operations Cost Center",
         };
         var department = new Department
         {
             TenantId = tenantId,
+            CompanyId = companyId,
             CostCenterId = costCenter.Id,
             Code = "QA-OPS",
             NameEn = "QA Operations",
@@ -36,13 +40,16 @@ public class EmployeeOrgFieldResolverTests
         var employee = new Employee
         {
             TenantId = tenantId,
+            CompanyId = companyId,
             Department = "QA-OPS",
             CostCenter = "OLD",
             ManagerEmployeeId = 1,
         };
 
+        var changes = new Dictionary<string, System.Text.Json.JsonElement> { ["department"] = System.Text.Json.JsonSerializer.SerializeToElement("QA-OPS") };
+        var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, null, null, CancellationToken.None);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(
-            db, tenantId, employee, ["department"], CancellationToken.None);
+            db, tenantId, employee, ["department"], attribution, CancellationToken.None);
 
         employee.DepartmentId.Should().Be(department.Id);
         employee.Department.Should().Be("QA Operations");

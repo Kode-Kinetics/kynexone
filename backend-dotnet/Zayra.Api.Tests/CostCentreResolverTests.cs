@@ -150,4 +150,40 @@ public class CostCentreResolverTests
         var r = CostCentreResolver.Resolve(new ResolverEmployee(dept.Id, null, null, false), snap);
         (r.CostCenterId, r.Source).Should().Be((cc.Id, "Department"));
     }
+
+    // ── Wave A: the entity each resolution came from (for "Inherited from {department}") ──
+
+    [Fact]
+    public void ResolveWithSource_NamesTheDepartmentParentOrPositionItCameFrom_AndAgreesWithResolve()
+    {
+        var parentCc = Cc(); var posCc = Cc(); var own = Cc(); var fallback = Cc();
+        var parent = new ResolverDepartment(Guid.NewGuid(), null, parentCc.Id);
+        var child = new ResolverDepartment(Guid.NewGuid(), parent.Id, null);
+        var position = new ResolverPosition(Guid.NewGuid(), posCc.Id);
+        var snap = Snap([parentCc, posCc, own, fallback], [parent, child], [position], companyDefault: fallback.Id);
+
+        var cases = new (ResolverEmployee Employee, string Source, Guid? From)[]
+        {
+            (new ResolverEmployee(parent.Id, null, null, false), "Department", parent.Id),
+            (new ResolverEmployee(child.Id, null, null, false), "ParentDepartment", parent.Id),
+            (new ResolverEmployee(child.Id, position.Id, null, false), "Position", position.Id),
+            (new ResolverEmployee(child.Id, position.Id, own.Id, true), "Employee", null),
+            (new ResolverEmployee(null, null, null, false), "CompanyDefault", null),
+        };
+        foreach (var (employee, source, from) in cases)
+        {
+            var (resolution, sourceEntityId) = CostCentreResolver.ResolveWithSource(employee, snap);
+            (resolution.Source, sourceEntityId).Should().Be((source, from), source);
+            resolution.Should().Be(CostCentreResolver.Resolve(employee, snap), "Resolve is ResolveWithSource without the entity");
+        }
+    }
+
+    [Fact]
+    public void ResolveWithSource_AnInvalidCostCentre_StillNamesWhereItWasFound()
+    {
+        var bad = Cc(active: false);
+        var dept = new ResolverDepartment(Guid.NewGuid(), null, bad.Id);
+        var (resolution, from) = CostCentreResolver.ResolveWithSource(new ResolverEmployee(dept.Id, null, null, false), Snap([bad], [dept]));
+        (resolution.IsResolved, resolution.UnresolvedReason, from).Should().Be((false, "department_cost_centre_invalid", dept.Id));
+    }
 }

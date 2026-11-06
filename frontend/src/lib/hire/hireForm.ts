@@ -9,6 +9,9 @@ export interface HireForm {
   gradeId: string;
   branchId: string;
   departmentId: string;
+  /** '' = follow the department (inherit); an id = an override, which needs `costCenterReason`. */
+  costCenterId: string;
+  costCenterReason: string;
   managerId: string;
   employeeCode: string;
   manualCode: boolean;
@@ -46,7 +49,7 @@ export interface HireForm {
 
 export function emptyHireForm(): HireForm {
   return {
-    englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', managerId: '',
+    englishName: '', companyId: '', startDate: '', designationId: '', gradeId: '', branchId: '', departmentId: '', costCenterId: '', costCenterReason: '', managerId: '',
     employeeCode: '', manualCode: false, workEmail: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
     nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
     personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', probationWaived: false, workLocation: '', iban: '', molId: '',
@@ -86,6 +89,9 @@ export function rebaseHireCompany(form: HireForm, companyId: string, choices: Hi
     gradeId: sharedOrOwnedBy(form.gradeId, choices.grades),
     branchId: branch,
     departmentId: sharedOrOwnedBy(form.departmentId, choices.departments),
+    // A cost centre belongs to exactly one company: another company's is never valid, so a company change starts over.
+    costCenterId: companyId === form.companyId ? form.costCenterId : '',
+    costCenterReason: companyId === form.companyId ? form.costCenterReason : '',
     managerId: manager,
   };
 }

@@ -10,6 +10,7 @@ import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
 import { glSetup } from './glSetup';
 import { costCentres } from './costCentres';
+import { employeeCostCentreEdit } from './employeeCostCentreEdit';
 import { payrollCostCentres } from './payrollCostCentres';
 import { glErp } from './glErp';
 import { statutoryRules } from './statutoryRules';
@@ -1573,6 +1574,8 @@ const en: Dict = {
   ...setupExperience.en,
   ...glSetup.en,
   ...costCentres.en,
+  // Cost centre on transfer (Wave A): Edit employee, create and hire wizards — see ./employeeCostCentreEdit.
+  ...employeeCostCentreEdit.en,
   ...payrollCostCentres.en,
   ...glErp.en,
   ...statutoryRules.en,
@@ -3100,6 +3103,7 @@ const ar: Dict = {
   ...setupExperience.ar,
   ...glSetup.ar,
   ...costCentres.ar,
+  ...employeeCostCentreEdit.ar,
   ...payrollCostCentres.ar,
   ...glErp.ar,
   ...statutoryRules.ar,
