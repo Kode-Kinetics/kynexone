@@ -2047,7 +2047,20 @@ public partial class PayrollController : ControllerBase
         // under it, and Process does not take it. LOCK ORDER in Approve: run row FOR UPDATE -> company cost-accounting lock (above) -> entitlements.matrix (here). The
         // matrix paths take entitlements.matrix first and never the run row or the cost-accounting lock (they read runs without a row lock), so no cycle exists.
         if (isAdmin || isFinance || (isHROrPayroll && run.Status == "Processed"))
+        {
             await Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, Infrastructure.Entitlements.EntitlementMatrixService.LockScope, tenantId, tenantId, cancellationToken);
+            // Read under the lock, so a correction cannot slip in between this look and the commit. A run whose allowance definitions were corrected after it was
+            // processed carries the old GL driver and end-of-service answer on its slips: it is re-processed first, never approved as it stands.
+            if (await Infrastructure.Payroll.PayrollRunDefinitionStaleness.FindAsync(_db, tenantId, run, cancellationToken) is { } stale)
+                return Conflict(new
+                {
+                    error = "payroll_run_stale_definition",
+                    message = $"The monthly allowance {stale.Code} was corrected from {stale.EffectiveFrom:yyyy-MM} after this run was processed, so its payslips use the old definition. "
+                              + "Nothing was approved. Reopen the run and process it again, then approve it.",
+                    componentCode = stale.Code,
+                    effectiveFrom = stale.EffectiveFrom.ToString("yyyy-MM-dd"),
+                });
+        }
 
         // Admin and Finance finalise directly to Approved
         if (isAdmin || isFinance)

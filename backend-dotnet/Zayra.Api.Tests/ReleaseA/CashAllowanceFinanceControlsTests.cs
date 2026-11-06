@@ -1248,6 +1248,83 @@ public class CashAllowanceFinanceControlsTests
         log.Should().Contain((EntitlementMatrixService.LockScope, w.Tid, w.Tid), "a closed period makes the month committed, so it is taken under the lock a correction holds");
     }
 
+    // ══ A Processed run whose definitions were corrected afterwards is stale: Approve refuses it ═══
+
+    private static async Task<PayrollRun> ProcessedRunWithCarAsync(World w)
+    {
+        await GiveAsync(w, w.A, Car, 500m);
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 6);
+        await w.Db.SaveChangesAsync();
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+        return run;
+    }
+
+    /// <summary>A correction written after the run was processed (the version row, as the Correct door writes it).</summary>
+    private static async Task CorrectAfterAsync(World w, PayrollRun run, DateOnly from)
+    {
+        var processedAt = (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).ProcessedAtUtc!.Value;
+        var row = await AddDefinitionAsync(w.Db, w.Tid, Car, "EARN:CAR", "Car allowance", "5210", driverRow: false, from: from);
+        row.CreatedAtUtc = processedAt.AddMilliseconds(1);   // just after the run was processed; a re-process is later still
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+    }
+
+    private static async Task<IActionResult> ApproveAsync(World w, Guid runId)
+    {
+        await ReconTestSupport.SignOffAsync(w.Db, runId);
+        w.Db.ChangeTracker.Clear();
+        var result = await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Approve(runId, new PayrollDecisionRequest("ok"), CancellationToken.None);
+        w.Db.ChangeTracker.Clear();
+        return result;
+    }
+
+    [Fact]
+    public async Task AStaleRun_IsRefusedAtApproval_NamingTheAllowanceAndMonth_AndNothingIsWritten_UntilItIsReprocessed()
+    {
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        await CorrectAfterAsync(w, run, new DateOnly(2026, 6, 1));
+
+        var refused = await ApproveAsync(w, run.Id);
+
+        refused.Should().BeOfType<ConflictObjectResult>(Describe(refused));
+        Body(refused).GetProperty("error").GetString().Should().Be("payroll_run_stale_definition");
+        Body(refused).GetProperty("message").GetString().Should().Contain(Car).And.Contain("2026-06");
+        (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).Status.Should().Be("Processed");
+        (await w.Db.PayrollApprovals.AsNoTracking().AnyAsync(a => a.PayrollRunId == run.Id)).Should().BeFalse("nothing was written");
+
+        // Re-process (reopen, then process again): the slips now use the corrected definition, so the approval goes through.
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).ReopenRun(run.Id, new PayrollReasonRequest("definition corrected"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task ACorrectionEffectiveAfterTheRunsMonth_DoesNotMakeItStale()
+    {
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        await CorrectAfterAsync(w, run, new DateOnly(2026, 7, 1));
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task ACorrectionToAnAllowanceNotOnTheRun_DoesNotMakeItStale()
+    {
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        await AddDefinitionAsync(w.Db, w.Tid, "ALW_PHONE", "EARN:PHONE", "Phone", "5214", from: new DateOnly(2026, 6, 1));
+        (await w.Db.PayComponents.SingleAsync(c => c.Code == "ALW_PHONE")).CreatedAtUtc = (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).ProcessedAtUtc!.Value.AddMilliseconds(1);
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
 
     [Fact]
