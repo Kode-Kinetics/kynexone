@@ -190,7 +190,7 @@ public static class EmployeeChangeDetail
         {
             var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(db, tenantId, employee.Id, effective,
                 new Zayra.Api.Infrastructure.Payroll.PaySlots(basic, package.HousingAllowance.GetValueOrDefault(), package.TransportAllowance.GetValueOrDefault(),
-                    package.FoodAllowance.GetValueOrDefault(), package.MobileAllowance.GetValueOrDefault(), package.OtherAllowance.GetValueOrDefault()),
+                    package.FoodAllowance.GetValueOrDefault(), package.MobileAllowance.GetValueOrDefault(), package.OtherAllowance.GetValueOrDefault(), package.FixedDeduction.GetValueOrDefault()),
                 proposedCard.Select(l => new Zayra.Api.Infrastructure.Payroll.ResolvedAllowanceLine(l.Code, l.Basis, l.Rate, l.Amount)).ToList(), ct);
             if (reduction.IsReduction)
             {

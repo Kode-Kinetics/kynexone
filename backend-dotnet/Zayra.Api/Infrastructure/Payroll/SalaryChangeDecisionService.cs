@@ -177,6 +177,42 @@ public sealed class SalaryChangeDecisionService
         });
     }
 
+    /// <summary>
+    /// Approving <paramref name="change"/> makes it the record in force just before the next approved record dated after it. When that later record would
+    /// lower pay against this one (a slot, an allowance line or the whole pay down, or a higher fixed deduction), was not already a reduction against what
+    /// precedes it today, and carries no written-agreement reference, the approval is refused so Finance decides the order consciously
+    /// (<c>later_change_becomes_reduction</c>, naming the later change's effective date). Null when there is no such record or nothing lowers.
+    /// </summary>
+    private async Task<IActionResult?> LaterRecordBecomesReductionAsync(Guid tenantId, SalaryChangeRequest change, IReadOnlyCollection<ResolvedAllowanceLine> newLines, CancellationToken ct)
+    {
+        var later = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == change.EmployeeId && x.IsActive && x.EffectiveDate > change.EffectiveDate)
+                .ToListAsync(ct))
+            .OrderBy(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+        if (later is null) return null;
+        var laterLines = (await SalaryAllowanceLines.LoadAsync(_db, tenantId, [later.Id], ct))[later.Id].Select(l => (l.Code, l.Amount)).ToList();
+
+        var afterThisApproval = SalaryReductions.Compare(PaySlots.Of(change), newLines.Select(l => (l.Code, l.Amount)).ToList(), PaySlots.Of(later), laterLines);
+        if (!afterThisApproval.IsReduction) return null;
+        // Already a reduction against what precedes it today: not something this approval introduces.
+        var (before, beforeLines) = await SalaryAllowanceLines.InForceAsync(_db, tenantId, change.EmployeeId, later.EffectiveDate.AddDays(-1), ct);
+        if (before is not null
+            && SalaryReductions.Compare(PaySlots.Of(before), beforeLines.Select(l => (l.Code, l.Amount)).ToList(), PaySlots.Of(later), laterLines).IsReduction)
+            return null;
+        // The later record's own agreement, kept on the change that produced it.
+        var reference = await _db.SalaryChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.AppliedAssignmentId == later.Id).Select(x => x.ReductionConsentReference).FirstOrDefaultAsync(ct);
+        if (SalaryReductions.CleanReference(reference) is not null) return null;
+        return new ConflictObjectResult(new
+        {
+            error = "later_change_becomes_reduction",
+            message = $"Approving this would make the salary change already approved from {later.EffectiveDate:yyyy-MM-dd} lower the employee's pay, and that change has no written agreement reference. "
+                      + "Approve the changes in date order, or reject this one and propose it again.",
+            laterEffectiveDate = later.EffectiveDate.ToString("yyyy-MM-dd"),
+            reducedItems = afterThisApproval.Items,
+        });
+    }
+
     /// <summary>Checks the separation-of-duties rules and applies or rejects. Returns null on success, else the refusal to send.</summary>
     private async Task<IActionResult?> DecideAsync(Guid tenantId, SalaryChangeRequest change, string decision, string? note, SalaryDecisionActor actor,
         Func<int, bool>? canDecideEmployee, CancellationToken ct, bool overrideGradeRange = false)
@@ -239,6 +275,10 @@ public sealed class SalaryChangeDecisionService
                     code = noConsent.Code,
                     reducedItems = reduction.Items,
                 });
+            // The same rule seen from the other side: this approval changes what the NEXT record (already approved, dated after this one) is measured against.
+            // A later record that was fine against the old predecessor can become a reduction against this one, with nobody having agreed to it.
+            if (await LaterRecordBecomesReductionAsync(tenantId, change, allowanceLines.Lines, ct) is { } laterReduction)
+                return laterReduction;
             if (employee.GradeId.HasValue)
             {
                 var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);

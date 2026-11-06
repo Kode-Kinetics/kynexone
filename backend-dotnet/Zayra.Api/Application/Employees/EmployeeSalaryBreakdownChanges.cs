@@ -89,7 +89,7 @@ public static class EmployeeSalaryBreakdownChanges
         {
             var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(db, reductionTenant, employee.Id, salary.EffectiveDate!.Value,
                 new Zayra.Api.Infrastructure.Payroll.PaySlots(salary.BasicSalary!.Value, salary.HousingAllowance!.Value, salary.TransportAllowance!.Value,
-                    salary.FoodAllowance!.Value, salary.MobileAllowance!.Value, salary.OtherAllowance!.Value),
+                    salary.FoodAllowance!.Value, salary.MobileAllowance!.Value, salary.OtherAllowance!.Value, salary.FixedDeduction.GetValueOrDefault()),
                 allowances.Lines, ct);
             if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, salary.ReductionConsentReference) is { } noConsent)
                 throw new InvalidOperationException(noConsent.Message);

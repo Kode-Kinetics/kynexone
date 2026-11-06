@@ -375,7 +375,7 @@ public partial class PayrollController : ControllerBase
         if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.CheckReference(req.ReductionConsentReference) is { } badReference)
             return StatusCode(badReference.Status, new { error = badReference.Code, code = badReference.Code, message = badReference.Message });
         var reduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(_db, tenantId, employee.Id, req.EffectiveDate,
-            new Zayra.Api.Infrastructure.Payroll.PaySlots(req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.FoodAllowance, req.MobileAllowance, req.OtherAllowance),
+            new Zayra.Api.Infrastructure.Payroll.PaySlots(req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.FoodAllowance, req.MobileAllowance, req.OtherAllowance, req.FixedDeduction),
             allowanceLines.Lines, cancellationToken);
         if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, req.ReductionConsentReference) is { } noConsent)
             return StatusCode(noConsent.Status, new { error = noConsent.Code, code = noConsent.Code, message = noConsent.Message, reducedItems = reduction.Items });
@@ -9221,7 +9221,7 @@ public partial class PayrollController : ControllerBase
             if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.CheckReference(consentReference) is { } badReference)
             { errors.Add($"Row {rowNum}: {badReference.Message}"); skipped++; continue; }
             var rowReduction = await Zayra.Api.Infrastructure.Payroll.SalaryReductions.EvaluateAsync(_db, tenantId, employee.Id, effectiveDate,
-                new Zayra.Api.Infrastructure.Payroll.PaySlots(basic, housing, transport, food, mobile, other), null, cancellationToken);
+                new Zayra.Api.Infrastructure.Payroll.PaySlots(basic, housing, transport, food, mobile, other, deduction), null, cancellationToken);
             if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(rowReduction, consentReference) is { } noConsent)
             { errors.Add($"Row {rowNum}: {noConsent.Message}"); skipped++; continue; }
 

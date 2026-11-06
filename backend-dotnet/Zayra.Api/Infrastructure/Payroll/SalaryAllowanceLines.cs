@@ -340,7 +340,7 @@ public static class SalaryAllowanceLines
         var employeeIds = changes.Select(c => c.EmployeeId).Distinct().ToList();
         var records = await db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && employeeIds.Contains(x.EmployeeId))
-            .Select(x => new { x.Id, x.EmployeeId, x.EffectiveDate, x.CreatedAtUtc, x.BasicSalary, x.HousingAllowance, x.TransportAllowance, x.FoodAllowance, x.MobileAllowance, x.OtherAllowance })
+            .Select(x => new { x.Id, x.EmployeeId, x.EffectiveDate, x.CreatedAtUtc, x.BasicSalary, x.HousingAllowance, x.TransportAllowance, x.FoodAllowance, x.MobileAllowance, x.OtherAllowance, x.FixedDeduction })
             .ToListAsync(ct);
         var appliedIds = changes.Where(c => c.AppliedAssignmentId.HasValue).Select(c => c.AppliedAssignmentId!.Value).ToList();
         var recordIds = records.Select(r => r.Id).Concat(appliedIds).Distinct().ToList();
@@ -399,7 +399,7 @@ public static class SalaryAllowanceLines
                         ? proposed.Select(l => (l.Code, l.Amount)).ToList()
                         : SalaryReductions.CarriedLines(currentRows, c.BasicSalary);
                 reduction = SalaryReductions.Compare(
-                    new PaySlots(current.BasicSalary, current.HousingAllowance, current.TransportAllowance, current.FoodAllowance, current.MobileAllowance, current.OtherAllowance),
+                    new PaySlots(current.BasicSalary, current.HousingAllowance, current.TransportAllowance, current.FoodAllowance, current.MobileAllowance, current.OtherAllowance, current.FixedDeduction),
                     currentRows.Select(r => (r.Code, r.Amount)).ToList(), PaySlots.Of(c), after);
             }
             views[c.Id] = new SalaryAllowanceView(currentViews, proposed, carried,

@@ -587,12 +587,12 @@ public class CashAllowanceFinanceControlsTests
     [Fact]
     public async Task NothingInForce_IsNeverAReduction_TheFirstPackageOfAHire()
     {
-        SalaryReductions.Compare(null, [], new PaySlots(5_000m, 0m, 0m, 0m, 0m, 0m), []).Should().Be(ReductionResult.None);
+        SalaryReductions.Compare(null, [], new PaySlots(5_000m, 0m, 0m, 0m, 0m, 0m, 0m), []).Should().Be(ReductionResult.None);
         await using var w = await NewWorld();
         w.Db.EmployeeSalaryStructures.RemoveRange(w.Db.EmployeeSalaryStructures.Where(x => x.EmployeeId == w.B.Id));
         await w.Db.SaveChangesAsync();
 
-        (await SalaryReductions.EvaluateAsync(w.Db, w.Tid, w.B.Id, new DateOnly(2026, 7, 1), new PaySlots(1m, 0m, 0m, 0m, 0m, 0m), null, default))
+        (await SalaryReductions.EvaluateAsync(w.Db, w.Tid, w.B.Id, new DateOnly(2026, 7, 1), new PaySlots(1m, 0m, 0m, 0m, 0m, 0m, 0m), null, default))
             .IsReduction.Should().BeFalse();
     }
 
@@ -1012,6 +1012,164 @@ public class CashAllowanceFinanceControlsTests
 
         (status, code).Should().Be((422, "cash_allowance_definition_invalid"));
         message.Should().Contain(Car);
+    }
+
+    // ══ L3. A higher fixed deduction lowers take-home pay: it needs the written agreement too ═════
+
+    [Fact]
+    public void RaisingTheFixedDeduction_OrAddingOne_IsAReduction_LoweringOrKeepingItIsNot()
+    {
+        var current = new PaySlots(10_000m, 2_000m, 1_000m, 0m, 0m, 0m, 100m);
+
+        var raised = SalaryReductions.Compare(current, [], current with { FixedDeduction = 150m }, []);
+        raised.IsReduction.Should().BeTrue();
+        raised.Items.Should().ContainSingle().Which.Should().Be(new ReducedItem("FIXED_DEDUCTION", 100m, 150m));
+        raised.ChangesContractWage.Should().BeFalse("a deduction is not part of the contract wage");
+        (raised.CurrentTotal, raised.ProposedTotal).Should().Be((13_000m, 13_000m), "the deduction is not pay");
+
+        SalaryReductions.Compare(new PaySlots(10_000m, 2_000m, 1_000m, 0m, 0m, 0m, 0m), [], current, []).Items
+            .Should().ContainSingle().Which.Should().Be(new ReducedItem("FIXED_DEDUCTION", 0m, 100m), "a deduction where there was none");
+        SalaryReductions.Compare(current, [], current with { FixedDeduction = 40m }, []).IsReduction.Should().BeFalse();
+        SalaryReductions.Compare(current, [], current with { FixedDeduction = 0m }, []).IsReduction.Should().BeFalse();
+        SalaryReductions.Compare(current, [], current, []).IsReduction.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ProposingAHigherFixedDeductionAlone_NeedsTheReference_AndALowerOrSameOneDoesNot()
+    {
+        await using var w = await NewWorld();
+
+        var refused = await TryProposeAsync(w, Package(w, w.A, 10_000m, "2026-07-01", null, deduction: 300m));
+        refused.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(400);
+        Body(refused).GetProperty("code").GetString().Should().Be("reduction_consent_required");
+        Body(refused).GetProperty("message").GetString().Should().Contain("Fixed deduction");
+        Body(refused).GetProperty("reducedItems").EnumerateArray().Single().GetProperty("item").GetString().Should().Be("FIXED_DEDUCTION");
+        (await w.Db.SalaryChangeRequests.AnyAsync()).Should().BeFalse();
+
+        var staged = await ProposeAsync(w, Package(w, w.A, 10_000m, "2026-07-01", null, consent: "AMEND-DED-1", deduction: 300m));
+        var listed = await ListedAsync(w, staged.Id);
+        listed.GetProperty("isReduction").GetBoolean().Should().BeTrue();
+        listed.GetProperty("reducedItems").EnumerateArray().Single().GetProperty("item").GetString().Should().Be("FIXED_DEDUCTION");
+        (await DecideAsync(w, staged.Id)).Should().BeOfType<OkObjectResult>();
+
+        // 300 is now in force: the same or a lower deduction is not a reduction.
+        (await TryProposeAsync(w, Package(w, w.A, 10_000m, "2026-08-01", null, deduction: 300m))).Should().BeOfType<AcceptedResult>();
+        (await TryProposeAsync(w, Package(w, w.A, 10_000m, "2026-09-01", null, deduction: 100m))).Should().BeOfType<AcceptedResult>();
+    }
+
+    [Fact]
+    public async Task TheCsvImport_AndTheApprovalsPath_AlsoRefuseAHigherFixedDeduction_WithoutAReference()
+    {
+        await using var w = await NewWorld();
+        const string header = "EmployeeCode,SalaryStructureCode,BasicSalary,HousingAllowance,TransportAllowance,FoodAllowance,MobileAllowance,OtherAllowance,FixedDeduction,Currency,EffectiveDate";
+        var import = await Hr(w).ImportEmployeeSalaries(new ImportSalaryStructuresRequest($"{header}\nC001,STR-C3,10000,2000,1000,0,0,0,300,SAR,2026-07-01\n"), default);
+        Body(import).GetProperty("skipped").GetInt32().Should().Be(1);
+        Body(import).GetProperty("errors").EnumerateArray().Single().GetString().Should().Contain("written agreement");
+
+        var employee = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.A.Id);
+        static IReadOnlyDictionary<string, JsonElement> Changes(string? consent) => new Dictionary<string, JsonElement>
+        {
+            ["salaryBreakdown"] = (JsonDocument.Parse(
+                "{\"basicSalary\":10000,\"housingAllowance\":2000,\"transportAllowance\":1000,\"foodAllowance\":0,\"mobileAllowance\":0,\"otherAllowance\":0," +
+                "\"fixedDeduction\":300,\"effectiveDate\":\"2026-07-01\",\"currency\":\"SAR\"" + (consent is null ? "" : ",\"reductionConsentReference\":\"" + consent + "\"") + "}")).RootElement.Clone(),
+        };
+        (await Assert.ThrowsAsync<InvalidOperationException>(() => EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(null), default)))
+            .Message.Should().Contain("written agreement");
+        await EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes("AMEND-DED-2"), default);
+    }
+
+    // ══ L4. Pending changes are judged against each other, in whichever order Finance approves ════
+
+    [Fact]
+    public async Task TwoPendingChanges_ApprovedLaterFirst_ThenTheEarlierOne_RefuseTheEarlierBecauseTheLaterWouldNowLowerPay()
+    {
+        await using var w = await NewWorld();
+        var a = await ProposeAsync(w, Package(w, w.A, 12_000m, "2026-06-01", null));
+        var b = await ProposeAsync(w, Package(w, w.A, 11_000m, "2026-07-01", null));      // fine against the 10,000 in force
+        (await DecideAsync(w, b.Id)).Should().BeOfType<OkObjectResult>("against what is in force from July today, B is a raise");
+
+        var refused = await DecideAsync(w, a.Id);
+
+        refused.Should().BeOfType<ConflictObjectResult>();
+        Body(refused).GetProperty("error").GetString().Should().Be("later_change_becomes_reduction");
+        Body(refused).GetProperty("message").GetString().Should().Contain("2026-07-01");
+        Body(refused).GetProperty("laterEffectiveDate").GetString().Should().Be("2026-07-01");
+        (await w.Db.SalaryChangeRequests.AsNoTracking().SingleAsync(x => x.Id == a.Id)).Status.Should().Be(SalaryChangeRequest.Pending);
+        (await w.Db.EmployeeSalaryStructures.AsNoTracking().AnyAsync(x => x.EmployeeId == w.A.Id && x.BasicSalary == 12_000m)).Should().BeFalse("nothing was applied");
+    }
+
+    [Fact]
+    public async Task TwoPendingChanges_ApprovedEarlierFirst_RefuseTheLaterOne_WithoutAReference()
+    {
+        await using var w = await NewWorld();
+        var a = await ProposeAsync(w, Package(w, w.A, 12_000m, "2026-06-01", null));
+        var b = await ProposeAsync(w, Package(w, w.A, 11_000m, "2026-07-01", null));
+        (await DecideAsync(w, a.Id)).Should().BeOfType<OkObjectResult>();
+
+        var refused = await DecideAsync(w, b.Id);
+
+        refused.Should().BeOfType<ConflictObjectResult>();
+        Body(refused).GetProperty("code").GetString().Should().Be("reduction_consent_required");
+    }
+
+    [Fact]
+    public async Task TwoPendingChanges_WhereTheLaterOneCarriesAReference_OrNothingLowers_ApproveInEitherOrder()
+    {
+        await using var w = await NewWorld();
+        // The later change is a reduction against the earlier one, but it was staged with the employee's written agreement.
+        var a = await ProposeAsync(w, Package(w, w.A, 12_000m, "2026-06-01", null));
+        var b = await ProposeAsync(w, Package(w, w.A, 11_000m, "2026-07-01", null, consent: "AMEND-B-1"));
+        (await DecideAsync(w, b.Id)).Should().BeOfType<OkObjectResult>();
+        (await DecideAsync(w, a.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task TwoPendingRaises_ApproveInEitherOrder()
+    {
+        await using var w = await NewWorld();
+        var a = await ProposeAsync(w, Package(w, w.A, 12_000m, "2026-06-01", null));
+        var b = await ProposeAsync(w, Package(w, w.A, 13_000m, "2026-07-01", null));
+        (await DecideAsync(w, b.Id)).Should().BeOfType<OkObjectResult>();
+        (await DecideAsync(w, a.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    // ══ L7. The consent reference must be a real reference, not "x" ═══════════════════════════════
+
+    [Theory]
+    [InlineData("x")]
+    [InlineData("ab")]
+    [InlineData("---")]
+    [InlineData(" . , ")]
+    public async Task AConsentReferenceThatIsTooShortOrHasNoLetterOrDigit_IsRefused(string reference)
+    {
+        await using var w = await NewWorld();
+
+        var refused = await TryProposeAsync(w, Package(w, w.A, 9_000m, "2026-07-01", null, consent: reference));
+
+        refused.Should().BeOfType<ObjectResult>().Which.StatusCode.Should().Be(400);
+        Body(refused).GetProperty("code").GetString().Should().Be("reduction_consent_reference_too_short");
+        (await w.Db.SalaryChangeRequests.AnyAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ABlankConsentReference_IsStillNoReference()
+    {
+        await using var w = await NewWorld();
+
+        var refused = await TryProposeAsync(w, Package(w, w.A, 9_000m, "2026-07-01", null, consent: "   "));
+
+        Body(refused).GetProperty("code").GetString().Should().Be("reduction_consent_required");
+    }
+
+    [Theory]
+    [InlineData("HR-2026-014")]
+    [InlineData("اتفاقية-٢٠٢٦")]
+    [InlineData("N/A")]
+    public async Task ARealReference_IsAccepted_ArabicIncluded(string reference)
+    {
+        await using var w = await NewWorld();
+
+        (await TryProposeAsync(w, Package(w, w.A, 9_000m, "2026-07-01", null, consent: reference))).Should().BeOfType<AcceptedResult>();
     }
 
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
