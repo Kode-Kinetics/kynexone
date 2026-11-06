@@ -204,10 +204,19 @@ public static class SalaryAllowanceLines
     public static List<SalaryAllowanceLine>? Deserialize(string? json) =>
         string.IsNullOrWhiteSpace(json) ? null : JsonSerializer.Deserialize<List<SalaryAllowanceLine>>(json, Json) ?? [];
 
-    /// <summary>True when two staged states are the same proposal (jsonb does not keep the text it was given, so the lines are compared, not the strings).</summary>
+    /// <summary><see cref="Deserialize"/> that never throws: false when the stored text is not a list of lines (corrupt state), so a caller
+    /// can refuse in words instead of failing with a 500.</summary>
+    public static bool TryDeserialize(string? json, out List<SalaryAllowanceLine>? lines)
+    {
+        try { lines = Deserialize(json); return true; }
+        catch (JsonException) { lines = null; return false; }
+    }
+
+    /// <summary>True when two staged states are the same proposal (jsonb does not keep the text it was given, so the lines are compared, not the strings).
+    /// An unreadable state is never "the same" as anything, so a fresh proposal replaces it.</summary>
     public static bool SameStaged(string? a, string? b)
     {
-        var x = Deserialize(a); var y = Deserialize(b);
+        if (!TryDeserialize(a, out var x) || !TryDeserialize(b, out var y)) return false;
         if (x is null || y is null) return x is null && y is null;
         if (x.Count != y.Count) return false;
         var xs = x.OrderBy(l => l.Code, StringComparer.Ordinal).ToList(); var ys = y.OrderBy(l => l.Code, StringComparer.Ordinal).ToList();

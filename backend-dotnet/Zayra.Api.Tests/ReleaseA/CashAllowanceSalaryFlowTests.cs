@@ -507,6 +507,33 @@ public class CashAllowanceSalaryFlowTests
     }
 
     [Fact]
+    public async Task AFirstPackageWhosePendingLinesCannotBeRead_IsRefusedPlainly_NotA500_AndAStatedListStillReplacesIt()
+    {
+        await using var w = await NewWorld();
+        var hire = new Employee
+        {
+            TenantId = w.Tid, CompanyId = w.CompanyId, EmployeeCode = "C102", FullName = "Corrupt Draft", Status = "Draft",
+            JoiningDate = new DateTime(2026, 6, 1), WorkEmail = "corrupt@c3.com", Nationality = "Indian", ContractType = "Indefinite",
+        };
+        w.Db.Employees.Add(hire);
+        await w.Db.SaveChangesAsync();
+        var context = new RequestContext(null, null, Guid.NewGuid(), w.Tid);
+        var first = new EmployeeSalaryBreakdownRequest(9_000m, 1_800m, 900m, 0m, 0m, 0m, 0m, null, new DateOnly(2026, 6, 1), "SAR", [Amt(Car, 400m)]);
+        var staged = await EmployeeSalaryBreakdownWriter.StageFirstPackageAsync(w.Db, hire, first, context, CancellationToken.None);
+        await w.Db.SaveChangesAsync();
+        staged!.AllowancesJson = "{\"not\":\"a list\"}";   // corrupt stored state: an object where a list belongs
+        await w.Db.SaveChangesAsync();
+
+        // Saved again without stating allowances: the kept lines can't be known, so the save is refused in words, never a JsonException.
+        var keep = () => EmployeeSalaryBreakdownWriter.StageFirstPackageAsync(w.Db, hire, first with { BasicSalary = 10_000m, Allowances = null }, context, CancellationToken.None);
+        (await keep.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("allowances");
+
+        // Stating the allowances again replaces the unreadable package.
+        var restated = await EmployeeSalaryBreakdownWriter.StageFirstPackageAsync(w.Db, hire, first with { Allowances = [Amt(Car, 450m)] }, context, CancellationToken.None);
+        SalaryAllowanceLines.Deserialize(restated!.AllowancesJson)!.Single().Amount.Should().Be(450m);
+    }
+
+    [Fact]
     public async Task TheEmployeesBreakdown_ReadsBackTheLinesOfTheRecordInForce()
     {
         await using var w = await NewWorld();

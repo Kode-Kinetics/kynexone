@@ -144,8 +144,14 @@ public static class EmployeeSalaryBreakdownWriter
             .ToListAsync(cancellationToken);
         // A draft saved again WITHOUT stating allowances keeps the lines the pending package already carries (a percentage re-worked on the
         // new basic): re-saving the form must not silently drop an allowance. An explicit list, even an empty one, is the writer's own.
-        if (request?.Allowances is null
-            && pending.Where(x => x.AllowancesJson != null).OrderByDescending(x => x.RequestedAtUtc).FirstOrDefault() is { } carriedFrom
+        var carriedFrom = request?.Allowances is null
+            ? pending.Where(x => x.AllowancesJson != null).OrderByDescending(x => x.RequestedAtUtc).FirstOrDefault()
+            : null;
+        // Corrupt stored lines can't be carried (nor silently dropped): refuse in words; stating the allowances again replaces them.
+        if (carriedFrom is not null && !Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.TryDeserialize(carriedFrom.AllowancesJson, out _))
+            throw new InvalidOperationException(
+                "The monthly allowances on this employee's pending salary can't be read, so they can't be kept. Enter the allowances again and save.");
+        if (carriedFrom is not null
             && Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Deserialize(carriedFrom.AllowancesJson) is { } carriedLines)
         {
             var asStated = carriedLines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
