@@ -12,6 +12,16 @@ import * as path from 'path';
  */
 const SRC = path.resolve(__dirname, '../src');
 const READ = /\.costCenter\b(?![\w$])|\[\s*['"]costCenter['"]\s*\]/;
+/**
+ * Destructuring reads: `const { costCenter } = e`, a rename `const { costCenter: cc } = e`, a nested
+ * `const { changes: { costCenter } } = p`, and parameters `({ costCenter }) =>` / `function f({ costCenter }: T) {`.
+ * An object literal passed or returned (`fn({ costCenter: code })`, `{ changes: { costCenter: '' } }`) is a write, not a read.
+ */
+const DESTRUCTURE = [
+  /\b(?:const|let|var)\s*\{[^=;]*\bcostCenter\b(?![\w$])[^=;]*\}\s*=(?![=>])/,
+  /\(\s*\{[^()]*\bcostCenter\b(?![\w$])[^()]*\}[^()]*\)\s*(?:=>|\{)/,
+];
+const reads = (line: string) => READ.test(line) || DESTRUCTURE.some((re) => re.test(line));
 
 const ALLOW: Record<string, string> = {
   // The edit patch's own `changes.costCenter` key (the code the PUT sends), not the employee's cached copy.
@@ -33,7 +43,7 @@ test('nothing in src reads the cached employee.costCenter string (use costCentre
   for (const file of files(SRC)) {
     const rel = path.relative(SRC, file).split(path.sep).join('/');
     fs.readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
-      if (COMMENT.test(line) || !READ.test(line.replace(/\/\/.*$/, ''))) return;
+      if (COMMENT.test(line) || !reads(line.replace(/\/\/.*$/, ''))) return;
       const key = `${rel}: ${line.trim()}`;
       if (!ALLOW[key]) hits.push(`${rel}:${i + 1}: ${line.trim()}`);
     });
@@ -42,6 +52,30 @@ test('nothing in src reads the cached employee.costCenter string (use costCentre
 });
 
 test('the scan itself catches the shapes it is meant to catch', () => {
-  for (const line of ['employee.costCenter', 'x?.costCenter ?? ""', "row['costCenter']", 'form.costCenter)']) expect(READ.test(line), line).toBe(true);
-  for (const line of ['employee.costCenterId', 'costCenterIsOverride', "key === 'costCenter'", 'costCenter: string;', 'employee.costCenters']) expect(READ.test(line), line).toBe(false);
+  for (const line of ['employee.costCenter', 'x?.costCenter ?? ""', "row['costCenter']", 'form.costCenter)']) expect(reads(line), line).toBe(true);
+  for (const line of ['employee.costCenterId', 'costCenterIsOverride', "key === 'costCenter'", 'costCenter: string;', 'employee.costCenters']) expect(reads(line), line).toBe(false);
+});
+
+test('the scan catches destructuring reads, and not object literals or types', () => {
+  const positive = [
+    'const { costCenter } = employee;',
+    'let {costCenter}=e',
+    'const { id, costCenter: cc } = employee;',
+    'const { changes: { costCenter } } = patch;',
+    'const show = ({ costCenter }) => costCenter;',
+    'function show({ costCenter }: EmployeeDetail) {',
+    'items.map(({ costCenter, id }) => id)',
+  ];
+  const negative = [
+    'fn({ costCenter: code });',
+    "return { changes: { costCenter: '' }, costCenterReason: reason.trim() };",
+    'const { costCenterId } = employee;',
+    'const { costCenterIsOverride: flag } = employee;',
+    "const body = { costCenter: 'A' };",
+    'type Row = { costCenter: string };',
+    'interface Row { costCenter: string }',
+    'if (a == { costCenter }) {}',
+  ];
+  for (const line of positive) expect(reads(line), line).toBe(true);
+  for (const line of negative) expect(reads(line), line).toBe(false);
 });
