@@ -50,6 +50,25 @@ public static class EmployeeSearch
     }
 
     /// <summary>
+    /// The list's exact-value filters beside the department one: branch (the stored label, or the linked branch's English name,
+    /// which is what the list shows when the label is empty) and job title. Empty means "any".
+    /// </summary>
+    public static IQueryable<Employee> ApplyFilters(IQueryable<Employee> query, IQueryable<Branch> branches, string? branch, string? designation)
+    {
+        if (!string.IsNullOrWhiteSpace(branch))
+        {
+            var b = branch.Trim();
+            query = query.Where(e => e.Branch == b || branches.Any(x => x.Id == e.BranchId && x.NameEn == b));
+        }
+        if (!string.IsNullOrWhiteSpace(designation))
+        {
+            var d = designation.Trim();
+            query = query.Where(e => e.Designation == d);
+        }
+        return query;
+    }
+
+    /// <summary>
     /// The digits of a term that looks like a phone number (only digits, spaces, + - ( ) .), without an international prefix
     /// ("00", a GCC calling code) or the trunk "0", or null when it is not a phone-shaped term or has too few digits.
     /// </summary>

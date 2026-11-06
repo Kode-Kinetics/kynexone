@@ -2,7 +2,7 @@
  * ATTENDANCE BULK OPERATIONS — the screen, driven as the IntelliFlow HR Manager against the real API.
  *
  *   /attendance → Raw Punch Logs:  Download template · paste a CSV · Validate · "Import N valid rows (skip M)"
- *   /attendance → Live Dashboard:  Record attendance → Several employees → progress (% and who is recorded) → Process now → daily records
+ *   /attendance → Live Dashboard:  Record attendance (one list, no mode switch) → progress (% and who is recorded) → Process now → daily records
  *   /attendance → Processing:      All employees → Process Records → progress → completion (a background job)
  *   …and one Arabic / right-to-left smoke over all three panels.
  *
@@ -161,8 +161,16 @@ test.describe('Attendance bulk operations — screen', () => {
     const m = main(page);
     const panel = m.getByRole('region', { name: en('Record attendance') });
     await expect(panel, 'record attendance is on the first screen').toBeVisible();
-    await panel.getByRole('button', { name: en('Several employees') }).click();
-    await expect(panel.getByRole('button', { name: en('Several employees') })).toHaveAttribute('aria-pressed', 'true');
+    // No mode to choose: one list serves one employee or many.
+    await expect(panel.getByRole('button', { name: /^(One employee|Several employees)$/ })).toHaveCount(0);
+
+    // Filters: department, branch and job title, folded behind one button so the list keeps the height.
+    const filters = panel.getByRole('button', { name: en('Filters'), exact: true });
+    await expect(filters).toHaveAttribute('aria-expanded', 'false');
+    await filters.click();
+    for (const label of ['Department', 'Branch', 'Job title']) await expect(panel.getByLabel(en(label), { exact: true })).toBeVisible();
+    await filters.click();
+    await expect(panel.getByLabel(en('Job title'), { exact: true })).toHaveCount(0);
 
     // 360 search: the hint names what an HR Manager (employees.sensitive) can search by.
     const search = panel.getByLabel(en('Find employees'), { exact: true });
@@ -186,7 +194,7 @@ test.describe('Attendance bulk operations — screen', () => {
     await panel.getByLabel(en('From date')).fill(massDays[0]);
     await panel.getByLabel(en('To date')).fill(massDays[1]);
     await panel.getByLabel(en('In time')).fill(`09:${mm}`);
-    await panel.getByLabel(en('Out time (optional)')).fill(`14:${mm}`);
+    await panel.getByLabel(en('Out time'), { exact: true }).fill(`14:${mm}`);
     const submit = panel.getByRole('button', { name: en(SUBMIT_KEY, { employees: 2, days: 2 }) });
     await expect(submit, 'a reason is required before anything can be recorded').toBeDisabled();
     const reason = panel.getByLabel(en('Reason (required)'));
@@ -246,6 +254,20 @@ test.describe('Attendance bulk operations — screen', () => {
     // New entry clears the progress view for the next one.
     await panel.getByRole('button', { name: en('New entry') }).click();
     await expect(progress).toHaveCount(0);
+
+    // The everyday single-person fix in the same list: tick ONE employee, leave In empty, enter only the Out.
+    await panel.getByRole('button', { name: en('Clear selection') }).click();
+    await search.fill(e1.code);
+    await panel.getByRole('checkbox', { name: codePattern(e1.code) }).check();
+    await panel.getByLabel(en('To date')).fill(massDays[0]);
+    await panel.getByLabel(en('In time')).fill('');
+    await panel.getByLabel(en('Out time'), { exact: true }).fill(`18:${mm}`);
+    await panel.getByLabel(en('Reason (required)')).fill(`E2E forgot to punch out ${Date.now()}`);
+    await panel.getByRole('button', { name: en(SUBMIT_KEY, { employees: 1, days: 1 }) }).click();
+    await expect(panel.getByRole('status').filter({ hasText: en('Finished: {done} of {total} employees recorded.', { done: 1, total: 1 }) })).toBeVisible({ timeout: 30_000 });
+    await expect(panel.getByText(en('Out at {time}', { time: `18:${mm}` }))).toBeVisible();
+    const outOnly = (await rawPunches(api, admin, e1.id, massDays[0])).filter((p) => p.source === 'Manual (bulk)' && p.punchTimestampUtc.slice(14, 16) === mm);
+    expect(outOnly.map((p) => p.punchDirection).sort(), 'the earlier In and Out, plus the new Out only').toEqual(['In', 'Out', 'Out']);
   });
 
   test('Processing: All employees runs as a job with progress, completes, and is never a 403', async ({ page }) => {
@@ -312,17 +334,15 @@ test.describe('Attendance bulk operations — screen', () => {
     const dashboardTab = m.getByRole('tab', { name: ar('Live Dashboard'), exact: true });
     await dashboardTab.click();
     await expect(m.getByRole('region', { name: ar('Record attendance') })).toBeVisible();
-    await m.getByRole('button', { name: ar('Several employees') }).click();
-    for (const title of ['Record attendance', 'One employee', 'Several employees']) {
+    for (const title of ['Record attendance', 'Filters', 'Out time']) {
       expect(ar(title), `the Arabic dictionary has "${title}"`).not.toBe(title);
       await expect(m.getByText(title, { exact: true }), `English "${title}" is still on screen`).toHaveCount(0);
     }
-    await expect(m.getByText(ar('Employees to include'), { exact: true })).toBeVisible();
     await expect(m.getByLabel(ar('Find employees'), { exact: true })).toBeVisible();
     await expect(m.getByRole('button', { name: ar('Select all shown') })).toBeVisible();
     await expect(m.getByLabel(ar('Reason (required)'))).toBeVisible();
     await expect(m.getByText(ar('In time'), { exact: true })).toBeVisible();
-    for (const english of ['Employees to include', 'Find employees', 'Select all shown', 'Reason (required)', 'Out time (optional)']) {
+    for (const english of ['Find employees', 'Select all shown', 'Reason (required)', 'Out time', 'Filters']) {
       await expect(m.getByText(english, { exact: true }), `English "${english}" is still on screen`).toHaveCount(0);
     }
 

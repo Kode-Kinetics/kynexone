@@ -16,7 +16,7 @@ public interface IEmployeeManagementService
     /// <summary>As above, plus the self-service access state filter (<c>access=</c>, comma-separated states).</summary>
     /// <param name="includeSensitive">The CALLER's employees.sensitive entitlement: only then does the search also match phone,
     /// personal email and the exact ID/Iqama number (EmployeeSearch). Defaults to FALSE so a forgotten call site searches less.</param>
-    Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false);
+    Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false, string? branch = null, string? designation = null);
     Task<EmployeeDetailDto?> GetAsync(Guid tenantId, int id, bool includeSensitive, RequestContext context, CancellationToken cancellationToken, bool includeOwnPersonal = false);
     /// <param name="includeSensitive">The CALLER's own sensitive-data entitlement (EmployeesController.CanViewSensitive()).
     /// Defaults to FALSE so a forgotten call site masks rather than leaks: a mutation response must never

@@ -37,12 +37,10 @@ import { EmployeeMultiSelect } from './EmployeeMultiSelect';
 import { ProcessJobProgress } from './ProcessJobProgress';
 import { SectionTitle } from './attendanceUi';
 
-type Mode = 'one' | 'several';
-
 interface Props {
-  /** The single-punch fields (one employee, now), or null when this user may not punch. */
+  /** The plain punch form (one employee, now), for users who may punch but not enter for a selection; null when they may not punch. */
   single: ReactNode | null;
-  /** attendance.write AND attendance.bulk_import: may record for several employees at once. */
+  /** attendance.write AND attendance.bulk_import: may record for a selection of employees (one or many). */
   canMass: boolean;
   /** attendance.write: may start processing for the people just recorded. */
   canProcess: boolean;
@@ -51,34 +49,19 @@ interface Props {
 }
 
 /**
- * The Live Dashboard's one place to record attendance: a single punch for one employee, or the same in/out times for several
- * employees over a date range (mass entry), with a live progress view of who is done and who is not.
+ * The Live Dashboard's one place to record attendance. With entry rights there is no mode to choose: one list, tick one person
+ * or many, set the days and times, give a reason. Without them, the plain punch form.
  */
 export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded }: Props) {
   const { t } = useLocale();
-  const [mode, setMode] = useState<Mode>(single ? 'one' : 'several');
-  const both = !!single && canMass;
   if (!single && !canMass) return null;
 
   return (
     <section className="surface p-4" aria-label={t('Record attendance')}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <SectionTitle icon={CalendarClock} title={t('Record attendance')}
-          subtitle={mode === 'one' ? t('Save a web, mobile or kiosk punch for one employee now.') : t('Record the same times for several employees over a date range. A reason is required and kept in the audit trail.')} />
-        {both && (
-          <div role="group" aria-label={t('Who to record for')} className="inline-flex rounded-xl border border-slate-200 p-0.5 dark:border-white/10">
-            {(['one', 'several'] as const).map((m) => (
-              <button key={m} type="button" aria-pressed={mode === m} onClick={() => setMode(m)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${mode === m ? 'bg-sapphire text-white' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-white/5'}`}>
-                {m === 'one' ? t('One employee') : t('Several employees')}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="mt-4">
-        {mode === 'one' && single}
-        {mode === 'several' && canMass && <MassEntry canProcess={canProcess} onRecorded={onRecorded} />}
+      <SectionTitle icon={CalendarClock} title={t('Record attendance')}
+        subtitle={canMass ? t('Tick one or more employees, set the days and times, and give a reason. Every entry is kept in the audit trail.') : t('Save a web, mobile or kiosk punch for one employee now.')} />
+      <div className="mt-3">
+        {canMass ? <MassEntry canProcess={canProcess} onRecorded={onRecorded} /> : single}
       </div>
     </section>
   );
@@ -105,7 +88,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
   const stopRef = useRef(false);
   const mountedRef = useRef(true);
   /** The entry as submitted, so a retry resends exactly that even if the fields were edited since. */
-  const sentRef = useRef<{ fromDate: string; toDate: string; inTime: string; outTime?: string; reason: string } | null>(null);
+  const sentRef = useRef<{ fromDate: string; toDate: string; inTime?: string; outTime?: string; reason: string } | null>(null);
   const processAskedRef = useRef<{ scope: 'all' | 'selected'; expected: number }>({ scope: 'selected', expected: 0 });
   const process = useAttendanceProcessJob(onRecorded);
 
@@ -156,7 +139,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
 
   const submit = () => {
     if (!state.canSubmit) return;
-    sentRef.current = { fromDate, toDate, inTime, outTime: outTime || undefined, reason: reason.trim() };
+    sentRef.current = { fromDate, toDate, inTime: inTime || undefined, outTime: outTime || undefined, reason: reason.trim() };
     setFilter('all');
     const order = selectedIds(selection);
     void send(order.map((id) => { const p = selection.get(id)!; return { id, code: p.employeeCode, name: p.fullName }; }));
@@ -179,6 +162,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
   const newEntry = () => { dispatch({ type: 'reset' }); setReason(''); };
 
   const shownPeople = useMemo(() => (filter === 'all' ? run.people : run.people.filter((p) => p.status === filter)), [run.people, filter]);
+  const timesLabel = (inAt?: string, outAt?: string) => (inAt && outAt ? `${inAt}–${outAt}` : inAt ? t('In at {time}', { time: inAt }) : t('Out at {time}', { time: outAt ?? '' }));
   const statusLabel = (s: PersonStatus) => ({ done: t('Recorded'), partial: t('Partly recorded'), notDone: t('Not recorded'), waiting: t('Pending') }[s]);
   const toProcess = recordedIds(run).length;
   const toRetry = retryIds(run).length;
@@ -198,16 +182,16 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
             {t(MASS_ENTRY_SUMMARY_KEY, { employees: run.people.length, days: inclusiveDays(sentRef.current.fromDate, sentRef.current.toDate) ?? 1 })}
           </span>
           {' · '}{fx.date(sentRef.current.fromDate)}{sentRef.current.toDate !== sentRef.current.fromDate && <> – {fx.date(sentRef.current.toDate)}</>}
-          {' · '}{sentRef.current.inTime}{sentRef.current.outTime && <>–{sentRef.current.outTime}</>}
+          {' · '}{timesLabel(sentRef.current.inTime, sentRef.current.outTime)}
           {' · '}<span className="italic">{sentRef.current.reason}</span>
         </p>
       )}
-      {run.phase === 'idle' && <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+      {run.phase === 'idle' && <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <EmployeeMultiSelect id={`${ids}-mass`} label={t('Employees to include')} selection={selection} onChange={setSelection}
-          max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-44" />
-        <fieldset className="space-y-3" disabled={locked}>
+          max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-52" />
+        <fieldset className="min-w-0 space-y-3" disabled={locked}>
           <legend className="sr-only">{t('Attendance to record')}</legend>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
             <div>
               <label htmlFor={`${ids}-from`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('From date')}</label>
               <input id={`${ids}-from`} type="date" className="input w-full" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
@@ -221,12 +205,12 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
               <input id={`${ids}-in`} type="time" className="input w-full" value={inTime} onChange={(e) => setInTime(e.target.value)} />
             </div>
             <div>
-              <label htmlFor={`${ids}-out`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Out time (optional)')}</label>
+              <label htmlFor={`${ids}-out`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Out time')}</label>
               <input id={`${ids}-out`} type="time" className="input w-full" value={outTime} onChange={(e) => setOutTime(e.target.value)} />
             </div>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            {t('Times are in {zone}.', { zone: defaultTimezone })}
+            {t('Enter an in time, an out time, or both.')} {t('Times are in {zone}.', { zone: defaultTimezone })}
             {state.overnight && <> {t('Overnight shift: the out time is recorded on the next day.')}</>}
           </p>
           <div>

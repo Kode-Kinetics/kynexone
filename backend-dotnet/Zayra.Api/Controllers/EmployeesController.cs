@@ -121,7 +121,8 @@ public class EmployeesController : ControllerBase
     [HttpGet]
     [Authorize(Roles = "Admin,HR Manager,HR Officer,Payroll Officer,Manager,Auditor")]
     [HasPermission("employees.read")]
-    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default, [FromQuery] string? access = null)
+    public async Task<ActionResult<PagedResult<EmployeeListItemDto>>> Search([FromServices] IEmployeeManagementService employeeManagement, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? department, [FromQuery] string? readiness = null, [FromQuery] Guid? importBatchId = null, [FromQuery] string? gapType = null, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default, [FromQuery] string? access = null,
+        [FromQuery] string? branch = null, [FromQuery] string? designation = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -130,7 +131,7 @@ public class EmployeesController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
 
         if (scope.IsUnrestricted && entityScope.IsGroupLevel)
-            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, access, page, pageSize, cancellationToken, CanViewSensitive()));
+            return Ok(await employeeManagement.SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, access, page, pageSize, cancellationToken, CanViewSensitive(), branch, designation));
 
         // Restricted scope: query directly and apply AllowedEmployeeIds and/or entity scope filter.
         // Exclude former employees (terminal statuses) — they belong to the Ex-Employees archive.
@@ -150,6 +151,7 @@ public class EmployeesController : ControllerBase
         query = EmployeeSearch.Apply(query, _db.Branches, search, CanViewSensitive());
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(e => e.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(e => e.Department == department);
+        query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter (fixes the page-local "Needs info" deep-link). Must be
         // applied in BOTH scope branches or a scoped user's post-import cleanup link breaks past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);

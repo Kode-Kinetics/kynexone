@@ -343,12 +343,13 @@ export function AttendancePage() {
       {activeTab === 'dashboard' && (
         <div className="space-y-5">
           {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Kpi label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" />
-              <Kpi label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
-              <Kpi label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" />
-              <Kpi label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
-            </div>
+            // One slim strip, not four cards: the day's counts at a glance, leaving the height for recording and the records.
+            <dl aria-label={t('Attendance at a glance')} className="surface grid grid-cols-2 divide-slate-100 px-2 py-1.5 sm:grid-cols-4 sm:divide-x dark:divide-white/[0.06] rtl:sm:divide-x-reverse">
+              <KpiInline label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" />
+              <KpiInline label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
+              <KpiInline label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" />
+              <KpiInline label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
+            </dl>
           )}
 
           <AttendanceRecordPanel
@@ -525,6 +526,18 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
         <span className={`grid h-9 w-9 place-items-center rounded-lg ${color}`}><Icon className="h-4 w-4" /></span>
       </div>
       <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">{value === 'Unavailable' ? t('Unavailable') : value}</p>
+    </div>
+  );
+}
+
+/** A count in the slim strip: icon, label and number on one line. */
+function KpiInline({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof Activity; tone: 'emerald' | 'rose' | 'amber' | 'blue' }) {
+  const color = { emerald: 'text-emeraldZ bg-emeraldZ/10', rose: 'text-rose-500 bg-rose-500/10', amber: 'text-amber-500 bg-amber-500/10', blue: 'text-sapphire bg-sapphire/10' }[tone];
+  return (
+    <div className="flex items-center gap-2.5 px-3 py-1.5">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><Icon className="h-3.5 w-3.5" aria-hidden="true" /></span>
+      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd className="ms-auto text-lg font-semibold tabular-nums text-slate-950 dark:text-white">{value}</dd>
     </div>
   );
 }

@@ -167,16 +167,24 @@ public partial class AttendanceService
         var reason = request.Reason?.Trim() ?? string.Empty;
         if (reason.Length == 0) throw new InvalidOperationException("A reason is required for mass entry. Say why these punches are being entered by hand.");
         if (reason.Length > BulkMaxReasonLength) throw new InvalidOperationException($"The reason is limited to {BulkMaxReasonLength} characters.");
-        if (!TryParseClock(request.InTime, out var inTime)) throw new InvalidOperationException("In time must be a time of day such as 08:00.");
+        // At least one of the two. An Out alone is the everyday fix for a forgotten punch-out.
+        if (string.IsNullOrWhiteSpace(request.InTime) && string.IsNullOrWhiteSpace(request.OutTime))
+            throw new InvalidOperationException("Enter an in time or an out time (or both).");
+        TimeOnly? inTime = null;
+        if (!string.IsNullOrWhiteSpace(request.InTime))
+        {
+            if (!TryParseClock(request.InTime, out var parsedIn)) throw new InvalidOperationException("In time must be a time of day such as 08:00, or left empty.");
+            inTime = parsedIn;
+        }
         TimeOnly? outTime = null;
         if (!string.IsNullOrWhiteSpace(request.OutTime))
         {
             if (!TryParseClock(request.OutTime, out var parsedOut)) throw new InvalidOperationException("Out time must be a time of day such as 17:00, or left empty.");
             outTime = parsedOut;
         }
-        if (outTime == inTime)
+        if (inTime is not null && outTime == inTime)
             throw new InvalidOperationException("The out time is the same as the in time. Use a different out time (an earlier one means the next morning), or leave it empty to enter only the in punch.");
-        var perDay = outTime is null ? 1 : 2;
+        var perDay = (inTime is null ? 0 : 1) + (outTime is null ? 0 : 1);
         var totalPunches = ids.Count * days * perDay;
         if (totalPunches > BulkMaxPunches)
             throw new InvalidOperationException(
@@ -199,15 +207,17 @@ public partial class AttendanceService
             for (var date = request.FromDate; date <= request.ToDate; date = date.AddDays(1))
             {
                 var unit = new BulkUnit { RowNumber = ++ordinal, EmployeeId = id, Date = date, Planned = perDay };
-                // An out time at or before the in time is the next morning: an overnight shift.
-                var outDate = outTime is { } later && later <= inTime ? date.AddDays(1) : date;
-                DateTime outUtc = default;
-                var readable = TryLocalToUtc(date, inTime, tz, out var inUtc, out var timeError);
+                // An out time at or before the in time is the next morning: an overnight shift. With no in time there is nothing to cross.
+                var outDate = outTime is { } later && inTime is { } earlier && later <= earlier ? date.AddDays(1) : date;
+                DateTime inUtc = default, outUtc = default;
+                string? timeError = null;
+                var readable = inTime is not { } inAt || TryLocalToUtc(date, inAt, tz, out inUtc, out timeError);
                 if (readable && outTime is { } outAt) readable = TryLocalToUtc(outDate, outAt, tz, out outUtc, out timeError);
                 if (!readable) unit.ParseError = timeError;
                 else
                 {
-                    unit.Punches.Add(new BulkPunch { Direction = "In", Utc = inUtc, Location = location, Method = method, Source = BulkEntrySource, PayloadJson = payload });
+                    if (inTime is not null)
+                        unit.Punches.Add(new BulkPunch { Direction = "In", Utc = inUtc, Location = location, Method = method, Source = BulkEntrySource, PayloadJson = payload });
                     if (outTime is not null)
                         unit.Punches.Add(new BulkPunch { Direction = "Out", Utc = outUtc, Location = location, Method = method, Source = BulkEntrySource, PayloadJson = payload });
                 }

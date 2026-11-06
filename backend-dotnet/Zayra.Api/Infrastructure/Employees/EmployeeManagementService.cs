@@ -72,7 +72,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
         => SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, null, page, pageSize, cancellationToken);
 
-    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false)
+    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false, string? branch = null, string? designation = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -85,6 +85,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
+        query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);

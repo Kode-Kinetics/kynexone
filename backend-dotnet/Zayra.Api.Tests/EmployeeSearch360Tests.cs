@@ -106,6 +106,32 @@ public class EmployeeSearch360Tests
         (await CodesAsync(db, f, "55", companyScoped, sensitive: true)).Should().BeEmpty("fewer than 4 digits is too broad to search phone numbers");
     }
 
+    // ── advanced filters: branch and job title, on the server so "select all shown" never misses people past page 1 ──
+
+    [Theory]
+    [MemberData(nameof(BothListPaths))]
+    public async Task TheBranchFilter_MatchesTheStoredLabel_OrTheLinkedBranch(bool companyScoped)
+    {
+        await using var db = CreateDb();
+        var f = await SeedAsync(db);
+
+        (await CodesAsync(db, f, string.Empty, companyScoped, sensitive: false, branch: "Jeddah HQ")).Should().Equal("EVT2-0001");
+        (await CodesAsync(db, f, string.Empty, companyScoped, sensitive: false, branch: "Riyadh Tower")).Should().Equal("EVT2-0002");
+        (await CodesAsync(db, f, string.Empty, companyScoped, sensitive: false, branch: "Dammam")).Should().BeEmpty();
+    }
+
+    [Theory]
+    [MemberData(nameof(BothListPaths))]
+    public async Task TheJobTitleFilter_IsExact_AndCombinesWithTheSearch(bool companyScoped)
+    {
+        await using var db = CreateDb();
+        var f = await SeedAsync(db);
+
+        (await CodesAsync(db, f, string.Empty, companyScoped, sensitive: false, designation: "Site Supervisor")).Should().Equal("EVT2-0002");
+        (await CodesAsync(db, f, "fahad", companyScoped, sensitive: false, designation: "Site Supervisor")).Should().BeEmpty("both must hold");
+        (await CodesAsync(db, f, "fahad", companyScoped, sensitive: false, designation: "Senior Accountant", branch: "Jeddah HQ")).Should().Equal("EVT2-0001");
+    }
+
     [Fact]
     public void LikeWildcardsInTheTerm_AreLiteral()
     {
@@ -165,7 +191,8 @@ public class EmployeeSearch360Tests
         return new Fixture(tenantId, company.Id);
     }
 
-    private static async Task<List<string>> CodesAsync(ZayraDbContext db, Fixture f, string term, bool companyScoped, bool sensitive)
+    private static async Task<List<string>> CodesAsync(ZayraDbContext db, Fixture f, string term, bool companyScoped, bool sensitive,
+        string? branch = null, string? designation = null)
     {
         var controller = new EmployeesController(
             db, new Pbkdf2PasswordHasher(), new AuditService(db), new NullDocumentStorage(), TestNotifications.For(db),
@@ -183,7 +210,7 @@ public class EmployeeSearch360Tests
             : new Claim("is_group_scope", "true"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } };
 
-        var result = await controller.Search(Service(db), term, null, null, null, null, null, 1, 25, CancellationToken.None);
+        var result = await controller.Search(Service(db), term, null, null, null, null, null, 1, 25, CancellationToken.None, branch: branch, designation: designation);
         var page = Assert.IsType<PagedResult<EmployeeListItemDto>>(Assert.IsType<OkObjectResult>(result.Result).Value);
         return page.Items.Select(i => i.EmployeeCode).OrderBy(c => c).ToList();
     }
