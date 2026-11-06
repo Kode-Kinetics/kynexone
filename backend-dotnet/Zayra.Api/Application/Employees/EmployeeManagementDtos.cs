@@ -765,6 +765,12 @@ public record EmployeeDocumentDto
 /// types override a missing or misleading client category, so legacy rows and today's category-free
 /// Passport upload payload fail closed. Normalization is case-, spacing-, punctuation-, and alias-insensitive.
 /// </summary>
+/// <summary>Thrown when a caller without employees.sensitive tries to change, verify, reject or archive a protected document, or to move one into or out of a protected category.</summary>
+public sealed class SensitiveDocumentAccessException : Exception
+{
+    public SensitiveDocumentAccessException() : base("This document is protected (identity, payroll or contract). Changing it needs the employees.sensitive permission.") { }
+}
+
 public static class EmployeeDocumentSensitivity
 {
     public const string Identity = "Identity";

@@ -4413,8 +4413,12 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
-        var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        try
+        {
+            var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
+            return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        }
+        catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
@@ -4422,8 +4426,12 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
-        var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        try
+        {
+            var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
+            return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        }
+        catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
@@ -4431,8 +4439,12 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
-        var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
-        return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        try
+        {
+            var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
+            return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
+        }
+        catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
     }
 
     [HttpDelete("{id:int}/documents/{docId:guid}")]
@@ -4440,7 +4452,11 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
-        return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
+        try
+        {
+            return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
     }
 
     [HttpGet("{id:int}/history")]
@@ -6647,6 +6663,8 @@ public class EmployeesController : ControllerBase
     // PrivilegedMfaPolicy counts, so a name-based grant would also have shown IBANs to a user MFA never covered.
     private bool CanEditSensitive() => User.HasPermission("employees.sensitive");
     private bool CanViewSensitive() => User.HasPermission("employees.sensitive");
+    private ObjectResult SensitiveDocumentRefusal(SensitiveDocumentAccessException ex) =>
+        StatusCode(403, new { code = "employees_sensitive_required", message = ex.Message });
     /// <summary>One addressed notice per recipient; nobody named means nothing is sent, never a workspace-wide
     /// broadcast (these notices name employees, new hires and the fields being changed — NotificationAudience).</summary>
     private Task Notify(IEnumerable<Guid?> recipients, string title, string message, string entity, string? entityId, CancellationToken cancellationToken) =>
