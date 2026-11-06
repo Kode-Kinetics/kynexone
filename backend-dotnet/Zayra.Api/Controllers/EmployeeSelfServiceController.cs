@@ -312,6 +312,10 @@ public class EmployeeSelfServiceController : ControllerBase
         if (unsupported.Count > 0)
             return BadRequest(new { message = $"Unsupported self-service profile field(s): {string.Join(", ", unsupported)}." });
         if (request.Changes.Count == 0) return BadRequest(new { message = "At least one profile change is required." });
+        // Field names are matched case-insensitively below. Two keys that differ only by case ("phone" and "Phone") are
+        // ambiguous - which value is meant? - and used to throw out of ToDictionary (a 500). Refused, nothing applied.
+        if (request.Changes.Keys.GroupBy(k => k, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1) is { } duplicate)
+            return BadRequest(new { code = "duplicate_field", message = $"The field '{duplicate.Key}' appears more than once (field names are not case-sensitive). Send each field once." });
         // PEO-03: only the fields in employees.profile_change_approval_fields wait for HR; the rest apply now.
         var approvalFields = _policySettings is null
             ? Zayra.Api.Infrastructure.Policy.PolicyRegistry.ParseCsv(Zayra.Api.Infrastructure.Policy.PolicyRegistry.Get(Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields).Default)

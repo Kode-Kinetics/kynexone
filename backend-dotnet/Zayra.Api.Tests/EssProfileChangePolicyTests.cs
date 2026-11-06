@@ -122,4 +122,30 @@ public class EssProfileChangePolicyTests
         result.Result.Should().BeOfType<BadRequestObjectResult>();
         (await db.Employees.SingleAsync()).PersonalEmail.Should().Be("old@example.com");
     }
+    // Security review L1: keys differing only by case used to make the ToDictionary(..., OrdinalIgnoreCase) throw (500).
+    [Theory]
+    [InlineData("phone", "Phone")]
+    [InlineData("personalEmail", "PERSONALEMAIL")]
+    public async Task Two_keys_differing_only_by_case_are_refused_as_a_duplicate_field_not_a_500(string first, string second)
+    {
+        var (db, tenant, emp) = Setup();
+        var result = await Ess(db, tenant, emp.Id, new FixedPolicy()).ProfileChangeRequest(
+            new ProfileChangeRequestDto(new() { [first] = "0555555555", [second] = "0566666666" }, null), default);
+
+        var refusal = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
+        refusal.Value!.GetType().GetProperty("code")!.GetValue(refusal.Value).Should().Be("duplicate_field");
+        (await db.Employees.SingleAsync()).Phone.Should().Be("0500000000", "nothing is applied when the request is ambiguous");
+        (await db.EmployeeProfileChangeRequests.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Duplicate_keys_are_refused_even_when_the_policy_gates_them()
+    {
+        var (db, tenant, emp) = Setup();
+        var result = await Ess(db, tenant, emp.Id, new FixedPolicy("phone")).ProfileChangeRequest(
+            new ProfileChangeRequestDto(new() { ["phone"] = "0555555555", ["Phone"] = "0566666666" }, null), default);
+
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+        (await db.EmployeeProfileChangeRequests.CountAsync()).Should().Be(0);
+    }
 }
