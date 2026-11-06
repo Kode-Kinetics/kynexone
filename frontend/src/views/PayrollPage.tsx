@@ -1103,7 +1103,7 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
 
         {lowersPay && <SalaryReductionNotice idPrefix="assign-salary-reduction" items={reducedItems} currentTotal={reduction.isReduction ? reduction.currentTotal : undefined}
           proposedTotal={reduction.isReduction ? reduction.proposedTotal : undefined} currency={effectiveCurrency} reference={reference}
-          onReference={v => { setReference(v); setServerReduction(null); }} problem={referenceProblem} focusToken={referenceFocus} lineLabel={lineLabel} />}
+          onReference={setReference} problem={referenceProblem} focusToken={referenceFocus} lineLabel={lineLabel} />}
 
         <div className="grid grid-cols-3 gap-3">
           <Field label="Fixed Deduction" info="A fixed amount removed every month (e.g. accommodation recovery), in the salary currency. Numbers only." infoKey="payroll.fixed_deduction"><input type="number" step="0.01" aria-label="Fixed deduction" className={inp} value={form.fixedDeduction} onChange={e => set('fixedDeduction', e.target.value)} /></Field>
