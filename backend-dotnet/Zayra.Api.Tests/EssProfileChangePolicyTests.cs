@@ -123,29 +123,47 @@ public class EssProfileChangePolicyTests
         (await db.Employees.SingleAsync()).PersonalEmail.Should().Be("old@example.com");
     }
     // Security review L1: keys differing only by case used to make the ToDictionary(..., OrdinalIgnoreCase) throw (500).
+    // (c) still not a 500; differing values for one directly-applied field are the only ambiguous case: refused, naming the field.
     [Theory]
     [InlineData("phone", "Phone")]
     [InlineData("personalEmail", "PERSONALEMAIL")]
-    public async Task Two_keys_differing_only_by_case_are_refused_as_a_duplicate_field_not_a_500(string first, string second)
+    public async Task Case_variant_keys_with_different_values_are_refused_as_a_conflict_not_a_500(string first, string second)
     {
         var (db, tenant, emp) = Setup();
         var result = await Ess(db, tenant, emp.Id, new FixedPolicy()).ProfileChangeRequest(
             new ProfileChangeRequestDto(new() { [first] = "0555555555", [second] = "0566666666" }, null), default);
 
         var refusal = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject;
-        refusal.Value!.GetType().GetProperty("code")!.GetValue(refusal.Value).Should().Be("duplicate_field");
+        refusal.Value!.GetType().GetProperty("code")!.GetValue(refusal.Value).Should().Be("duplicate_field_conflict");
+        refusal.Value.GetType().GetProperty("message")!.GetValue(refusal.Value).Should().BeOfType<string>().Which.Should().Contain(first);
         (await db.Employees.SingleAsync()).Phone.Should().Be("0500000000", "nothing is applied when the request is ambiguous");
         (await db.EmployeeProfileChangeRequests.CountAsync()).Should().Be(0);
     }
 
+    // (a) the same field under two casings with the same value is not ambiguous: accepted, applied once.
     [Fact]
-    public async Task Duplicate_keys_are_refused_even_when_the_policy_gates_them()
+    public async Task Case_variant_keys_with_identical_values_are_accepted_and_applied_once()
+    {
+        var (db, tenant, emp) = Setup();
+        var result = await Ess(db, tenant, emp.Id, new FixedPolicy()).ProfileChangeRequest(
+            new ProfileChangeRequestDto(new() { ["phone"] = "0555555555", ["Phone"] = "0555555555" }, null), default);
+
+        result.Result.Should().BeOfType<OkObjectResult>();
+        (await db.Employees.SingleAsync()).Phone.Should().Be("0555555555");
+    }
+
+    // Gated fields never went through the throwing dictionary: both casings are stored as sent and HR's approval applies
+    // them in order (the generic route's long-standing behaviour, pinned by EmployeeCompletionHttpTests). Not refused.
+    [Fact]
+    public async Task Case_variant_keys_on_a_gated_field_are_queued_as_sent()
     {
         var (db, tenant, emp) = Setup();
         var result = await Ess(db, tenant, emp.Id, new FixedPolicy("phone")).ProfileChangeRequest(
             new ProfileChangeRequestDto(new() { ["phone"] = "0555555555", ["Phone"] = "0566666666" }, null), default);
 
-        result.Result.Should().BeOfType<BadRequestObjectResult>();
-        (await db.EmployeeProfileChangeRequests.CountAsync()).Should().Be(0);
+        result.Result.Should().BeOfType<CreatedResult>();
+        (await db.Employees.SingleAsync()).Phone.Should().Be("0500000000");
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>((await db.EmployeeProfileChangeRequests.SingleAsync()).RequestedChangesJson)!
+            .Keys.Should().Equal("phone", "Phone");
     }
 }

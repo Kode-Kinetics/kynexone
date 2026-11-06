@@ -312,16 +312,21 @@ public class EmployeeSelfServiceController : ControllerBase
         if (unsupported.Count > 0)
             return BadRequest(new { message = $"Unsupported self-service profile field(s): {string.Join(", ", unsupported)}." });
         if (request.Changes.Count == 0) return BadRequest(new { message = "At least one profile change is required." });
-        // Field names are matched case-insensitively below. Two keys that differ only by case ("phone" and "Phone") are
-        // ambiguous - which value is meant? - and used to throw out of ToDictionary (a 500). Refused, nothing applied.
-        if (request.Changes.Keys.GroupBy(k => k, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1) is { } duplicate)
-            return BadRequest(new { code = "duplicate_field", message = $"The field '{duplicate.Key}' appears more than once (field names are not case-sensitive). Send each field once." });
         // PEO-03: only the fields in employees.profile_change_approval_fields wait for HR; the rest apply now.
         var approvalFields = _policySettings is null
             ? Zayra.Api.Infrastructure.Policy.PolicyRegistry.ParseCsv(Zayra.Api.Infrastructure.Policy.PolicyRegistry.Get(Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields).Default)
             : await _policySettings.GetCsvAsync(tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields, cancellationToken);
-        var direct = request.Changes.Where(x => !Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApproval(x.Key, approvalFields))
-            .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        // Directly-applied fields are keyed case-insensitively, so two keys differing only by case ("phone"/"Phone") used
+        // to throw out of ToDictionary (a 500). They are folded here instead: the LAST occurrence wins (the same order
+        // approval already applies queued variants in), unless the values differ - then it is ambiguous which one the
+        // employee meant, and the request is refused, nothing applied. Approval-gated keys are stored as sent, as before.
+        var direct = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in request.Changes.Where(x => !Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApproval(x.Key, approvalFields)))
+        {
+            if (direct.TryGetValue(key, out var earlier) && ToJsonElement(earlier).GetRawText() != ToJsonElement(value).GetRawText())
+                return BadRequest(new { code = "duplicate_field_conflict", message = $"The field '{direct.Keys.First(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase))}' is sent more than once with different values (field names are not case-sensitive). Send each field once." });
+            direct[key] = value;
+        }
         var gated = request.Changes.Where(x => !direct.ContainsKey(x.Key)).ToDictionary(x => x.Key, x => x.Value);
         // Validate both halves BEFORE either is saved: a bad value leaves the record and the queue untouched.
         var directValues = direct.ToDictionary(x => x.Key, x => ToJsonElement(x.Value), StringComparer.OrdinalIgnoreCase);
