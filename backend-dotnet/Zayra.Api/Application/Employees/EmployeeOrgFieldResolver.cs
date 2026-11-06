@@ -101,34 +101,34 @@ public static class EmployeeOrgFieldResolver
     /// Unresolvable non-empty name ⇒ InvalidOperationException (callers surface 422).
     /// Clearing (empty string) nulls the ID — an explicit, countable "no department".
     /// </summary>
+    /// <param name="attribution">From <see cref="PrepareAttributionAsync"/> on the SAME patch: the department is taken from it (resolved once,
+    /// from the request, by id), never re-resolved here from the name the patch left on the record.</param>
     public static async Task ResolveAppliedChangesAsync(ZayraDbContext db, Guid tenantId, Employee employee,
-        IEnumerable<string> changedFields, CancellationToken ct, PreparedCostCentre? costCentre = null)
+        IEnumerable<string> changedFields, PreparedAttribution attribution, CancellationToken ct)
     {
         var fields = new HashSet<string>(changedFields, StringComparer.OrdinalIgnoreCase);
 
         if (fields.Contains("department"))
         {
-            if (string.IsNullOrWhiteSpace(employee.Department))
+            // Wave A review S2: a JSON null leaves the old department NAME on the record; re-resolving that name could move the person to another
+            // department that now carries it (renamed and reused), past the gate and the keep/drop rule. Only the prepared move is applied.
+            if (attribution.DepartmentMoves)
             {
-                // Clearing a department the person has is a move (to "no department"); clearing one they never had moves nothing.
-                if (employee.DepartmentId is not null) await MoveDepartmentAsync(db, tenantId, employee, null, keepOverride: false, ct);
-                if (!fields.Contains("managerEmployeeId")) employee.ManagerEmployeeId = null;
+                // A move re-derives the cost centre from the new department. An override survives only on a keep, which the prepared cost centre
+                // re-applies below (PrepareAttributionAsync refuses a move of an overridden person without one).
+                var moved = await MoveDepartmentAsync(db, tenantId, employee, attribution.NewDepartmentId, keepOverride: false, ct, refreshCache: false);
+                employee.Department = moved.NameEn ?? string.Empty;
+                if (!fields.Contains("managerEmployeeId")) employee.ManagerEmployeeId = moved.ManagerEmployeeId;
             }
-            else
+            else if (employee.DepartmentId is Guid current)
             {
-                var (id, nameEn) = await ResolveDepartmentAsync(db, tenantId, employee.Department, ct, employee.CompanyId);
-                var unchanged = employee.DepartmentId == id;
-                employee.Department = nameEn;
-                // Re-sending the CURRENT department is not a transfer: the cost centre, its override flag and the manager stay as they are.
-                if (!unchanged)
-                {
-                    // A move re-derives the cost centre from the new department. An override survives only on an explicit keep, which the
-                    // prepared cost centre re-applies below (PrepareAttributionAsync refuses a move of an overridden person without a decision).
-                    var departmentManager = await MoveDepartmentAsync(db, tenantId, employee, id, keepOverride: false, ct);
-                    if (!fields.Contains("managerEmployeeId"))
-                        employee.ManagerEmployeeId = departmentManager;
-                }
+                // Re-sending the CURRENT department (or null) is not a transfer: cost centre, override and manager stay; the name is made canonical.
+                employee.Department = await ScopedBypass.TenantWide(db.Departments, tenantId,
+                        "The display name of the employee's own department, which is tenant master data independent of the caller's company scope.")
+                    .AsNoTracking().Where(d => d.Id == current).Select(d => d.NameEn).FirstOrDefaultAsync(ct) ?? employee.Department;
             }
+            else if (string.IsNullOrWhiteSpace(employee.Department) && !fields.Contains("managerEmployeeId"))
+                employee.ManagerEmployeeId = null;
         }
 
         if (fields.Contains("designation"))
@@ -153,8 +153,9 @@ public static class EmployeeOrgFieldResolver
             }
         }
 
-        if (costCentre is not null) await ApplyCostCentreAsync(db, tenantId, employee, costCentre, ct);
-        if (costCentre is not null || fields.Contains("department") || fields.Contains("costCenter"))
+        if (attribution.CostCentre is { } costCentre) await ApplyCostCentreAsync(db, tenantId, employee, costCentre, ct);
+        // The cached code is refreshed ONCE, after everything that moves attribution has been applied.
+        if (attribution.CostCentre is not null || fields.Contains("department") || fields.Contains("costCenter"))
             await RefreshCachedCostCentreAsync(db, tenantId, employee, ct);
     }
 
@@ -162,21 +163,27 @@ public static class EmployeeOrgFieldResolver
     /// THE department-move rule, shared by every door that moves an existing employee (the PUT and approval paths through
     /// <see cref="ResolveAppliedChangesAsync"/>, and the HR transfer approval). The stored cost centre becomes the new department's copy and the
     /// override flag drops, unless <paramref name="keepOverride"/> and the person has one (the transfer approval's implicit keep). The cached
-    /// code is refreshed. Returns the new department's default manager. Writes nothing to the database.
+    /// code is refreshed unless <paramref name="refreshCache"/> is false (a caller that refreshes once at its end). Returns the new department's
+    /// default manager and name. Writes nothing to the database.
     /// </summary>
-    public static async Task<int?> MoveDepartmentAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid? newDepartmentId, bool keepOverride, CancellationToken ct)
+    public static async Task<MovedDepartment> MoveDepartmentAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid? newDepartmentId, bool keepOverride,
+        CancellationToken ct, bool refreshCache = true)
     {
         Guid? departmentCostCentre = null;
         int? departmentManager = null;
+        string? departmentName = null;
         if (newDepartmentId is Guid id)
         {
             var defaults = await ScopedBypass.TenantWide(db.Departments, tenantId,
                     "Department defaults follow the department just resolved for this employee, which is tenant master data independent of the caller's company scope.")
                 .AsNoTracking()
-                .Where(d => !d.IsDeleted && d.Id == id)
-                .Select(d => new { d.CostCenterId, d.ManagerEmployeeId })
+                .Where(d => !d.IsDeleted && d.IsActive && d.Id == id)
+                .Select(d => new { d.CostCenterId, d.ManagerEmployeeId, d.NameEn })
                 .FirstOrDefaultAsync(ct);
-            (departmentCostCentre, departmentManager) = (defaults?.CostCenterId, defaults?.ManagerEmployeeId);
+            // A move lands in a live department only (the PUT resolves active ones; a transfer approved after its department was turned off is refused).
+            if (defaults is null)
+                throw new InvalidOperationException("The new department is no longer active. Choose an active department, then try again. No change was applied.");
+            (departmentCostCentre, departmentManager, departmentName) = (defaults?.CostCenterId, defaults?.ManagerEmployeeId, defaults?.NameEn);
         }
         employee.DepartmentId = newDepartmentId;
         if (!(keepOverride && employee.CostCenterIsOverride))
@@ -184,9 +191,11 @@ public static class EmployeeOrgFieldResolver
             employee.CostCenterId = departmentCostCentre;
             employee.CostCenterIsOverride = false;
         }
-        await RefreshCachedCostCentreAsync(db, tenantId, employee, ct);
-        return departmentManager;
+        if (refreshCache) await RefreshCachedCostCentreAsync(db, tenantId, employee, ct);
+        return new MovedDepartment(departmentManager, departmentName);
     }
+
+    public sealed record MovedDepartment(int? ManagerEmployeeId, string? NameEn);
 
     /// <summary>
     /// Wave A D3: the cached <c>Employee.CostCenter</c> string holds the RESOLVED code (override, position, department, parent department or
@@ -270,7 +279,19 @@ public static class EmployeeOrgFieldResolver
         var namesCostCentre = changes.ContainsKey("costCenter");
         if (decision is null)
         {
-            if (employee.CostCenterIsOverride && departmentMoves && !namesCostCentre) throw CostCentreRuleException.DecisionRequired();
+            if (employee.CostCenterIsOverride && departmentMoves)
+            {
+                if (!namesCostCentre) throw CostCentreRuleException.DecisionRequired();
+                // Wave A review B2: naming the CURRENT override next to a move IS a keep, and naming none ("") IS a drop. Labelled so, a keep is
+                // re-validated as a new assignment (an inactive or foreign override cannot ride through a move), and both need a reason and write
+                // the override audit row with the decision, exactly as the explicit costCenterDecision does.
+                if (costCentre is { Clear: false, Id: Guid named } && named == employee.CostCenterId)
+                {
+                    await new CostCentreRefValidator(db).EnsureAsync(tenantId, employee.CompanyId, named, forNewAssignment: true, ct);
+                    return new(departmentMoves, newDepartmentId, costCentre, KeepDecision);
+                }
+                if (costCentre is { Clear: true }) return new(departmentMoves, newDepartmentId, costCentre, DropDecision);
+            }
             return new(departmentMoves, newDepartmentId, costCentre, null);
         }
 
@@ -301,8 +322,22 @@ public static class EmployeeOrgFieldResolver
         if (needsReason && string.IsNullOrWhiteSpace(reason)) throw CostCentreRuleException.ReasonRequired();
     }
 
-    public static bool HasInvalidReasonCharacters(string reason) =>
-        reason.Any(c => (char.IsControl(c) && c is not ('\n' or '\r' or '\t')) || c is >= '\u202A' and <= '\u202E' || c is >= '\u2066' and <= '\u2069');
+    /// <summary>Control characters other than tab, line feed and a carriage return that ends a CRLF pair, or a bidirectional override/isolate.
+    /// A lone carriage return is refused: it can overwrite what a log or terminal shows of the text before it.</summary>
+    public static bool HasInvalidReasonCharacters(string reason)
+    {
+        for (var i = 0; i < reason.Length; i++)
+        {
+            var c = reason[i];
+            if (c == '\r') { if (i + 1 < reason.Length && reason[i + 1] == '\n') continue; return true; }
+            if ((char.IsControl(c) && c is not ('\n' or '\t')) || c is >= '\u202A' and <= '\u202E' || c is >= '\u2066' and <= '\u2069') return true;
+        }
+        return false;
+    }
+
+    /// <summary>The reason as the audit trail stores it: trimmed, CRLF as LF; null when blank.</summary>
+    public static string? NormaliseReason(string? reason) =>
+        string.IsNullOrWhiteSpace(reason) ? null : reason.Replace("\r\n", "\n").Trim();
 
     /// <summary>Whether applying the prepared "costCenter" patch would set, re-point or remove the employee's override (so it needs a reason, M-10).</summary>
     public static bool ChangesOverride(Employee employee, PreparedCostCentre costCentre) =>
@@ -317,6 +352,10 @@ public static class EmployeeOrgFieldResolver
             employee.CostCenter = costCentre.Code;
             return;
         }
+
+        // Wave A review S3: blank on someone with no override changes nothing (no stored-id rewrite, so no attribution row for a caller who
+        // could not move cost anyway).
+        if (!employee.CostCenterIsOverride) return;
 
         // Blank: back to inheriting. The stored id becomes the department's copy (the resolver ignores it without the flag); the cached code is
         // the RESOLVED one, refreshed by the caller (ResolveAppliedChangesAsync), so it is right whichever level the person now inherits from.
@@ -374,7 +413,7 @@ public static class EmployeeOrgFieldResolver
     {
         var after = AttributionState.Of(employee);
         if (before == after) return;
-        var trimmedReason = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+        var trimmedReason = NormaliseReason(reason);
 
         // The audit action finance's separation-of-duties check reads: an override was set, removed, re-pointed, or kept through a move.
         if (!overrideAlreadyAudited && (before.IsOverride != after.IsOverride || (after.IsOverride && before.CostCenterId != after.CostCenterId) || decision is not null))

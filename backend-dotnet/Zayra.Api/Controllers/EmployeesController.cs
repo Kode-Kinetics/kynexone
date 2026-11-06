@@ -2395,7 +2395,7 @@ public class EmployeesController : ControllerBase
             ProbationEndDate = ReadCsvDate(row, "ProbationEndDate", gaps),
             NoticePeriodDays = ReadCsvInt(row, "NoticePeriodDays", gaps),
             Branch = resolved.BranchNameEn,
-            CostCenter = resolved.CostCenterCode,
+            CostCenter = resolved.ResolvedCostCentreCode,
             WorkLocation = row.GetValueOrDefault("WorkLocation", string.Empty).Trim(),
             ShiftPolicyCode = row.GetValueOrDefault("ShiftPolicyCode", string.Empty).Trim(),
             LeavePolicyCode = row.GetValueOrDefault("LeavePolicyCode", string.Empty).Trim(),
@@ -4182,14 +4182,13 @@ public class EmployeesController : ControllerBase
 
                 if (immediateChanges.Count > 0)
                 {
-                    // department and costCenter are not sensitive, so the prepared attribution is entirely in the immediate part.
-                    var immediateCostCentre = attribution.CostCentre;
                     var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
                     ApplyChanges(employee, immediateChanges);
                     // Keys stored on the payroll profile (socialInsuranceReference) have no home on
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
-                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken, immediateCostCentre);
+                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, attribution, cancellationToken);
+                    // (department and costCenter are not sensitive, so the prepared attribution is entirely in the immediate part.)
                     // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
                     await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
                     await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
@@ -4277,11 +4276,10 @@ public class EmployeesController : ControllerBase
                 });
             }
 
-            var costCentrePatch = attribution.CostCentre;
             var directAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken, costCentrePatch);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, attribution, cancellationToken);
             // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
             await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
@@ -5284,6 +5282,12 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        // Wave A security L1: the transfer's reason is the one its approval audits the kept override with.
+        if (!string.IsNullOrWhiteSpace(request.Reason) && EmployeeOrgFieldResolver.HasInvalidReasonCharacters(request.Reason))
+        {
+            var invalid = CostCentreRuleException.ReasonInvalidCharacters();
+            return StatusCode(invalid.Status, invalid.ToPayload());
+        }
         try
         {
             var tenantId = RequireTenant();
@@ -5361,6 +5365,25 @@ public class EmployeesController : ControllerBase
                 if (newDeptId != employee.DepartmentId)
                 {
                     keptOverride = employee.CostCenterIsOverride;
+                    // Security L2: the implicit keep is re-validated as a new assignment in the employee's company, before anything is touched.
+                    if (keptOverride)
+                    {
+                        try
+                        {
+                            if (employee.CostCenterId is not Guid kept)
+                                throw new CostCentreRefException(CostCentreRefCodes.NotFound, "The cost centre was not found in this tenant.");
+                            await new CostCentreRefValidator(_db).EnsureAsync(tenantId, employee.CompanyId, kept, forNewAssignment: true, cancellationToken);
+                        }
+                        catch (CostCentreRefException ex)
+                        {
+                            return UnprocessableEntity(new
+                            {
+                                error = ex.Code, code = ex.Code,
+                                message = "This employee's own cost centre can no longer be used (" + ex.Message.TrimEnd('.') + "). Use Edit employee to keep another one or follow the department, with a reason, then approve the transfer again.",
+                                messageAr = "لم يعد بالإمكان استخدام مركز التكلفة الخاص بهذا الموظف. استخدم «تعديل الموظف» لاختيار مركز آخر أو لاتباع القسم مع ذكر السبب، ثم اعتمد النقل مرة أخرى.",
+                            });
+                        }
+                    }
                     await EmployeeOrgFieldResolver.MoveDepartmentAsync(_db, tenantId, employee, newDeptId, keepOverride: true, cancellationToken);
                 }
                 employee.Department = newDeptName;

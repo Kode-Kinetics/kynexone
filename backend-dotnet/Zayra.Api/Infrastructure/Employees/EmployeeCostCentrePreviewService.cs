@@ -30,7 +30,8 @@ public sealed class EmployeeCostCentrePreviewService(ZayraDbContext db) : IEmplo
             && !await ScopedBypass.TenantWide(db.Positions, tenantId,
                     "Cost-centre preview: a position is checked against the EMPLOYEE's company (explicit below), not the caller's switcher selection.")
                 .AsNoTracking()
-                .AnyAsync(p => p.Id == position && !p.IsDeleted && (p.CompanyId == subject.CompanyId || p.CompanyId == null), ct))
+                .AnyAsync(p => p.Id == position && !p.IsDeleted && p.Status != Zayra.Api.Models.PositionStatuses.Closed
+                               && (p.CompanyId == subject.CompanyId || p.CompanyId == null), ct))
             return (CostCentrePreviewRefusal.PositionNotFound, null);
 
         var isOverride = costCenterId is not null;

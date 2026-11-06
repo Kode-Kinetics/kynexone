@@ -67,6 +67,14 @@ public class CostCentreEstablishmentRepairTests
     }
 
     [Fact]
+    public async Task TheRepair_CachesTheResolvedCode_OfThePeopleItLinks()
+    {
+        var w = await Seed();
+        await Reconcile(w, "organization.costcenter.manage");
+        (await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Free.Id)).CostCenter.Should().Be("OPS");
+    }
+
+    [Fact]
     public async Task S029_OnceTheRunIsLocked_TheSameRepairStampsTheRest()
     {
         var w = await Seed();

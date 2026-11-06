@@ -138,6 +138,47 @@ public class CostCentreCachedCopyTests
         (stored.CostCenterIsOverride, stored.CostCenter).Should().Be((false, "FIN"));
     }
 
+    // ── Security L1: reason hygiene on the form door and the transfer request ──
+
+    [Theory]
+    [InlineData("Seconded \u202Ehere")]
+    [InlineData("Seconded\rhere")]
+    public async Task TheFormDoor_RefusesAReasonWithHiddenCharacters(string reason)
+    {
+        var w = await Seed();
+        var act = () => Service(w).CreateAsync(w.Tenant, Form(w, w.Fin.Id, w.Own.Id, reason), Ctx(w), default);
+        (await act.Should().ThrowAsync<Zayra.Api.Application.Organization.CostCentreRuleException>()).Which.Code.Should().Be("reason_invalid_characters");
+        (await w.Db.Employees.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TheFormDoor_StoresACrLfReasonWithLf()
+    {
+        var w = await Seed();
+        var form = Form(w, w.Fin.Id, null, null);
+        var created = await Service(w).CreateAsync(w.Tenant, form, Ctx(w), default);
+        await Service(w).UpdateAsync(w.Tenant, created.Id, form with { CostCenterId = w.Own.Id, CostCenterReason = "Seconded\r\nto the project" }, Ctx(w), default);
+        var row = await w.Db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "employee.cost_centre_override.changed");
+        JsonDocument.Parse(row.Metadata!).RootElement.GetProperty("reason").GetString().Should().Be("Seconded\nto the project");
+    }
+
+    [Theory]
+    [InlineData("Restructure \u202Ehere")]
+    [InlineData("Restructure\rhere")]
+    public async Task RequestTransfer_RefusesAReasonWithHiddenCharacters(string reason)
+    {
+        var w = await Seed();
+        var e = await AddEmployee(w, x => { x.DepartmentId = w.Child.Id; x.Department = w.Child.NameEn; });
+        var request = new EmployeeTransferCreateRequest(null, w.Fin.NameEn, null, null, DateOnly.FromDateTime(DateTime.UtcNow.Date), reason);
+
+        var result = await Controller(w, "manager.approve", "employees.read").RequestTransfer(e.Id, request, Service(w), default);
+
+        var refused = result.Result.Should().BeAssignableTo<ObjectResult>().Subject;
+        refused.StatusCode.Should().Be(422);
+        JsonSerializer.Serialize(refused.Value).Should().Contain("reason_invalid_characters");
+        (await w.Db.EmployeeTransferRequests.CountAsync()).Should().Be(0);
+    }
+
     [Fact]
     public async Task TheDetail_ShowsTheResolvedCode_WhateverTheCacheSays()
     {
@@ -180,6 +221,22 @@ public class CostCentreCachedCopyTests
         var resolved = EmployeeImportRowResolver.ResolveRow(row, lookups, new HashSet<string>());
         resolved.CostCenterCode.Should().Be(exportedCode);
         resolved.CostCenterIsOverride.Should().BeFalse("the code the export wrote is what the person inherits: re-importing it must not pin it");
+    }
+
+    [Theory]
+    [InlineData("CD", "", "PARENT")]
+    [InlineData("BD", "", "DEF")]
+    [InlineData("CD", "OWN", "OWN")]
+    public async Task AnImportedRow_CachesTheResolvedCode(string departmentCode, string costCentreCode, string cached)
+    {
+        var w = await Seed();
+        var lookups = await EmployeeImportRowResolver.LoadImportLookupsAsync(w.Db, w.Tenant, default);
+        var row = new Dictionary<string, string>
+        {
+            ["EmployeeCode"] = "IMP-3", ["FullName"] = "Imported", ["CompanyLegalName"] = w.Co.LegalNameEn,
+            ["DepartmentCode"] = departmentCode, ["CostCenterCode"] = costCentreCode,
+        };
+        EmployeeImportRowResolver.ResolveRow(row, lookups, new HashSet<string>()).ResolvedCostCentreCode.Should().Be(cached);
     }
 
     [Fact]

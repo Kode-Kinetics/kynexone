@@ -46,8 +46,10 @@ public class EmployeeOrgFieldResolverTests
             ManagerEmployeeId = 1,
         };
 
+        var changes = new Dictionary<string, System.Text.Json.JsonElement> { ["department"] = System.Text.Json.JsonSerializer.SerializeToElement("QA-OPS") };
+        var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, null, null, CancellationToken.None);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(
-            db, tenantId, employee, ["department"], CancellationToken.None);
+            db, tenantId, employee, ["department"], attribution, CancellationToken.None);
 
         employee.DepartmentId.Should().Be(department.Id);
         employee.Department.Should().Be("QA Operations");

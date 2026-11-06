@@ -41,6 +41,8 @@ public sealed class ImportLookups
     /// an export pins nobody. A company missing here falls back to the department's own cost centre.</summary>
     public IReadOnlyDictionary<Guid, Zayra.Api.Infrastructure.Payroll.CostCentreResolverSnapshot> CostCentreSnapshots { get; init; } =
         new Dictionary<Guid, Zayra.Api.Infrastructure.Payroll.CostCentreResolverSnapshot>();
+    /// <summary>Active cost centres' codes by id, for the resolved code an imported employee caches.</summary>
+    public IReadOnlyDictionary<Guid, string> CostCentreCodesById { get; init; } = new Dictionary<Guid, string>();
     public required IReadOnlyDictionary<string, DesignationRef> DesigByTitle { get; init; } // OrgKey(company, title lower)
     public required IReadOnlyDictionary<string, Grade> GradeByCode { get; init; } // OrgKey(company, CODE upper)
     public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // OrgKey(company, name lower)
@@ -124,6 +126,9 @@ public sealed class ResolvedImportRow
     public string CostCenterCode { get; set; } = string.Empty;
     /// <summary>True when the row names a cost centre that differs from its department's (an override of where the person's pay posts).</summary>
     public bool CostCenterIsOverride { get; set; }
+    /// <summary>The code the person resolves to (override, position, department, parent department, company default): the employee's cached
+    /// <c>CostCenter</c> copy (Wave A D3). Empty when nothing resolves.</summary>
+    public string ResolvedCostCentreCode { get; set; } = string.Empty;
     public Guid? DepartmentId { get; set; }
     public Guid? DesignationId { get; set; }
     public Guid? GradeId { get; set; }
@@ -243,6 +248,7 @@ public static class EmployeeImportRowResolver
             DeptByName = deptByName,
             DeptCostCentre = departments.GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First().CostCenterId),
             CostCentreSnapshots = costCentreSnapshots,
+            CostCentreCodesById = costCenters.ToDictionary(c => c.Id, c => c.Code),
             DesigByTitle = desigByTitle,
             GradeByCode = gradeByCode,
             GradeByName = gradeByName,
@@ -254,6 +260,14 @@ public static class EmployeeImportRowResolver
             DesigTitleCandidates = desigTitleCandidates,
         };
     }
+
+    /// <summary>What the imported person resolves to, as the employee's cached code. Without a snapshot (hand-built lookups) the row's own code.</summary>
+    private static string ResolvedCostCentreCode(ResolvedImportRow r, ImportLookups lk) =>
+        r.CompanyId is Guid companyId && lk.CostCentreSnapshots.TryGetValue(companyId, out var snapshot)
+            ? Zayra.Api.Infrastructure.Payroll.CostCentreResolver.Resolve(
+                    new Zayra.Api.Infrastructure.Payroll.ResolverEmployee(r.DepartmentId, r.PositionId, r.CostCenterId, r.CostCenterIsOverride), snapshot)
+                .CostCenterId is Guid id && lk.CostCentreCodesById.TryGetValue(id, out var code) ? code : string.Empty
+            : r.CostCenterCode;
 
     private static Guid? InheritedCostCentre(ResolvedImportRow r, ImportLookups lk) =>
         r.CompanyId is Guid companyId && lk.CostCentreSnapshots.TryGetValue(companyId, out var snapshot)
@@ -624,6 +638,7 @@ public static class EmployeeImportRowResolver
         // company default, the payroll resolver's order) is only a copy; anything else is an override. Decided after the position, which is part
         // of what they inherit.
         r.CostCenterIsOverride = r.CostCenterId is Guid explicitCc && explicitCc != InheritedCostCentre(r, lk);
+        r.ResolvedCostCentreCode = ResolvedCostCentreCode(r, lk);
 
         // ── Salary (Leak #5/#6): no valid grade → HOLD; outside band → REVIEW. NEVER drops.
         var gross = GrossSalaryFromRow(row);

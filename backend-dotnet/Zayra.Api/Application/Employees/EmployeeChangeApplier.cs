@@ -180,12 +180,11 @@ public static class EmployeeChangeApplier
         // keep/drop decision, so moving someone who has their own cost centre fails closed here (422 cost_centre_decision_required) rather than
         // dropping the override silently; that decision is made on the employee PUT by someone holding organization.costcenter.manage.
         var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, decision: null, expectedOverrideId: null, ct);
-        var costCentre = attribution.CostCentre;
         var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
         var unknown = Apply(employee, changes);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
-        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, ct, costCentre);
+        await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, attribution, ct);
         await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(db, tenantId, employee, attributionBefore, ct);
         await EmployeeOrgFieldResolver.StageAttributionAuditAsync(db, tenantId, employee, attributionBefore, actorUserId, ct);
         await EmployeeBankProfileSync.SyncAsync(db, employee, changes.Keys, ct);

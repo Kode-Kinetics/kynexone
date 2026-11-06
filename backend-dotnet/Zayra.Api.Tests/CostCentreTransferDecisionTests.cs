@@ -227,6 +227,206 @@ public class CostCentreTransferDecisionTests
         await Unchanged(w, w.Own.Id);
     }
 
+    // ── Review B2: naming the CURRENT override code next to a move is a keep ──
+
+    private static EmployeeUpdateRequest MoveNamingCode(string code, string? reason) =>
+        Put(new() { ["department"] = "Finance", ["costCenter"] = code }, reason);
+
+    [Fact]
+    public async Task ExplicitCurrentOverrideCode_WithAMove_IsAKeep_AndNeedsAReason()
+    {
+        var w = await Seed();
+        Error(await Controller(w, Manager).UpdateEmployee(w.Emp.Id, MoveNamingCode("OWN", reason: null), default), 422).Should().Be("cost_centre_reason_required");
+        await Unchanged(w, w.Own.Id);
+    }
+
+    [Fact]
+    public async Task ExplicitCurrentOverrideCode_WithAMoveAndAReason_IsAuditedAsAKeep()
+    {
+        var w = await Seed();
+        (await Controller(w, Manager).UpdateEmployee(w.Emp.Id, MoveNamingCode("own", "Stays on the project"), default)).Should().BeOfType<OkObjectResult>();
+
+        var stored = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id);
+        (stored.DepartmentId, stored.CostCenterId, stored.CostCenterIsOverride, stored.CostCenter).Should().Be((w.Fin.Id, w.Own.Id, true, "OWN"));
+        var overrideRow = await Row(w, "employee.cost_centre_override.changed");
+        (overrideRow.GetProperty("decision").GetString(), overrideRow.GetProperty("reason").GetString()).Should().Be(("keep", "Stays on the project"));
+        var attribution = await Row(w, "employee.cost_attribution_changed");
+        (attribution.GetProperty("decision").GetString(), attribution.GetProperty("reason").GetString()).Should().Be(("keep", "Stays on the project"));
+    }
+
+    [Fact]
+    public async Task ExplicitCurrentOverrideCode_OfAnInactiveOverride_WithAMove_Is422Inactive()
+    {
+        var w = await Seed();
+        var emp = await w.Db.Employees.SingleAsync(e => e.Id == w.Emp.Id);
+        emp.CostCenterId = w.Off.Id; await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        Error(await Controller(w, Manager).UpdateEmployee(w.Emp.Id, MoveNamingCode("OFF", "Stays"), default), 422).Should().Be("cost_centre_inactive");
+        await Unchanged(w, w.Off.Id);
+    }
+
+    [Fact]
+    public async Task ExplicitCurrentOverrideCode_WithoutAMove_IsStillANoOp()
+    {
+        var w = await Seed();
+        (await Controller(w, HrOfficer).UpdateEmployee(w.Emp.Id, Put(new() { ["costCenter"] = "OWN", ["jobTitle"] = "Analyst" }), default)).Should().BeOfType<OkObjectResult>();
+        await Unchanged(w, w.Own.Id);
+    }
+
+    // ── Review S2: the department is resolved ONCE, from the request, by id ──
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DepartmentNull_AfterTheNameWasRenamedAndReused_DoesNotMoveThePerson(bool manager)
+    {
+        var w = await Seed();
+        var ops = await w.Db.Departments.SingleAsync(d => d.Id == w.Ops.Id);
+        ops.NameEn = "Operations (old)";
+        var fin = await w.Db.Departments.SingleAsync(d => d.Id == w.Fin.Id);
+        fin.NameEn = "Operations"; // the employee's cached department text still reads "Operations"
+        await w.Db.SaveChangesAsync(); w.Db.ChangeTracker.Clear();
+
+        var result = await Controller(w, manager ? Manager : HrOfficer).UpdateEmployee(w.Emp.Id, Put(new() { ["department"] = null, ["jobTitle"] = "Analyst" }), default);
+
+        result.Should().BeOfType<OkObjectResult>();
+        await Unchanged(w, w.Own.Id);
+    }
+
+    // ── Security L1: line breaks are fine, a lone carriage return is not; CRLF is stored as LF ──
+
+    [Fact]
+    public async Task Reason_WithALoneCarriageReturn_Is422()
+    {
+        var w = await Seed();
+        Error(await Controller(w, Manager).UpdateEmployee(w.Emp.Id, MoveToFinance(w, "keep", "Seconded\rto finance"), default), 422).Should().Be("reason_invalid_characters");
+        await Unchanged(w, w.Own.Id);
+    }
+
+    [Fact]
+    public async Task Reason_WithCrLf_IsAccepted_AndAuditedWithLf()
+    {
+        var w = await Seed();
+        (await Controller(w, Manager).UpdateEmployee(w.Emp.Id, MoveToFinance(w, "keep", "Seconded\r\nto finance"), default)).Should().BeOfType<OkObjectResult>();
+        (await Row(w, "employee.cost_attribution_changed")).GetProperty("reason").GetString().Should().Be("Seconded\nto finance");
+        (await Row(w, "employee.cost_centre_override.changed")).GetProperty("reason").GetString().Should().Be("Seconded\nto finance");
+    }
+
+    [Theory]
+    [InlineData("plain", false)]
+    [InlineData("two\nlines", false)]
+    [InlineData("crlf\r\nlines", false)]
+    [InlineData("tab\there", false)]
+    [InlineData("lone\rcr", true)]
+    [InlineData("trailing cr\r", true)]
+    [InlineData("bell\u0007", true)]
+    [InlineData("rlo\u202Eabc", true)]
+    [InlineData("isolate\u2068abc", true)]
+    public void HasInvalidReasonCharacters_Classifies(string reason, bool invalid) =>
+        EmployeeOrgFieldResolver.HasInvalidReasonCharacters(reason).Should().Be(invalid);
+
+    // ── Security L2 / L3: the HR transfer approval re-validates the kept override and the department ──
+
+    private async Task<EmployeeTransferRequest> PendingTransferToFinance(World w)
+    {
+        var transfer = new EmployeeTransferRequest
+        {
+            TenantId = w.Tenant, EmployeeId = w.Emp.Id, Status = "PendingHrApproval", RequestedByUserId = Guid.NewGuid(),
+            CurrentDepartment = w.Ops.NameEn, CurrentDepartmentId = w.Ops.Id, NewDepartment = w.Fin.NameEn, NewDepartmentId = w.Fin.Id,
+            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow.Date), Reason = "Restructure",
+        };
+        w.Db.EmployeeTransferRequests.Add(transfer);
+        await w.Db.SaveChangesAsync();
+        return transfer;
+    }
+
+    private static Task<IActionResult> Approve(World w, EmployeeTransferRequest transfer) =>
+        Controller(w, "employees.approve", "employees.read").ApproveHrTransfer(transfer.Id,
+            new Zayra.Api.Infrastructure.Organization.HrmHierarchyService(w.Db, new Zayra.Api.Infrastructure.Audit.AuditService(w.Db)), default);
+
+    private static async Task StillPending(World w, EmployeeTransferRequest transfer, Guid costCentre, bool overridden = true)
+    {
+        (await w.Db.EmployeeTransferRequests.AsNoTracking().SingleAsync(t => t.Id == transfer.Id)).Status.Should().Be("PendingHrApproval");
+        await Unchanged(w, costCentre, overridden);
+    }
+
+    [Theory]
+    [InlineData("OFF", "cost_centre_inactive")]
+    [InlineData("FAR", "cost_centre_other_company")]
+    public async Task ApproveHrTransfer_KeepOfAnOverrideThatIsNoLongerValid_Is422_PointingAtEditEmployee_NothingPersisted(string code, string expected)
+    {
+        var w = await Seed();
+        var pinned = code == "OFF" ? w.Off.Id : w.Far.Id;
+        var emp = await w.Db.Employees.SingleAsync(e => e.Id == w.Emp.Id);
+        emp.CostCenterId = pinned; await w.Db.SaveChangesAsync();
+        var transfer = await PendingTransferToFinance(w);
+        w.Db.ChangeTracker.Clear();
+
+        var result = await Approve(w, transfer);
+
+        Error(result, 422).Should().Be(expected);
+        JsonSerializer.Serialize(((ObjectResult)result).Value).Should().Contain("Edit employee");
+        await StillPending(w, transfer, pinned);
+    }
+
+    [Fact]
+    public async Task ApproveHrTransfer_IntoADepartmentDeactivatedSinceTheRequest_Is422_NothingPersisted()
+    {
+        var w = await Seed(overridden: false);
+        var transfer = await PendingTransferToFinance(w);
+        var fin = await w.Db.Departments.SingleAsync(d => d.Id == w.Fin.Id);
+        fin.IsActive = false; await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await Approve(w, transfer)).Should().BeAssignableTo<ObjectResult>().Which.StatusCode.Should().Be(422);
+        await StillPending(w, transfer, w.OpsCc.Id, overridden: false);
+    }
+
+    // ── Review S5: keep and drop on the immediate-plus-sensitive (approval) branch ──
+
+    private async Task<EmployeesController> SensitiveManager(World w)
+    {
+        await TestApprovalConfig.EnsureDeciderAsync(w.Db, w.Tenant);
+        return Controller(w, "employees.write", "employees.read", "employees.sensitive", Manage);
+    }
+
+    private static EmployeeUpdateRequest MoveWithBankChange(World w, string decision, string reason) =>
+        Put(new() { ["department"] = "Finance", ["bankName"] = "Another Bank" }, reason, decision, w.Own.Id);
+
+    [Fact]
+    public async Task Decision_Keep_OnTheApprovalBranch_IsApplied_AndAudited()
+    {
+        var w = await Seed();
+        var result = await (await SensitiveManager(w)).UpdateEmployee(w.Emp.Id, MoveWithBankChange(w, "keep", "Seconded"), default);
+
+        result.Should().BeOfType<AcceptedResult>(JsonSerializer.Serialize((result as ObjectResult)?.Value));
+        var stored = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id);
+        (stored.DepartmentId, stored.CostCenterId, stored.CostCenterIsOverride).Should().Be((w.Fin.Id, w.Own.Id, true));
+        (await Row(w, "employee.cost_centre_override.changed")).GetProperty("decision").GetString().Should().Be("keep");
+        (await Row(w, "employee.cost_attribution_changed")).GetProperty("reason").GetString().Should().Be("Seconded");
+        (await w.Db.EmployeeChangeRequests.CountAsync()).Should().Be(1, "the bank change still waits for approval");
+    }
+
+    [Fact]
+    public async Task Decision_Drop_OnTheApprovalBranch_IsApplied_AndAudited()
+    {
+        var w = await Seed();
+        (await (await SensitiveManager(w)).UpdateEmployee(w.Emp.Id, MoveWithBankChange(w, "drop", "Back to budget"), default)).Should().BeOfType<AcceptedResult>();
+        var stored = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id);
+        (stored.DepartmentId, stored.CostCenterId, stored.CostCenterIsOverride, stored.CostCenter).Should().Be((w.Fin.Id, w.FinCc.Id, false, "FIN"));
+        (await Row(w, "employee.cost_centre_override.changed")).GetProperty("decision").GetString().Should().Be("drop");
+    }
+
+    [Fact]
+    public async Task Decision_Drop_OnTheApprovalBranch_OfSomeoneInALockingRun_Is409_NothingPersisted()
+    {
+        var w = await Seed(runStatus: "PendingFinanceReview");
+        Error(await (await SensitiveManager(w)).UpdateEmployee(w.Emp.Id, MoveWithBankChange(w, "drop", "Back to budget"), default), 409).Should().Be("locked_into_approved_run");
+        await Unchanged(w, w.Own.Id);
+        (await w.Db.EmployeeChangeRequests.CountAsync()).Should().Be(0);
+    }
+
     // ── Strict validation ────────────────────────────────────────────────────
 
     [Theory]

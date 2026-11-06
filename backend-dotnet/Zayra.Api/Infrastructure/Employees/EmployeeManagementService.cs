@@ -1580,6 +1580,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// </summary>
     private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null, bool hire = false)
     {
+        // Wave A security L1: the same reason hygiene as the employee PUT (no hidden control or text-direction characters).
+        if (!string.IsNullOrWhiteSpace(reason) && Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.HasInvalidReasonCharacters(reason))
+            throw Zayra.Api.Application.Organization.CostCentreRuleException.ReasonInvalidCharacters();
         if (requested is not Guid costCenterId) return;
         var wasOverride = employee.CostCenterIsOverride;
         var wasCostCentre = employee.CostCenterId;
@@ -1608,7 +1611,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 {
                     before = new { @override = wasOverride, costCenterId = wasCostCentre },
                     after = new { @override = employee.CostCenterIsOverride, costCenterId = employee.CostCenterId },
-                    reason = reason!.Trim(),
+                    reason = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.NormaliseReason(reason),
                 }), employee.CompanyId);
     }
 

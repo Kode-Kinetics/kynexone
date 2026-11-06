@@ -207,6 +207,43 @@ public sealed class CostCentrePreviewHttpTests : IClassFixture<HireIntegrityHttp
         remove.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task HireDraft_ReasonWithHiddenCharacters_422_NothingWritten()
+    {
+        var s = await SeedAsync();
+        var manager = await User("employees.write", "employees.read", "organization.costcenter.manage");
+        var (id, basis) = await DraftAsync(manager);
+        using var refused = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft", new { baseUpdatedAtUtc = basis, request = Hire("Renamed", s.Cc, "Pinned \u202Ehere") }, manager);
+        refused.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
+        (await refused.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("error").GetString().Should().Be("reason_invalid_characters");
+        using var scope = _fx.Host.Services.CreateScope();
+        (await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == id)).CostCenterIsOverride.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Preview_AClosedPosition_IsRefusedLikeAMissingOne()
+    {
+        var s = await SeedAsync();
+        Guid closed, open;
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            var tag = Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+            var c = new Position { TenantId = _fx.TenantId, CompanyId = _fx.CompanyId, Code = "PC" + tag, Title = "Closed", Status = PositionStatuses.Closed };
+            var o = new Position { TenantId = _fx.TenantId, CompanyId = _fx.CompanyId, Code = "PO" + tag, Title = "Open" };
+            db.AddRange(c, o);
+            await db.SaveChangesAsync();
+            (closed, open) = (c.Id, o.Id);
+        }
+        var token = await User("employees.read", "employees.write");
+        using var refused = await Get($"/api/employees/{s.Emp}/cost-centre/preview?positionId={closed}", token);
+        using var missing = await Get($"/api/employees/{s.Emp}/cost-centre/preview?positionId={Guid.NewGuid()}", token);
+        refused.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await refused.Content.ReadAsStringAsync()).Should().Be(await missing.Content.ReadAsStringAsync()).And.Contain("position_not_found");
+        using var ok = await Get($"/api/employees/{s.Emp}/cost-centre/preview?positionId={open}", token);
+        ok.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
     // ── Reason cap on a decision ─────────────────────────────────────────────
 
     [Fact]

@@ -134,6 +134,26 @@ public class CostCentreAttributionGateTests
         await NoOverrideAndNoRows(w);
     }
 
+    /// <summary>Review S3: clearing on someone without an override must not rewrite the stored id (or audit anything) for a caller without the
+    /// permission, with or without a company.</summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ClearingOnANonOverrideEmployee_LeavesTheStoredIdAlone_AndWritesNoRow(bool withCompany)
+    {
+        var w = await Seed();
+        var emp = await w.Db.Employees.SingleAsync(e => e.Id == w.Emp.Id);
+        emp.CostCenterId = w.Own.Id; // a stale copy, flag false
+        if (!withCompany) emp.CompanyId = null;
+        await w.Db.SaveChangesAsync(); w.Db.ChangeTracker.Clear();
+
+        (await Controller(w, HrOfficer).UpdateEmployee(w.Emp.Id, Put("costCenter", "", reason: null), default)).Should().BeOfType<OkObjectResult>();
+
+        var stored = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id);
+        (stored.CostCenterId, stored.CostCenterIsOverride).Should().Be((w.Own.Id, false));
+        (await w.Db.AuditLogs.CountAsync(a => a.Action.StartsWith("employee.cost_"))).Should().Be(0);
+    }
+
     [Fact]
     public async Task ACostCentreManager_SetsTheOverride_WithTheReasonAudited()
     {
