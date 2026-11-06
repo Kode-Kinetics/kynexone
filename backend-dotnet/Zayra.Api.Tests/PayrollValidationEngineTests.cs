@@ -108,6 +108,39 @@ public class PayrollValidationEngineTests
         results.Should().Contain(r => r.Code == "MISSING_SALARY_STRUCTURE" && r.Severity == "Error" && r.EmployeeId == emp.Id);
     }
 
+    // Security review L5: the finding names the mismatch instead of reading like an ordinary late approval.
+    [Fact]
+    public void Rule11b_OvertimeStampedWithAnotherCompany_SaysItBelongsToAnotherCompanysPeriod()
+    {
+        var tid = Guid.NewGuid();
+        var emp = MakeSaudiEmp(tid);
+        var ctx = new PayrollValidationContext(MakeRun(tid), [], [emp], [], [], [], [], null)
+        {
+            PriorPeriodUnpaidOvertime =
+            [
+                new PriorPeriodOvertime(emp.Id, Guid.NewGuid(), new DateOnly(2026, 5, 28), 120, OtherCompanyStamp: true),
+            ],
+        };
+
+        var finding = PayrollValidationEngine.Run(ctx).Should().ContainSingle(r => r.Code == PayrollValidationEngine.PriorPeriodOvertimeUnpaid).Subject;
+
+        finding.Message.Should().Contain("another company's period");
+    }
+
+    [Fact]
+    public void Rule11b_OvertimeStampedWithThisCompany_DoesNotMentionAnotherCompany()
+    {
+        var tid = Guid.NewGuid();
+        var emp = MakeSaudiEmp(tid);
+        var ctx = new PayrollValidationContext(MakeRun(tid), [], [emp], [], [], [], [], null)
+        {
+            PriorPeriodUnpaidOvertime = [new PriorPeriodOvertime(emp.Id, Guid.NewGuid(), new DateOnly(2026, 5, 28), 120)],
+        };
+
+        PayrollValidationEngine.Run(ctx).Should().ContainSingle(r => r.Code == PayrollValidationEngine.PriorPeriodOvertimeUnpaid)
+            .Which.Message.Should().NotContain("another company");
+    }
+
     [Fact]
     public void Rule1_MissingPayrollProfile_ProducesWarning()
     {

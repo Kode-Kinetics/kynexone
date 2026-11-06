@@ -171,14 +171,27 @@ public class OvertimeLateSettlementFinderTests
         (await Settled(w, OvertimeLateSettlement.BackPay, runId: Guid.NewGuid())).Should().BeEmpty("a different live run may not take it");
     }
 
-    [Fact]
-    public async Task AnotherCompanysOvertime_IsNeitherFlaggedNorSettled_ByThisCompanysRun()
+    // Security review L5: flagged for the run that now pays the employee, but NEVER settled across companies.
+    [Theory]
+    [InlineData(OvertimeLateSettlement.BackPay)]
+    [InlineData(OvertimeLateSettlement.Refuse)]
+    public async Task AnotherCompanysOvertime_IsFlaggedButNeverSettled_ByThisCompanysRun(string mode)
     {
         var w = new World();
         await AddAsync(w, companyId: Guid.NewGuid());
 
+        (await Flagged(w, mode)).Should().ContainSingle().Which.OtherCompanyStamp.Should().BeTrue();
+        (await Settled(w, mode)).Should().BeEmpty("paying a request stamped with another company would be a cross-company payment");
+    }
+
+    [Fact]
+    public async Task ThisCompanysOvertime_IsStillSettledInBackPayAndNotFlagged()
+    {
+        var w = new World();
+        await AddAsync(w);
+
+        (await Settled(w, OvertimeLateSettlement.BackPay)).Should().ContainSingle();
         (await Flagged(w, OvertimeLateSettlement.BackPay)).Should().BeEmpty();
-        (await Settled(w, OvertimeLateSettlement.BackPay)).Should().BeEmpty();
     }
 }
 

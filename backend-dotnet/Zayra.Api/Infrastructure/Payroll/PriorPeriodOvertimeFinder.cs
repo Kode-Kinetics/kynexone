@@ -6,10 +6,13 @@ namespace Zayra.Api.Infrastructure.Payroll;
 
 /// <summary>
 /// One approved overtime impact that no payroll run has paid, dated before the run being validated. The trailing
-/// members are what <see cref="OvertimeLateSettlement"/> needs to pay it; rule 11b reads only the first four.
+/// members are what <see cref="OvertimeLateSettlement"/> needs to pay it; rule 11b reads the first four and
+/// <paramref name="OtherCompanyStamp"/>.
 /// </summary>
+/// <param name="OtherCompanyStamp">The request is stamped with a different company than the run's (the employee moved
+/// companies after filing it). It is flagged, never settled: paying it would be a cross-company payment.</param>
 public readonly record struct PriorPeriodOvertime(int EmployeeId, Guid OvertimeRequestId, DateOnly WorkDate, int Minutes,
-    Guid ImpactId = default, decimal Amount = 0m, decimal Multiplier = 0m, Guid? OvertimePolicyId = null);
+    Guid ImpactId = default, decimal Amount = 0m, decimal Multiplier = 0m, Guid? OvertimePolicyId = null, bool OtherCompanyStamp = false);
 
 /// <summary>
 /// The ONE source for Rule 11b (<see cref="PayrollValidationEngine.PriorPeriodOvertimeUnpaid"/>): approved
@@ -78,7 +81,8 @@ public static class PriorPeriodOvertimeFinder
     private static async Task<IReadOnlyList<PriorPeriodOvertime>> SettleableAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyList<PriorPeriodOvertime> candidates, Guid? runId, CancellationToken ct)
     {
-        var payable = candidates.Where(OvertimeLateSettlement.IsSettleable).ToList();
+        // A request stamped with another company is flagged, never paid here: that would be a cross-company payment.
+        var payable = candidates.Where(c => !c.OtherCompanyStamp && OvertimeLateSettlement.IsSettleable(c)).ToList();
         if (payable.Count == 0) return payable;
         var requestIds = payable.Select(c => c.OvertimeRequestId).ToList();
         var blocked = await (from a in db.PayrollAdjustments.AsNoTracking()
@@ -96,23 +100,26 @@ public static class PriorPeriodOvertimeFinder
         CancellationToken ct)
     {
         if (employeeIds.Count == 0) return Array.Empty<PriorPeriodOvertime>();
-        // Tenant-wide read with the company named in the predicate, as the run's own period query does; a
-        // legacy request with no company stamp belongs to whichever run pays its employee.
+        // Tenant-wide read; the employee ids are the run's own population, so the employee's CURRENT company is this
+        // run's company. A legacy request with no company stamp belongs to whichever run pays its employee. A request
+        // stamped with a DIFFERENT company (the employee moved after filing it) is returned too, marked OtherCompanyStamp:
+        // it used to be filtered out, so it was neither paid (the settle path is company-bound) nor flagged.
         var consumed = ConsumedRunStatuses;
         var rows = await (from i in db.OvertimePayrollImpacts.AsNoTracking()
                           join r in db.OvertimeRequests.AsNoTracking() on i.OvertimeRequestId equals r.Id
                           where i.TenantId == tenantId && i.Status == "PendingPayroll" && i.PayrollRunId == null
                                 && employeeIds.Contains(i.EmployeeId)
                                 && r.TenantId == tenantId && r.Status == "Approved" && r.WorkDate < periodStart
-                                && (r.CompanyId == companyId || r.CompanyId == null)
-                                // The overtime's own period was already run for this company (Regular/Replacement own the month).
+                                // The overtime's own period was already run for this company, or for the company the request is stamped
+                                // with (Regular/Replacement own the month).
                                 && db.PayrollRuns.AsNoTracking().Any(pr =>
-                                       pr.TenantId == tenantId && pr.CompanyId == companyId
+                                       pr.TenantId == tenantId
+                                       && (pr.CompanyId == companyId || (r.CompanyId != null && pr.CompanyId == r.CompanyId))
                                        && pr.Year == r.WorkDate.Year && pr.Month == r.WorkDate.Month
                                        && (pr.RunType == PayrollRunTypes.Regular || pr.RunType == PayrollRunTypes.Replacement)
                                        && consumed.Contains(pr.Status))
                           orderby i.EmployeeId, r.WorkDate
-                          select new PriorPeriodOvertime(i.EmployeeId, r.Id, r.WorkDate, i.Minutes, i.Id, i.Amount, i.ApprovedMultiplier, r.OvertimePolicyId))
+                          select new PriorPeriodOvertime(i.EmployeeId, r.Id, r.WorkDate, i.Minutes, i.Id, i.Amount, i.ApprovedMultiplier, r.OvertimePolicyId, r.CompanyId != null && r.CompanyId != companyId))
             .ToListAsync(ct);
         return rows;
     }

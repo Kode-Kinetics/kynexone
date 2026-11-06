@@ -722,10 +722,17 @@ public static class PayrollValidationEngine
             empById.TryGetValue(byEmp.Key, out var otEmp);
             var minutes = byEmp.Sum(x => x.Minutes);
             var dates = string.Join(", ", byEmp.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")));
+            // Overtime filed under another company (the employee moved after filing it) is never paid by this run, in any mode:
+            // say so, rather than advising a setting that cannot pay it.
+            var otherCompany = byEmp.Where(x => x.OtherCompanyStamp).ToList();
+            var otherCompanyNote = otherCompany.Count == 0 ? string.Empty
+                : $" {otherCompany.Sum(x => x.Minutes) / 60m:0.00##} h of it ({string.Join(", ", otherCompany.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")))}) " +
+                  "belongs to another company's period (the request is recorded under the company the employee used to work for), so no run of this company pays it: " +
+                  "settle it through the overtime record, or override this error with a written basis if it was already settled.";
             Err(PriorPeriodOvertimeUnpaid,
                 $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
-                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it. " +
-                LateApprovalAdvice(ctx),
+                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it." +
+                (otherCompany.Count == byEmp.Count() ? string.Empty : " " + LateApprovalAdvice(ctx)) + otherCompanyNote,
                 byEmp.Key);
         }
 

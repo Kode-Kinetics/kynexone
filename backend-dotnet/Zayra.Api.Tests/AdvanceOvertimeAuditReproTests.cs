@@ -425,11 +425,57 @@ public class AdvanceOvertimeAuditReproPriorPeriodFinderTests
         (await FindAsync(w)).Should().ContainSingle();
     }
 
+    // Security review L5. An employee who moved companies keeps overtime stamped with the OLD company. It was neither paid
+    // (the settle path is company-bound) nor flagged (the finder filtered on the stamp), so it vanished. The run that now
+    // pays the employee flags it, marked as another company's period; it is never settled across companies.
     [Fact]
-    public async Task AnotherCompanysOvertime_IsNotFlagged()
+    public async Task OvertimeStampedWithAnotherCompany_ForAnEmployeeNowInThisCompany_IsFlaggedAsAnotherCompanysPeriod()
     {
         var w = new World();
         await AddImpactAsync(w, MayDay, requestCompany: Guid.NewGuid());
+        await AddRunAsync(w, 2026, 5, "Locked");
+
+        (await FindAsync(w)).Should().ContainSingle().Which.OtherCompanyStamp.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task OvertimeStampedWithAnotherCompany_WhoseOwnCompanyRanThatPeriod_IsFlagged()
+    {
+        var w = new World();
+        var oldCompany = Guid.NewGuid();
+        await AddImpactAsync(w, MayDay, requestCompany: oldCompany);
+        await AddRunAsync(w, 2026, 5, "Locked", companyId: oldCompany);
+
+        (await FindAsync(w)).Should().ContainSingle().Which.OtherCompanyStamp.Should().BeTrue(
+            "the old company's run consumed the month without this employee's overtime reaching a payslip");
+    }
+
+    [Fact]
+    public async Task OvertimeStampedWithAnotherCompany_WhosePeriodNobodyHasRun_IsNotFlagged()
+    {
+        var w = new World();
+        await AddImpactAsync(w, MayDay, requestCompany: Guid.NewGuid());
+
+        (await FindAsync(w)).Should().BeEmpty("no run has consumed the month yet, so nothing is stranded");
+    }
+
+    [Fact]
+    public async Task OvertimeStampedWithThisCompany_IsFlaggedWithoutTheOtherCompanyMarker()
+    {
+        var w = new World();
+        await AddImpactAsync(w, MayDay);
+        await AddRunAsync(w, 2026, 5, "Locked");
+
+        (await FindAsync(w)).Should().ContainSingle().Which.OtherCompanyStamp.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AnotherTenantsEmployeeWithAMismatchedStamp_IsNeverRead()
+    {
+        var w = new World();
+        var otherTenant = Guid.NewGuid();
+        await AddImpactAsync(w, MayDay, requestCompany: Guid.NewGuid(), tenantId: otherTenant);
+        await AddRunAsync(w, 2026, 5, "Locked", tenantId: otherTenant);
         await AddRunAsync(w, 2026, 5, "Locked");
 
         (await FindAsync(w)).Should().BeEmpty();
