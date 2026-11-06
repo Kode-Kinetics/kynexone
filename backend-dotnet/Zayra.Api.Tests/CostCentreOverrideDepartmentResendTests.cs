@@ -77,14 +77,18 @@ public class CostCentreOverrideDepartmentResendTests
     }
 
     [Fact]
-    public async Task MovingToAnotherDepartment_WithThePermission_ResetsTheOverride()
+    public async Task MovingToAnotherDepartment_WithThePermission_NeedsAKeepOrDropDecision_AndDropResetsTheOverride()
     {
         var w = await Seed();
+        var manager = Controller(w, "employees.write", "employees.read", "organization.costcenter.manage");
 
-        var result = await Controller(w, "employees.write", "employees.read", "organization.costcenter.manage")
-            .UpdateEmployee(w.Emp.Id, Put(("department", "Finance")), default);
+        // Wave A D2: the override is no longer dropped silently.
+        var silent = await manager.UpdateEmployee(w.Emp.Id, Put(("department", "Finance")), default);
+        ((ObjectResult)silent).StatusCode.Should().Be(422);
+        (await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id)).CostCenterIsOverride.Should().BeTrue();
 
-        result.Should().BeOfType<OkObjectResult>();
+        var drop = Put(("department", "Finance")) with { CostCenterReason = "Back to the department", CostCenterDecision = "drop", ExpectedCostCenterOverrideId = w.Own.Id };
+        (await manager.UpdateEmployee(w.Emp.Id, drop, default)).Should().BeOfType<OkObjectResult>();
         var stored = await w.Db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.Emp.Id);
         (stored.CostCenterIsOverride, stored.DepartmentId).Should().Be((false, w.Fin.Id));
     }

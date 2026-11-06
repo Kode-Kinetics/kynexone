@@ -73,6 +73,15 @@ public sealed class EmployeeHireController : ControllerBase
             return Problem(409, "draft_changed_elsewhere", "This draft was changed in another window. Reload it before saving.");
 
         var request = body.Request;
+        // Wave A D1 (threat model section 1): this door writes the cost centre through the profile form's rule, so setting, re-pointing or
+        // removing an override needs organization.costcenter.manage here exactly as on POST and PUT /api/employees. A no-op (null, the stored
+        // id again, or None on someone without an override) is not a change. Refused before the draft is claimed: nothing is written.
+        if (OrgWriteRules.FormMovesEmployeeAttribution(employee, request.CostCenterId) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
+        if (!string.IsNullOrWhiteSpace(request.CostCenterReason) && EmployeeOrgFieldResolver.HasInvalidReasonCharacters(request.CostCenterReason))
+        {
+            var invalid = Zayra.Api.Application.Organization.CostCentreRuleException.ReasonInvalidCharacters();
+            return StatusCode(invalid.Status, invalid.ToPayload());
+        }
         // A caller who cannot see pay or identity values resumed a form that holds none of them: the server must not read
         // those empty (or masked) fields as an instruction to clear what is stored. What they typed is still applied.
         if (!User.HasPermission("employees.sensitive"))

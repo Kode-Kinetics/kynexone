@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
@@ -155,20 +156,45 @@ public class CostCentrePermissionTests
 
     // ── S-027: the employee patch ─────────────────────────────────────────────
 
-    private static Dictionary<string, JsonElement> Patch(params (string K, string V)[] items) =>
-        items.ToDictionary(i => i.K, i => JsonDocument.Parse(JsonSerializer.Serialize(i.V)).RootElement.Clone());
+    private static readonly Guid Ops = Guid.NewGuid(), Sales = Guid.NewGuid();
+
+    private static EmployeeOrgFieldResolver.PreparedAttribution Prepared(bool moves = false, EmployeeOrgFieldResolver.PreparedCostCentre? cc = null, string? decision = null) =>
+        new(moves, moves ? Sales : null, cc, decision);
+
+    /// <summary>Wave A D1: the gate is judged on the server's state (override flag and stored id, the department by id), never on the cached
+    /// <c>Employee.CostCenter</c> string, which goes stale. The cached code is set to the patched one here on purpose: it must not matter.</summary>
+    [Theory]
+    [InlineData(false, "jobTitle-only", false)]
+    [InlineData(false, "same-as-cache-on-a-non-override", true)]
+    [InlineData(true, "same-override", false)]
+    [InlineData(true, "other-cost-centre", true)]
+    [InlineData(false, "clear-without-override", false)]
+    [InlineData(true, "clear-the-override", true)]
+    [InlineData(false, "department-move", true)]
+    [InlineData(true, "a-decision", true)]
+    public void S027_EmployeePatch_TheGateReadsTheOverrideFlagAndIds_NeverTheCachedCode(bool isOverride, string patch, bool moves)
+    {
+        var emp = new Employee { Department = "Operations", DepartmentId = Ops, CostCenter = "OPS", CostCenterId = Ops, CostCenterIsOverride = isOverride };
+        var prepared = patch switch
+        {
+            "jobTitle-only" => Prepared(),
+            "same-as-cache-on-a-non-override" or "same-override" => Prepared(cc: new(false, Ops, "OPS")),
+            "other-cost-centre" => Prepared(cc: new(false, Sales, "SALES")),
+            "clear-without-override" or "clear-the-override" => Prepared(cc: new(true, null, string.Empty)),
+            "department-move" => Prepared(moves: true),
+            "a-decision" => Prepared(moves: true, cc: new(false, Ops, "OPS"), decision: "keep"),
+            _ => throw new ArgumentOutOfRangeException(nameof(patch)),
+        };
+        OrgWriteRules.MovesEmployeeAttribution(emp, prepared).Should().Be(moves, patch);
+    }
 
     [Fact]
-    public void S027_EmployeePatch_OnlyAChangeOfDepartmentOrCostCentre_MovesAttribution()
+    public void S027_TheCachedStringOverload_IsGone()
     {
-        var emp = new Employee { Department = "Operations", CostCenter = "OPS" };
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("jobTitle", "Analyst"))).Should().BeFalse();
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("department", " operations "))).Should().BeFalse("the same department in another spelling");
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("costCenter", "ops"))).Should().BeFalse();
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("department", "Sales"))).Should().BeTrue();
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("costCenter", "SALES"))).Should().BeTrue();
-        OrgWriteRules.MovesEmployeeAttribution(emp, Patch(("costCenter", ""))).Should().BeTrue("clearing an override is a re-point");
-        OrgWriteRules.MovesEmployeeAttribution(new Employee(), Patch(("department", "Sales"))).Should().BeTrue();
+        typeof(OrgWriteRules).GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.Name == nameof(OrgWriteRules.MovesEmployeeAttribution))
+            .SelectMany(m => m.GetParameters()).Select(p => p.ParameterType)
+            .Should().NotContain(typeof(IReadOnlyDictionary<string, JsonElement>), "a patch dictionary compared with Employee.CostCenter is the D1 bypass");
     }
 
     // ── S-008 / AM-10: the functional class is a finance decision ─────────────
@@ -222,8 +248,7 @@ public class CostCentrePermissionTests
     {
         ["Infrastructure/Organization/OrganizationSetupService.cs"] = ["Controllers/CostCenterEndpoints.cs", "Controllers/CostCentersController.cs", "Controllers/DepartmentsController.cs"],
         ["Application/Employees/EmployeeOrgFieldResolver.cs"] = ["Controllers/EmployeesController.cs"],
-        ["Infrastructure/Employees/EmployeeManagementService.cs"] = ["Controllers/EmployeesController.cs"],
-        ["Controllers/EmployeesController.cs"] = ["Controllers/EmployeesController.cs"],
+        ["Infrastructure/Employees/EmployeeManagementService.cs"] = ["Controllers/EmployeesController.cs", "Controllers/Employees/EmployeeHireController.cs"],
         ["Controllers/PositionsController.cs"] = ["Controllers/PositionsController.cs"],
         ["Controllers/PlanningController.cs"] = ["Controllers/PlanningController.cs"],
         ["Controllers/OrganizationStructureImportController.cs"] = ["Controllers/OrganizationStructureImportController.cs"],

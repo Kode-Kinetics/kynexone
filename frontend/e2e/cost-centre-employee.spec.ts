@@ -78,6 +78,14 @@ async function boot(page: Page, options: Options = {}) {
     if (p === '/api/organization/cost-centers' || p === '/api/cost-centers') return reply(paged(costCentres));
     if (p === '/api/departments') return reply(paged(state.departments));
     if (p === '/api/positions') return reply([]);
+    if (p === '/api/employees/901/cost-centre/preview') {
+      // Wave A: the edit flow asks the server where a department's people land (the department's own cost centre here).
+      const dept = state.departments.find((d) => d.id === (new URL(request.url()).searchParams.get('departmentId') ?? 'qa-finance'));
+      const hit = costCentres.find((c) => c.id === dept?.costCenterId);
+      return reply(hit
+        ? { costCentreId: hit.id, code: hit.code, nameEn: hit.name, nameAr: hit.nameAr ?? null, source: 'Department', sourceName: dept!.nameEn, sourceNameAr: dept!.nameAr || null, level: 'department', isOverride: false, invalidReason: null }
+        : { costCentreId: null, code: null, nameEn: null, nameAr: null, source: 'None', sourceName: null, sourceNameAr: null, level: null, isOverride: false, invalidReason: null });
+    }
     if (p === '/api/finance/gl/cost-accounting/readiness') {
       if (!finance) return reply({ message: 'Forbidden' }, 403);
       return reply({ companyId: CO, settings: { enabled: !!options.costingOn, defaultCostCenterId: 'cc-dflt', smallCellMin: 0, awaitingRun: false }, checks: [], smallCellExposure: { count: 0, threshold: 3 } });
@@ -374,8 +382,8 @@ test('the full edit form no longer turns a department change into a cost-centre 
   await page.goto('/people/901/edit?section=employment');
   await expect(page.getByRole('heading', { name: 'Review employment details' })).toBeVisible();
   await page.getByRole('combobox', { name: 'Department' }).selectOption({ label: 'QA Operations' });
-  // The read-only field still shows where the person will land.
-  await expect(page.getByLabel('Cost center')).toHaveValue('SALES');
+  // The server's preview says where the person will land (Wave A replaced the read-only box).
+  await expect(page.getByTestId('cc-edit-preview')).toHaveText('Will follow QA Operations → SALES');
   await page.getByRole('button', { name: /^Step 6: Review/ }).click();
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(page).toHaveURL(/\/people\/901\?section=employment/);

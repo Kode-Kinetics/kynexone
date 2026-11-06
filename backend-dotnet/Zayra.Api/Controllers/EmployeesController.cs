@@ -385,6 +385,9 @@ public class EmployeesController : ControllerBase
                 .Select(x => new { x.Id, x.EmployeeCode, x.WorkEmail })
                 .ToListAsync(ct))
                 .ToDictionary(x => x.Id, x => (Code: x.EmployeeCode, Email: x.WorkEmail));
+        // Wave A D3: the cost-centre column is where payroll posts the person's cost (the resolver, one snapshot per company), never the
+        // cached Employee.CostCenter copy. The importer treats this inherited code as a copy, so a round trip pins nobody.
+        var resolvedCostCentres = await EmployeeCostCentreView.ResolvedCodesAsync(_db, tenantId, emps, ct);
         var headers = EmployeeCsvHeaders;
         var rows = emps.Select(e =>
         {
@@ -406,7 +409,7 @@ public class EmployeesController : ControllerBase
                 ["EmployeeCode"] = e.EmployeeCode,
                 ["CompanyLegalName"] = companyLegalName,
                 ["BranchCode"] = branchCode,
-                ["CostCenterCode"] = e.CostCenter,
+                ["CostCenterCode"] = resolvedCostCentres.GetValueOrDefault(e.Id, string.Empty),
                 ["WorkLocation"] = e.WorkLocation,
                 ["FullName"] = e.FullName,
                 ["ArabicName"] = e.ArabicName,
@@ -2387,7 +2390,7 @@ public class EmployeesController : ControllerBase
             ProbationEndDate = ReadCsvDate(row, "ProbationEndDate", gaps),
             NoticePeriodDays = ReadCsvInt(row, "NoticePeriodDays", gaps),
             Branch = resolved.BranchNameEn,
-            CostCenter = resolved.CostCenterCode,
+            CostCenter = resolved.ResolvedCostCentreCode,
             WorkLocation = row.GetValueOrDefault("WorkLocation", string.Empty).Trim(),
             ShiftPolicyCode = row.GetValueOrDefault("ShiftPolicyCode", string.Empty).Trim(),
             LeavePolicyCode = row.GetValueOrDefault("LeavePolicyCode", string.Empty).Trim(),
@@ -4024,8 +4027,22 @@ public class EmployeesController : ControllerBase
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
         // A department or cost-centre change moves where the person's pay posts (cost-centre accounting): that needs the cost-centre permission,
-        // not just employees.write. An unchanged value sent back with the form is not a change.
-        if (OrgWriteRules.MovesEmployeeAttribution(employee, request.Changes) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
+        // not just employees.write. An unchanged value sent back with the form is not a change. Wave A D1/D2: the change is worked out from the
+        // server's state (override flag, stored id, department id), never the cached code; a caller without the permission whose patch names
+        // something that does not resolve gets the same 403 as any other attribution change, never a 422 that confirms which codes exist.
+        EmployeeOrgFieldResolver.PreparedAttribution attribution;
+        try
+        {
+            attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(_db, tenantId, employee, request.Changes,
+                request.CostCenterDecision, request.ExpectedCostCenterOverrideId, cancellationToken);
+        }
+        catch (InvalidOperationException) when (!OrgWriteRules.MayManageCostCentres(this)) { return Forbid(); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
+        catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+        if (OrgWriteRules.MovesEmployeeAttribution(employee, attribution) && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
+        try { EmployeeOrgFieldResolver.EnsureAttributionReason(employee, attribution, request.CostCenterReason); }
+        catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         // FAIL LOUD ON AN UNKNOWN KEY — before a single column is touched, so a rejected patch is never
         // half-applied. ApplyChanges had no default arm, so a key it did not recognise was accepted with 200
         // and discarded; the user saw a successful save and the value was gone. Ordinal match, because the
@@ -4160,16 +4177,17 @@ public class EmployeesController : ControllerBase
 
                 if (immediateChanges.Count > 0)
                 {
-                    var immediateCostCentre = await PrepareCostCentrePatchAsync(employee, immediateChanges, request.CostCenterReason, tenantId, cancellationToken);
                     var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
                     ApplyChanges(employee, immediateChanges);
                     // Keys stored on the payroll profile (socialInsuranceReference) have no home on
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
-                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, cancellationToken, immediateCostCentre);
+                    await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, attribution, cancellationToken);
+                    // (department and costCenter are not sensitive, so the prepared attribution is entirely in the immediate part.)
                     // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
                     await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
-                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
+                    await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
+                        decision: attribution.Decision);
                     await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
                     await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
@@ -4253,14 +4271,14 @@ public class EmployeesController : ControllerBase
                 });
             }
 
-            var costCentrePatch = await PrepareCostCentrePatchAsync(employee, request.Changes, request.CostCenterReason, tenantId, cancellationToken);
             var directAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
-            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, cancellationToken, costCentrePatch);
+            await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, attribution, cancellationToken);
             // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
-            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
+                decision: attribution.Decision);
             await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
             await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
@@ -4291,18 +4309,6 @@ public class EmployeesController : ControllerBase
         catch (CostCentreRuleException ex) { return StatusCode(ex.Status, ex.ToPayload()); }
         catch (CostCentreRefException ex) { return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
-    }
-
-    /// <summary>
-    /// The "costCenter" patch key, resolved to a live cost centre of the employee's company BEFORE any column is touched (a code that does not resolve is a
-    /// 422 with nothing written), and refused with 422 <c>cost_centre_reason_required</c> when it would set, re-point or remove the override without a reason (M-10).
-    /// </summary>
-    private async Task<EmployeeOrgFieldResolver.PreparedCostCentre?> PrepareCostCentrePatchAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> changes, string? reason, Guid tenantId, CancellationToken ct)
-    {
-        var prepared = await EmployeeOrgFieldResolver.PrepareCostCentreAsync(_db, tenantId, employee, changes, ct);
-        if (prepared is not null && EmployeeOrgFieldResolver.ChangesOverride(employee, prepared) && string.IsNullOrWhiteSpace(reason))
-            throw CostCentreRuleException.ReasonRequired();
-        return prepared;
     }
 
     private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
@@ -5265,6 +5271,12 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        // Wave A security L1: the transfer's reason is the one its approval audits the kept override with.
+        if (!string.IsNullOrWhiteSpace(request.Reason) && EmployeeOrgFieldResolver.HasInvalidReasonCharacters(request.Reason))
+        {
+            var invalid = CostCentreRuleException.ReasonInvalidCharacters();
+            return StatusCode(invalid.Status, invalid.ToPayload());
+        }
         try
         {
             var tenantId = RequireTenant();
@@ -5333,14 +5345,46 @@ public class EmployeesController : ControllerBase
                 (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
 
             var transferAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
-            if (newDeptId is not null) { employee.DepartmentId = newDeptId; employee.Department = newDeptName; }
+            // Wave A (CTO decision): the shared move rule with an IMPLICIT keep. An override survives the transfer (the request carries no
+            // keep/drop decision; failing closed here would block every transfer of an overridden person) and the keep is audited with the
+            // transfer's reason and id. Someone without an override follows the new department; the cached code is refreshed either way.
+            var keptOverride = false;
+            if (newDeptId is not null)
+            {
+                if (newDeptId != employee.DepartmentId)
+                {
+                    keptOverride = employee.CostCenterIsOverride;
+                    // Security L2: the implicit keep is re-validated as a new assignment in the employee's company, before anything is touched.
+                    if (keptOverride)
+                    {
+                        try
+                        {
+                            if (employee.CostCenterId is not Guid kept)
+                                throw new CostCentreRefException(CostCentreRefCodes.NotFound, "The cost centre was not found in this tenant.");
+                            await new CostCentreRefValidator(_db).EnsureAsync(tenantId, employee.CompanyId, kept, forNewAssignment: true, cancellationToken);
+                        }
+                        catch (CostCentreRefException ex)
+                        {
+                            return UnprocessableEntity(new
+                            {
+                                error = ex.Code, code = ex.Code,
+                                message = "This employee's own cost centre can no longer be used (" + ex.Message.TrimEnd('.') + "). Use Edit employee to keep another one or follow the department, with a reason, then approve the transfer again.",
+                                messageAr = "لم يعد بالإمكان استخدام مركز التكلفة الخاص بهذا الموظف. استخدم «تعديل الموظف» لاختيار مركز آخر أو لاتباع القسم مع ذكر السبب، ثم اعتمد النقل مرة أخرى.",
+                            });
+                        }
+                    }
+                    await EmployeeOrgFieldResolver.MoveDepartmentAsync(_db, tenantId, employee, newDeptId, keepOverride: true, cancellationToken);
+                }
+                employee.Department = newDeptName;
+            }
             if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
             if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
             employee.UpdatedAtUtc = DateTime.UtcNow;
             // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
             // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
-            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken);
+            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken,
+                reason: transfer.Reason, decision: keptOverride ? EmployeeOrgFieldResolver.KeepDecision : null, transferId: transfer.Id);
             transfer.Status = "ApprovedApplied";
             transfer.HrApprovedAtUtc = DateTime.UtcNow;
             await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
@@ -6732,7 +6776,11 @@ internal sealed class DraftApprovalNotFoundException : InvalidOperationException
 public record EmployeeDocumentRequest(string DocumentType, string FileName, string ContentType, string StorageUrl, bool IsRequired, DateOnly? ExpiryDate);
 public record EmployeeTransferRequestDto(string NewDepartment, string NewBranch, int? NewManagerEmployeeId, DateOnly EffectiveDate);
 /// <param name="CostCenterReason">Why the "costCenter" key is setting or removing the employee's cost-centre override (M-10): required when it does, audited.</param>
-public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, JsonElement> Changes, string? CostCenterReason = null);
+/// <param name="CostCenterDecision">Wave A D2: "keep" or "drop" — what happens to the person's cost-centre override when the patch moves them to another
+/// department. Required exactly then (422 <c>cost_centre_decision_required</c>), refused anywhere else (422 <c>cost_centre_decision_invalid</c>).</param>
+/// <param name="ExpectedCostCenterOverrideId">The override id the form was showing (null = no override) when it sent a decision; a mismatch is a stale form (409).</param>
+public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, JsonElement> Changes, string? CostCenterReason = null,
+    string? CostCenterDecision = null, Guid? ExpectedCostCenterOverrideId = null);
 public record GroupCountDto(string Name, int Count);
 public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int NewJoiners, int Exits, int ProbationEmployees, IReadOnlyCollection<GroupCountDto> DepartmentHeadcount, IReadOnlyCollection<GroupCountDto> BranchHeadcount, IReadOnlyCollection<GroupCountDto> NationalityMix, IReadOnlyCollection<GroupCountDto> GenderMix, int ContractExpiringSoon, int VisaOrPassportExpiringSoon, int MissingDocumentsOrIncompleteProfiles);
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);

@@ -539,7 +539,8 @@ test('a read-only user sees the next action disabled with the reason, not a link
 });
 
 test('route-owned employment editing preserves tenant values and follows organization master data', async ({ page }) => {
-  await bootEmployeeWorkspaceFixture(page);
+  // Changing the department moves the person's cost centre, which needs organization.costcenter.manage.
+  await bootEmployeeWorkspaceFixture(page, { permissions: ['employees.read', 'employees.write', 'employees.sensitive', 'dashboard.read', 'organization.costcenter.manage'] });
   await page.goto('/people/901/edit?section=employment');
 
   await expect(page.getByRole('heading', { name: 'Review employment details' })).toBeVisible();
@@ -552,7 +553,8 @@ test('route-owned employment editing preserves tenant values and follows organiz
   await page.getByRole('combobox', { name: 'Department' }).selectOption({ label: 'QA Operations' });
   await expect(page.getByRole('combobox', { name: 'Designation' })).toHaveValue('QA Operations Lead');
   await expect(page.getByRole('combobox', { name: 'Grade' })).toHaveValue('M1');
-  await expect(page.getByLabel('Cost center')).toHaveValue('QA-OPS-CC-18');
+  // No override on this person: the cost centre follows the new department, as the server resolves it.
+  await expect(page.getByRole('combobox', { name: 'Cost center', exact: true }).locator('option:checked')).toHaveText('Follow department · QA-OPS-CC-18 — QA Operations Cost Center');
   await expect(page.getByRole('combobox', { name: 'Line manager' })).toHaveValue('902');
   await expect(page.getByRole('combobox', { name: 'Line manager' }).locator('option')).toHaveText(['Select', 'Second Route Employee (EMP-SA-QA-OPS-18-2026-0002)']);
 });

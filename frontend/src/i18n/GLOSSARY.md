@@ -18,3 +18,7 @@ Chosen by existing majority in the dictionaries (counts at 2026-10-26). Use thes
 | Performance | الأداء | |
 | Designation | المسمى الوظيفي | |
 | Status | الحالة | |
+| Cost centre | مركز التكلفة | مركز تكاليف |
+| Cost-centre override (set for one employee) | استثناء (مركز تكلفة استثنائي) | تجاوز |
+| Follow the department (inherit its cost centre) | اتباع القسم | وراثة |
+| Parent department | القسم الأعلى | القسم الأب |

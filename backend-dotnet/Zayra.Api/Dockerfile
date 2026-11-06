@@ -1,4 +1,8 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+ENV DOTNET_gcServer=0
+ENV DOTNET_GCHeapCount=1
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
+ENV DOTNET_NOLOGO=1
 WORKDIR /src
 COPY Zayra.Api.csproj ./
 RUN dotnet restore
@@ -7,7 +11,8 @@ COPY . ./
 # by /health/live, so the e2e preflight can refuse a stale image. Empty unless the builder passes it
 # (docker compose forwards BUILD_COMMIT).
 ARG BUILD_COMMIT=
-RUN dotnet publish Zayra.Api.csproj -c Release -o /app/publish -p:SourceRevisionId=${BUILD_COMMIT}
+RUN dotnet publish Zayra.Api.csproj -c Release -o /app/publish --no-restore \
+    -p:RunAnalyzers=false -p:UseSharedCompilation=false -p:SourceRevisionId=${BUILD_COMMIT} -maxcpucount:1
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app

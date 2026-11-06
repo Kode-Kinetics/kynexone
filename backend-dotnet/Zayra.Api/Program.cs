@@ -398,6 +398,7 @@ builder.Services.AddSingleton(new Zayra.Api.Infrastructure.Attendance.SelfieImag
     builder.Configuration.GetValue(Zayra.Api.Infrastructure.Attendance.SelfieImageGate.ConfigKey,
         Zayra.Api.Infrastructure.Attendance.SelfieImageGate.DefaultConcurrency)));
 builder.Services.AddScoped<IEmployeeManagementService, EmployeeManagementService>();
+builder.Services.AddScoped<Zayra.Api.Application.Employees.IEmployeeCostCentrePreviewService, Zayra.Api.Infrastructure.Employees.EmployeeCostCentrePreviewService>();
 builder.Services.AddScoped<IOrganizationSetupService, OrganizationSetupService>();
 // Establishment matrix: the ONE budget guard every assignment path shares, plus the per-tenant
 // staffing-level defaults seeder (invoked from AuthSeeder + lazily by EstablishmentController).

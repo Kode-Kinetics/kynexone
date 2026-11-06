@@ -785,6 +785,31 @@ export function possibleDuplicateFromError(err: unknown): PossibleDuplicateError
 
 export { probationOverLimitFromError, type ProbationOverLimitError } from '../lib/probationOverLimit';
 
+/** The cost-centre part of PUT /api/employees/{id} (Wave A). Never both `changes.costCenter` and a decision. */
+export interface EmployeeCostCentreUpdateOptions {
+  costCenterReason?: string;
+  /** Only with a department change for a person who has an override: keep it, or drop it and follow the new department. */
+  costCenterDecision?: 'keep' | 'drop';
+  /** The override id the decision was made against; the server answers 409 cost_centre_state_changed when it moved. */
+  expectedCostCenterOverrideId?: string | null;
+}
+
+/** GET /api/employees/{id}/cost-centre/preview: the server's resolution for an org assignment, the same resolver payroll uses. */
+export interface EmployeeCostCentrePreview {
+  costCentreId: string | null;
+  code: string | null;
+  nameEn: string | null;
+  nameAr: string | null;
+  /** Employee | Position | Department | ParentDepartment | CompanyDefault | None. */
+  source: string;
+  sourceName: string | null;
+  sourceNameAr: string | null;
+  level: string | null;
+  isOverride: boolean;
+  /** '<level>_cost_centre_invalid' when the cost centre at the winning level cannot be used; no code or name then. */
+  invalidReason: string | null;
+}
+
 export const employeesApi = {
   list: (
     params: {
@@ -868,8 +893,25 @@ export const employeesApi = {
     client.post(`/api/employees/${id}/bank-details/confirm`, { note }).then((r) => r.data),
 
   /** Sends only the changed fields; sensitive fields (salary, passport, bank…) return 202 and go to an approval workflow. */
-  update: (id: number, effectiveDate: string, changes: Record<string, unknown>, options?: { costCenterReason?: string }) =>
-    client.put(`/api/employees/${id}`, { effectiveDate, changes, ...(options?.costCenterReason ? { costCenterReason: options.costCenterReason } : {}) }),
+  update: (id: number, effectiveDate: string, changes: Record<string, unknown>, options?: EmployeeCostCentreUpdateOptions) =>
+    client.put(`/api/employees/${id}`, {
+      effectiveDate,
+      changes,
+      ...(options?.costCenterReason ? { costCenterReason: options.costCenterReason } : {}),
+      ...(options?.costCenterDecision ? { costCenterDecision: options.costCenterDecision } : {}),
+      ...(options?.expectedCostCenterOverrideId !== undefined ? { expectedCostCenterOverrideId: options.expectedCostCenterOverrideId } : {}),
+    }),
+
+  /**
+   * Where this person's cost would land for a hypothetical department / position / cost centre (read-only; the server writes
+   * nothing). No parameters = what they inherit today (an override is ignored). Any parameter needs employees.write.
+   * A department or position outside the employee's company is a 404 (department_not_found / position_not_found).
+   */
+  costCentrePreview: (id: number, params: { departmentId?: string; positionId?: string; costCenterId?: string } = {}, signal?: AbortSignal) =>
+    client.get<EmployeeCostCentrePreview>(`/api/employees/${id}/cost-centre/preview`, {
+      params: Object.fromEntries(Object.entries(params).filter(([, v]) => !!v)),
+      signal,
+    }).then((r) => r.data),
 
   remove: (id: number) => client.delete(`/api/employees/${id}`),
 

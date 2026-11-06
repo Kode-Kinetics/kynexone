@@ -105,6 +105,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (includeSensitive)
             await _audit.WriteAsync("employee.sensitive_viewed", "Employee", id.ToString(), context, null, cancellationToken);
 
+        var costCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken);
         var detail = EmployeeDetailDto.Project(
             employee,
             includeSensitive,
@@ -116,7 +117,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             includeOwnPersonal: includeOwnPersonal) with
         {
             SalaryBreakdown = includeSensitive ? await EmployeeSalaryBreakdownChanges.ReadLatestAsync(_db, employee, cancellationToken) : null,
-            CostCentreResolution = await ResolveCostCentreAsync(tenantId, employee, cancellationToken),
+            CostCentreResolution = costCentreResolution,
+            // Wave A D3: the detail shows where payroll posts the cost, never the cached copy (which a legacy writer may have left stale).
+            CostCenter = costCentreResolution.Code ?? string.Empty,
         };
         // A new hire's first package waits for Finance as a pending request: no salary row exists yet, but the pay HR typed must not look
         // lost when the draft is reopened. It is shown (marked Pending, never as approved pay) to exactly the callers who see applied pay.
@@ -147,12 +150,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     private async Task<EmployeeCostCentreResolutionDto> ResolveCostCentreAsync(Guid tenantId, Employee employee, CancellationToken cancellationToken)
     {
         if (employee.CompanyId is not Guid companyId) return new(null, null, null, null, "None", null, "none");
-        var snapshot = await Zayra.Api.Infrastructure.Payroll.CostCentreResolver.LoadSnapshotAsync(_db, tenantId, companyId, cancellationToken);
-        var resolution = Zayra.Api.Infrastructure.Payroll.CostCentreResolver.Resolve(Zayra.Api.Infrastructure.Payroll.ResolverEmployee.From(employee), snapshot);
-        if (resolution.CostCenterId is not Guid id) return new(null, null, null, null, "None", resolution.Level, resolution.UnresolvedReason ?? "none");
-        var master = await _db.CostCenters.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == id)
-            .Select(c => new { c.Code, c.Name, c.NameAr }).FirstOrDefaultAsync(cancellationToken);
-        return new(id, master?.Code, master?.Name, master?.NameAr, resolution.Source ?? "None", resolution.Level, null);
+        var view = await Zayra.Api.Application.Employees.EmployeeCostCentreView.DescribeAsync(_db, tenantId, companyId,
+            Zayra.Api.Infrastructure.Payroll.ResolverEmployee.From(employee), cancellationToken);
+        return new(view.CostCentreId, view.Code, view.NameEn, view.NameAr, view.Source, view.Level,
+            view.CostCentreId is null ? view.InvalidReason ?? "none" : null);
     }
 
     public async Task<EmployeeDetailDto> CreateAsync(Guid tenantId, EmployeeCreateRequest request, RequestContext context, CancellationToken cancellationToken, bool includeSensitive = false)
@@ -201,6 +202,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Employees must always resolve to a legal entity: operational company scoping
         // treats null CompanyId as invisible to scoped users, so default it here.
         employee.CompanyId ??= await ResolveDefaultCompanyId(tenantId, cancellationToken);
+        // The cached code is the RESOLVED one, which depends on the company just settled (Wave A D3).
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, cancellationToken);
         var hireTemplate = await Zayra.Api.Application.Onboarding.HireTemplateHook.RequireAsync(_db, tenantId, employee.CompanyId, request.HireTemplateId, cancellationToken);   // P3
         // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
         // rationale as the work email below: it is resolved once the legal entity is final.
@@ -1574,6 +1577,9 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// </summary>
     private async Task ApplyCostCentreAsync(Employee employee, Guid? requested, Guid? departmentId, Guid tenantId, CancellationToken cancellationToken, RequestContext? context = null, string? reason = null, bool hire = false)
     {
+        // Wave A security L1: the same reason hygiene as the employee PUT (no hidden control or text-direction characters).
+        if (!string.IsNullOrWhiteSpace(reason) && Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.HasInvalidReasonCharacters(reason))
+            throw Zayra.Api.Application.Organization.CostCentreRuleException.ReasonInvalidCharacters();
         if (requested is not Guid costCenterId) return;
         var wasOverride = employee.CostCenterIsOverride;
         var wasCostCentre = employee.CostCenterId;
@@ -1602,7 +1608,7 @@ public class EmployeeManagementService : IEmployeeManagementService
                 {
                     before = new { @override = wasOverride, costCenterId = wasCostCentre },
                     after = new { @override = employee.CostCenterIsOverride, costCenterId = employee.CostCenterId },
-                    reason = reason!.Trim(),
+                    reason = Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.NormaliseReason(reason),
                 }), employee.CompanyId);
     }
 
@@ -1669,7 +1675,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             }
         }
         employee.Grade = request.GradeId is null ? employee.Grade : await _db.Grades.Where(x => x.TenantId == tenantId && x.Id == request.GradeId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.Grade;
-        employee.CostCenter = request.CostCenterId is null ? employee.CostCenter : await _db.CostCenters.Where(x => x.TenantId == tenantId && x.Id == request.CostCenterId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.CostCenter;
+        // Wave A D3: the cached copy is the RESOLVED code (a Remove used to leave the old override's code behind).
+        await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, cancellationToken);
         employee.JobTitle = Clean(request.JobTitle);
         employee.ManagerEmployeeId = request.ReportingManagerEmployeeId
             ?? await ResolveDepartmentManagerAsync(tenantId, department?.ManagerEmployeeId, cancellationToken)

@@ -40,6 +40,36 @@ public sealed class CostCentreRuleException(string code, int status, string mess
     public static CostCentreRuleException ReasonRequired() => new("cost_centre_reason_required", 422,
         "Enter a reason for this change.", "أدخل سببًا لهذا التغيير.");
 
+    /// <summary>Wave A D2: a department move of someone with their own cost centre, with no keep/drop decision.</summary>
+    public static CostCentreRuleException DecisionRequired() => new("cost_centre_decision_required", 422,
+        "This person has their own cost centre. Choose whether they keep it or follow the new department, and give a reason.",
+        "لهذا الموظف مركز تكلفة خاص به. اختر إن كان سيحتفظ به أم سيتبع القسم الجديد، واذكر السبب.");
+
+    /// <summary>Wave A D2: a decision that is not exactly "keep" or "drop", or one sent where there is nothing to decide.</summary>
+    public static CostCentreRuleException DecisionInvalid(string message, string messageAr) => new("cost_centre_decision_invalid", 422, message, messageAr);
+
+    public static CostCentreRuleException DecisionValueInvalid() => DecisionInvalid(
+        "The cost centre decision must be keep or drop.",
+        "يجب أن يكون قرار مركز التكلفة الاحتفاظ أو الإلغاء.");
+
+    public static CostCentreRuleException DecisionNotApplicable() => DecisionInvalid(
+        "A keep or drop decision applies only when someone with their own cost centre moves to another department. Remove the decision.",
+        "لا ينطبق قرار الاحتفاظ أو الإلغاء إلا عند نقل موظف له مركز تكلفة خاص إلى قسم آخر. احذف القرار.");
+
+    public static CostCentreRuleException DecisionWithCostCentre() => DecisionInvalid(
+        "Send either a cost centre or a keep/drop decision, not both.",
+        "أرسل مركز تكلفة أو قرارًا بالاحتفاظ أو الإلغاء، وليس الاثنين معًا.");
+
+    /// <summary>Wave A D2: the form decided on an override that has changed since it was read.</summary>
+    public static CostCentreRuleException StateChanged() => new("cost_centre_state_changed", 409,
+        "This person's cost centre was changed by someone else after you opened the form. Reload and decide again.",
+        "غيّر شخص آخر مركز تكلفة هذا الموظف بعد أن فتحت النموذج. أعد التحميل واتخذ القرار من جديد.");
+
+    /// <summary>A reason holding control or bidirectional-override characters (they can disguise the text in the audit trail and exports).</summary>
+    public static CostCentreRuleException ReasonInvalidCharacters() => new("reason_invalid_characters", 422,
+        "The reason contains hidden control or text-direction characters. Retype it as plain text.",
+        "يحتوي السبب على محارف تحكم أو محارف اتجاه نص مخفية. أعد كتابته نصًا عاديًا.");
+
     public static CostCentreRuleException Parent(string code, string message) => new(code, 422, message, ParentArabic(code));
 
     private static string ParentArabic(string code) => code switch

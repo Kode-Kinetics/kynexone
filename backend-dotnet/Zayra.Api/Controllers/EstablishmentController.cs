@@ -720,6 +720,7 @@ public class EstablishmentController : ControllerBase
             }
             catch (Zayra.Api.Application.Organization.CostCentreRuleException) { lockedIntoRun++; continue; }
             employee.DepartmentId = matches[0].Id;
+            await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, ct);
             employee.UpdatedAtUtc = DateTime.UtcNow;
             await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, this.GetUserId(), ct);
             resolved.Add(new { employeeId = employee.Id, employee.EmployeeCode, departmentId = matches[0].Id, departmentName = matches[0].NameEn });
