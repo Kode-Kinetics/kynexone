@@ -176,7 +176,7 @@ export function HireWizard() {
     return grade ? { gradeId: grade.id, gradeCode: grade.code } : undefined;
   }, [lookups, form.designationId]);
   const ctx = useMemo(
-    () => ({ today, emailDomain: company?.emailDomain || undefined, companyCountry, designationGrade, departmentCostCentreId: costCentre.departmentCostCentreId, overrideId: costCentre.canManage ? draftOverrideId : null }),
+    () => ({ today, emailDomain: company?.emailDomain || undefined, companyCountry, designationGrade, departmentCostCentreId: costCentre.departmentCostCentreId, overrideId: draftOverrideId, canManageCostCentre: costCentre.canManage }),
     [today, company, companyCountry, designationGrade, costCentre.departmentCostCentreId, costCentre.canManage, draftOverrideId],
   );
   const issues = useMemo(() => {

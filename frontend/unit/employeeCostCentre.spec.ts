@@ -591,3 +591,22 @@ test.describe('hire draft holding an override: any choice but that same override
     expect(createCostCentreFields({ canManage: true, chosenId: 'ops', departmentCostCentreId: 'ops', reason: '' })).toEqual({ costCenterId: 'ops' });
   });
 });
+
+// PR #325 review: a user without organization.costcenter.manage resumes a draft a manager gave an override. The
+// override is hydrated into the form, the dropdown and the reason field are read-only for them, and the request
+// never carries cost-centre fields — so validation must not demand a reason they cannot enter (it blocked autosave).
+test.describe('hire validation for a reader who cannot change the cost centre', () => {
+  const form = (over: Record<string, unknown> = {}) => ({ ...emptyHireForm(), englishName: 'Alex Morgan', companyId: 'co', departmentId: 'd1', ...over });
+  const reasonIssues = (issues: ReturnType<typeof validateHire>) => issues.filter((i) => i.field === 'costCenterReason');
+  test('an untouched hydrated override needs no reason, whether or not the wizard still knows its id', () => {
+    const vctx = { today: '2026-11-05', companyCountry: 'SA', departmentCostCentreId: 'ops', canManageCostCentre: false };
+    expect(reasonIssues(validateHire(form({ costCenterId: 'sales' }), { ...vctx, hadOverride: true, overrideId: 'sales' }))).toEqual([]);
+    expect(reasonIssues(validateHire(form({ costCenterId: 'sales' }), vctx))).toEqual([]);
+    expect(reasonIssues(validateHire(form(), { ...vctx, hadOverride: true }))).toEqual([]);
+  });
+  test('a manager keeps the rule', () => {
+    const vctx = { today: '2026-11-05', companyCountry: 'SA', departmentCostCentreId: 'ops', canManageCostCentre: true };
+    expect(reasonIssues(validateHire(form({ costCenterId: 'sales' }), vctx))).toHaveLength(1);
+    expect(reasonIssues(validateHire(form(), { ...vctx, hadOverride: true }))).toHaveLength(1);
+  });
+});

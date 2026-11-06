@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
-import { bootHire, expectNoHorizontalScroll } from './hire/hireMocks';
+import { bootHire, expectNoHorizontalScroll, realDraft } from './hire/hireMocks';
 
 /**
  * Browser Pilot: the hire wizard (hire_wizard_v2) against a mocked API. Runs in the main `chromium` project
@@ -607,6 +607,22 @@ test.describe('cost centre', () => {
     await page.getByRole('button', { name: 'Create employee draft' }).click();
     await expect(page.getByRole('heading', { name: 'Alex Morgan has been added as a draft.' })).toBeVisible();
     expect(api.creates[0].body).not.toHaveProperty('costCenterId');
+  });
+
+  // PR #325 review: the hydrated override is not a change this user can make or explain, so an unrelated edit still autosaves.
+  test('without organization.costcenter.manage: resuming a draft that holds an override still autosaves an unrelated edit, with no reason demanded', async ({ page }) => {
+    const detail = realDraft({ id: 44, departmentId: 'dept-1', designationId: 'desig-1', gradeId: 'grade-g5', costCenterId: 'cc-fin', costCenterIsOverride: true, updatedAtUtc: '2026-10-27T08:00:00Z' });
+    const api = await bootHire(page, { org: ccOrg, draftDetail: detail }, '/people/new?draft=44');
+    await expect(page.getByLabel('English full name')).toHaveValue('Alex Morgan');
+    await expect(costCentre(page)).toHaveCount(0);
+    await expect(page.getByTestId('hire-cost-centre-readonly')).toContainText('FIN');
+    await page.getByLabel('English full name').fill('Alex J Morgan');
+    await page.getByLabel('English full name').pressSequentially('x');
+    await expect.poll(() => api.puts.length, { timeout: 5000 }).toBe(1);
+    expect(api.puts[0].request.englishName).toBe('Alex J Morganx');
+    expect(api.puts[0].request).not.toHaveProperty('costCenterId');
+    expect(api.puts[0].request).not.toHaveProperty('costCenterReason');
+    await expect(page.getByText('Enter a reason for this change.')).toHaveCount(0);
   });
 
   test('Arabic: the Arabic cost-centre names, the code first', async ({ page }) => {

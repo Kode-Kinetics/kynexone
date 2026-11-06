@@ -31,6 +31,11 @@ export interface ValidationContext {
   hadOverride?: boolean;
   /** That override's id: picking it again is no change. */
   overrideId?: string | null;
+  /**
+   * False when the user lacks organization.costcenter.manage: the cost-centre and reason controls are read-only and the
+   * request carries no cost-centre fields, so no reason is ever due (a hydrated override would otherwise block saving).
+   */
+  canManageCostCentre?: boolean;
 }
 
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
@@ -83,9 +88,11 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
   if (blank(form.companyId)) add('companyId', 'Choose the employing company.');
   // Wave A: a cost centre other than the department's is an override, and the server needs the reason for it (audited).
   const holdsOverride = !!ctx.hadOverride || !!ctx.overrideId;
-  const costCentreReasonDue = holdsOverride
-    ? form.costCenterId !== ctx.overrideId || !ctx.overrideId
-    : !blank(form.costCenterId) && form.costCenterId !== ctx.departmentCostCentreId;
+  const costCentreReasonDue = ctx.canManageCostCentre === false
+    ? false
+    : holdsOverride
+      ? form.costCenterId !== ctx.overrideId || !ctx.overrideId
+      : !blank(form.costCenterId) && form.costCenterId !== ctx.departmentCostCentreId;
   if (costCentreReasonDue && blank(form.costCenterReason)) add('costCenterReason', 'Enter a reason for this change.');
 
   const { min, max } = startDateRange(ctx.today);
