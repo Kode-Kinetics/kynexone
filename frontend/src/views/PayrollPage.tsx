@@ -32,13 +32,12 @@ import { SecondApproverNotice } from '../components/SecondApproverNotice';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
-import { employeesApi } from '../api/employees';
 import { formatAmount } from '../lib/hire/money';
 import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
 import { SalaryAllowanceComparison } from '../components/payroll/SalaryAllowanceViews';
 import { useCashAllowanceCatalog } from '../hooks/useCashAllowanceCatalog';
 import {
-  allowanceProblems, allowanceRefusal, allowancesForRequest, linesFromWire, shownLines, totalMonthly,
+  allowanceProblems, allowanceRefusal, allowancesForRequest, currentRecordLines, shownLines, totalMonthly,
   type AllowanceDraftLine, type AllowanceValue,
 } from '../lib/salaryAllowances';
 import { parseReconError } from '../lib/payrollRecon';
@@ -952,7 +951,9 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
   const [allowances, setAllowances] = useState<AllowanceValue>(null);
   const [showAllowanceProblems, setShowAllowanceProblems] = useState(false);
   const [allowanceServerProblem, setAllowanceServerProblem] = useState<string | null>(null);
-  // The lines on the employee's salary now (what untouched means), read once an employee id is entered. null = not known.
+  // The lines on the employee's salary now (what untouched means), read once an employee id is entered from the salary list, which carries
+  // each record's lines already named (so no employee read and no catalogue access is needed). null = not known: the list masks them
+  // (viewer may not see amounts), the read failed, or the server predates the field; untouched then means "left as they are".
   const [currentLines, setCurrentLines] = useState<AllowanceDraftLine[] | null>(null);
   useEffect(() => {
     setAllowances(null); setCurrentLines(null); setAllowanceServerProblem(null);
@@ -960,7 +961,7 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
     if (!form.employeeId || !Number.isInteger(id) || id <= 0) return;
     let live = true;
     const timer = setTimeout(() => {
-      employeesApi.get(id).then(d => { if (live && d.salaryBreakdown !== undefined) setCurrentLines(linesFromWire(d.salaryBreakdown?.allowances)); }, () => undefined);
+      payrollApi.listEmployeeSalaryStructures(id).then(records => { if (live) setCurrentLines(currentRecordLines(records)); }, () => undefined);
     }, 400);
     return () => { live = false; clearTimeout(timer); };
   }, [form.employeeId]);

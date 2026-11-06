@@ -39,6 +39,7 @@ const pairs: Array<[string, string]> = [
   ['This allowance is on the salary twice. Keep one line for it.', 'هذا البدل مكرر في الراتب. أبقِ بنداً واحداً له.'],
   ['Enter a monthly amount above zero, with at most two decimal places.', 'أدخل مبلغاً شهرياً أكبر من صفر بخانتين عشريتين على الأكثر.'],
   ['Enter a percentage above 0 and up to 100, with at most two decimal places.', 'أدخل نسبة أكبر من 0 وحتى 100 بخانتين عشريتين على الأكثر.'],
+  ['Enter the basic salary before adding monthly allowances.', 'أدخل الراتب الأساسي قبل إضافة البدلات الشهرية.'],
   ['This percentage of the basic salary comes to nothing. Use a fixed amount instead.', 'هذه النسبة من الراتب الأساسي لا تساوي شيئاً. استخدم مبلغاً ثابتاً بدلاً منها.'],
 
   // Finance approval and profile

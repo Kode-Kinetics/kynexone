@@ -7,6 +7,8 @@ import { bootEmployeeWorkspaceFixture, employees } from './employee-workspace.fi
  *  - Finance approval: current beside proposed, every difference named in words, carried-forward said plainly, a stale refusal explained;
  *  - Assign Salary: an untouched section sends NO `allowances` (the server carries the lines forward), an edit sends the list, clearing sends [];
  *  - Edit employee (Salary step) and the employee profile salary panel.
+ * Names come from the server on every line (employee detail `salaryBreakdown.allowances[]`, the salary list's `allowances`, the approval view), so a
+ * reader without entitlements.read still sees names; the approval view also carries glDriverLabel, shown instead of the bare key.
  * Written without a run: the sandbox cannot launch Chromium. CI's browser lane runs it.
  *
  * Run: npx playwright test -c e2e/playwright.salary-allowances.config.ts (starts `next dev` on SALARY_ALLOWANCES_PORT, default 5198).
@@ -25,7 +27,7 @@ const component = (c: { code: string; nameEn: string; nameAr: string }) => ({
 const matrix = { asOf: '2026-11-05', today: '2026-11-05', companyId: null, currency: 'SAR', grades: [], components: [component(meal), component(car)], cells: [], offerings: [], gaps: [] };
 
 const line = (c: { code: string; nameEn: string; nameAr: string }, basis: 'Amount' | 'PercentOfBasic', amount: number, rate: number | null = null, extra: object = {}) =>
-  ({ ...c, basis, rate, amount, glDriverKey: `EARN:${c.code}`, eosbIncluded: true, eosbExclusionReason: null, ...extra });
+  ({ ...c, basis, rate, amount, glDriverKey: `EARN:${c.code}`, glDriverLabel: `${c.nameEn} expense account`, eosbIncluded: true, eosbExclusionReason: null, ...extra });
 
 const change = (id: string, over: object) => ({
   id, batchId: null, source: 'Manual', employeeId: 901, employeeCode: 'EMP-901', employeeName: 'Layla Test', basicSalary: 6000, housingAllowance: 1500, transportAllowance: 0,
@@ -42,11 +44,22 @@ const changes = [
     employeeId: 902, employeeName: 'Omar Test', allowancesCarriedForward: true,
     currentAllowances: [line(meal, 'Amount', 300)], proposedAllowances: [line(meal, 'Amount', 300)],
   }),
+  change('c-nolabel', {
+    employeeId: 903, employeeName: 'Nadia Test', allowancesCarriedForward: false,
+    currentAllowances: [], proposedAllowances: [line(meal, 'Amount', 300, null, { glDriverLabel: null })],
+  }),
 ];
 
 const HR = ['dashboard.read', 'payroll.read', 'payroll.write', 'payroll.approve', 'employees.read', 'entitlements.read'];
 
-async function bootPayroll(page: Page, locale: Locale, opts: { onApprove?: (id: string) => { status: number; body: unknown } } = {}) {
+// The salary list (GET /api/payroll/employee-salary-structures): each record carries its allowance lines, named; null when the viewer may not see amounts.
+const salaryRecord = (allowances: unknown) => ({
+  id: 'rec-901', employeeId: 901, salaryStructureId: 'ss-1', basicSalary: 5000, housingAllowance: 1000, transportAllowance: 0, foodAllowance: 0, mobileAllowance: 0,
+  otherAllowance: 0, fixedDeduction: 0, effectiveDate: '2026-10-17', currency: 'SAR', isActive: true, createdAtUtc: '2026-10-17T08:00:00Z', allowances,
+});
+const mealOnRecord = { code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبات', basis: 'Amount', rate: null, amount: 300 };
+
+async function bootPayroll(page: Page, locale: Locale, opts: { onApprove?: (id: string) => { status: number; body: unknown }; permissions?: string[]; recordAllowances?: unknown } = {}) {
   const posts: { path: string; body: any }[] = [];
   await page.addInitScript(([lang]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
@@ -56,14 +69,15 @@ async function bootPayroll(page: Page, locale: Locale, opts: { onApprove?: (id: 
   await page.route('**/api/**', route => {
     const request = route.request(); const p = new URL(request.url()).pathname;
     const json = (b: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
-    if (p === '/api/auth/me') return json({ id: 'u-hr', tenantId: 't1', tenantSlug: 'solo', email: 'hr@solo.test', fullName: 'Hana HR', roles: ['Admin'], accountType: 'Tenant', isGroupScope: true, companies: [], permissions: HR });
+    if (p === '/api/auth/me') return json({ id: 'u-hr', tenantId: 't1', tenantSlug: 'solo', email: 'hr@solo.test', fullName: 'Hana HR', roles: ['Admin'], accountType: 'Tenant', isGroupScope: true, companies: [], permissions: opts.permissions ?? HR });
     if (p === '/api/features/disabled-keys') return json([]);
     if (p === '/api/payroll/salary-changes/approver-status') return json({ hasEligibleApprover: true });
     if (p === '/api/payroll/salary-changes' && request.method() === 'GET') return json(changes);
     const decide = /^\/api\/payroll\/salary-changes\/([^/]+)\/(approve|reject)$/.exec(p);
     if (decide && request.method() === 'POST') { const r = opts.onApprove?.(decide[1]) ?? { status: 200, body: {} }; return json(r.body, r.status); }
     if (p === '/api/entitlements/matrix') return json(matrix);
-    if (p === '/api/employees/901') return json({ id: 901, fullName: 'Layla Test', salaryBreakdown: { basicSalary: 5000, currency: 'SAR', allowances: [{ code: 'ALW_MEAL', basis: 'Amount', rate: null, amount: 300 }] } });
+    // Assign Salary reads the current lines from this list, not from the employee (which needs employees.sensitive).
+    if (p === '/api/payroll/employee-salary-structures' && request.method() === 'GET') return json([salaryRecord('recordAllowances' in opts ? opts.recordAllowances : [mealOnRecord])]);
     if (p === '/api/payroll/employee-salary-structures' && request.method() === 'POST') { posts.push({ path: p, body: request.postDataJSON() }); return json({ id: 'new' }, 202); }
     if (p === '/api/payroll/overview') return json({ year: 2026, month: 11, totalCompanies: 0, totalActiveEmployees: 0, totalGrossPayroll: 0, totalNetPayroll: 0, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] });
     if (p === '/api/tenant-admin/localization') return json({ countryCode: 'SA', currencyCode: 'SAR', defaultLanguage: locale });
@@ -91,9 +105,17 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(moved.getByTestId('salary-allowance-carried')).toHaveText(say(locale, 'This change sets the monthly allowances shown below.'));
       // Where each posts and whether it counts in end of service, with the reason when it does not.
       const phone = moved.locator('tr[data-change="added"]');
-      await expect(phone).toContainText('EARN:ALW_PHONE');
+      // The account is named in words (the server's glDriverLabel), not by the bare key.
+      await expect(phone).toContainText('Phone expense account');
+      await expect(phone).not.toContainText('EARN:ALW_PHONE');
       await expect(phone).toContainText('Reimbursement, not wage');
       await expect(moved.locator('tr[data-change="unchanged"]')).toContainText(say(locale, 'Counts toward end of service pay'));
+    });
+
+    test('a line the server sent without a label falls back to the bare key', async ({ page }) => {
+      await bootPayroll(page, locale);
+      const row = page.getByTestId('salary-change-row').filter({ hasText: 'Nadia Test' });
+      await expect(row.locator('tr[data-change="added"]')).toContainText('EARN:ALW_MEAL', { timeout: 30_000 });
     });
 
     test('a change that does not mention allowances says they carry on unchanged', async ({ page }) => {
@@ -118,17 +140,42 @@ for (const locale of ['en', 'ar'] as const) {
 }
 
 test.describe('Assign Salary: the monthly allowances section', () => {
-  const open = async (page: Page) => {
-    const { posts } = await bootPayroll(page, 'en');
+  const start = async (page: Page, opts: Parameters<typeof bootPayroll>[2] = {}) => {
+    const { posts } = await bootPayroll(page, 'en', opts);
     await page.getByRole('button', { name: 'Assign Salary' }).click();
     await page.getByLabel('Employee ID', { exact: true }).fill('901');
     await page.getByLabel('Basic Salary *').fill('5000');
-    // What untouched means is read from the employee's salary record: the lines stay as they are.
-    const section = page.getByTestId('salary-allowances');
+    return { posts, section: page.getByTestId('salary-allowances') };
+  };
+  const open = async (page: Page) => {
+    const { posts, section } = await start(page);
+    // What untouched means is read from the salary list's record for the employee: the lines stay as they are.
     await expect(section.getByTestId('salary-allowances-note')).toHaveText('These stay as they are on the new salary. A percentage is worked out again on the new basic salary.');
     await expect(section.getByTestId('salary-allowance-line')).toHaveCount(1);
     return { posts, section };
   };
+
+  test('a user who cannot list Benefits by grade still sees the existing lines by name, and cannot change them', async ({ page }) => {
+    const { posts, section } = await start(page, { permissions: HR.filter(p => p !== 'entitlements.read') });
+    const lines = section.getByTestId('salary-allowance-line');
+    await expect(lines).toHaveCount(1);
+    await expect(lines.first()).toContainText('Meal');
+    await expect(lines.first()).toContainText('300.00');
+    await expect(section).toContainText('You can’t add or change monthly allowances here. The ones already on the salary stay as they are.');
+    await expect(section.getByRole('button', { name: 'Add an allowance' })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Assign Salary' }).last().click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(Object.keys(posts[0].body)).not.toContain('allowances'); // untouched: carried forward by the server
+  });
+
+  test('when the list masks the lines, the section says they stay as they are and sends none', async ({ page }) => {
+    const { posts, section } = await start(page, { recordAllowances: null });
+    await expect(section.getByTestId('salary-allowances-note')).toHaveText('The allowances already on this employee’s salary stay as they are. Add a line to set the allowances yourself instead.');
+    await expect(section.getByTestId('salary-allowance-line')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Assign Salary' }).last().click();
+    await expect.poll(() => posts.length).toBe(1);
+    expect(Object.keys(posts[0].body)).not.toContain('allowances');
+  });
 
   test('untouched sends no allowances at all, so the server carries the current lines forward', async ({ page }) => {
     const { posts } = await open(page);
@@ -174,7 +221,8 @@ test.describe('Employee profile and Edit employee', () => {
   const breakdown = {
     basicSalary: 5000, housingAllowance: 1000, transportAllowance: 0, foodAllowance: 0, mobileAllowance: 0, otherAllowance: 0, fixedDeduction: 0,
     currency: 'SAR', effectiveDate: '2026-10-17', salaryStructureCode: 'DIRECT',
-    allowances: [{ code: 'ALW_MEAL', basis: 'Amount', rate: null, amount: 300 }, { code: 'ALW_CAR', basis: 'PercentOfBasic', rate: 0.1, amount: 500 }],
+    // The server names each line (nameEn/nameAr), so the profile needs no catalogue access.
+    allowances: [{ code: 'ALW_MEAL', nameEn: meal.nameEn, nameAr: meal.nameAr, basis: 'Amount', rate: null, amount: 300 }, { code: 'ALW_CAR', nameEn: car.nameEn, nameAr: car.nameAr, basis: 'PercentOfBasic', rate: 0.1, amount: 500 }],
   };
   const permissions = ['employees.read', 'employees.write', 'employees.sensitive', 'dashboard.read', 'entitlements.read'];
   test.beforeEach(() => { (employees[901] as unknown as { salaryBreakdown?: unknown }).salaryBreakdown = breakdown; });
@@ -197,6 +245,17 @@ test.describe('Employee profile and Edit employee', () => {
       await expect(items.nth(1)).toContainText('10%');
     });
   }
+
+  test('a reader without entitlements.read still sees the lines by name, not by code', async ({ page }) => {
+    await bootEmployeeWorkspaceFixture(page, { permissions: permissions.filter(p => p !== 'entitlements.read'), disabledFeatures: [] });
+    await page.route('**/api/entitlements/matrix*', route => route.fulfill({ status: 403, json: { error: 'forbidden' } }));
+    await page.goto('/people/901?section=pay-benefits');
+    const items = page.getByTestId('employee-salary-allowances').getByTestId('employee-salary-allowance');
+    await expect(items).toHaveCount(2);
+    await expect(items.first()).toContainText(meal.nameEn);
+    await expect(items.first()).not.toContainText('ALW_MEAL');
+    await expect(items.nth(1)).toContainText(car.nameEn);
+  });
 
   test('a basic-only edit sends no allowances, so the server carries them forward', async ({ page }) => {
     const fixture = await bootEmployeeWorkspaceFixture(page, { permissions, disabledFeatures: [] });

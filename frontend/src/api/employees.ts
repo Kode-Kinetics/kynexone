@@ -3,7 +3,7 @@ import { fetchAllPages } from '../lib/paging';
 import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
 import type { EmployeeAccessState } from './employeeAccess';
-import type { SalaryAllowanceWire } from '../lib/salaryAllowances';
+import type { SalaryAllowanceView } from '../lib/salaryAllowances';
 
 export interface OrgChartNodeDto {
   id: number;
@@ -101,7 +101,7 @@ export interface EmployeeSalaryBreakdownRequest {
    * Monthly cash allowances (ALW_*). On a request: omitted = carry the current lines forward (or fill a first package from the grade),
    * [] = remove them all, a list = exactly those lines. On a read: the lines on the record in force (null/absent when none).
    */
-  allowances?: SalaryAllowanceWire[] | null;
+  allowances?: SalaryAllowanceView[] | null;
 }
 
 export interface EmployeeComplianceRecordRequest {

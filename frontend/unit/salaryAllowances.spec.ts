@@ -9,8 +9,8 @@ import { formFromEmployee } from '../src/lib/hire/draftHydrate';
 import { validateHire } from '../src/lib/hire/hireValidation';
 import { buildCreateRequest } from '../src/lib/hire/payload';
 import {
-  allowanceChoices, allowanceProblems, allowanceRefusal, allowancesForRequest, compareAllowances, decodeValue, describeLines, encodeValue,
-  gradeAllowanceLines, lineMonthly, linesFromWire, nameOf, rateFromPercent, requestLines, sameLines, totalMonthly, valueAfterEdit,
+  allowanceChoices, allowanceProblems, allowanceRefusal, allowancesForRequest, allowancesNeedBasic, compareAllowances, currentRecordLines, decodeValue, describeLines, encodeValue,
+  gradeAllowanceLines, lineMonthly, lineName, linesFromWire, nameOf, rateFromPercent, requestLines, sameLines, totalMonthly, valueAfterEdit,
   type AllowanceDraftLine, type SalaryAllowanceView,
 } from '../src/lib/salaryAllowances';
 
@@ -180,10 +180,75 @@ test('the approval comparison names every difference, and an unchanged line is u
 });
 
 test('describing lines for a review reads in the reader\'s words', () => {
-  const words = { none: 'None', name: (c: string) => c, money: (n: number) => n.toFixed(2), amount: (a: string) => `${a}/m`, percent: (r: string, a: string) => `${r}% = ${a}/m` };
+  const words = { none: 'None', name: (l: AllowanceDraftLine) => l.code, money: (n: number) => n.toFixed(2), amount: (a: string) => `${a}/m`, percent: (r: string, a: string) => `${r}% = ${a}/m` };
   expect(describeLines([], 5000, words)).toBe('None');
   expect(describeLines([meal, car], 5000, words)).toBe('ALW_MEAL: 300.00/m; ALW_CAR: 10% = 500.00/m');
   expect(describeLines([car], undefined, words)).toBe('ALW_CAR: 10% = —/m');
+});
+
+test('a line is named by the server first, then the catalogue (per language), then the code', () => {
+  const choices = [{ code: 'ALW_MEAL', nameEn: 'Meal (catalogue)', nameAr: 'وجبة (الفهرس)' }];
+  // A reader without access to the catalogue (no choices) still sees the server's name.
+  expect(lineName({ code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبة' }, [], 'en')).toBe('Meal');
+  expect(lineName({ code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبة' }, [], 'ar')).toBe('وجبة');
+  expect(lineName({ code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبة' }, choices, 'en')).toBe('Meal');
+  // The name is per language: a missing Arabic comes from the catalogue, and with neither it falls back to the English, then the code.
+  expect(lineName({ code: 'alw_meal', nameEn: 'Meal' }, choices, 'ar')).toBe('وجبة (الفهرس)');
+  expect(lineName({ code: 'ALW_MEAL', nameEn: 'Meal' }, [], 'ar')).toBe('Meal');
+  expect(lineName({ code: 'ALW_MEAL' }, choices, 'en')).toBe('Meal (catalogue)');
+  // The definition is gone: the server omits the names and the catalogue has nothing, so the code stands in.
+  expect(lineName({ code: 'ALW_GONE' }, choices, 'en')).toBe('ALW_GONE');
+  expect(lineName({ code: 'ALW_GONE', nameEn: '  ', nameAr: null }, [], 'ar')).toBe('ALW_GONE');
+});
+
+test('the names the server sends survive into the rows and the edit form, and never go back out on a request', () => {
+  const rows = linesFromWire([{ code: 'ALW_MEAL', basis: 'Amount', amount: 300, nameEn: 'Meal', nameAr: 'وجبة' }, { code: 'ALW_GONE', basis: 'Amount', amount: 50 }]);
+  expect(rows[0]).toMatchObject({ nameEn: 'Meal', nameAr: 'وجبة' });
+  expect(rows[1].nameEn).toBeUndefined();
+  expect('nameEn' in rows[1]).toBe(false);
+  expect(decodeValue(encodeValue(rows))?.[0]).toMatchObject({ code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبة' });
+  expect(requestLines(rows)).toEqual([{ code: 'ALW_MEAL', basis: 'Amount', amount: 300 }, { code: 'ALW_GONE', basis: 'Amount', amount: 50 }]);
+  // Names do not make two otherwise identical sections different.
+  expect(sameLines(rows, linesFromWire([{ code: 'ALW_MEAL', basis: 'Amount', amount: 300 }, { code: 'ALW_GONE', basis: 'Amount', amount: 50 }]))).toBe(true);
+});
+
+test('Assign Salary takes the current lines from the active record in force on the salary list', () => {
+  const rec = (over: Partial<Parameters<typeof currentRecordLines>[0][number]>) => ({ isActive: true, effectiveDate: '2026-01-01', createdAtUtc: '2026-01-01T00:00:00Z', allowances: [], ...over });
+  const named = [{ code: 'ALW_MEAL', basis: 'Amount' as const, amount: 300, nameEn: 'Meal', nameAr: 'وجبة' }];
+  // The latest effective date among the active records wins, then the latest created; an inactive record is never "now".
+  const rows = currentRecordLines([
+    rec({ effectiveDate: '2025-01-01', allowances: [{ code: 'ALW_OLD', basis: 'Amount', amount: 1 }] }),
+    rec({ effectiveDate: '2026-03-01', allowances: named }),
+    rec({ effectiveDate: '2026-09-01', isActive: false, allowances: [{ code: 'ALW_INACTIVE', basis: 'Amount', amount: 9 }] }),
+  ]);
+  expect(rows?.map(r => [r.code, r.nameEn])).toEqual([['ALW_MEAL', 'Meal']]);
+  expect(currentRecordLines([rec({ createdAtUtc: '2026-01-01T00:00:00Z', allowances: named }), rec({ createdAtUtc: '2026-01-02T00:00:00Z', allowances: [] })])).toEqual([]);
+  // A record that carries none is known to carry none; no active record at all leaves nothing to carry forward.
+  expect(currentRecordLines([rec({ allowances: [] })])).toEqual([]);
+  expect(currentRecordLines([])).toEqual([]);
+  expect(currentRecordLines([rec({ isActive: false })])).toEqual([]);
+  // Masked (viewer may not see amounts) or an older server without the field: not known, so the section leaves the lines as they are.
+  expect(currentRecordLines([rec({ allowances: null })])).toBeNull();
+  expect(currentRecordLines([rec({ allowances: undefined })])).toBeNull();
+});
+
+test('lines the person entered need a basic salary first; lines the grade will fill in do not', () => {
+  expect(allowancesNeedBasic(null, undefined)).toBe(false); // untouched: the server fills from the grade or carries forward
+  expect(allowancesNeedBasic([], undefined)).toBe(false); // an empty list removes lines, nothing to work out
+  expect(allowancesNeedBasic([meal], undefined)).toBe(true);
+  expect(allowancesNeedBasic([car], 0)).toBe(true);
+  expect(allowancesNeedBasic([meal], 5000)).toBe(false);
+});
+
+test('the hire wizard refuses entered allowance lines until the basic salary is in, on the basic salary field', () => {
+  const ctx = { today: '2026-11-05', companyCountry: 'SA' };
+  const form = { ...emptyHireForm(), englishName: 'Test Person', companyId: 'c1', allowances: encodeValue([meal]) };
+  const blocked = validateHire({ ...form, basic: '' }, ctx).filter(i => i.field === 'basic');
+  expect(blocked.map(i => i.key)).toEqual(['Enter the basic salary before adding monthly allowances.']);
+  expect(blocked[0].step).toBe(3);
+  expect(validateHire({ ...form, basic: '5000' }, ctx).filter(i => i.field === 'basic')).toEqual([]);
+  // Untouched lines (the grade's) are not entered by the person: no block.
+  expect(validateHire({ ...form, allowances: '', basic: '' }, ctx).filter(i => i.field === 'basic')).toEqual([]);
 });
 
 test('lines on a record become rows with stable keys and a percentage the way people write it', () => {

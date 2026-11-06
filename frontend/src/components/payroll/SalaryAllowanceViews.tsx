@@ -23,12 +23,13 @@ function useLineText(currency: string, basic?: number) {
 /** Where a line posts and whether it counts in end of service pay: what Finance takes on by approving it. Nothing when the server does not say. */
 function AllowanceLiability({ line }: { line: SalaryAllowanceView }) {
   const { t } = useLocale();
-  const posts = line.glDriverKey?.trim();
+  // The account's label in words; the bare key only when the server sent no label.
+  const posts = line.glDriverLabel?.trim() || line.glDriverKey?.trim();
   const eosb = line.eosbIncluded;
   if (!posts && eosb == null) return null;
   return (
     <span className="mt-0.5 block text-xs font-normal text-slate-600 dark:text-slate-300" data-testid="salary-allowance-liability">
-      {posts && <span className="block">{t('Posts to {account}', { account: isolateLtr(posts) })}</span>}
+      {posts && <span className="block">{t('Posts to {account}', { account: line.glDriverLabel?.trim() ? isolateName(posts) : isolateLtr(posts) })}</span>}
       {eosb === true && <span className="block">{t('Counts toward end of service pay')}</span>}
       {eosb === false && <span className="block">{line.eosbExclusionReason?.trim()
         ? t('Left out of end of service pay: {reason}', { reason: isolateName(line.eosbExclusionReason.trim()) })
@@ -87,12 +88,14 @@ export function SalaryAllowanceComparison({ current, proposed, carriedForward, c
           <tbody>
             {rows.map(r => {
               const named = r.proposed ?? r.current!;
+              // The server names each line it sends; either side's name will do (a line only on one side is named by that side).
+              const shownName = nameOf({ code: r.code, nameEn: r.proposed?.nameEn?.trim() || r.current?.nameEn?.trim(), nameAr: r.proposed?.nameAr?.trim() || r.current?.nameAr?.trim() }, locale);
               const diff = r.change !== 'unchanged';
               return (
                 <tr key={r.code} data-change={r.change} data-testid="salary-allowance-row"
                   className={`border-t border-slate-100 align-top dark:border-white/[0.06] ${diff ? 'border-s-4 border-s-sapphire font-semibold text-slate-900 dark:text-white' : 'text-slate-600 dark:text-slate-300'}`}>
                   <th scope="row" className="py-1 pe-3 text-start font-medium">
-                    {nameOf(named, locale)} <span className="font-normal text-slate-500" dir="ltr"><bdi>{r.code}</bdi></span>
+                    {shownName} <span className="font-normal text-slate-500" dir="ltr"><bdi>{r.code}</bdi></span>
                     <AllowanceLiability line={named} />
                   </th>
                   <td className="py-1 pe-3">{r.current ? <bdi>{text(r.current)}</bdi> : <><span aria-hidden="true">—</span><span className="sr-only">{t('None')}</span></>}</td>
@@ -111,7 +114,7 @@ export function SalaryAllowanceComparison({ current, proposed, carriedForward, c
 /** The allowance lines on the salary record in force, by name in the reader's language, with the basis and the monthly amount. */
 export function SalaryAllowanceList({ lines, names, currency, basic, pending = false }: {
   lines: readonly SalaryAllowanceView[];
-  /** Names by code from Benefits by grade, when this reader may read them; otherwise the code stands in. */
+  /** Names by code from Benefits by grade, when this reader may read them: used only for a line the server sent no name for. The code stands in last. */
   names: ReadonlyMap<string, { nameEn: string; nameAr: string }>;
   currency: string;
   basic?: number;
@@ -131,7 +134,7 @@ export function SalaryAllowanceList({ lines, names, currency, basic, pending = f
           const known = names.get(code);
           return (
             <div key={code} className="rounded-xl border border-slate-200 p-4 dark:border-white/10" data-testid="employee-salary-allowance">
-              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{nameOf({ code, nameEn: line.nameEn ?? known?.nameEn, nameAr: line.nameAr ?? known?.nameAr }, locale)}</dt>
+              <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{nameOf({ code, nameEn: line.nameEn?.trim() || known?.nameEn, nameAr: line.nameAr?.trim() || known?.nameAr }, locale)}</dt>
               <dd className="mt-1 font-semibold text-slate-900 dark:text-white"><bdi>{text(line)}</bdi></dd>
             </div>
           );

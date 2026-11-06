@@ -1,4 +1,5 @@
 import type { EntitlementMatrix, MatrixComponent } from '../api/entitlements';
+import type { EmployeeSalaryStructure } from '../api/payroll';
 import { isCashAllowance } from './cashAllowance';
 import { percentFromRate } from './entitlementMatrix';
 import { roundMoney } from './gradeSalaryDefaults';
@@ -26,12 +27,16 @@ export interface SalaryAllowanceWire { code: string; basis: AllowanceBasis; rate
 /** A line as the API returns it on a salary change (names resolved by the server, removed definitions included). */
 export interface SalaryAllowanceView extends SalaryAllowanceWire {
   nameEn?: string | null; nameAr?: string | null;
-  /** Where the allowance posts in the payroll journal (the GL driver key), and whether it counts in end of service pay. Optional: older servers omit them. */
-  glDriverKey?: string | null; eosbIncluded?: boolean | null; eosbExclusionReason?: string | null;
+  /** Where the allowance posts in the payroll journal (the GL driver key and its label), and whether it counts in end of service pay. Optional: older servers omit them. */
+  glDriverKey?: string | null; glDriverLabel?: string | null; eosbIncluded?: boolean | null; eosbExclusionReason?: string | null;
 }
 
-/** One row of the section while it is edited. `value` is the amount, or the percentage (10 = 10%), as typed. */
-export interface AllowanceDraftLine { key: string; code: string; basis: AllowanceBasis; value: string }
+/**
+ * One row of the section while it is edited. `value` is the amount, or the percentage (10 = 10%), as typed.
+ * `nameEn` / `nameAr` are the names the server sent with the line (for reading only, never sent back): they let a reader who may not
+ * read the benefits catalogue still see a name. They are dropped when the line is switched to another allowance.
+ */
+export interface AllowanceDraftLine { key: string; code: string; basis: AllowanceBasis; value: string; nameEn?: string; nameAr?: string }
 
 /** The edited section: null = untouched (send nothing), otherwise exactly the lines shown. */
 export type AllowanceValue = AllowanceDraftLine[] | null;
@@ -56,15 +61,40 @@ const decimals = (n: number) => { const s = String(n); const i = s.indexOf('.');
 export const rateFromPercent = (percent: number) => Math.round(percent * 100) / 10000;
 
 /** The lines on a salary record, as editable rows. Keys follow the code, so the same record always gives the same keys. */
-export function linesFromWire(lines: readonly SalaryAllowanceWire[] | null | undefined): AllowanceDraftLine[] {
+export function linesFromWire(lines: readonly SalaryAllowanceView[] | null | undefined): AllowanceDraftLine[] {
   return (lines ?? []).map((l, i) => {
     const code = (l.code ?? '').toUpperCase();
     const key = `record-line-${code || i}`;
+    const names = { ...(l.nameEn?.trim() ? { nameEn: l.nameEn.trim() } : {}), ...(l.nameAr?.trim() ? { nameAr: l.nameAr.trim() } : {}) };
     return l.basis === 'PercentOfBasic'
-      ? { key, code, basis: 'PercentOfBasic' as const, value: percentFromRate(l.rate) }
-      : { key, code, basis: 'Amount' as const, value: l.amount == null ? '' : String(l.amount) };
+      ? { key, code, basis: 'PercentOfBasic' as const, value: percentFromRate(l.rate), ...names }
+      : { key, code, basis: 'Amount' as const, value: l.amount == null ? '' : String(l.amount), ...names };
   });
 }
+
+/**
+ * The lines on the salary record in force for an employee, from GET /api/payroll/employee-salary-structures (whatever order the list
+ * comes in): the active record with the latest effective date, then the latest created, as the server reads "the record in force".
+ *  - `[]`   the employee has no active salary record (nothing to carry forward);
+ *  - `null` the lines are not known: the list masks them (`allowances: null`), or the server predates the field.
+ * A caller treats `null` as "left as they are".
+ */
+export function currentRecordLines(records: readonly Pick<EmployeeSalaryStructure, 'isActive' | 'effectiveDate' | 'createdAtUtc' | 'allowances'>[]): AllowanceDraftLine[] | null {
+  const latest = records.filter(r => r.isActive)
+    .sort((a, b) => (b.effectiveDate ?? '').localeCompare(a.effectiveDate ?? '') || (b.createdAtUtc ?? '').localeCompare(a.createdAtUtc ?? ''))[0];
+  if (!latest) return [];
+  return Array.isArray(latest.allowances) ? linesFromWire(latest.allowances) : null;
+}
+
+/**
+ * Whether lines the person has entered cannot be saved yet because there is no basic salary to work them against. Lines the server
+ * would fill in from the grade are not "entered": only an edited section (`value` is a list with a line in it) counts.
+ */
+export function allowancesNeedBasic(value: AllowanceValue, basic: number | undefined): boolean {
+  return value !== null && value.length > 0 && !(basic !== undefined && basic > 0);
+}
+
+export const BASIC_FIRST_KEY = 'Enter the basic salary before adding monthly allowances.';
 
 /** The monthly amount of a line: a fixed amount as typed, a percentage of `basic` to the halala (half away from zero, as the server does). */
 export function lineMonthly(line: Pick<AllowanceDraftLine, 'basis' | 'value'>, basic: number | undefined): number | undefined {
@@ -147,7 +177,8 @@ export function decodeValue(raw: string | undefined): AllowanceValue {
     if (!Array.isArray(parsed)) return null;
     return parsed.map(p => {
       const o = p as Partial<AllowanceDraftLine>;
-      return { key: o.key || newLineKey(), code: String(o.code ?? ''), basis: o.basis === 'PercentOfBasic' ? 'PercentOfBasic' as const : 'Amount' as const, value: String(o.value ?? '') };
+      const names = { ...(typeof o.nameEn === 'string' && o.nameEn ? { nameEn: o.nameEn } : {}), ...(typeof o.nameAr === 'string' && o.nameAr ? { nameAr: o.nameAr } : {}) };
+      return { key: o.key || newLineKey(), code: String(o.code ?? ''), basis: o.basis === 'PercentOfBasic' ? 'PercentOfBasic' as const : 'Amount' as const, value: String(o.value ?? ''), ...names };
     });
   } catch { return null; }
 }
@@ -167,6 +198,15 @@ export function allowanceChoices(components: readonly Pick<MatrixComponent, 'cod
 export function nameOf(x: { code: string; nameEn?: string | null; nameAr?: string | null }, locale: string): string {
   const ar = x.nameAr?.trim(), en = x.nameEn?.trim();
   return (locale.startsWith('ar') ? ar || en : en || ar) || x.code;
+}
+
+/**
+ * The name to show for a line: the names the server sent with it, then the benefits catalogue (per language), then the code.
+ * A reader without access to the catalogue (`choices` empty) still sees the server's names.
+ */
+export function lineName(line: { code: string; nameEn?: string | null; nameAr?: string | null }, choices: readonly AllowanceChoice[], locale: string): string {
+  const hit = choices.find(c => c.code === line.code.toUpperCase());
+  return nameOf({ code: line.code, nameEn: line.nameEn?.trim() || hit?.nameEn, nameAr: line.nameAr?.trim() || hit?.nameAr }, locale);
 }
 
 /**
@@ -235,12 +275,12 @@ export function allowanceRefusal(err: unknown): { code: string; message: string 
 /** The lines in one sentence for a review: "Meal: 300.00 a month; Car: 10% of basic = 500.00 a month", or `none` for no lines. */
 export function describeLines(
   lines: readonly AllowanceDraftLine[], basic: number | undefined,
-  words: { none: string; name: (code: string) => string; money: (n: number) => string; amount: (amount: string) => string; percent: (rate: string, amount: string) => string },
+  words: { none: string; name: (line: AllowanceDraftLine) => string; money: (n: number) => string; amount: (amount: string) => string; percent: (rate: string, amount: string) => string },
 ): string {
   if (lines.length === 0) return words.none;
   return lines.map(l => {
     const monthly = lineMonthly(l, basic);
     const amount = monthly === undefined ? '\u2014' : words.money(monthly);
-    return `${words.name(l.code.toUpperCase())}: ${l.basis === 'PercentOfBasic' ? words.percent(l.value, amount) : words.amount(amount)}`;
+    return `${words.name(l)}: ${l.basis === 'PercentOfBasic' ? words.percent(l.value, amount) : words.amount(amount)}`;
   }).join('; ');
 }

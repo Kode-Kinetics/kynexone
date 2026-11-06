@@ -5,7 +5,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import type { CashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
 import { formatAmount } from '../../lib/hire/money';
 import {
-  allowanceProblems, blankLine, lineMonthly, nameOf, shownLines, totalMonthly, valueAfterEdit,
+  allowanceProblems, blankLine, lineMonthly, lineName, nameOf, shownLines, totalMonthly, valueAfterEdit,
   type AllowanceBasis, type AllowanceDraftLine, type AllowanceValue,
 } from '../../lib/salaryAllowances';
 
@@ -49,7 +49,13 @@ export function SalaryAllowancesEditor({
   const editable = ready && !disabled;
   const money = (n: number) => formatAmount(n, currency, locale);
   const set = (next: AllowanceDraftLine[]) => onChange(valueAfterEdit(baseline, next));
-  const patch = (key: string, p: Partial<AllowanceDraftLine>) => set(lines.map(l => (l.key === key ? { ...l, ...p } : l)));
+  // Switching a line to another allowance drops the names it came with: they belonged to the old one.
+  const patch = (key: string, p: Partial<AllowanceDraftLine>) => set(lines.map(l => {
+    if (l.key !== key) return l;
+    const next = { ...l, ...p };
+    if (p.code !== undefined && p.code.toUpperCase() !== l.code.toUpperCase()) { delete next.nameEn; delete next.nameAr; }
+    return next;
+  }));
 
   // Nothing to show and nothing that can be added: the tenant has no Benefits by grade, or this person may not read it.
   if (catalog.status === 'unavailable' && lines.length === 0) return null;
@@ -71,10 +77,8 @@ export function SalaryAllowancesEditor({
           : t('This grade gives no monthly allowances. Add one if this employee should get it.');
 
   const usedElsewhere = (key: string) => new Set(lines.filter(l => l.key !== key).map(l => l.code.toUpperCase()));
-  const nameFor = (code: string) => {
-    const hit = choices.find(c => c.code === code.toUpperCase());
-    return hit ? nameOf(hit, locale) : code;
-  };
+  // The server's name for the line, then the catalogue's, then the code: a reader who cannot list the catalogue still sees names.
+  const nameFor = (line: AllowanceDraftLine) => lineName(line, choices, locale);
 
   return (
     <fieldset className="rounded-xl border border-slate-200 p-3 dark:border-white/10 sm:col-span-2" data-testid="salary-allowances" aria-describedby={`${idPrefix}-note`}>
@@ -103,7 +107,7 @@ export function SalaryAllowancesEditor({
             if (!editable) {
               return (
                 <li key={line.key} className="flex flex-wrap items-baseline justify-between gap-2 text-sm" data-testid="salary-allowance-line">
-                  <span className="font-medium text-slate-800 dark:text-slate-100">{nameFor(line.code)} <span className="text-xs font-normal text-slate-500" dir="ltr"><bdi>{line.code}</bdi></span></span>
+                  <span className="font-medium text-slate-800 dark:text-slate-100">{nameFor(line)}{nameFor(line) !== line.code && <> <span className="text-xs font-normal text-slate-500" dir="ltr"><bdi>{line.code}</bdi></span></>}</span>
                   <span className="text-slate-700 dark:text-slate-200">
                     {line.basis === 'PercentOfBasic'
                       ? t('{rate}% of basic = {amount} a month', { rate: line.value, amount: monthly === undefined ? '—' : money(monthly) })
@@ -117,7 +121,7 @@ export function SalaryAllowancesEditor({
                 <select className="select w-full" aria-label={t('Allowance, line {n}', { n })} aria-invalid={!!problem} aria-describedby={problem ? errorId : undefined}
                   value={line.code.toUpperCase()} onChange={e => patch(line.key, { code: e.target.value })}>
                   <option value="">{t('Choose an allowance')}</option>
-                  {!knownCode && line.code && <option value={line.code.toUpperCase()}>{line.code}</option>}
+                  {!knownCode && line.code && <option value={line.code.toUpperCase()}>{nameFor(line)}</option>}
                   {choices.map(c => <option key={c.code} value={c.code} disabled={taken.has(c.code)}>{nameOf(c, locale)}</option>)}
                 </select>
                 <select className="select w-full" aria-label={t('Fixed amount or percentage of basic, line {n}', { n })} value={line.basis}

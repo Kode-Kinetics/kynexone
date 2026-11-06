@@ -98,6 +98,8 @@ export interface EmployeeSalaryStructure {
   currency: string;
   isActive: boolean;
   createdAtUtc: string;
+  /** The record's monthly cash allowance lines, named by the server: [] when it carries none, null when the viewer may not see amounts, absent from an older API. */
+  allowances?: SalaryAllowanceView[] | null;
 }
 
 export interface PayrollRun {

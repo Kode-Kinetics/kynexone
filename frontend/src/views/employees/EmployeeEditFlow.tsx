@@ -31,7 +31,7 @@ import { SalaryAllowancesEditor } from '../../components/payroll/SalaryAllowance
 import { useCashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
 import { ALLOWANCES_KEY } from '../../lib/employeeEditDraft';
 import { formatAmount } from '../../lib/hire/money';
-import { describeLines, encodeValue, nameOf, parseDecimal, type AllowanceDraftLine } from '../../lib/salaryAllowances';
+import { describeLines, encodeValue, lineName, parseDecimal, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -97,7 +97,7 @@ export function EmployeeEditFlow({
     const choices = allowanceCatalog.status === 'ready' ? allowanceCatalog.choices : [];
     const words = {
       none: t('None'),
-      name: (code: string) => nameOf(choices.find(c => c.code === code) ?? { code }, locale),
+      name: (line: AllowanceDraftLine) => lineName(line, choices, locale),
       money: (n: number) => formatAmount(n, salaryCurrency, locale),
       amount: (amount: string) => t('{amount} a month', { amount }),
       percent: (rate: string, amount: string) => t('{rate}% of basic = {amount} a month', { rate, amount }),

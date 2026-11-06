@@ -6,7 +6,7 @@ import { workEmailLocalProblem, workEmailProblemKey } from '../employeeAccess';
 import { isFixedTerm, parseAmount } from './payload';
 import { parseMobile } from './phone';
 import { normalizeDigits, validateIdNumber, type IdKind } from './saudiId';
-import { allowanceProblems, decodeValue } from '../salaryAllowances';
+import { allowanceProblems, allowancesNeedBasic, BASIC_FIRST_KEY, decodeValue } from '../salaryAllowances';
 
 export type HireScope = 'draft' | 'create';
 
@@ -135,7 +135,10 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
   }
 
   const allowanceRows = decodeValue(form.allowances);
-  if (allowanceRows && Object.keys(allowanceProblems(allowanceRows, parseAmount(form.basic))).length > 0) add('allowances', 'Fix the allowance lines that show a message before saving.');
+  // Lines the person entered are worked against the basic salary (a percentage is a share of it), so the basic comes first. The message sits on the
+  // basic salary field, where the fix is. Lines the server will fill in from the grade are not entered here and do not trigger it.
+  if (allowancesNeedBasic(allowanceRows, parseAmount(form.basic))) add('basic', BASIC_FIRST_KEY);
+  else if (allowanceRows && Object.keys(allowanceProblems(allowanceRows, parseAmount(form.basic))).length > 0) add('allowances', 'Fix the allowance lines that show a message before saving.');
 
   if (!blank(form.contractEndDate)) {
     // CD17: an end date needs a fixed-term contract, and must be after the start.

@@ -22,9 +22,11 @@ export function EmployeePayBenefitsSection({ employee, panel, canWrite, returnTo
   const releaseA = useReleaseA();
   const canSeeSensitive = hasPermission('employees.sensitive');
   const canReadBenefits = hasPermission('employees.write');
-  // The monthly cash allowances on the salary in force. Their names come from Benefits by grade when this reader may read it; the code stands in otherwise.
+  // The monthly cash allowances on the salary in force. The server names each line, so no catalogue access is needed; Benefits by grade is read
+  // (when this reader may) only for a line that came without a name, and the code stands in last.
   const allowanceLines: SalaryAllowanceView[] = employee.salaryBreakdown?.allowances ?? [];
-  const { catalog } = useCashAllowanceCatalog({ enabled: canSeeSensitive && allowanceLines.length > 0 });
+  const unnamed = allowanceLines.some(l => !l.nameEn?.trim() && !l.nameAr?.trim());
+  const { catalog } = useCashAllowanceCatalog({ enabled: canSeeSensitive && unnamed });
   const allowanceNames = useMemo(() => new Map(catalog.status === 'ready'
     ? catalog.matrix.components.map(c => [c.code.toUpperCase(), { nameEn: c.nameEn, nameAr: c.nameAr }] as const) : []), [catalog]);
   const knownPanels = new Set(['payroll', 'benefits', 'package', 'deductions']);

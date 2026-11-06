@@ -13,7 +13,7 @@ import { SERVER_CODE_KEYS } from '@/src/lib/hire/problem';
 import { referenceOptions } from '@/src/lib/referenceLists';
 import type { ReferenceValue } from '@/src/lib/referenceLists';
 import { gradeLinesFrom } from '@/src/hooks/useCashAllowanceCatalog';
-import { decodeValue, describeLines, nameOf } from '@/src/lib/salaryAllowances';
+import { decodeValue, describeLines, lineName } from '@/src/lib/salaryAllowances';
 import type { StepProps } from '../types';
 import { CONTRACT_FALLBACK, EMPLOYMENT_FALLBACK } from './JobPayDocsStep';
 import { GENDER_FALLBACK, MARITAL_FALLBACK } from './PersonContactStep';
@@ -87,7 +87,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
   const allowanceChoices = allowanceCatalog.catalog.status === 'ready' ? allowanceCatalog.catalog.choices : [];
   const allowanceSummary = allowanceRows === null && allowanceLines.length === 0 ? '' : describeLines(allowanceLines, basic, {
     none: t('None'),
-    name: code => nameOf(allowanceChoices.find(c => c.code === code) ?? { code }, locale),
+    name: line => lineName(line, allowanceChoices, locale),
     money: n => formatAmount(n, currency, locale),
     amount: amount => t('{amount} a month', { amount }),
     percent: (rate, amount) => t('{rate}% of basic = {amount} a month', { rate, amount }),

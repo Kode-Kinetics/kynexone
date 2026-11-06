@@ -21,7 +21,7 @@ import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeduct
 import { useReleaseA } from '../lib/releaseA';
 import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
 import { gradeLinesFrom, useCashAllowanceCatalog } from '../hooks/useCashAllowanceCatalog';
-import { allowanceProblems, allowancesForRequest, shownLines, totalMonthly, type AllowanceValue } from '../lib/salaryAllowances';
+import { allowanceProblems, allowancesForRequest, allowancesNeedBasic, BASIC_FIRST_KEY, shownLines, totalMonthly, type AllowanceValue } from '../lib/salaryAllowances';
 import { SALARY_AMOUNT_FIELDS, applyGradeSalaryDefaults, grossPackage, mergeGradeSalary, monthlySalaryField, type SalaryAmountField, type SalaryAmounts } from '../lib/gradeSalaryDefaults';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { DevelopmentPlanPanel } from '../components/succession/DevelopmentPlanPanel';
@@ -1337,6 +1337,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     if (step === 3 && selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
       message = `Salary package must be within ${selectedGrade.currency} ${wizardFormat.number(selectedGrade.minSalary)} - ${wizardFormat.number(selectedGrade.maxSalary)} for ${selectedGrade.code}.`;
     }
+    if (step === 3 && !message && allowancesNeedBasic(allowanceValue, effectiveSalary.basicSalary)) {
+      message = t(BASIC_FIRST_KEY);
+    }
     if (step === 3 && !message && Object.keys(allowanceProblems(shownAllowances, effectiveSalary.basicSalary)).length > 0) {
       setShowAllowanceProblems(true);
       message = t('Fix the allowance lines that show a message before saving.');
@@ -1491,6 +1494,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     }
     if (selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
       setFormError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
+      return;
+    }
+    if (allowancesNeedBasic(allowanceValue, effectiveSalary.basicSalary)) {
+      setFormStep(3);
+      setFormError(t(BASIC_FIRST_KEY));
       return;
     }
     if (Object.keys(allowanceProblems(shownAllowances, effectiveSalary.basicSalary)).length > 0) {
