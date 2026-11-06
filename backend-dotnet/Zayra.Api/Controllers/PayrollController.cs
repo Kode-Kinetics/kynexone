@@ -2040,6 +2040,15 @@ public partial class PayrollController : ControllerBase
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
         var isFinance = User.IsInRole("Finance Controller") || User.IsInRole("Finance Approver");
 
+        // The moment the month becomes "committed" (every status but Draft/Processed/Voided counts for PayComponentPolicy.LatestCommittedPeriodAsync) is the
+        // status write below, at either level. A Finance correction of a cash allowance's definition reads that committed period under the "entitlements.matrix"
+        // lock and writes under it, so the approval takes the SAME lock (same scope, tenant, aggregate = tenant) here, immediately before it decides: the two can
+        // no longer interleave, and whichever commits second sees the other. Held to the end of this transaction (pg_advisory_xact_lock), nothing remote runs
+        // under it, and Process does not take it. LOCK ORDER in Approve: run row FOR UPDATE -> company cost-accounting lock (above) -> entitlements.matrix (here). The
+        // matrix paths take entitlements.matrix first and never the run row or the cost-accounting lock (they read runs without a row lock), so no cycle exists.
+        if (isAdmin || isFinance || (isHROrPayroll && run.Status == "Processed"))
+            await Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, Infrastructure.Entitlements.EntitlementMatrixService.LockScope, tenantId, tenantId, cancellationToken);
+
         // Admin and Finance finalise directly to Approved
         if (isAdmin || isFinance)
         {

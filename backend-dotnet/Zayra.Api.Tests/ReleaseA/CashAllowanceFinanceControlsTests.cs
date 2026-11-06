@@ -1172,6 +1172,69 @@ public class CashAllowanceFinanceControlsTests
         (await TryProposeAsync(w, Package(w, w.A, 9_000m, "2026-07-01", null, consent: reference))).Should().BeOfType<AcceptedResult>();
     }
 
+    // ══ M1 (closed): run approval and a correction take the same matrix lock ═══════════════════════
+
+    private static List<(string Scope, Guid TenantId, Guid AggregateId)> Record()
+    {
+        var log = new List<(string Scope, Guid TenantId, Guid AggregateId)>();
+        Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = log;
+        return log;
+    }
+
+    [Theory]
+    [InlineData("Admin", "Approved")]
+    [InlineData("HR Manager", "PendingFinanceReview")]
+    public async Task ApprovingARun_TakesTheMatrixLock_OnTheKeyACorrectionHolds_AtBothLevels(string role, string expectedStatus)
+    {
+        await using var w = await NewWorld();
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 6);
+        await w.Db.SaveChangesAsync();
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+        await ReconTestSupport.SignOffAsync(w.Db, run.Id);   // approval needs a recorded reconciliation review
+        w.Db.ChangeTracker.Clear();
+        var approver = PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid);
+        var user = approver.ControllerContext.HttpContext.User;
+        approver.ControllerContext.HttpContext.User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            user.Claims.Where(c => c.Type != System.Security.Claims.ClaimTypes.Role).Append(new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, role)), "test"));
+        var log = Record();
+        try
+        {
+            var result = await approver.Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None);
+
+            result.Should().BeOfType<OkObjectResult>(Describe(result));
+        }
+        finally { Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = null; }
+
+        (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).Status.Should().Be(expectedStatus);
+        log.Should().Contain((EntitlementMatrixService.LockScope, w.Tid, w.Tid), "approval takes the lock a correction holds: same scope, tenant, and aggregate = tenant");
+    }
+
+    [Fact]
+    public async Task ACorrection_TakesTheMatrixLock_OnTheTenantKey()
+    {
+        await using var h = await Mx.Create();
+        await h.Add(h.FinanceA, finance: true, "Car");
+        var log = Record();
+        try { Status(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Posts elsewhere", "EARN:CAR2"))).Should().Be(200); }
+        finally { Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = null; }
+
+        log.Should().Contain((EntitlementMatrixService.LockScope, h.Tid, h.Tid));
+    }
+
+    [Fact]
+    public async Task Process_NeverTakesTheMatrixLock_OnlyTheApproveTransitionDoes()
+    {
+        await using var w = await NewWorld();
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 6);
+        await w.Db.SaveChangesAsync();
+        var log = Record();
+        try { (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>(); }
+        finally { Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.Recorder.Value = null; }
+
+        log.Should().NotContain(l => l.Scope == EntitlementMatrixService.LockScope, "the long-running Process must not hold the lock every matrix write waits on");
+    }
+
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
 
     [Fact]
