@@ -18,6 +18,10 @@ type Locale = 'en' | 'ar';
 const say = (locale: Locale, key: string, values: Record<string, string | number> = {}) =>
   Object.entries(values).reduce((text, [k, v]) => text.replaceAll(`{${k}}`, String(v)), (LOCALE_DICTS[locale] as Record<string, string>)[key] ?? key);
 
+// The app isolates interpolated names (FSI...PDI, src/lib/bidi.ts) so they keep their own direction inside a sentence;
+// the sentence around the name is what is asserted.
+const isolated = (name: string) => `⁨${name}⁩`;
+
 const meal = { code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبات' };
 const car = { code: 'ALW_CAR', nameEn: 'Car', nameAr: 'سيارة' };
 const component = (c: { code: string; nameEn: string; nameAr: string }) => ({
@@ -46,8 +50,9 @@ const changes = [
   }),
   // A reduction proposed with the employee's written agreement reference, and a change that only raises pay.
   change('c-reduction', {
-    employeeId: 904, employeeName: 'Reem Test', allowancesCarriedForward: true, previousBasicSalary: 5000, basicSalary: 5000, housingAllowance: 1000,
-    currentAllowances: [], proposedAllowances: [], isReduction: true, reducedItems: [{ item: 'HOUSING', from: 1500, to: 1000 }, { item: 'ALW_MEAL', from: 300, to: 0 }],
+    // The meal line is taken away, so it is on the record in force (that is where its name is read from).
+    employeeId: 904, employeeName: 'Reem Test', allowancesCarriedForward: false, previousBasicSalary: 5000, basicSalary: 5000, housingAllowance: 1000,
+    currentAllowances: [line(meal, 'Amount', 300)], proposedAllowances: [], isReduction: true, reducedItems: [{ item: 'HOUSING', from: 1500, to: 1000 }, { item: 'ALW_MEAL', from: 300, to: 0 }],
     reductionConsentReference: 'QIWA-77', currentMonthlyPay: 6800, proposedMonthlyPay: 6000, changesContractWage: true,
   }),
   change('c-raise', {
@@ -210,7 +215,7 @@ test.describe('Assign Salary: the monthly allowances section', () => {
     await section.getByRole('button', { name: 'Add an allowance' }).click();
     await section.getByLabel('Allowance, line 2').selectOption('ALW_CAR');
     await section.getByLabel('Fixed amount or percentage of basic, line 2').selectOption('PercentOfBasic');
-    await section.getByLabel('Percentage of basic, line 2').fill('10');
+    await section.getByLabel('Percentage of basic, line 2', { exact: true }).fill('10');
     await expect(section.getByTestId('salary-allowance-computed')).toContainText('500.00');
     await expect(section.getByTestId('salary-allowances-total')).toContainText('800.00'); // 300 + 500
     await expect(page.getByTestId('gross-includes-allowances')).toContainText('800.00');
@@ -268,7 +273,7 @@ test.describe('Assign Salary: lowering the pay needs the employee’s written ag
     await page.getByLabel('Housing Allowance').fill('800');
     await expect(notice).toBeVisible();
     await expect(notice.getByRole('heading')).toHaveText('This lowers the employee’s pay');
-    await expect(notice.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
+    await expect(notice.getByTestId('reduced-items')).toContainText(`${isolated('Housing allowance')} goes from`);
     await expect(notice.getByTestId('reduction-total')).toContainText('The monthly pay goes from');
     // Saving without the reference is refused here, at the field, and nothing is sent.
     await submit(page);
@@ -307,7 +312,7 @@ test.describe('Assign Salary: lowering the pay needs the employee’s written ag
     await submit(page);
     const notice = page.getByTestId('salary-reduction-notice');
     await expect(notice).toBeVisible();
-    await expect(notice.getByTestId('reduced-items')).toContainText('Meal is removed. It was');
+    await expect(notice.getByTestId('reduced-items')).toContainText(`${isolated('Meal')} is removed. It was`);
     await expect(page.getByLabel('Employee’s written agreement reference')).toBeFocused();
     await expect(page.getByText(message)).toBeVisible();
     await page.getByLabel('Employee’s written agreement reference').fill('QIWA-9');
@@ -324,8 +329,8 @@ test.describe('Finance approval of a pay reduction', () => {
     const summary = reduction.getByTestId('salary-reduction-summary');
     await expect(summary).toBeVisible({ timeout: 30_000 });
     await expect(summary).toContainText('This lowers the employee’s pay');
-    await expect(summary.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
-    await expect(summary.getByTestId('reduced-items')).toContainText('Meal is removed. It was');
+    await expect(summary.getByTestId('reduced-items')).toContainText(`${isolated('Housing allowance')} goes from`);
+    await expect(summary.getByTestId('reduced-items')).toContainText(`${isolated('Meal')} is removed. It was`);
     await expect(summary.getByTestId('reduction-reference')).toContainText('QIWA-77');
     await expect(reduction.getByTestId('salary-change-monthly-pay')).toContainText('6,800.00');
     await expect(reduction.getByTestId('salary-change-monthly-pay')).toContainText('6,000.00');
@@ -464,7 +469,7 @@ test.describe('Employee profile and Edit employee', () => {
     await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);
     await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('700');
     await expect(flow.getByTestId('salary-reduction-notice')).toBeVisible();
-    await expect(flow.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
+    await expect(flow.getByTestId('reduced-items')).toContainText(`${isolated('Housing allowance')} goes from`);
     await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('1000');
     await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);
   });
