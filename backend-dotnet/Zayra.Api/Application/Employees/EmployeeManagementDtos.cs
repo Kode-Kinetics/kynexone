@@ -89,7 +89,9 @@ public record EmployeeSalaryBreakdownRequest(
     decimal? FixedDeduction,
     string? SalaryStructureCode,
     DateOnly? EffectiveDate,
-    string? Currency);
+    string? Currency,
+    // Monthly cash allowances (ALW_*): null = not mentioned (carried forward from the current salary record, or filled from the grade for a first package).
+    IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? Allowances = null);
 
 public record EmployeeComplianceRecordRequest(
     [Required, MaxLength(10)] string CountryCode,

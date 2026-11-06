@@ -21,7 +21,7 @@ public static class EmployeeSalaryBreakdownChanges
     public static EmployeeSalaryBreakdownRequest Read(JsonElement value)
     {
         if (value.ValueKind != JsonValueKind.Object) throw new InvalidOperationException("Salary breakdown must be a complete object.");
-        var allowed = AmountKeys.Concat(["salaryStructureCode", "effectiveDate", "currency"]).ToHashSet(StringComparer.Ordinal);
+        var allowed = AmountKeys.Concat(["salaryStructureCode", "effectiveDate", "currency", "allowances"]).ToHashSet(StringComparer.Ordinal);
         if (value.EnumerateObject().Any(p => !allowed.Contains(p.Name))) throw new InvalidOperationException("Salary breakdown contains an unrecognised field.");
         foreach (var key in AmountKeys)
             if (!value.TryGetProperty(key, out var amount) || amount.ValueKind != JsonValueKind.Number || !amount.TryGetDecimal(out var number)
@@ -36,6 +36,8 @@ public static class EmployeeSalaryBreakdownChanges
         if (value.TryGetProperty("salaryStructureCode", out var structureCode)
             && (structureCode.ValueKind is not (JsonValueKind.String or JsonValueKind.Null) || structureCode.GetString()?.Length > 80))
             throw new InvalidOperationException("Salary structure code must be text of 80 characters or fewer.");
+        if (value.TryGetProperty("allowances", out var allowanceLines) && allowanceLines.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
+            throw new InvalidOperationException("Allowances must be a list of lines, each with a code, a basis and an amount or a rate.");
         var salary = value.Deserialize<EmployeeSalaryBreakdownRequest>(Json)!;
         if (salary.BasicSalary <= 0) throw new InvalidOperationException("Basic salary must be greater than zero.");
         if (Gross(salary) > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");
@@ -54,7 +56,15 @@ public static class EmployeeSalaryBreakdownChanges
         var salary = Read(value);
         var grade = employee.GradeId is null ? null : await db.Grades.AsNoTracking()
             .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
-        if (grade is not null && ((grade.MinSalary > 0 && Gross(salary) < grade.MinSalary) || (grade.MaxSalary > 0 && Gross(salary) > grade.MaxSalary)))
+        // The customer-defined cash allowances this package pays: stated lines are checked against the live definitions at submit, and a package that
+        // does not mention them carries the current ones, so the grade range below is checked on the whole pay.
+        var allowances = employee.TenantId is Guid allowanceTenant
+            ? await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
+                db, allowanceTenant, employee.Id, salary.EffectiveDate!.Value, salary.BasicSalary!.Value, salary.Allowances, ct)
+            : new Zayra.Api.Infrastructure.Payroll.AllowanceResolution([], false, null);
+        if (allowances.Problem is { } allowanceProblem) throw new InvalidOperationException(allowanceProblem.Message);
+        var wholePay = Gross(salary) + allowances.Total;
+        if (grade is not null && ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary)))
             throw new InvalidOperationException($"Salary package is outside grade {grade.Code}'s salary range.");
         // Refused at submit, not at approval, by the same rule the writer applies: an unknown or inactive named
         // structure (SalaryStructureRefusedException). null = the default structure, which the writer creates.
@@ -95,9 +105,17 @@ public static class EmployeeSalaryBreakdownChanges
                 && structure.TenantId == employee.TenantId && !structure.IsDeleted
             orderby assignment.EffectiveDate descending, assignment.CreatedAtUtc descending
             select new { assignment, structure.Code }).ToListAsync(ct);
+        // The customer-defined cash allowances each record carries (null for a record with none, so nothing changes for an employee without any).
+        var recordIds = rows.Select(r => r.assignment.Id).ToList();
+        var lines = recordIds.Count == 0 || employee.TenantId is not Guid tenantId ? Enumerable.Empty<EmployeeSalaryAllowance>().ToLookup(x => x.SalaryStructureId)
+            : (await db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && recordIds.Contains(x.SalaryStructureId)).ToListAsync(ct))
+                .ToLookup(x => x.SalaryStructureId);
         return rows.Select(r => new EmployeeSalaryBreakdownRequest(r.assignment.BasicSalary, r.assignment.HousingAllowance,
             r.assignment.TransportAllowance, r.assignment.FoodAllowance, r.assignment.MobileAllowance, r.assignment.OtherAllowance,
-            r.assignment.FixedDeduction, r.Code, r.assignment.EffectiveDate, r.assignment.Currency)).ToList();
+            r.assignment.FixedDeduction, r.Code, r.assignment.EffectiveDate, r.assignment.Currency,
+            lines[r.assignment.Id].Any()
+                ? lines[r.assignment.Id].OrderBy(l => l.Code, StringComparer.Ordinal).Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Amount)).ToList()
+                : null)).ToList();
     }
 
     // The whole live schedule is baselined: an edit to a different effective date must not be hidden by the latest row.

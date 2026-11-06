@@ -409,6 +409,89 @@ public class CashAllowancePayrollTests
     }
 
     [Fact]
+    public async Task AnAllowanceThatAPendingSalaryChangeProposes_CannotBeRemoved_UntilTheChangeIsDecided()
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        Mx.Status(await h.AddCash("Phone Allowance", driver: Driver)).Should().Be(200);
+        var change = new SalaryChangeRequest
+        {
+            TenantId = h.Tid, CompanyId = h.Facility.Id, EmployeeId = 1, EmployeeCode = "E1", EmployeeName = "E", SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, EffectiveDate = new DateOnly(2026, 11, 1), Currency = "SAR", Status = SalaryChangeRequest.Pending,
+            AllowancesJson = "[{\"code\":\"ALW_CAR\",\"basis\":\"Amount\",\"amount\":500}]",
+        };
+        h.Db.SalaryChangeRequests.Add(change);
+        // A pending change that does not mention allowances (carry forward) or states none names nothing, so it blocks nothing.
+        h.Db.SalaryChangeRequests.Add(new SalaryChangeRequest
+        {
+            TenantId = h.Tid, CompanyId = h.Facility.Id, EmployeeId = 2, EmployeeCode = "E2", EmployeeName = "E", SalaryStructureId = Guid.NewGuid(),
+            BasicSalary = 10_000m, EffectiveDate = new DateOnly(2026, 11, 1), Currency = "SAR", Status = SalaryChangeRequest.Pending, AllowancesJson = "[]",
+        });
+        await h.Db.SaveChangesAsync();
+
+        var refused = await h.Remove(Code.ToLowerInvariant());
+        Mx.Error(refused).Should().Be("benefit_in_use");
+        Mx.Describe(refused).Should().Contain("waiting for approval");
+        (await h.Db.PayComponents.SingleAsync(x => x.Code == Code)).IsDeleted.Should().BeFalse();
+
+        Mx.Status(await h.Remove("ALW_PHONE_ALLOWANCE")).Should().Be(200, "no pending change names it");
+
+        // Once the change is decided it no longer holds the allowance.
+        (await h.Db.SalaryChangeRequests.SingleAsync(x => x.Id == change.Id)).Status = SalaryChangeRequest.Rejected;
+        await h.Db.SaveChangesAsync();
+        Mx.Status(await h.Remove(Code)).Should().Be(200);
+    }
+
+    // ══ Least-privilege GL driver list for "Add a benefit → cash allowance" ═════════════════════
+
+    [Fact]
+    public async Task TheCashGlDriverList_MarksEachEarningDriver_ByTheRuleAddingACashAllowanceApplies()
+    {
+        await using var h = await Mx.Create();
+        // Beyond the harness's mapped / unmapped drivers: an employer-expense pair, a driver on a control account, and an inactive one.
+        h.Db.GlDrivers.AddRange(
+            new GlDriver
+            {
+                TenantId = h.Tid, CompanyId = null, Key = "EARN:PAIR", Label = "Employer pair", Category = GlDriverCategories.Earning, PostingSide = "DR",
+                DefaultCode = "5300", DefaultName = "Pair", MatchMode = "Exact", MatchComponentCode = "PAIR", EmitsEmployerExpensePair = true, SortOrder = 71,
+            },
+            new GlDriver
+            {
+                TenantId = h.Tid, CompanyId = null, Key = "EARN:CONTROL", Label = "Posts to a control account", Category = GlDriverCategories.Earning, PostingSide = "DR",
+                DefaultCode = "2101", DefaultName = "Social insurance payable", MatchMode = "Exact", MatchComponentCode = "CONTROL", SortOrder = 72,
+            },
+            new GlDriver
+            {
+                TenantId = h.Tid, CompanyId = null, Key = "EARN:OFF", Label = "Switched off", Category = GlDriverCategories.Earning, PostingSide = "DR",
+                DefaultCode = "5400", DefaultName = "Off", MatchMode = "Exact", MatchComponentCode = "OFF", IsActive = false, SortOrder = 73,
+            });
+        await h.Db.SaveChangesAsync();
+
+        var response = await new EntitlementMatrixController { ControllerContext = h.Context() }.CashGlDrivers(h.Service, default);
+
+        var list = JsonSerializer.SerializeToElement(((OkObjectResult)response).Value, new JsonSerializerOptions(JsonSerializerDefaults.Web)).EnumerateArray().ToList();
+        string[] Keys(bool usable) => list.Where(d => d.GetProperty("usable").GetBoolean() == usable).Select(d => d.GetProperty("key").GetString()!).ToArray();
+        list.Select(d => d.GetProperty("key").GetString()).Should().NotContain(["DED:UNION", "EARN:OFF"], "only active earning drivers are candidates");
+        Keys(true).Should().Contain(["EARN:CAR", "EARN:BASIC", "EARN:OTHER"]).And.NotContain(["EARN:NOWHERE", "EARN:PAIR", "EARN:CONTROL"]);
+        Keys(false).Should().BeEquivalentTo("EARN:NOWHERE", "EARN:PAIR", "EARN:CONTROL");
+        list.Single(d => d.GetProperty("key").GetString() == "EARN:CAR").GetProperty("label").GetString().Should().Be("EARN:CAR");
+        list.Single(d => d.GetProperty("key").GetString() == "EARN:NOWHERE").GetProperty("reasonCode").GetString().Should().Be("unmapped");
+        list.Single(d => d.GetProperty("key").GetString() == "EARN:PAIR").GetProperty("reasonCode").GetString().Should().Be("employer_pair");
+        list.Single(d => d.GetProperty("key").GetString() == "EARN:CAR").GetProperty("reason").ValueKind.Should().Be(JsonValueKind.Null);
+
+        // No chart of accounts leaks: no account number or name anywhere in the answer.
+        var text = JsonSerializer.Serialize(((OkObjectResult)response).Value);
+        text.Should().NotContain("5210").And.NotContain("2101").And.NotContain("Account 5210").And.NotContain("Social insurance payable");
+
+        // The list and the rule agree: every usable driver is accepted by "Add a benefit"; every refused one is refused.
+        var n = 0;
+        foreach (var key in Keys(true))
+            Mx.Status(await h.AddCash($"Probe {n++}", driver: key)).Should().Be(200, key);
+        foreach (var key in Keys(false))
+            Mx.Error(await h.AddCash($"Probe {n++}", driver: key)).Should().Be("gl_driver_invalid", key);
+    }
+
+    [Fact]
     public async Task AddingACashAllowance_NeedsAccessToEveryCompany()
     {
         await using var h = await Mx.Create();

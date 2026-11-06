@@ -129,7 +129,8 @@ public class EmployeeManagementService : IEmployeeManagementService
             var structureCode = await _db.SalaryStructures.AsNoTracking()
                 .Where(s => s.TenantId == tenantId && s.Id == pending.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
             var staged = new EmployeeSalaryBreakdownRequest(pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
-                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency);
+                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency,
+                SalaryAllowanceLines.Deserialize(pending.AllowancesJson));
             detail = detail with
             {
                 SalaryBreakdown = staged,
@@ -2045,11 +2046,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         var problems = new List<string>();
         foreach (var allowance in allowances)
         {
+            // A code with no salary slot of its own is a bug, not "other pay": a customer-defined allowance (ALW_*) is a salary LINE (below), and a
+            // contract benefit (BEN_*) never reaches the salary at all. Nothing is ever defaulted into Other allowance.
             var supplied = allowance.Field switch
             {
                 "HousingAllowance" => request.HousingAllowance,
                 "TransportAllowance" => request.TransportAllowance,
-                _ => request.OtherAllowance,
+                "OtherAllowance" => request.OtherAllowance,
+                _ => throw new InvalidOperationException($"{allowance.ComponentCode} has no salary field ({allowance.Field}); it cannot be filled in from the grade."),
             };
             if (supplied is not null) continue;
             var name = EntitlementComponentRules.For(allowance.ComponentCode)?.NameEn ?? allowance.ComponentCode;
@@ -2064,8 +2068,19 @@ public class EmployeeManagementService : IEmployeeManagementService
             {
                 "HousingAllowance" => filled with { HousingAllowance = cash },
                 "TransportAllowance" => filled with { TransportAllowance = cash },
-                _ => filled with { OtherAllowance = cash },
+                "OtherAllowance" => filled with { OtherAllowance = cash },
+                _ => throw new InvalidOperationException($"{allowance.ComponentCode} has no salary field ({allowance.Field}); it cannot be filled in from the grade."),
             };
+        }
+        // The customer-defined cash allowances (ALW_*) the grade offers become PROPOSED LINES, only when the salary did not state any (null: an
+        // explicit list, even an empty one, is the operator's own and is kept). A grade with no value for one simply has no line for it — unlike the
+        // three standard allowances, an allowance the grade does not offer is not an omission. A percentage needs a basic to apply to.
+        if (request.Allowances is null)
+        {
+            var lines = await EntitlementMatrixService.CashAllowanceLinesAsync(_db, tenantId, gradeId, employee.CompanyId, effectiveDate, cancellationToken);
+            foreach (var line in lines.Where(l => l.Basis == AllowanceBases.PercentOfBasic && basic <= 0m))
+                problems.Add($"{await AllowanceNameAsync(tenantId, line.Code!, cancellationToken)}: it is a percentage of basic salary, and no basic salary was entered");
+            if (lines.Count > 0) filled = filled with { Allowances = lines };
         }
         if (problems.Count > 0)
             throw new InvalidOperationException(
@@ -2075,6 +2090,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
 
+
+    private async Task<string> AllowanceNameAsync(Guid tenantId, string code, CancellationToken ct) =>
+        await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId, "Names a cash allowance in a refusal message; tenant-wide definition.")
+            .AsNoTracking().Where(c => c.CompanyId == null && c.Code == code).Select(c => c.NameEn).FirstOrDefaultAsync(ct) ?? code;
 
     private static decimal GrossSalary(EmployeeSalaryBreakdownRequest? salary)
         => (salary?.BasicSalary ?? 0m)

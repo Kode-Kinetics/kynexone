@@ -56,7 +56,8 @@ public sealed class SalaryChangeDecisionService
             if (refusal is not null) return refusal;
             await _db.SaveChangesAsync(ct);
             await RestampFirstPackageEmployeesAsync(tenantId, [change], ct);
-            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change));
+            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change,
+                (await SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], ct)).GetValueOrDefault(change.Id)));
         }, ct);
 
     public async Task<IActionResult> RejectAsync(Guid tenantId, Guid id, SalaryDecisionActor actor, string? note,
@@ -70,7 +71,8 @@ public sealed class SalaryChangeDecisionService
             if (refusal is not null) return refusal;
             await _db.SaveChangesAsync(ct);
             await RestampFirstPackageEmployeesAsync(tenantId, [change], ct);
-            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change));
+            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change,
+                (await SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], ct)).GetValueOrDefault(change.Id)));
         }, ct);
 
     /// <summary>Decides every pending row of one import. Rows the caller may not decide stay pending and are reported.</summary>
@@ -210,10 +212,26 @@ public sealed class SalaryChangeDecisionService
             // new package, and a grade whose range changed (or an employee moved to another grade) is checked again here.
             if (employee.Status is EmployeeStatuses.Terminated or EmployeeStatuses.Exited or EmployeeStatuses.Archived)
                 return new ConflictObjectResult(new { error = "salary_change_stale", message = $"The employee is now {employee.Status}, so this package cannot be applied. Reject it." });
+            // The customer-defined cash allowances the new record will carry, resolved NOW against what is live and in force: stated lines are checked
+            // again (a definition removed or switched off since the proposal refuses the approval), and a proposal that did not mention allowances
+            // carries the current record's lines — read before the replaced row is switched off below. Nothing is written for a refused decision.
+            List<SalaryAllowanceLine>? statedLines;
+            try { statedLines = SalaryAllowanceLines.Deserialize(change.AllowancesJson); }
+            catch (JsonException)
+            { return new ConflictObjectResult(new { error = "salary_change_stale", message = "This change's allowance lines cannot be read. Reject it and propose it again." }); }
+            var allowanceLines = await SalaryAllowanceLines.ResolveForProposalAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, change.BasicSalary, statedLines, ct);
+            if (allowanceLines.Problem is { } allowanceProblem)
+                return new ConflictObjectResult(new
+                {
+                    error = "salary_change_stale",
+                    message = allowanceProblem.Message + " Reject this change, or fix the allowance and approve again.",
+                    code = allowanceProblem.Code,
+                });
             if (employee.GradeId.HasValue)
             {
                 var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
-                var gross = change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance - change.FixedDeduction;
+                var gross = change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance
+                            + allowanceLines.Total - change.FixedDeduction;
                 var below = grade is not null && grade.MinSalary > 0 && gross < grade.MinSalary;
                 var above = grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary;
                 if (below || above)
@@ -258,6 +276,7 @@ public sealed class SalaryChangeDecisionService
                 EffectiveDate = change.EffectiveDate, Currency = change.Currency, CreatedBy = change.RequestedByUserId,
             };
             _db.EmployeeSalaryStructures.Add(assignment);
+            _db.EmployeeSalaryAllowances.AddRange(SalaryAllowanceLines.RowsFor(tenantId, assignment.Id, allowanceLines.Lines));
             change.AppliedAssignmentId = assignment.Id;
             if (firstPackage)
             {
@@ -267,7 +286,10 @@ public sealed class SalaryChangeDecisionService
                 await EmployeeSalaryBreakdownWriter.ApplyFirstPackageEffectsAsync(_db, employee, structure, change, ct);
             }
             Audit(tenantId, actor, "payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(),
-                new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId });
+                allowanceLines.Lines.Count == 0
+                    ? new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId }
+                    : (object)new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId,
+                        allowances = allowanceLines.Lines, allowancesCarriedForward = allowanceLines.Carried });
         }
         else
         {

@@ -61,6 +61,8 @@ public static class EntitlementComponentRules
     public const string AllowancePrefix = "ALW_";
     /// <summary>The longest custom code (the prefix included).</summary>
     public const int CustomCodeMaxLength = 40;
+    /// <summary>A cash allowance's code is shorter: back pay for it is an <c>ARREARS_</c> + code line, and the arrears code column is 40 characters.</summary>
+    public const int AllowanceCodeMaxLength = 32;
     public const string LoanHousingAdvance = "LOAN_HOUSING_ADVANCE";
 
     /// <summary>Criteria a cell may never use (non-discrimination). R1 refuses them with ENTITLEMENT_BANNED_CRITERION.</summary>

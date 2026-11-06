@@ -905,7 +905,10 @@ public class OvertimeController : ControllerBase
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive && x.EffectiveDate <= request.WorkDate).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
         var basic = salary?.BasicSalary ?? employee?.Salary ?? 0m;
-        var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
+        // The customer-defined monthly cash allowances are part of the full wage here exactly as in the payroll run (which prices overtime on the same package).
+        var cashAllowances = salary is null ? 0m
+            : (await _db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == salary.Id).Select(x => x.Amount).ToListAsync(ct)).Sum();
+        var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance + cashAllowances;
 
         // Weekend categorisation is config-driven (WorkWeekService): the employee's company
         // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)

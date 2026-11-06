@@ -123,6 +123,75 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 Percentage = a.ValueType == GradeEntitlementValueTypes.PercentOfBasic ? Math.Round((a.Rate ?? 0m) * 100m, 4) : 0m,
             });
 
+    /// <summary>
+    /// The customer-defined monthly cash allowances (<c>ALW_*</c>) a grade's matrix values describe, as proposed salary lines: the company cell over the
+    /// group cell in force on <paramref name="asOf"/>, an amount or a percentage of basic, for allowances whose definition is live. A value in kind,
+    /// "Not offered" and a grade with no value have no line, and a contract benefit (<c>BEN_*</c>) or an unknown code never has one: only a live cash
+    /// allowance definition reaches a salary. A percentage carries its rate; the server works the amount out on the proposed basic.
+    /// </summary>
+    public static async Task<IReadOnlyList<SalaryAllowanceLine>> CashAllowanceLinesAsync(ZayraDbContext db, Guid tid, Guid gradeId, Guid? companyId,
+        DateOnly asOf, CancellationToken ct)
+    {
+        var cells = await ScopedBypass.TenantWide(db.GradeEntitlements, tid,
+                "Salary prefill reads the group cell and the employee's company cell for each cash allowance; the caller authorised the employee.")
+            .AsNoTracking()
+            .Where(x => x.GradeId == gradeId && x.PayComponentCode.StartsWith(EntitlementComponentRules.AllowancePrefix)
+                && (x.CompanyId == null || x.CompanyId == companyId) && x.EffectiveFrom <= asOf && (x.EffectiveTo == null || x.EffectiveTo >= asOf))
+            .ToListAsync(ct);
+        if (cells.Count == 0) return [];
+        var codes = cells.Select(c => c.PayComponentCode).Distinct().ToList();
+        var live = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LiveDefinitionCodesAsync(db, tid, codes, ct);
+        return cells
+            .GroupBy(c => c.PayComponentCode, StringComparer.Ordinal)
+            .Where(g => live.Contains(g.Key))
+            .Select(g => g.OrderByDescending(c => c.CompanyId.HasValue).First())
+            .Where(c => c.Eligible && (c.ValueType == GradeEntitlementValueTypes.Amount || c.ValueType == GradeEntitlementValueTypes.PercentOfBasic))
+            .OrderBy(c => c.PayComponentCode, StringComparer.Ordinal)
+            .Select(c => c.ValueType == GradeEntitlementValueTypes.PercentOfBasic
+                ? new SalaryAllowanceLine(c.PayComponentCode, AllowanceBases.PercentOfBasic, c.Rate, null)
+                : new SalaryAllowanceLine(c.PayComponentCode, AllowanceBases.Amount, null, c.Amount))
+            .ToList();
+    }
+
+    /// <summary>One GL driver as the "Add a benefit → cash allowance" screen offers it. No account numbers, no balances.</summary>
+    public sealed record CashGlDriverDto(string Key, string Label, string? LabelAr, bool Usable, string? ReasonCode, string? Reason);
+
+    /// <summary>
+    /// The earning GL drivers, each marked usable or not for a cash allowance by exactly the rule <see cref="CreateBenefitAsync"/> applies
+    /// (<c>PayComponentPolicy.ValidateGlDriverAsync</c>: active Earning driver, not reserved, not an employer-expense pair, mapped to an account in
+    /// every company, not a control account). It answers HR, who does not hold the finance GL permissions, without handing out the chart.
+    /// </summary>
+    public async Task<IReadOnlyList<CashGlDriverDto>> CashGlDriversAsync(Guid tid, CancellationToken ct)
+    {
+        var rows = (await ScopedBypass.TenantWide(db.GlDrivers, tid, "The earning drivers a cash allowance may name, listed for the benefit screen; tenant-wide rows only.")
+                .AsNoTracking()
+                .Where(d => d.CompanyId == null && d.IsActive && d.Category == GlDriverCategories.Earning)
+                .Select(d => new { d.Key, d.Label, d.SortOrder }).ToListAsync(ct))
+            .GroupBy(d => d.Key, StringComparer.Ordinal).Select(g => g.First()).OrderBy(d => d.SortOrder).ThenBy(d => d.Key, StringComparer.Ordinal)
+            .ToList();
+        var candidates = rows.Select(d => (d.Key, d.Label)).ToList();
+        // The compiled catalogue's earning drivers are valid targets too (the validator falls back to them), whether or not the tenant has seeded a row.
+        foreach (var driver in PayrollGlCatalog.Drivers.Where(d => d.Key.StartsWith("EARN:", StringComparison.Ordinal)))
+            if (!candidates.Any(c => c.Key == driver.Key)) candidates.Add((driver.Key, driver.Label));
+
+        var faults = await PayComponentPolicy.CheckGlDriversAsync(db, tid, null, PayComponentTypes.Earning, candidates.Select(c => c.Key).ToList(), ct);
+        return candidates.Select(c =>
+        {
+            var fault = faults[c.Key];
+            // Fixed words per fault, never the validator's message: that one can carry an account number.
+            var (code, reason) = fault?.Code switch
+            {
+                null => ((string?)null, (string?)null),
+                PayComponentPolicy.GlDriverFaultCodes.Reserved => (fault.Code, "Reserved for statutory and recovery postings."),
+                PayComponentPolicy.GlDriverFaultCodes.EmployerPair => (fault.Code, "A statutory employer posting rule, not for an allowance."),
+                PayComponentPolicy.GlDriverFaultCodes.Unmapped => (fault.Code, "Not linked to an account yet. Ask Finance to map it."),
+                PayComponentPolicy.GlDriverFaultCodes.ProtectedAccount => (fault.Code, "Posts to a control account that allowances cannot use."),
+                _ => (fault.Code, "Not available for an allowance."),
+            };
+            return new CashGlDriverDto(c.Key, c.Label, null, fault is null, code, reason);
+        }).ToList();
+    }
+
     /// <summary>A wage component pays through payroll, so a company row for it would shadow the payroll catalogue.
     /// The matrix therefore never writes a skip marker for one; "Not offered" cells express it instead.</summary>
     public static bool CanSkipHere(EntitlementComponentRule rule) =>
@@ -692,7 +761,7 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             else gap = true;
         }
         if (slug.Length == 0) return null;
-        var room = EntitlementComponentRules.CustomCodeMaxLength - prefix.Length;
+        var room = (prefix == EntitlementComponentRules.AllowancePrefix ? EntitlementComponentRules.AllowanceCodeMaxLength : EntitlementComponentRules.CustomCodeMaxLength) - prefix.Length;
         return prefix + (slug.Length > room ? slug.ToString(0, room).TrimEnd('_') : slug.ToString());
     }
 
@@ -826,9 +895,18 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 .AnyAsync(x => x.PayComponentCode == code, ct);
             var inPackages = await ScopedBypass.TenantWide(db.EmployeeEntitlements, tid, "A benefit in any employee's package can't be removed.")
                 .AnyAsync(x => x.PayComponentCode == code, ct);
-            // A cash allowance is also used once it sits on any salary record. (A pending salary change that proposes it is checked when
-            // the proposal flow lands: nothing writes those lines yet.)
+            // A cash allowance is also used once it sits on any salary record, or while a pending salary change proposes it (Finance would
+            // otherwise be asked to approve a line whose definition no longer exists). The staged lines are JSON, so they are read here and
+            // compared in memory: a text search inside jsonb does not translate safely across providers.
             var onSalary = cash && await db.EmployeeSalaryAllowances.AnyAsync(x => x.TenantId == tid && x.Code == code, ct);
+            var inPendingChange = cash && (await ScopedBypass.TenantWide(db.SalaryChangeRequests, tid,
+                        "A cash allowance a pending salary change names can't be removed; the guard reads every company's pending changes.")
+                    .AsNoTracking()
+                    .Where(x => x.Status == SalaryChangeRequest.Pending && x.AllowancesJson != null)
+                    .Select(x => x.AllowancesJson).ToListAsync(ct))
+                .Any(json => Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Names(json, code));
+            if (inPendingChange)
+                return Conflict("benefit_in_use", "A salary change that is waiting for approval still includes this allowance, so it can't be removed. Decide or withdraw that change first.");
             if (hasValues || inPackages || onSalary)
                 return Conflict("benefit_in_use", "This benefit already has values for grades or is in employees' packages or salaries, so it can't be removed. Set it to Not offered for every grade instead.");
             foreach (var row in rows)

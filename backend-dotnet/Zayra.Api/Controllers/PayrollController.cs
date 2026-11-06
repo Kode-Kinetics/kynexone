@@ -349,10 +349,17 @@ public partial class PayrollController : ControllerBase
         if (structure is null) return BadRequest(new { message = "Salary structure not found." });
         var eligibilityError = ValidateEmployeeSalaryAssignment(structure, employee, req, checkEffectiveDate: !automatic);
         if (eligibilityError is not null) return BadRequest(new { message = eligibilityError });
+        // The customer-defined monthly cash allowances this salary pays: stated lines are validated against the live definitions; a salary that does
+        // not mention allowances carries the current ones forward when Finance approves (so a basic-only change never drops one).
+        var allowanceLines = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
+            _db, tenantId, employee.Id, req.EffectiveDate, req.BasicSalary, req.Allowances, cancellationToken);
+        if (allowanceLines.Problem is { } allowanceProblem)
+            return StatusCode(allowanceProblem.Status, new { error = allowanceProblem.Code, code = allowanceProblem.Code, message = allowanceProblem.Message });
         if (employee.GradeId.HasValue)
         {
             var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, cancellationToken);
-            var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance - req.FixedDeduction;
+            var gross = req.BasicSalary + req.HousingAllowance + req.TransportAllowance + req.FoodAllowance + req.MobileAllowance + req.OtherAllowance
+                        + allowanceLines.Total - req.FixedDeduction;
             if (grade is not null && grade.MinSalary > 0 && gross < grade.MinSalary)
                 return BadRequest(new { message = $"Salary package is below grade {grade.Code} minimum {grade.MinSalary:N2} {grade.Currency}." });
             if (grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary)
@@ -364,13 +371,17 @@ public partial class PayrollController : ControllerBase
         var change = await StageSalaryChangeAsync(tenantId, employee, structure.Id,
             new EmployeeSalaryStructureRequest(req.EmployeeId, structure.Id, req.BasicSalary, req.HousingAllowance, req.TransportAllowance, req.FoodAllowance,
                 req.MobileAllowance, req.OtherAllowance, req.FixedDeduction, req.EffectiveDate, assignmentCurrency),
-            "Manual", null, cancellationToken);
+            "Manual", null, cancellationToken,
+            allowancesJson: req.Allowances is null ? null : Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(allowanceLines.Lines));
         await PayrollAudit("payroll.employee_salary.change_requested", "SalaryChangeRequest", change.Id.ToString(),
-            new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate }, cancellationToken);
+            req.Allowances is null
+                ? (object)new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate }
+                : new { employeeId = req.EmployeeId, basicSalary = req.BasicSalary, effectiveDate = req.EffectiveDate, allowances = allowanceLines.Lines }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
         await NotePaySubmittedAsync(req.EmployeeId, cancellationToken);
         await SyncPayApprovalAsync(cancellationToken);
-        return Accepted($"/api/payroll/salary-changes/{change.Id}", SalaryChangeDto.Project(change));
+        var allowanceViews = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], cancellationToken);
+        return Accepted($"/api/payroll/salary-changes/{change.Id}", SalaryChangeDto.Project(change, allowanceViews.GetValueOrDefault(change.Id)));
     }
 
     [HttpGet("runs")]
@@ -5697,14 +5708,19 @@ public partial class PayrollController : ControllerBase
         // F2 — the catalog version in effect for the CURRENT payroll month (the EOSB wage is the last wage).
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var components = await LoadPayComponentsAsync(tenantId, companyId, new DateOnly(today.Year, today.Month, 1), ct);
-        return EosbWageBasisFrom(components, salary, employee);
+        var cashAllowances = salary is null ? null
+            : (await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.EosbIncludedAsync(_db, tenantId, [salary.Id], ct)).GetValueOrDefault(salary.Id);
+        return EosbWageBasisFrom(components, salary, employee, cashAllowances);
     }
 
     /// <summary>The pure half of <see cref="ResolveEosbWageBasisAsync"/>: the same wage-basis rule over a
     /// catalog the caller already loaded, so the monthly provision (POD-C2) measures every employee on
     /// exactly the base a settlement would, without reloading the catalog once per employee.</summary>
+    /// <param name="cashAllowances">The customer-defined monthly cash allowances on the salary record whose definition counts in the end-of-service wage
+    /// (<c>EosbIncluded</c>); null or empty for an employee without any. Their monthly amounts join the configured wage.</param>
     private static EosbWageBasis EosbWageBasisFrom(
-        IEnumerable<PayComponent> components, EmployeeSalaryStructure? salary, Employee employee)
+        IEnumerable<PayComponent> components, EmployeeSalaryStructure? salary, Employee employee,
+        IReadOnlyList<Zayra.Api.Infrastructure.Payroll.EosbCashAllowance>? cashAllowances = null)
     {
         var basic = salary?.BasicSalary ?? employee.Salary ?? 0m;
         var housing = salary?.HousingAllowance ?? 0m;
@@ -5724,9 +5740,11 @@ public partial class PayrollController : ControllerBase
             Gross = gross,
         }).Earnings;
         var eligible = Math.Round(computed.Sum(l => l.Amount), 2);
+        var allowanceWage = Math.Round(cashAllowances?.Sum(a => a.Amount) ?? 0m, 2);
+        var allowanceCodes = cashAllowances?.Select(a => a.Code).ToList() ?? [];
         if (eligible > 0m)
-            return new EosbWageBasis(package, eligible,
-                computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList(), null);
+            return new EosbWageBasis(package, eligible + allowanceWage,
+                computed.Select(l => l.Code).Concat(allowanceCodes).Distinct(StringComparer.Ordinal).ToList(), null);
 
         // A tenant may have a partially seeded component catalog with no EOSB flags at all. The OLD
         // behaviour here was to fall back to BASIC ALONE and record the reason in a snapshot column
@@ -5734,8 +5752,10 @@ public partial class PayrollController : ControllerBase
         // PACKAGE and leaves the statutory narrowing to the pack (KSA takes basic + housing + configured
         // allowances; UAE Art. 51 and Qatar Art. 54 take basic and are unaffected), and the fallback is
         // surfaced as a settlement warning by the caller instead of being buried.
-        return new EosbWageBasis(package, 0m,
-            ["(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)"],
+        // An allowance the customer marked as part of the end-of-service wage still counts here: it raises the configured wage above the
+        // statutory base (the pack can only ever raise it), by the whole package it can be added to.
+        return new EosbWageBasis(package, allowanceWage > 0m ? Math.Round(basic + housing + transport + allowanceWage, 2) : 0m,
+            new[] { "(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)" }.Concat(allowanceCodes).ToList(),
             "No active pay component in this company's catalog is flagged EosbIncluded, so the gratuity was " +
             "computed on the country pack's STATUTORY base rather than on a configured one. For KSA that is " +
             "Art. 84 last wage (basic + housing, plus transport unless disabled); for UAE/Qatar it is basic. " +
@@ -8386,8 +8406,12 @@ public partial class PayrollController : ControllerBase
             .OrderByDescending(x => x.EffectiveDate)
             .FirstOrDefaultAsync(ct);
         var basicWage = salary?.BasicSalary ?? employee.Salary ?? 0m;
+        // The customer-defined monthly cash allowances are paid in salary, so they are part of the monthly package here exactly as in a payroll run:
+        // the leaver's wages for the last month, the day rate for notice, and the full-package encashment base all include them.
+        var cashAllowanceTotal = salary is null ? 0m
+            : (await _db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == salary.Id).Select(x => x.Amount).ToListAsync(ct)).Sum();
         var monthlyGross = basicWage + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
-                         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m);
+                         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m) + cashAllowanceTotal;
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary!.Currency
             : await ResolveCurrencyAsync(tenantId, ct);
@@ -9752,7 +9776,10 @@ public record GradePackagesView(string Source, IReadOnlyList<GradePackageDto> Gr
 public record SalaryComponentRequest(string Code, string Name, string ComponentType, string CalculationType, decimal Amount, decimal Percentage, bool IsTaxable, bool IsActive = true);
 /// <param name="SalaryStructureId">Optional: blank puts the salary on the employee's default structure — the grade's
 /// package structure, or DIRECT without a grade.</param>
-public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency);
+/// <param name="Allowances">The monthly cash allowances (ALW_*) this salary pays beyond the slots above. Null = not mentioned: the new record carries the
+/// current record's lines forward (a percentage re-worked on this basic). An empty list removes them all.</param>
+public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructureId, decimal BasicSalary, decimal HousingAllowance, decimal TransportAllowance, decimal FoodAllowance, decimal MobileAllowance, decimal OtherAllowance, decimal FixedDeduction, DateOnly EffectiveDate, string? Currency,
+    IReadOnlyList<SalaryAllowanceLine>? Allowances = null);
 // POD-B2 (M5b) — ExpectedExcludedCount is an ACKNOWLEDGEMENT, not a warning. Approve refuses with 409
 // when the run holds deliberate exclusions and the approver's expectation does not match the resolved
 // count, so the person signing off cannot miss a hold-out buried among dozens of routine warnings.

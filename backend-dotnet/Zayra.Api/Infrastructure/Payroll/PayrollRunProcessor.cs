@@ -1175,6 +1175,9 @@ public sealed class PayrollRunProcessor
                 }
             var cashAllowanceTotal = cashAllowances.Sum(x => x.Amount);
             var cashAllowanceTaxable = cashAllowances.Where(x => x.Taxable).Sum(x => x.Amount);
+            // The FULL monthly amount of the lines on the salary record, for every base that is "the whole package": an absent day, short hours and
+            // overtime on a full-wage base are priced on the monthly RATE, never on a prorated or supplemental-run figure. 0 without any line.
+            var fullCashAllowances = salary is null ? 0m : cashAllowancesByRecord[salary.Id].Sum(x => x.Amount);
             var fixedDeduction = policy.Prorates(ProratedComponentCodes.FixedDeduction)
                 ? ProrationCalculator.ApplyScalar(fullFixedDeduction, factor)
                 : fullFixedDeduction;
@@ -1188,8 +1191,9 @@ public sealed class PayrollRunProcessor
             // The wage every absence-type deduction is priced on: basic by default, or the company's full monthly package
             // (Setup -> Payroll rules). ONE base feeds the absent day, late/early short hours and unpaid leave, so the
             // three never disagree on the same payslip.
+            // The customer's monthly cash allowances are part of the full package, so on the Gross base they price an absent day too (basic-only: unchanged).
             var lopBase = CompanyPayrollRules.AbsenceDeductionBaseAmount(
-                companyPayrollRules.AbsenceDeductionBase, fullBasic, fullHousing, fullTransport, fullOther);
+                companyPayrollRules.AbsenceDeductionBase, fullBasic, fullHousing, fullTransport, fullOther + fullCashAllowances);
             var shortHoursHourlyRate = standardMonthlyHours > 0 ? lopBase / standardMonthlyHours : 0m;
 
             // ── Short-hours deduction (late/early) at hourly rate ─────────────
@@ -1251,7 +1255,7 @@ public sealed class PayrollRunProcessor
             // jurisdiction whose ot.hourly_base is "wage" it is the full-wage hourly rate, not basic.
             // The full monthly wage is used for the same reason the basic hourly rate is: a joiner's
             // overtime must not be paid at a fraction of their real hourly rate.
-            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther;
+            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther + fullCashAllowances;
             var otBaseHourly = standardMonthlyHours > 0
                 ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
@@ -1861,9 +1865,11 @@ public sealed class PayrollRunProcessor
                                            .ThenBy(a => a.ComponentCode, StringComparer.Ordinal))
             {
                 if (line.Amount <= 0m) continue;
+                // Back pay for a customer-defined cash allowance is named after it and posts to ITS GL driver (the definition's own), never EARN:OTHER.
+                cashAllowanceDefinitions.TryGetValue(PayrollArrearsComponents.SourceComponent(line.ComponentCode), out var arrearsAllowance);
                 AddEarning(tenantId, id, e.Id, line.ComponentCode,
-                    $"Arrears — {PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
-                    line.Amount, "Arrears");
+                    $"Arrears — {arrearsAllowance?.NameEn ?? PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
+                    line.Amount, "Arrears", glDriverKey: string.IsNullOrWhiteSpace(arrearsAllowance?.GlDriverKey) ? null : arrearsAllowance!.GlDriverKey);
                 arrearsLinesToPersist.Add(line);
             }
 

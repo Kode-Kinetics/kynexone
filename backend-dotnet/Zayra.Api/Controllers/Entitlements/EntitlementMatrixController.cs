@@ -97,6 +97,17 @@ public sealed class EntitlementMatrixController : ControllerBase
         CancellationToken ct) =>
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.CreateBenefitAsync(Actor(), req, ct));
 
+    /// <summary>
+    /// GET /api/entitlements/components/cash-gl-drivers — the earning GL drivers a monthly cash allowance may name, each marked <c>usable</c> (or not, with
+    /// a plain reason), judged by exactly the rule <c>POST /components</c> applies to a cash benefit. It exists so the person adding the benefit
+    /// (HR, who holds <c>entitlements.manage</c> but not the finance GL permissions) can choose a driver without being handed the chart of accounts:
+    /// key, label and the verdict only; no account numbers, no balances. Shape: <c>[{ key, label, labelAr, usable, reasonCode, reason }]</c>.
+    /// </summary>
+    [HttpGet("components/cash-gl-drivers")]
+    [HasPermission("entitlements.manage")]
+    public async Task<IActionResult> CashGlDrivers([FromServices] EntitlementMatrixService matrix, CancellationToken ct) =>
+        this.GetTenantId() is not Guid tid ? Unauthorized() : Ok(await matrix.CashGlDriversAsync(tid, ct));
+
     /// <summary>POST /api/entitlements/components/{code}/remove — removes a benefit the customer added and nobody has used yet.</summary>
     [HttpPost("components/{code}/remove")]
     [HasPermission("entitlements.manage")]

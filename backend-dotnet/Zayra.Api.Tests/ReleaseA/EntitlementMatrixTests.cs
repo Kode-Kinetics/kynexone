@@ -297,11 +297,13 @@ public class EntitlementMatrixTests
     {
         var actions = typeof(EntitlementMatrixController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttributes().Any(a => a is Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute)).ToList();
-        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "AddBenefit", "RemoveBenefit", "ImportLegacy");
+        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "AddBenefit", "CashGlDrivers", "RemoveBenefit", "ImportLegacy");
         foreach (var action in actions)
         {
             var permissions = action.GetCustomAttribute<HasPermissionAttribute>()!.Permissions;
-            var write = action.GetCustomAttributes().OfType<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>().Any(a => !a.HttpMethods.Contains("GET"));
+            // CashGlDrivers is a read, but it serves only the person ADDING a benefit (entitlements.manage), who must not need finance GL permissions.
+            var write = action.Name == "CashGlDrivers"
+                || action.GetCustomAttributes().OfType<Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute>().Any(a => !a.HttpMethods.Contains("GET"));
             permissions.Should().Equal(new[] { write ? "entitlements.manage" : "entitlements.read" }, action.Name);
         }
     }

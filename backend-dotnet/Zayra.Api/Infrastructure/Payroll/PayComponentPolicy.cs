@@ -157,11 +157,36 @@ public static class PayComponentPolicy
     /// because a company-level account remap is what the Lock actually resolves. Returns null when valid.
     /// </summary>
     public static async Task<string?> ValidateGlDriverAsync(
-        ZayraDbContext db, Guid tenantId, Guid? companyId, string componentType, string driverKey, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, Guid? companyId, string componentType, string driverKey, CancellationToken ct) =>
+        (await CheckGlDriversAsync(db, tenantId, companyId, componentType, [driverKey], ct))[driverKey]?.Message;
+
+    /// <summary>Why a GL driver cannot carry a tenant component: a stable code, and the message a person who has to fix it reads.</summary>
+    public sealed record GlDriverFault(string Code, string Message);
+
+    public static class GlDriverFaultCodes
     {
-        if (ForbiddenDriverKeys.Contains(driverKey))
-            return $"GL driver '{driverKey}' is reserved for statutory / recovery postings. A tenant component posting there " +
-                   "would break the GOSI tie-out (deducted = recomputed = posted to 2101/2106) or a recovery ledger.";
+        public const string Reserved = "reserved";
+        public const string Missing = "missing";
+        public const string WrongCategory = "wrong_category";
+        public const string EmployerPair = "employer_pair";
+        public const string Unmapped = "unmapped";
+        public const string ProtectedAccount = "protected_account";
+    }
+
+    /// <summary>
+    /// <see cref="ValidateGlDriverAsync"/> for several drivers at once: every key is judged by the SAME rules (one implementation), and each
+    /// scope's resolution context is loaded once instead of once per key. A key maps to null when it is valid, else to its first fault.
+    /// </summary>
+    public static async Task<Dictionary<string, GlDriverFault?>> CheckGlDriversAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, string componentType, IReadOnlyCollection<string> driverKeys, CancellationToken ct)
+    {
+        var faults = new Dictionary<string, GlDriverFault?>(StringComparer.Ordinal);
+        foreach (var key in driverKeys)
+            faults[key] = ForbiddenDriverKeys.Contains(key)
+                ? new GlDriverFault(GlDriverFaultCodes.Reserved,
+                    $"GL driver '{key}' is reserved for statutory / recovery postings. A tenant component posting there " +
+                    "would break the GOSI tie-out (deducted = recomputed = posted to 2101/2106) or a recovery ledger.")
+                : null;
 
         var expectedCategory = componentType == PayComponentTypes.Earning ? GlDriverCategories.Earning : GlDriverCategories.Deduction;
 
@@ -178,33 +203,47 @@ public static class PayComponentPolicy
         {
             var ctx = await GlAccountResolver.LoadAsync(db, tenantId, scope, ct);
             var where = scope is null ? "the tenant defaults" : $"company {scope}";
-
-            var row = ctx.Drivers.FirstOrDefault(d => string.Equals(d.Key, driverKey, StringComparison.Ordinal));
-            string? category = row?.Category;
-            if (category is null && PayrollGlCatalog.Defaults.ContainsKey(driverKey))
-                category = driverKey.StartsWith("EARN:", StringComparison.Ordinal) ? GlDriverCategories.Earning
-                         : driverKey.StartsWith("DED:", StringComparison.Ordinal) ? GlDriverCategories.Deduction
-                         : GlDriverCategories.Balancing;
-            if (category is null)
-                return $"GL driver '{driverKey}' does not exist in {where}. Create it under Finance → GL drivers, or use an " +
-                       "existing Earning/Deduction driver such as EARN:OTHER or DED:OTHER.";
-            if (!string.Equals(category, expectedCategory, StringComparison.Ordinal))
-                return $"GL driver '{driverKey}' is a {category} driver; a {componentType} component must post to a {expectedCategory} driver.";
-            if (row is { EmitsEmployerExpensePair: true })
-                return $"GL driver '{driverKey}' emits an employer-expense pair (a statutory employer driver); it cannot carry a tenant component.";
-
-            var (code, name) = GlAccountResolver.Resolve(driverKey, ctx.Overrides, ctx.DriverDefaults);
-            if (string.IsNullOrWhiteSpace(code) || code == "9999" || string.Equals(name, "Unmapped", StringComparison.OrdinalIgnoreCase))
-                return $"GL driver '{driverKey}' resolves to no account in {where} (Unmapped). Map it to a GL account first — " +
-                       "an unmapped line would make the run's journal fail the ERP-readiness check.";
-
-            foreach (var protectedDriver in ProtectedAccountDrivers)
+            foreach (var driverKey in driverKeys.Where(k => faults[k] is null))
             {
-                var (pCode, _) = GlAccountResolver.Resolve(protectedDriver, ctx.Overrides, ctx.DriverDefaults);
-                if (string.Equals(pCode, code, StringComparison.Ordinal))
-                    return $"GL driver '{driverKey}' resolves to account {code} in {where}, which is the account of '{protectedDriver}'. " +
-                           "Tenant components may not post to the statutory liabilities, net salaries payable or control accounts.";
+                var fault = CheckInContext(driverKey, expectedCategory, componentType, ctx, where);
+                if (fault is not null) faults[driverKey] = fault;
             }
+        }
+        return faults;
+    }
+
+    private static GlDriverFault? CheckInContext(string driverKey, string expectedCategory, string componentType, GlResolutionContext ctx, string where)
+    {
+        var row = ctx.Drivers.FirstOrDefault(d => string.Equals(d.Key, driverKey, StringComparison.Ordinal));
+        string? category = row?.Category;
+        if (category is null && PayrollGlCatalog.Defaults.ContainsKey(driverKey))
+            category = driverKey.StartsWith("EARN:", StringComparison.Ordinal) ? GlDriverCategories.Earning
+                     : driverKey.StartsWith("DED:", StringComparison.Ordinal) ? GlDriverCategories.Deduction
+                     : GlDriverCategories.Balancing;
+        if (category is null)
+            return new GlDriverFault(GlDriverFaultCodes.Missing,
+                $"GL driver '{driverKey}' does not exist in {where}. Create it under Finance → GL drivers, or use an " +
+                "existing Earning/Deduction driver such as EARN:OTHER or DED:OTHER.");
+        if (!string.Equals(category, expectedCategory, StringComparison.Ordinal))
+            return new GlDriverFault(GlDriverFaultCodes.WrongCategory,
+                $"GL driver '{driverKey}' is a {category} driver; a {componentType} component must post to a {expectedCategory} driver.");
+        if (row is { EmitsEmployerExpensePair: true })
+            return new GlDriverFault(GlDriverFaultCodes.EmployerPair,
+                $"GL driver '{driverKey}' emits an employer-expense pair (a statutory employer driver); it cannot carry a tenant component.");
+
+        var (code, name) = GlAccountResolver.Resolve(driverKey, ctx.Overrides, ctx.DriverDefaults);
+        if (string.IsNullOrWhiteSpace(code) || code == "9999" || string.Equals(name, "Unmapped", StringComparison.OrdinalIgnoreCase))
+            return new GlDriverFault(GlDriverFaultCodes.Unmapped,
+                $"GL driver '{driverKey}' resolves to no account in {where} (Unmapped). Map it to a GL account first — " +
+                "an unmapped line would make the run's journal fail the ERP-readiness check.");
+
+        foreach (var protectedDriver in ProtectedAccountDrivers)
+        {
+            var (pCode, _) = GlAccountResolver.Resolve(protectedDriver, ctx.Overrides, ctx.DriverDefaults);
+            if (string.Equals(pCode, code, StringComparison.Ordinal))
+                return new GlDriverFault(GlDriverFaultCodes.ProtectedAccount,
+                    $"GL driver '{driverKey}' resolves to account {code} in {where}, which is the account of '{protectedDriver}'. " +
+                    "Tenant components may not post to the statutory liabilities, net salaries payable or control accounts.");
         }
         return null;
     }
