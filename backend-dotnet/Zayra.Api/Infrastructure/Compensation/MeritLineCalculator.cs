@@ -130,7 +130,8 @@ public static class MeritLineCalculator
     /// the fixed deduction carried from the row the award is based on, the same structure code, the cycle's effective
     /// date and the pay currency. Exactly the shape <see cref="EmployeeSalaryBreakdownChanges.Read"/> accepts.
     /// </summary>
-    public static Dictionary<string, JsonElement> Package(EmployeeSalaryStructure row, string? structureCode, decimal newBasic, DateOnly effectiveDate, string currency)
+    public static Dictionary<string, JsonElement> Package(EmployeeSalaryStructure row, string? structureCode, decimal newBasic, DateOnly effectiveDate, string currency,
+        string? reductionConsentReference = null)
     {
         var package = new Dictionary<string, object?>
         {
@@ -145,6 +146,7 @@ public static class MeritLineCalculator
             ["currency"] = currency,
         };
         if (!string.IsNullOrWhiteSpace(structureCode)) package["salaryStructureCode"] = structureCode;
+        if (!string.IsNullOrWhiteSpace(reductionConsentReference)) package["reductionConsentReference"] = reductionConsentReference;
         return new Dictionary<string, JsonElement> { [EmployeeSalaryBreakdownChanges.Key] = JsonSerializer.SerializeToElement(package) };
     }
 }

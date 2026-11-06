@@ -290,6 +290,45 @@ public sealed class CompensationFixRoundTests(PostgresFixture fx)
         }
     }
 
+    [Fact]
+    public async Task AReversalThatWouldLandBelowThePreAwardPay_StillNeedsTheConsentReference()
+    {
+        var w = await SeedAsync(fx);
+        var applied = await AppliedAsync(fx, w);
+        Guid a1Line, a1Change;
+        await using (var db = fx.CreateDb())
+        {
+            var line = await db.CompWorksheetLines.SingleAsync(l => l.CycleId == applied.Id && l.EmployeeId == w.E["A1"] && l.ChangeRequestId != null);
+            (a1Line, a1Change) = (line.Id, line.ChangeRequestId!.Value);
+        }
+        (await RunJobAsync(fx, w.Tenant, a1Change, Effective)).Outcome.Should().Be(EffectiveChangeOutcome.Applied);
+        await using (var db = fx.CreateDb())
+        {
+            var wf = new ApprovalWorkflow { TenantId = w.Tenant, Code = "EMP-CHANGE", Name = "Employee change", EntityName = nameof(EmployeeChangeRequest), IsDefault = true, IsActive = true };
+            wf.Steps.Add(new ApprovalWorkflowStep { TenantId = w.Tenant, WorkflowId = wf.Id, StepOrder = 1, StepName = "HR", ApproverType = "Role", ApproverRole = "HR Manager", IsFinalStep = true });
+            db.ApprovalWorkflows.Add(wf);
+            // The award took basic from 6,000 to 6,360. Recording a larger increase means undoing it would leave 5,960: below what the employee had agreed to before.
+            (await db.CompWorksheetLines.SingleAsync(l => l.Id == a1Line)).ProratedIncreasePay += 40m;
+            foreach (var grade in await db.Grades.Where(g => g.TenantId == w.Tenant).ToListAsync()) grade.MinSalary = 0m;   // the grade floor is a different rule
+            await db.SaveChangesAsync();
+            var before = await db.EmployeeChangeRequests.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.Tenant && x.EmployeeId == w.E["A1"]);
+            var svc = Service(db);
+            var req = new ReverseCompAwardRequest(Effective, "Awarded in error");
+
+            var refused = await FluentActions.Invoking(() => svc.ReverseAwardAsync(Hr(w), a1Line, req, default)).Should().ThrowAsync<CompRuleException>();
+            refused.Which.Code.Should().Be("invalid_package");
+            refused.Which.Message.Should().Contain("written agreement").And.Contain("5,960.00");
+            (await db.EmployeeChangeRequests.IgnoreQueryFilters().CountAsync(x => x.TenantId == w.Tenant && x.EmployeeId == w.E["A1"])).Should().Be(before);
+
+            var ok = await svc.ReverseAwardAsync(Hr(w), a1Line, req with { ReductionConsentReference = "AMD-2026-114" }, default);
+            ok.ReversalStatus.Should().Be(EmployeeChangeStatuses.PendingApproval);
+            var package = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                (await db.EmployeeChangeRequests.SingleAsync(x => x.Id == ok.ReversalChangeRequestId)).ProposedChangesJson)!["salaryBreakdown"];
+            package.GetProperty("basicSalary").GetDecimal().Should().Be(5960m);
+            package.GetProperty("reductionConsentReference").GetString().Should().Be("AMD-2026-114");
+        }
+    }
+
     // ───────────── P2-12: concurrency ─────────────
 
     [Fact]

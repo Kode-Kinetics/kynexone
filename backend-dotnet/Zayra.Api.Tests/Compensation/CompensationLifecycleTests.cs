@@ -290,7 +290,10 @@ public sealed class CompensationLifecycleTests(PostgresFixture fx)
         await using (var db = fx.CreateDb())
         {
             var change = await db.EmployeeChangeRequests.SingleAsync(x => x.Id == reversal.ReversalChangeRequestId);
-            JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson)!["salaryBreakdown"].GetProperty("basicSalary").GetDecimal().Should().Be(6000m);
+            var reversalPackage = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson)!["salaryBreakdown"];
+            reversalPackage.GetProperty("basicSalary").GetDecimal().Should().Be(6000m);
+            reversalPackage.GetProperty("reductionConsentReference").GetString().Should().Be("merit-award-reversal:" + a1Change.ToString("D"),
+                "restoring the pre-award package needs no signed agreement, and says why");
             reversalApproval = change.ApprovalRequestId!.Value;
         }
         await FluentActions.Invoking(() => DecideAsync(fx, w, reversalApproval, w.UserHr, ["HR Manager"], "Approve", "self"))
