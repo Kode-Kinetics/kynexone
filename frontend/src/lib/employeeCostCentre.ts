@@ -1,4 +1,5 @@
 import { apiErrorCode } from './glCostAccounting';
+import { msg } from '../i18n/translations';
 
 /**
  * Cost accounting v1 (WP-F), screen 6 and AM-30: where an employee's cost centre comes from, and the request shapes that
@@ -113,6 +114,36 @@ function inferCostCentre(input: ResolveInput, options: { ignoreOverride?: boolea
   return { kind: 'none', costCentreId: null };
 }
 
+/** The preview endpoint's DTO (api/employees EmployeeCostCentrePreview), restated here so this file stays free of the API client. */
+export interface PreviewLike {
+  costCentreId: string | null;
+  code: string | null;
+  source: string;
+  sourceName: string | null;
+  sourceNameAr: string | null;
+  level: string | null;
+  invalidReason: string | null;
+}
+
+const LEVEL_OF_REASON: Array<[string, SourceLevel]> = [
+  ['employee_', 'employee'], ['position_', 'position'], ['parent_department_', 'parentDepartment'], ['parentdepartment_', 'parentDepartment'],
+  ['department_', 'department'], ['company_', 'company'],
+];
+const LEVELS: ReadonlySet<string> = new Set(['employee', 'position', 'department', 'parentDepartment', 'company']);
+
+/** The preview endpoint's answer in the screen's terms. An unusable cost centre is `invalid` at its level, with only the code the server sent. */
+export function previewResolution(dto: PreviewLike, locale: string): Resolution {
+  if (dto.invalidReason) {
+    const reason = dto.invalidReason.toLowerCase();
+    const level = dto.level && LEVELS.has(dto.level) ? dto.level as SourceLevel : LEVEL_OF_REASON.find(([prefix]) => reason.startsWith(prefix))?.[1] ?? 'company';
+    return { kind: 'invalid', costCentreId: null, level, code: dto.code ?? '' };
+  }
+  const kind = KIND_OF_SOURCE[dto.source];
+  if (!kind || !dto.costCentreId) return { kind: 'none', costCentreId: null };
+  const sourceName = (locale === 'ar' && dto.sourceNameAr ? dto.sourceNameAr : dto.sourceName) ?? undefined;
+  return sourceName && kind !== 'employee' && kind !== 'companyDefault' ? { kind, costCentreId: dto.costCentreId, sourceName } : { kind, costCentreId: dto.costCentreId };
+}
+
 // ── Request shapes (AM-30) ───────────────────────────────────────────────────
 
 /** PUT /api/employees/{id}: setting or re-pointing the override. The reason is required (M-10) and audited. */
@@ -127,31 +158,229 @@ export function removeOverridePatch(reason: string) {
 
 /**
  * The create form's cost-centre fields. A user without organization.costcenter.manage sends none (the server refuses any,
- * 403). The department's own cost centre is a plain copy and needs no reason; a different one is an override and carries
- * one. Choosing "None" where the department has one sends the explicit None (Guid.Empty), never null.
+ * 403). Nothing chosen is "Follow department": nothing is sent and the person inherits. On a saved hire draft whose server
+ * record holds an override (`hadOverride`), following again sends the explicit None (Guid.Empty) WITH the reason, because
+ * removing an override is audited and the server requires one. The department's own cost centre is a plain copy and needs no
+ * reason; a different one is an override and carries one.
  */
-export function createCostCentreFields(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; reason: string }): { costCenterId?: string; costCenterReason?: string } {
+export function createCostCentreFields(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; reason: string; hadOverride?: boolean; overrideId?: string | null }): { costCenterId?: string; costCenterReason?: string } {
   if (!input.canManage) return {};
   const { chosenId, departmentCostCentreId } = input;
-  if (!chosenId) return departmentCostCentreId ? { costCenterId: NO_COST_CENTRE } : {};
-  if (chosenId === departmentCostCentreId) return { costCenterId: chosenId };
+  // The override the saved record already holds, picked again: no change.
+  if (chosenId && input.overrideId && chosenId === input.overrideId) return {};
+  const holdsOverride = !!input.hadOverride || !!input.overrideId;
+  if (!chosenId) return holdsOverride ? { costCenterId: NO_COST_CENTRE, costCenterReason: input.reason.trim() } : {};
+  // A plain copy only when no override is held; otherwise moving off the override is audited and needs the reason.
+  if (chosenId === departmentCostCentreId && !holdsOverride) return { costCenterId: chosenId };
   return { costCenterId: chosenId, costCenterReason: input.reason.trim() };
 }
 
-/** True when the create form's choice is an override (a cost centre that is not the department's), so a reason is due. */
-export function createNeedsReason(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string }): boolean {
-  return input.canManage && !!input.chosenId && input.chosenId !== input.departmentCostCentreId;
+/** True when the create form's choice changes an override (a cost centre that is not the department's, or following the department while the saved record holds one), so a reason is due. */
+export function createNeedsReason(input: { canManage: boolean; chosenId: string; departmentCostCentreId: string; hadOverride?: boolean; overrideId?: string | null }): boolean {
+  if (!input.canManage) return false;
+  const holdsOverride = !!input.hadOverride || !!input.overrideId;
+  // While an override is held, any choice but that same override changes it: reason due.
+  if (holdsOverride) return input.chosenId !== input.overrideId || !input.overrideId;
+  return !!input.chosenId && input.chosenId !== input.departmentCostCentreId;
+}
+
+/**
+ * Whether the server holds an override for a hire draft after a create or save. The response's own flag wins; without one, the
+ * request decides: an id other than the department's = override, Guid.Empty or the department's own = none, nothing sent =
+ * unchanged. Recomputed after EVERY save, so "Follow department" later sends the explicit None (with a reason) when it must.
+ */
+export function overrideAfterSave(input: {
+  /** The override id held before this save (null = none). */
+  previous: string | null;
+  sentCostCenterId: string | undefined;
+  serverFlag: boolean | null | undefined;
+  serverCostCenterId?: string | null;
+  departmentCostCentreId: string;
+}): string | null {
+  const sent = input.sentCostCenterId;
+  const sentOverride = sent !== undefined && sent !== NO_COST_CENTRE && sent !== input.departmentCostCentreId ? sent : null;
+  if (input.serverFlag === false) return null;
+  if (input.serverFlag === true) return input.serverCostCenterId ?? sentOverride ?? input.previous;
+  if (sent === undefined) return input.previous;
+  return sentOverride;
 }
 
 // ── Refusals ─────────────────────────────────────────────────────────────────
 
-export type CostCentreErrorKind = 'reason' | 'locked' | 'forbidden' | 'other';
+export type CostCentreErrorKind = 'reason' | 'decision' | 'ref' | 'locked' | 'stale' | 'forbidden' | 'other';
+
+const REF_CODES = new Set(['cost_centre_inactive', 'cost_centre_other_company', 'cost_centre_not_found']);
 
 export function costCentreErrorKind(err: unknown): CostCentreErrorKind {
   const status = (err as { response?: { status?: number } } | null | undefined)?.response?.status;
   const code = apiErrorCode(err);
-  if (status === 422 && code === 'cost_centre_reason_required') return 'reason';
+  if (status === 422 && (code === 'cost_centre_reason_required' || code === 'reason_invalid_characters' || code === 'reason_too_long')) return 'reason';
+  if (status === 422 && (code === 'cost_centre_decision_required' || code === 'cost_centre_decision_invalid')) return 'decision';
+  if (status === 422 && code && REF_CODES.has(code)) return 'ref';
   if (status === 409 && code === 'locked_into_approved_run') return 'locked';
+  if (status === 409 && code === 'cost_centre_state_changed') return 'stale';
   if (status === 403) return 'forbidden';
   return 'other';
+}
+
+const REFUSAL_BY_CODE: Record<string, string> = {
+  cost_centre_reason_required: msg('Enter a reason for this change.'),
+  reason_invalid_characters: msg('The reason contains characters that are not allowed. Remove them and try again.'),
+  reason_too_long: msg('The reason is too long. Use 500 characters or fewer.'),
+  cost_centre_decision_required: msg('Choose whether to keep the override or follow the new department.'),
+  cost_centre_decision_invalid: msg('Choose whether to keep the override or follow the new department.'),
+  cost_centre_inactive: msg('This cost centre is inactive. Choose an active one.'),
+  cost_centre_other_company: msg('This cost centre belongs to another company. Choose one of this company’s cost centres.'),
+  cost_centre_not_found: msg('This cost centre no longer exists. Choose another.'),
+  cost_centre_state_changed: msg('Someone changed this employee’s cost centre since you opened the form. Reload the employee and try again.'),
+};
+
+/**
+ * The words for a cost-centre refusal, by the server's code (a translation key; the caller runs it through t). Null when the
+ * code is not a cost-centre one, so the caller falls back to the server's own sentence. 403 is the permission sentence.
+ */
+export function costCentreRefusalKey(err: unknown): string | null {
+  const status = (err as { response?: { status?: number } } | null | undefined)?.response?.status;
+  const code = apiErrorCode(err);
+  if (code && REFUSAL_BY_CODE[code] && (status === 422 || status === 409 || status === 400)) return REFUSAL_BY_CODE[code];
+  if (status === 403) return msg('Only HR managers and admins can change this.');
+  return null;
+}
+
+// ── The preview endpoint's refusals (backend as built) ─────────────────────────
+
+export type PreviewFailure =
+  | { kind: 'rateLimited'; retryAfterSeconds: number }
+  | { kind: 'departmentNotFound' }
+  | { kind: 'positionNotFound' }
+  | { kind: 'error' };
+
+/**
+ * What a failed preview means for the screen. 429 {error:"rate_limited"} + Retry-After is a short wait (bounded 1–30 s, 2 s when
+ * the header is missing), shown as "try again", never as an error. 404 department_not_found / position_not_found carry their code;
+ * a 404 for the employee itself has an empty body and is a plain error, like anything else.
+ */
+export function previewFailure(err: unknown): PreviewFailure {
+  const response = (err as { response?: { status?: number; headers?: Record<string, unknown> } } | null | undefined)?.response;
+  if (response?.status === 429) {
+    const raw = Number(response.headers?.['retry-after']);
+    return { kind: 'rateLimited', retryAfterSeconds: Number.isFinite(raw) && raw > 0 ? Math.min(30, Math.max(1, Math.ceil(raw))) : 2 };
+  }
+  const code = apiErrorCode(err);
+  if (response?.status === 404 && code === 'department_not_found') return { kind: 'departmentNotFound' };
+  if (response?.status === 404 && code === 'position_not_found') return { kind: 'positionNotFound' };
+  return { kind: 'error' };
+}
+
+/**
+ * Whether the department in the form is a move the server will see. Judged by id when both are known (a department saved under
+ * its code but shown by its name is not a move), so a keep/drop decision is never sent where the server finds nothing to decide.
+ */
+export function departmentMoves(input: { formValue: string; originalValue: string; selectedId: string | null; currentId: string | null }): boolean {
+  if (input.formValue === input.originalValue) return false;
+  if (!input.formValue.trim()) return true;
+  if (input.selectedId && input.currentId) return input.selectedId !== input.currentId;
+  return true;
+}
+
+// ── The edit flow (Wave A: D2 keep-or-follow on a transfer, D4 the dropdown) ─────────────
+
+export type CostCentreDecision = 'keep' | 'drop';
+
+export interface EditCostCentreInput {
+  /** organization.costcenter.manage. Without it nothing about the cost centre is sent. */
+  canManage: boolean;
+  /** The server says the person has an override now. */
+  isOverride: boolean;
+  /** The override's cost-centre id (null without one). */
+  overrideId: string | null;
+  /** What the person inherits for the department in the form (the server preview without a cost centre). */
+  inheritedId: string | null;
+  /** The dropdown: undefined = untouched, '' = "Follow department", an id = that cost centre. */
+  choice: string | undefined;
+  /** The department in the form differs from the saved one. */
+  departmentChanged: boolean;
+  /** The answer to "keep the override or follow the new department?". */
+  decision: CostCentreDecision | undefined;
+  reason: string;
+  /** Cost-centre id → code, for the PUT's `changes.costCenter`. */
+  codeOf: (id: string) => string;
+}
+
+export interface EditCostCentrePatch {
+  changes?: { costCenter: string };
+  costCenterReason?: string;
+  costCenterDecision?: CostCentreDecision;
+  expectedCostCenterOverrideId?: string | null;
+}
+
+/** The code an edit patch sends ('' removes the override), or undefined when it sends none. */
+export function patchCostCentreCode(patch: EditCostCentrePatch): string | undefined {
+  return patch.changes ? patch.changes.costCenter : undefined;
+}
+
+/** What the dropdown amounts to: no change, follow (remove any override), or a specific cost centre. */
+function editIntent(input: EditCostCentreInput): { kind: 'none' } | { kind: 'follow' } | { kind: 'pick'; id: string } {
+  const { choice } = input;
+  if (choice === undefined) return { kind: 'none' };
+  if (input.isOverride && choice === input.overrideId) return { kind: 'none' };
+  if (choice === '' || choice === input.inheritedId) return input.isOverride ? { kind: 'follow' } : { kind: 'none' };
+  return { kind: 'pick', id: choice };
+}
+
+/** The keep-or-follow question is due: an override, a department change, a manager, and no explicit pick in the dropdown. */
+export function needsDecision(input: EditCostCentreInput): boolean {
+  return input.canManage && input.isOverride && input.departmentChanged && editIntent(input).kind === 'none';
+}
+
+/** A reason is due whenever the PUT changes the override or carries a decision. */
+export function editCostCentreNeedsReason(input: EditCostCentreInput): boolean {
+  if (!input.canManage) return false;
+  return editIntent(input).kind !== 'none' || needsDecision(input);
+}
+
+/**
+ * The cost-centre part of PUT /api/employees/{id} for the edit flow. An explicit pick wins and is sent as `changes.costCenter`
+ * (an empty code removes the override); the inherited cost centre is never sent as a code, because the server would store it as
+ * an override. Without a pick, an override plus a department change sends the decision with the override id it was made
+ * against (the server answers 409 cost_centre_state_changed when that is no longer true). Never both a code and a decision.
+ */
+export function editCostCentrePatch(input: EditCostCentreInput): EditCostCentrePatch {
+  if (!input.canManage) return {};
+  const intent = editIntent(input);
+  const reason = input.reason.trim();
+  if (intent.kind === 'follow') return { changes: { costCenter: '' }, costCenterReason: reason };
+  if (intent.kind === 'pick') {
+    const code = input.codeOf(intent.id);
+    return code ? { changes: { costCenter: code }, costCenterReason: reason } : {};
+  }
+  if (needsDecision(input) && input.decision) {
+    return { costCenterDecision: input.decision, costCenterReason: reason, expectedCostCenterOverrideId: input.overrideId };
+  }
+  return {};
+}
+
+// ── The dropdown ─────────────────────────────────────────────────────────────
+
+export interface CostCentreOption { value: string; code: string; name: string; label: string; inherit?: true }
+
+/**
+ * The company's active cost centres as `CODE — name` (the Arabic name in Arabic, falling back to English). With `inherited`,
+ * the first option is "follow" (value '') carrying the inherited code and name, and that cost centre is not listed again.
+ * Without a company nothing is offered: never every company's list.
+ */
+export function costCentreOptions(
+  list: ReadonlyArray<CostCentreLike>,
+  companyId: string | null | undefined,
+  locale: string,
+  inherited: { id: string | null; code: string; name: string } | null,
+): CostCentreOption[] {
+  if (!companyId) return [];
+  const nameOf = (c: CostCentreLike) => (locale === 'ar' && c.nameAr ? c.nameAr : c.name);
+  const label = (code: string, name: string) => (code ? (name ? `${code} — ${name}` : code) : '');
+  const rows = list
+    .filter((c) => c.isActive && c.companyId === companyId && c.id !== inherited?.id)
+    .map((c) => ({ value: c.id, code: c.code, name: nameOf(c), label: label(c.code, nameOf(c)) }));
+  if (!inherited) return rows;
+  return [{ value: '', code: inherited.code, name: inherited.name, label: label(inherited.code, inherited.name), inherit: true }, ...rows];
 }

@@ -46,6 +46,8 @@ export interface HireMockOptions {
   warnOnFirstPut?: boolean;
   /** Hold the create response until released (double-click test). */
   holdCreate?: Promise<void>;
+  /** Hold every hire-draft PUT response until released (the request is still recorded when it is sent). */
+  holdPut?: Promise<void>;
   permissions?: string[];
   /** Arabic name suggestions the transliterate endpoint knows, by the English text sent. Any other name answers requiresManualEntry. */
   transliterations?: Record<string, string>;
@@ -61,6 +63,8 @@ export interface HireMockOptions {
     designations?: Array<Record<string, any>>;
     grades?: Array<Record<string, any>>;
     managers?: Array<Record<string, any>>;
+    /** Cost centres (Wave A); GET /api/organization/cost-centers answers only the asked company's. */
+    costCentres?: Array<Record<string, any>>;
   };
   /** Hold a company's hire-template list response so stale choices can be tested deterministically. */
   holdHireTemplatesForCompany?: Record<string, Promise<void>>;
@@ -134,7 +138,10 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/departments') return reply(paged(departments));
     if (p === '/api/designations') return reply(paged(designations));
     if (p === '/api/grades') return reply(paged(grades));
-    if (p === '/api/organization/cost-centers') return reply(paged([]));
+    if (p === '/api/organization/cost-centers') {
+      const wanted = url.searchParams.get('companyId');
+      return reply(paged((options.org?.costCentres ?? []).filter(c => !wanted || c.companyId === wanted)));
+    }
     if (p === '/api/admin/master-data/values') return reply([]);
     // The real endpoint's rows ({ iso2, nameEn, nameAr, class }), not a shape invented for the mock.
     if (p === '/api/reference/nationalities') return reply(nationalitiesFixture);
@@ -154,9 +161,20 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       if (options.warnFirstCreate && !body.acknowledgedWarnings) {
         return reply({ title: 'Warnings', status: 409, code: 'warnings_require_acknowledgement', traceId: 't1', warnings: (options.warnings ?? [{ code: 'joining_backdated', field: 'joiningDate' }]).map(w => ({ message: 'x', requiresPermission: false, ...w })) }, 409);
       }
-      const created = realDraft({ id: 901, employeeCode: 'TEST-901', fullName: body.englishName, englishName: body.englishName, updatedAtUtc: '2026-10-27T08:00:00Z' });
+      // Like the server: a created cost-centre override (a cost centre sent with its reason) is reported back.
+      const override = !!body.costCenterId && !!body.costCenterReason;
+      const created = realDraft({ id: 901, employeeCode: 'TEST-901', fullName: body.englishName, englishName: body.englishName, updatedAtUtc: '2026-10-27T08:00:00Z', costCenterId: body.costCenterId ?? null, costCenterIsOverride: override });
       if (creates.filter(c => c.key === key).length > 1) return reply(created, 200);
       return reply(created, 201);
+    }
+    if (/^\/api\/employees\/\d+\/cost-centre\/preview$/.test(p)) {
+      // Wave A preview, as the backend builds it: what the person would inherit in that department.
+      const dept = departments.find(d => d.id === url.searchParams.get('departmentId'));
+      if (!dept) return reply({ error: 'department_not_found', code: 'department_not_found', message: 'Department not found.', messageAr: 'القسم غير موجود.' }, 404);
+      const cc = (options.org?.costCentres ?? []).find(c => c.id === dept.costCenterId);
+      return reply(cc
+        ? { costCentreId: cc.id, code: cc.code, nameEn: cc.name, nameAr: cc.nameAr ?? null, source: 'Department', sourceName: dept.nameEn, sourceNameAr: dept.nameAr ?? null, level: 'department', isOverride: false, invalidReason: null }
+        : { costCentreId: null, code: null, nameEn: null, nameAr: null, source: 'None', sourceName: null, sourceNameAr: null, level: null, isOverride: false, invalidReason: null });
     }
     if (/^\/api\/employees\/\d+$/.test(p) && method === 'GET') {
       gets.push(p);
@@ -167,6 +185,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
     if (p === '/api/employees' && method === 'GET') return reply(paged(url.searchParams.get('status') === 'Active' ? managers : []));
     if (/^\/api\/employees\/\d+\/hire-draft$/.test(p) && method === 'PUT') {
       puts.push(body);
+      await options.holdPut;
       if (options.conflictOnPut) return reply({ title: 'Draft changed elsewhere.', status: 409, code: 'draft_changed_elsewhere', traceId: 't2' }, 409);
       if (options.warnOnFirstPut && puts.length === 1) return reply({ title: 'Acknowledgement required.', status: 409, code: 'warnings_require_acknowledgement', traceId: 't4', warnings: [{ code: 'joining_backdated', field: 'joiningDate', message: 'Joining date is more than 30 days in the past.', requiresPermission: false }] }, 409);
       seq++;

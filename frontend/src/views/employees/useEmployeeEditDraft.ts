@@ -16,6 +16,7 @@ import { employeesApi } from '../../api/employees';
 import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
 import { workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
 import { linesFromWire, decodeValue, type AllowanceDraftLine } from '../../lib/salaryAllowances';
+import type { CostCentreDecision, EditCostCentrePatch } from '../../lib/employeeCostCentre';
 import {
   NO_REDUCTION, consentReferenceProblem, proposalReduction, reductionBlock, reductionRefusal, type ReductionRefusal,
 } from '../../lib/salaryReduction';
@@ -77,6 +78,24 @@ function fieldIsAvailable(employee: EmployeeDetail, field: EmployeeEditField) {
   return true;
 }
 
+/** What the cost-centre dropdown and the keep-or-follow question hold (Wave A). Kept apart from `form`: it is not a PUT field. */
+export interface CostCentreIntent {
+  /** undefined = untouched, '' = follow the department, an id = that cost centre. */
+  choice?: string;
+  decision?: CostCentreDecision;
+  reason: string;
+}
+const NO_INTENT: CostCentreIntent = { reason: '' };
+
+/** The cost-centre part of a save, worked out by the edit flow from the intent and the server's preview. */
+export interface CostCentreSavePlan {
+  patch: EditCostCentrePatch;
+  /** A refusal of the PUT that belongs to the cost-centre block: return the step to show it on (Employment), or null. */
+  onError?: (error: unknown) => number | null;
+}
+
+export const hasCostCentrePatch = (patch: EditCostCentrePatch | undefined) => !!patch && (!!patch.changes || !!patch.costCenterDecision);
+
 function errorMessage(error: unknown) {
   const data = (error as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
   if (data?.message) return data.message;
@@ -117,6 +136,7 @@ export function useEmployeeEditDraft({
   const [referenceProblemShown, setReferenceProblemShown] = useState(false);
   const [serverReduction, setServerReduction] = useState<ReductionRefusal | null>(null);
   const [referenceFocus, setReferenceFocus] = useState(0);
+  const [costCentreIntent, setCostCentreIntentState] = useState<CostCentreIntent>(NO_INTENT);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,7 +155,8 @@ export function useEmployeeEditDraft({
   const dirtyKeys = useMemo(() => Object.keys(form).filter(key => form[key] !== original[key]), [form, original]);
   const changedKeys = useMemo(() => dirtyKeys.filter(key => availableKeys.has(key)), [availableKeys, dirtyKeys]);
   const unavailableKeys = useMemo(() => dirtyKeys.filter(key => !availableKeys.has(key)), [availableKeys, dirtyKeys]);
-  const dirty = dirtyKeys.length > 0;
+  const intentDirty = costCentreIntent.choice !== undefined || costCentreIntent.decision !== undefined || costCentreIntent.reason !== '';
+  const dirty = dirtyKeys.length > 0 || intentDirty;
 
   // Whether the proposal lowers the pay against the record in force (what the profile shows now). A first package waiting for Finance is not in force.
   const salaryTouched = changedKeys.some(key => key.startsWith('salaryBreakdown.') && key !== REDUCTION_REFERENCE_KEY);
@@ -162,11 +183,17 @@ export function useEmployeeEditDraft({
 
   const discard = useCallback(() => {
     setForm({ ...original });
+    setCostCentreIntentState(NO_INTENT);
     setNotice('');
     setAllowanceProblemsShown(false);
     setReferenceProblemShown(false);
     setServerReduction(null);
   }, [original]);
+
+  const setCostCentreIntent = useCallback((next: Partial<CostCentreIntent>) => {
+    setCostCentreIntentState((current) => ({ ...current, ...next }));
+    setNotice('');
+  }, []);
   useNavigationBlocker({ id: `employee-edit-${employee.id}`, when: dirty && !saving, message: 'Discard unsaved employee changes?', onDiscard: discard });
 
   const setField = useCallback((key: string, value: string) => {
@@ -216,8 +243,9 @@ export function useEmployeeEditDraft({
     setStepState(Math.max(0, Math.min(EMPLOYEE_EDIT_STEP_LABELS.length - 1, next)));
   }, [saving, step, validateStep]);
 
-  const save = useCallback(async () => {
-    if (!canWrite || saving || step !== 5 || changedKeys.length === 0) return;
+  const save = useCallback(async (costCentre?: CostCentreSavePlan) => {
+    const costCentreChanged = hasCostCentrePatch(costCentre?.patch);
+    if (!canWrite || saving || step !== 5 || (changedKeys.length === 0 && !costCentreChanged)) return;
     for (let index = 0; index < 5; index++) {
       if (!validateStep(index)) { setStepState(index); return; }
     }
@@ -234,8 +262,15 @@ export function useEmployeeEditDraft({
     setSaving(true);
     setNotice('');
     try {
-      const response = await employeesApi.update(employee.id, effectiveDate, changes);
+      const patch = costCentre?.patch ?? {};
+      // Never both a code and a decision (the server refuses that); editCostCentrePatch already guarantees it.
+      const response = await employeesApi.update(employee.id, effectiveDate, { ...changes, ...(patch.changes ?? {}) }, {
+        costCenterReason: patch.costCenterReason,
+        costCenterDecision: patch.costCenterDecision,
+        expectedCostCenterOverrideId: patch.expectedCostCenterOverrideId,
+      });
       setOriginal({ ...form });
+      setCostCentreIntentState(NO_INTENT);
       await onSaved(response.status);
     } catch (error) {
       const reduced = reductionRefusal(error);
@@ -244,7 +279,11 @@ export function useEmployeeEditDraft({
         if (reduced.kind === 'required') setServerReduction(reduced);
         setReferenceProblemShown(true); setReferenceFocus(n => n + 1); setStepState(3);
         setNotice(reduced.message || 'Lowering an employee’s pay needs their written agreement; enter its reference.');
-      } else setNotice(errorMessage(error));
+      } else {
+        const target = costCentre?.onError?.(error) ?? null;
+        if (target !== null) setStepState(target);
+        else setNotice(errorMessage(error));
+      }
     } finally {
       setSaving(false);
     }
@@ -287,6 +326,8 @@ export function useEmployeeEditDraft({
     changedKeys,
     unavailableKeys,
     reviewSections,
+    costCentreIntent,
+    setCostCentreIntent,
     salaryPackageChanged: changedKeys.some(key => key.startsWith('salaryBreakdown.')),
     salaryEffectiveDate: form['salaryBreakdown.effectiveDate'] ?? '',
     allowanceBaseline,

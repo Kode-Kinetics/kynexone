@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
 import shutil
 import subprocess
@@ -49,7 +48,9 @@ def identity(root):
         raise ValueError('workflow run and attempt must be positive integers')
     return {'version': 1, 'sha': sha, 'run_id': values['GITHUB_RUN_ID'],
             'run_attempt': values['GITHUB_RUN_ATTEMPT'], 'configuration': 'Release',
-            'framework': 'net8.0', 'platform': sys.platform, 'architecture': platform.machine()}
+            # No CPU architecture here on purpose: the outputs are IL (AnyCPU) and the Release build may run on the
+            # arm64 self-hosted runner while the test lanes run on x64 hosted runners. OS stays pinned.
+            'framework': 'net8.0', 'platform': sys.platform}
 
 
 def require_outputs(names):

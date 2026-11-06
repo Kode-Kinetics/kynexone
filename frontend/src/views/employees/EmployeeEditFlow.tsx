@@ -24,7 +24,11 @@ import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRou
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
 import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
-import { employeeEditStep, useEmployeeEditDraft } from './useEmployeeEditDraft';
+import { employeeEditStep, hasCostCentrePatch, useEmployeeEditDraft, type CostCentreIntent } from './useEmployeeEditDraft';
+import { useEditCostCentre } from './useEditCostCentre';
+import { EmployeeEditCostCentreField, type EditCostCentreAlert } from './EmployeeEditCostCentreField';
+import { costCentreErrorKind, costCentreRefusalKey } from '../../lib/employeeCostCentre';
+import { pickServerMessage } from '../../lib/glCostAccounting';
 import { useLiveGrades } from '../../hooks/useLiveGrades';
 import { designationChoices } from '../../lib/employeeDesignationChoices';
 import { SalaryAllowancesEditor } from '../../components/payroll/SalaryAllowancesEditor';
@@ -75,6 +79,8 @@ export function EmployeeEditFlow({
   const { t, locale } = useLocale();
   const canWrite = hasPermission('employees.write');
   const canSeeSensitive = hasPermission('employees.sensitive');
+  // Moving a person's cost (override, or a department change) needs organization.costcenter.manage on the server.
+  const canManageCostCentres = hasPermission('organization.costcenter.manage');
   const [company, setCompany] = useState<CompanyDto | null>(null);
   const [departments, setDepartments] = useState<DepartmentDto[]>([]);
   const [designations, setDesignations] = useState<DesignationDto[]>([]);
@@ -122,9 +128,11 @@ export function EmployeeEditFlow({
       if (cancelled) return;
       const [companyResult, departmentResult, designationResult, costCenterResult, employeeResult] = results;
       setCompany(companyResult.status === 'fulfilled' ? companyResult.value.find((item) => item.id === employee.companyId) ?? null : null);
-      setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive) : []);
+      // Only this employee's company (or company-less) departments: another company's department is refused by the server.
+      setDepartments(departmentResult.status === 'fulfilled' ? departmentResult.value.filter((item) => item.isActive && (!item.companyId || item.companyId === employee.companyId)) : []);
       setDesignations(designationResult.status === 'fulfilled' ? designationResult.value.filter((item) => item.isActive) : []);
-      setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => item.isActive) : []);
+      // Every row of this company, active or not: a stored inactive override is still named; the dropdown offers active ones only.
+      setCostCenters(costCenterResult.status === 'fulfilled' ? costCenterResult.value.filter((item) => !item.companyId || item.companyId === employee.companyId) : []);
       setEmployees(employeeResult.status === 'fulfilled' ? employeeResult.value : []);
     });
     return () => { cancelled = true; };
@@ -154,12 +162,72 @@ export function EmployeeEditFlow({
     const department = departments.find((item) => item.nameEn === value || item.code === value);
     const designation = department ? designations.find((item) => item.departmentId === department.id) : undefined;
     const grade = designation?.gradeId ? grades.find((item) => item.id === designation.gradeId) : undefined;
-    const costCenter = department?.costCenterId ? costCenters.find((item) => item.id === department.costCenterId) : undefined;
     draft.setField('designation', designation?.titleEn ?? '');
     draft.setField('grade', grade?.code ?? designation?.jobGrade ?? '');
-    draft.setField('costCenter', costCenter?.code ?? '');
+    // The cost centre is not guessed here: the server's preview answers for the new department (useEditCostCentre).
     draft.setField('managerEmployeeId', department?.managerEmployeeId?.toString() ?? '');
+    setCostCentreAlert(null);
   };
+
+  const [costCentreAlert, setCostCentreAlert] = useState<EditCostCentreAlert | null>(null);
+  const cc = useEditCostCentre({
+    employee,
+    departments,
+    costCentres: costCenters,
+    departmentValue: draft.form.department ?? '',
+    originalDepartmentValue: draft.original.department ?? '',
+    canManage: canManageCostCentres,
+    canWrite,
+    intent: draft.costCentreIntent,
+    locale,
+  });
+  const costCentreChanged = hasCostCentrePatch(cc.patch);
+  const changeCount = draft.changedKeys.length + (costCentreChanged && !draft.changedKeys.includes('costCenter') ? 1 : 0);
+  const setCostCentreIntent = (next: Partial<CostCentreIntent>) => {
+    draft.setCostCentreIntent(next);
+    setCostCentreAlert(null);
+  };
+  const problemAlert = useCallback((): EditCostCentreAlert | null => {
+    if (cc.problem === 'decision') return { message: t('Choose whether to keep the override or follow the new department.'), focus: 'decision', n: Date.now() };
+    if (cc.problem === 'reason') return { message: t('Enter a reason for this change.'), focus: 'reason', n: Date.now() };
+    return null;
+  }, [cc.problem, t]);
+  /** Leaving Employment (or saving) with the cost-centre question open: stay on Employment, say why, focus the question. */
+  const goToStep = (next: number) => {
+    const blocking = next > draft.step && draft.step === 1 ? problemAlert() : null;
+    if (blocking) return setCostCentreAlert(blocking);
+    draft.setStep(next);
+  };
+  const costCentreRefusal = (error: unknown): number | null => {
+    const kind = costCentreErrorKind(error);
+    const carried = costCentreChanged || cc.departmentChanged;
+    if (kind === 'other' || (kind === 'forbidden' && !carried) || (kind === 'locked' && !carried)) return null;
+    const key = costCentreRefusalKey(error);
+    const data = (error as { response?: { data?: unknown } })?.response?.data;
+    const message = key ? t(key) : pickServerMessage(data, locale) ?? t('The cost centre could not be saved. Review it and try again.');
+    setCostCentreAlert({ message, focus: kind === 'decision' ? 'decision' : kind === 'reason' ? 'reason' : 'select', n: Date.now() });
+    return 1;
+  };
+  const submitSave = () => {
+    const blocking = problemAlert();
+    if (blocking) {
+      draft.setStep(1);
+      return setCostCentreAlert(blocking);
+    }
+    void draft.save({ patch: cc.patch, onError: costCentreRefusal });
+  };
+  const reviewText = (() => {
+    const r = cc.review;
+    if (!r) return null;
+    if (r.kind === 'pick') return t('From {from} to {to}. Reason: {reason}', { from: r.from || '—', to: r.to, reason: r.reason });
+    if (r.kind === 'keep') return t('Keeps {code} (override). Reason: {reason}', { code: r.to, reason: r.reason });
+    if (r.kind === 'follow') return t('Follows {department}: {code}. Reason: {reason}', { department: r.department, code: r.to || '—', reason: r.reason });
+    return t('Follows {department}: {code}', { department: r.department, code: r.to || '—' });
+  })();
+  const costCentreFieldLabel = draft.fields.find((field) => field.key === 'costCenter')?.label;
+  const reviewSections = reviewText && costCentreFieldLabel
+    ? draft.reviewSections.map((section) => ({ ...section, rows: section.rows.map(([label, value]) => (label === costCentreFieldLabel ? [label, reviewText] : [label, value]) as [string, string]) }))
+    : draft.reviewSections;
 
   const changeDesignation = (value: string) => {
     draft.setField('designation', value);
@@ -180,14 +248,14 @@ export function EmployeeEditFlow({
             </div>
             <button type="button" onClick={draft.discard} disabled={draft.saving || draft.dirtyKeys.length === 0} className="btn-secondary disabled:opacity-40"><RotateCcw className="h-4 w-4" />{t('Revert changes')}</button>
           </div>
-          <div className="p-4"><EmployeeCreateProgress steps={EMPLOYEE_EDIT_STEPS} step={draft.step} onStepChange={draft.setStep} busy={draft.saving} allowAll /></div>
+          <div className="p-4"><EmployeeCreateProgress steps={EMPLOYEE_EDIT_STEPS} step={draft.step} onStepChange={goToStep} busy={draft.saving} allowAll /></div>
         </header>
 
         <section className="surface p-5" data-employee-workspace-scroll>
           {!canWrite && <p className="mb-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {draft.unavailableKeys.length > 0 && <p role="alert" className="mb-4 rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Some edited fields are no longer available. Revert the changes or reopen the employee record.')}</p>}
           {draft.notice && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{t(draft.notice)}</p>}
-          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) draft.setStep(draft.step + 1); else if (!salaryBlockedByStructure) void draft.save(); }}>
+          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) goToStep(draft.step + 1); else if (!salaryBlockedByStructure) submitSave(); }}>
             {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((stepLabel, index) => (
               <EmployeeCreatePanel key={stepLabel.label} steps={EMPLOYEE_EDIT_STEPS} step={index} activeStep={draft.step}>
                 {draft.fields.some(field => employeeEditStep(field) === index && field.sensitive) && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>}
@@ -220,10 +288,13 @@ export function EmployeeEditFlow({
                     }
                     if (field.key === 'department') {
                       const options = retainCurrentOption(departments.map((item) => item.nameEn), draft.form.department);
-                      return <label key={field.key} htmlFor="edit-field-department" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                        <span>{t('Department')}</span>
-                        <select id="edit-field-department" value={draft.form.department ?? ''} onChange={event => changeDepartment(event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
-                      </label>;
+                      return <div key={field.key}>
+                        <label htmlFor="edit-field-department" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+                          <span>{t('Department')}</span>
+                          <select id="edit-field-department" value={draft.form.department ?? ''} onChange={event => changeDepartment(event.target.value)} disabled={!canManageCostCentres} aria-describedby={canManageCostCentres ? undefined : 'edit-field-department-note'} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
+                        </label>
+                        {!canManageCostCentres && <p id="edit-field-department-note" data-testid="cc-edit-department-note" className="mt-1 text-xs text-slate-500">{t('Changing the department moves the cost centre, so only HR managers and admins can change it.')}</p>}
+                      </div>;
                     }
                     if (field.key === 'designation') {
                       const options = retainCurrentOption(departmentDesignations.map((item) => item.titleEn), draft.form.designation);
@@ -249,11 +320,14 @@ export function EmployeeEditFlow({
                       onInvalidSelectionChange={setStructureInvalid}
                       labelSuffix={<>{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-caption font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</>}
                     />;
-                    if (field.key === 'costCenter') return <label key={field.key} htmlFor="edit-field-costCenter" className="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                      <span>{t('Cost center')}</span>
-                      <input id="edit-field-costCenter" value={draft.form.costCenter ?? ''} readOnly aria-describedby="edit-field-costCenter-hint" className="input mt-1.5 w-full bg-slate-50 dark:bg-white/5" />
-                      <span id="edit-field-costCenter-hint" className="mt-1 block text-xs font-normal text-slate-500">{t('Managed on the Employment tab of the profile, with a reason.')}</span>
-                    </label>;
+                    if (field.key === 'costCenter') return <EmployeeEditCostCentreField
+                      key={field.key}
+                      cc={cc}
+                      label={t(field.label)}
+                      intent={draft.costCentreIntent}
+                      onIntent={setCostCentreIntent}
+                      alert={costCentreAlert}
+                    />;
                     if (field.key === 'managerEmployeeId') {
                       const current = draft.form.managerEmployeeId ?? '';
                       const options = managerCandidates.some((item) => String(item.id) === current)
@@ -292,17 +366,17 @@ export function EmployeeEditFlow({
               </EmployeeCreatePanel>
             ))}
             <EmployeeCreatePanel steps={EMPLOYEE_EDIT_STEPS} step={5} activeStep={draft.step}>
-              <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{draft.changedKeys.length ? t('{count} fields changed. Review the before and after values before saving.', { count: draft.changedKeys.length }) : t('No changes yet. You can return to any section to update it.')}</p>
+              <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{changeCount ? t('{count} fields changed. Review the before and after values before saving.', { count: changeCount }) : t('No changes yet. You can return to any section to update it.')}</p>
               {salaryBlockedByStructure && <p role="alert" className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.')}</p>}
               {draft.salaryPackageChanged && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Salary changes take effect on {date}, after approval.', { date: draft.salaryEffectiveDate })}</p>}
-              <EmployeeCreateReview sections={draft.reviewSections} onEdit={draft.setStep} readOnly={!canWrite} busy={draft.saving} />
+              <EmployeeCreateReview sections={reviewSections} onEdit={draft.setStep} readOnly={!canWrite} busy={draft.saving} />
             </EmployeeCreatePanel>
             <footer className="sticky bottom-0 mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface pt-4">
               <Link href={viewHref} className="btn-secondary">{t('Cancel')}</Link>
               <div className="flex items-center gap-2">
-                {draft.step > 0 && <button type="button" onClick={() => draft.setStep(draft.step - 1)} disabled={draft.saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" />{t('Back')}</button>}
+                {draft.step > 0 && <button type="button" onClick={() => goToStep(draft.step - 1)} disabled={draft.saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" />{t('Back')}</button>}
                 {draft.step < 5 ? <button type="submit" disabled={draft.saving} className="btn-primary">{t('Next: {step}', { step: t(EMPLOYEE_EDIT_STEPS[draft.step + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button>
-                  : <button type="submit" disabled={draft.saving || draft.changedKeys.length === 0 || draft.unavailableKeys.length > 0 || salaryBlockedByStructure} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
+                  : <button type="submit" disabled={draft.saving || changeCount === 0 || draft.unavailableKeys.length > 0 || salaryBlockedByStructure} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
               </div>
             </footer>
           </form>

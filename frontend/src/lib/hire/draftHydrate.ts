@@ -81,6 +81,8 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
     ...f,
     englishName: text(d.englishName) || text(d.fullName), companyId: text(d.companyId), startDate: day(d.joiningDate), designationId: text(d.designationId), gradeId: text(d.gradeId),
     branchId: text(d.branchId), departmentId: text(d.departmentId), managerId: d.managerEmployeeId ? String(d.managerEmployeeId) : '',
+    // Only an override is a choice; an inherited cost centre is what "Follow department" already gives.
+    costCenterId: d.costCenterIsOverride ? text(d.costCenterId) : '', costCenterReason: '',
     workEmail: work, arabicName: text(d.arabicName), preferredName: text(d.preferredName), gender: text(d.gender), maritalStatus: text(d.maritalStatus),
     nationalityCode: nationalityOf(d, ctx.countryOptions), dob: day(d.dateOfBirth), mobileCountry, mobileNational, personalEmail: text(d.personalEmail),
     employmentType: text(d.employmentType), contractType: text(d.contractType),

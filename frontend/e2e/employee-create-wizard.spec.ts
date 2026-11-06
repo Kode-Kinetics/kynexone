@@ -38,6 +38,10 @@ interface MockOptions {
     isSystemDefined: boolean;
     isActive: boolean;
   }>>;
+  /** The reader's language (default English). */
+  locale?: 'en' | 'ar';
+  /** POST /api/employees answers this once (e.g. a 422 cost-centre refusal). */
+  createRefusal?: { status: number; body: unknown };
   transliteration?: {
     status?: number;
     result?: { suggestion: string; requiresManualEntry?: boolean };
@@ -62,7 +66,11 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (options.workEmailConflict && /Failed to load resource.*409/.test(message.text())) return;
     errors.push(message.text());
   });
-  await page.addInitScript(() => localStorage.setItem('zayra_access_token', 'wizard-browser-fixture'));
+  await page.addInitScript((locale) => {
+    localStorage.setItem('zayra_access_token', 'wizard-browser-fixture');
+    if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
+  }, options.locale ?? '');
+  let createRefusal = options.createRefusal ?? null;
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -90,10 +98,16 @@ async function boot(page: Page, options: MockOptions = {}) {
     if (path === '/api/grades') return reply(paged([grade, { ...grade, id: 'grade-other', code: 'G6', name: 'Senior' }, { ...grade, id: 'grade-retired', code: 'G0', name: 'Retired grade', isActive: false }]));
     if (path === '/api/compensation/benefits/grade-defaults') return reply([]);
     if (path.endsWith('/pay-scale')) return reply(options.payScale?.[path.split('/')[3] ?? ''] ?? []);
-    if (path === '/api/organization/cost-centers') return reply(paged([
-      { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', isActive: true },
-      { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', isActive: true },
-    ]));
+    if (path === '/api/organization/cost-centers') {
+      // Wave A (D5): the wizard asks for the chosen company's cost centres; the other company's never reach its dropdown.
+      const all = [
+        { id: 'cost-wizard', companyId: company.id, code: 'OPS', name: 'Operations cost center', nameAr: 'مركز العمليات', isActive: true },
+        { id: 'cost-finance', companyId: company.id, code: 'FIN', name: 'Finance cost center', nameAr: 'مركز المالية', isActive: true },
+        { id: 'cost-other-co', companyId: 'company-other', code: 'OTHER', name: 'Other company cost center', isActive: true },
+      ];
+      const wanted = url.searchParams.get('companyId');
+      return reply(paged(wanted ? all.filter(item => item.companyId === wanted) : all));
+    }
     if (path === '/api/payroll/salary-structures') return reply([
       { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
       { id: 'structure-retired', companyId: company.id, code: 'OPS-OLD', name: 'Retired band', isActive: false },
@@ -116,6 +130,7 @@ async function boot(page: Page, options: MockOptions = {}) {
     }
     if (path === '/api/employees' && request.method() === 'POST') {
       creates.push(body);
+      if (createRefusal) { const refusal = createRefusal; createRefusal = null; return reply(refusal.body, refusal.status); }
       if (options.failFirstCreate && creates.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
       if (options.workEmailConflict) return reply({
         error: 'work_email_conflict',
@@ -148,8 +163,10 @@ async function boot(page: Page, options: MockOptions = {}) {
   await page.goto('/people/new');
   await expect(page).toHaveURL(/\/people\/new(?:\?|$)/);
   await expect(page).not.toHaveTitle('');
+  // The legacy wizard's dialog title is not translated yet; the steps inside it are.
   const dialog = page.getByRole('dialog', { name: 'Add Employee', exact: true });
-  await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
+  if (options.locale === 'ar') await expect(dialog.locator('#employee-create-name')).toBeVisible();
+  else await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();
   if (!options.quick) {
     await expandOptional(dialog, 'Additional personal details');
   }
@@ -231,7 +248,7 @@ test('quick creation starts with three steps and saves only after review', async
   expect(errors).toEqual([]);
 });
 
-test('department selection assigns its cost center and offers only its configured manager', async ({ page }, info) => {
+test('department selection follows its cost center (named in the first option) and offers only its configured manager', async ({ page }, info) => {
   const { dialog, errors } = await boot(page, { quick: true });
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
   await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
@@ -241,11 +258,17 @@ test('department selection assigns its cost center and offers only its configure
   await expect(managerSelect).toHaveValue(String(manager.id));
   await expect(managerSelect.locator('option')).toHaveText(['Select', `${manager.fullName} (${manager.employeeCode})`]);
   await expandOptional(dialog, 'More employment details');
-  await expect(dialog.getByRole('combobox', { name: 'Cost center', exact: true })).toHaveValue('cost-wizard');
+  const costCenter = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
+  // "Follow department" is the first option and the default: the person inherits, nothing is copied into the request.
+  await expect(costCenter).toHaveValue('');
+  await expect(costCenter.locator('option:checked')).toHaveText('Follow department · OPS — Operations cost center');
   await department.selectOption('department-finance');
   await expect(managerSelect).toHaveValue(String(otherManager.id));
   await expect(managerSelect.locator('option')).toHaveText(['Select', `${otherManager.fullName} (${otherManager.employeeCode})`]);
-  await expect(dialog.getByRole('combobox', { name: 'Cost center', exact: true })).toHaveValue('cost-finance');
+  await expect(costCenter).toHaveValue('');
+  await expect(costCenter.locator('option:checked')).toHaveText('Follow department · FIN — Finance cost center');
+  // No "None": following the department is the only way to have no override.
+  await expect(costCenter.locator('option')).toHaveText(['Follow department · FIN — Finance cost center', 'OPS — Operations cost center']);
   await evidence(page, info, 'department-manager-cost-center');
   expect(errors).toEqual([]);
 });
@@ -577,11 +600,13 @@ test('retains entered values across Back and review edits and submits the existi
   expect(creates[0]).toMatchObject({
     englishName: 'Alex Morgan', preferredName: 'Alex M', manualEmployeeCode: false,
     personalEmail: 'alex.personal@example.test', workEmail: 'alex.it-issued@example.test', companyId: company.id,
-    branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id, costCenterId: 'cost-wizard',
+    branchId: 'branch-wizard', departmentId: 'department-wizard', designationId: 'designation-wizard', gradeId: grade.id,
     reportingManagerEmployeeId: 17, jobTitle: 'Operations specialist', joiningDate: '2026-10-15',
     payrollProfile: { bankName: 'Test Bank', iban: 'SA0380000000608010167519', accountNumber: '608010167519', paymentMethod: 'BankTransfer', salaryCurrency: 'SAR', wpsEligible: true, eosbEligible: true },
     salaryBreakdown: { basicSalary: 7000, housingAllowance: 2000, fixedDeduction: 100, effectiveDate: '2026-10-15', currency: 'SAR' },
   });
+  // Following the department sends no cost centre: the server inherits it (Wave A, D5).
+  expect(creates[0]).not.toHaveProperty('costCenterId');
   expect(creates[0].salaryBreakdown?.salaryStructureCode).toBeUndefined();
   expect(creates[0].payrollProfile?.salaryStructureReference).toBeUndefined();
   expect(creates[0].complianceRecords).toEqual(expect.arrayContaining([expect.objectContaining({ fieldKey: 'passport_number', fieldValue: 'TEST-PASSPORT-001' })]));
@@ -997,7 +1022,7 @@ test('AM-30: the department\'s own cost centre is a plain copy (no reason); a di
   await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
   await expandOptional(dialog, 'More employment details');
   const select = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
-  await expect(select).toHaveValue('cost-wizard');
+  await expect(select).toHaveValue('');
   await expect(dialog.getByTestId('cc-create-reason')).toHaveCount(0);
   await select.selectOption('cost-finance');
   await expect(dialog.getByTestId('cc-create-reason')).toBeVisible();
@@ -1014,14 +1039,67 @@ test('AM-30: the department\'s own cost centre is a plain copy (no reason); a di
   expect(errors).toEqual([]);
 });
 
-test('AM-30: choosing the department\'s own cost centre sends it without a reason', async ({ page }) => {
+test('Wave A: following the department sends no cost centre and no reason (the server inherits; "None" is gone)', async ({ page }) => {
   const { dialog, creates } = await boot(page, { quick: true });
   await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
   await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
   await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
   await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await expect(dialog.locator('[data-employee-step="5"]')).toContainText('Follow department · OPS — Operations cost center');
   await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
   await finishCreated(dialog);
-  expect(creates[0]).toMatchObject({ costCenterId: 'cost-wizard' });
+  expect(creates[0]).not.toHaveProperty('costCenterId');
   expect(creates[0]).not.toHaveProperty('costCenterReason');
+});
+
+test('Wave A: only the chosen company\'s cost centres are offered, and a company change clears the pick and its reason', async ({ page }) => {
+  const { dialog, creates, errors } = await boot(page, { quick: true, multipleCompanies: true });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  const companySelect = dialog.getByRole('combobox', { name: 'Company', exact: true });
+  await companySelect.selectOption(company.id);
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  await expandOptional(dialog, 'More employment details');
+  const select = dialog.getByRole('combobox', { name: 'Cost center', exact: true });
+  await expect(select.locator('option')).toHaveText(['Follow department · OPS — Operations cost center', 'FIN — Finance cost center']);
+  await select.selectOption('cost-finance');
+  await dialog.getByTestId('cc-create-reason').fill('Cross-charged');
+  const refetch = page.waitForResponse(r => r.url().includes('/api/organization/cost-centers') && r.url().includes('companyId=company-other'));
+  await companySelect.selectOption('company-other');
+  await refetch;
+  await expect(select).toHaveValue('');
+  await expect(dialog.getByTestId('cc-create-reason')).toHaveCount(0);
+  await expect(select.locator('option', { hasText: 'FIN' })).toHaveCount(0);
+  await expect(select.locator('option', { hasText: 'OTHER — Other company cost center' })).toHaveCount(1);
+  await companySelect.selectOption(company.id);
+  await expect(select).toHaveValue('');
+  await expect(select.locator('option', { hasText: 'OTHER' })).toHaveCount(0);
+  expect(creates).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
+test('Wave A: a 422 cost-centre refusal is shown in words', async ({ page }) => {
+  const { dialog, creates } = await boot(page, { quick: true, createRefusal: { status: 422, body: { error: 'cost_centre_other_company', message: 'cost_centre_other_company' } } });
+  await dialog.getByLabel('English full name', { exact: false }).fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'Next: Employment', exact: true }).click();
+  await dialog.getByRole('combobox', { name: 'Department', exact: true }).selectOption('department-wizard');
+  await expandOptional(dialog, 'More employment details');
+  await dialog.getByRole('combobox', { name: 'Cost center', exact: true }).selectOption('cost-finance');
+  await dialog.getByTestId('cc-create-reason').fill('Cross-charged');
+  await dialog.getByRole('button', { name: 'Next: Review', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Create Employee', exact: true }).click();
+  await expect(dialog.getByText('This cost centre belongs to another company. Choose one of this company’s cost centres.')).toBeVisible();
+  await expect(dialog.getByText('cost_centre_other_company')).toHaveCount(0);
+  expect(creates).toHaveLength(1);
+});
+
+test('Wave A: Arabic shows the Arabic cost-centre names; the code stays first', async ({ page }) => {
+  const { dialog } = await boot(page, { quick: true, locale: 'ar' });
+  await dialog.locator('#employee-create-name').fill('Alex Morgan');
+  await dialog.getByRole('button', { name: 'التالي: التوظيف', exact: true }).click();
+  await dialog.locator('#employee-form-department').selectOption('department-wizard');
+  const details = dialog.locator('details').filter({ has: page.getByTestId('cc-create-select') });
+  if (await details.getAttribute('open') === null) await details.locator('summary').click();
+  const select = dialog.getByTestId('cc-create-select');
+  await expect(select.locator('option')).toHaveText(['اتباع القسم · OPS — مركز العمليات', 'FIN — مركز المالية']);
 });

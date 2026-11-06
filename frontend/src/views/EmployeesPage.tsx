@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { pickable } from '../lib/pickable';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, AlertTriangle, CheckCircle2, Download, FileUp, History, Mail, Pencil, Plus, Printer, RefreshCw, Search, Send, Trash2, UserCheck, UserRound, Users, UserX, X } from 'lucide-react';
@@ -31,7 +32,9 @@ import client from '../api/client';
 import { createLatestRequestGate, runLatest } from '../lib/latestRequest';
 import { buildPeopleReturnTo, employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { usePeopleDirectoryQuery } from '../hooks/usePeopleDirectoryQuery';
-import { createCostCentreFields, createNeedsReason } from '../lib/employeeCostCentre';
+import { costCentreErrorKind, costCentreOptions, costCentreRefusalKey, createCostCentreFields, createNeedsReason, resolveCostCentre } from '../lib/employeeCostCentre';
+import { useCompanyCostCentres } from '../hooks/useCompanyCostCentres';
+import { CostCentreSelect } from '../components/employees/CostCentreSelect';
 import { buildEmployeeEditChanges, buildEmployeeEditSnapshot, buildSalaryBreakdownChange } from '../lib/employeeEditDraft';
 import { employeeAccessApi, EMPLOYEE_ACCESS_STATES, MAX_CODES_PER_REQUEST } from '../api/employeeAccess';
 import type { EmployeeAccessDto, EmployeeAccessState, EmployeeAccessSummary, SkippedWelcomeCode } from '../api/employeeAccess';
@@ -59,8 +62,8 @@ const employeesImportExport = {
 import { establishmentBlockFromError } from '../api/establishment';
 import type { EstablishmentBlockedPayload } from '../api/establishment';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
-import { branchesApi, companiesApi, costCentersApi, departmentsApi, designationsApi, gradesApi, DEFAULT_WORK_EMAIL_PATTERN } from '../api/organization';
-import type { BranchDto, CompanyDto, CostCenterDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
+import { branchesApi, companiesApi, departmentsApi, designationsApi, gradesApi, DEFAULT_WORK_EMAIL_PATTERN } from '../api/organization';
+import type { BranchDto, CompanyDto, DepartmentDto, DesignationDto, GradeDto, GradePayScaleComponentDto } from '../api/organization';
 import { Avatar } from '../components/Avatar';
 import { ArabicNameField } from '../components/ArabicNameField';
 import { InfoTip } from '../components/InfoTip';
@@ -438,6 +441,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const [editOriginal, setEditOriginal] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
   const [editNotice, setEditNotice] = useState('');
+  const [editCostCentreRefused, setEditCostCentreRefused] = useState(false);
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [documentType, setDocumentType] = useState('Passport');
   const [documentExpiry, setDocumentExpiry] = useState('');
@@ -461,7 +465,6 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // What the grade last put in each salary field. A field still holding that value (or blank) follows the grade; any
   // other value is the user's exception and is never overwritten (see lib/gradeSalaryDefaults).
   const [gradeSalaryFill, setGradeSalaryFill] = useState<SalaryAmounts>({});
-  const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [managerCandidates, setManagerCandidates] = useState<EmployeeListItem[]>([]);
   // Employee reference values come from tenant-wide Master Data. The constants remain a deliberate
   // offline fallback so a temporary setup API failure never leaves a required create control empty.
@@ -557,6 +560,32 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const pageSize = 25;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const defaultCompany = useMemo(() => companies.length === 1 ? companies[0] : undefined, [companies]);
+  // Wave A (D5): the employing company's cost centres only; a company change refetches and the form clears its pick.
+  const formCostCentres = useCompanyCostCentres(form.companyId);
+  const costCenters = formCostCentres.list;
+  /** What "Follow department" gives, worked out from the lists (accepted deviation: no company-level preview). Null = unknown. */
+  const createFollow = useMemo(() => {
+    if (!form.companyId || !form.departmentId) return null;
+    const r = resolveCostCentre({
+      companyId: form.companyId,
+      employee: { costCenterId: null, departmentId: form.departmentId, positionId: null, costCenterIsOverride: false },
+      departments: departments.map((d) => ({ id: d.id, nameEn: d.nameEn, parentDepartmentId: d.parentDepartmentId ?? null, costCenterId: d.costCenterId ?? null })),
+      positions: [],
+      costCentres: costCenters,
+      companyDefaultId: undefined,
+    });
+    const hit = r.costCentreId ? costCenters.find((c) => c.id === r.costCentreId) : null;
+    return hit ? { id: hit.id, code: hit.code, name: locale === 'ar' && hit.nameAr ? hit.nameAr : hit.name } : null;
+  }, [costCenters, departments, form.companyId, form.departmentId, locale]);
+  const createCostCentreOptions = useMemo(
+    () => costCentreOptions(costCenters, form.companyId, locale, createFollow ?? { id: null, code: '', name: '' }),
+    [costCenters, createFollow, form.companyId, locale],
+  );
+  const createCostCentreLabel = (() => {
+    const chosen = form.costCenterId ? createCostCentreOptions.find((o) => o.value === form.costCenterId) : null;
+    if (chosen) return chosen.label;
+    return createFollow ? t('Follow department · {code}', { code: `${createFollow.code} — ${createFollow.name}` }) : t('Follow department');
+  })();
   const selectedFormCompany = useMemo(
     () => companies.find((item) => item.id === form.companyId) ?? defaultCompany,
     [companies, defaultCompany, form.companyId],
@@ -628,19 +657,18 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const loadLookups = useCallback(async () => {
     // Every row of each lookup, page by page. One page of 100 left the 101st department,
     // designation or active manager missing from the form's selects with nothing to say so.
-    const [companyRes, branchRes, deptRes, desigRes, costRes, managerRes] = await Promise.all([
+    // Cost centres are not here: they belong to one company and are read for the form's company (useCompanyCostCentres).
+    const [companyRes, branchRes, deptRes, desigRes, managerRes] = await Promise.all([
       companiesApi.listAll(),
       branchesApi.listAll(),
       departmentsApi.listAll(),
       designationsApi.listAll(),
-      costCentersApi.listAll(),
       employeesApi.listAll({ status: 'Active' }),
     ]);
     setCompanies(companyRes);
     setBranches(branchRes);
     setDepartments(deptRes);
     setDesignations(desigRes);
-    setCostCenters(costRes);
     setManagerCandidates(managerRes);
   }, []);
 
@@ -1219,7 +1247,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         ...current,
         departmentId: value,
         reportingManagerEmployeeId: department?.managerEmployeeId,
-        costCenterId: department?.costCenterId,
+        // Wave A: the person follows the department; its cost centre is never copied in as if it were chosen.
+        costCenterId: '',
+        costCenterReason: '',
       };
     });
 
@@ -1424,7 +1454,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       ['Designation', nameById(designations, form.designationId, 'titleEn')], ['Grade', selectedGrade?.name],
       ...(!releaseA && form.gradeId ? [[t('Default benefits'), gradeBenefitsLoading ? t('Loading grade benefits…') : gradeBenefitsError ? t('Grade benefits preview unavailable') : gradeBenefits.filter(item => item.eligible).map(item => item.name).join(', ') || t('No eligible grade benefits')],
         ...(gradeBenefits.some(item => !item.eligible) ? [[t('Not yet eligible'), gradeBenefits.filter(item => !item.eligible).map(item => `${item.name}: ${item.blockingReason}`).join('; ')]] : [])] as Array<[string, string]> : []),
-      ['Cost center', nameById(costCenters, form.costCenterId, 'name')], ['Job title', form.jobTitle],
+      ['Cost center', createCostCentreLabel], ['Job title', form.jobTitle],
       ['Employment type', referenceText('employmentType', form.employmentType)], ['Contract type', referenceText('contractType', form.contractType)],
       ['Joining date', form.joiningDate], ['Work location', form.workLocation], ['Work email', form.workEmail],
     ] },
@@ -1598,6 +1628,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         setFormError(t(workEmailProblemKey(workEmailErrorCode(e))!));
       } else if (workEmailErrorCode(e) === 'work_email_wrong_domain' && selectedFormCompany?.emailDomain) {
         setFormError(t('Work email must end in @{domain}.', { domain: selectedFormCompany.emailDomain }));
+      } else if (costCentreRefusalKey(e)) {
+        // Wave A (D5): a cost-centre refusal in words, by code, not "Employee could not be saved — cost_centre_…".
+        setFormError(t(costCentreRefusalKey(e)!));
       } else if (status === 422 && data?.error === 'employee_limit_reached') {
         setFormError(data.message ?? `Employee limit reached (${data.current}/${data.limit}). Please upgrade your subscription.`);
       } else {
@@ -1915,6 +1948,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     }
     setEditSaving(true);
     setEditNotice('');
+    setEditCostCentreRefused(false);
     setActionNotice('');
     try {
       const effectiveDate = salaryPackageChanged ? editSalaryEffectiveDate : new Date().toISOString().slice(0, 10);
@@ -1947,6 +1981,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       }
       const emailProblem = workEmailProblemKey(workEmailErrorCode(e));
       if (emailProblem) { setEditNotice(t(emailProblem)); return; }
+      // Wave A: a cost-centre refusal in words. Only a missing keep-or-follow decision (which only Edit employee asks) gets the
+      // link there; a plain 403 is the permission sentence and nothing more.
+      const costCentreKey = costCentreRefusalKey(e);
+      if (costCentreKey) {
+        setEditNotice(t(costCentreKey));
+        setEditCostCentreRefused(costCentreErrorKind(e) === 'decision');
+        return;
+      }
       const data = (e as { response?: { data?: { message?: string; errors?: Record<string, string[]> } } })?.response?.data;
       const detailMsg = data?.message ?? (data?.errors ? Object.entries(data.errors).map(([f, m]) => `${f}: ${m.join(' ')}`).join(' · ') : '');
       setEditNotice(detailMsg ? `Could not save — ${detailMsg}` : 'Could not save the changes. Please review the values and try again.');
@@ -2560,6 +2602,12 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
           {!canEditEmployees && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {unavailableEditKeys.length > 0 && <p role="alert" className="rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{unavailableEditNotice}</p>}
           {editNotice && <p role="alert" className="rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{editNotice}</p>}
+          {editNotice && editCostCentreRefused && editEmployeeId && (
+            <p data-testid="legacy-edit-cost-centre-link" className="rounded-lg bg-slate-50 px-3 py-2.5 text-sm text-slate-700 dark:bg-white/5 dark:text-slate-200">
+              {t('Changing the department of someone with a cost centre override needs a decision. Open Edit employee to choose.')}{' '}
+              <Link href={employeeWorkspaceHref(editEmployeeId, { edit: true, section: 'employment' })} className="font-semibold text-sapphire underline">{t('Open Edit employee')}</Link>
+            </p>
+          )}
           {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((step, index) => (
             <EmployeeCreatePanel key={step.label} steps={employeeWindowSteps} step={index} activeStep={editStep}>
               {index === 1 && <dl className="mb-5 grid gap-3 border-b border-slate-100 pb-4 text-sm sm:grid-cols-2 dark:border-white/10">
@@ -2830,6 +2878,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                 setForm((current) => ({
                   ...current,
                   companyId: v,
+                  // A cost centre belongs to one company: another company's is refused (422), so a change starts over.
+                  ...(v !== current.companyId ? { costCenterId: '', costCenterReason: '' } : {}),
                   payrollProfile: {
                     ...current.payrollProfile!,
                     salaryCurrency: company?.defaultCurrency || current.payrollProfile?.salaryCurrency || currencyCode,
@@ -2892,7 +2942,17 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <EmployeeAdditionalDetails title="More employment details">
             {canManageCostCentres ? (
               <div>
-                <Lookup label="Cost center" value={form.costCenterId ?? ''} onChange={(v) => setField('costCenterId', v)} items={costCenters} textKey="name" />
+                <label htmlFor="cc-create-select" className="block text-sm font-medium text-slate-700 dark:text-slate-300">{t('Cost center')}</label>
+                <CostCentreSelect
+                  id="cc-create-select"
+                  testId="cc-create-select"
+                  value={form.costCenterId ?? ''}
+                  onChange={(v) => setForm((current) => ({ ...current, costCenterId: v, ...(v ? {} : { costCenterReason: '' }) }))}
+                  options={createCostCentreOptions}
+                  followPending={!createFollow}
+                  className="select mt-1.5 w-full"
+                />
+                {formCostCentres.status === 'error' && <p role="alert" className="mt-1 text-xs text-rose-600 dark:text-rose-400">{t('The cost centres could not be loaded.')} <button type="button" onClick={formCostCentres.reload} className="font-semibold underline">{t('Retry')}</button></p>}
                 {createNeedsReason({ canManage: true, chosenId: form.costCenterId ?? '', departmentCostCentreId: departments.find((item) => item.id === form.departmentId)?.costCenterId ?? '' }) && (
                   <label className="mt-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
                     <span>{t('Reason')} <span aria-hidden className="text-rose-500">*</span></span>
@@ -2904,7 +2964,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             ) : (
               <div className="text-sm">
                 <p className="font-medium text-slate-700 dark:text-slate-300">{t('Cost center')}</p>
-                <p className="mt-1.5 min-h-10 rounded-lg bg-slate-50 px-3 py-2.5 text-slate-700 dark:bg-white/5 dark:text-slate-300">{nameById(costCenters, form.costCenterId, 'name') || '—'}</p>
+                <p className="mt-1.5 min-h-10 rounded-lg bg-slate-50 px-3 py-2.5 text-slate-700 dark:bg-white/5 dark:text-slate-300">{createCostCentreLabel}</p>
                 <p role="note" data-testid="cc-create-readonly-note" className="mt-1 text-xs text-slate-500">{t('Only HR managers and admins can change this.')}</p>
               </div>
             )}
