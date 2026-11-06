@@ -6,6 +6,7 @@ namespace Zayra.Api.Infrastructure.Employees;
 /// camelCase, case-insensitive). Fields in the policy's vocabulary (the registry defaults) are governed purely by
 /// the list; fields outside that vocabulary which were always approval-gated (GOSI reference, medical, salary package…)
 /// stay gated regardless: they are structural, not a tenant choice. Any other field becomes gated when listed.
+/// Salary, bank IBAN, national ID and passport number are a floor: always gated, whatever list is stored.
 /// </summary>
 public static class ProfileChangeApprovalRules
 {
@@ -49,6 +50,14 @@ public static class ProfileChangeApprovalRules
         "salary", "bankiban", "passportnumber", "idnumber", "iqamanumber", "sponsorname", "nationality",
     };
 
+    /// <summary>The comparison key for a field name: snake_case, kebab-case and camelCase spellings, and the policy's
+    /// <c>national_id</c> alias, all collapse to one.</summary>
+    public static string FieldKey(string s) => Norm(s);
+
+    /// <summary>The fields no stored list can relax (see <see cref="Zayra.Api.Infrastructure.Policy.PolicyRegistry.ProfileChangeApprovalFloor"/>).</summary>
+    private static readonly HashSet<string> Floor =
+        new(Zayra.Api.Infrastructure.Policy.PolicyRegistry.ProfileChangeApprovalFloor.Select(f => Norm(f)), StringComparer.Ordinal);
+
     private static string Norm(string s)
     {
         var n = s.Replace("_", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal).Trim().ToLowerInvariant();
@@ -71,6 +80,7 @@ public static class ProfileChangeApprovalRules
     public static bool RequiresApproval(string field, IReadOnlyList<string> policyFields)
     {
         var key = Norm(field);
+        if (Floor.Contains(key)) return true;
         if (policyFields.Any(p => Norm(p) == key)) return true;
         return LegacySensitiveFields.Contains(field) && !Governed.Contains(key);
     }

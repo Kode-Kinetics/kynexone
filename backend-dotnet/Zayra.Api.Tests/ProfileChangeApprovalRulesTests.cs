@@ -53,7 +53,23 @@ public class ProfileChangeApprovalRulesTests
     public void Removing_a_policy_governed_field_lets_it_apply_directly()
     {
         ProfileChangeApprovalRules.RequiresApproval("nationality", new[] { "salary" }).Should().BeFalse();
-        ProfileChangeApprovalRules.RequiresApproval("salary", Array.Empty<string>()).Should().BeFalse();
+        ProfileChangeApprovalRules.RequiresApproval("iqamaNumber", Array.Empty<string>()).Should().BeFalse();
+    }
+
+    // Security review M1: pay, bank and identity fields are an approval floor the stored list cannot lower.
+    [Theory]
+    [InlineData("salary")]
+    [InlineData("bankIban")]
+    [InlineData("bank_iban")]
+    [InlineData("passportNumber")]
+    [InlineData("passport_number")]
+    [InlineData("idNumber")]
+    [InlineData("national_id")]
+    public void The_floor_fields_need_approval_even_when_the_stored_list_is_empty(string field)
+    {
+        ProfileChangeApprovalRules.RequiresApproval(field, Array.Empty<string>()).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApprovalForHrEdit(field, Array.Empty<string>()).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApproval(field, new[] { "nationality" }).Should().BeTrue();
     }
 
     [Theory]

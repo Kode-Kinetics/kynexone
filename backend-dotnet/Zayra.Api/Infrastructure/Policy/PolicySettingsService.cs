@@ -30,7 +30,7 @@ public interface IPolicySettings
 
 public sealed record PolicySettingView(PolicyDefinition Definition, string Value, bool IsDefault);
 
-public enum PolicySetStatus { Changed, Unchanged, UnknownKey, Invalid }
+public enum PolicySetStatus { Changed, Unchanged, UnknownKey, Invalid, FloorViolated }
 
 public sealed record PolicySetResult(PolicySetStatus Status, string? Error, PolicySettingView? Setting);
 
@@ -40,6 +40,9 @@ public interface IPolicySettingsAdmin
 {
     Task<IReadOnlyList<PolicySettingView>> ListAsync(Guid tenantId, CancellationToken ct = default);
     Task<PolicySetResult> SetAsync(Guid tenantId, string key, string? value, PolicyActor actor, CancellationToken ct = default);
+
+    /// <summary>Audits a policy write that was refused (the change is NOT made), with the value that was attempted and why.</summary>
+    Task RecordRefusedWriteAsync(Guid tenantId, string key, string? attemptedValue, string reason, PolicyActor actor, CancellationToken ct = default);
 }
 
 public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmin
@@ -69,7 +72,7 @@ public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmi
     {
         var stored = await StoredAsync(tenantId, def.Key, ct);
         if (stored is null) return def.Default;
-        if (def.Type == PolicyValueType.Csv) return string.Join(',', PolicyRegistry.ParseCsv(stored));
+        if (def.Type == PolicyValueType.Csv) return PolicyRegistry.EffectiveCsv(def, stored);
         return PolicyRegistry.TryNormalise(def, stored, out var n, out _) ? n : def.Default;
     }
 
@@ -121,23 +124,37 @@ public sealed class PolicySettingsService : IPolicySettings, IPolicySettingsAdmi
         {
             var value = def.Default;
             if (rows.TryGetValue(def.Key, out var stored))
-                value = def.Type == PolicyValueType.Csv ? string.Join(',', PolicyRegistry.ParseCsv(stored))
+                value = def.Type == PolicyValueType.Csv ? PolicyRegistry.EffectiveCsv(def, stored)
                     : PolicyRegistry.TryNormalise(def, stored, out var n, out _) ? n : def.Default;
             return new PolicySettingView(def, value, value == def.Default);
         }).ToList();
+    }
+
+    public async Task RecordRefusedWriteAsync(Guid tenantId, string key, string? attemptedValue, string reason, PolicyActor actor, CancellationToken ct = default)
+    {
+        var def = PolicyRegistry.Get(key);
+        var current = await EffectiveAsync(tenantId, def, ct);
+        _db.AdminAuditLogs.Add(new AdminAuditLog
+        {
+            TenantId = tenantId, CompanyId = null, EntityType = AuditEntityType, EntityId = key, Action = "WriteRefused",
+            OldValuesJson = JsonSerializer.Serialize(new { key, value = current }),
+            NewValuesJson = JsonSerializer.Serialize(new { key, value = attemptedValue, reason }),
+            PerformedBy = actor.UserId, PerformedByName = actor.Name, IpAddress = actor.IpAddress,
+        });
+        await _db.SaveChangesAsync(ct);
     }
 
     public async Task<PolicySetResult> SetAsync(Guid tenantId, string key, string? value, PolicyActor actor, CancellationToken ct = default)
     {
         if (!PolicyRegistry.TryGet(key, out var def))
             return new PolicySetResult(PolicySetStatus.UnknownKey, $"'{key}' is not a known policy setting.", null);
-        if (!PolicyRegistry.TryNormalise(def, value, out var normalised, out var error))
-            return new PolicySetResult(PolicySetStatus.Invalid, error, null);
+        if (!PolicyRegistry.TryNormalise(def, value, out var normalised, out var error, out var code))
+            return new PolicySetResult(code == PolicyRegistry.CodeFloorViolated ? PolicySetStatus.FloorViolated : PolicySetStatus.Invalid, error, null);
 
         var row = await ScopedBypass.TenantWide(_db.SystemSettings, tenantId, "Policy settings are read outside an HTTP request (jobs) where the ambient tenant filter hides rows; the tenant is pinned by ScopedBypass.")
             .FirstOrDefaultAsync(s => s.Category == PolicyRegistry.StorageCategory && s.SettingKey == key, ct);
         var old = row is null ? def.Default
-            : def.Type == PolicyValueType.Csv ? string.Join(',', PolicyRegistry.ParseCsv(row.SettingValue))
+            : def.Type == PolicyValueType.Csv ? PolicyRegistry.EffectiveCsv(def, row.SettingValue)
             : PolicyRegistry.TryNormalise(def, row.SettingValue, out var o, out _) ? o : def.Default;
 
         if (old == normalised)

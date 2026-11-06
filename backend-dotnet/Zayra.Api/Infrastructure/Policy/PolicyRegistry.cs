@@ -33,6 +33,23 @@ public static class PolicyRegistry
     public const string PayrollAllowSameApproverMultipleLevels = "payroll.allow_same_approver_multiple_levels";
     public const string EmployeesProfileChangeApprovalFields = "employees.profile_change_approval_fields";
 
+    /// <summary>Error code for a value that is malformed (wrong type, shape or vocabulary).</summary>
+    public const string CodeValueInvalid = "policy_value_invalid";
+    /// <summary>Error code for a value that is well-formed but removes something a policy may never relax.</summary>
+    public const string CodeFloorViolated = "policy_floor_violated";
+
+    /// <summary>
+    /// Fields whose profile change is ALWAYS approval-gated, whatever list a tenant stores: pay, bank account and the two
+    /// identity numbers. The list may be cleared down to these, never below. Spelled as the policy spells them.
+    /// </summary>
+    public static readonly IReadOnlyList<string> ProfileChangeApprovalFloor = ["bank_iban", "national_id", "passport_number", "salary"];
+
+    /// <summary>
+    /// Switches that relax a payroll control for whoever runs payroll. The person who benefits (payroll.approve, or a Payroll
+    /// Manager / Officer) may not switch them on: PolicySettingsController refuses and audits the attempt.
+    /// </summary>
+    public static readonly IReadOnlyList<string> PayrollControlSwitches = [PayrollAllowSkipReview, PayrollAllowSameApproverMultipleLevels];
+
     private static readonly PolicyDefinition[] Definitions =
     [
         new(OvertimeLateApprovalMode, PolicyValueType.Enum, "Refuse", ["Refuse", "BackPay"],
@@ -70,9 +87,13 @@ public static class PolicyRegistry
         TryGet(key, out var d) ? d : throw new UnknownPolicyKeyException(key);
 
     /// <summary>Validates <paramref name="raw"/> against the definition and returns its canonical stored form.</summary>
-    public static bool TryNormalise(PolicyDefinition def, string? raw, out string normalised, out string error)
+    public static bool TryNormalise(PolicyDefinition def, string? raw, out string normalised, out string error) =>
+        TryNormalise(def, raw, out normalised, out error, out _);
+
+    /// <summary>As above, also naming the failure: <see cref="CodeValueInvalid"/> or <see cref="CodeFloorViolated"/>.</summary>
+    public static bool TryNormalise(PolicyDefinition def, string? raw, out string normalised, out string error, out string code)
     {
-        normalised = string.Empty; error = string.Empty;
+        normalised = string.Empty; error = string.Empty; code = CodeValueInvalid;
         raw ??= string.Empty;
         switch (def.Type)
         {
@@ -86,12 +107,41 @@ public static class PolicyRegistry
                 error = $"Value must be one of: {string.Join(", ", def.AllowedValues)}.";
                 return false;
             case PolicyValueType.Csv:
-                normalised = string.Join(',', ParseCsv(raw));
+                var tokens = ParseCsv(raw);
+                IReadOnlyList<string> floorMissing = def.Key == EmployeesProfileChangeApprovalFields ? MissingFloor(tokens) : [];
+                normalised = string.Join(',', tokens);
+                if (floorMissing.Count > 0)
+                {
+                    normalised = string.Empty;
+                    code = CodeFloorViolated;
+                    error = $"These fields always need approval and cannot be removed: {string.Join(", ", floorMissing)}.";
+                    return false;
+                }
                 return true;
             default:
                 error = "Unsupported policy type.";
                 return false;
         }
+    }
+
+    /// <summary>The floor fields (as the policy spells them) that <paramref name="tokens"/> does not cover, comparing field names the way the approval rules do.</summary>
+    public static IReadOnlyList<string> MissingFloor(IReadOnlyCollection<string> tokens)
+    {
+        var have = tokens.Select(Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.FieldKey).ToHashSet(StringComparer.Ordinal);
+        return ProfileChangeApprovalFloor
+            .Where(f => !have.Contains(Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.FieldKey(f)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The value a reader sees for a Csv policy: the stored tokens, plus (for the approval-fields policy) any floor field the
+    /// stored list lacks. A list stored before the floor existed therefore reads with the floor applied.
+    /// </summary>
+    public static string EffectiveCsv(PolicyDefinition def, string? stored)
+    {
+        var tokens = ParseCsv(stored).ToList();
+        if (def.Key == EmployeesProfileChangeApprovalFields) tokens.AddRange(MissingFloor(tokens));
+        return string.Join(',', tokens);
     }
 
     public static IReadOnlyList<string> ParseCsv(string? raw) =>
