@@ -179,7 +179,12 @@ public class TableBudgetRatchetTests
         // "at most one Active per run" or the superseded history. PayrollRunReconExplanations: the written reason per flagged item or
         // unpaid employee, which belongs to its sign-off and is deleted only with it. Retention: kept with the payroll run (84 months,
         // class E in OWNERSHIP_AND_RETENTION.md); removed by whole-tenant erasure.
-        DeclaredDbSets().Should().HaveCount(383,
+        // Monthly cash allowances on a salary (AddEmployeeSalaryAllowances; owner Payroll, owner-approved 2026-11-05). One table, 383 -> 384.
+        // EmployeeSalaryAllowances: per employee, per salary record, per allowance code, a monthly cash amount paid with the salary, with its
+        // own GL and end-of-service semantics. No existing table can carry it: employee_salary_structures has four fixed slots and cannot
+        // hold an open-ended list of coded amounts. HR proposes, Finance approves; tenant data. Retention: kept with the salary record
+        // (OWNERSHIP_AND_RETENTION.md updated); removed by whole-tenant erasure.
+        DeclaredDbSets().Should().HaveCount(384,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
