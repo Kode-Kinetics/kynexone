@@ -358,7 +358,8 @@ public class AdvanceOvertimeAuditReproPriorPeriodFinderTests
         await AddRunAsync(w, 2026, 5, status);
 
         var found = await FindAsync(w);
-        found.Should().ContainSingle().Which.Should().BeEquivalentTo(new PriorPeriodOvertime(w.EmployeeId, request.Id, MayDay, 120));
+        found.Should().ContainSingle().Which.Should().BeEquivalentTo(new PriorPeriodOvertime(w.EmployeeId, request.Id, MayDay, 120),
+            o => o.Including(x => x.EmployeeId).Including(x => x.OvertimeRequestId).Including(x => x.WorkDate).Including(x => x.Minutes));
     }
 
     [Fact]

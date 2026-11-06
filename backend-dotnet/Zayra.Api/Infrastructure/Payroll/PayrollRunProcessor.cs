@@ -1060,6 +1060,21 @@ public sealed class PayrollRunProcessor
             employees, includesRecurringPay, periodStart, periodEnd, cancellationToken);
         approvedAdjustments.RemoveAll(BenefitPayroll.IsBenefit);
         approvedAdjustments.AddRange(benefitAdjustments);
+        // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
+        // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
+        // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.
+        var lateOvertimeMode = await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
+            tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        var lateOvertime = await OvertimeLateSettlement.StageAsync(_db, run,
+            await PriorPeriodOvertimeFinder.FindSettleableAsync(_db, tenantId, company.Id, employeeIdsForRun, periodStart,
+                cancellationToken, lateOvertimeMode, includesRecurringPay, id),
+            cancellationToken);
+        if (lateOvertime.Count > 0)
+        {
+            var lateAdjustmentIds = lateOvertime.Select(x => x.Adjustment.Id).ToHashSet();
+            approvedAdjustments.RemoveAll(a => lateAdjustmentIds.Contains(a.Id)); // a re-process already loaded the reused row
+            approvedAdjustments.AddRange(lateOvertime.Select(x => x.Adjustment));
+        }
         var benefitGl = benefitAdjustments.Count > 0
             ? await LoadGlResolutionContextAsync(tenantId, company.Id, cancellationToken) : null;
         PayComponentLine AdjustmentLine(PayrollAdjustment adjustment)
@@ -2024,10 +2039,19 @@ public sealed class PayrollRunProcessor
                 .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
+            // OVT-04: the prior-period overtime this run pays as back pay leaves PendingPayroll here, with this run's id, in the same
+            // transaction as the slips that carry the money. Same compare-and-swap: only a row still PendingPayroll and unowned is taken.
+            var lateImpactIds = lateOvertime.Select(x => x.Source.ImpactId).ToList();
+            foreach (var x in lateOvertime)
+                Witness(PayrollConsumptionArtifacts.OvertimeImpact, x.Source.ImpactId, x.Source.EmployeeId, x.Source.Amount, "PendingPayroll");
+            var markedLateOvertime = lateImpactIds.Count == 0 ? 0 : await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && lateImpactIds.Contains(x.Id) && x.Status == "PendingPayroll" && x.PayrollRunId == null)
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+
             // The message deliberately does not claim WHO changed the impacts: an ambiguous-commit retry of a
             // run that did commit also lands here (its own commit marked them), and reloading shows that.
             if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count
-                || markedOvertime != consumedOtIds.Count)
+                || markedOvertime != consumedOtIds.Count || markedLateOvertime != lateImpactIds.Count)
                 throw new PayrollProcessAbortException(409, new
                 {
                     error    = "payroll_impacts_changed_concurrently",
@@ -2038,6 +2062,8 @@ public sealed class PayrollRunProcessor
                     leaveMarked        = markedLeave,
                     overtimeExpected   = consumedOtIds.Count,
                     overtimeMarked     = markedOvertime,
+                    lateOvertimeExpected = lateImpactIds.Count,
+                    lateOvertimeMarked   = markedLateOvertime,
                 });
         }
         // Adjustments are NOT gated: they are already `PayrollRunId == id`-scoped, i.e. attached to THIS
@@ -2051,6 +2077,9 @@ public sealed class PayrollRunProcessor
         await _db.PayrollAdjustments
             .Where(x => x.TenantId == tenantId && consumedAdjustmentIds.Contains(x.Id))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+        // The back-pay adjustments staged above are tracked and not yet saved (the update above cannot reach a row that is not in the
+        // table), so they are consumed on the entity; the witness above recorded them as Approved for a void/reopen to restore.
+        foreach (var late in lateOvertime) late.Adjustment.Status = "Processed";
         var consumedEncashmentIds = approvedAdjustments
             .Where(a => employeeIdsForRun.Contains(a.EmployeeId)
                 && a.SourceType == PayrollAdjustmentSources.LeaveEncashment
@@ -2106,7 +2135,9 @@ public sealed class PayrollRunProcessor
             // Rule 11b — approved overtime from an earlier period that no run has paid (the run above
             // loads only this period's impacts, so these would otherwise stay PendingPayroll silently).
             PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
-                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken),
+                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken,
+                lateOvertimeMode, includesRecurringPay, id),
+            OvertimeLateApprovalMode       = lateOvertimeMode,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
             EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,

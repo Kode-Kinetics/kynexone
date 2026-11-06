@@ -1705,6 +1705,8 @@ public partial class PayrollController : ControllerBase
         // Load OT/attendance data so Rules 10+11 fire correctly on /validate too.
         var valPeriodStart = new DateOnly(run.Year, run.Month, 1);
         var valPeriodEnd   = valPeriodStart.AddMonths(1).AddDays(-1);
+        var valLateOvertimeMode = await (_policySettings ?? new Infrastructure.Policy.PolicySettingsService(_db))
+            .GetEnumAsync(tenantId, Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
         var valOtRequestIds = await _db.OvertimeRequests.AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)
@@ -1777,8 +1779,12 @@ public partial class PayrollController : ControllerBase
             HolidayCalendarCoversPeriod    = await CompanyPayrollRules.HasHolidayInPeriodAsync(
                 _db, tenantId, company.Id, valPeriodStart, valPeriodEnd, cancellationToken),
             // Same finder as Process, so /validate (which replaces the findings wholesale) keeps Rule 11b.
+            // Mode-aware: in BackPay mode the run that pays recurring items settles the prior-period overtime itself (Process stages it),
+            // so it is not flagged here either; Refuse mode flags it and names the setting.
             PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
-                _db, tenantId, company.Id, employeeIdsForValidation, valPeriodStart, cancellationToken),
+                _db, tenantId, company.Id, employeeIdsForValidation, valPeriodStart, cancellationToken,
+                valLateOvertimeMode, run.IncludesRecurringPay, run.Id),
+            OvertimeLateApprovalMode       = valLateOvertimeMode,
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
             // Mid-year cutover — re-derived with the SAME loader Process used; /validate replaces the
             // stored results wholesale, so omitting it would silently drop Rule 14b.

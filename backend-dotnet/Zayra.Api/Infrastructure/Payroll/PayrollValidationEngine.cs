@@ -86,6 +86,19 @@ public static class PayrollValidationEngine
     /// be settled late (per <c>overtime.late_approval_mode</c>), so HR is told before the run is approved.
     /// </summary>
     public const string OvertimePendingApproval = "WARN_OVERTIME_PENDING_APPROVAL";
+    /// <summary>
+    /// The tail of rule 11b's message, naming where the behaviour lives. In Refuse mode nothing pays the overtime automatically; in
+    /// BackPay mode a run that pays recurring items would have paid it, so reaching here means this run does not (a supplemental run)
+    /// or the overtime could not be priced (no amount) or is held by an adjustment on another run.
+    /// </summary>
+    private static string LateApprovalAdvice(PayrollValidationContext ctx) =>
+        string.Equals(ctx.OvertimeLateApprovalMode, "BackPay", StringComparison.Ordinal)
+            ? $"The company setting overtime.late_approval_mode is BackPay, which pays such overtime in the next run that pays recurring items; " +
+              "this run does not, or the overtime has no amount to pay or is already attached to another run. Settle it through the overtime record. " +
+              "If it was already settled outside payroll, override this error with a written basis."
+            : $"The company setting overtime.late_approval_mode is {ctx.OvertimeLateApprovalMode}, so no run pays it automatically: settle it through the overtime record, " +
+              "or set overtime.late_approval_mode to BackPay so the next run pays it. If it was already settled outside payroll, override this error with a written basis.";
+
     public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
@@ -712,7 +725,7 @@ public static class PayrollValidationEngine
             Err(PriorPeriodOvertimeUnpaid,
                 $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
                 $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it. " +
-                "Settle it through the overtime record. If it was already settled outside payroll, override this error with a written basis.",
+                LateApprovalAdvice(ctx),
                 byEmp.Key);
         }
 
@@ -1011,6 +1024,9 @@ public sealed record PayrollValidationContext(
     /// /validate (<see cref="PriorPeriodOvertimeFinder"/>), which replaces the stored results wholesale.
     /// </summary>
     public IReadOnlyList<PriorPeriodOvertime> PriorPeriodUnpaidOvertime { get; init; } = Array.Empty<PriorPeriodOvertime>();
+
+    /// <summary>The tenant's <c>overtime.late_approval_mode</c> (Refuse | BackPay), named in rule 11b's message.</summary>
+    public string OvertimeLateApprovalMode { get; init; } = "Refuse";
 }
 
 /// <summary>
