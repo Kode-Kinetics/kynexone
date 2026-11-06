@@ -7,5 +7,9 @@
   "shadow2xl": 3,
   "tintedShadow": 0,
   "fontWeightSprawl": 30,
+  "rawDurationClass": 46,
+  "animatePulse": 66,
+  "animatePing": 4,
+  "tile3d": 0,
   "nativeDialog": 0
 }
