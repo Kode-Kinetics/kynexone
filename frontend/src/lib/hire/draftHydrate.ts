@@ -5,6 +5,7 @@ import { formatNational } from './phone';
 import { buildCountryOptions, foldText, type CountryOption } from './nationality';
 import { DEFAULT_ZONE } from './dates';
 import { dateLocale } from '../format';
+import { encodeValue, linesFromWire } from '../salaryAllowances';
 import { parsePhoneNumberFromString } from 'libphonenumber-js/min';
 
 export interface HydrateContext {
@@ -86,6 +87,8 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
     contractEndDate: day((d as { contractEndDate?: string }).contractEndDate), probationEndDate: day(d.probationEndDate), probationWaived: d.probationWaived === true, workLocation: text(d.workLocation),
     iban: text(d.payrollProfile?.iban) || text(d.bankIban), molId: text(d.payrollProfile?.molId),
     basic: amount(d.salaryBreakdown?.basicSalary), housing: amount(d.salaryBreakdown?.housingAllowance), transport: amount(d.salaryBreakdown?.transportAllowance), other: amount(d.salaryBreakdown?.otherAllowance),
+    // The lines already staged with this draft's package are kept as the person's own, so saving again sends them rather than filling from the grade.
+    allowances: d.salaryBreakdown?.allowances?.length ? encodeValue(linesFromWire(d.salaryBreakdown.allowances)) : '',
     ...(primary
       ? { idType: primary[0], idNumber: primary[1], idExpiry: text(primary[2]), passportNumber: passport, passportExpiry: day(d.passportExpiryDate) }
       : passport ? { idType: 'passport' as const, idNumber: passport, idExpiry: day(d.passportExpiryDate) } : {}),

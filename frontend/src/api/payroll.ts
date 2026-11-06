@@ -1,4 +1,5 @@
 import client from './client';
+import type { SalaryAllowanceView } from '../lib/salaryAllowances';
 import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
@@ -1038,4 +1039,8 @@ export interface SalaryChange {
   otherAllowance: number; fixedDeduction: number; effectiveDate: string; currency: string; previousBasicSalary?: number | null;
   status: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'; requestedByName: string; requestedAtUtc: string;
   decidedByName: string; decidedAtUtc?: string | null; decisionNote: string;
+  /** Monthly cash allowance lines (ALW_*): on the salary record in force now, and as the change leaves them. Absent from an older API. */
+  currentAllowances?: SalaryAllowanceView[]; proposedAllowances?: SalaryAllowanceView[];
+  /** The change does not mention allowances: the proposed lines are the current ones carried over. */
+  allowancesCarriedForward?: boolean;
 }

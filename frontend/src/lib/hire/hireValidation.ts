@@ -6,6 +6,7 @@ import { workEmailLocalProblem, workEmailProblemKey } from '../employeeAccess';
 import { isFixedTerm, parseAmount } from './payload';
 import { parseMobile } from './phone';
 import { normalizeDigits, validateIdNumber, type IdKind } from './saudiId';
+import { allowanceProblems, decodeValue } from '../salaryAllowances';
 
 export type HireScope = 'draft' | 'create';
 
@@ -30,7 +31,7 @@ export interface ValidationContext {
 const STEP: Partial<Record<keyof HireForm, 1 | 2 | 3>> = {
   englishName: 1, companyId: 1, startDate: 1, designationId: 1, gradeId: 1, workEmail: 1,
   nationalityCode: 2, dob: 2, mobileNational: 2, personalEmail: 2, arabicName: 2, preferredName: 2,
-  idNumber: 3, idExpiry: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, contractEndDate: 3,
+  idNumber: 3, idExpiry: 3, passportNumber: 3, passportExpiry: 3, probationEndDate: 3, iban: 3, molId: 3, workLocation: 3, basic: 3, housing: 3, transport: 3, other: 3, allowances: 3, contractEndDate: 3,
 };
 
 /** CD26: the server's own limits (EmployeeCreateRequest MaxLength, payroll bounds), so a too-long value names its field and its limit. */
@@ -132,6 +133,9 @@ export function validateHire(form: HireForm, ctx: ValidationContext, _scope: Hir
     else if (n < 0) add(f, 'Amount cannot be negative.');
     else if (n > MAX_AMOUNT) add(f, 'Enter an amount of 9,999,999,999.99 or less.');
   }
+
+  const allowanceRows = decodeValue(form.allowances);
+  if (allowanceRows && Object.keys(allowanceProblems(allowanceRows, parseAmount(form.basic))).length > 0) add('allowances', 'Fix the allowance lines that show a message before saving.');
 
   if (!blank(form.contractEndDate)) {
     // CD17: an end date needs a fixed-term contract, and must be after the start.

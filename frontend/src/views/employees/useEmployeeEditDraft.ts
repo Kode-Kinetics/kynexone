@@ -15,7 +15,9 @@ import {
 import { employeesApi } from '../../api/employees';
 import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
 import { workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
+import { linesFromWire, decodeValue, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 import {
+  ALLOWANCES_KEY,
   buildEmployeeEditChanges,
   buildEmployeeEditSnapshot,
   buildSalaryBreakdownChange,
@@ -46,12 +48,18 @@ export function employeeEditStep(field: EmployeeEditField): number {
   return 0;
 }
 
+/**
+ * The monthly cash allowances: tracked in the draft like any salary field (so a change counts as a salary change, awaits approval and
+ * blocks navigation), but drawn by SalaryAllowancesEditor rather than as an input, hence hidden from the generic field list.
+ */
+const ALLOWANCES_FIELD: EmployeeEditField = { key: ALLOWANCES_KEY, label: 'Other monthly allowances', section: 'Salary', sensitive: true, hidden: true };
+
 function fieldsForEmployee(employee: EmployeeDetail, catalog: ResolvedFieldCatalog, canSeeSensitive: boolean) {
   const country = normalizeCountryCode(employee.countryCode);
   const base = editFieldsForCountry(catalog, country);
   const withSalary = Object.prototype.hasOwnProperty.call(employee, 'salaryBreakdown')
     && (employee.salaryBreakdown != null || Number(employee.salary ?? 0) <= 0)
-    ? [...base.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
+    ? [...base.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS, ALLOWANCES_FIELD]
     : base;
   return withSalary.filter(field => canSeeSensitive || (!field.sensitive && !MASKED_KEYS.has(field.key) && !field.key.startsWith('salaryBreakdown.')));
 }
@@ -76,6 +84,7 @@ export function useEmployeeEditDraft({
   initialStep,
   onSaved,
   formatValue,
+  describeAllowanceChange,
 }: {
   employee: EmployeeDetail;
   canWrite: boolean;
@@ -84,6 +93,8 @@ export function useEmployeeEditDraft({
   onSaved(status: number): Promise<void> | void;
   /** How the review shows a stored value — e.g. a reference-list code as its label in the reader's language. */
   formatValue?: (key: string, value: string) => string;
+  /** The review's words for a change to the monthly allowances ("From … to …"), in the reader's language. */
+  describeAllowanceChange?: (before: readonly AllowanceDraftLine[], after: readonly AllowanceDraftLine[], basic: number | undefined) => string;
 }) {
   const [catalog, setCatalog] = useState<ResolvedFieldCatalog>(LOCAL_FIELD_CATALOG);
   const fields = useMemo(() => fieldsForEmployee(employee, catalog, canSeeSensitive), [employee, catalog, canSeeSensitive]);
@@ -93,6 +104,8 @@ export function useEmployeeEditDraft({
   const [step, setStepState] = useState(initialStep);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
+  // Show each allowance line's own problem once a save or a step change was refused over them.
+  const [allowanceProblemsShown, setAllowanceProblemsShown] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +129,7 @@ export function useEmployeeEditDraft({
   const discard = useCallback(() => {
     setForm({ ...original });
     setNotice('');
+    setAllowanceProblemsShown(false);
   }, [original]);
   useNavigationBlocker({ id: `employee-edit-${employee.id}`, when: dirty && !saving, message: 'Discard unsaved employee changes?', onDiscard: discard });
 
@@ -149,6 +163,7 @@ export function useEmployeeEditDraft({
         }
       } catch (error) {
         setNotice(error instanceof Error ? error.message : 'Review the salary values and try again.');
+        if (decodeValue(form[ALLOWANCES_KEY]) !== null) setAllowanceProblemsShown(true);
         return false;
       }
     }
@@ -172,6 +187,7 @@ export function useEmployeeEditDraft({
       changes = buildEmployeeEditChanges(form, availableFields, changedKeys);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Review the changed values and try again.');
+      if (decodeValue(form[ALLOWANCES_KEY]) !== null) setAllowanceProblemsShown(true);
       return;
     }
     const salaryChanged = changedKeys.some(key => key.startsWith('salaryBreakdown.'));
@@ -194,12 +210,24 @@ export function useEmployeeEditDraft({
     return (value && formatValue ? formatValue(field.key, value) : value) || 'Not provided';
   }, [form, formatValue, original]);
 
+  // What the allowances are on the record now (what untouched means), and what the person has edited them to.
+  const allowanceBaseline = useMemo(() => linesFromWire(employee.salaryBreakdown?.allowances), [employee.salaryBreakdown]);
+  const allowanceEdit = decodeValue(form[ALLOWANCES_KEY]);
+  const allowanceRows = (): Array<[string, string]> => {
+    if (!changedKeys.includes(ALLOWANCES_KEY) || !allowanceEdit || !describeAllowanceChange) return [];
+    const basic = Number((form['salaryBreakdown.basicSalary'] ?? '').trim());
+    return [['Other monthly allowances · Approval', describeAllowanceChange(allowanceBaseline, allowanceEdit, Number.isFinite(basic) && basic > 0 ? basic : undefined)]];
+  };
+
   const reviewSections = EMPLOYEE_EDIT_STEP_LABELS.slice(0, 5).map((title, index) => ({
     title,
-    rows: availableFields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => [
-      field.sensitive && changedKeys.includes(field.key) ? `${field.label} · Approval` : field.label,
-      changedKeys.includes(field.key) ? `From ${displayValue(field, true)} to ${displayValue(field)}` : displayValue(field),
-    ] as [string, string]),
+    rows: [
+      ...availableFields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => [
+        field.sensitive && changedKeys.includes(field.key) ? `${field.label} · Approval` : field.label,
+        changedKeys.includes(field.key) ? `From ${displayValue(field, true)} to ${displayValue(field)}` : displayValue(field),
+      ] as [string, string]),
+      ...(index === 3 ? allowanceRows() : []),
+    ],
   }));
 
   return {
@@ -215,6 +243,9 @@ export function useEmployeeEditDraft({
     reviewSections,
     salaryPackageChanged: changedKeys.some(key => key.startsWith('salaryBreakdown.')),
     salaryEffectiveDate: form['salaryBreakdown.effectiveDate'] ?? '',
+    allowanceBaseline,
+    allowanceEdit,
+    allowanceProblemsShown,
     setField,
     setStep,
     save,

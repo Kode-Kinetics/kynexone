@@ -8,6 +8,7 @@ import { matrix } from './matrix';
 import { packageStrings } from './package';
 import { renewals } from './renewals';
 import { renewalsOffer } from './renewals.offer';
+import { salaryAllowances } from './salaryAllowances';
 import { shared } from './shared';
 import type { ReleaseADict } from './types';
 
@@ -17,7 +18,7 @@ import type { ReleaseADict } from './types';
  */
 export const releaseASlices: Record<string, ReleaseADict> = {
   shared, matrix, package: packageStrings, deductions, renewals, renewalsOffer, ess, accessCeiling, employeeLogin, employeeAccess,
-  employeeSignIn,
+  employeeSignIn, salaryAllowances,
 };
 
 const merge = (lang: 'en' | 'ar') =>

@@ -32,6 +32,15 @@ import { SecondApproverNotice } from '../components/SecondApproverNotice';
 import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
+import { employeesApi } from '../api/employees';
+import { formatAmount } from '../lib/hire/money';
+import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
+import { SalaryAllowanceComparison } from '../components/payroll/SalaryAllowanceViews';
+import { useCashAllowanceCatalog } from '../hooks/useCashAllowanceCatalog';
+import {
+  allowanceProblems, allowanceRefusal, allowancesForRequest, linesFromWire, shownLines, totalMonthly,
+  type AllowanceDraftLine, type AllowanceValue,
+} from '../lib/salaryAllowances';
 import { parseReconError } from '../lib/payrollRecon';
 import { useFormat } from '../hooks/useFormat';
 import { useLocale } from '../contexts/LocaleContext';
@@ -879,12 +888,18 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
   const t = useT();
   const [rows, setRows] = useState<SalaryChange[]>([]);
   const [notice, setNotice] = useState('');
+  // A change that cannot be approved as it stands (409 salary_change_stale) is explained on its own row, in the server's words.
+  const [stale, setStale] = useState<{ id: string; message: string } | null>(null);
   const load = () => { payrollApi.listSalaryChanges('Pending').then(setRows).catch(() => setRows([])); };
   useEffect(load, []);
-  const decide = async (fn: () => Promise<unknown>) => {
-    setNotice('');
+  const decide = async (id: string, fn: () => Promise<unknown>) => {
+    setNotice(''); setStale(null);
     try { await fn(); load(); onApplied(); }
-    catch (e: unknown) { setNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Could not record the decision.')); }
+    catch (e: unknown) {
+      const refusal = allowanceRefusal(e);
+      if (refusal?.code === 'salary_change_stale') { setStale({ id, message: refusal.message }); return; }
+      setNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Could not record the decision.'));
+    }
   };
   if (rows.length === 0 && !notice) return null;
   return (
@@ -893,14 +908,23 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
       {notice && <p role="alert" className="text-sm text-rose-600">{notice}</p>}
       <ul className="divide-y divide-slate-100 dark:divide-white/[0.06]">
         {rows.map(r => (
-          <li key={r.id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
+          <li key={r.id} className="flex flex-wrap items-center gap-3 py-2 text-sm" data-testid="salary-change-row">
             <span className="font-medium">{r.employeeName || `#${r.employeeId}`}</span>
             <span className="text-slate-500">{r.previousBasicSalary != null ? `${r.previousBasicSalary.toLocaleString()} → ` : ''}{r.basicSalary.toLocaleString()} {r.currency}</span>
             <span className="text-xs text-slate-400">{t('Proposed by')} {r.requestedByName}</span>
             <span className="ms-auto flex gap-2">
-              <button type="button" className={btn.primary} onClick={() => decide(() => payrollApi.approveSalaryChange(r.id))}>{t('Approve')}</button>
-              <button type="button" className={btn.ghost} onClick={() => decide(() => payrollApi.rejectSalaryChange(r.id))}>{t('Reject')}</button>
+              <button type="button" className={btn.primary} onClick={() => decide(r.id, () => payrollApi.approveSalaryChange(r.id))}>{t('Approve')}</button>
+              <button type="button" className={btn.ghost} onClick={() => decide(r.id, () => payrollApi.rejectSalaryChange(r.id))}>{t('Reject')}</button>
             </span>
+            {stale?.id === r.id && (
+              <div role="alert" className="basis-full rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200" data-testid="salary-change-stale">
+                <p className="font-semibold">{t('This change is out of date, so it was not approved. Nothing was paid or changed.')}</p>
+                {stale.message && <p className="mt-1">{stale.message}</p>}
+              </div>
+            )}
+            <div className="basis-full">
+              <SalaryAllowanceComparison current={r.currentAllowances} proposed={r.proposedAllowances} carriedForward={r.allowancesCarriedForward ?? false} currency={r.currency} basic={r.basicSalary} />
+            </div>
           </li>
         ))}
       </ul>
@@ -910,6 +934,7 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
 
 function AssignSalaryModal({ structures, onClose, onSaved }: { structures: SalaryStructure[]; onClose: () => void; onSaved: () => void }) {
   const t = useT();
+  const { locale } = useLocale();
   const today = new Date().toISOString().slice(0, 10);
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
@@ -922,9 +947,33 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
   const [error, setError] = useState('');
   const set = (k: keyof typeof form, v: string) => setForm(f => ({ ...f, [k]: v }));
 
+  // Monthly cash allowances. Untouched (null) sends no `allowances`, so the employee's current ones carry forward; only an edit sends a list.
+  const { catalog, retry: retryCatalog } = useCashAllowanceCatalog();
+  const [allowances, setAllowances] = useState<AllowanceValue>(null);
+  const [showAllowanceProblems, setShowAllowanceProblems] = useState(false);
+  const [allowanceServerProblem, setAllowanceServerProblem] = useState<string | null>(null);
+  // The lines on the employee's salary now (what untouched means), read once an employee id is entered. null = not known.
+  const [currentLines, setCurrentLines] = useState<AllowanceDraftLine[] | null>(null);
+  useEffect(() => {
+    setAllowances(null); setCurrentLines(null); setAllowanceServerProblem(null);
+    const id = Number(form.employeeId);
+    if (!form.employeeId || !Number.isInteger(id) || id <= 0) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      employeesApi.get(id).then(d => { if (live && d.salaryBreakdown !== undefined) setCurrentLines(linesFromWire(d.salaryBreakdown?.allowances)); }, () => undefined);
+    }, 400);
+    return () => { live = false; clearTimeout(timer); };
+  }, [form.employeeId]);
+  const basicNumber = form.basicSalary.trim() === '' ? undefined : Number(form.basicSalary);
+  const shownAllowances = shownLines(currentLines ?? [], allowances);
+  const allowanceTotal = totalMonthly(shownAllowances, basicNumber);
+
   const save = async () => {
     if (!form.employeeId || !form.basicSalary) { setError('Employee ID and basic salary are required.'); return; }
-    setSaving(true); setError('');
+    if (Object.keys(allowanceProblems(shownAllowances, basicNumber)).length > 0) {
+      setShowAllowanceProblems(true); setError(t('Fix the allowance lines that show a message before saving.')); return;
+    }
+    setSaving(true); setError(''); setAllowanceServerProblem(null);
     try {
       await payrollApi.assignEmployeeSalary({
         // Blank: the employee's grade package structure (or DIRECT without a grade), resolved by the server.
@@ -933,15 +982,20 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
         transportAllowance: Number(form.transportAllowance) || 0, foodAllowance: Number(form.foodAllowance) || 0,
         mobileAllowance: Number(form.mobileAllowance) || 0, otherAllowance: Number(form.otherAllowance) || 0,
         fixedDeduction: Number(form.fixedDeduction) || 0, effectiveDate: form.effectiveDate, currency: form.currency,
+        // Left out entirely when untouched: [] would remove every allowance.
+        allowances: allowancesForRequest(allowances),
       });
       onSaved();
     } catch (e: unknown) {
-      setError(apiErrorReason(e, 'Save failed.')); setSaving(false);
+      const refusal = allowanceRefusal(e);
+      if (refusal && refusal.code !== 'salary_change_stale') { setAllowanceServerProblem(refusal.message); setError(t('The salary was not saved.')); setShowAllowanceProblems(true); }
+      else setError(apiErrorReason(e, 'Save failed.'));
+      setSaving(false);
     }
   };
 
   const gross = ['basicSalary', 'housingAllowance', 'transportAllowance', 'foodAllowance', 'mobileAllowance', 'otherAllowance']
-    .reduce((sum, k) => sum + (Number(form[k as keyof typeof form]) || 0), 0);
+    .reduce((sum, k) => sum + (Number(form[k as keyof typeof form]) || 0), 0) + allowanceTotal;
 
   return (
     <Modal title="Assign Salary to Employee" onClose={onClose} wide>
@@ -969,8 +1023,13 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
           </div>
           <div className="mt-3 rounded-lg bg-slate-50 px-4 py-2.5 dark:bg-white/5">
             <p className="text-sm font-semibold text-sapphire dark:text-cyanAccent">Gross Total: {form.currency} {gross.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            {allowanceTotal > 0 && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="gross-includes-allowances">{t('Includes {amount} a month in other monthly allowances.', { amount: formatAmount(allowanceTotal, effectiveCurrency, locale) })}</p>}
           </div>
         </div>
+
+        <SalaryAllowancesEditor idPrefix="assign-salary-allowances" baseline={currentLines ?? []} baselineKind="record" baselineKnown={currentLines !== null}
+          value={allowances} onChange={v => { setAllowances(v); setAllowanceServerProblem(null); }} basic={basicNumber} currency={effectiveCurrency}
+          catalog={catalog} onRetry={retryCatalog} showProblems={showAllowanceProblems} serverProblem={allowanceServerProblem} />
 
         <div className="grid grid-cols-3 gap-3">
           <Field label="Fixed Deduction" info="A fixed amount removed every month (e.g. accommodation recovery), in the salary currency. Numbers only." infoKey="payroll.fixed_deduction"><input type="number" step="0.01" aria-label="Fixed deduction" className={inp} value={form.fixedDeduction} onChange={e => set('fixedDeduction', e.target.value)} /></Field>

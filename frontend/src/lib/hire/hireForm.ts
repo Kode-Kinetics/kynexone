@@ -42,6 +42,11 @@ export interface HireForm {
   housing: string;
   transport: string;
   other: string;
+  /**
+   * The monthly cash allowances (ALW_*) as text: '' while the person has not touched the section (nothing is sent, and the server fills a
+   * first package from the grade), otherwise the rows as JSON (lib/salaryAllowances encodeValue).
+   */
+  allowances: string;
 }
 
 export function emptyHireForm(): HireForm {
@@ -50,7 +55,7 @@ export function emptyHireForm(): HireForm {
     employeeCode: '', manualCode: false, workEmail: '', arabicName: '', preferredName: '', gender: '', maritalStatus: '',
     nationalityCode: '', idType: '', idNumber: '', idExpiry: '', idChecksumOverrideReason: '', passportNumber: '', passportExpiry: '', dob: '', mobileCountry: '', mobileNational: '',
     personalEmail: '', employmentType: '', contractType: '', contractEndDate: '', probationEndDate: '', probationWaived: false, workLocation: '', iban: '', molId: '',
-    basic: '', housing: '', transport: '', other: '',
+    basic: '', housing: '', transport: '', other: '', allowances: '',
   };
 }
 
