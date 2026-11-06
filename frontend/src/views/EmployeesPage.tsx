@@ -1557,7 +1557,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             changed: t('{name} was saved as a draft.', { name }),
             where: t('You are on the draft record, at the step where you stopped.'),
             next: { label: t('Back to the People list'), href: '/people' },
-          });
+          }, `/people/${created.id}/edit`);
           navigation.push(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
           return;
         }
