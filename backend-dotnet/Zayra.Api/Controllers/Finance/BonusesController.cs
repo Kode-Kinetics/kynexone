@@ -188,7 +188,9 @@ public class BonusesController : ControllerBase
     }
 
     private bool IsHrActor() => User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Director");
-    private bool IsFinanceActor() => User.IsInRole("Admin") || User.IsInRole("Finance");
+    // Finance standing is the permission that reads the journal, not one role name: the seeded Finance Approver, Payroll
+    // Manager and any custom Finance Controller role hold finance.gl.read. Admin and the Finance role keep their view.
+    private bool IsFinanceActor() => User.IsInRole("Admin") || User.IsInRole("Finance") || User.HasPermission("finance.gl.read");
 
     /// <summary>
     /// The batch, only when it is in the caller's company scope. A batch has no company of its own: it belongs
@@ -330,6 +332,10 @@ public class BonusesController : ControllerBase
         var tid = GetTenantId(); var uid = GetUserId();
         var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
+        // A batch spans the companies of its lines. A caller who sees only some of them must not edit it (Approve and
+        // Process already refuse a partial view the same way); checked before anything is touched.
+        var (_, partialEdit) = await LoadWholeBatchBonusesAsync(tid, id, ct);
+        if (partialEdit is not null) return partialEdit;
         if (batch.Status != "Draft") return BadRequest("Only Draft batches can be edited.");
         batch.BatchName = req.BatchName ?? batch.BatchName;
         if (req.PaymentPeriod != null) batch.PaymentPeriod = req.PaymentPeriod;
@@ -348,6 +354,10 @@ public class BonusesController : ControllerBase
         var tid = GetTenantId(); var uid = GetUserId();
         var batch = await ScopedBatchAsync(id, tid, ct);
         if (batch == null) return NotFound();
+        // Deleting soft-deletes the lines the caller can see, which would orphan the other companies' lines of a mixed
+        // batch. Refused unless the caller sees every line.
+        var (_, partialDelete) = await LoadWholeBatchBonusesAsync(tid, id, ct);
+        if (partialDelete is not null) return partialDelete;
         if (batch.Status is not ("Draft" or "Cancelled"))
             return BadRequest("Only Draft or Cancelled batches can be deleted. Reject the batch first.");
         batch.IsDeleted = true; batch.UpdatedAtUtc = DateTime.UtcNow; batch.UpdatedBy = uid;
