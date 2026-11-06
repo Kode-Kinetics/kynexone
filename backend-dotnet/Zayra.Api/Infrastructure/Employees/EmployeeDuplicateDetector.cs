@@ -142,6 +142,9 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
                 .IgnoreQueryFilters()
                 .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.DateOfBirth == d
                             && (probe.ExcludeEmployeeId == null || x.Id != probe.ExcludeEmployeeId))
+                // A capped read needs a total order: without one PostgreSQL returns whichever rows its scan meets first,
+                // and that order changes whenever a row is updated, so two reads of the same data could keep different rows.
+                .OrderBy(x => x.Id)
                 .Take(IdentityValueNormalizer.DobBlockCap + 1)
                 .ToListAsync(ct);
 
@@ -211,6 +214,9 @@ public sealed class EmployeeDuplicateDetector : IEmployeeDuplicateDetector
                     (x.EnglishName.ToLower().Contains(enFirst) && x.EnglishName.ToLower().Contains(enLast!))
                     || (x.FullName.ToLower().Contains(enFirst) && x.FullName.ToLower().Contains(enLast!))))
                 || (arFirst != null && x.ArabicName.Contains(arFirst) && x.ArabicName.Contains(arLast!)))
+            // Total order before both caps: the same data must always yield the same (lowest-id) matches. An unordered
+            // Take returned an arbitrary subset that shifted between two reads once rows had been updated.
+            .OrderBy(x => x.Id)
             .Take(200).ToListAsync(ct);
         return candidates.Where(e =>
                 (englishKey is not null
