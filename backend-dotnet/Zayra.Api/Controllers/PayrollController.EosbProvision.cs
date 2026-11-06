@@ -148,7 +148,7 @@ public partial class PayrollController
             obligations.Add(new EosbObligation(
                 employee.Id, employee.EmployeeCode, result.TotalGratuity, carried,
                 IsCatchUp: history.Count == 0,
-                WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.ConfiguredWage,
+                WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.FallbackWage,
                 ServiceYears: (decimal)years, Rule: result.ApplicableRule,
                 CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
         }

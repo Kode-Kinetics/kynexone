@@ -5620,7 +5620,7 @@ public partial class PayrollController : ControllerBase
         // S1/A1 — the wage the PACK awarded on, not the controller's pre-narrowed scalar. When a pack
         // does not report one (Default), fall back to the configured wage so the field is never zero
         // against a non-zero award.
-        var eligibleSalary = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
+        var eligibleSalary = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.FallbackWage;
         var dailySalary = eligibleSalary * 12 / 365m;
         var monthlySalary = eligibleSalary;
 
@@ -5631,7 +5631,7 @@ public partial class PayrollController : ControllerBase
             existing.CalculationDate = DateOnly.FromDateTime(calcDate);
             existing.EligibleSalary = eligibleSalary;
             existing.CalculatedAmount = eosbAmount;
-            existing.RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, wageBasis.IncludedComponents });
+            existing.RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, IncludedComponents = wageBasis.AllIncludedComponents });
         }
         else
         {
@@ -5639,7 +5639,7 @@ public partial class PayrollController : ControllerBase
             {
                 TenantId = tenantId, EmployeeId = req.EmployeeId, CalculationDate = DateOnly.FromDateTime(calcDate),
                 EligibleSalary = eligibleSalary, CalculatedAmount = eosbAmount,
-                RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, wageBasis.IncludedComponents })
+                RulesSnapshotJson = System.Text.Json.JsonSerializer.Serialize(new { formula = eosbFormula, totalYears, dailySalary, monthlySalary, countryCode = company.CountryCode, company.Jurisdiction, IncludedComponents = wageBasis.AllIncludedComponents })
             });
         }
         await _db.SaveChangesAsync(cancellationToken);
@@ -5659,7 +5659,7 @@ public partial class PayrollController : ControllerBase
             dailySalary = Math.Round(dailySalary, 4),
             formula = eosbFormula,
             eosbAmount,
-            wageBasis = wageBasis.IncludedComponents,
+            wageBasis = wageBasis.AllIncludedComponents,
             // S1/A1 — the pack's statutory notices and the compatibility-fallback reason are part of the
             // ANSWER, not a snapshot footnote. A caller that cannot see them cannot sign off on the award.
             statutoryNotices = EosbCalculateNotices(eosbResult, wageBasis, serviceStart, joiningDate),
@@ -5695,12 +5695,28 @@ public partial class PayrollController : ControllerBase
     /// to the pack as <c>new SalaryBreakdown(eligibleWage, 0, 0, 0)</c> — housing and transport
     /// explicitly zeroed — so no pack could ever see, let alone apply, the Art. 84 "last wage". That is
     /// the mechanical cause of A1.</para>
+    ///
+    /// <para><see cref="CashAllowanceWage"/> is the employee's own customer-defined cash allowances that count in the end-of-service wage. It is
+    /// deliberately NOT part of <see cref="ConfiguredWage"/>: a pack takes the greater of its statutory base and the configured wage, which would lose
+    /// an allowance folded into the latter whenever statute is the larger. It travels to the pack as <c>AdditionalEosbWage</c>; a pack that awards on a
+    /// wider last wage adds it, and one that awards on basic by law does not.</para>
     /// </summary>
     private sealed record EosbWageBasis(
         SalaryBreakdown Package,
         decimal ConfiguredWage,
         IReadOnlyList<string> IncludedComponents,
-        string? FallbackReason);
+        string? FallbackReason,
+        decimal CashAllowanceWage = 0m,
+        IReadOnlyList<string>? CashAllowanceCodes = null)
+    {
+        /// <summary>The wage a caller shows when the pack reports none (the no-op pack): the configured wage plus the allowances, each once.</summary>
+        public decimal FallbackWage => ConfiguredWage + CashAllowanceWage;
+
+        /// <summary>The catalogue's included components and the counted cash allowance codes, for display.</summary>
+        public IReadOnlyList<string> AllIncludedComponents => CashAllowanceCodes is { Count: > 0 }
+            ? IncludedComponents.Concat(CashAllowanceCodes).Distinct(StringComparer.Ordinal).ToList()
+            : IncludedComponents;
+    }
 
     private async Task<EosbWageBasis> ResolveEosbWageBasisAsync(
         Guid tenantId, Guid? companyId, EmployeeSalaryStructure? salary, Employee employee, CancellationToken ct)
@@ -5717,7 +5733,7 @@ public partial class PayrollController : ControllerBase
     /// catalog the caller already loaded, so the monthly provision (POD-C2) measures every employee on
     /// exactly the base a settlement would, without reloading the catalog once per employee.</summary>
     /// <param name="cashAllowances">The customer-defined monthly cash allowances on the salary record whose definition counts in the end-of-service wage
-    /// (<c>EosbIncluded</c>); null or empty for an employee without any. Their monthly amounts join the configured wage.</param>
+    /// (<c>EosbIncluded</c>); null or empty for an employee without any. Their total is carried apart from the configured wage and added by the pack.</param>
     private static EosbWageBasis EosbWageBasisFrom(
         IEnumerable<PayComponent> components, EmployeeSalaryStructure? salary, Employee employee,
         IReadOnlyList<Zayra.Api.Infrastructure.Payroll.EosbCashAllowance>? cashAllowances = null)
@@ -5740,11 +5756,12 @@ public partial class PayrollController : ControllerBase
             Gross = gross,
         }).Earnings;
         var eligible = Math.Round(computed.Sum(l => l.Amount), 2);
+        // The employee's cash allowances that count in the wage travel apart from the configured wage (see EosbWageBasis).
         var allowanceWage = Math.Round(cashAllowances?.Sum(a => a.Amount) ?? 0m, 2);
         var allowanceCodes = cashAllowances?.Select(a => a.Code).ToList() ?? [];
         if (eligible > 0m)
-            return new EosbWageBasis(package, eligible + allowanceWage,
-                computed.Select(l => l.Code).Concat(allowanceCodes).Distinct(StringComparer.Ordinal).ToList(), null);
+            return new EosbWageBasis(package, eligible,
+                computed.Select(l => l.Code).Distinct(StringComparer.Ordinal).ToList(), null, allowanceWage, allowanceCodes);
 
         // A tenant may have a partially seeded component catalog with no EOSB flags at all. The OLD
         // behaviour here was to fall back to BASIC ALONE and record the reason in a snapshot column
@@ -5752,14 +5769,13 @@ public partial class PayrollController : ControllerBase
         // PACKAGE and leaves the statutory narrowing to the pack (KSA takes basic + housing + configured
         // allowances; UAE Art. 51 and Qatar Art. 54 take basic and are unaffected), and the fallback is
         // surfaced as a settlement warning by the caller instead of being buried.
-        // An allowance the customer marked as part of the end-of-service wage still counts here: it raises the configured wage above the
-        // statutory base (the pack can only ever raise it), by the whole package it can be added to.
-        return new EosbWageBasis(package, allowanceWage > 0m ? Math.Round(basic + housing + transport + allowanceWage, 2) : 0m,
-            new[] { "(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)" }.Concat(allowanceCodes).ToList(),
+        return new EosbWageBasis(package, 0m,
+            ["(compatibility fallback: no EOSB-flagged pay component — statutory base applied by the country pack)"],
             "No active pay component in this company's catalog is flagged EosbIncluded, so the gratuity was " +
             "computed on the country pack's STATUTORY base rather than on a configured one. For KSA that is " +
             "Art. 84 last wage (basic + housing, plus transport unless disabled); for UAE/Qatar it is basic. " +
-            "Seed the pay-component catalog so the base is an explicit, auditable configuration.");
+            "Seed the pay-component catalog so the base is an explicit, auditable configuration.",
+            allowanceWage, allowanceCodes);
     }
 
     /// <summary>
@@ -5929,6 +5945,8 @@ public partial class PayrollController : ControllerBase
             Nationality:       employee.Nationality ?? string.Empty)
         {
             ConfiguredEosbWage = wageBasis.ConfiguredWage,
+            AdditionalEosbWage = wageBasis.CashAllowanceWage,
+            AdditionalEosbWageCodes = wageBasis.CashAllowanceCodes ?? [],
             UnpaidLeaveDays    = unpaidLeaveDays,
             // S1 — the three EOSB fields the country compliance-config screen has always let a customer
             // edit and which nothing read. The pack decides what it is lawful to honour.
@@ -8437,7 +8455,7 @@ public partial class PayrollController : ControllerBase
             countryCode, jurisdiction, companyId ?? Guid.Empty, wageBasis,
             serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
         var gratuity = Math.Round(eosbResult.TotalGratuity, 2);
-        var appliedWageBase = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.ConfiguredWage;
+        var appliedWageBase = eosbResult.AppliedWageBase > 0m ? eosbResult.AppliedWageBase : wageBasis.FallbackWage;
 
         // ── S1/A1: the pack's own statutory notices, surfaced ON THE SETTLEMENT ──────────────────────
         // A [COUNSEL] default that changes the award (transport in / other out) and a DIFC trustee
@@ -8457,14 +8475,16 @@ public partial class PayrollController : ControllerBase
         decimal wageBaseDelta = 0m;
         if (monthlyGross > appliedWageBase && gratuity > 0m)
         {
-            var fullBasis = wageBasis with { ConfiguredWage = monthlyGross };
+            // The full package already holds every cash allowance (monthlyGross), so the separately carried allowance wage is cleared: otherwise
+            // the pack would add it a second time on top of the package.
+            var fullBasis = wageBasis with { ConfiguredWage = monthlyGross, CashAllowanceWage = 0m, CashAllowanceCodes = null };
             var (fullResult, _) = await ComputeEndOfServiceAsync(
                 countryCode, jurisdiction, companyId ?? Guid.Empty, fullBasis,
                 serviceStart, calcDate, terminationReason, employee, unpaidLeaveDays, gcc, ct);
             wageBaseDelta = Math.Max(0m, Math.Round(fullResult.TotalGratuity - gratuity, 2));
             if (wageBaseDelta > 0m)
                 warnings.Add($"[FLAG-COMPLIANCE] Gratuity is computed on the wage base the country pack applied " +
-                             $"({appliedWageBase:N2}; configured components: {string.Join(", ", wageBasis.IncludedComponents)}). On the " +
+                             $"({appliedWageBase:N2}; configured components: {string.Join(", ", wageBasis.AllIncludedComponents)}). On the " +
                              $"full package ({monthlyGross:N2}) it would be {wageBaseDelta:N2} {currency} higher. " +
                              "KSA Art. 84 measures the award on the LAST WAGE (Art. 2: basic plus all due increments); " +
                              "UAE Art. 51 and Qatar Art. 54 are basic-only and this delta is expected there. " +
@@ -8683,7 +8703,7 @@ public partial class PayrollController : ControllerBase
                 packageTransport = wageBasis.Package.TransportAllowance,
                 packageOther = wageBasis.Package.OtherAllowances,
                 unpaidLeaveDays,
-                eosbIncludedComponents = wageBasis.IncludedComponents, currency,
+                eosbIncludedComponents = wageBasis.AllIncludedComponents, currency,
                 // M1 — the start the pack measured on, plus the joining date it may differ from, so the
                 // snapshot alone explains a migrated leaver's award years later.
                 serviceStart,
