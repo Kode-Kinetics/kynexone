@@ -6,6 +6,7 @@ import { apiErrorReason } from '../../api/client';
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useT } from '../../hooks/useT';
+import { useConfirm } from '../ui/useConfirm';
 import { policySources } from '../../lib/policyBinder';
 import { savePolicyFormDraft } from '../../lib/policyFormDrafts';
 import { SetupPolicyExtraction } from '../SetupPolicyExtraction';
@@ -17,6 +18,7 @@ export function LocalOnboardingPreparation({ value, onChange, profile, onProfile
   onReviewOnboardingDraft: () => void;
 }) {
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { user, hasPermission } = useAuth();
   const { companies, accountType } = useCompany();
   const sources = policySources(value);
@@ -64,7 +66,7 @@ export function LocalOnboardingPreparation({ value, onChange, profile, onProfile
     const source = sources.find(source => source.documentId === result.documentId && source.contentSha256 === result.sourceHash);
     return source ? (result.onboardingTaskDrafts ?? []).map(task => ({ ...task, documentId: source.documentId, contentSha256: source.contentSha256, sourceName: source.name })) : [];
   });
-  const review = () => {
+  const review = async () => {
     const company = companies.find(company => company.id === profile.companyId && company.isActive);
     if (!user || !company || busy || readySignature !== signature || !tasks.length) return;
     const bundle = { tenantId: user.tenantId, userId: user.id, companyId: company.id, companyName: company.name, accountType, sources, tasks };
@@ -72,13 +74,18 @@ export function LocalOnboardingPreparation({ value, onChange, profile, onProfile
       try { savePolicyFormDraft(localStorage, bundle); }
       catch (cause) {
         if (!(cause instanceof Error) || !cause.message.startsWith('Existing policy form drafts')) throw cause;
-        if (!window.confirm(t('Your existing policy form draft has unsaved edits. Replace it with the newly extracted values? Saved checklist tasks will not change.'))) return;
+        if (!await confirm({
+          title: t('Replace your existing policy form draft?'),
+          message: t('Your existing policy form draft has unsaved edits. Replace it with the newly extracted values? Saved checklist tasks will not change.'),
+          confirmLabel: t('Replace draft'),
+        })) return;
         savePolicyFormDraft(localStorage, bundle, { replace: true });
       }
       onReviewOnboardingDraft();
     } catch { setError(t('The form draft could not be saved in this browser. Your setup values are unchanged.')); }
   };
   return <div className="space-y-3">
+    {confirmDialog}
     <p className="text-sm">{t('Document text is read on the application server. Supported onboarding fields are prepared without AI; nothing is sent to an AI provider.')}</p>
     {busy && <p role="status" className="text-sm">{t('Preparing form values locally…')}</p>}
     {error && <div role="alert" className="text-sm text-rose-700 dark:text-rose-300">{error}<button className="btn-secondary ms-2" type="button" onClick={() => setRetry(count => count + 1)}>{t('Retry local preparation')}</button></div>}
@@ -86,7 +93,7 @@ export function LocalOnboardingPreparation({ value, onChange, profile, onProfile
       <h3 className="font-semibold">{t('Document parsed successfully')}</h3>
       <p className="text-sm">{tasks.length ? t('{count} local task drafts are ready for review.', { count: tasks.length }) : t('No supported onboarding tasks were mapped locally. Enter tasks manually or optionally use AI; no policy values have been guessed.')}</p>
       <p className="text-xs text-slate-600 dark:text-slate-300">{t('Local mapping is limited to supported clauses. Review every value and its source; unclear deadlines and requirements stay blank.')}</p>
-      {tasks.length > 0 && <button type="button" className="btn-primary" onClick={review} disabled={!hasPermission('recruitment.read') && !hasPermission('recruitment.write')}>{t('Review local form values')}</button>}
+      {tasks.length > 0 && <button type="button" className="btn-primary" onClick={() => void review()} disabled={!hasPermission('recruitment.read') && !hasPermission('recruitment.write')}>{t('Review local form values')}</button>}
       {results.some(result => result.issues.length) && <details><summary className="cursor-pointer text-sm">{t('Local mapping notes')}</summary><ul className="list-disc ps-5 text-sm">{results.flatMap(result => result.issues.map((issue, index) => <li key={`${result.documentId}:${index}`}>{issue.message}</li>))}</ul></details>}
     </section>}
     <button type="button" className="btn-secondary" disabled={busy} aria-expanded={showAi} onClick={() => setShowAi(open => !open)}>{t('Improve with AI (optional)')}</button>

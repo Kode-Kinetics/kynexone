@@ -6,5 +6,6 @@
   "radiusOutsideScale": 28,
   "shadow2xl": 3,
   "tintedShadow": 0,
-  "fontWeightSprawl": 30
+  "fontWeightSprawl": 30,
+  "nativeDialog": 0
 }

@@ -58,6 +58,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { useConfirm } from '../components/ui/useConfirm';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
@@ -488,6 +489,8 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
   // A Recruiter holds recruitment.read/write only, so these buttons only ever returned 403 for them.
   const { hasPermission } = useAuth();
   const canDecide = hasPermission('recruitment.approve');
+  const t = useT();
+  const { ask, dialog: confirmDialog } = useConfirm();
   const [statusFilter, setStatusFilter] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [acting, setActing] = useState<string | null>(null);
@@ -515,15 +518,21 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
   };
 
   const reject = async (id: string) => {
-    const reason = window.prompt('Rejection reason:');
-    if (!reason) return;
+    const answer = await ask({
+      title: t('Reject this requisition?'),
+      message: t('The requisition is marked as rejected with the reason you give.'),
+      confirmLabel: t('Reject requisition'),
+      reason: { required: true, label: t('Rejection reason') },
+    });
+    if (!answer.confirmed) return;
     setActing(id);
-    try { await requisitionsApi.reject(id, reason); load(); } catch (e) { notifyApiError(e); }
+    try { await requisitionsApi.reject(id, answer.reason); load(); } catch (e) { notifyApiError(e); }
     finally { setActing(null); }
   };
 
   return (
     <div>
+      {confirmDialog}
       <div className="mb-4 flex items-center gap-3">
         <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label="Filter by status">
           <option value="">All Statuses</option>
@@ -2345,6 +2354,7 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
 
 export function OnboardingTab({ configurationOnly = false, policyDraft, policyDraftRevision = 0, onDirtyChange }: { configurationOnly?: boolean; policyDraft?: boolean; policyDraftRevision?: number; onDirtyChange?: (dirty: boolean) => void } = {}) {
   const t = useT();
+  const { confirm: policyConfirm, dialog: policyConfirmDialog } = useConfirm();
   const { user, hasPermission } = useAuth();
   const { companies, selectedCompanyId, accountType } = useCompany();
   const activeCompanies = companies.filter(company => company.isActive);
@@ -2413,11 +2423,15 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
       persistPolicyBundle({ ...policyBundle, saved, selectedTaskId: activePolicyTaskId, edits: { ...policyBundle.edits, [activePolicyTaskId]: next } });
     }
   };
-  const fillPolicyTask = (replace = false) => {
+  const fillPolicyTask = async (replace = false) => {
     const task = policyBundle?.tasks.find(item => item.id === policyTaskId);
     if (!policyBundle || !task) return;
     if ((replace || (!activePolicyTaskId && (templateForm.taskTitle || templateForm.taskDescription || templateForm.assignedToName)))
-      && !window.confirm(t(replace ? 'Replace your edits for this task with the extracted policy values?' : 'Replace the unsaved values in the current task form with this policy draft?'))) return;
+      && !(await policyConfirm({
+        title: t(replace ? 'Replace your edits for this task with the extracted policy values?' : 'Replace the unsaved values in the current task form with this policy draft?'),
+        message: t('Your unsaved edits in the task form are lost.'),
+        confirmLabel: t('Replace values'),
+      }))) return;
     const existing = templateTasks.find(item => item.taskTitle === task.taskTitle.trim());
     const next = !replace && policyBundle.edits?.[task.id] ? policyBundle.edits[task.id] : policyTaskForm(task, policyBundle.tasks.indexOf(task), { ...existing, checklistId: selectedChecklistId });
     setTemplateForm(next); setActivePolicyTaskId(task.id); setShowTemplate(true); setTaskError(''); setPolicyNotice(t('Policy values filled the existing task form. Review and save explicitly; no task has been assigned to an employee.'));
@@ -2554,6 +2568,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   return (
     <div className="space-y-4">
+      {policyConfirmDialog}
       {summary && (
         <div className="surface p-4">
           <div className="mb-2 flex items-center justify-between">
@@ -2581,8 +2596,8 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           {!canWriteTemplates && <p className="text-sm text-amber-800 dark:text-amber-200">{t('You can review this draft, but saving templates requires recruitment write access.')}</p>}
           <div className="flex flex-wrap gap-2"><select aria-label={t('Policy task draft')} className="input min-w-64" value={policyTaskId} onChange={event => { setPolicyTaskId(event.target.value); persistPolicyBundle({ ...policyBundle, selectedTaskId: event.target.value }); }}>
             {policyBundle.tasks.map(task => <option key={task.id} value={task.id}>{task.taskTitle}{policyBundle.saved?.[task.id] ? ` · ${t('Saved')}` : ''}</option>)}
-          </select><button type="button" className="btn-secondary" disabled={templateSaving || (!!selectedChecklistId && templatesLoadedFor !== selectedChecklistId)} onClick={() => fillPolicyTask()}>{t('Fill existing task form')}</button>
-          {activePolicyTaskId && <button type="button" className="btn-secondary" disabled={templateSaving} onClick={() => fillPolicyTask(true)}>{t('Replace with extracted values')}</button>}</div>
+          </select><button type="button" className="btn-secondary" disabled={templateSaving || (!!selectedChecklistId && templatesLoadedFor !== selectedChecklistId)} onClick={() => void fillPolicyTask()}>{t('Fill existing task form')}</button>
+          {activePolicyTaskId && <button type="button" className="btn-secondary" disabled={templateSaving} onClick={() => void fillPolicyTask(true)}>{t('Replace with extracted values')}</button>}</div>
           {policyNotice && <p role="status" className="text-sm text-emerald-800 dark:text-emerald-200">{policyNotice}</p>}
         </section>}
         <div className="flex flex-wrap items-center gap-3">

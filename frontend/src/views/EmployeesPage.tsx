@@ -98,6 +98,7 @@ import { EMPLOYEE_REFERENCE_TYPES, EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeR
 import { referenceCode, referenceDefault, referenceLabel, referenceOptions, type ReferenceOption } from '../lib/referenceLists';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
 import { useLiveGrades } from '../hooks/useLiveGrades';
+import { useConfirm } from '../components/ui/useConfirm';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -326,6 +327,7 @@ interface EmployeeUsageData {
 export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } = {}) {
   const wizardFormat = useFormat();
   const { t, locale } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
@@ -1719,7 +1721,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // gated behind an explicit confirm and offered only for STRONG (near-certain) matches.
   const mergeInto = async (intoEmployeeId: number, targetLabel: string) => {
     if (!selectedId) return;
-    if (!confirm(`Merge this record into ${targetLabel}? This record will be closed as a duplicate — its pending approvals are cancelled and its payroll footprint deactivated. History is kept and linked for audit.`)) return;
+    if (!(await confirm({
+      title: t('Merge this record into {target}?', { target: targetLabel }),
+      message: t('This record is closed as a duplicate: its pending approvals are cancelled and its payroll footprint is deactivated. History is kept and linked for audit.'),
+      confirmLabel: t('Merge records'),
+    }))) return;
     setDupResolving(true);
     setDupNotice('');
     try {
@@ -1747,16 +1753,20 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
-  const closeEditModal = (): boolean => {
+  const closeEditModal = async (): Promise<boolean> => {
     if (editSaving) return false;
-    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return false;
+    if (dirtyEditKeys.length > 0 && !(await confirm({
+      title: t('Discard unsaved employee changes?'),
+      message: t('Your edits to this employee have not been saved and will be lost.'),
+      confirmLabel: t('Discard changes'),
+    }))) return false;
     setEditOpen(false);
     return true;
   };
 
   const openFullProfile = async () => {
     const id = editEmployeeId ?? selectedEmployee?.id;
-    if (!id || !closeEditModal()) return;
+    if (!id || !(await closeEditModal())) return;
     await openDetail(id, true);
   };
 
@@ -1851,10 +1861,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
 
-  const closeCreateModal = () => {
+  const closeCreateModal = async () => {
     if (saving) return;
     if (createdEmployee) { finishCreated(); return; }
-    if (formChanged && !confirm('Discard this employee draft?')) return;
+    if (formChanged && !(await confirm({
+      title: t('Discard this employee draft?'),
+      message: t('The details you entered have not been saved and will be lost.'),
+      confirmLabel: t('Discard draft'),
+    }))) return;
     createGeneration.current++;
     setCheckingDuplicate(false);
     setFormOpen(false);
@@ -1958,7 +1972,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
   const deleteEmployee = async () => {
     if (!selectedId || !detail) return;
-    if (!confirm(`Delete ${detail.fullName}'s record? It will be hidden from all lists; history is kept for audit.`)) return;
+    if (!(await confirm({
+      title: t('Delete {name}?', { name: detail.fullName }),
+      message: t('The record is hidden from all lists. History is kept for audit.'),
+      confirmLabel: t('Delete employee'),
+    }))) return;
     try {
       await employeesApi.remove(selectedId);
       setSelectedId(null);
@@ -2164,6 +2182,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
   return (
     <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
+      {confirmDialog}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
           {subscriptionBanner}
@@ -2528,11 +2547,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       )}
 
       <Modal isOpen={editOpen} title={canEditEmployees ? t('Edit Employee — {name}', { name: selectedEmployee?.fullName ?? '' }) : t('Employee record — {name}', { name: selectedEmployee?.fullName ?? '' })}
-        size="wizard" onClose={closeEditModal}
+        size="wizard" onClose={() => void closeEditModal()}
         headerContent={<EmployeeCreateProgress steps={employeeWindowSteps} step={editStep} onStepChange={changeEditStep} busy={editSaving} allowAll />}
         footer={
           <div className="flex w-full items-center justify-between gap-3">
-            <button type="button" onClick={closeEditModal} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
+            <button type="button" onClick={() => void closeEditModal()} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
             <div className="flex items-center gap-2">
               {editStep > 0 && <button type="button" onClick={() => changeEditStep(editStep - 1)} disabled={editSaving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
               {editStep < EMPLOYEE_EDIT_STEPS.length - 1 ? (
@@ -2544,7 +2563,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   {editSaving ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
                   {t(editSaving ? 'Saving...' : 'Save changes')}
                 </button>
-              ) : <button type="button" onClick={closeEditModal} className="btn-primary">{t('Done')}</button>}
+              ) : <button type="button" onClick={() => void closeEditModal()} className="btn-primary">{t('Done')}</button>}
             </div>
           </div>
         }
@@ -2624,7 +2643,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         </form>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
+      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={() => void closeCreateModal()}
         headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={createBusy} visibleSteps={createStepOrder} visitedSteps={visitedCreateSteps} />}
         footer={createdEmployee ? (
         <>
@@ -2651,7 +2670,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         </>
       ) : (
           <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:justify-between">
-            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary justify-self-start disabled:opacity-60">Cancel</button>
+            <button type="button" onClick={() => void closeCreateModal()} disabled={saving} className="btn-secondary justify-self-start disabled:opacity-60">Cancel</button>
             <button type="button" onClick={() => void saveEmployee(false, true)} disabled={createBusy || formCompanyMissingCountry} className="justify-self-end px-1 py-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-60 dark:text-slate-300 sm:me-auto sm:ms-2">{saving && pendingCreateExit ? t('Saving...') : t('Save draft and exit')}</button>
             <div className="col-span-2 flex items-center justify-end gap-2">
               {formStep > 0 && <button type="button" onClick={() => changeCreateStep(previousCreateStep)} disabled={createBusy} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}

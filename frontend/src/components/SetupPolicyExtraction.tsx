@@ -7,6 +7,7 @@ import { useCompany } from '../contexts/CompanyContext';
 import { setupAssistantApi, type CompanyProfile, type SetupConfiguration, type PolicyExtractionProposal, type PolicyExtractionResult, type PolicyReviewItem } from '../api/setupAssistant';
 import { apiErrorReason } from '../api/client';
 import { useT } from '../hooks/useT';
+import { useConfirm } from './ui/useConfirm';
 import { msg } from '../i18n/translations';
 import { appendOnboardingTaskDrafts, appendPolicyProposals, mergePolicyValue, policySources, proposalsConflict, type SourcedPolicyProposal } from '../lib/policyBinder';
 import { savePolicyFormDraft, type PolicyOnboardingTaskDraft } from '../lib/policyFormDrafts';
@@ -58,6 +59,7 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
   onReviewOnboardingDraft?: () => void;
 }) {
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const router = useRouter();
   const { user, hasPermission } = useAuth();
   const { accountType, companies } = useCompany();
@@ -182,7 +184,7 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
     saveCheckpoint(true); onProfileChange(profilePatch as Partial<CompanyProfile>);
     setProposals(collected.current.proposals); setSelected(new Set()); setNotice(t('Selected suggestions copied into setup. Review the following steps before generating your draft.'));
   };
-  const openOnboardingForm = () => {
+  const openOnboardingForm = async () => {
     const company = companies.find(item => item.id === profile.companyId && item.isActive);
     if (!complete || busy || !user || !company || !hasPermission('recruitment.read') && !hasPermission('recruitment.write')) return;
     if (!inputsMatch()) { setError(t('Your setup changed after extraction. Extract again before accepting suggestions.')); return; }
@@ -191,7 +193,11 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
       try { savePolicyFormDraft(localStorage, bundle); }
       catch (cause) {
         if (!(cause instanceof Error) || !cause.message.startsWith('Existing policy form drafts')) throw cause;
-        if (!window.confirm(t('Your existing policy form draft has unsaved edits. Replace it with the newly extracted values? Saved checklist tasks will not change.'))) return;
+        if (!await confirm({
+          title: t('Replace your existing policy form draft?'),
+          message: t('Your existing policy form draft has unsaved edits. Replace it with the newly extracted values? Saved checklist tasks will not change.'),
+          confirmLabel: t('Replace draft'),
+        })) return;
         savePolicyFormDraft(localStorage, bundle, { replace: true });
       }
       if (onReviewOnboardingDraft) onReviewOnboardingDraft();
@@ -199,6 +205,7 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
     } catch (cause) { setError(apiErrorReason(cause, t('The form draft could not be saved in this browser. Your setup values are unchanged.'))); }
   };
   return <div className="space-y-3">
+    {confirmDialog}
     <p className="text-xs text-slate-600 dark:text-slate-300">{t('Your complete binder is processed in sections automatically. Suggestions from all documents are combined for review; conflicting rules require your choice.')}</p>
     <p className="text-sm text-slate-600 dark:text-slate-300">{t('AI proposes settings with supporting policy passages. Select the changes you want; existing values are shown before replacement.')}</p>
     <details className="text-xs text-slate-600 dark:text-slate-300"><summary className="cursor-pointer font-medium">{t('Limits for reviewed changes')}</summary><p className="mt-2">{t('Document upload limits are separate from applying settings. Each reviewed setup submission supports up to 500 source references and 128 KiB of configuration data. If exceeded, review and apply smaller groups of settings.')}</p></details>
@@ -217,7 +224,7 @@ export function SetupPolicyExtraction({ value, onChange, profile, onProfileChang
         <p className="mt-1 text-sm">{t('{count} task drafts are ready for the existing Onboarding → Checklist Templates form.', { count: onboardingTaskDrafts.length })}</p>
         <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{t('Review the extracted title, description, category and owner in the existing fields. Missing deadlines stay blank. Nothing is saved until you use the form’s Save action.')}</p>
         <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{t('Checklist templates are tenant-wide. Policy text does not activate conditional eligibility, probation calculations or employee tasks.')}</p>
-        <button type="button" className="btn-primary mt-3" disabled={busy || !profile.companyId || !hasPermission('recruitment.read') && !hasPermission('recruitment.write')} onClick={openOnboardingForm}>{t('Review prefilled forms')}</button>
+        <button type="button" className="btn-primary mt-3" disabled={busy || !profile.companyId || !hasPermission('recruitment.read') && !hasPermission('recruitment.write')} onClick={() => void openOnboardingForm()}>{t('Review prefilled forms')}</button>
         {!profile.companyId && <p className="mt-2 text-sm text-amber-800">{t('Select an existing company before opening the form.')}</p>}
         {!hasPermission('recruitment.read') && !hasPermission('recruitment.write') && <p className="mt-2 text-sm">{t('Recruitment access is required to open this form.')}</p>}
       </section>}

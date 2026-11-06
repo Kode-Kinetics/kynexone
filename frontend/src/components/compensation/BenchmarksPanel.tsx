@@ -11,6 +11,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
+import { useLocale } from '../../contexts/LocaleContext';
+import { useConfirm } from '../ui/useConfirm';
+import { refusalFromError } from '../../lib/refusal';
 import { Badge, Field, FieldError, PanelState, serverMessage, theadClass, thClass } from '../gl/glUi';
 import { SyntheticBanner, SyntheticChip } from './compUi';
 
@@ -158,6 +161,9 @@ function ImportForm({ onDone }: { onDone: (s: BenchmarkSet) => void }) {
 
 function SetDetail({ setId, canManage, onChanged }: { setId: string; canManage: boolean; onChanged: () => void }) {
   const t = useT();
+  const { locale } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const [retiring, setRetiring] = useState(false);
   const f = useFormat();
   const [data, setData] = useState<{ set: BenchmarkSet; rows: BenchmarkRow[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +174,21 @@ function SetDetail({ setId, canManage, onChanged }: { setId: string; canManage: 
     try { setData(await compensationApi.benchmarkSet(setId)); } catch (err) { setError(serverMessage(err, t)); }
   }, [setId, t]);
   useEffect(() => { void load(); }, [load]);
+  // Retiring was one click with no confirmation, no busy state and no catch: a failure was an unhandled rejection
+  // and nothing told the user it had not happened.
+  const retire = async () => {
+    if (!data || retiring) return;
+    if (!(await confirm({
+      title: t('Retire this benchmark set?'),
+      message: t('The set is marked as retired.'),
+      confirmLabel: t('Retire set'),
+    }))) return;
+    setRetiring(true);
+    setError(null);
+    try { await compensationApi.retireSet(data.set.id); await load(); onChanged(); }
+    catch (err) { setError(refusalFromError(err, { what: t('The benchmark set was not retired'), fix: t('Reload the page to see its current state.') }, t, locale)); }
+    finally { setRetiring(false); }
+  };
   useEffect(() => {
     designationsApi.listAll().then(setDesignations).catch(() => setDesignations([]));
     gradesApi.listAll().then(setGrades).catch(() => setGrades([]));
@@ -176,54 +197,57 @@ function SetDetail({ setId, canManage, onChanged }: { setId: string; canManage: 
     try { await compensationApi.mapRow(row.id, designationId, gradeId); await load(); onChanged(); } catch (err) { setError(serverMessage(err, t)); }
   };
   return (
-    <PanelState loading={!data && !error} error={error} onRetry={load} empty={false} emptyLabel="">
-      {data && (
-        <div className="surface space-y-3 p-4" data-testid="benchmark-set-detail">
-          <h4 className="text-sm font-semibold text-slate-900 dark:text-white">{data.set.name}</h4>
-          {data.set.isSynthetic && <SyntheticBanner t={t} />}
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            {t('Imported by {name} on {date} from {file} (SHA-256 {hash}).', { name: data.set.importedByName, date: f.date(data.set.importedAtUtc), file: data.set.sourceFileName, hash: data.set.sourceFileSha256.slice(0, 12) })}
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-sm">
-              <thead className={theadClass}><tr>
-                <th className={thClass}>{t('Job family')}</th><th className={thClass}>{t('Level')}</th><th className={thClass}>{t('Sample')}</th>
-                <th className={thClass}>{t('P25')}</th><th className={thClass}>{t('P50')}</th><th className={thClass}>{t('P75')}</th><th className={thClass}>{t('P90')}</th>
-                <th className={thClass}>{t('Mapped to')}</th>
-              </tr></thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-white/5">
-                {data.rows.map((r) => (
-                  <tr key={r.id} data-family={r.jobFamily}>
-                    <td className="px-3 py-2 font-medium">{r.jobFamily}</td>
-                    <td className="px-3 py-2">{r.level}</td>
-                    <td className="px-3 py-2 tabular-nums">{f.integer(r.sampleSize)}</td>
-                    {[r.p25, r.p50, r.p75, r.p90].map((p, i) => <td key={i} className="px-3 py-2 tabular-nums">{f.money(p, data.set.currency)}</td>)}
-                    <td className="px-3 py-2">
-                      {canManage ? (
-                        <div className="flex flex-wrap gap-1">
-                          <select className="input h-8 text-xs" value={r.designationId ?? ''} aria-label={t('Designation for {family} {level}', { family: r.jobFamily, level: r.level })}
-                            onChange={(e) => map(r, e.target.value || null, r.gradeId)}>
-                            <option value="">{t('No designation')}</option>
-                            {pickable(designations, r.designationId).map((d) => <option key={d.id} value={d.id}>{d.titleEn}</option>)}
-                          </select>
-                          <select className="input h-8 text-xs" value={r.gradeId ?? ''} aria-label={t('Grade for {family} {level}', { family: r.jobFamily, level: r.level })}
-                            onChange={(e) => map(r, r.designationId, e.target.value || null)}>
-                            <option value="">{t('No grade')}</option>
-                            {pickable(grades, r.gradeId).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-                          </select>
-                        </div>
-                      ) : (r.designationId || r.gradeId ? t('Mapped') : t('Not mapped'))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <>
+      <PanelState loading={!data && !error} error={error} onRetry={load} empty={false} emptyLabel="">
+        {data && (
+          <div className="surface space-y-3 p-4" data-testid="benchmark-set-detail">
+            <h4 className="text-sm font-semibold text-slate-900 dark:text-white">{data.set.name}</h4>
+            {data.set.isSynthetic && <SyntheticBanner t={t} />}
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {t('Imported by {name} on {date} from {file} (SHA-256 {hash}).', { name: data.set.importedByName, date: f.date(data.set.importedAtUtc), file: data.set.sourceFileName, hash: data.set.sourceFileSha256.slice(0, 12) })}
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[860px] text-sm">
+                <thead className={theadClass}><tr>
+                  <th className={thClass}>{t('Job family')}</th><th className={thClass}>{t('Level')}</th><th className={thClass}>{t('Sample')}</th>
+                  <th className={thClass}>{t('P25')}</th><th className={thClass}>{t('P50')}</th><th className={thClass}>{t('P75')}</th><th className={thClass}>{t('P90')}</th>
+                  <th className={thClass}>{t('Mapped to')}</th>
+                </tr></thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-white/5">
+                  {data.rows.map((r) => (
+                    <tr key={r.id} data-family={r.jobFamily}>
+                      <td className="px-3 py-2 font-medium">{r.jobFamily}</td>
+                      <td className="px-3 py-2">{r.level}</td>
+                      <td className="px-3 py-2 tabular-nums">{f.integer(r.sampleSize)}</td>
+                      {[r.p25, r.p50, r.p75, r.p90].map((p, i) => <td key={i} className="px-3 py-2 tabular-nums">{f.money(p, data.set.currency)}</td>)}
+                      <td className="px-3 py-2">
+                        {canManage ? (
+                          <div className="flex flex-wrap gap-1">
+                            <select className="input h-8 text-xs" value={r.designationId ?? ''} aria-label={t('Designation for {family} {level}', { family: r.jobFamily, level: r.level })}
+                              onChange={(e) => map(r, e.target.value || null, r.gradeId)}>
+                              <option value="">{t('No designation')}</option>
+                              {pickable(designations, r.designationId).map((d) => <option key={d.id} value={d.id}>{d.titleEn}</option>)}
+                            </select>
+                            <select className="input h-8 text-xs" value={r.gradeId ?? ''} aria-label={t('Grade for {family} {level}', { family: r.jobFamily, level: r.level })}
+                              onChange={(e) => map(r, r.designationId, e.target.value || null)}>
+                              <option value="">{t('No grade')}</option>
+                              {pickable(grades, r.gradeId).map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                            </select>
+                          </div>
+                        ) : (r.designationId || r.gradeId ? t('Mapped') : t('Not mapped'))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {canManage && data.set.isActive && (
+              <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => void retire()} disabled={retiring} aria-busy={retiring || undefined}>{retiring ? t('Retiring…') : t('Retire this set')}</button>
+            )}
           </div>
-          {canManage && data.set.isActive && (
-            <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={async () => { await compensationApi.retireSet(data.set.id); await load(); onChanged(); }}>{t('Retire this set')}</button>
-          )}
-        </div>
-      )}
-    </PanelState>
+        )}
+      </PanelState>
+      {confirmDialog}
+    </>
   );
 }
