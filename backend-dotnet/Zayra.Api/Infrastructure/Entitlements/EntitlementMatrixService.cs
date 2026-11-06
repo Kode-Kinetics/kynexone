@@ -35,6 +35,9 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
 {
     /// <summary>One lock per tenant for every matrix write: publish, offering switch and import.</summary>
     public const string LockScope = "entitlements.matrix";
+
+    /// <summary>Test seam: runs inside a correction after its first committed-period check and before the final one that guards the write.</summary>
+    internal Func<Task>? BeforeCorrectionSaveHook { get; set; }
     public const string AuditPublished = "entitlements.matrix.published";
     public const string AuditReverted = "entitlements.matrix.reverted_to_group";
     /// <summary>A not-yet-started version that nothing cites, replaced (or dropped for the group default) on its own start date.</summary>
@@ -1026,7 +1029,10 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 return Conflict("not_confirmed", "Confirm this allowance first. A correction changes a confirmed allowance; while confirming, you can change its GL driver or end-of-service setting directly.");
 
             // Retroactive changes to a committed period are refused: the earliest month is the one after the latest period any company has approved or locked.
-            if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, null, ct) is DateOnly committed && from <= committed)
+            // Read here (inside the matrix lock) and again just before anything is changed, so a run approved in between is seen.
+            async Task<MatrixResult?> CommittedPeriodRefusalAsync()
+            {
+                if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, null, ct) is not DateOnly committed || from > committed) return null;
                 return new MatrixResult(StatusCodes.Status409Conflict, new
                 {
                     error = "period_committed",
@@ -1034,6 +1040,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                         + $"The earliest month you can change it from is {committed.AddMonths(1):yyyy-MM}.",
                     earliestEffectiveFrom = committed.AddMonths(1),
                 });
+            }
+            if (await CommittedPeriodRefusalAsync() is { } committedRefusal) return committedRefusal;
             if (versions.FirstOrDefault(v => v.EffectiveFrom is DateOnly f && f > from) is { } later)
                 return Conflict("later_version_exists", $"A change from {later.EffectiveFrom:yyyy-MM} is already scheduled. Choose a month after it.");
 
@@ -1041,6 +1049,10 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             if (problem is not null) return problem;
             var before = TermsOf(head);
             if (before == terms) return Bad("nothing_to_change", "That is how the allowance is already set. Change the GL driver or the end-of-service setting.");
+
+            // The last look before the write: nothing below awaits until SaveChanges, and nothing has been changed yet, so a refusal here saves nothing.
+            if (BeforeCorrectionSaveHook is { } beforeSave) await beforeSave();
+            if (await CommittedPeriodRefusalAsync() is { } lateRefusal) return lateRefusal;
 
             PayComponent result;
             var inPlace = head.EffectiveFrom == from;

@@ -897,6 +897,30 @@ public class CashAllowanceFinanceControlsTests
         (await ReadinessAsync(w, 2026, 7)).GetProperty("cashAllowanceIssues").GetArrayLength().Should().Be(0);
     }
 
+    // ══ Security-review fixes (M1, L1, L2, L5, L6) ══════════════════════════════════════════════
+
+    [Fact]
+    public async Task ACorrection_IsRefused_AndSavesNothing_WhenARunBecomesCommittedAfterTheFirstCheck()
+    {
+        await using var h = await Mx.Create();
+        await h.Add(h.FinanceA, finance: true, "Car");
+        // Between the first read of the latest committed period and the write, payroll for December is approved.
+        h.Service.BeforeCorrectionSaveHook = async () =>
+        {
+            h.Db.PayrollRuns.Add(new PayrollRun { TenantId = h.Tid, CompanyId = null, Year = 2026, Month = 12, Status = "Approved", RunType = PayrollRunTypes.Regular });
+            await h.Db.SaveChangesAsync();
+        };
+
+        var refused = await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Raced a run", "EARN:CAR2"));
+
+        Status(refused).Should().Be(409, Describe(refused));
+        Error(refused).Should().Be("period_committed");
+        var rows = await h.Rows(Car);
+        rows.Should().ContainSingle("a refused correction writes no new version");
+        (rows[0].GlDriverKey, rows[0].EffectiveTo).Should().Be((CarDriver, (DateOnly?)null));
+        (await h.Db.AuditLogs.AnyAsync(a => a.Action == EntitlementMatrixService.AuditBenefitCorrected)).Should().BeFalse("and no audit row");
+    }
+
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
 
     [Fact]
