@@ -36,6 +36,11 @@ public sealed class ImportLookups
     public required IReadOnlyDictionary<string, Guid> DeptByName { get; init; }   // OrgKey(company, name lower) -> id
     /// <summary>Each department's own cost centre: an explicit cost-centre cell equal to it is just a copy, anything else is an override.</summary>
     public IReadOnlyDictionary<Guid, Guid?> DeptCostCentre { get; init; } = new Dictionary<Guid, Guid?>();
+    /// <summary>Wave A D3: each active company's resolver input, so an explicit cost-centre cell equal to what the person would INHERIT (position,
+    /// department, parent department, company default) is a copy, not an override. The employee export writes the resolved code, so re-importing
+    /// an export pins nobody. A company missing here falls back to the department's own cost centre.</summary>
+    public IReadOnlyDictionary<Guid, Zayra.Api.Infrastructure.Payroll.CostCentreResolverSnapshot> CostCentreSnapshots { get; init; } =
+        new Dictionary<Guid, Zayra.Api.Infrastructure.Payroll.CostCentreResolverSnapshot>();
     public required IReadOnlyDictionary<string, DesignationRef> DesigByTitle { get; init; } // OrgKey(company, title lower)
     public required IReadOnlyDictionary<string, Grade> GradeByCode { get; init; } // OrgKey(company, CODE upper)
     public required IReadOnlyDictionary<string, Grade> GradeByName { get; init; } // OrgKey(company, name lower)
@@ -183,7 +188,7 @@ public static class EmployeeImportRowResolver
         // Departments/Designations/Grades: !IsDeleted (matches the authoritative commit filter — parity).
         var departments = await db.Departments.AsNoTracking()
             .Where(d => d.TenantId == tenantId && !d.IsDeleted)
-            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId, d.CompanyId, d.CostCenterId })
+            .Select(d => new { d.Id, d.Code, d.NameEn, d.BranchId, d.CompanyId, d.CostCenterId, d.ParentDepartmentId })
             .ToListAsync(ct);
         var deptByCode = ImportLookupBuilder.Build(departments, d => ImportLookups.OrgKey(d.CompanyId, d.Code.Trim().ToUpperInvariant()), d => d.Id,
             d => d.Id, d => d.Code, "department-code", k => k, ambiguous);
@@ -220,6 +225,13 @@ public static class EmployeeImportRowResolver
         var positionsByCode = ImportLookupBuilder.Build(positions, p => p.Code.Trim().ToUpperInvariant(), p => p,
             p => p.Id, p => p.Code, "position", k => k, ambiguous);
 
+        // Active cost centres only: an inactive one is absent, which the resolver treats exactly like an inactive one (invalid).
+        var costCentreSnapshots = activeCompanies.ToDictionary(c => c.Id, c => new Zayra.Api.Infrastructure.Payroll.CostCentreResolverSnapshot(
+            tenantId, c.Id, c.DefaultCostCenterId,
+            costCenters.Where(cc => cc.CompanyId == c.Id).Select(cc => new Zayra.Api.Infrastructure.Payroll.ResolverCostCentre(cc.Id, cc.TenantId, cc.CompanyId, cc.IsActive, cc.IsDeleted)),
+            departments.Where(d => d.CompanyId == c.Id || d.CompanyId == null).Select(d => new Zayra.Api.Infrastructure.Payroll.ResolverDepartment(d.Id, d.ParentDepartmentId, d.CostCenterId)),
+            positions.Where(p => p.CompanyId == c.Id || p.CompanyId == null).Select(p => new Zayra.Api.Infrastructure.Payroll.ResolverPosition(p.Id, p.CostCenterId))));
+
         return new ImportLookups
         {
             CompaniesByName = companiesByName,
@@ -230,6 +242,7 @@ public static class EmployeeImportRowResolver
             DeptByCode = deptByCode,
             DeptByName = deptByName,
             DeptCostCentre = departments.GroupBy(d => d.Id).ToDictionary(g => g.Key, g => g.First().CostCenterId),
+            CostCentreSnapshots = costCentreSnapshots,
             DesigByTitle = desigByTitle,
             GradeByCode = gradeByCode,
             GradeByName = gradeByName,
@@ -241,6 +254,12 @@ public static class EmployeeImportRowResolver
             DesigTitleCandidates = desigTitleCandidates,
         };
     }
+
+    private static Guid? InheritedCostCentre(ResolvedImportRow r, ImportLookups lk) =>
+        r.CompanyId is Guid companyId && lk.CostCentreSnapshots.TryGetValue(companyId, out var snapshot)
+            ? Zayra.Api.Infrastructure.Payroll.CostCentreResolver.Resolve(
+                new Zayra.Api.Infrastructure.Payroll.ResolverEmployee(r.DepartmentId, r.PositionId, null, false), snapshot).CostCenterId
+            : r.DepartmentId is Guid department && lk.DeptCostCentre.TryGetValue(department, out var departmentCostCentre) ? departmentCostCentre : null;
 
     public static decimal GrossSalaryFromRow(Dictionary<string, string> row)
     {
@@ -447,9 +466,6 @@ public static class EmployeeImportRowResolver
             r.Warnings.Add($"Department '{raw}' not found — imported as free text without an org link.");
         }
         r.DepartmentId = deptId;
-        // An explicit cost centre that is not the department's own is an override; one equal to it is only a copy (the form door's rule).
-        r.CostCenterIsOverride = r.CostCenterId is Guid explicitCc
-            && explicitCc != (deptId is Guid ownDept && lk.DeptCostCentre.TryGetValue(ownDept, out var deptCc) ? deptCc : null);
 
         // ── Designation: unknown → free text, no FK + gap + warning.
         var desigTitleRaw = V("Designation");
@@ -603,6 +619,11 @@ public static class EmployeeImportRowResolver
                 }
             }
         }
+
+        // ── Cost-centre override: an explicit cost centre equal to what the person would inherit (position → department → parent department →
+        // company default, the payroll resolver's order) is only a copy; anything else is an override. Decided after the position, which is part
+        // of what they inherit.
+        r.CostCenterIsOverride = r.CostCenterId is Guid explicitCc && explicitCc != InheritedCostCentre(r, lk);
 
         // ── Salary (Leak #5/#6): no valid grade → HOLD; outside band → REVIEW. NEVER drops.
         var gross = GrossSalaryFromRow(row);

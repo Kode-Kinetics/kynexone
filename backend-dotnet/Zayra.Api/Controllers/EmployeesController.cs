@@ -390,6 +390,9 @@ public class EmployeesController : ControllerBase
                 .Select(x => new { x.Id, x.EmployeeCode, x.WorkEmail })
                 .ToListAsync(ct))
                 .ToDictionary(x => x.Id, x => (Code: x.EmployeeCode, Email: x.WorkEmail));
+        // Wave A D3: the cost-centre column is where payroll posts the person's cost (the resolver, one snapshot per company), never the
+        // cached Employee.CostCenter copy. The importer treats this inherited code as a copy, so a round trip pins nobody.
+        var resolvedCostCentres = await EmployeeCostCentreView.ResolvedCodesAsync(_db, tenantId, emps, ct);
         var headers = EmployeeCsvHeaders;
         var rows = emps.Select(e =>
         {
@@ -411,7 +414,7 @@ public class EmployeesController : ControllerBase
                 ["EmployeeCode"] = e.EmployeeCode,
                 ["CompanyLegalName"] = companyLegalName,
                 ["BranchCode"] = branchCode,
-                ["CostCenterCode"] = e.CostCenter,
+                ["CostCenterCode"] = resolvedCostCentres.GetValueOrDefault(e.Id, string.Empty),
                 ["WorkLocation"] = e.WorkLocation,
                 ["FullName"] = e.FullName,
                 ["ArabicName"] = e.ArabicName,
