@@ -272,30 +272,46 @@ public class CostCentreDoorTests
     }
 
     [Fact]
-    public async Task S029_ADepartmentMove_ClearsTheOverride_AndAuditsTheResolvedCostCentreBeforeAndAfter()
+    public async Task S029_ADepartmentMove_OfSomeoneWithoutAnOverride_FollowsTheNewDepartment_AndAuditsTheResolvedCostCentreBeforeAndAfter()
     {
         var w = await Seed();
         var second = new CostCenter { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "SEC", Name = "Second" };
         var d1 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D1", NameEn = "First", CostCenterId = w.Own.Id };
         var d2 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D2", NameEn = "Second Dept", CostCenterId = second.Id };
         w.Db.AddRange(second, d1, d2); await w.Db.SaveChangesAsync();
-        var overridden = new CostCenter { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "PIN", Name = "Pinned" };
-        w.Db.CostCenters.Add(overridden); await w.Db.SaveChangesAsync();
         var emp = await EmployeeIn(w, department: d1.Id);
-        emp.CostCenterId = overridden.Id; emp.CostCenterIsOverride = true; await w.Db.SaveChangesAsync();
+        emp.CostCenterId = w.Own.Id; emp.CostCenterIsOverride = false; await w.Db.SaveChangesAsync();
 
         var actor = Guid.NewGuid();
         await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("department", "Second Dept")), actor, default);
         await w.Db.SaveChangesAsync();
 
-        (emp.DepartmentId, emp.CostCenterIsOverride, emp.CostCenterId).Should().Be((d2.Id, false, second.Id), "a transfer drops the old override: the person inherits the new department's cost centre");
+        (emp.DepartmentId, emp.CostCenterIsOverride, emp.CostCenterId, emp.CostCenter).Should().Be((d2.Id, false, second.Id, "SEC"), "the person inherits the new department's cost centre");
         var row = await w.Db.AuditLogs.SingleAsync(a => a.Action == "employee.cost_attribution_changed");
         (row.CompanyId, row.UserId, row.EntityName).Should().Be((w.A.Id, actor, "Employee"));
         var json = JsonDocument.Parse(row.Metadata!).RootElement;
-        json.GetProperty("before").GetProperty("resolvedCostCenterId").GetGuid().Should().Be(overridden.Id);
+        json.GetProperty("before").GetProperty("resolvedCostCenterId").GetGuid().Should().Be(w.Own.Id);
         json.GetProperty("after").GetProperty("resolvedCostCenterId").GetGuid().Should().Be(second.Id);
-        json.GetProperty("before").GetProperty("override").GetBoolean().Should().BeTrue();
-        json.GetProperty("after").GetProperty("override").GetBoolean().Should().BeFalse();
+    }
+
+    /// <summary>Wave A D2: an approved change used to drop an override silently on a department move. No approval path carries a keep/drop
+    /// decision, so it fails closed: the decision belongs to someone holding organization.costcenter.manage on the employee PUT.</summary>
+    [Fact]
+    public async Task S029_ADepartmentMove_OfSomeoneWithAnOverride_FailsClosed_AndTouchesNothing()
+    {
+        var w = await Seed();
+        var second = new CostCenter { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "SEC", Name = "Second" };
+        var d1 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D1", NameEn = "First", CostCenterId = w.Own.Id };
+        var d2 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D2", NameEn = "Second Dept", CostCenterId = second.Id };
+        var pinned = new CostCenter { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "PIN", Name = "Pinned" };
+        w.Db.AddRange(second, d1, d2, pinned); await w.Db.SaveChangesAsync();
+        var emp = await EmployeeIn(w, department: d1.Id);
+        emp.CostCenterId = pinned.Id; emp.CostCenterIsOverride = true; await w.Db.SaveChangesAsync();
+
+        var act = () => EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("department", "Second Dept")), Guid.NewGuid(), default);
+
+        (await act.Should().ThrowAsync<Zayra.Api.Application.Organization.CostCentreRuleException>()).Which.Code.Should().Be("cost_centre_decision_required");
+        (emp.DepartmentId, emp.CostCenterIsOverride, emp.CostCenterId).Should().Be((d1.Id, true, pinned.Id));
     }
 
     [Fact]
@@ -336,7 +352,9 @@ public class CostCentreDoorTests
     }
 
     [Fact]
-    public async Task Sod_ADepartmentMoveThatDropsAnOverride_WritesAnOverrideChangedRow_ButOtherEditsDoNot()
+    /// <summary>Wave A D2: an approved department move used to drop the override silently (and write this row). It now fails closed with
+    /// nothing written; a drop decided on the PUT writes the override row with its reason (CostCentreTransferDecisionTests).</summary>
+    public async Task Sod_ADepartmentMoveOfAnOverriddenPerson_OnTheApprovalPath_FailsClosed_AndOtherEditsWriteNoOverrideRow()
     {
         var w = await Seed();
         var d1 = new Department { TenantId = w.Tenant, CompanyId = w.A.Id, Code = "D1", NameEn = "First", CostCenterId = w.Own.Id };
@@ -349,9 +367,10 @@ public class CostCentreDoorTests
         await w.Db.SaveChangesAsync();
         (await OverrideRows(w)).Should().BeEmpty();
 
-        await EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("department", "Second Dept")), Guid.NewGuid(), default);
-        await w.Db.SaveChangesAsync();
-        (await OverrideRows(w)).Should().ContainSingle();
+        var move = () => EmployeeChangeApplier.ApplyApprovedChangeAsync(w.Db, w.Tenant, emp, Patch(("department", "Second Dept")), Guid.NewGuid(), default);
+        await move.Should().ThrowAsync<Zayra.Api.Application.Organization.CostCentreRuleException>();
+        (await OverrideRows(w)).Should().BeEmpty();
+        (emp.DepartmentId, emp.CostCenterIsOverride).Should().Be((d1.Id, true));
     }
 
     [Fact]
