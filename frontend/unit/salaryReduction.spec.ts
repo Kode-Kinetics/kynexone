@@ -112,6 +112,26 @@ test('the reference: blank is refused only for a reduction, it is trimmed, kept 
   expect(consentReferenceForRequest('   ', true)).toBeUndefined();
 });
 
+test('the reference must be a real one: at least 3 characters with a letter or a number (Arabic counts), checked before the server is asked', () => {
+  const problem = 'Enter a real reference: at least 3 characters, including a letter or a number.';
+  for (const bad of ['x', 'ab', '---', ' . , ', '  x ']) {
+    expect(consentReferenceProblem(bad), bad).toBe(problem);
+    expect(reductionBlock({ isReduction: true }, bad), bad).toBe(problem);
+  }
+  for (const good of ['HR-2026-014', 'N/A', 'اتفاقية-٢٠٢٦', 'أ١٢', '123']) expect(consentReferenceProblem(good), good).toBeNull();
+  // Blank is "no reference", not "a bad one": the reduction message for that stays as it was.
+  expect(consentReferenceProblem('   ')).toBeNull();
+  expect(reductionBlock({ isReduction: true }, '   ')).toBe('Enter the employee’s written agreement reference before saving.');
+  expect(reductionBlock({ isReduction: false }, 'x')).toBeNull();
+  expect(reductionRefusal({ response: { status: 400, data: { error: 'reduction_consent_reference_too_short', message: 'Too short' } } })).toEqual({ kind: 'tooShort', message: 'Too short', items: [] });
+});
+
+test('a higher fixed deduction comes back from the server as a reduction item and is read like any other', () => {
+  const reducedItems = [{ item: 'FIXED_DEDUCTION', from: 0, to: 300 }];
+  expect(reductionRefusal({ response: { status: 400, data: { code: 'reduction_consent_required', message: 'Fixed deduction raised', reducedItems } } }))
+    .toMatchObject({ kind: 'required', items: reducedItems });
+});
+
 test('the server refusal of a reduction without its reference, on a proposal (400) and on approval (409), carries what goes down', () => {
   const reducedItems = [{ item: 'HOUSING', from: 1250, to: 1000 }, { item: 'ALW_MEAL', from: 300, to: 0 }];
   const proposed = reductionRefusal({ response: { status: 400, data: { error: 'reduction_consent_required', code: 'reduction_consent_required', message: 'Lowering needs agreement (HOUSING 1,250.00 to 1,000.00)', reducedItems } } });
@@ -132,7 +152,8 @@ test('every sentence of the reduction notice has Arabic, with the same placehold
     'For example the signed amendment’s number or the Qiwa request number.', 'Employee’s written agreement reference: {reference}', 'No written agreement reference was given.',
     'Keep the agreement reference under 200 characters.', 'Enter the employee’s written agreement reference before saving.',
     'Lowering an employee’s pay needs their written agreement; enter its reference.', 'This changes the contract wage. Amend the contract on Qiwa and keep the employee’s acceptance.',
-    'Monthly pay: {current} now, {proposed} proposed.'];
+    'Monthly pay: {current} now, {proposed} proposed.', 'Enter a real reference: at least 3 characters, including a letter or a number.',
+    'At least 3 characters, with a letter or a number.', 'Fixed deduction', '{item} goes up from {from} to {to} a month.'];
   const holes = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort().join();
   for (const key of keys) {
     expect(LOCALE_DICTS.en[key], key).toBeDefined();

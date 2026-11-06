@@ -7,7 +7,8 @@ import { lineMonthly, viewMonthly, type AllowanceValue, type SalaryAllowanceView
  * form can say so before the person saves; the server stays the backstop and always has the last word. No React: unit-tested directly.
  *
  * "Pay" is the six slots (basic, housing, transport, food, mobile, other) and every monthly cash allowance line, carried lines
- * included (a percentage line worked out again on the proposed basic). The fixed deduction is not pay. A proposal is a reduction
+ * included (a percentage line worked out again on the proposed basic). The fixed deduction is not pay (the server also treats a HIGHER one as a
+ * reduction, named FIXED_DEDUCTION; the form learns of that from the server's refusal). A proposal is a reduction
  * when the whole monthly pay goes down OR any single slot or line goes down or disappears. A first package (nothing in force)
  * never is one. Strings returned are English i18n keys (src/i18n/releaseA/salaryReduction.ts) for t().
  */
@@ -16,6 +17,10 @@ export const PAY_SLOT_CODES = ['BASIC', 'HOUSING', 'TRANSPORT', 'FOOD', 'MOBILE'
 export type PaySlotCode = (typeof PAY_SLOT_CODES)[number];
 
 export const CONSENT_REFERENCE_MAX = 200;
+/** The shortest reference the server keeps (backend SalaryReductions.ReferenceMinLength): 3 characters, at least one a letter or a number. */
+export const CONSENT_REFERENCE_MIN = 3;
+/** The reduction item the server names when the fixed deduction goes UP (it lowers take-home pay though it is not pay). */
+export const FIXED_DEDUCTION_ITEM = 'FIXED_DEDUCTION';
 
 export interface PayLine { code: string; amount: number }
 /** The pay a salary gives each month: the six slots and the allowance lines. */
@@ -124,7 +129,11 @@ export const isPaySlot = (item: string): item is PaySlotCode => (PAY_SLOT_CODES 
 
 /** What stops a consent reference being sent (an i18n key); null when it is fine or blank. */
 export function consentReferenceProblem(reference: string): string | null {
-  return reference.trim().length > CONSENT_REFERENCE_MAX ? 'Keep the agreement reference under 200 characters.' : null;
+  const text = reference.trim();
+  if (text.length > CONSENT_REFERENCE_MAX) return 'Keep the agreement reference under 200 characters.';
+  // Not "x" or "---": a real reference has at least 3 characters and a letter or a number (Arabic letters and digits count).
+  if (text.length > 0 && (text.length < CONSENT_REFERENCE_MIN || !/[\p{L}\p{N}]/u.test(text))) return 'Enter a real reference: at least 3 characters, including a letter or a number.';
+  return null;
 }
 
 /**
@@ -144,8 +153,8 @@ export function reductionBlock(check: Pick<ReductionCheck, 'isReduction'>, refer
 }
 
 export interface ReductionRefusal {
-  /** `required`: the proposal lowers the pay and carries no reference; `tooLong`: the reference cannot be kept. */
-  kind: 'required' | 'tooLong';
+  /** `required`: the proposal lowers the pay and carries no reference; `tooLong` / `tooShort`: the reference cannot be kept. */
+  kind: 'required' | 'tooLong' | 'tooShort';
   /** The server's sentence (English). */
   message: string;
   items: ReducedItem[];
@@ -166,5 +175,6 @@ export function reductionRefusal(err: unknown): ReductionRefusal | null {
   const message = typeof data.message === 'string' ? data.message : '';
   if (codes.includes('reduction_consent_required')) return { kind: 'required', message, items: readItems(data.reducedItems) };
   if (codes.includes('reduction_consent_reference_too_long')) return { kind: 'tooLong', message, items: [] };
+  if (codes.includes('reduction_consent_reference_too_short')) return { kind: 'tooShort', message, items: [] };
   return null;
 }

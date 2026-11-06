@@ -6,12 +6,17 @@ import type { ReducedItem } from '../../api/payroll';
 import { useLocale } from '../../contexts/LocaleContext';
 import { isolateLtr, isolateName } from '../../lib/bidi';
 import { formatAmount } from '../../lib/hire/money';
-import { CONSENT_REFERENCE_MAX, SLOT_LABEL_KEYS, isPaySlot } from '../../lib/salaryReduction';
+import { CONSENT_REFERENCE_MAX, FIXED_DEDUCTION_ITEM, SLOT_LABEL_KEYS, isPaySlot } from '../../lib/salaryReduction';
 
 /** What goes down, one sentence per item: "Housing allowance goes from SAR 1,500.00 to SAR 1,000.00 a month". */
 function useItemSentence(currency: string, lineLabel?: (code: string) => string) {
   const { t, locale } = useLocale();
   return (r: ReducedItem) => {
+    // A deduction going UP lowers take-home pay: said as going up, never as "goes from ... to ..." on a pay item.
+    if (r.item === FIXED_DEDUCTION_ITEM)
+      return t('{item} goes up from {from} to {to} a month.', {
+        item: isolateName(t('Fixed deduction')), from: isolateLtr(formatAmount(r.from, currency, locale)), to: isolateLtr(formatAmount(r.to, currency, locale)),
+      });
     const label = isPaySlot(r.item) ? t(SLOT_LABEL_KEYS[r.item.toUpperCase() as keyof typeof SLOT_LABEL_KEYS]) : lineLabel?.(r.item) || r.item;
     const item = isolateName(label);
     const from = isolateLtr(formatAmount(r.from, currency, locale));
@@ -77,7 +82,7 @@ export function SalaryReductionNotice({
         <label htmlFor={id} className="block text-sm font-medium">{t('Employee’s written agreement reference')}</label>
         <input id={id} ref={ref} className="input mt-1 w-full max-w-md" maxLength={CONSENT_REFERENCE_MAX} required aria-required="true" autoComplete="off" disabled={disabled}
           value={reference} onChange={e => onReference(e.target.value)} aria-invalid={!!problem} aria-describedby={`${id}-help${problem ? ` ${id}-error` : ''}`} />
-        <p id={`${id}-help`} className="mt-1 text-xs">{t('For example the signed amendment’s number or the Qiwa request number.')}</p>
+        <p id={`${id}-help`} className="mt-1 text-xs">{t('For example the signed amendment’s number or the Qiwa request number.')} {t('At least 3 characters, with a letter or a number.')}</p>
         {problem && <p id={`${id}-error`} role="alert" className="mt-1 text-sm font-semibold text-red-700 dark:text-red-300">{problem}</p>}
       </div>
     </section>

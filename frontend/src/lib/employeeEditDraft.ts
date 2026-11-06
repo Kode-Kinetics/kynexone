@@ -2,7 +2,7 @@ import type { EmployeeDetail, EmployeeSalaryBreakdownRequest } from '../api/empl
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 import { allowanceProblems, decodeValue, requestLines, totalMonthly } from './salaryAllowances';
-import { CONSENT_REFERENCE_MAX } from './salaryReduction';
+import { consentReferenceProblem } from './salaryReduction';
 
 export type EmployeeEditDraft = Record<string, string>;
 
@@ -128,7 +128,8 @@ export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSal
   if ((salary.fixedDeduction ?? 0) > gross) throw new Error('Fixed deduction cannot exceed the gross salary.');
   // Only a reduction needs the reference; the draft clears it otherwise, and the server ignores it when the pay does not go down.
   const consent = (form[REDUCTION_REFERENCE_KEY] ?? '').trim();
-  if (consent.length > CONSENT_REFERENCE_MAX) throw new Error('Keep the agreement reference under 200 characters.');
+  const consentProblem = consentReferenceProblem(consent);
+  if (consentProblem) throw new Error(consentProblem);
   const date = value('effectiveDate');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) throw new Error('Choose a valid salary effective date.');
   if (!/^[A-Z]{3}$/.test(value('currency'))) throw new Error('Choose a salary currency.');

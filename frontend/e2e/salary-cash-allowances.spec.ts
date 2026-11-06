@@ -287,6 +287,27 @@ test.describe('Assign Salary: lowering the pay needs the employee’s written ag
     expect(posts[0].body.reductionConsentReference).toBe('QIWA-2026-77');
   });
 
+  test('a reference like "x" is refused here, the rule is shown beside the field, and nothing is sent until it is a real one', async ({ page }) => {
+    const { posts, notice } = await start(page);
+    await page.getByLabel('Housing Allowance').fill('800');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('At least 3 characters, with a letter or a number.');
+    const field = page.getByLabel('Employee’s written agreement reference');
+    await field.fill('x');
+    await submit(page);
+    await expect(field).toBeFocused();
+    await expect(notice.getByRole('alert')).toHaveText('Enter a real reference: at least 3 characters, including a letter or a number.');
+    expect(posts).toHaveLength(0);
+    await field.fill('---');
+    await submit(page);
+    await expect(notice.getByRole('alert')).toHaveText('Enter a real reference: at least 3 characters, including a letter or a number.');
+    expect(posts).toHaveLength(0);
+    await field.fill('HR-2026-014');
+    await submit(page);
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0].body.reductionConsentReference).toBe('HR-2026-014');
+  });
+
   test('raising it back removes the notice and the reference is no longer sent', async ({ page }) => {
     const { posts, notice } = await start(page);
     await page.getByLabel('Housing Allowance').fill('800');
