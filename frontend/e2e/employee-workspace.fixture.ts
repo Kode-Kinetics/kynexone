@@ -261,10 +261,31 @@ export async function bootEmployeeWorkspaceFixture(
       return reply(values.map(([code, valueEn, valueAr], index) => ({ id: `${typeCode}-${index}`, typeId: typeCode, code, valueEn, valueAr, sortOrder: index, isDefault: false, isSystemDefined: true, isActive: true })));
     }
     if (path === '/api/companies') return reply({ items: [{ id: 'fixture-company', legalNameEn: 'Evostel', tradeName: 'Evostel', countryCode: 'SAU', emailDomain: 'evostel.test', workEmailPattern: 'first.last', isActive: true, approvalStatus: 'Active' }], total: 1, page: 1, pageSize: 100 });
-    if (path === '/api/departments') return reply({ items: [
+    const departments = [
       { id: 'qa-finance', branchId: 'jeddah-office', costCenterId: 'qa-fin-cc-17', code: 'QA-FIN', nameEn: 'QA Finance', nameAr: '', managerEmployeeId: 901, isActive: true },
       { id: 'qa-operations', branchId: 'riyadh-office', costCenterId: 'qa-ops-cc-18', code: 'QA-OPS', nameEn: 'QA Operations', nameAr: '', managerEmployeeId: 902, isActive: true },
-    ], total: 2, page: 1, pageSize: 100 });
+    ];
+    const costCenters = [
+      { id: 'qa-fin-cc-17', code: 'QA-FIN-CC-17', name: 'QA Finance Cost Center', isActive: true },
+      { id: 'qa-ops-cc-18', code: 'QA-OPS-CC-18', name: 'QA Operations Cost Center', isActive: true },
+    ];
+    if (path === '/api/departments') return reply({ items: departments, total: departments.length, page: 1, pageSize: 100 });
+    // The edit screen's live cost-centre preview: neither fixture employee has an override, so the answer is the
+    // department's cost centre (the requested department, or the employee's own when none is asked about).
+    const previewMatch = /^\/api\/employees\/(\d+)\/cost-centre\/preview$/.exec(path);
+    if (previewMatch) {
+      const employee = employees[Number(previewMatch[1]) as keyof typeof employees];
+      if (!employee) return route.fulfill({ status: 404, json: { error: 'employee_not_found', message: 'Employee not found.' } });
+      const departmentId = new URL(route.request().url()).searchParams.get('departmentId') ?? employee.departmentId;
+      const department = departments.find(item => item.id === departmentId);
+      if (!department) return route.fulfill({ status: 404, json: { error: 'department_not_found', message: 'Department not found.' } });
+      const costCenter = costCenters.find(item => item.id === department.costCenterId) ?? null;
+      return reply({
+        costCentreId: costCenter?.id ?? null, code: costCenter?.code ?? null, nameEn: costCenter?.name ?? null, nameAr: null,
+        source: costCenter ? 'Department' : 'None', sourceName: costCenter ? department.nameEn : null, sourceNameAr: null,
+        level: costCenter ? 'department' : null, isOverride: false, invalidReason: null,
+      });
+    }
     if (path === '/api/designations') return reply({ items: [
       { id: 'qa-finance-manager', departmentId: 'qa-finance', code: 'QA-FIN-MGR', titleEn: 'QA Finance Manager', titleAr: '', gradeId: 'm2', isActive: true },
       { id: 'qa-operations-lead', departmentId: 'qa-operations', code: 'QA-OPS-LEAD', titleEn: 'QA Operations Lead', titleAr: '', gradeId: 'm1', isActive: true },
@@ -273,10 +294,7 @@ export async function bootEmployeeWorkspaceFixture(
       { id: 'm1', code: 'M1', name: 'M1', band: 'M1', level: 1, minSalary: 10000, midSalary: 15000, maxSalary: 20000, currency: 'SAR', isActive: true },
       { id: 'm2', code: 'M2', name: 'M2', band: 'M2', level: 2, minSalary: 18000, midSalary: 24000, maxSalary: 30000, currency: 'SAR', isActive: true },
     ], total: 2, page: 1, pageSize: 100 });
-    if (path === '/api/organization/cost-centers' || path === '/api/cost-centers') return reply({ items: [
-      { id: 'qa-fin-cc-17', code: 'QA-FIN-CC-17', name: 'QA Finance Cost Center', isActive: true },
-      { id: 'qa-ops-cc-18', code: 'QA-OPS-CC-18', name: 'QA Operations Cost Center', isActive: true },
-    ], total: 2, page: 1, pageSize: 100 });
+    if (path === '/api/organization/cost-centers' || path === '/api/cost-centers') return reply({ items: costCenters, total: costCenters.length, page: 1, pageSize: 100 });
     if (path === '/api/employees/field-catalog') return reply({ fields: [
       { key: 'passportNumber', complianceFieldKey: 'passport_number', label: 'Passport number', section: 'compliance', inputType: 'text', entityKey: 'passportNumber', countries: ['SA'], visible: true },
       { key: 'gosiReference', complianceFieldKey: 'gosi_reference', label: 'GOSI reference', section: 'compliance', inputType: 'text', entityKey: 'gosiReference', countries: ['SA'], visible: true },
