@@ -15,6 +15,9 @@ public static class ExceptionResponseMapper
     {
         // POD-B1 — a GL post into a closed period surfaces as a typed 422 gl_period_closed.
         Zayra.Api.Infrastructure.Payroll.PeriodClosedException closed => (StatusCodes.Status422UnprocessableEntity, "gl_period_closed", closed.Message),
+        // An end-of-service wage that would silently leave out a salary line whose allowance definition is gone: refused, never understated.
+        Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitionMissingException orphan =>
+            (StatusCodes.Status422UnprocessableEntity, "cash_allowance_definition_invalid", orphan.Message),
         // Field encryption: the tenant's keys are revoked (423) or temporarily unavailable (503) - never a 500, never key detail.
         Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionUnavailableException fe => (fe.StatusCode, fe.Code, fe.SafeMessage),
         // Another writer saved the same organisation code first (the unique index refused this save): a conflict, not a fault.

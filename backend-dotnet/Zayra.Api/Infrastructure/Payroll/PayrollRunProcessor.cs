@@ -1172,14 +1172,18 @@ public sealed class PayrollRunProcessor
                 {
                     // A line with no live definition, or a definition with no GL driver, is corrupt data: paying it would post to a fallback
                     // account (EARN:OTHER) nobody chose. Refuse the run and say whose line it is.
-                    if (!cashAllowanceDefinitions.TryGetValue(allowance.Code, out var definition) || string.IsNullOrWhiteSpace(definition.GlDriverKey))
+                    // Defence in depth: a definition Finance has not confirmed is refused here as well, whichever door it came through.
+                    if (!cashAllowanceDefinitions.TryGetValue(allowance.Code, out var definition) || string.IsNullOrWhiteSpace(definition.GlDriverKey)
+                        || definition.FinanceConfirmedAtUtc is null)
                         throw new PayrollProcessAbortException(422, new
                         {
                             error = "cash_allowance_definition_invalid",
                             message = $"{e.FullName} ({e.EmployeeCode}) has the monthly allowance {allowance.Code} on their salary, but " +
                                       (definition is null
                                           ? "that allowance no longer exists in Benefits by grade."
-                                          : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                          : definition.FinanceConfirmedAtUtc is null
+                                              ? "Finance has not confirmed its definition."
+                                              : "its definition has no GL driver, so its expense has nowhere to post.") +
                                       " Nothing was saved. Restore the allowance or remove the line from the salary, then process the run again.",
                             employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = allowance.Code,
                         });
@@ -1887,14 +1891,17 @@ public sealed class PayrollRunProcessor
                     var allowanceCode = PayrollArrearsComponents.SourceComponent(line.ComponentCode);
                     // Same refusal as a current line: an allowance with no definition, or a definition with no GL driver, would post to a fallback
                     // account nobody chose. Refuse the run and say whose back pay it is.
-                    if (!arrearsAllowanceDefinitions.TryGetValue(allowanceCode, out arrearsAllowance) || string.IsNullOrWhiteSpace(arrearsAllowance.GlDriverKey))
+                    if (!arrearsAllowanceDefinitions.TryGetValue(allowanceCode, out arrearsAllowance) || string.IsNullOrWhiteSpace(arrearsAllowance.GlDriverKey)
+                        || arrearsAllowance.FinanceConfirmedAtUtc is null)
                         throw new PayrollProcessAbortException(422, new
                         {
                             error = "cash_allowance_definition_invalid",
                             message = $"{e.FullName} ({e.EmployeeCode}) is owed back pay ({line.ComponentCode}, {line.CoveredYear}-{line.CoveredMonth:D2}) for the monthly allowance {allowanceCode}, but " +
                                       (arrearsAllowance is null
                                           ? "that allowance no longer exists in Benefits by grade."
-                                          : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                          : arrearsAllowance.FinanceConfirmedAtUtc is null
+                                              ? "Finance has not confirmed its definition."
+                                              : "its definition has no GL driver, so its expense has nowhere to post.") +
                                       " Nothing was saved. Restore the allowance, then process the run again.",
                             employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = line.ComponentCode,
                         });

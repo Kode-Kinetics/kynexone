@@ -469,7 +469,8 @@ public static class SalaryAllowanceLines
     }
 
     /// <summary>The lines of each salary record whose definition counts in the end-of-service wage, by record, on the definition version in effect on
-    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). A line whose definition is gone is left out: it cannot be known to count.</summary>
+    /// <paramref name="asOf"/> (a Finance correction can change the answer from a month on). A line with no definition version in effect on that date is NOT left
+    /// out — that would silently understate the wage; it throws <see cref="CashAllowanceDefinitionMissingException"/> (answered 422), naming the line.</summary>
     public static async Task<Dictionary<Guid, List<EosbCashAllowance>>> EosbIncludedAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<Guid> salaryIds, DateOnly asOf, CancellationToken ct)
     {
@@ -478,9 +479,16 @@ public static class SalaryAllowanceLines
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
         var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
-        var counted = codes.Where(code => versions[code]
-                .Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault()?.EosbIncluded == true)
-            .ToHashSet(StringComparer.Ordinal);
+        var counted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var code in codes)
+        {
+            var version = versions[code].Where(v => v.IsInEffect(asOf)).OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
+            if (version is null)
+                throw new CashAllowanceDefinitionMissingException(code,
+                    $"the monthly allowance {code} is on a salary record but has no definition in effect on {asOf:yyyy-MM-dd}, so it cannot be known whether it counts in the end-of-service wage. " +
+                    "Restore the allowance in Benefits by grade or remove the line from the salary, then try again.");
+            if (version.EosbIncluded) counted.Add(code);
+        }
         foreach (var group in rows)
         {
             var lines = group.Where(r => counted.Contains(r.Code)).OrderBy(r => r.Code, StringComparer.Ordinal)
@@ -489,4 +497,10 @@ public static class SalaryAllowanceLines
         }
         return result;
     }
+}
+
+/// <summary>A salary line names a monthly cash allowance whose definition cannot be found, so what it contributes to a wage cannot be known.</summary>
+public sealed class CashAllowanceDefinitionMissingException(string code, string detail) : Exception($"{code}: {detail}")
+{
+    public string Code { get; } = code;
 }

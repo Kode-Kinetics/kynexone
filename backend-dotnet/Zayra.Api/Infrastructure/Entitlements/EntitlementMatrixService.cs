@@ -38,6 +38,9 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
 
     /// <summary>Test seam: runs inside a correction after its first committed-period check and before the final one that guards the write.</summary>
     internal Func<Task>? BeforeCorrectionSaveHook { get; set; }
+
+    /// <summary>How far ahead of the current month a Finance correction may start.</summary>
+    public const int MaxCorrectionMonthsAhead = 12;
     public const string AuditPublished = "entitlements.matrix.published";
     public const string AuditReverted = "entitlements.matrix.reverted_to_group";
     /// <summary>A not-yet-started version that nothing cites, replaced (or dropped for the group default) on its own start date.</summary>
@@ -1020,6 +1023,12 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             var reason = (req.Reason ?? string.Empty).Trim();
             if (reason.Length == 0) return Bad("reason_required", "Say why you are changing it.");
             if (reason.Length > CashAllowanceDefinitions.NoteMaxLength) return Bad("reason_too_long", $"Keep the reason under {CashAllowanceDefinitions.NoteMaxLength} characters.");
+            if (CashAllowanceDefinitions.HasUnsafeCharacters(reason)) return Bad("reason_invalid", "The reason can't contain control or text-direction override characters.");
+            // A far-future start would sit as the "later version" and block every correction after it with no way to cancel it: at most twelve months ahead.
+            var today = await clock.TodayAsync(tid, ct);
+            var latestStart = new DateOnly(today.Year, today.Month, 1).AddMonths(MaxCorrectionMonthsAhead);
+            if (from > latestStart)
+                return Bad("effective_from_too_far", $"A change can start at most {MaxCorrectionMonthsAhead} months ahead, so no later than {latestStart:yyyy-MM}.");
 
             var versions = (await CashAllowanceDefinitions.VersionsAsync(db, tid, [code], ct, tracked: true)).SelectMany(g => g).ToList();
             if (versions.Count == 0)

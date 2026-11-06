@@ -921,6 +921,99 @@ public class CashAllowanceFinanceControlsTests
         (await h.Db.AuditLogs.AnyAsync(a => a.Action == EntitlementMatrixService.AuditBenefitCorrected)).Should().BeFalse("and no audit row");
     }
 
+    [Fact]
+    public async Task ACorrection_MayStartAtMostTwelveMonthsAfterTheCurrentMonth()
+    {
+        await using var h = await Mx.Create();      // today = 2026-10-06
+        await h.Add(h.FinanceA, finance: true, "Car");
+
+        var tooFar = await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 11, 1), "Too far ahead", "EARN:CAR2"));
+        Status(tooFar).Should().Be(400, Describe(tooFar));
+        Error(tooFar).Should().Be("effective_from_too_far");
+        (await h.Rows(Car)).Should().ContainSingle();
+
+        Status(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2027, 10, 1), "Exactly twelve months ahead", "EARN:CAR2"))).Should().Be(200);
+    }
+
+    [Theory]
+    [InlineData("bell\u0007note")]
+    [InlineData("flip\u202Eed")]
+    [InlineData("isolate\u2066x\u2069")]
+    public async Task AnEosbNote_AndACorrectionReason_RefuseControlAndBidiOverrideCharacters(string text)
+    {
+        await using var h = await Mx.Create();
+
+        Error(await h.Add(h.FinanceA, true, "Car", eosb: false, category: "Other", reason: text)).Should().Be("eosb_reason_invalid");
+        (await h.Db.PayComponents.AnyAsync(x => x.Code == Car)).Should().BeFalse();
+
+        await h.Add(h.FinanceA, true, "Car");
+        Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), text, "EARN:CAR2"))).Should().Be("reason_invalid");
+        Error(await h.Correct(h.FinanceB, Car, new CorrectAllowanceRequest(new DateOnly(2026, 12, 1), "Fine reason", null, false, "Other", text))).Should().Be("eosb_reason_invalid");
+        (await h.Rows(Car)).Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task AnArabicNoteWithRightToLeftMarks_IsStillAccepted()
+    {
+        await using var h = await Mx.Create();
+
+        Status(await h.Add(h.FinanceA, true, "Car", eosb: false, category: "Other", reason: "بدل غير ثابت\u200F (٢٠٢٦)")).Should().Be(200);
+    }
+
+    [Fact]
+    public async Task ThePayrollRun_RefusesAnAllowanceLineWhoseDefinitionIsNotConfirmedByFinance()
+    {
+        await using var w = await NewWorld(definition: false);
+        await AddDefinitionAsync(w.Db, w.Tid, Car, CarDriver, "Car allowance", "5210", confirmed: false);   // inserted past the write doors
+        await GiveAsync(w, w.A, Car, 500m);
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 6);
+        await w.Db.SaveChangesAsync();
+
+        var result = await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None);
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(422);
+        JsonSerializer.Serialize(refusal.Value).Should().Contain("cash_allowance_definition_invalid").And.Contain(w.A.EmployeeCode).And.Contain(Car).And.Contain("Nothing was saved");
+        (await w.Db.PayrollEarnings.AsNoTracking().AnyAsync(e => e.PayrollRunId == run.Id)).Should().BeFalse("nothing is paid or saved");
+    }
+
+    [Fact]
+    public async Task ThePayrollRun_RefusesBackPayForAnAllowanceWhoseDefinitionIsNotConfirmedByFinance()
+    {
+        var (w, march) = await JanFebOneOffAsync();
+        await using var _ = w;
+        (await w.Db.PayComponents.SingleAsync(c => c.Code == Car && c.EffectiveFrom == new DateOnly(2026, 3, 1))).FinanceConfirmedAtUtc = null;
+        await w.Db.SaveChangesAsync();
+
+        var result = await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(march.Id, CancellationToken.None);
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(422);
+        JsonSerializer.Serialize(refusal.Value).Should().Contain("cash_allowance_definition_invalid").And.Contain(w.A.EmployeeCode).And.Contain("ARREARS_ALW_CAR");
+        (await w.Db.PayrollEarnings.AsNoTracking().AnyAsync(e => e.PayrollRunId == march.Id)).Should().BeFalse("nothing is paid or saved");
+    }
+
+    [Fact]
+    public async Task EndOfService_RefusesALineWhoseDefinitionIsGone_NamingTheLine_InsteadOfUnderstatingTheWage()
+    {
+        await using var w = await NewWorld(definition: false);
+        await GiveAsync(w, w.A, Car, 500m);                      // an orphan: no definition at all
+        var salaryId = (await w.Db.EmployeeSalaryStructures.AsNoTracking().FirstAsync(x => x.EmployeeId == w.A.Id)).Id;
+
+        var act = () => SalaryAllowanceLines.EosbIncludedAsync(w.Db, w.Tid, [salaryId], new DateOnly(2026, 6, 1), default);
+
+        (await act.Should().ThrowAsync<CashAllowanceDefinitionMissingException>()).Which.Message.Should().Contain(Car);
+    }
+
+    [Fact]
+    public void AnOrphanAllowanceLine_IsAnswered422WithAStableCode_NotA500()
+    {
+        var (status, code, message) = Zayra.Api.Infrastructure.Http.ExceptionResponseMapper.Map(new CashAllowanceDefinitionMissingException(Car, "no longer exists"));
+
+        (status, code).Should().Be((422, "cash_allowance_definition_invalid"));
+        message.Should().Contain(Car);
+    }
+
     // ══ migration/schema shape ══════════════════════════════════════════════════════════════════
 
     [Fact]

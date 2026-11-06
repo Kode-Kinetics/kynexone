@@ -83,7 +83,7 @@ public static class CashAllowanceDefinitions
     /// <summary>
     /// Employees (of <paramref name="employees"/>) whose salary record in force for the period carries an allowance line whose definition, for the period
     /// starting <paramref name="periodStart"/>, is missing or not in effect, is not confirmed by Finance, or has no GL driver. It lists them BEFORE payroll day,
-    /// where the run would refuse (422) instead. An employee without allowance lines never appears, and the check reads no amounts.
+    /// where the run refuses (422) instead — it checks the same three things on the same version, for current lines and for back pay. An employee without allowance lines never appears, and the check reads no amounts.
     /// </summary>
     public static async Task<List<ReadinessIssue>> ReadinessIssuesAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyCollection<(int Id, string Code, string Name, Guid? CompanyId)> employees,
@@ -127,6 +127,13 @@ public static class CashAllowanceDefinitions
 
     public const int NoteMaxLength = 500;
 
+    /// <summary>
+    /// True when free text carries a control character (as a name is refused) or a bidirectional embedding, override or isolate (U+202A-202E, U+2066-2069), which
+    /// can make a stored note read differently from what it says. The plain left/right marks (U+200E, U+200F, U+061C) stay allowed: Arabic text uses them.
+    /// </summary>
+    public static bool HasUnsafeCharacters(string text) =>
+        text.Any(c => char.IsControl(c) || c is >= '\u202A' and <= '\u202E' or >= '\u2066' and <= '\u2069');
+
     /// <summary>A refused end-of-service answer: the stable code and the words.</summary>
     public sealed record EosbProblem(string Code, string Message);
 
@@ -156,6 +163,8 @@ public static class CashAllowanceDefinitions
             return (new("eosb_reason_required", "Say why this allowance is left out of the end-of-service wage."), null, null);
         if (text.Length > NoteMaxLength)
             return (new("eosb_reason_too_long", $"Keep the reason under {NoteMaxLength} characters."), null, null);
+        if (HasUnsafeCharacters(text))
+            return (new("eosb_reason_invalid", "The reason can't contain control or text-direction override characters."), null, null);
         return (null, normalized, text.Length == 0 ? null : text);
     }
 
