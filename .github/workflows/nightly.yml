@@ -68,6 +68,7 @@ jobs:
               playwright.renewals.config.ts
               playwright.fixture.config.ts
               playwright.ux-fixes.config.ts
+              playwright.screen-contract.config.ts
           - name: talent-and-chrome
             configs: >-
               playwright.learning.config.ts
@@ -102,6 +103,7 @@ jobs:
       LEARNING_BASE_URL: http://127.0.0.1:5197
       SETUP_EXPERIENCE_BASE_URL: http://127.0.0.1:5197
       UX_FIXES_BASE_URL: http://127.0.0.1:5197
+      SCREEN_CONTRACT_BASE_URL: http://127.0.0.1:5197
       STATUTORY_RULES_BASE_URL: http://127.0.0.1:5197
       SUCCESSION_BASE_URL: http://127.0.0.1:5197
       CI: 'true'
