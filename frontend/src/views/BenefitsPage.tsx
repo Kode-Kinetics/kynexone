@@ -1,5 +1,6 @@
 'use client';
 
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, CheckCircle2, HeartPulse, Loader2, Plus, RefreshCw, Search, ShieldCheck, UserPlus, XCircle,
@@ -81,7 +82,7 @@ export function BenefitsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Benefits Administration')}</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{releaseA ? 'Employee enrolments and contributions' : 'Employee enrolments, exceptions and contributions'}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -98,6 +99,9 @@ export function BenefitsPage() {
           <ModuleSettingsLink sections={['benefitPlans']} label={msg('Benefit settings')} />
         </div>
       </div>
+
+      {/* One home for what each grade receives. This page is the enrolment desk; the grade rules are not edited here. */}
+      <BenefitsByGradeDoor variant="panel" intro={t('What each grade receives (housing, transport, tickets, medical, education) is set in Benefits by grade, not here. This page is for enrolments and contributions.')} />
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">

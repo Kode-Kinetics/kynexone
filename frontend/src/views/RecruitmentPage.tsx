@@ -2947,6 +2947,7 @@ function RecruitmentAITab() {
 type Tab = 'overview' | 'requisitions' | 'openings' | 'candidates' | 'workforce' | 'interviews' | 'assessments' | 'offers' | 'onboarding' | 'reports' | 'ai';
 
 export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { initialTab?: Tab; initialOfferDesigner?: boolean } = {}) {
+  const t = useT();
   const navigationGuard = useNavigationGuard();
   const [tab, setTab] = useState<Tab>(initialTab ?? 'overview');
   useEffect(() => { if (!initialTab && new URLSearchParams(window.location.search).get('tab') === 'offers') setTab('offers'); }, [initialTab]);
@@ -2975,7 +2976,7 @@ export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { 
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Recruitment & Requisitions</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Recruitment & Requisitions')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Manage manpower requisitions, job openings, and candidate pipeline end-to-end.
         </p>

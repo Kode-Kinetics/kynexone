@@ -99,6 +99,49 @@ const ar: Record<string, string> = {
   'Retiring…': 'جارٍ الإيقاف…',
   'The benchmark set was not retired': 'لم تُوقَف مجموعة المقارنة',
   'Reload the page to see its current state.': 'أعد تحميل الصفحة لمعرفة حالتها الحالية.',
+  // Failures that are said out loud (what happened, why, what to do)
+  'The comment was not sent': 'لم يُرسل التعليق',
+  'Your text is still in the box. Try again.': 'نصك ما زال في الخانة. أعد المحاولة.',
+  'The status was not changed': 'لم تتغير الحالة',
+  'Reload the request to see its current status.': 'أعد تحميل الطلب لمعرفة حالته الحالية.',
+  'The request was not submitted': 'لم يُقدَّم الطلب',
+  'Your details are still in the form. Try again.': 'بياناتك ما زالت في النموذج. أعد المحاولة.',
+  'The insight was not acknowledged': 'لم يُسجَّل الاطلاع على الملاحظة',
+  'Try again; it is still listed as new.': 'أعد المحاولة؛ فهي ما زالت مدرجة كجديدة.',
+  'The risk scores were not recomputed': 'لم تُعَد حسابات درجات المخاطر',
+  'The scores shown are the previous ones. Try again.': 'الدرجات المعروضة هي السابقة. أعد المحاولة.',
+  'The shift assignment was not removed': 'لم يُزل تعيين الوردية',
+  'It is still on the roster. Try again.': 'ما زال في جدول المناوبات. أعد المحاولة.',
+  'The renewal status was not changed': 'لم تتغير حالة التجديد',
+  'The employee record was not deleted': 'لم يُحذف سجل الموظف',
+
+  // After a save: what changed, where you are, the next action
+  'Request submitted: {subject}': 'تم تقديم الطلب: {subject}',
+  'You are on the list of requests.': 'أنت الآن في قائمة الطلبات.',
+  'Submit another request': 'تقديم طلب آخر',
+  'You are on the draft record, at the step where you stopped.': 'أنت الآن في سجل المسودة، عند الخطوة التي توقفت عندها.',
+  'Back to the People list': 'العودة إلى قائمة الموظفين',
+
+  // Disabled with a reason
+  'Changes are turned off until this has loaded. If it did not load, use Retry below.': 'التعديلات متوقفة إلى أن يكتمل التحميل. إذا لم يكتمل، فاستخدم إعادة المحاولة أدناه.',
+  'Employee limit reached ({used}/{max}). Upgrade your plan to add more employees.': 'تم بلوغ حد الموظفين ({used}/{max}). رقِّ خطتك لإضافة المزيد من الموظفين.',
+  'User limit reached ({used}/{max}). Upgrade your plan to add more users.': 'تم بلوغ حد المستخدمين ({used}/{max}). رقِّ خطتك لإضافة المزيد من المستخدمين.',
+
+  // Benefits by grade: one home
+  "You can't see Benefits by grade": 'لا يمكنك الاطلاع على المزايا حسب الدرجة',
+  'What each grade is entitled to is set there, and access is given by your HR administrator.': 'تُحدَّد هناك استحقاقات كل درجة، ويمنح مسؤول الموارد البشرية صلاحية الاطلاع عليها.',
+  'What each grade receives (housing, transport, tickets, medical, education) is set in Benefits by grade, not here. This page is for enrolments and contributions.':
+    'ما تحصل عليه كل درجة (السكن والنقل والتذاكر والتأمين الطبي والتعليم) يُحدَّد في المزايا حسب الدرجة وليس هنا. هذه الصفحة للتسجيل في المزايا والاشتراكات.',
+
+  // Page headings that were English-only
+  'HR Request Center': 'مركز طلبات الموارد البشرية',
+  'Employee service desk: submit, track and resolve HR requests': 'مكتب خدمة الموظفين: قدّم طلبات الموارد البشرية وتابعها وأنجزها',
+  'Benefits Administration': 'إدارة المزايا',
+  'Document & Compliance Management': 'إدارة المستندات والامتثال',
+  'Employee Management': 'إدارة الموظفين',
+  'New hires': 'الموظفون الجدد',
+  'Recruitment & Requisitions': 'التوظيف وطلبات التوظيف',
+  'Saudi Compliance Command Center': 'مركز قيادة الامتثال السعودي',
 };
 
 export const uxFoundation = {

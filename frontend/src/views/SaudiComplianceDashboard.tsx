@@ -810,6 +810,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 ];
 
 export function SaudiComplianceDashboard() {
+  const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('dashboard');
 
   return (
@@ -817,7 +818,7 @@ export function SaudiComplianceDashboard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-6 w-6 text-sapphire dark:text-cyanAccent" />
-          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Saudi Compliance Command Center</h1>
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">{t('Saudi Compliance Command Center')}</h1>
         </div>
         <ModuleSettingsLink sections={['saudiCompliance']} label={msg('Saudi compliance settings')} />
       </div>

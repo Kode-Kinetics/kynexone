@@ -1,5 +1,6 @@
 'use client';
 import { SetupWorkspaceReturn } from '../components/setup/SetupWorkspaceReturn';
+import { FlashResultHost } from '../components/FlashResultHost';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquareText, Clock, Search, X } from 'lucide-react';
@@ -455,7 +456,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
           {/* "Confirm it's you" before actions against an Admin or the workspace owner (src/api/stepUp.ts). */}
           <StepUpHost />
           {/* Bottom padding below lg clears the fixed bottom nav and the device safe area. */}
-          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn />{children}</main>
+          <main key={mainKey} className={`animate-fade-in-up px-4 pt-6 sm:px-6 lg:px-8 ${mayUseAssistant && pathname !== '/ai-assistant' ? 'pb-[calc(9rem+env(safe-area-inset-bottom))] lg:pb-24' : 'pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8'}`}><SetupWorkspaceReturn /><FlashResultHost />{children}</main>
         </div>
       </div>
 

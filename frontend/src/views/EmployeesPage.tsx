@@ -99,6 +99,10 @@ import { referenceCode, referenceDefault, referenceLabel, referenceOptions, type
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
 import { useLiveGrades } from '../hooks/useLiveGrades';
 import { useConfirm } from '../components/ui/useConfirm';
+import { PlanLimitNote } from '../components/ui/PlanLimitNote';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
+import { setFlashResult } from '../lib/flashResult';
+import { refusalFromError } from '../lib/refusal';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -328,6 +332,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const wizardFormat = useFormat();
   const { t, locale } = useLocale();
   const { confirm, dialog: confirmDialog } = useConfirm();
+  // Client-side navigation (guarded), not window.location.assign: a hard navigation threw away the SPA state.
+  const navigation = useNavigationGuard();
   const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
@@ -834,11 +840,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const welcome = useWelcomeCodes(useCallback(() => {
     setAccessRefresh((n) => n + 1);
     if (createOnly && welcomeReturnEmployeeId) {
-      window.location.assign(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
+      navigation.push(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
       return;
     }
     void load();
-  }, [createOnly, load, welcomeReturnEmployeeId]));
+  }, [createOnly, load, navigation, welcomeReturnEmployeeId]));
 
   /** Every employee matching the current filter, page by page (for "all matching" selections). */
   const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
@@ -1546,7 +1552,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               : formStep === 4 ? 'compliance-documents'
                 : 'pay-benefits';
           writeEmployeeCreateResume(window.localStorage, { employeeId: created.id, section });
-          window.location.assign(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
+          // The save is confirmed on the screen the user lands on: what changed, where they are, the one next action.
+          setFlashResult(window.sessionStorage, {
+            changed: t('{name} was saved as a draft.', { name }),
+            where: t('You are on the draft record, at the step where you stopped.'),
+            next: { label: t('Back to the People list'), href: '/people' },
+          });
+          navigation.push(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
           return;
         }
         await load();
@@ -1840,7 +1852,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      window.location.assign(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
+      navigation.push(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
       return;
     }
     if (thenOpen && id) void openDetail(id);
@@ -1874,7 +1886,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
-    if (createOnly) window.location.assign('/people');
+    if (createOnly) navigation.push('/people');
   };
 
   // ── Duplicate warning actions (create path — no new record exists yet) ──
@@ -1886,7 +1898,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      window.location.assign(employeeWorkspaceHref(employeeId, { section: 'overview' }));
+      navigation.push(employeeWorkspaceHref(employeeId, { section: 'overview' }));
       return;
     }
     openDetail(employeeId);
@@ -1896,7 +1908,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setDuplicateWarning([]);
     setFormOpen(false);
     if (createOnly) {
-      window.location.assign(`/people/${employeeId}/edit?section=personal`);
+      navigation.push(`/people/${employeeId}/edit?section=personal`);
       return;
     }
     setFormError('');
@@ -1982,8 +1994,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       setSelectedId(null);
       setDetail(null);
       await load();
-    } catch {
-      setError('Could not delete the employee. Only Admins can delete records.');
+    } catch (e) {
+      // The server's own reason (a payroll lock, a scope refusal), not "Only Admins" whatever it said.
+      setError(refusalFromError(e, { what: t('The employee record was not deleted') }, t, locale));
     }
   };
 
@@ -2191,7 +2204,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Employee Management</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Employee Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {view === 'current'
               ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
@@ -2241,21 +2254,18 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   });
                 }}
               />
-              {canWriteEmployees && <div className="relative group">
+              {canWriteEmployees && <div className="flex flex-col items-start gap-1">
                 <button
                   type="button"
-                  onClick={() => { if (!atEmployeeLimit) window.location.assign('/people/new'); }}
+                  onClick={() => { if (!atEmployeeLimit) navigation.push('/people/new'); }}
                   disabled={atEmployeeLimit}
+                  aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason' : undefined}
                   className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" />
                   Add Employee
                 </button>
-                {atEmployeeLimit && usage && (
-                  <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
-                    Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
-                  </div>
-                )}
+                {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} />}
               </div>}
             </>
           )}
@@ -2470,7 +2480,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           })}
                         >Clear filters</button>
                       ) : canWriteEmployees ? (
-                        <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
+                        <>
+                          <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit} aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason-empty' : undefined}><Plus className="h-4 w-4" />Add Employee</button>
+                          {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason-empty" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} className="mx-auto mt-2" />}
+                        </>
                       ) : null}
                     </td></tr>
                   )}

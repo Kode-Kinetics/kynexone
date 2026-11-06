@@ -33,6 +33,7 @@ import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
 import { useConfirm } from '../components/ui/useConfirm';
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { parseReconError } from '../lib/payrollRecon';
 import { useFormat } from '../hooks/useFormat';
 import { useLocale } from '../contexts/LocaleContext';
@@ -772,6 +773,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
 function GradePackagesTab() {
   const t = useT();
+  const { hasPermission } = useAuth();
   const fmt = useFormat();
   const { locale } = useLocale();
   const [view, setView] = useState<GradePackagesView | null>(null);
@@ -803,9 +805,13 @@ function GradePackagesTab() {
             ? t('Grade benefits are set in Benefits by grade. This shows the cash lines payroll uses for each grade.')
             : t('Pay packages are set on each grade in Setup. Payroll uses them as they are shown here.')}
         </p>
-        <Link href={benefitsByGrade ? '/benefits/by-grade' : '/setup?tab=grades'} className={btn.ghost}>
-          {benefitsByGrade ? t('Open Benefits by grade') : t('Open Setup → Grades')}
-        </Link>
+        {benefitsByGrade && !hasPermission('entitlements.read')
+          ? <BenefitsByGradeDoor intro="" />
+          : (
+            <Link href={benefitsByGrade ? '/benefits/by-grade' : '/setup?tab=grades'} className={btn.ghost}>
+              {benefitsByGrade ? t('Open Benefits by grade') : t('Open Setup → Grades')}
+            </Link>
+          )}
       </div>
 
       {loading ? <p className="text-sm text-slate-500">{t('Loading…')}</p>
@@ -845,7 +851,9 @@ function GradePackagesTab() {
                   <p className="text-slate-500">{p.structureCode ? t('Salary structure {code} · version {version}', { code: p.structureCode, version: p.structureVersion ?? 1 }) : t('No salary structure yet')}</p>
                 </div>
                 <div className="mt-3 flex justify-end">
-                  <Link href={editHref(p.gradeId)} className={btn.sm}><Pencil className="h-3.5 w-3.5" aria-hidden="true" /> {t('Edit in Setup')}</Link>
+                  {benefitsByGrade && !hasPermission('entitlements.read')
+                    ? null
+                    : <Link href={editHref(p.gradeId)} className={btn.sm}><Pencil className="h-3.5 w-3.5" aria-hidden="true" /> {t('Edit in Setup')}</Link>}
                 </div>
               </article>
             ))}
@@ -3813,6 +3821,7 @@ function FinalSettlementTab() {
 // ── Main Page ───────────────────────────────────────────────────────────────────
 
 export function PayrollPage() {
+  const t = useT();
   const { user } = useAuth();
   const { currencyCode } = useTenantSettings();
   const isAdmin    = user?.roles.some(r => r === 'Admin') ?? false;
@@ -3897,7 +3906,7 @@ export function PayrollPage() {
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Payroll Management</h1>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.</p>
         </div>
         {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}

@@ -250,7 +250,7 @@ export function NewHiresPage() {
       {confirmDialog}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">New hires</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('New hires')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             Accepted offers and prepared hires on their way to becoming employees. A different HR approver activates each one.
           </p>

@@ -1,5 +1,6 @@
 'use client';
 
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
@@ -1221,8 +1222,7 @@ function GradesTab() {
               <FormField label={t('Currency')}><input value={form.currency ?? ''} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder={t('Company currency')} /></FormField>
             </div>
             {benefitsByGrade
-              ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
-                <Link href="/benefits/by-grade" className="text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+              ? <BenefitsByGradeDoor className="mt-2" intro={t('Allowances and benefits for this grade are set in Benefits by grade.')} />
               : <GradePackageEditor companyId={form.companyId ?? editing?.companyId ?? null} components={payScale} onChange={setPayScale}
                   minSalary={form.minSalary} maxSalary={form.maxSalary} currency={form.currency || undefined} onCatalogue={setCatalogue} />}
           </div>
