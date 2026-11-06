@@ -20,9 +20,10 @@ namespace Zayra.Api.Tests;
 /// <summary>PAY-10 — payroll.slips.read reads the register and payslips; it never exports. payroll.export keeps working.</summary>
 public class PayrollSlipsReadPermissionTests
 {
+    // L3: a single payslip PDF is a read of one person's slip, so slips.read keeps opening it. The run-wide ZIP of every
+    // payslip is a bulk export of the whole run's pay and needs payroll.export (see the ratchet below).
     [Theory]
     [InlineData("DownloadSlipPdf")]
-    [InlineData("DownloadRunPdfBundle")]
     [InlineData("Slips")]
     [InlineData("ListPayslips")]
     [InlineData("Register")]
@@ -44,9 +45,13 @@ public class PayrollSlipsReadPermissionTests
     [Fact]
     public void Slips_read_is_not_accepted_for_any_export_or_write_action()
     {
-        foreach (var (action, verb) in new[] { ("GenerateWpsFile", "POST"), ("Approve", "POST"), ("ExportStructures", "GET"), ("Process", "POST") })
+        foreach (var (action, verb) in new[] { ("GenerateWpsFile", "POST"), ("Approve", "POST"), ("ExportStructures", "GET"), ("Process", "POST"), ("DownloadRunPdfBundle", "GET") })
             LegacyRolePermissionResolver.ResolveAllFor("Payroll", action, new[] { verb }).Should().NotContain("payroll.slips.read", action);
     }
+
+    [Fact]
+    public void The_bulk_payslip_bundle_is_gated_on_payroll_export_alone()
+        => LegacyRolePermissionResolver.ResolveAllFor("Payroll", "DownloadRunPdfBundle", new[] { "GET" }).Should().Equal("payroll.export");
 
     [Fact]
     public async Task A_role_holding_only_slips_read_cannot_export_the_register()
