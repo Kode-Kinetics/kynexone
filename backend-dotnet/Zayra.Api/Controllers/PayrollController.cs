@@ -57,6 +57,8 @@ public partial class PayrollController : ControllerBase
     private readonly Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService _salaryDecisions;
     // The payroll-run computation (moved out of this controller); shared with the background job.
     private readonly PayrollRunProcessor _processor;
+    // Null means the registry defaults (both approval relaxations OFF).
+    private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
@@ -65,8 +67,10 @@ public partial class PayrollController : ControllerBase
         Zayra.Api.Infrastructure.Employees.IEmployeeActivationGuard? activationGuard = null,
         IProrationPolicyResolver? prorationPolicy = null,
         Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null,
-        Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null)
+        Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null,
+        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
     {
+        _policySettings = policySettings;
         _db = db;
         _scopeService = scopeService;
         _http = http;
@@ -1705,6 +1709,12 @@ public partial class PayrollController : ControllerBase
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null)) && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd)
             .Select(r => r.Id)
             .ToListAsync(cancellationToken);
+        // OVT-04: same pending-overtime query Process runs (/validate replaces the stored results wholesale).
+        var valPendingOvertimeByEmp = await _db.OvertimeRequests.AsNoTracking()
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployeesForValidation && r.CompanyId == null))
+                && r.WorkDate >= valPeriodStart && r.WorkDate <= valPeriodEnd && r.Status.StartsWith("Pending") && employeeIdsForValidation.Contains(r.EmployeeId))
+            .GroupBy(r => r.EmployeeId).Select(g => new { EmployeeId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x.Count, cancellationToken);
         var valOtImpacts = await _db.OvertimePayrollImpacts.AsNoTracking()
             .Where(x => x.TenantId == tenantId && employeeIdsForValidation.Contains(x.EmployeeId) && valOtRequestIds.Contains(x.OvertimeRequestId))
             .ToListAsync(cancellationToken);
@@ -1776,6 +1786,7 @@ public partial class PayrollController : ControllerBase
             YtdPreCutoverExcludedEmployeeIds        = valYtdSources.PreCutoverSlipsExcludedEmployeeIds,
             YtdSuggestedCutover                     = valYtdSources.SuggestedCutover,
             Exclusions                              = validationPopulation.Exclusions,
+            PendingOvertimeRequestsByEmployee       = valPendingOvertimeByEmp,
             NotEligibleSelections                   = validationPopulation.NotEligible,
             SiblingRunCount                         = valSiblingRuns.Count,
             // Matches Process: the stored statutory amounts WERE netted incrementally whenever a sibling
@@ -2005,8 +2016,24 @@ public partial class PayrollController : ControllerBase
         var isHROrPayroll = User.IsInRole("HR Manager") || User.IsInRole("Payroll Manager");
         var isFinance = User.IsInRole("Finance Controller") || User.IsInRole("Finance Approver");
 
+        // PAY-05: two explicit, default-off tenant settings let an HR / Payroll Manager do what the two-level chain
+        // otherwise reserves for Finance. Each relaxes ONE action, is checked here (after maker-checker above, which
+        // is never waived), and is written into the approval row and the audit entry.
+        string? relaxation = null;
+        if (!isAdmin && !isFinance && isHROrPayroll && _policySettings is not null)
+        {
+            if (run.Status == "Processed"
+                && await _policySettings.GetBoolAsync(tenantId, Infrastructure.Policy.PolicyRegistry.PayrollAllowSkipReview, cancellationToken))
+                relaxation = Infrastructure.Policy.PolicyRegistry.PayrollAllowSkipReview;
+            else if (run.Status == "PendingFinanceReview" && approverId.HasValue
+                && await _policySettings.GetBoolAsync(tenantId, Infrastructure.Policy.PolicyRegistry.PayrollAllowSameApproverMultipleLevels, cancellationToken)
+                && await _db.PayrollApprovals.AsNoTracking().AnyAsync(a => a.TenantId == tenantId && a.PayrollRunId == id
+                    && a.ApprovalLevel == "PayrollReview" && a.Decision == "Approved" && a.DecidedByUserId == approverId, cancellationToken))
+                relaxation = Infrastructure.Policy.PolicyRegistry.PayrollAllowSameApproverMultipleLevels;
+        }
+
         // Admin and Finance finalise directly to Approved
-        if (isAdmin || isFinance)
+        if (isAdmin || isFinance || relaxation is not null)
         {
             // AM-8: the approval hash is written ONLY on the transition to Approved (never at level 1), from the very journal Lock will
             // build. Costing off: no hash. A costed run whose approver has not acknowledged the uncosted lines is refused (S-048).
@@ -2028,14 +2055,14 @@ public partial class PayrollController : ControllerBase
                 sealedHash = preview.CostHash;
             }
             run.CostCenterResolutionHash = sealedHash;
-            _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "Approved", Notes = req.Notes ?? string.Empty, DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
+            _db.PayrollApprovals.Add(new PayrollApproval { TenantId = tenantId, PayrollRunId = id, ApprovalLevel = "FinanceReview", Decision = "Approved", Notes = relaxation is null ? req.Notes ?? string.Empty : $"[policy relaxation applied: {relaxation}] {req.Notes}".TrimEnd(), DecidedByUserId = GetUserId(), DecidedAtUtc = DateTime.UtcNow });
             run.Status = "Approved";
             if (reconGate.Waived)
                 await PayrollAudit("payroll.recon.approved_without_signoff", "PayrollRun", id.ToString(),
                     new { level = "Finance", reason = reconGate.Reason, processVersion = run.ProcessVersion }, cancellationToken);
             // The acknowledged cash/cheque list is sealed here; Lock refuses to freeze any other list.
             await PayrollAudit("payroll.run.approved", "PayrollRun", id.ToString(),
-                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees }, cancellationToken);
+                new { notes = req.Notes, level = "Finance", paidOutsideBankFile = outsideBankEmployees, policyRelaxation = relaxation }, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             onFinanceApproved(run);
             return Ok(run);

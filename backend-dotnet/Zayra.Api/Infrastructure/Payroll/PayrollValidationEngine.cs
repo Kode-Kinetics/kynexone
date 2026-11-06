@@ -28,6 +28,9 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollValidationEngine
 {
+    /// <summary>PAY-08 — nationality text that is neither Saudi, GCC nor a known country.</summary>
+    public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
+
     /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
     /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
@@ -77,6 +80,12 @@ public static class PayrollValidationEngine
     /// says out loud what it is not deducting, and HR can correct the punches before it is approved.
     /// </summary>
     public const string NoHolidayCalendar = "WARN_NO_HOLIDAY_CALENDAR";
+
+    /// <summary>
+    /// Warning, never blocks: overtime for this period is still awaiting approval. Once the period closes it can only
+    /// be settled late (per <c>overtime.late_approval_mode</c>), so HR is told before the run is approved.
+    /// </summary>
+    public const string OvertimePendingApproval = "WARN_OVERTIME_PENDING_APPROVAL";
     public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
@@ -284,6 +293,17 @@ public static class PayrollValidationEngine
                 Warn("MISSING_NATIONALITY",
                     $"Employee {slip.EmployeeCode} has no nationality recorded. " +
                     "Nationality drives GOSI classification (Saudi vs GCC vs expat) and must be set before processing.",
+                    slip.EmployeeId);
+
+            // PAY-08: free text that is not Saudi, GCC or a known country is NEVER guessed. DeriveClassification would read
+            // it as an expatriate (no GOSI), so a typo for "Saudi" would silently drop the contribution. An Error, because
+            // the figure on the slip may be wrong; overridable with a reason (a real but unlisted nationality is a judgement).
+            if (isKsa && emp is not null && !string.IsNullOrWhiteSpace(emp.Nationality)
+                && Zayra.Api.Application.Onboarding.NationalityClasses.Of(emp.Nationality) == Zayra.Api.Application.Onboarding.NationalityClasses.Unknown)
+                Err(NationalityUnrecognised,
+                    $"Employee {slip.EmployeeCode} has the nationality \"{emp.Nationality.Trim()}\", which is not recognised as Saudi, GCC or a known country, " +
+                    "so GOSI cannot be classified and it was NOT assumed to be an expatriate. Correct the nationality on the employee record " +
+                    "(pick it from the list) and reprocess the run, or confirm the classification with a reason.",
                     slip.EmployeeId);
 
             // Rule 2: GOSI rate check — KSA runs only
@@ -612,6 +632,13 @@ public static class PayrollValidationEngine
                     emp.Id);
         }
 
+        // ── Rule 10c: overtime still pending approval for this period ────────────
+        foreach (var pending in ctx.PendingOvertimeRequestsByEmployee.Where(kv => kv.Value > 0).OrderBy(kv => kv.Key))
+            Warn(OvertimePendingApproval,
+                $"{CodeFor(pending.Key)}: {pending.Value} overtime request(s) worked in {ctx.Run.Year}-{ctx.Run.Month:D2} are still " +
+                "awaiting approval. Approve or reject them before this period is closed; after that they can only be settled late, " +
+                "as the company's late-approval setting allows.", pending.Key);
+
         // ── Rule 10a: no public holiday entered for the period ───────────────────
         // WARN only, never a block: holidays are entered per the company's own policy (Eid dates move with the
         // moon and are announced late), so a month with none may be right. It is raised so it is never silent:
@@ -850,6 +877,12 @@ public sealed record PayrollValidationContext(
     /// populated identically by Process and by /validate (which replaces the stored results wholesale).
     /// </summary>
     public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
+
+    /// <summary>
+    /// Overtime requests still awaiting approval per employee, for work dates in this pay period. Process and
+    /// /validate must populate it identically. Empty (the default) raises nothing.
+    /// </summary>
+    public IReadOnlyDictionary<int, int> PendingOvertimeRequestsByEmployee { get; init; } = new Dictionary<int, int>();
 
     /// <summary>Total approved OT hours per employee in this pay period.</summary>
     public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =

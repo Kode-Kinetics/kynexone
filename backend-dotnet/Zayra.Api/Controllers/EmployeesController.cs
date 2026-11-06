@@ -47,32 +47,7 @@ namespace Zayra.Api.Controllers;
 [Zayra.Api.Infrastructure.Filters.ReasonLimit("CostCenterReason")]
 public class EmployeesController : ControllerBase
 {
-    private static readonly HashSet<string> SensitiveFields = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportExpiryDate", "visaNumber",
-        "dateOfBirth", "salary", "bankName", "bankIban", "wpsBankDetails", "passportNumber", "passportIssueDate",
-        "passportExpiryDate", "visaNumber", "visaIssueDate", "visaExpiryDate", "iqamaNumber", "muqeemNumber",
-        // KSA Border Number — the pre-Iqama national-identity number; same approval route as the Iqama.
-        "borderNumber",
-        // F02 — the GOSI first-registration date decides which contribution schedule a Saudi national is on,
-        // so it takes the same maker-checker route as the GOSI reference beside it.
-        "gosiFirstRegisteredOn",
-        "gosiReference", "qiwaContractNumber", "emiratesId", "laborCardNumber", "visaFileNumber", "qid", "civilId", "residencyNumber",
-        "residencyIssueDate", "workPermitNumber", "workPermitIssueDate", "medicalInformation", "disciplinaryRecords",
-        "terminationReason",
-        // The GPSSA/GRSIA/PIFSS/SPF/SIO counterpart of gosiReference (Saudi GOSI). Same class of value — the
-        // social-insurance enrolment every contribution is filed against — so it takes the same maker-checker
-        // route. It became writable through PUT when EmployeeChangeApplier gained its payroll-profile key;
-        // without this entry that write would have skipped the approval gosiReference always required.
-        "socialInsuranceReference",
-        // Where the WPS/SIF line pays: the bank's routing code and the account number (payroll profile).
-        "bankRoutingCode", "accountNumber",
-        "molId", "salaryCurrency", "payrollGroup", "salaryStructureReference", "paymentMethod", "salaryBreakdown",
-        // The national ID and the four identity-card expiries take the same route as the passport and visa beside
-        // them: they identify the person and gate activation/payroll, so a change is approved before it applies.
-        // Creating an employee is not a change and still sets them directly.
-        "idNumber", "iqamaExpiryDate", "emiratesIdExpiryDate", "qidExpiryDate", "civilIdExpiryDate"
-    };
+    private static readonly HashSet<string> SensitiveFields = Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.LegacySensitiveFields;
 
     private readonly ZayraDbContext _db;
     private readonly IPasswordHasher _passwordHasher;
@@ -84,13 +59,14 @@ public class EmployeesController : ControllerBase
     private readonly ILetterService _letters;
     private readonly IHrLetterIssuer _letterIssuer;
     private readonly IApprovalWorkflowService _approvalWorkflow;
+    private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
     private readonly ILogger<EmployeesController>? _logger;
     private readonly IEstablishmentGuard _establishmentGuard;
     private readonly IEmployeeActivationGuard _activationGuard;
     private readonly IEmployeeDuplicateDetector _duplicateDetector;
     private readonly IDraftHireMakers _draftHireMakers;
 
-    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null, IDraftHireMakers? draftHireMakers = null)
+    public EmployeesController(ZayraDbContext db, IPasswordHasher passwordHasher, IAuditService audit, IDocumentStorage documents, INotificationService notifications, IHijriDateService hijri, IDataScopeService scopeService, ILetterService letters, IApprovalWorkflowService? approvalWorkflow = null, ILogger<EmployeesController>? logger = null, IEstablishmentGuard? establishmentGuard = null, IEmployeeActivationGuard? activationGuard = null, IEmployeeDuplicateDetector? duplicateDetector = null, IHrLetterIssuer? letterIssuer = null, IDraftHireMakers? draftHireMakers = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
     {
         _db = db;
         _passwordHasher = passwordHasher;
@@ -105,6 +81,7 @@ public class EmployeesController : ControllerBase
         // stateless coordinator over exactly the three dependencies already passed above, so a
         // caller that does not supply one still gets the real behaviour.
         _letterIssuer = letterIssuer ?? new HrLetterIssuer(db, letters, documents);
+        _policySettings = policySettings;
         _approvalWorkflow = approvalWorkflow ?? new Zayra.Api.Infrastructure.Approvals.ApprovalWorkflowService(db, audit);
         _logger = logger;
         // Optional with concrete fallback (same pattern as _approvalWorkflow): DI supplies the
@@ -3011,6 +2988,12 @@ public class EmployeesController : ControllerBase
             // CanViewSensitive() — the write response is a read of the record and obeys the same mask
             // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
             var employee = await employeeManagement.CreateAsync(tenantId, request, Context(), cancellationToken, CanViewSensitive());
+            // Advisory only (PAY-08): an ID prefix that contradicts the nationality never blocks the create.
+            var saved = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == employee.Id)
+                .Select(x => new { x.Nationality, x.IdNumber, x.IqamaNumber }).FirstOrDefaultAsync(cancellationToken);
+            if (saved is not null
+                && Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(saved.Nationality, saved.IdNumber, saved.IqamaNumber) is { Count: > 0 } idWarnings)
+                employee = employee with { IdentityWarnings = idWarnings };
             return CreatedAtAction(nameof(Get), new { id = employee.Id }, employee);
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
@@ -4010,6 +3993,11 @@ public class EmployeesController : ControllerBase
         return result!;
     }
 
+    private async Task<IReadOnlyList<string>> ProfileChangeApprovalFieldsAsync(Guid tenantId, CancellationToken ct) =>
+        _policySettings is null
+            ? Zayra.Api.Infrastructure.Policy.PolicyRegistry.ParseCsv(Zayra.Api.Infrastructure.Policy.PolicyRegistry.Get(Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields).Default)
+            : await _policySettings.GetCsvAsync(tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.EmployeesProfileChangeApprovalFields, ct);
+
     private async Task<IActionResult> UpdateEmployeeCoreAsync(int id, EmployeeUpdateRequest request, CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
@@ -4068,8 +4056,18 @@ public class EmployeesController : ControllerBase
             if (managerRejection.OutOfScope) return Forbid();
             return UnprocessableEntity(new { error = "invalid_manager", message = managerRejection.Message + " No change was applied." });
         }
-        var sensitive = request.Changes.Keys.Where(SensitiveFields.Contains).ToList();
-        if (sensitive.Count > 0 && !CanEditSensitive()) return Forbid();
+        // Who may write a sensitive field is unchanged; WHICH changes go through approval is the tenant's
+        // employees.profile_change_approval_fields policy (PEO-03). Unlisted fields apply directly and are history-logged.
+        if (request.Changes.Keys.Any(SensitiveFields.Contains) && !CanEditSensitive()) return Forbid();
+        var approvalFields = await ProfileChangeApprovalFieldsAsync(tenantId, cancellationToken);
+        var gatedKeys = request.Changes.Keys.Where(k => Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApprovalForHrEdit(k, approvalFields))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var sensitive = gatedKeys.ToList();
+        string? Proposed(string key, string? current) =>
+            request.Changes.TryGetValue(key, out var v) ? (v.ValueKind == JsonValueKind.String ? v.GetString() : null) : current;
+        // Advisory only (PAY-08): what the saved record would look like, for a change that waits for approval.
+        var proposedIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(
+            Proposed("nationality", employee.Nationality), Proposed("idNumber", employee.IdNumber), Proposed("iqamaNumber", employee.IqamaNumber));
         // Rich payroll edits use the same approval route, but malformed values must never become
         // unapplyable approvals. Validate the complete package before any immediate field is written.
         try
@@ -4122,10 +4120,10 @@ public class EmployeesController : ControllerBase
             if (sensitive.Count > 0)
             {
                 var sensitiveChanges = request.Changes
-                    .Where(x => SensitiveFields.Contains(x.Key))
+                    .Where(x => gatedKeys.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
                 var immediateChanges = request.Changes
-                    .Where(x => !SensitiveFields.Contains(x.Key))
+                    .Where(x => !gatedKeys.Contains(x.Key))
                     .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
 
                 // A sensitive value does not change until it is approved, so the form (and the readiness
@@ -4142,6 +4140,7 @@ public class EmployeesController : ControllerBase
                         requiresApproval = true,
                         alreadyPending = true,
                         sensitiveFields = sensitive,
+                        identityWarnings = proposedIdWarnings,
                         appliedFields = new List<string>()
                     });
                 }
@@ -4271,6 +4270,7 @@ public class EmployeesController : ControllerBase
                     approvalRequestId = approval.Id,
                     requiresApproval = true,
                     sensitiveFields = sensitive,
+                        identityWarnings = proposedIdWarnings,
                     appliedFields = immediateChanges.Keys.ToList(),
                     loginUsernameDiffers
                 });
@@ -4303,7 +4303,9 @@ public class EmployeesController : ControllerBase
                 await _db.SaveChangesAsync(cancellationToken);
             }
             await Audit("employee.updated", "Employee", employee.Id.ToString(), cancellationToken);
-            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers });
+            // Advisory only (PAY-08): applied values that contradict each other are reported, never refused.
+            var updateIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(employee.Nationality, employee.IdNumber, employee.IqamaNumber);
+            return Ok(EmployeeDetailDto.Project(employee, CanViewSensitive()) with { LoginUsernameDiffers = loginUsernameDiffers, IdentityWarnings = updateIdWarnings.Count > 0 ? updateIdWarnings : null });
         }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
         catch (WorkEmailConflictException ex) { return Conflict(new { error = "work_email_conflict", attempted = ex.Attempted, suggestion = ex.Suggestion }); }

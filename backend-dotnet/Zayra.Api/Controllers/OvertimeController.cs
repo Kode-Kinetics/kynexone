@@ -15,6 +15,7 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Policy;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -31,10 +32,13 @@ public class OvertimeController : ControllerBase
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _ruleReader;
     private readonly IConfiguration? _configuration;
+    private readonly IPolicySettings _policy;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null, IPolicySettings? policySettings = null)
     {
         _configuration = configuration;
+        // Optional like the others so existing callers/tests keep working; DI supplies the registered one.
+        _policy = policySettings ?? new PolicySettingsService(db);
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
@@ -668,6 +672,11 @@ public class OvertimeController : ControllerBase
             var approvedMinutes = req.ApprovedMinutes > 0 ? req.ApprovedMinutes : request.RequestedMinutes;
             if (approvedMinutes <= 0 || approvedMinutes > request.RequestedMinutes)
                 return BadRequest(new { message = "Approved minutes must be positive and cannot exceed requested minutes." });
+            // OVT-04: a work date whose payroll period has already closed is settled per overtime.late_approval_mode.
+            // Decided BEFORE anything is mutated, so a refusal leaves the request exactly as it was.
+            var (lateRefusal, backPayRun) = await ResolveLateApprovalAsync(tenantId, request, req.Notes, ct);
+            if (lateRefusal is not null) return lateRefusal;
+
             _db.OvertimeApprovals.Add(NewOvertimeApproval(
                 tenantId, request.Id, "Final", "Approved", req.Notes));
             request.Status = "Approved";
@@ -676,6 +685,45 @@ public class OvertimeController : ControllerBase
             request.DecidedAtUtc = DateTime.UtcNow;
             var calc = await Calculate(request, ct);
             _db.OvertimeCalculations.Add(calc);
+            if (backPayRun is not null)
+            {
+                // Carried into the next open run as a prior-period adjustment. The impact row stays (marked
+                // CarriedForward) so the request can never also be paid by a run or converted to comp-off, but it
+                // is not PendingPayroll: no run will pick it up a second time. The closed period is never touched.
+                var reason = req.Notes!.Trim();
+                var backPaySnapshot = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        overtimeRequestId = request.Id,
+                        originalWorkDate = request.WorkDate.ToString("yyyy-MM-dd"),
+                        originalPeriod = request.WorkDate.ToString("yyyy-MM"),
+                        carriedToPeriod = $"{backPayRun.Year}-{backPayRun.Month:00}",
+                        reason,
+                        approvedMinutes = calc.ApprovedMinutes,
+                        multiplier = calc.Multiplier,
+                        amount = calc.Amount,
+                        overtimePolicyId = request.OvertimePolicyId,
+                    });
+                _db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
+                {
+                    TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId,
+                    Minutes = calc.ApprovedMinutes, Amount = calc.Amount, ApprovedMultiplier = calc.Multiplier,
+                    Status = "CarriedForward",
+                });
+                _db.PayrollAdjustments.Add(new PayrollAdjustment
+                {
+                    TenantId = tenantId, PayrollRunId = backPayRun.Id, EmployeeId = request.EmployeeId,
+                    AdjustmentType = "Overtime Back Pay", Amount = calc.Amount, Status = "Approved",
+                    Reason = $"Overtime back pay for work date {request.WorkDate:yyyy-MM-dd} (closed period {request.WorkDate:yyyy-MM}): {reason}",
+                    SourceType = PayrollAdjustmentSources.OvertimeBackPay, SourceId = request.Id,
+                    SourceSnapshotJson = backPaySnapshot,
+                });
+                await SaveAudit("overtime.request.backpay_carried", "OvertimeRequest", request.Id.ToString(), ct, new
+                {
+                    originalWorkDate = request.WorkDate.ToString("yyyy-MM-dd"), reason,
+                    carriedToRunId = backPayRun.Id, carriedToPeriod = $"{backPayRun.Year}-{backPayRun.Month:00}", amount = calc.Amount,
+                });
+            }
+            else
             _db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
             {
                 TenantId = tenantId,
@@ -823,7 +871,10 @@ public class OvertimeController : ControllerBase
         if (req.CompOffDays <= 0) return BadRequest(new { message = "Comp-off days must be positive." });
         // OVT-01: the days are bounded by the hours actually approved, over the working day. Unbounded days
         // let one hour of overtime mint any amount of paid leave.
-        var maxDays = MaxCompOffDays(request.ApprovedMinutes);
+        var capMode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeCompoffCapMode, ct);
+        var maxDays = string.Equals(capMode, "Fractional", StringComparison.Ordinal)
+            ? MaxCompOffDaysFractional(request.ApprovedMinutes)
+            : MaxCompOffDays(request.ApprovedMinutes);
         if (req.CompOffDays > maxDays)
             return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
@@ -831,7 +882,7 @@ public class OvertimeController : ControllerBase
         // OVT-01: the same overtime must never be both cash and leave. Cash already paid cannot be taken back
         // here; cash still waiting for payroll is withdrawn in the same save as the credit.
         var impacts = await _db.OvertimePayrollImpacts.Where(x => x.TenantId == tenantId && x.OvertimeRequestId == request.Id).ToListAsync(ct);
-        if (impacts.Any(x => x.Status == "Processed" || x.PayrollRunId != null))
+        if (impacts.Any(x => x.Status is "Processed" or "CarriedForward" || x.PayrollRunId != null))
             return Conflict(new { message = "This overtime has already been paid through payroll and cannot be converted to comp-off." });
         _db.OvertimePayrollImpacts.RemoveRange(impacts);
         await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
@@ -873,6 +924,10 @@ public class OvertimeController : ControllerBase
     /// </summary>
     internal static decimal MaxCompOffDays(int approvedMinutes) =>
         Math.Max(1m, Math.Ceiling(approvedMinutes / 60m / CompOffHoursPerWorkingDay));
+
+    /// <summary>overtime.compoff_cap_mode = Fractional: exactly the approved hours over the working day, no whole-day rounding.</summary>
+    internal static decimal MaxCompOffDaysFractional(int approvedMinutes) =>
+        Math.Round(approvedMinutes / 60m / CompOffHoursPerWorkingDay, 4);
 
     [HttpGet("reports/summary")]
     public async Task<ActionResult<object>> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
@@ -1083,6 +1138,58 @@ public class OvertimeController : ControllerBase
         DecidedByUserId = GetUserId(),
         DecidedAtUtc = DateTime.UtcNow
     };
+
+    /// <summary>
+    /// OVT-04. Null refusal and null run = the period is open, approve as usual. A closed period either refuses (409
+    /// <c>overtime_period_closed</c>, naming the next open period) or, in BackPay mode with a reason and an open run
+    /// to carry into, returns that run.
+    /// </summary>
+    private async Task<(ActionResult? Refusal, PayrollRun? CarryRun)> ResolveLateApprovalAsync(
+        Guid tenantId, OvertimeRequest request, string? reason, CancellationToken ct)
+    {
+        if (!await AttendancePayrollLock.IsLockedAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct))
+            return (null, null);
+
+        // First month after the work date's month that is not itself closed (bounded, so a wide lock cannot loop).
+        var next = new DateOnly(request.WorkDate.Year, request.WorkDate.Month, 1).AddMonths(1);
+        for (var i = 0; i < 36 && await AttendancePayrollLock.IsLockedAsync(_db, tenantId, request.EmployeeId, next, ct); i++)
+            next = next.AddMonths(1);
+        var nextOpen = new { year = next.Year, month = next.Month, label = $"{next.Year}-{next.Month:00}" };
+        var closed = $"{request.WorkDate.Year}-{request.WorkDate.Month:00}";
+
+        var mode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeLateApprovalMode, ct);
+        if (!string.Equals(mode, "BackPay", StringComparison.Ordinal))
+            return (Conflict(new
+            {
+                code = "overtime_period_closed",
+                message = $"The {closed} payroll period is closed. This overtime stays pending; it can be settled in the next open period, {nextOpen.label}.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+
+        if (string.IsNullOrWhiteSpace(reason))
+            return (BadRequest(new
+            {
+                code = "overtime_backpay_reason_required",
+                message = $"The {closed} payroll period is closed. A reason is required to pay this overtime as back pay in {nextOpen.label}.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+
+        var companyId = request.CompanyId
+            ?? await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Resolve the employee's legal entity to find the payroll run overtime back pay is carried into.")
+                .Where(e => e.Id == request.EmployeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "Finding the open run an employee's late overtime is carried into: the approver's company scope must not hide it.")
+            .Where(r => r.CompanyId == companyId && r.Year == next.Year && r.Month == next.Month
+                && r.Status == "Draft" && r.LockedAtUtc == null && r.RunType == PayrollRunTypes.Regular)
+            .OrderBy(r => r.CreatedAtUtc).FirstOrDefaultAsync(ct);
+        if (run is null)
+            return (Conflict(new
+            {
+                code = "overtime_backpay_no_open_run",
+                message = $"The {closed} payroll period is closed and there is no open payroll run for {nextOpen.label} to carry this overtime into. Create that run, then approve again; the request stays pending.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+        return (null, run);
+    }
 
     private async Task<bool> TrySaveDecisionAsync(CancellationToken ct)
     {
