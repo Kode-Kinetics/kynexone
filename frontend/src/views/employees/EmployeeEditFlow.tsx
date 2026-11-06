@@ -29,7 +29,8 @@ import { useLiveGrades } from '../../hooks/useLiveGrades';
 import { designationChoices } from '../../lib/employeeDesignationChoices';
 import { SalaryAllowancesEditor } from '../../components/payroll/SalaryAllowancesEditor';
 import { useCashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
-import { ALLOWANCES_KEY } from '../../lib/employeeEditDraft';
+import { ALLOWANCES_KEY, REDUCTION_REFERENCE_KEY } from '../../lib/employeeEditDraft';
+import { SalaryReductionNotice } from '../../components/payroll/SalaryReductionNotice';
 import { formatAmount } from '../../lib/hire/money';
 import { describeLines, encodeValue, lineName, parseDecimal, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 
@@ -277,6 +278,15 @@ export function EmployeeEditFlow({
                       value={draft.allowanceEdit} onChange={value => draft.setField(ALLOWANCES_KEY, encodeValue(value))}
                       basic={parseDecimal(draft.form['salaryBreakdown.basicSalary'] ?? '')} currency={draft.form['salaryBreakdown.currency'] || salaryCurrency}
                       catalog={allowanceCatalog} onRetry={retryAllowanceCatalog} showProblems={draft.allowanceProblemsShown} />
+                  )}
+                  {index === 3 && draft.lowersPay && (
+                    <SalaryReductionNotice idPrefix="edit-salary-reduction" items={draft.reductionItems}
+                      currentTotal={draft.reduction.isReduction ? draft.reduction.currentTotal : undefined}
+                      proposedTotal={draft.reduction.isReduction ? draft.reduction.proposedTotal : undefined}
+                      currency={draft.form['salaryBreakdown.currency'] || salaryCurrency} reference={draft.reference}
+                      onReference={value => draft.setField(REDUCTION_REFERENCE_KEY, value)}
+                      problem={draft.referenceProblem ? t(draft.referenceProblem) : null} focusToken={draft.referenceFocus}
+                      lineLabel={(code) => lineName({ code, ...(draft.allowanceBaseline.find(l => l.code.toUpperCase() === code.toUpperCase()) ?? {}) }, allowanceCatalog.status === 'ready' ? allowanceCatalog.choices : [], locale)} />
                   )}
                 </fieldset>
               </EmployeeCreatePanel>

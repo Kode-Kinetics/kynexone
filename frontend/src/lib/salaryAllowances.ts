@@ -185,12 +185,13 @@ export function decodeValue(raw: string | undefined): AllowanceValue {
 
 // ── Definitions and grade values (the benefits matrix) ──────────────────────────────────────────────────────────────────
 
-export interface AllowanceChoice { code: string; nameEn: string; nameAr: string }
+/** `financePending`: Finance has not confirmed it yet, so no salary line can use it. */
+export interface AllowanceChoice { code: string; nameEn: string; nameAr: string; financePending?: boolean }
 
 /** The monthly cash allowances the customer has defined, from the benefits matrix, by name. */
-export function allowanceChoices(components: readonly Pick<MatrixComponent, 'code' | 'nameEn' | 'nameAr' | 'isCustom'>[], locale: string): AllowanceChoice[] {
+export function allowanceChoices(components: readonly Pick<MatrixComponent, 'code' | 'nameEn' | 'nameAr' | 'isCustom' | 'cashAllowance'>[], locale: string): AllowanceChoice[] {
   return components.filter(isCashAllowance)
-    .map(c => ({ code: c.code.toUpperCase(), nameEn: c.nameEn, nameAr: c.nameAr }))
+    .map(c => ({ code: c.code.toUpperCase(), nameEn: c.nameEn, nameAr: c.nameAr, ...(c.cashAllowance?.financePending ? { financePending: true } : {}) }))
     .sort((a, b) => nameOf(a, locale).localeCompare(nameOf(b, locale)) || a.code.localeCompare(b.code));
 }
 
@@ -264,7 +265,7 @@ export function viewMonthly(line: SalaryAllowanceView, basic?: number): number |
 export const viewPercent = (line: Pick<SalaryAllowanceView, 'rate'>): number => Math.round((line.rate ?? 0) * 10000) / 100;
 
 /** The server's reasons for refusing an allowance on a salary, and where they belong. */
-export const ALLOWANCE_ERROR_CODES = ['salary_allowance_invalid', 'salary_allowance_unknown', 'salary_change_stale'] as const;
+export const ALLOWANCE_ERROR_CODES = ['salary_allowance_invalid', 'salary_allowance_unknown', 'salary_allowance_pending_finance', 'salary_change_stale'] as const;
 export function allowanceRefusal(err: unknown): { code: string; message: string } | null {
   const data = (err as { response?: { data?: { error?: unknown; message?: unknown } } })?.response?.data;
   const code = typeof data?.error === 'string' ? data.error : '';

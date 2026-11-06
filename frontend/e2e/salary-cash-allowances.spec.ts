@@ -44,6 +44,16 @@ const changes = [
     employeeId: 902, employeeName: 'Omar Test', allowancesCarriedForward: true,
     currentAllowances: [line(meal, 'Amount', 300)], proposedAllowances: [line(meal, 'Amount', 300)],
   }),
+  // A reduction proposed with the employee's written agreement reference, and a change that only raises pay.
+  change('c-reduction', {
+    employeeId: 904, employeeName: 'Reem Test', allowancesCarriedForward: true, previousBasicSalary: 5000, basicSalary: 5000, housingAllowance: 1000,
+    currentAllowances: [], proposedAllowances: [], isReduction: true, reducedItems: [{ item: 'HOUSING', from: 1500, to: 1000 }, { item: 'ALW_MEAL', from: 300, to: 0 }],
+    reductionConsentReference: 'QIWA-77', currentMonthlyPay: 6800, proposedMonthlyPay: 6000, changesContractWage: true,
+  }),
+  change('c-raise', {
+    employeeId: 905, employeeName: 'Rana Test', allowancesCarriedForward: true, currentAllowances: [], proposedAllowances: [],
+    isReduction: false, reducedItems: [], reductionConsentReference: null, currentMonthlyPay: 5000, proposedMonthlyPay: 6000, changesContractWage: true,
+  }),
   change('c-nolabel', {
     employeeId: 903, employeeName: 'Nadia Test', allowancesCarriedForward: false,
     currentAllowances: [], proposedAllowances: [line(meal, 'Amount', 300, null, { glDriverLabel: null })],
@@ -59,7 +69,10 @@ const salaryRecord = (allowances: unknown) => ({
 });
 const mealOnRecord = { code: 'ALW_MEAL', nameEn: 'Meal', nameAr: 'وجبات', basis: 'Amount', rate: null, amount: 300 };
 
-async function bootPayroll(page: Page, locale: Locale, opts: { onApprove?: (id: string) => { status: number; body: unknown }; permissions?: string[]; recordAllowances?: unknown } = {}) {
+async function bootPayroll(page: Page, locale: Locale, opts: {
+  onApprove?: (id: string) => { status: number; body: unknown }; permissions?: string[]; recordAllowances?: unknown;
+  onAssign?: () => { status: number; body: unknown }; readiness?: unknown; openSalaryTab?: boolean;
+} = {}) {
   const posts: { path: string; body: any }[] = [];
   await page.addInitScript(([lang]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
@@ -78,14 +91,19 @@ async function bootPayroll(page: Page, locale: Locale, opts: { onApprove?: (id: 
     if (p === '/api/entitlements/matrix') return json(matrix);
     // Assign Salary reads the current lines from this list, not from the employee (which needs employees.sensitive).
     if (p === '/api/payroll/employee-salary-structures' && request.method() === 'GET') return json([salaryRecord('recordAllowances' in opts ? opts.recordAllowances : [mealOnRecord])]);
-    if (p === '/api/payroll/employee-salary-structures' && request.method() === 'POST') { posts.push({ path: p, body: request.postDataJSON() }); return json({ id: 'new' }, 202); }
+    if (p === '/api/payroll/employee-salary-structures' && request.method() === 'POST') {
+      posts.push({ path: p, body: request.postDataJSON() });
+      const r = opts.onAssign?.() ?? { status: 202, body: { id: 'new' } };
+      return json(r.body, r.status);
+    }
+    if (p === '/api/payroll/readiness') return json(opts.readiness ?? {});
     if (p === '/api/payroll/overview') return json({ year: 2026, month: 11, totalCompanies: 0, totalActiveEmployees: 0, totalGrossPayroll: 0, totalNetPayroll: 0, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] });
     if (p === '/api/tenant-admin/localization') return json({ countryCode: 'SA', currencyCode: 'SAR', defaultLanguage: locale });
     if (p.startsWith('/api/features') || p === '/api/notifications') return json([]);
     return json([]);
   });
   await page.goto('/payroll');
-  await page.getByRole('tab', { name: say(locale, 'Employee Salary') }).click();
+  if (opts.openSalaryTab !== false) await page.getByRole('tab', { name: say(locale, 'Employee Salary') }).click();
   return { posts };
 }
 
@@ -145,6 +163,8 @@ test.describe('Assign Salary: the monthly allowances section', () => {
     await page.getByRole('button', { name: 'Assign Salary' }).click();
     await page.getByLabel('Employee ID', { exact: true }).fill('901');
     await page.getByLabel('Basic Salary *').fill('5000');
+    // The record in force has 1,000 housing: keeping it keeps the proposal from being a reduction.
+    await page.getByLabel('Housing Allowance').fill('1000');
     return { posts, section: page.getByTestId('salary-allowances') };
   };
   const open = async (page: Page) => {
@@ -194,7 +214,7 @@ test.describe('Assign Salary: the monthly allowances section', () => {
     await expect(section.getByTestId('salary-allowance-computed')).toContainText('500.00');
     await expect(section.getByTestId('salary-allowances-total')).toContainText('800.00'); // 300 + 500
     await expect(page.getByTestId('gross-includes-allowances')).toContainText('800.00');
-    await expect(page.getByText(/Gross Total:.*5,800\.00/)).toBeVisible();
+    await expect(page.getByText(/Gross Total:.*6,800\.00/)).toBeVisible();
     await page.getByRole('button', { name: 'Assign Salary' }).last().click();
     await expect.poll(() => posts.length).toBe(1);
     expect(posts[0].body.allowances).toEqual([
@@ -211,10 +231,148 @@ test.describe('Assign Salary: the monthly allowances section', () => {
     await expect(section.getByRole('alert')).toContainText('Choose the allowance for this line.');
     expect(posts).toHaveLength(0);
     await section.getByRole('button', { name: 'Remove allowance line 1' }).click();
+    // Taking the meal allowance away lowers the pay: it needs the employee's written agreement reference.
+    await page.getByRole('button', { name: 'Assign Salary' }).last().click();
+    expect(posts).toHaveLength(0);
+    await page.getByLabel('Employee’s written agreement reference').fill('QIWA-501');
     await page.getByRole('button', { name: 'Assign Salary' }).last().click();
     await expect.poll(() => posts.length).toBe(1);
     expect(posts[0].body.allowances).toEqual([]);
+    expect(posts[0].body.reductionConsentReference).toBe('QIWA-501');
   });
+});
+
+test.describe('Assign Salary: lowering the pay needs the employee’s written agreement', () => {
+  const start = async (page: Page, opts: Parameters<typeof bootPayroll>[2] = {}) => {
+    const { posts } = await bootPayroll(page, 'en', opts);
+    await page.getByRole('button', { name: 'Assign Salary' }).click();
+    await page.getByLabel('Employee ID', { exact: true }).fill('901');
+    await page.getByLabel('Basic Salary *').fill('5000');
+    await page.getByLabel('Housing Allowance').fill('1000');
+    await expect(page.getByTestId('salary-allowance-line')).toHaveCount(1); // the record's lines have been read
+    return { posts, notice: page.getByTestId('salary-reduction-notice') };
+  };
+  const submit = (page: Page) => page.getByRole('button', { name: 'Assign Salary' }).last().click();
+
+  test('no notice while the pay is kept or raised', async ({ page }) => {
+    const { posts, notice } = await start(page);
+    await page.getByLabel('Basic Salary *').fill('5500');
+    await expect(notice).toHaveCount(0);
+    await submit(page);
+    await expect.poll(() => posts.length).toBe(1);
+    expect(Object.keys(posts[0].body)).not.toContain('reductionConsentReference');
+  });
+
+  test('a lower item says what goes down, asks for the reference, focuses it, and sends it', async ({ page }) => {
+    const { posts, notice } = await start(page);
+    await page.getByLabel('Housing Allowance').fill('800');
+    await expect(notice).toBeVisible();
+    await expect(notice.getByRole('heading')).toHaveText('This lowers the employee’s pay');
+    await expect(notice.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
+    await expect(notice.getByTestId('reduction-total')).toContainText('The monthly pay goes from');
+    // Saving without the reference is refused here, at the field, and nothing is sent.
+    await submit(page);
+    const field = page.getByLabel('Employee’s written agreement reference');
+    await expect(field).toBeFocused();
+    await expect(notice.getByRole('alert')).toHaveText('Enter the employee’s written agreement reference before saving.');
+    expect(posts).toHaveLength(0);
+    await field.fill('  QIWA-2026-77  ');
+    await submit(page);
+    await expect.poll(() => posts.length).toBe(1);
+    expect(posts[0].body.reductionConsentReference).toBe('QIWA-2026-77');
+  });
+
+  test('raising it back removes the notice and the reference is no longer sent', async ({ page }) => {
+    const { posts, notice } = await start(page);
+    await page.getByLabel('Housing Allowance').fill('800');
+    await page.getByLabel('Employee’s written agreement reference').fill('QIWA-1');
+    await page.getByLabel('Housing Allowance').fill('1000');
+    await expect(notice).toHaveCount(0);
+    await submit(page);
+    await expect.poll(() => posts.length).toBe(1);
+    expect(Object.keys(posts[0].body)).not.toContain('reductionConsentReference');
+  });
+
+  test('when the form cannot tell, the server’s refusal shows what goes down and focuses the field', async ({ page }) => {
+    const message = 'Lowering an employee\'s pay needs their written agreement; enter its reference. (ALW_MEAL removed)';
+    const refusal = { error: 'reduction_consent_required', code: 'reduction_consent_required', message, reducedItems: [{ item: 'ALW_MEAL', from: 300, to: 0 }] };
+    let first = true;
+    // The salary list masks the lines, so the form compares the six slots only and sees no reduction; the server does.
+    const { posts } = await bootPayroll(page, 'en', { recordAllowances: null, onAssign: () => { const r = first ? { status: 400, body: refusal } : { status: 202, body: { id: 'new' } }; first = false; return r; } });
+    await page.getByRole('button', { name: 'Assign Salary' }).click();
+    await page.getByLabel('Employee ID', { exact: true }).fill('901');
+    await page.getByLabel('Basic Salary *').fill('5000');
+    await page.getByLabel('Housing Allowance').fill('1000');
+    await expect(page.getByTestId('salary-reduction-notice')).toHaveCount(0);
+    await submit(page);
+    const notice = page.getByTestId('salary-reduction-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice.getByTestId('reduced-items')).toContainText('Meal is removed. It was');
+    await expect(page.getByLabel('Employee’s written agreement reference')).toBeFocused();
+    await expect(page.getByText(message)).toBeVisible();
+    await page.getByLabel('Employee’s written agreement reference').fill('QIWA-9');
+    await submit(page);
+    await expect.poll(() => posts.length).toBe(2);
+    expect(posts[1].body.reductionConsentReference).toBe('QIWA-9');
+  });
+});
+
+test.describe('Finance approval of a pay reduction', () => {
+  test('a reduction is said first, with what goes down and the agreement reference; a change that only raises pay is not', async ({ page }) => {
+    await bootPayroll(page, 'en');
+    const reduction = page.getByTestId('salary-change-row').filter({ hasText: 'Reem Test' });
+    const summary = reduction.getByTestId('salary-reduction-summary');
+    await expect(summary).toBeVisible({ timeout: 30_000 });
+    await expect(summary).toContainText('This lowers the employee’s pay');
+    await expect(summary.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
+    await expect(summary.getByTestId('reduced-items')).toContainText('Meal is removed. It was');
+    await expect(summary.getByTestId('reduction-reference')).toContainText('QIWA-77');
+    await expect(reduction.getByTestId('salary-change-monthly-pay')).toContainText('6,800.00');
+    await expect(reduction.getByTestId('salary-change-monthly-pay')).toContainText('6,000.00');
+    await expect(reduction.getByTestId('contract-wage-note')).toHaveText('This changes the contract wage. Amend the contract on Qiwa and keep the employee’s acceptance.');
+    const raise = page.getByTestId('salary-change-row').filter({ hasText: 'Rana Test' });
+    await expect(raise.getByTestId('salary-change-monthly-pay')).toBeVisible();
+    await expect(raise.getByTestId('salary-reduction-summary')).toHaveCount(0);
+    await expect(raise.getByTestId('contract-wage-note')).toBeVisible();
+  });
+
+  test('approving a reduction that has no reference is refused in words, and nothing looks approved', async ({ page }) => {
+    await bootPayroll(page, 'en', { onApprove: () => ({ status: 409, body: {
+      error: 'salary_change_stale', code: 'reduction_consent_required', message: 'Lowering an employee\'s pay needs their written agreement; enter its reference. Reject this change, or propose it again with the reference.',
+      reducedItems: [{ item: 'HOUSING', from: 1500, to: 1000 }] } }) });
+    const row = page.getByTestId('salary-change-row').filter({ hasText: 'Reem Test' });
+    await row.getByRole('button', { name: 'Approve' }).click();
+    const stale = row.getByTestId('salary-change-stale');
+    await expect(stale).toContainText('This change lowers the employee’s pay but has no written agreement reference, so it was not approved. Nothing was paid or changed.');
+    await expect(stale).toContainText('Reject this change, or ask for it to be proposed again with the reference.');
+    await expect(stale).toHaveAttribute('role', 'alert');
+    await expect(row).toBeVisible(); // still pending
+  });
+});
+
+test.describe('Payroll readiness: monthly allowance lines the run cannot use', () => {
+  const issue = (over: object) => ({ employeeId: 901, employeeCode: 'EMP-901', employeeName: 'Layla Test', companyId: null, code: 'ALW_MEAL', problem: 'not_confirmed', message: 'x', ...over });
+  for (const locale of ['en', 'ar'] as const) {
+    test(`each problem is said in plain words with where to fix it (${locale})`, async ({ page }) => {
+      await bootPayroll(page, locale, { openSalaryTab: false, readiness: {
+        year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: false, totalActiveEmployees: 3, employeesWithSalary: 3, salaryCoveragePercent: 100,
+        validationErrors: 0, payrollRunStatus: null, steps: [],
+        cashAllowanceIssues: [issue({}), issue({ employeeId: 902, employeeCode: 'EMP-902', employeeName: 'Omar Test', problem: 'no_gl_driver' }),
+          issue({ employeeId: 903, employeeCode: 'EMP-903', employeeName: 'Nadia Test', code: 'ALW_OLD', problem: 'no_definition' })],
+      } });
+      const panel = page.getByTestId('cash-allowance-issues');
+      await expect(panel).toBeVisible({ timeout: 30_000 });
+      const rows = panel.getByTestId('cash-allowance-issue');
+      await expect(rows).toHaveCount(3);
+      await expect(rows.nth(0)).toContainText(say(locale, 'The allowance {code} is waiting for Finance to confirm it in Benefits by grade.', { code: 'ALW_MEAL' }));
+      await expect(rows.nth(1)).toContainText(say(locale, 'The allowance {code} has no GL account yet. Finance sets it in Benefits by grade.', { code: 'ALW_MEAL' }));
+      await expect(rows.nth(2)).toContainText(say(locale, 'The allowance {code} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', { code: 'ALW_OLD' }));
+      // The employee's salary, and Benefits by grade where Finance has to act (not for a line that must come off the salary).
+      await expect(rows.nth(0).getByRole('link').first()).toHaveAttribute('href', /\/people\/901\?section=pay-benefits&panel=salary/);
+      await expect(rows.nth(0).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveAttribute('href', '/benefits/by-grade');
+      await expect(rows.nth(2).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveCount(0);
+    });
+  }
 });
 
 test.describe('Employee profile and Edit employee', () => {
@@ -281,12 +439,33 @@ test.describe('Employee profile and Edit employee', () => {
     const section = flow.getByTestId('salary-allowances');
     await section.getByRole('button', { name: 'Remove allowance line 2' }).click();
     await expect(section.getByTestId('salary-allowances-note')).toHaveText('You changed these. Saving sends exactly the lines shown here.');
+    // Dropping the car allowance lowers the pay: the Salary step asks for the employee's written agreement reference before it moves on.
+    await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
+    await expect(flow.getByTestId('salary-reduction-notice')).toBeVisible();
+    await expect(flow.getByLabel('Employee’s written agreement reference')).toBeFocused();
+    await flow.getByLabel('Employee’s written agreement reference').fill('QIWA-88');
     await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
     await expect(flow).toContainText('Other monthly allowances');
     await expect(flow).toContainText('Meal');
+    await expect(flow).toContainText('QIWA-88');
     await flow.getByRole('button', { name: 'Save changes', exact: true }).click();
     await expect.poll(() => fixture.mutations.filter(m => m.method === 'PUT').length).toBe(1);
-    const body = fixture.mutations.find(m => m.method === 'PUT')!.body as { changes: { salaryBreakdown: { allowances: unknown } } };
+    const body = fixture.mutations.find(m => m.method === 'PUT')!.body as { changes: { salaryBreakdown: { allowances: unknown; reductionConsentReference: string } } };
     expect(body.changes.salaryBreakdown.allowances).toEqual([{ code: 'ALW_MEAL', basis: 'Amount', amount: 300 }]);
+    expect(body.changes.salaryBreakdown.reductionConsentReference).toBe('QIWA-88');
+  });
+
+  test('a lower housing allowance asks for the reference, and a raise does not', async ({ page }) => {
+    await bootEmployeeWorkspaceFixture(page, { permissions, disabledFeatures: [] });
+    await withMatrix(page);
+    await page.goto('/people/901/edit?section=pay-benefits&panel=salary');
+    const flow = page.getByTestId('employee-edit-flow');
+    await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('1200');
+    await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);
+    await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('700');
+    await expect(flow.getByTestId('salary-reduction-notice')).toBeVisible();
+    await expect(flow.getByTestId('reduced-items')).toContainText('Housing allowance goes from');
+    await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('1000');
+    await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);
   });
 });

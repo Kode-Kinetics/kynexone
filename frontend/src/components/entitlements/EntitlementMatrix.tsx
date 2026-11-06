@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { Hourglass, Info, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   entitlementsApi, type BlockReason, type EntitlementMatrix as Matrix, type MatrixCellError, type MatrixComponent, type MatrixGrade,
@@ -14,9 +15,11 @@ import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
-  EOSB_REASON_MAX, addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, cashGlChoices, isCashAllowance,
-  type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type GlChoice, type ServerProblem,
+  addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, isCashAllowance, isPendingFinance, staleRunMonths,
+  type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type ServerProblem,
 } from '../../lib/cashAllowance';
+import { EosbFields, FinanceAllowancePanel, GlAccountField, useCashGlChoices } from './CashAllowanceFinance';
+import { useFormat } from '../../hooks/useFormat';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
   inputFromDraft, markRestNotOffered, monthStarts, periodChoiceKeys, sameDraft, summarise, tierKeys, type CellDraft, type SummaryPart,
@@ -61,6 +64,9 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const { t, locale } = useLocale();
   const { hasPermission } = useAuth();
   const canManage = hasPermission('entitlements.manage');
+  // Finance (payroll.approve) confirms a cash allowance somebody else added, and corrects a confirmed one.
+  const canFinance = hasPermission('payroll.approve');
+  const fmt = useFormat();
   const { isGroupScope, selectedCompanyId } = useCompany();
   const [companyId, setCompanyId] = useState(isGroupScope ? '' : (selectedCompanyId ?? companies[0]?.id ?? ''));
   const [matrix, setMatrix] = useState<Matrix | null>(null);
@@ -80,6 +86,11 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const [notice, setNotice] = useState('');
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
+  // Finance's confirm / correct panel for one allowance, the allowances the server said their own maker cannot confirm, and what a change left to say.
+  const [finance, setFinance] = useState<{ code: string; mode: 'confirm' | 'correct' } | null>(null);
+  const [makerBlocked, setMakerBlocked] = useState<ReadonlySet<string>>(new Set());
+  const [cautions, setCautions] = useState<string[]>([]);
+  const [staleNote, setStaleNote] = useState('');
   const requestSeq = useRef(0);
   // The browser key the edits on screen are kept under: the scope and date of the grid that is loaded.
   const storageKey = useRef<string | null>(null);
@@ -130,7 +141,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
       setMatrix(null); setLoadError(loanErrorMessage(e, t('Unable to load benefits by grade.')));
     } finally { if (seq === requestSeq.current) setLoading(false); }
   }, [companyId, isGroupScope, apply, t]);
-  useEffect(() => { setAsOf(null); setNotice(''); setError(''); setEditing(null); void load(); }, [load]);
+  useEffect(() => { setAsOf(null); setNotice(''); setError(''); setEditing(null); setFinance(null); setCautions([]); setStaleNote(''); void load(); }, [load]);
 
   const components = useMemo(() => {
     const list = matrix?.components ?? [];
@@ -144,7 +155,9 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const cellByKey = useMemo(() => new Map((matrix?.cells ?? []).map(x => [cellKey(x.gradeId, x.componentCode), x])), [matrix]);
   const gapKeys = useMemo(() => new Set((matrix?.gaps ?? []).filter(g => !g.scheduledFrom).map(g => cellKey(g.gradeId, g.componentCode))), [matrix]);
   const scheduled = useMemo(() => new Map((matrix?.gaps ?? []).filter(g => g.scheduledFrom).map(g => [cellKey(g.gradeId, g.componentCode), g.scheduledFrom!])), [matrix]);
-  const openGaps = [...gapKeys].filter(k => drafts[k]?.state === 'unset').length;
+  // An allowance still waiting for Finance takes no grade value: it is not a gap to set and not a step in the guide.
+  const pendingCodes = useMemo(() => new Set(components.filter(isPendingFinance).map(c => c.code)), [components]);
+  const openGaps = [...gapKeys].filter(k => drafts[k]?.state === 'unset' && !pendingCodes.has(k.split('|')[1])).length;
   // A new benefit is a row for the whole group, so it is added from the group view by someone who can reach every company.
   const canAddBenefit = canManage && !companyId && isGroupScope;
   const dirty = changed.length > 0;
@@ -160,7 +173,8 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   }, [dirty]);
 
   // The step strip: how many grade values are set, and the next one to set, in the order the grid shows them.
-  const skippedHere = useCallback((code: string) => matrix?.offerings.find(o => o.componentCode === code)?.mode === 'Skipped', [matrix]);
+  const skippedHere = useCallback((code: string) => matrix?.offerings.find(o => o.componentCode === code)?.mode === 'Skipped'
+    || !!matrix?.components.some(c => c.code === code && isPendingFinance(c)), [matrix]);
   const scheduledKeys = useMemo(() => new Set(scheduled.keys()), [scheduled]);
   const progress = useMemo(() => guideProgress(components, grades, drafts, scheduledKeys, skippedHere), [components, grades, drafts, scheduledKeys, skippedHere]);
   const nextAfter = (key: string | null) => guideProgress(components, grades, drafts, scheduledKeys, skippedHere, key).nextKey;
@@ -243,13 +257,26 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
     </div>
     {adding && canAddBenefit && <AddBenefitPanel
       onClose={() => setAdding(false)}
-      onAdded={async name => { setAdding(false); setNotice(fillTemplate(t('{benefit} was added. Set its value for each grade, then publish.'), { benefit: name })); await load(asOf); }} />}
+      onAdded={async (name, added) => {
+        setAdding(false); setStaleNote(''); setCautions(allowanceWarnings(added.warnings));
+        // A cash allowance added without the Finance permission waits for Finance: it can take no value until then.
+        setNotice(isPendingFinance(added)
+          ? t('Added. Finance must confirm the GL account and end-of-service setting before it can be used.')
+          : fillTemplate(t('{benefit} was added. Set its value for each grade, then publish.'), { benefit: name }));
+        await load(asOf);
+      }} />}
     <p className="text-xs text-slate-500 dark:text-slate-400">{t(companyId
       ? 'This company uses the group values unless you tailor a grade. Values you set here take priority over the group default.'
       : 'These values apply to every company unless a company tailors or skips a benefit.')}</p>
 
     {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
     {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
+    {cautions.length > 0 && <div role="status" className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100" data-testid="allowance-cautions">
+      <p className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4 shrink-0" aria-hidden="true" />{t('Worth a second look')}</p>
+      <ul className="mt-1 list-disc space-y-0.5 ps-9 text-xs">{cautions.map(c => <li key={c}>{c}</li>)}</ul>
+    </div>}
+    {staleNote && <p role="status" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100" data-testid="stale-runs">
+      <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{staleNote}</p>}
     {asOf && <p role="status" className="rounded-lg border border-sapphire/30 bg-sapphire/5 p-2 text-sm">
       {fillTemplate(t('Showing the values that apply from {date}. Until then the current values stay in force.'), { date: asOf })}
       {' '}<button type="button" className="text-sapphire underline" onClick={() => { setAsOf(null); void load(); }}>{t('Show current values')}</button>
@@ -269,6 +296,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
             </button></p>
         </div>}
         <GuideStrip progress={progress} changes={changed.length} canManage={canManage} canAddBenefit={canAddBenefit}
+          pendingNames={components.filter(isPendingFinance).map(componentName)}
           nextLabel={progress.nextKey ? nextLabel(progress.nextKey) : ''}
           onNext={() => progress.nextKey && openCell(progress.nextKey)} onAddBenefit={() => setAdding(true)} />
         {openGaps > 0 && (nothingPublished
@@ -314,6 +342,8 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
                 </th></tr>
                 {rows.map(c => <MatrixRow key={c.code} component={c} grades={grades} drafts={drafts} original={original} gapKeys={gapKeys}
                   offering={offering(c.code)} companyView={!!companyId} canManage={canManage} today={matrix.today} companyId={companyId}
+                  canFinance={canFinance} makerBlocked={makerBlocked.has(c.code)} financeOpen={finance?.code === c.code ? finance.mode : null}
+                  onFinance={mode => { setFinance({ code: c.code, mode }); setNotice(''); setCautions([]); setStaleNote(''); setEditing(null); }}
                   canRemove={canAddBenefit} onRemoved={name => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); }}
                   onEdit={openCell} onMarkRest={() => setDrafts(list => markRestNotOffered(list, grades, c, new Set(scheduled.keys())))} onOfferingChanged={() => void load(asOf)}
                   say={say} money={money} reasonText={reasonText} componentName={componentName} serverError={serverError} editing={editing} cellByKey={cellByKey} scheduled={scheduled} />)}
@@ -321,6 +351,25 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
             })}
           </table>
         </div>
+
+        {finance && componentOf(finance.code) && <FinanceAllowancePanel key={`${finance.code}-${finance.mode}`} mode={finance.mode} component={componentOf(finance.code)!}
+          name={componentName(componentOf(finance.code)!)} today={matrix.today} onClose={() => setFinance(null)}
+          onMakerBlocked={code => setMakerBlocked(blocked => new Set(blocked).add(code))} onReload={() => { setFinance(null); void load(asOf); }}
+          onConfirmed={async confirmed => {
+            const benefit = componentName(confirmed); setFinance(null); setStaleNote(''); setCautions(allowanceWarnings(confirmed.warnings));
+            setNotice(fillTemplate(t('{benefit} was confirmed. Set its value for each grade, then publish.'), { benefit }));
+            await load(asOf);
+          }}
+          onCorrected={async result => {
+            const benefit = componentName(result.component); const from = result.component.cashAllowance?.effectiveFrom;
+            setFinance(null); setCautions(allowanceWarnings(result.component.warnings));
+            setNotice(from ? fillTemplate(t('{benefit} was changed from {month}.'), { benefit, month: fmt.gregorian(from, 'monthYear') })
+              : fillTemplate(t('{benefit} was changed.'), { benefit }));
+            setStaleNote(result.staleRuns.length > 0
+              ? fillTemplate(t('These draft runs were calculated with the old setting; process them again: {months}.'),
+                { months: staleRunMonths(result.staleRuns, iso => fmt.gregorian(iso, 'monthYear')) }) : '');
+            await load(asOf);
+          }} />}
 
         {editingDraft && editingComponent && editingGrade && <CellEditor
           key={editing} draft={editingDraft} component={editingComponent} grade={editingGrade} grades={grades} companyView={!!companyId}
@@ -365,10 +414,12 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
 }
 
 function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, companyView, canManage, today, companyId, canRemove, onRemoved, onEdit, onMarkRest,
-  onOfferingChanged, say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled }: {
+  onOfferingChanged, say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled, canFinance, makerBlocked, financeOpen, onFinance }: {
   component: MatrixComponent; grades: MatrixGrade[]; drafts: Drafts; original: Drafts; gapKeys: Set<string>; offering?: MatrixOffering;
   companyView: boolean; canManage: boolean; today: string; companyId: string; editing: string | null;
   canRemove: boolean; onRemoved: (name: string) => void;
+  /** Finance (payroll.approve): confirm a pending cash allowance, or correct a confirmed one. `financeOpen` is the panel open for this row. */
+  canFinance: boolean; makerBlocked: boolean; financeOpen: 'confirm' | 'correct' | null; onFinance: (mode: 'confirm' | 'correct') => void;
   onEdit: (key: string) => void; onMarkRest: () => void; onOfferingChanged: () => void;
   say: (parts: SummaryPart[]) => string; money: (n: number) => string;
   reasonText: (r: BlockReason | null | undefined, field: 'title' | 'why' | 'fix') => string; componentName: (c: MatrixComponent) => string;
@@ -376,7 +427,9 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
 }) {
   const { t } = useLocale();
   const skipped = offering?.mode === 'Skipped';
-  const anyUnset = grades.some(g => drafts[cellKey(g.id, c.code)]?.state === 'unset' && !scheduled.has(cellKey(g.id, c.code)));
+  const pending = isPendingFinance(c);
+  const confirmedCash = isCashAllowance(c) && !pending && !!c.cashAllowance;
+  const anyUnset = !pending && grades.some(g => drafts[cellKey(g.id, c.code)]?.state === 'unset' && !scheduled.has(cellKey(g.id, c.code)));
   return <tr className={`border-b border-slate-100 align-top dark:border-white/[0.06] ${skipped ? 'opacity-60' : ''}`}>
     <th scope="row" className="sticky start-0 z-10 w-56 min-w-[9rem] bg-white p-3 text-start font-medium text-slate-800 dark:bg-slate-900 dark:text-slate-100">
       <span className="block">{componentName(c)}</span>
@@ -387,6 +440,15 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
       </details>}
       {c.isCustom && <span className="mt-1 inline-block rounded-full bg-slate-100 px-2 py-0.5 text-caption font-semibold text-slate-600 dark:bg-white/10 dark:text-slate-300">{t('Added by you')}</span>}
       {isCashAllowance(c) && <span className="ms-1 mt-1 inline-block rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-caption font-semibold text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200">{t('Paid in salary')}</span>}
+      {pending && <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 text-caption font-semibold text-amber-900 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-200" data-testid="waiting-for-finance">
+        <Hourglass className="h-3 w-3" aria-hidden="true" />{t('Waiting for Finance')}</span>}
+      {pending && canFinance && !makerBlocked && <button type="button" className="mt-1 block text-caption font-normal text-sapphire underline" aria-expanded={financeOpen === 'confirm'}
+        aria-label={fillTemplate(t('Confirm {benefit}'), { benefit: componentName(c) })} onClick={() => onFinance('confirm')}>{t('Confirm')}</button>}
+      {pending && canFinance && makerBlocked && <span className="mt-1 block text-caption font-normal text-slate-600 dark:text-slate-300" data-testid="maker-cannot-confirm">
+        {t('You added this allowance, so someone else in Finance must confirm it.')}</span>}
+      {pending && !canFinance && <span className="mt-1 block text-caption font-normal text-slate-600 dark:text-slate-300">{t('Finance must confirm it before it can be used.')}</span>}
+      {confirmedCash && canFinance && <button type="button" className="mt-1 block text-caption font-normal text-sapphire underline" aria-expanded={financeOpen === 'correct'}
+        aria-label={fillTemplate(t('Correct GL account or end of service for {benefit}'), { benefit: componentName(c) })} onClick={() => onFinance('correct')}>{t('Correct GL / end of service')}</button>}
       {c.isCustom && canRemove && <RemoveBenefit code={c.code} name={componentName(c)} onRemoved={onRemoved} />}
       {companyView && offering && offering.mode !== 'Group' && !c.isLoanFacility && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-caption font-semibold ${
         offering.mode === 'Skipped' ? 'bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200'
@@ -406,9 +468,9 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
       if (!d) return <td key={g.id} className="p-2" />;
       const dirty = original[key] && JSON.stringify(original[key]) !== JSON.stringify(d);
       const problem = dirty ? draftProblem(d, c) : null;
-      const gap = gapKeys.has(key) && d.state === 'unset';
+      const gap = !pending && gapKeys.has(key) && d.state === 'unset';
       const startsOn = d.state === 'unset' ? scheduled.get(key) : undefined;
-      const summary = c.isLoanFacility ? loanSummary(cellByKey.get(key), money, t)
+      const summary = pending ? t('Waiting for Finance') : c.isLoanFacility ? loanSummary(cellByKey.get(key), money, t)
         : startsOn ? fillTemplate(t('Starts {date}'), { date: startsOn }) : say(summarise(d, money));
       const tone = problem || serverError(key) ? 'border-red-400 bg-red-50 dark:bg-red-500/10'
         : dirty ? 'border-sapphire bg-sapphire/5'
@@ -416,12 +478,12 @@ function MatrixRow({ component: c, grades, drafts, original, gapKeys, offering, 
         : startsOn ? 'border-dashed border-sapphire/40'
         : 'border-slate-200 dark:border-white/10';
       return <td key={g.id} className="p-2">
-        <button type="button" disabled={c.isLoanFacility || skipped} aria-pressed={editing === key}
+        <button type="button" disabled={c.isLoanFacility || skipped || pending} aria-pressed={editing === key}
           aria-label={fillTemplate(t('{benefit} for {grade}: {value}'), { benefit: componentName(c), grade: g.code,
             value: [summary, gap && !dirty ? t('Needs a value') : '', dirty ? t('Changed — not published yet') : ''].filter(Boolean).join(', ') })}
           onClick={() => onEdit(key)}
           className={`w-full min-w-[120px] rounded-lg border px-2 py-1.5 text-start text-xs transition hover:border-sapphire disabled:cursor-default disabled:hover:border-slate-200 ${tone}`}>
-          <bdi className={d.state === 'notOffered' || d.state === 'unset' ? 'text-slate-500' : 'text-slate-800 dark:text-slate-100'}>{summary}</bdi>
+          <bdi className={d.state === 'notOffered' || d.state === 'unset' || pending ? 'text-slate-500' : 'text-slate-800 dark:text-slate-100'}>{pending && <Hourglass className="me-1 inline h-3 w-3" aria-hidden="true" />}{summary}</bdi>
           {gap && !dirty && <span className="mt-0.5 block text-caption font-semibold text-amber-700 dark:text-amber-300">{t('Needs a value')}</span>}
           {companyView && !dirty && cellByKey.get(key) && <span className="mt-0.5 block text-caption text-slate-400">{t(cellByKey.get(key)!.isCompanyOverride ? 'This company' : 'Group default')}</span>}
           {dirty && <span className="mt-0.5 block text-caption font-semibold text-sapphire">{t('Changed — not published yet')}</span>}
@@ -496,8 +558,10 @@ function ImportPanel({ components, grades, onApply, onClose }: {
  * The guided path through the grid: ① grades, ② the benefits on offer, ③ a value for every grade, ④ review and publish.
  * Every step stays a status the admin can act on, never a gate: they can work in any order.
  */
-function GuideStrip({ progress, changes, canManage, canAddBenefit, nextLabel, onNext, onAddBenefit }: {
+function GuideStrip({ progress, changes, canManage, canAddBenefit, pendingNames, nextLabel, onNext, onAddBenefit }: {
   progress: { total: number; set: number; nextKey: string | null }; changes: number; canManage: boolean; canAddBenefit: boolean;
+  /** Cash allowances waiting for Finance: nothing can be set for them until it confirms. */
+  pendingNames: string[];
   nextLabel: string; onNext: () => void; onAddBenefit: () => void;
 }) {
   const { t } = useLocale();
@@ -519,6 +583,11 @@ function GuideStrip({ progress, changes, canManage, canAddBenefit, nextLabel, on
         <span>{step.label}<span className="block text-caption font-normal text-slate-500 dark:text-slate-400">{step.detail}</span></span>
       </li>)}
     </ol>
+    {pendingNames.length > 0 && <p className="mt-3 flex items-start gap-2 border-t border-slate-100 pt-3 text-sm text-amber-900 dark:border-white/10 dark:text-amber-200" data-testid="guide-waiting-for-finance">
+      <Hourglass className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+      {t('{count, plural, one {Nothing can be set for {benefits} until Finance confirms it.} other {Nothing can be set for {benefits} until Finance confirms them.}}',
+        { count: pendingNames.length, benefits: pendingNames.join(', ') })}
+    </p>}
     {canManage && <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-sm dark:border-white/10" aria-live="polite">
       {progress.nextKey
         ? <>
@@ -531,47 +600,32 @@ function GuideStrip({ progress, changes, canManage, canAddBenefit, nextLabel, on
   </nav>;
 }
 
-/** The GL accounts a cash allowance may post to, read once when the admin first says it is paid in salary. */
-type GlState = { status: 'idle' | 'loading' } | { status: 'ready'; choices: GlChoice[] } | { status: 'error'; forbidden: boolean };
-
 /**
  * Adds a benefit of the customer's own to the grid: a name (English, Arabic or both), then whether it is paid in the monthly
  * salary. A contract benefit is only recorded on the package; a monthly cash allowance needs the GL account its expense posts
- * to and an end of service choice. GOSI and WPS are shown as fixed. What the server refuses is said next to its field.
+ * to and an end of service choice (a category and a note). GOSI and WPS are shown as fixed. What the server refuses is said next
+ * to its field. Added by someone without the Finance permission, a cash allowance waits for Finance to confirm it.
  */
-function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Promise<void>; onClose: () => void }) {
+function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string, added: MatrixComponent) => Promise<void>; onClose: () => void }) {
   const { t, locale } = useLocale();
   const [form, setForm] = useState<AddBenefitForm>(blankAddBenefit);
   const [busy, setBusy] = useState(false);
   const [problems, setProblems] = useState<AddBenefitProblems>({});
   const [server, setServer] = useState<ServerProblem | null>(null);
-  const [gl, setGl] = useState<GlState>({ status: 'idle' });
-  const [glAttempt, setGlAttempt] = useState(0);
   const [focus, setFocus] = useState<{ field: AddBenefitField; n: number } | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const glRef = useRef<HTMLSelectElement>(null);
+  const categoryRef = useRef<HTMLSelectElement>(null);
   const reasonRef = useRef<HTMLTextAreaElement>(null);
   const cash = form.kind === 'Cash';
   const set = (patch: Partial<AddBenefitForm>) => { setForm(f => ({ ...f, ...patch })); setServer(null); setProblems({}); };
 
   // The GL accounts are read when they are first needed: a contract benefit never asks for them.
-  useEffect(() => {
-    if (!cash) return;
-    let live = true;
-    setGl({ status: 'loading' });
-    entitlementsApi.cashGlDrivers().then(rows => {
-      if (!live) return;
-      setGl(Array.isArray(rows) ? { status: 'ready', choices: cashGlChoices(rows, locale) } : { status: 'error', forbidden: false });
-    }, (err: unknown) => {
-      if (!live) return;
-      setGl({ status: 'error', forbidden: (err as { response?: { status?: number } })?.response?.status === 403 });
-    });
-    return () => { live = false; };
-  }, [cash, glAttempt, locale]);
+  const { gl, retry } = useCashGlChoices(cash);
 
   useEffect(() => {
     if (!focus) return;
-    ({ name: nameRef, glDriver: glRef, eosbReason: reasonRef })[focus.field].current?.focus();
+    ({ name: nameRef, glDriver: glRef, eosbCategory: categoryRef, eosbReason: reasonRef })[focus.field].current?.focus();
   }, [focus]);
   const ask = (field: AddBenefitField) => setFocus(f => ({ field, n: (f?.n ?? 0) + 1 }));
 
@@ -579,12 +633,12 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
     e.preventDefault();
     const found = addBenefitProblems(form);
     setProblems(found); setServer(null);
-    const first = (['name', 'glDriver', 'eosbReason'] as const).find(f => found[f]);
+    const first = (['name', 'glDriver', 'eosbCategory', 'eosbReason'] as const).find(f => found[f]);
     if (first) { ask(first); return; }
     setBusy(true);
     try {
       const added = await entitlementsApi.addBenefit(addBenefitRequest(form));
-      await onAdded(localName(locale, added.nameEn, added.nameAr));
+      await onAdded(localName(locale, added.nameEn, added.nameAr), added);
     } catch (err) {
       const refused = benefitServerProblem(err, t('Unable to add the benefit.'));
       setServer(refused); setBusy(false);
@@ -592,14 +646,9 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
     }
   };
 
-  const choices = gl.status === 'ready' ? gl.choices : [];
-  const usable = choices.filter(c => c.usable);
   const shown = (field: AddBenefitField) => (server?.field === field ? (server.key ? t(server.key) : server.message ?? '') : '') || (problems[field] ? t(problems[field]!) : '');
-  const nameError = shown('name'); const glError = shown('glDriver'); const reasonError = shown('eosbReason');
+  const nameError = shown('name'); const glError = shown('glDriver');
   const generalError = server?.field === 'general' ? server.message ?? '' : '';
-  const choiceLabel = (c: GlChoice) => {
-    return c.usable ? c.label : fillTemplate(t(c.reasonKey ?? '{account} — no usable account'), { account: c.label });
-  };
 
   return <form onSubmit={e => void submit(e)} aria-labelledby="add-benefit-heading" noValidate className="surface space-y-3 rounded-2xl border border-sapphire/30 p-4">
     <div>
@@ -632,25 +681,8 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
     </fieldset>
 
     {cash && <div className="space-y-3 rounded-xl border border-slate-200 p-3 dark:border-white/10" data-testid="cash-allowance-fields">
-      <div className="text-sm">
-        <label htmlFor="add-benefit-gl">{t('GL account for this allowance (required)')}</label>
-        {gl.status === 'ready' && usable.length > 0 && <select id="add-benefit-gl" ref={glRef} className="select mt-1 w-full" required aria-required="true" value={form.glDriverKey}
-          aria-invalid={!!glError} aria-describedby={`add-benefit-gl-help${glError ? ' add-benefit-gl-error' : ''}`} onChange={e => set({ glDriverKey: e.target.value })}>
-          <option value="">{t('Choose an account')}</option>
-          {choices.map(c => <option key={c.key} value={c.key} disabled={!c.usable}>{choiceLabel(c)}</option>)}
-        </select>}
-        <p id="add-benefit-gl-help" className="mt-1 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
-          {gl.status === 'idle' || gl.status === 'loading' ? t('Loading the GL accounts…')
-            : gl.status === 'error' ? <>{gl.forbidden
-              ? t('You don’t have access to the GL accounts. Ask someone in Finance to add this allowance, or to give you access.')
-              : t('The GL accounts could not be loaded.')}{' '}
-              {!gl.forbidden && <button type="button" className="text-sapphire underline" onClick={() => setGlAttempt(n => n + 1)}>{t('Try again')}</button>}</>
-            : usable.length === 0 ? <>{t('No GL account is set up for earnings yet. Set one up in Payroll accounting, then come back to add this allowance.')}{' '}
-              <Link href="/setup?tab=glMapping" className="font-semibold text-sapphire underline">{t('Open Payroll accounting')}</Link></>
-            : t('The allowance’s expense is posted to this account in the payroll journal.')}
-        </p>
-        {glError && <p id="add-benefit-gl-error" role="alert" className="mt-1 text-sm text-red-600">{glError}</p>}
-      </div>
+      <GlAccountField idPrefix="add-benefit" gl={gl} value={form.glDriverKey} onChange={key => set({ glDriverKey: key })} error={glError} selectRef={glRef} onRetry={retry}
+        forbiddenKey="You don’t have access to the GL accounts. Ask someone in Finance to add this allowance, or to give you access." />
 
       <dl className="grid gap-2 text-sm sm:grid-cols-2">
         <div>
@@ -663,19 +695,8 @@ function AddBenefitPanel({ onAdded, onClose }: { onAdded: (name: string) => Prom
         </div>
       </dl>
 
-      <fieldset className="space-y-2">
-        <legend className="text-sm font-medium text-slate-800 dark:text-slate-100">{t('Does it count toward end of service pay?')}</legend>
-        <div className="flex flex-wrap gap-4 text-sm">
-          <label className="flex items-center gap-1.5"><input type="radio" name="benefit-eosb" checked={form.eosbIncluded} onChange={() => set({ eosbIncluded: true })} />{t('Yes, include it')}</label>
-          <label className="flex items-center gap-1.5"><input type="radio" name="benefit-eosb" checked={!form.eosbIncluded} onChange={() => set({ eosbIncluded: false })} />{t('No, leave it out')}</label>
-        </div>
-        {!form.eosbIncluded && <label className="block text-sm">{t('Why is it left out? (required)')}
-          <textarea ref={reasonRef} className="input mt-1 h-20 w-full" maxLength={EOSB_REASON_MAX} required aria-required="true" value={form.eosbReason}
-            dir={locale === 'ar' ? 'rtl' : 'ltr'} aria-invalid={!!reasonError} aria-describedby={reasonError ? 'add-benefit-reason-error' : undefined}
-            onChange={e => set({ eosbReason: e.target.value })} />
-        </label>}
-        {reasonError && <p id="add-benefit-reason-error" role="alert" className="text-sm text-red-600">{reasonError}</p>}
-      </fieldset>
+      <EosbFields idPrefix="add-benefit" value={form} onChange={patch => set(patch)} categoryError={shown('eosbCategory')} reasonError={shown('eosbReason')}
+        categoryRef={categoryRef} reasonRef={reasonRef} />
 
       <p className="text-xs text-slate-500 dark:text-slate-400">{t('Each employee’s amount is set on their salary and approved by Finance before it’s paid.')}</p>
     </div>}

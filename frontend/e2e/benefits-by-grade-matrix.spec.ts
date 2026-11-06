@@ -229,23 +229,30 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(glSelect).toBeFocused();
       expect(calls).toHaveLength(0);
 
-      // Leaving it out of end of service needs a reason.
+      // Leaving it out of end of service needs a category; a note is required only for Other.
       // An account the server refuses is listed with its reason but cannot be chosen.
       await expect(glSelect.locator('option[value="EARN:BASIC"]')).toBeDisabled();
       await expect(glSelect.locator('option[value="EARN:BASIC"]')).toContainText('Basic salary');
       await glSelect.selectOption('EARN:PHONE');
       await page.getByRole('radio', { name: say(locale, 'No, leave it out') }).check();
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await expect(page.getByText(say(locale, 'Choose why this allowance is left out of end of service pay.'))).toBeVisible();
+      expect(calls).toHaveLength(0);
+      const category = page.getByLabel(say(locale, 'Why is it left out? (required)'));
+      await expect(category.getByRole('option')).toHaveCount(5); // Choose a reason + Reimbursement, Discretionary, Non-recurring, Other
+      await category.selectOption('Other');
+      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
       await expect(page.getByText(say(locale, 'Say why this allowance is left out of end of service pay.'))).toBeVisible();
       expect(calls).toHaveLength(0);
-      await page.getByLabel(say(locale, 'Why is it left out? (required)')).fill('A reimbursement, not wage');
+      await category.selectOption('Reimbursement');
+      await page.getByLabel(say(locale, 'Note (optional)')).fill('A reimbursement, not wage');
 
       // The server's refusal of the GL account is shown at the GL field, and the form stays open with what was typed.
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
       await expect(page.locator('#add-benefit-gl-error')).toContainText('EARN:PHONE');
       await expect(page.getByLabel(say(locale, 'Benefit name (English)'))).toHaveValue('Phone allowance');
       expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: {
-        nameEn: 'Phone allowance', nameAr: 'بدل هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: false, eosbExclusionReason: 'A reimbursement, not wage' } });
+        nameEn: 'Phone allowance', nameAr: 'بدل هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: false, eosbExclusionCategory: 'Reimbursement', eosbExclusionReason: 'A reimbursement, not wage' } });
 
       await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit }))).toBeVisible();

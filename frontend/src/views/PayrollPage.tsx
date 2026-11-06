@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -33,13 +33,20 @@ import { InfoTip } from '../components/InfoTip';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
 import { formatAmount } from '../lib/hire/money';
+import { isolateLtr } from '../lib/bidi';
 import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
 import { SalaryAllowanceComparison } from '../components/payroll/SalaryAllowanceViews';
+import { ContractWageNote, SalaryReductionNotice, SalaryReductionSummary } from '../components/payroll/SalaryReductionNotice';
+import { CashAllowanceIssuesPanel } from '../components/payroll/CashAllowanceIssues';
 import { useCashAllowanceCatalog } from '../hooks/useCashAllowanceCatalog';
 import {
-  allowanceProblems, allowanceRefusal, allowancesForRequest, currentRecordLines, shownLines, totalMonthly,
+  allowanceProblems, allowanceRefusal, allowancesForRequest, currentRecordLines, lineName, shownLines, totalMonthly,
   type AllowanceDraftLine, type AllowanceValue,
 } from '../lib/salaryAllowances';
+import {
+  consentReferenceForRequest, proposalReduction, recordInForce, reductionBlock, reductionRefusal, consentReferenceProblem,
+  type ReductionRefusal,
+} from '../lib/salaryReduction';
 import { parseReconError } from '../lib/payrollRecon';
 import { useFormat } from '../hooks/useFormat';
 import { useLocale } from '../contexts/LocaleContext';
@@ -668,6 +675,11 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
         </div>
       )}
 
+      {/* ── Monthly allowance lines the run could not use: they stop payroll being ready ── */}
+      {!loading && readiness?.cashAllowanceIssues && readiness.cashAllowanceIssues.length > 0 && (
+        <CashAllowanceIssuesPanel issues={readiness.cashAllowanceIssues} />
+      )}
+
       {/* ── Who can actually be paid (exceptions first) ── */}
       {!loading && readiness?.paymentPrerequisites && (
         <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />
@@ -888,13 +900,16 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
   const [rows, setRows] = useState<SalaryChange[]>([]);
   const [notice, setNotice] = useState('');
   // A change that cannot be approved as it stands (409 salary_change_stale) is explained on its own row, in the server's words.
-  const [stale, setStale] = useState<{ id: string; message: string } | null>(null);
+  // `reduced`: the refusal was a pay reduction without the employee's agreement reference, with what goes down.
+  const [stale, setStale] = useState<{ id: string; message: string; reduced?: ReductionRefusal } | null>(null);
   const load = () => { payrollApi.listSalaryChanges('Pending').then(setRows).catch(() => setRows([])); };
   useEffect(load, []);
   const decide = async (id: string, fn: () => Promise<unknown>) => {
     setNotice(''); setStale(null);
     try { await fn(); load(); onApplied(); }
     catch (e: unknown) {
+      const reduced = reductionRefusal(e);
+      if (reduced?.kind === 'required') { setStale({ id, message: reduced.message, reduced }); return; }
       const refusal = allowanceRefusal(e);
       if (refusal?.code === 'salary_change_stale') { setStale({ id, message: refusal.message }); return; }
       setNotice((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Could not record the decision.'));
@@ -917,17 +932,44 @@ function SalaryChangesPanel({ onApplied }: { onApplied: () => void }) {
             </span>
             {stale?.id === r.id && (
               <div role="alert" className="basis-full rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200" data-testid="salary-change-stale">
-                <p className="font-semibold">{t('This change is out of date, so it was not approved. Nothing was paid or changed.')}</p>
+                <p className="font-semibold">{stale.reduced
+                  ? t('This change lowers the employee’s pay but has no written agreement reference, so it was not approved. Nothing was paid or changed.')
+                  : t('This change is out of date, so it was not approved. Nothing was paid or changed.')}</p>
+                {stale.reduced && <p className="mt-1">{t('Reject this change, or ask for it to be proposed again with the reference.')}</p>}
                 {stale.message && <p className="mt-1">{stale.message}</p>}
               </div>
             )}
-            <div className="basis-full">
+            <div className="basis-full space-y-2">
+              <SalaryChangeMoney change={r} />
               <SalaryAllowanceComparison current={r.currentAllowances} proposed={r.proposedAllowances} carriedForward={r.allowancesCarriedForward ?? false} currency={r.currency} basic={r.basicSalary} />
             </div>
           </li>
         ))}
       </ul>
     </section>
+  );
+}
+
+/** Finance's reading of a salary change: a reduction first (what goes down, the agreement reference), current against proposed monthly pay, and the contract wage note. */
+function SalaryChangeMoney({ change: r }: { change: SalaryChange }) {
+  const { t, locale } = useLocale();
+  const lineLabel = (code: string) => {
+    const hit = [...(r.proposedAllowances ?? []), ...(r.currentAllowances ?? [])].find(l => l.code.toUpperCase() === code.toUpperCase());
+    return lineName({ code, nameEn: hit?.nameEn, nameAr: hit?.nameAr }, [], locale);
+  };
+  const hasPay = r.currentMonthlyPay != null && r.proposedMonthlyPay != null && (r.currentMonthlyPay > 0 || r.proposedMonthlyPay > 0);
+  if (!r.isReduction && !hasPay && !r.changesContractWage) return null;
+  return (
+    <div className="space-y-2" data-testid="salary-change-money">
+      {r.isReduction && <SalaryReductionSummary items={r.reducedItems ?? []} currentTotal={r.currentMonthlyPay} proposedTotal={r.proposedMonthlyPay}
+        currency={r.currency} reference={r.reductionConsentReference} lineLabel={lineLabel} />}
+      {hasPay && <p className="text-sm text-slate-700 dark:text-slate-200" data-testid="salary-change-monthly-pay">
+        {t('Monthly pay: {current} now, {proposed} proposed.', {
+          current: isolateLtr(formatAmount(r.currentMonthlyPay!, r.currency, locale)), proposed: isolateLtr(formatAmount(r.proposedMonthlyPay!, r.currency, locale)),
+        })}
+      </p>}
+      {r.changesContractWage && <ContractWageNote />}
+    </div>
   );
 }
 
@@ -955,25 +997,46 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
   // each record's lines already named (so no employee read and no catalogue access is needed). null = not known: the list masks them
   // (viewer may not see amounts), the read failed, or the server predates the field; untouched then means "left as they are".
   const [currentLines, setCurrentLines] = useState<AllowanceDraftLine[] | null>(null);
+  // The employee's salary records, to tell whether the proposal lowers the pay (it then needs the employee's written agreement).
+  const [records, setRecords] = useState<EmployeeSalaryStructure[]>([]);
+  const [reference, setReference] = useState('');
+  const [serverReduction, setServerReduction] = useState<ReductionRefusal | null>(null);
+  const [showReferenceProblem, setShowReferenceProblem] = useState(false);
+  const [referenceFocus, setReferenceFocus] = useState(0);
   useEffect(() => {
-    setAllowances(null); setCurrentLines(null); setAllowanceServerProblem(null);
+    setAllowances(null); setCurrentLines(null); setRecords([]); setAllowanceServerProblem(null); setServerReduction(null); setShowReferenceProblem(false);
     const id = Number(form.employeeId);
     if (!form.employeeId || !Number.isInteger(id) || id <= 0) return;
     let live = true;
     const timer = setTimeout(() => {
-      payrollApi.listEmployeeSalaryStructures(id).then(records => { if (live) setCurrentLines(currentRecordLines(records)); }, () => undefined);
+      payrollApi.listEmployeeSalaryStructures(id).then(list => { if (live) { setCurrentLines(currentRecordLines(list)); setRecords(list); } }, () => undefined);
     }, 400);
     return () => { live = false; clearTimeout(timer); };
   }, [form.employeeId]);
   const basicNumber = form.basicSalary.trim() === '' ? undefined : Number(form.basicSalary);
   const shownAllowances = shownLines(currentLines ?? [], allowances);
   const allowanceTotal = totalMonthly(shownAllowances, basicNumber);
+  const reduction = useMemo(() => proposalReduction(recordInForce(records, form.effectiveDate), {
+    basicSalary: Number(form.basicSalary) || 0, housingAllowance: Number(form.housingAllowance) || 0, transportAllowance: Number(form.transportAllowance) || 0,
+    foodAllowance: Number(form.foodAllowance) || 0, mobileAllowance: Number(form.mobileAllowance) || 0, otherAllowance: Number(form.otherAllowance) || 0,
+  }, allowances), [records, form.effectiveDate, form.basicSalary, form.housingAllowance, form.transportAllowance, form.foodAllowance, form.mobileAllowance, form.otherAllowance, allowances]);
+  // The form's own check, or the server's refusal when the form could not tell (masked amounts, an older record).
+  const lowersPay = reduction.isReduction || serverReduction?.kind === 'required';
+  const reducedItems = reduction.isReduction ? reduction.items : serverReduction?.items ?? [];
+  const referenceProblem = !showReferenceProblem ? null
+    : lowersPay && !reference.trim() ? t('Enter the employee’s written agreement reference before saving.')
+    : consentReferenceProblem(reference) ? t(consentReferenceProblem(reference)!) : null;
+  const lineLabel = (code: string) => lineName(currentLines?.find(l => l.code.toUpperCase() === code.toUpperCase()) ?? { code },
+    catalog.status === 'ready' ? catalog.choices : [], locale);
 
   const save = async () => {
     if (!form.employeeId || !form.basicSalary) { setError('Employee ID and basic salary are required.'); return; }
     if (Object.keys(allowanceProblems(shownAllowances, basicNumber)).length > 0) {
       setShowAllowanceProblems(true); setError(t('Fix the allowance lines that show a message before saving.')); return;
     }
+    // Lowering the pay needs the employee's written agreement: say so here rather than after the server refuses.
+    const blocked = reductionBlock({ isReduction: lowersPay }, reference);
+    if (blocked) { setShowReferenceProblem(true); setReferenceFocus(n => n + 1); setError(t(blocked)); return; }
     setSaving(true); setError(''); setAllowanceServerProblem(null);
     try {
       await payrollApi.assignEmployeeSalary({
@@ -985,9 +1048,15 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
         fixedDeduction: Number(form.fixedDeduction) || 0, effectiveDate: form.effectiveDate, currency: form.currency,
         // Left out entirely when untouched: [] would remove every allowance.
         allowances: allowancesForRequest(allowances),
+        reductionConsentReference: consentReferenceForRequest(reference, lowersPay),
       });
       onSaved();
     } catch (e: unknown) {
+      const reduced = reductionRefusal(e);
+      if (reduced) {
+        setServerReduction(reduced.kind === 'required' ? reduced : serverReduction); setShowReferenceProblem(true); setReferenceFocus(n => n + 1);
+        setError(reduced.message || t('Lowering an employee’s pay needs their written agreement; enter its reference.')); setSaving(false); return;
+      }
       const refusal = allowanceRefusal(e);
       if (refusal && refusal.code !== 'salary_change_stale') { setAllowanceServerProblem(refusal.message); setError(t('The salary was not saved.')); setShowAllowanceProblems(true); }
       else setError(apiErrorReason(e, 'Save failed.'));
@@ -1031,6 +1100,10 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
         <SalaryAllowancesEditor idPrefix="assign-salary-allowances" baseline={currentLines ?? []} baselineKind="record" baselineKnown={currentLines !== null}
           value={allowances} onChange={v => { setAllowances(v); setAllowanceServerProblem(null); }} basic={basicNumber} currency={effectiveCurrency}
           catalog={catalog} onRetry={retryCatalog} showProblems={showAllowanceProblems} serverProblem={allowanceServerProblem} />
+
+        {lowersPay && <SalaryReductionNotice idPrefix="assign-salary-reduction" items={reducedItems} currentTotal={reduction.isReduction ? reduction.currentTotal : undefined}
+          proposedTotal={reduction.isReduction ? reduction.proposedTotal : undefined} currency={effectiveCurrency} reference={reference}
+          onReference={v => { setReference(v); setServerReduction(null); }} problem={referenceProblem} focusToken={referenceFocus} lineLabel={lineLabel} />}
 
         <div className="grid grid-cols-3 gap-3">
           <Field label="Fixed Deduction" info="A fixed amount removed every month (e.g. accommodation recovery), in the salary currency. Numbers only." infoKey="payroll.fixed_deduction"><input type="number" step="0.01" aria-label="Fixed deduction" className={inp} value={form.fixedDeduction} onChange={e => set('fixedDeduction', e.target.value)} /></Field>

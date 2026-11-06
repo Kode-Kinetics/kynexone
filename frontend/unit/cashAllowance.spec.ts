@@ -1,8 +1,11 @@
 import { expect, test } from '@playwright/test';
-import type { CashGlDriver, MatrixComponent } from '../src/api/entitlements';
+import type { CashAllowanceInfo, CashGlDriver, MatrixComponent } from '../src/api/entitlements';
 import { LOCALE_DICTS } from '../src/i18n/translations';
+import { releaseASlices } from '../src/i18n/releaseA';
 import {
-  addBenefitProblems, addBenefitRequest, benefitServerProblem, blankAddBenefit, cashGlChoices, isCashAllowance, type AddBenefitForm,
+  addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, cashGlChoices, confirmProblems, confirmRequest,
+  correctProblems, correctRequest, correctionMonths, financeServerProblem, isCashAllowance, isPendingFinance, settingsFromInfo, staleRunMonths,
+  type AddBenefitForm, type CorrectForm,
 } from '../src/lib/cashAllowance';
 import { blankDraft, draftProblem, inputFromDraft, summarise } from '../src/lib/entitlementMatrix';
 
@@ -30,21 +33,27 @@ test('a cash allowance needs its GL account', () => {
   expect(addBenefitProblems(cash())).toEqual({});
 });
 
-test('leaving a cash allowance out of end of service needs a reason, and a reason that fits', () => {
-  expect(addBenefitProblems(cash({ eosbIncluded: false }))).toEqual({ eosbReason: 'Say why this allowance is left out of end of service pay.' });
-  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbReason: '   ' }))).toHaveProperty('eosbReason');
-  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbReason: 'x'.repeat(501) }))).toEqual({ eosbReason: 'Keep the reason under 500 characters.' });
-  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbReason: 'Reimbursement, not wage' }))).toEqual({});
-  // A reason typed and then switched back to "include" is neither required nor sent.
-  expect(addBenefitProblems(cash({ eosbIncluded: true, eosbReason: '' }))).toEqual({});
+test('leaving a cash allowance out of end of service needs a category, and a note only for Other', () => {
+  expect(addBenefitProblems(cash({ eosbIncluded: false }))).toEqual({ eosbCategory: 'Choose why this allowance is left out of end of service pay.' });
+  // A category alone is enough for Reimbursement, Discretionary and Non-recurring: the note is optional.
+  for (const eosbCategory of ['Reimbursement', 'Discretionary', 'NonRecurring'] as const) expect(addBenefitProblems(cash({ eosbIncluded: false, eosbCategory }))).toEqual({});
+  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbCategory: 'Other' }))).toEqual({ eosbReason: 'Say why this allowance is left out of end of service pay.' });
+  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbCategory: 'Other', eosbReason: '   ' }))).toHaveProperty('eosbReason');
+  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbCategory: 'Other', eosbReason: 'Paid only in summer' }))).toEqual({});
+  expect(addBenefitProblems(cash({ eosbIncluded: false, eosbCategory: 'Reimbursement', eosbReason: 'x'.repeat(501) }))).toEqual({ eosbReason: 'Keep the reason under 500 characters.' });
+  // A category or note chosen and then switched back to "include" is neither required nor sent.
+  expect(addBenefitProblems(cash({ eosbIncluded: true, eosbCategory: '', eosbReason: '' }))).toEqual({});
 });
 
-test('a cash allowance sends kind Cash, its GL account and the end of service choice', () => {
+test('a cash allowance sends kind Cash, its GL account and the end of service choice with its category', () => {
   expect(addBenefitRequest(cash({ nameAr: 'هاتف' }))).toEqual({
-    nameEn: 'Phone', nameAr: 'هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: true, eosbExclusionReason: null,
+    nameEn: 'Phone', nameAr: 'هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: true, eosbExclusionCategory: null, eosbExclusionReason: null,
   });
-  expect(addBenefitRequest(cash({ eosbIncluded: false, eosbReason: ' Not wage ' }))).toMatchObject({ eosbIncluded: false, eosbExclusionReason: 'Not wage' });
-  expect(addBenefitRequest(cash({ eosbIncluded: true, eosbReason: 'left over text' }))).toMatchObject({ eosbExclusionReason: null });
+  expect(addBenefitRequest(cash({ eosbIncluded: false, eosbCategory: 'Reimbursement', eosbReason: ' Not wage ' })))
+    .toMatchObject({ eosbIncluded: false, eosbExclusionCategory: 'Reimbursement', eosbExclusionReason: 'Not wage' });
+  // The note is optional outside Other: blank goes as null.
+  expect(addBenefitRequest(cash({ eosbIncluded: false, eosbCategory: 'NonRecurring' }))).toMatchObject({ eosbExclusionCategory: 'NonRecurring', eosbExclusionReason: null });
+  expect(addBenefitRequest(cash({ eosbIncluded: true, eosbCategory: 'Other', eosbReason: 'left over text' }))).toMatchObject({ eosbExclusionCategory: null, eosbExclusionReason: null });
 });
 
 test('each server refusal is said next to the field it belongs to', () => {
@@ -54,6 +63,7 @@ test('each server refusal is said next to the field it belongs to', () => {
   expect(benefitServerProblem(refused('gl_driver_invalid', "GL driver 'EARN:X' resolves to no account in company 7 (Unmapped)."))).toEqual({
     field: 'glDriver', message: "GL driver 'EARN:X' resolves to no account in company 7 (Unmapped).",
   });
+  expect(benefitServerProblem(refused('eosb_category_invalid'))).toMatchObject({ field: 'eosbCategory' });
   expect(benefitServerProblem(refused('eosb_reason_required'))).toMatchObject({ field: 'eosbReason' });
   expect(benefitServerProblem(refused('eosb_reason_too_long'))).toMatchObject({ field: 'eosbReason' });
   expect(benefitServerProblem(refused('benefit_exists'))).toMatchObject({ field: 'name' });
@@ -128,5 +138,134 @@ test('every new sentence of the add form has Arabic', () => {
   for (const key of keys) {
     expect(LOCALE_DICTS.en[key], key).toBe(key);
     expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key] ?? ''), key).toBe(true);
+  }
+});
+
+// ── Finance confirms and corrects an allowance (wave D) ─────────────────────────────────────────────────────────────────────
+
+const info = (over: Partial<CashAllowanceInfo> = {}): CashAllowanceInfo => ({
+  financePending: false, financeConfirmedAtUtc: '2026-11-01T08:00:00Z', glDriverKey: 'EARN:PHONE', eosbIncluded: true, eosbExclusionCategory: null,
+  eosbExclusionReason: null, effectiveFrom: null, ...over,
+});
+const refusedWith = (status: number, data: Record<string, unknown>) => ({ response: { status, data } });
+
+test('only an allowance the server marks as waiting for Finance is pending', () => {
+  expect(isPendingFinance({ cashAllowance: info({ financePending: true }) })).toBe(true);
+  expect(isPendingFinance({ cashAllowance: info() })).toBe(false);
+  expect(isPendingFinance({ cashAllowance: null })).toBe(false);
+  expect(isPendingFinance({})).toBe(false);
+});
+
+test('the confirm and correct forms start from the setting in effect', () => {
+  expect(settingsFromInfo(info())).toEqual({ glDriverKey: 'EARN:PHONE', eosbIncluded: true, eosbCategory: '', eosbReason: '' });
+  expect(settingsFromInfo(info({ eosbIncluded: false, eosbExclusionCategory: 'Other', eosbExclusionReason: 'Summer only' })))
+    .toEqual({ glDriverKey: 'EARN:PHONE', eosbIncluded: false, eosbCategory: 'Other', eosbReason: 'Summer only' });
+  expect(settingsFromInfo(null)).toEqual({ glDriverKey: '', eosbIncluded: true, eosbCategory: '', eosbReason: '' });
+});
+
+test('confirming needs the GL account and a complete end of service choice, and sends them as shown', () => {
+  const now = settingsFromInfo(info());
+  expect(confirmProblems({ ...now, glDriverKey: '' })).toEqual({ glDriver: 'Choose the GL account this allowance posts to.' });
+  expect(confirmProblems({ ...now, eosbIncluded: false })).toEqual({ eosbCategory: 'Choose why this allowance is left out of end of service pay.' });
+  expect(confirmProblems({ ...now, eosbIncluded: false, eosbCategory: 'Other' })).toHaveProperty('eosbReason');
+  expect(confirmProblems(now)).toEqual({});
+  expect(confirmRequest(now)).toEqual({ glDriverKey: 'EARN:PHONE', eosbIncluded: true, eosbExclusionCategory: null, eosbExclusionReason: null });
+  expect(confirmRequest({ ...now, glDriverKey: ' EARN:CAR ', eosbIncluded: false, eosbCategory: 'Discretionary', eosbReason: ' bonus ' }))
+    .toEqual({ glDriverKey: 'EARN:CAR', eosbIncluded: false, eosbExclusionCategory: 'Discretionary', eosbExclusionReason: 'bonus' });
+});
+
+test('a correction needs a month that starts on the 1st, a reason and a real change', () => {
+  const now = settingsFromInfo(info());
+  const form = (over: Partial<CorrectForm> = {}): CorrectForm => ({ ...now, effectiveFrom: '2026-12-01', reason: 'Posted to the wrong account', ...over });
+  expect(correctProblems(form(), now)).toEqual({ change: 'Change the GL account or the end of service setting, or cancel.' });
+  expect(correctProblems(form({ glDriverKey: 'EARN:CAR' }), now)).toEqual({});
+  expect(correctProblems(form({ glDriverKey: 'EARN:CAR', effectiveFrom: '' }), now)).toEqual({ effectiveFrom: 'Choose the month the change starts from.' });
+  expect(correctProblems(form({ glDriverKey: 'EARN:CAR', effectiveFrom: '2026-12-15' }), now)).toHaveProperty('effectiveFrom');
+  expect(correctProblems(form({ glDriverKey: 'EARN:CAR', reason: '  ' }), now)).toEqual({ reason: 'Say why you are changing it.' });
+  // Switching end of service to "left out" needs its category; the GL account is not asked again when it did not change.
+  expect(correctProblems(form({ eosbIncluded: false }), now)).toEqual({ eosbCategory: 'Choose why this allowance is left out of end of service pay.' });
+  expect(correctProblems(form({ eosbIncluded: false, eosbCategory: 'Reimbursement' }), now)).toEqual({});
+  expect(correctProblems(form({ glDriverKey: '' }), now)).toHaveProperty('glDriver');
+});
+
+test('a correction sends only the parts that changed', () => {
+  const now = settingsFromInfo(info());
+  const base: CorrectForm = { ...now, effectiveFrom: '2026-12-01', reason: ' Wrong account ' };
+  expect(correctRequest({ ...base, glDriverKey: 'EARN:CAR' }, now)).toEqual({ effectiveFrom: '2026-12-01', reason: 'Wrong account', glDriverKey: 'EARN:CAR' });
+  expect(correctRequest({ ...base, eosbIncluded: false, eosbCategory: 'Reimbursement', eosbReason: 'Phone bills' }, now)).toEqual({
+    effectiveFrom: '2026-12-01', reason: 'Wrong account', eosbIncluded: false, eosbExclusionCategory: 'Reimbursement', eosbExclusionReason: 'Phone bills',
+  });
+  expect(correctRequest({ ...base, glDriverKey: 'EARN:CAR', eosbIncluded: false, eosbCategory: 'Other', eosbReason: 'x' }, now))
+    .toMatchObject({ glDriverKey: 'EARN:CAR', eosbIncluded: false, eosbExclusionCategory: 'Other' });
+  // Back to "included" clears the category and note on the wire.
+  const left = settingsFromInfo(info({ eosbIncluded: false, eosbExclusionCategory: 'Other', eosbExclusionReason: 'x' }));
+  expect(correctRequest({ ...left, effectiveFrom: '2026-12-01', reason: 'r', eosbIncluded: true }, left))
+    .toEqual({ effectiveFrom: '2026-12-01', reason: 'r', eosbIncluded: true, eosbExclusionCategory: null, eosbExclusionReason: null });
+});
+
+test('each refusal of confirm and correct belongs to a field, and the maker is told once', () => {
+  const field = (error: string, status = 400, extra: Record<string, unknown> = {}) => financeServerProblem(refusedWith(status, { error, message: 'server sentence', ...extra }));
+  expect(field('gl_driver_required')).toMatchObject({ field: 'glDriver', key: 'Choose the GL account this allowance posts to.' });
+  // The server names the driver and company for an invalid one: its own sentence is the useful part.
+  expect(field('gl_driver_invalid')).toEqual({ field: 'glDriver', message: 'server sentence' });
+  expect(field('eosb_category_invalid')).toMatchObject({ field: 'eosbCategory' });
+  expect(field('eosb_reason_required')).toMatchObject({ field: 'eosbReason' });
+  expect(field('eosb_reason_too_long')).toMatchObject({ field: 'eosbReason' });
+  expect(field('effective_from_required')).toMatchObject({ field: 'effectiveFrom' });
+  expect(field('effective_from_not_month_start')).toMatchObject({ field: 'effectiveFrom' });
+  expect(field('reason_required')).toMatchObject({ field: 'reason' });
+  expect(field('reason_too_long')).toMatchObject({ field: 'reason' });
+  expect(field('nothing_to_change')).toMatchObject({ field: 'change' });
+  expect(field('finance_required', 403)).toMatchObject({ field: 'general' });
+  expect(field('group_scope_required', 403)).toMatchObject({ field: 'general' });
+  // The person who added it cannot confirm it: the grid withdraws Confirm for them.
+  expect(field('maker_cannot_confirm', 403)).toMatchObject({ field: 'general', makerBlocked: true, key: 'You added this allowance, so someone else in Finance must confirm it.' });
+  // A screen that is out of date is told to reload.
+  for (const code of ['already_confirmed', 'not_confirmed', 'not_a_cash_allowance']) expect(field(code, 409)).toMatchObject({ field: 'general', stale: true });
+  expect(field('later_version_exists', 409)).toMatchObject({ field: 'effectiveFrom' });
+  // A committed period carries the first month that can still change.
+  expect(field('period_committed', 409, { earliestEffectiveFrom: '2027-01-01' })).toMatchObject({ field: 'effectiveFrom', earliestEffectiveFrom: '2027-01-01' });
+  expect(field('period_committed', 409, { earliestEffectiveFrom: '2027-01-01T00:00:00' }).earliestEffectiveFrom).toBe('2027-01-01');
+  expect(field('period_committed', 409)).not.toHaveProperty('earliestEffectiveFrom');
+  // Unknown or no body: the server's words, then the caller's fallback.
+  expect(field('something_else', 500)).toEqual({ field: 'general', message: 'server sentence' });
+  expect(financeServerProblem(new Error('Network Error'), 'Unable to confirm the allowance.')).toEqual({ field: 'general', message: 'Unable to confirm the allowance.' });
+});
+
+test('the correction months run from a few months back to a year ahead, and always include the earliest the server named', () => {
+  const months = correctionMonths('2026-11-05', 2, 3);
+  expect(months).toEqual(['2026-09-01', '2026-10-01', '2026-11-01', '2026-12-01', '2027-01-01', '2027-02-01']);
+  expect(correctionMonths('2026-01-31', 1, 0)).toEqual(['2025-12-01', '2026-01-01']);
+  expect(correctionMonths('2026-11-05', 0, 1, '2025-06-01')).toEqual(['2025-06-01', '2026-11-01', '2026-12-01']);
+  // A name that is not a month start is ignored.
+  expect(correctionMonths('2026-11-05', 0, 0, '2025-06-15')).toEqual(['2026-11-01']);
+});
+
+test('the draft runs a correction left stale are listed oldest first, and warnings are plain, de-duplicated sentences', () => {
+  const runs = [{ id: 'b', year: 2026, month: 12, status: 'Draft' }, { id: 'a', year: 2026, month: 11, status: 'Draft' }];
+  expect(staleRunMonths(runs, iso => iso.slice(0, 7))).toBe('2026-11, 2026-12');
+  expect(staleRunMonths([], iso => iso)).toBe('');
+  expect(allowanceWarnings([{ code: 'a', message: ' Looks like a reimbursement. ' }, { code: 'b', message: 'Looks like a reimbursement.' }, { code: 'c', message: '  ' }]))
+    .toEqual(['Looks like a reimbursement.']);
+  expect(allowanceWarnings(null)).toEqual([]);
+});
+
+test('every sentence of the Finance confirm and correct panels, the end of service categories and the cautions has Arabic', () => {
+  const reused = ['Reimbursement', 'Discretionary', 'Other', 'Note (optional)', 'Confirm', 'Cancel', 'Saving…', 'Open Benefits by grade', 'Try again',
+    'Choose an account', 'Yes, include it', 'No, leave it out', 'Basic salary', 'Housing allowance', 'Transport allowance', 'Food allowance', 'Mobile allowance', 'Other allowance'];
+  const own = Object.keys(releaseASlices.cashAllowanceFinance.en);
+  for (const key of [...reused, ...own]) {
+    expect(LOCALE_DICTS.en[key], key).toBeDefined();
+    expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key] ?? ''), key).toBe(true);
+    expect(LOCALE_DICTS.ar[key], key).not.toBe(LOCALE_DICTS.en[key]);
+  }
+  // Every key a refusal can resolve to is in the dictionary.
+  const refusals = ['gl_driver_required', 'eosb_category_invalid', 'eosb_reason_required', 'eosb_reason_too_long', 'effective_from_required', 'effective_from_not_month_start',
+    'reason_required', 'reason_too_long', 'nothing_to_change', 'group_scope_required', 'finance_required', 'maker_cannot_confirm', 'not_a_cash_allowance',
+    'already_confirmed', 'not_confirmed', 'later_version_exists', 'period_committed'];
+  for (const code of refusals) {
+    const key = financeServerProblem(refusedWith(400, { error: code })).key;
+    expect(key, code).toBeTruthy();
+    expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key!] ?? ''), `${code} → ${key}`).toBe(true);
   }
 });

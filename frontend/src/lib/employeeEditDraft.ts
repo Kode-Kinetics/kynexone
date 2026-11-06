@@ -2,6 +2,7 @@ import type { EmployeeDetail, EmployeeSalaryBreakdownRequest } from '../api/empl
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
 import { allowanceProblems, decodeValue, requestLines, totalMonthly } from './salaryAllowances';
+import { CONSENT_REFERENCE_MAX } from './salaryReduction';
 
 export type EmployeeEditDraft = Record<string, string>;
 
@@ -10,6 +11,11 @@ export type EmployeeEditDraft = Record<string, string>;
  * (nothing is sent, so the server carries the current lines forward), otherwise the rows as JSON (lib/salaryAllowances encodeValue).
  */
 export const ALLOWANCES_KEY = 'salaryBreakdown.allowances';
+/**
+ * The employee's written agreement to a pay reduction rides in the same draft, as text: '' until the proposal lowers the pay. It is sent only
+ * with a salary package (`salaryBreakdown.reductionConsentReference`), and the draft clears it when the proposal no longer lowers the pay.
+ */
+export const REDUCTION_REFERENCE_KEY = 'salaryBreakdown.reductionConsentReference';
 export type EmployeeEditChanges = Record<string, string | number | null | EmployeeSalaryBreakdownRequest>;
 
 /** Only these flat update keys are stored exclusively on the payroll profile. */
@@ -32,7 +38,7 @@ export function buildEmployeeEditSnapshot(
   const snapshot: EmployeeEditDraft = {};
 
   for (const field of fields) {
-    if (field.key === ALLOWANCES_KEY) { snapshot[field.key] = ''; continue; }
+    if (field.key === ALLOWANCES_KEY || field.key === REDUCTION_REFERENCE_KEY) { snapshot[field.key] = ''; continue; }
     let raw = source[field.key];
     if (field.key.startsWith('salaryBreakdown.')) {
       const key = field.key.slice('salaryBreakdown.'.length) as keyof EmployeeSalaryBreakdownRequest;
@@ -119,6 +125,9 @@ export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSal
   const gross = amounts.filter(key => key !== 'fixedDeduction').reduce((total, key) => total + (salary[key] ?? 0), 0)
     + (allowances ? totalMonthly(allowances, salary.basicSalary) : 0);
   if ((salary.fixedDeduction ?? 0) > gross) throw new Error('Fixed deduction cannot exceed the gross salary.');
+  // Only a reduction needs the reference; the draft clears it otherwise, and the server ignores it when the pay does not go down.
+  const consent = (form[REDUCTION_REFERENCE_KEY] ?? '').trim();
+  if (consent.length > CONSENT_REFERENCE_MAX) throw new Error('Keep the agreement reference under 200 characters.');
   const date = value('effectiveDate');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) throw new Error('Choose a valid salary effective date.');
   if (!/^[A-Z]{3}$/.test(value('currency'))) throw new Error('Choose a salary currency.');
@@ -126,5 +135,6 @@ export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSal
   return {
     ...salary, currency: value('currency'), effectiveDate: date, salaryStructureCode: value('salaryStructureCode'),
     ...(allowances ? { allowances: requestLines(allowances) } : {}),
+    ...(consent ? { reductionConsentReference: consent } : {}),
   };
 }

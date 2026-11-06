@@ -122,7 +122,8 @@ export function SalaryAllowancesEditor({
                   value={line.code.toUpperCase()} onChange={e => patch(line.key, { code: e.target.value })}>
                   <option value="">{t('Choose an allowance')}</option>
                   {!knownCode && line.code && <option value={line.code.toUpperCase()}>{nameFor(line)}</option>}
-                  {choices.map(c => <option key={c.code} value={c.code} disabled={taken.has(c.code)}>{nameOf(c, locale)}</option>)}
+                  {choices.map(c => <option key={c.code} value={c.code} disabled={taken.has(c.code) || (c.financePending && c.code !== line.code.toUpperCase())}>
+                    {c.financePending ? t('{name} — waiting for Finance', { name: nameOf(c, locale) }) : nameOf(c, locale)}</option>)}
                 </select>
                 <select className="select w-full" aria-label={t('Fixed amount or percentage of basic, line {n}', { n })} value={line.basis}
                   onChange={e => patch(line.key, { basis: e.target.value as AllowanceBasis })}>
