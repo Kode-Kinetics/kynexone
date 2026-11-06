@@ -56,3 +56,27 @@ test('the hit area is 24 px on a mouse (44 px on a coarse pointer, by the media 
   expect(box?.width).toBe(24);
   expect(box?.height).toBe(24);
 });
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`${locale}: the popover opens in the same place every time (it flipped on every second open)`, async ({ page }) => {
+    // A narrow viewport pushes the icon toward the edge where the popover has to flip.
+    await page.setViewportSize({ width: 420, height: 900 });
+    await open(page, withoutSetup, locale);
+    const icon = page.getByRole('button', { name: /About Leave Type|حول/ }).first();
+    const tip = page.getByRole('tooltip').filter({ hasText: /The category of leave|فئة الإجازة|نوع الإجازة/ }).first();
+    // Push the icon toward the inline-end edge so the popover has to flip there.
+    await icon.evaluate(el => { (el.parentElement as HTMLElement).style.marginInlineStart = '210px'; });
+    const placements: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      await icon.focus();
+      await expect(tip).toBeVisible();
+      const box = await tip.boundingBox();
+      placements.push(Math.round(box!.x));
+      expect(box!.x, 'inside the viewport on the left').toBeGreaterThanOrEqual(-1);
+      expect(box!.x + box!.width, 'inside the viewport on the right').toBeLessThanOrEqual(421);
+      await icon.blur();
+      await expect(tip).toBeHidden();
+    }
+    expect(new Set(placements).size, `placements ${placements.join(', ')}`).toBe(1);
+  });
+}

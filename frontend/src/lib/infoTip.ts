@@ -25,3 +25,13 @@ export function resolveInfoText(text: string, override: string | undefined, t: (
 export function flipsAtViewportEdge(rect: { left: number; right: number }, viewportWidth: number, dir: 'ltr' | 'rtl'): boolean {
   return dir === 'rtl' ? rect.left < 0 : rect.right > viewportWidth;
 }
+
+/**
+ * Where the popover would sit when anchored to the inline-start edge of the icon: grows right from the icon's left in
+ * LTR, left from the icon's right in RTL. Computed from the ICON's rect and the popover's width, never from the popover's
+ * own rect, so the answer does not depend on whether it is currently drawn flipped (which made it alternate on every
+ * second open).
+ */
+export function popoverEdgesAtInlineStart(anchor: { left: number; right: number }, width: number, dir: 'ltr' | 'rtl'): { left: number; right: number } {
+  return dir === 'rtl' ? { left: anchor.right - width, right: anchor.right } : { left: anchor.left, right: anchor.left + width };
+}

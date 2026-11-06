@@ -5,7 +5,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useOptionalAuth } from '../contexts/AuthContext';
 import { useHelpTexts } from '../contexts/HelpTextContext';
 import { useLocale } from '../contexts/LocaleContext';
-import { canSeeFieldKey, flipsAtViewportEdge, resolveInfoText } from '../lib/infoTip';
+import { canSeeFieldKey, flipsAtViewportEdge, popoverEdgesAtInlineStart, resolveInfoText } from '../lib/infoTip';
 
 /**
  * The `i`: a short explanation next to a form field label (Screen Standard 3b).
@@ -50,12 +50,14 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
     return () => document.removeEventListener('keydown', onKey, true);
   }, [open]);
 
-  // Flip at the viewport edge: measure where it would sit when anchored to the inline-start edge.
+  // Flip at the viewport edge: where would it sit anchored to the inline-start edge of the icon? Measured from the icon
+  // and the popover's width, so the decision is the same on every open whatever the popover is currently drawn as.
+  const button = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
-    if (!open || !popover.current) return;
-    setFlipped(false);
-    const rect = popover.current.getBoundingClientRect();
-    setFlipped(flipsAtViewportEdge(rect, window.innerWidth, dir));
+    if (!open || !button.current || !popover.current) return;
+    const anchor = button.current.getBoundingClientRect();
+    const edges = popoverEdgesAtInlineStart(anchor, popover.current.offsetWidth, dir);
+    setFlipped(flipsAtViewportEdge(edges, window.innerWidth, dir));
   }, [open, dir]);
 
   const name = label ? t('About {field}', { field: label }) : t('More information');
@@ -69,6 +71,7 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
       onMouseLeave={() => { setHover(false); setPinned(false); reopen(); }}
     >
       <button
+        ref={button}
         type="button"
         aria-label={name}
         aria-describedby={id}

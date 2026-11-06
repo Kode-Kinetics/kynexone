@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { translate } from '../src/i18n/translations';
-import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, resolveInfoText } from '../src/lib/infoTip';
+import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, popoverEdgesAtInlineStart, resolveInfoText } from '../src/lib/infoTip';
 import { renderComponent } from './support/ssr';
 
 /**
@@ -77,4 +77,27 @@ test('hit area is 24 px, 44 on coarse pointers; it opens on hover, focus and tap
   expect(source).toContain("'Escape'");
   // WCAG 1.4.13: the popover must stay open while hovered, so it is a child of the hover target and not pointer-events-none.
   expect(source).not.toContain('pointer-events-none');
+});
+
+test('placement is measured from the icon, not from the popover, so it is the same on every open (LTR and RTL)', () => {
+  const placement = (anchor: { left: number; right: number }, width: number, vw: number, dir: 'ltr' | 'rtl') =>
+    flipsAtViewportEdge(popoverEdgesAtInlineStart(anchor, width, dir), vw, dir);
+  // LTR icon near the right edge: a 280 px popover anchored at its start would pass the viewport, so it flips.
+  const nearRight = { left: 1100, right: 1124 };
+  // RTL icon near the left edge: anchored at its start (the right side of the icon) it would pass x = 0.
+  const nearLeft = { left: 70, right: 94 };
+  for (const [anchor, dir] of [[nearRight, 'ltr'], [nearLeft, 'rtl']] as const) {
+    const opens = [1, 2, 3, 4].map(() => placement(anchor, 280, 1200, dir));
+    expect(opens, `${dir}: every open decides the same`).toEqual([true, true, true, true]);
+  }
+  // Plenty of room: never flips, however often it opens.
+  expect([1, 2, 3].map(() => placement({ left: 300, right: 324 }, 280, 1200, 'ltr'))).toEqual([false, false, false]);
+  expect([1, 2, 3].map(() => placement({ left: 800, right: 824 }, 280, 1200, 'rtl'))).toEqual([false, false, false]);
+  expect(popoverEdgesAtInlineStart({ left: 100, right: 124 }, 280, 'ltr')).toEqual({ left: 100, right: 380 });
+  expect(popoverEdgesAtInlineStart({ left: 500, right: 524 }, 280, 'rtl')).toEqual({ left: 244, right: 524 });
+});
+
+test('the component measures the icon (not the popover) in a layout effect', () => {
+  expect(source).toContain('popoverEdgesAtInlineStart');
+  expect(source).not.toMatch(/popover\.current\.getBoundingClientRect/);
 });
