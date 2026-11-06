@@ -41,6 +41,10 @@ export const METRICS = {
   tile3d: /(?<![\w-])wg-tile3d(?![\w-])/g,
   // Native browser dialogs: English-only, unstyled, not RTL-aware, and they block the thread. Use
   // useConfirm (components/ui/useConfirm) with its three tiers; a prompt() becomes `ask` with a reason.
+  // Empty states are ui/EmptyState (first-use / filtered / restricted, each with its next action). A hand-rolled
+  // dashed box, or an ad-hoc "No ... yet / found" sentence with no action, is a defect that may only go down.
+  borderDashed: /(?<![\w-])border-dashed(?![\w-])/g,
+  adHocEmptyText: /\bNo (?:[A-Za-z&\/-]+ ){1,6}(?:yet|found)\b/g,
   nativeDialog: /\bwindow\.(?:confirm|prompt|alert)\(|(?<![.\w$])(?:confirm|prompt|alert)\(\s*(?:[`'"]|t\()/g,
 };
 

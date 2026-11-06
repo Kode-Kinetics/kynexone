@@ -36,6 +36,6 @@ export function BenefitsByGradeDoor({ intro, variant = 'inline', className = '' 
   const title = t("You can't see Benefits by grade");
   const reason = t('What each grade is entitled to is set there, and access is given by your HR administrator.');
   return variant === 'panel'
-    ? <div data-benefits-door="restricted" className={`surface ${className}`.trim()}><EmptyState title={title} description={reason} /></div>
+    ? <div data-benefits-door="restricted" className={`surface ${className}`.trim()}><EmptyState kind="restricted" title={title} description={reason} /></div>
     : <p data-benefits-door="restricted" className={`text-meta text-fg-muted ${className}`.trim()}>{intro} {title}. {reason}</p>;
 }

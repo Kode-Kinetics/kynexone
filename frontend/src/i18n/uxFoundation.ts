@@ -5,6 +5,10 @@
  * English is the key; whole sentences with {placeholders}, never fragments.
  */
 const ar: Record<string, string> = {
+  // Empty states
+  'Clear filters': 'مسح عوامل التصفية',
+  'Access is given by your HR administrator.': 'يمنح مسؤول الموارد البشرية الصلاحية.',
+
   // The `i` (InfoTip)
   'About {field}': 'حول {field}',
   'More information': 'مزيد من المعلومات',

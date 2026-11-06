@@ -11,5 +11,7 @@
   "animatePulse": 66,
   "animatePing": 4,
   "tile3d": 0,
+  "borderDashed": 36,
+  "adHocEmptyText": 190,
   "nativeDialog": 0
 }
