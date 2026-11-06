@@ -248,6 +248,12 @@ test('the draft runs a correction left stale are listed oldest first, and warnin
   expect(allowanceWarnings([{ code: 'a', message: ' Looks like a reimbursement. ' }, { code: 'b', message: 'Looks like a reimbursement.' }, { code: 'c', message: '  ' }]))
     .toEqual(['Looks like a reimbursement.']);
   expect(allowanceWarnings(null)).toEqual([]);
+  // A caution the server knows by code becomes an i18n key with Arabic, whatever English the server sent.
+  const keys = allowanceWarnings([
+    { code: 'eosb_included_reimbursive', message: 'x' }, { code: 'eosb_excluded_fixed_monthly', message: 'y' }, { code: 'commission_name', message: 'z' }]);
+  expect(keys).toHaveLength(3);
+  const ar = releaseASlices.cashAllowanceFinance.ar;
+  for (const k of keys) { expect(ar[k], k).toBeTruthy(); expect(ar[k]).not.toBe(k); }
 });
 
 test('every sentence of the Finance confirm and correct panels, the end of service categories and the cautions has Arabic', () => {

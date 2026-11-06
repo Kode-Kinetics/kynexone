@@ -266,6 +266,16 @@ export const staleRunMonths = (runs: readonly StaleRun[], monthName: (iso: strin
     .map(r => monthName(`${r.year}-${String(r.month).padStart(2, '0')}-01`)).join(', ');
 
 /** The cautions to show after an add, confirm or correct (non-blocking), de-duplicated and without blanks. */
+/** The cautions the server knows by code, as the English i18n keys (src/i18n/releaseA/cashAllowanceFinance.ts) so Arabic gets its own sentence. */
+const warningKeys: Record<string, string> = {
+  eosb_included_reimbursive: 'This looks like a reimbursement (travel, phone, fuel, expenses). A reimbursement usually does not count as wage for end of service. Check that it should be included.',
+  eosb_excluded_fixed_monthly: 'A fixed monthly cash payment usually counts as wage for end of service; keep the documented basis.',
+  commission_name: 'Commissions are usually part of the GOSI wage for Saudis; a cash allowance here is never in the GOSI base.',
+};
+
+/** What to show for the server's non-blocking cautions: an i18n key for a known code (pass it to t()), else the server's own sentence. */
 export function allowanceWarnings(list: readonly AllowanceWarning[] | null | undefined): string[] {
-  return [...new Set((list ?? []).map(w => w.message?.trim()).filter((m): m is string => !!m))];
+  return [...new Set((list ?? [])
+    .map(w => warningKeys[w.code] ?? w.message?.trim())
+    .filter((m): m is string => !!m))];
 }

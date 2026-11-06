@@ -273,7 +273,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
     {notice && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-300">{notice}</p>}
     {cautions.length > 0 && <div role="status" className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100" data-testid="allowance-cautions">
       <p className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4 shrink-0" aria-hidden="true" />{t('Worth a second look')}</p>
-      <ul className="mt-1 list-disc space-y-0.5 ps-9 text-xs">{cautions.map(c => <li key={c}>{c}</li>)}</ul>
+      <ul className="mt-1 list-disc space-y-0.5 ps-9 text-xs">{cautions.map(c => <li key={c}>{t(c)}</li>)}</ul>
     </div>}
     {staleNote && <p role="status" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100" data-testid="stale-runs">
       <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />{staleNote}</p>}
