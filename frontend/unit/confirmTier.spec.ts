@@ -35,3 +35,11 @@ test('tier 3 needs the name typed back exactly and a reason', () => {
 test('tier 3 without a name to type can never be confirmed (a missing name is a bug, not a bypass)', () => {
   expect(canConfirm({ tier: 3 }, { typed: '', reason: 'x' })).toBe(false);
 });
+
+test('the reason box invents no length limit: the cap is the caller\'s option, from the server\'s own limit', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const dialog = readFileSync(join(__dirname, '..', 'src', 'components', 'ui', 'ConfirmDialog.tsx'), 'utf8');
+  expect(dialog).not.toMatch(/maxLength=\{\d+\}/);
+  expect(dialog).toContain('maxLength={state?.reason?.maxLength}');
+});

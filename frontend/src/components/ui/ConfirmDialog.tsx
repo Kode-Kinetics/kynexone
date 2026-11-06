@@ -29,7 +29,8 @@ export interface ConfirmState {
   /** Tier 3: the exact name or number to type back. */
   typeToConfirm?: string;
   /** Ask for a reason (always asked for tier 3; this adds it to tier 2, replacing a native prompt()). */
-  reason?: { label?: string; required?: boolean; placeholder?: string; minLength?: number };
+  /** `maxLength` is the server's own limit for this reason, when it has one; there is no default cap. */
+  reason?: { label?: string; required?: boolean; placeholder?: string; minLength?: number; maxLength?: number };
 }
 
 export function ConfirmDialog({
@@ -134,7 +135,7 @@ export function ConfirmDialog({
           <label htmlFor={reasonId} className="block text-body font-medium text-fg">
             {state?.reason?.label ?? t('Reason')} <span className="font-normal text-fg-muted">{reasonRequired ? t('(required)') : t('(optional)')}</span>
           </label>
-          <textarea id={reasonId} className="textarea mt-1.5 w-full" rows={3} maxLength={500} value={reason} disabled={busy}
+          <textarea id={reasonId} className="textarea mt-1.5 w-full" rows={3} maxLength={state?.reason?.maxLength} value={reason} disabled={busy}
             placeholder={state?.reason?.placeholder} onChange={(e) => setReason(e.target.value)} data-testid="confirm-reason" />
         </div>
       )}

@@ -25,7 +25,7 @@ export interface ConfirmOptions {
   /** Tier 3: the exact name or number to type back. */
   typeToConfirm?: string;
   /** Ask for a reason (tier 3 always does). */
-  reason?: { label?: string; required?: boolean; placeholder?: string; minLength?: number };
+  reason?: { label?: string; required?: boolean; placeholder?: string; minLength?: number; maxLength?: number };
 }
 
 export interface AskResult { confirmed: boolean; reason: string }
