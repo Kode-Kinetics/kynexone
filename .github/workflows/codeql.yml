@@ -21,7 +21,8 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-24.04
+    # C# compiles the 4M-line backend: use HEAVY_RUNNER_LABEL (self-hosted, same-repo only) when set, else ubuntu-24.04.
+    runs-on: ${{ matrix.language != 'csharp' && 'ubuntu-24.04' || (vars.HEAVY_RUNNER_LABEL && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.HEAVY_RUNNER_LABEL || 'ubuntu-24.04') }}
     timeout-minutes: 45
     env:
       DOTNET_gcServer: '0'
