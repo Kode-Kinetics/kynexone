@@ -1111,6 +1111,40 @@ public sealed class PayrollRunProcessor
             approvedAdjustments.RemoveAll(a => lateAdjustmentIds.Contains(a.Id)); // a re-process already loaded the reused row
             approvedAdjustments.AddRange(lateOvertime.Select(x => x.Adjustment));
         }
+        // Defence in depth: late overtime carried into THIS run at approval is paid through the adjustment loader above, which reads only the run's own
+        // population. If the employee has since dropped out of it (HR excluded them, the allow-list no longer names them, their employment window is empty),
+        // the adjustment would stay attached and never be paid, and nothing would ever offer the overtime again (the prior-period finder reads PendingPayroll
+        // impacts only). Return the request to PendingPayroll and detach the adjustment, exactly as a void does, so a run that does pay the employee settles it.
+        var orphanBackPay = await _db.PayrollAdjustments
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.SourceType == PayrollAdjustmentSources.OvertimeBackPay
+                        && a.SourceId != null && a.Status == "Approved" && !employeeIdsForRun.Contains(a.EmployeeId))
+            .ToListAsync(cancellationToken);
+        if (orphanBackPay.Count > 0)
+        {
+            var orphanRequestIds = orphanBackPay.Select(a => a.SourceId!.Value).ToList();
+            var orphanImpacts = await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && x.Status == "CarriedForward" && orphanRequestIds.Contains(x.OvertimeRequestId))
+                .ToListAsync(cancellationToken);
+            foreach (var impact in orphanImpacts)
+            {
+                impact.Status = "PendingPayroll";
+                impact.PayrollRunId = null;
+                impact.ProcessedAtUtc = null;
+            }
+            foreach (var adjustment in orphanBackPay)
+                _db.AuditLogs.Add(new AuditLog
+                {
+                    TenantId = tenantId, CompanyId = run.CompanyId, EntityName = "OvertimeRequest",
+                    EntityId = adjustment.SourceId!.Value.ToString(), Action = "overtime.request.backpay_released_by_run",
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        runId = id, employeeId = adjustment.EmployeeId, amount = adjustment.Amount, adjustmentId = adjustment.Id,
+                        reason = "The employee is not in this run's population, so the run cannot pay the back pay it was carried into.",
+                    }),
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+            _db.PayrollAdjustments.RemoveRange(orphanBackPay);
+        }
         var benefitGl = benefitAdjustments.Count > 0
             ? await LoadGlResolutionContextAsync(tenantId, company.Id, cancellationToken) : null;
         PayComponentLine AdjustmentLine(PayrollAdjustment adjustment)
@@ -2822,6 +2856,27 @@ public sealed class PayrollRunProcessor
         return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
 
+    /// <summary>
+    /// The operator's include/exclude intent for one run, and THE rule for who it admits: any Include row makes the run an allow-list (only the named
+    /// employees), and an Exclude row removes an employee either way. <see cref="ResolveRunPopulationAsync"/> applies it to the eligible set at Process;
+    /// the late-overtime approval asks it whether a Draft run would pay an employee before carrying back pay into that run.
+    /// </summary>
+    internal sealed class RunSelectionIntent
+    {
+        private readonly HashSet<int> _include;
+        private readonly HashSet<int> _exclude;
+
+        private RunSelectionIntent(HashSet<int> include, HashSet<int> exclude) { _include = include; _exclude = exclude; }
+
+        public static RunSelectionIntent From(IEnumerable<PayrollRunEmployeeSelection> selections) => new(
+            selections.Where(s => s.Mode == PayrollRunSelectionModes.Include).Select(s => s.EmployeeId).ToHashSet(),
+            selections.Where(s => s.Mode == PayrollRunSelectionModes.Exclude).Select(s => s.EmployeeId).ToHashSet());
+
+        public bool IsAllowList => _include.Count > 0;
+        public bool IsExcluded(int employeeId) => _exclude.Contains(employeeId);
+        public bool Admits(int employeeId) => !_exclude.Contains(employeeId) && (!IsAllowList || _include.Contains(employeeId));
+    }
+
     /// <summary>The resolved population of a run plus every unhonoured/deliberate deviation from it.</summary>
     internal sealed record RunPopulation(
         List<Employee> Employees,
@@ -2853,13 +2908,10 @@ public sealed class PayrollRunProcessor
             return new RunPopulation(eligible, new(), new(), selections, "AllEligible");
 
         var eligibleById = eligible.ToDictionary(e => e.Id);
-        var includeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Include).Select(s => s.EmployeeId).ToHashSet();
-        var excludeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Exclude).Select(s => s.EmployeeId).ToHashSet();
+        var intent = RunSelectionIntent.From(selections);
 
-        var mode = includeIds.Count > 0 ? "AllowList" : "DenyList";
-        var population = (includeIds.Count > 0 ? eligible.Where(e => includeIds.Contains(e.Id)) : eligible.AsEnumerable())
-            .Where(e => !excludeIds.Contains(e.Id))
-            .ToList();
+        var mode = intent.IsAllowList ? "AllowList" : "DenyList";
+        var population = eligible.Where(e => intent.Admits(e.Id)).ToList();
         var populationIds = population.Select(e => e.Id).ToHashSet();
 
         var exclusions  = new List<PayrollRunExclusion>();
@@ -2888,11 +2940,11 @@ public sealed class PayrollRunProcessor
 
         // An eligible employee dropped by ALLOW-LIST mode without ever being named is still a hold-out and
         // must be reported — silence here is exactly the "silently unpay the company" failure mode.
-        if (includeIds.Count > 0)
+        if (intent.IsAllowList)
         {
             foreach (var e in eligible)
             {
-                if (populationIds.Contains(e.Id) || excludeIds.Contains(e.Id)) continue;
+                if (populationIds.Contains(e.Id) || intent.IsExcluded(e.Id)) continue;
                 exclusions.Add(new PayrollRunExclusion(e.Id, e.EmployeeCode, e.FullName,
                     "Not named in this run's allow-list."));
             }

@@ -238,4 +238,59 @@ public class OvertimeLateApprovalModeTests
         Body(result).Code.Should().Be("overtime_backpay_no_open_run");
         (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
     }
+
+    // ── The destination run must actually pay the employee: PayrollRunProcessor loads adjustments only for the run's own population ──
+
+    private static async Task<PayrollRun> SelectAsync(World w, OvertimeRequest r, string mode, int? employeeId = null)
+    {
+        var run = await w.Db.PayrollRuns.SingleAsync();
+        w.Db.PayrollRunEmployeeSelections.Add(new PayrollRunEmployeeSelection
+        {
+            TenantId = w.TenantId, CompanyId = run.CompanyId, PayrollRunId = run.Id, EmployeeId = employeeId ?? r.EmployeeId, Mode = mode, Reason = "test",
+        });
+        await w.Db.SaveChangesAsync();
+        return run;
+    }
+
+    [Fact]
+    public async Task BackPay_WhenTheOpenRunExcludesTheEmployee_Refuses409_AndCarriesNothing()
+    {
+        var (w, r) = await ArrangeAsync("BackPay");
+        await SelectAsync(w, r, PayrollRunSelectionModes.Exclude);
+
+        var result = await Approve(w, r, "late");
+
+        result.Should().BeOfType<ConflictObjectResult>();
+        var (code, json) = Body(result);
+        code.Should().Be("overtime_backpay_employee_not_in_run");
+        json.Should().Contain("2026-07");
+        (await w.Db.OvertimeRequests.AsNoTracking().SingleAsync()).Status.Should().Be("PendingManager", "the request stays pending");
+        (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0, "an adjustment on a run that does not pay the employee would never be paid");
+        (await w.Db.OvertimePayrollImpacts.CountAsync()).Should().Be(0, "nothing is marked CarriedForward");
+    }
+
+    [Fact]
+    public async Task BackPay_WhenTheOpenRunIsAnAllowListThatDoesNotNameTheEmployee_Refuses409()
+    {
+        var (w, r) = await ArrangeAsync("BackPay");
+        await SelectAsync(w, r, PayrollRunSelectionModes.Include, employeeId: r.EmployeeId + 1000);
+
+        var result = await Approve(w, r, "late");
+
+        result.Should().BeOfType<ConflictObjectResult>();
+        Body(result).Code.Should().Be("overtime_backpay_employee_not_in_run");
+        (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task BackPay_WhenTheOpenRunIsAnAllowListThatNamesTheEmployee_StillCarries()
+    {
+        var (w, r) = await ArrangeAsync("BackPay");
+        var run = await SelectAsync(w, r, PayrollRunSelectionModes.Include);
+
+        (await Approve(w, r, "late")).Should().BeOfType<OkObjectResult>();
+
+        (await w.Db.PayrollAdjustments.AsNoTracking().SingleAsync()).PayrollRunId.Should().Be(run.Id);
+        (await w.Db.OvertimePayrollImpacts.SingleAsync()).Status.Should().Be("CarriedForward");
+    }
 }

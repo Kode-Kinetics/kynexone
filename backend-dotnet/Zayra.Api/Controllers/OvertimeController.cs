@@ -1234,6 +1234,20 @@ public class OvertimeController : ControllerBase
                 message = $"The {closed} payroll period is closed and there is no open payroll run for {nextOpen.label} to carry this overtime into. Create that run, then approve again; the request stays pending.",
                 nextOpenPeriod = nextOpen,
             }), null);
+        // The run pays only its own population (PayrollRunProcessor loads adjustments for those employees alone), so an adjustment carried into a run
+        // that excludes this employee would never be paid, and the CarriedForward impact would hide the overtime from every later run and rule 11b. Ask the
+        // processor's own selection rule; nothing is carried when the run would not pay the employee, and the request stays pending.
+        var selections = await ScopedBypass.TenantWide(_db.PayrollRunEmployeeSelections, tenantId,
+                "Reading the destination run's include/exclude selection, whatever the approver's company scope, to see whether the run pays this employee.")
+            .Where(s => s.PayrollRunId == run.Id).AsNoTracking().ToListAsync(ct);
+        if (!PayrollRunProcessor.RunSelectionIntent.From(selections).Admits(request.EmployeeId))
+            return (Conflict(new
+            {
+                code = "overtime_backpay_employee_not_in_run",
+                message = $"The {closed} payroll period is closed and the open {nextOpen.label} payroll run does not pay this employee (they are excluded from it or it names other employees only), so back pay carried into it would never be paid. Add the employee to that run, then approve again; the request stays pending.",
+                nextOpenPeriod = nextOpen,
+                runId = run.Id,
+            }), null);
         return (null, run);
     }
 
