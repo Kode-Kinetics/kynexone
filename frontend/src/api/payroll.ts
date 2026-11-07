@@ -1,4 +1,5 @@
 import client from './client';
+import type { SalaryAllowanceView } from '../lib/salaryAllowances';
 import { requireList } from '../lib/listResponse';
 import { fetchAllPages } from '../lib/paging';
 import type { PagedResult } from './organization';
@@ -97,6 +98,8 @@ export interface EmployeeSalaryStructure {
   currency: string;
   isActive: boolean;
   createdAtUtc: string;
+  /** The record's monthly cash allowance lines, named by the server: [] when it carries none, null when the viewer may not see amounts, absent from an older API. */
+  allowances?: SalaryAllowanceView[] | null;
 }
 
 export interface PayrollRun {
@@ -631,6 +634,15 @@ export interface PayrollReadiness {
   validationErrors: number;
   payrollRunStatus: string | null;
   steps: ReadinessStep[];
+  /** Employees whose monthly allowance line the run could not use. Absent from an older API; any entry makes `isReadyForProcessing` false. */
+  cashAllowanceIssues?: CashAllowanceIssue[];
+}
+
+export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_driver';
+
+export interface CashAllowanceIssue {
+  employeeId: number; employeeCode: string; employeeName: string; companyId: string | null; code: string;
+  problem: CashAllowanceProblem; message: string;
 }
 
 export interface EmployeeSalaryRow {
@@ -1026,6 +1038,7 @@ export const payrollApi = {
     return res.data;
   },
 
+  /** The CSV may carry an optional ReductionConsentReference column (up to 200 characters): a row that lowers the monthly pay, or any pay item or allowance line the employee has now, is not staged without one. No screen in the app uses this yet. */
   importEmployeeSalaries: (csvContent: string) =>
     client.post<{ received: number; created: number; updated: number; pendingApproval?: number; batchId?: string | null; skipped: number; errors: string[] }>(
       '/api/payroll/employee-salaries/import', { csvContent }
@@ -1038,4 +1051,16 @@ export interface SalaryChange {
   otherAllowance: number; fixedDeduction: number; effectiveDate: string; currency: string; previousBasicSalary?: number | null;
   status: 'Pending' | 'Approved' | 'Rejected' | 'Cancelled'; requestedByName: string; requestedAtUtc: string;
   decidedByName: string; decidedAtUtc?: string | null; decisionNote: string;
+  /** Monthly cash allowance lines (ALW_*): on the salary record in force now, and as the change leaves them. Absent from an older API. */
+  currentAllowances?: SalaryAllowanceView[]; proposedAllowances?: SalaryAllowanceView[];
+  /** The change does not mention allowances: the proposed lines are the current ones carried over. */
+  allowancesCarriedForward?: boolean;
+  /** The change lowers the whole monthly pay or any pay item or allowance line (judged against the record in force when read). */
+  isReduction?: boolean; reducedItems?: ReducedItem[]; reductionConsentReference?: string | null;
+  currentMonthlyPay?: number; proposedMonthlyPay?: number;
+  /** A pay item or allowance line differs from the record in force: the contract wage changes (amend it on Qiwa). */
+  changesContractWage?: boolean;
 }
+
+/** One pay item that goes down: BASIC, HOUSING, TRANSPORT, FOOD, MOBILE, OTHER or an allowance code; `to` is 0 when it is removed. */
+export interface ReducedItem { item: string; from: number; to: number }

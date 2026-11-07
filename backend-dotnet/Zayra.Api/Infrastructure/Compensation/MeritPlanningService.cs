@@ -7,6 +7,7 @@ using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Compensation;
@@ -769,8 +770,14 @@ public sealed partial class MeritPlanningService(
             if (row.BasicSalary != l.NewBasic)
                 throw new CompRuleException("pay_moved", $"Basic is now {row.BasicSalary:0.00}, not the awarded {l.NewBasic:0.00}; another change followed the award. Correct pay through the employee's salary instead.");
             var code = await db.SalaryStructures.AsNoTracking().Where(s => s.Id == row.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(ct);
-            var package = MeritLineCalculator.Package(row, code, row.BasicSalary - l.ProratedIncreasePay, request.EffectiveDate, row.Currency);
-            await ValidatePackageAsync(employee, package, ct);
+            var reversedBasic = row.BasicSalary - l.ProratedIncreasePay;
+            var package = MeritLineCalculator.Package(row, code, reversedBasic, request.EffectiveDate, row.Currency);
+            // A reversal takes back an award the employee had already agreed to the pay before: it is a correction, not a new reduction, so it needs no
+            // written agreement while it lowers nothing below the package in force before the award (judged in ValidateAsync against that record, here and again
+            // when the change is applied). Landing below it is a reduction like any other and carries the reference the caller supplies, or is refused.
+            if (SalaryReductions.CleanReference(request.ReductionConsentReference) is { } suppliedReference)
+                package = MeritLineCalculator.Package(row, code, reversedBasic, request.EffectiveDate, row.Currency, suppliedReference);
+            await ValidatePackageAsync(employee, package, ct, l.SalaryRowId);
             var reversalTitle = Truncate($"Merit award reversal - {employee.EmployeeCode} {employee.FullName} ({c.Name}): {reason}", 240);
             // Routed BEFORE the change row is written: a reversal nobody could decide is refused with nothing saved,
             // not left as a PendingApproval change with no approval behind it.
@@ -817,9 +824,9 @@ public sealed partial class MeritPlanningService(
             changeId, EmployeeChangeStatuses.PendingApproval);
     }
 
-    private async Task ValidatePackageAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> package, CancellationToken ct)
+    private async Task ValidatePackageAsync(Employee employee, IReadOnlyDictionary<string, JsonElement> package, CancellationToken ct, Guid? restoresSalaryRowId = null)
     {
-        try { await EmployeeSalaryBreakdownChanges.ValidateAsync(db, employee, package, ct); }
+        try { await EmployeeSalaryBreakdownChanges.ValidateAsync(db, employee, package, ct, restoresSalaryRowId); }
         catch (InvalidOperationException ex) { throw new CompRuleException("invalid_package", ex.Message); }
     }
 

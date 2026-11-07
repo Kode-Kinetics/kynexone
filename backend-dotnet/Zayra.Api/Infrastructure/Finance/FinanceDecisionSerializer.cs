@@ -66,10 +66,20 @@ public static class FinanceDecisionSerializer
     /// Runs <paramref name="body"/> as the sole writer of (<paramref name="scope"/>,
     /// <paramref name="tenantId"/>, <paramref name="aggregateId"/>).
     /// </summary>
+    /// <summary>Test seam: when a test sets a list here, every lock this class is asked for (scope, tenant, aggregate) is appended to it,
+    /// so a test can assert WHICH lock a code path takes even on providers (InMemory, SQLite) that take none. Null in production.</summary>
+    internal static readonly AsyncLocal<List<(string Scope, Guid TenantId, Guid AggregateId)>?> Recorder = new();
+
+    private static void Record(string scope, Guid tenantId, Guid aggregateId)
+    {
+        if (Recorder.Value is { } list) lock (list) list.Add((scope, tenantId, aggregateId));
+    }
+
     public static async Task<T> SerializeAsync<T>(
         ZayraDbContext db, string scope, Guid tenantId, Guid aggregateId,
         Func<Task<T>> body, CancellationToken ct = default)
     {
+        Record(scope, tenantId, aggregateId);
         // EF InMemory (the unit suite) has neither transactions nor advisory locks. It also has no
         // concurrency to defend against: every InMemory test is single-threaded against one context.
         // Running the body bare keeps those tests byte-identical — the racing proof is the real-Postgres
@@ -107,6 +117,7 @@ public static class FinanceDecisionSerializer
     public static Task AcquireAsync(
         ZayraDbContext db, string scope, Guid tenantId, Guid aggregateId, CancellationToken ct = default)
     {
+        Record(scope, tenantId, aggregateId);
         // SQLite is used by the financial integration fixtures. Its transaction already
         // serializes writers; PostgreSQL additionally needs the aggregate advisory lock.
         if (!db.Database.IsNpgsql()) return Task.CompletedTask;

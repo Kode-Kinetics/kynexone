@@ -3,7 +3,8 @@ import type { MatrixCell, MatrixComponent, MatrixGrade } from '../src/api/entitl
 import { LOCALE_DICTS } from '../src/i18n/translations';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys,
-  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, summarise, tierKeys, type CellDraft,
+  inputFromDraft, markRestNotOffered, monthStarts, percentFromRate, periodChoiceKeys, amountPeriodKeys, quantityPeriodKeys, plainQuantityPeriodKeys, summarise, tierKeys, type CellDraft,
+  guideProgress, restoreDrafts, savedFrom, draftStorageKey, gridToCsv, importGrid, parseCellText, splitTable,
 } from '../src/lib/entitlementMatrix';
 
 // Release A R1 — the pure rules behind Benefits by grade, with the Masar Holding demo values (plan §5).
@@ -119,4 +120,119 @@ test('every word the matrix can show has Arabic', () => {
     expect(LOCALE_DICTS.en[key], key).toBe(key);
     expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key] ?? ''), key).toBe(true);
   }
+});
+
+// A benefit the customer added: a contract benefit with no class of cover, no dependants and a yearly reset.
+const PARKING = component({
+  code: 'BEN_PARKING', nameEn: 'Parking', nameAr: 'موقف', class: 'Contractual', group: 'Contract', isCustom: true,
+  allowedValueTypes: ['Amount', 'InKind', 'Quantity'], allowedLimitPeriods: ['Annual'], defaultLimitPeriod: 'Annual',
+});
+
+test('a customer-added benefit starts as a yearly amount and sends no class of cover or dependants', () => {
+  const draft = { ...blankDraft(PARKING, 'g1'), state: 'offered' as const, amount: '1200' };
+  expect(draft).toMatchObject({ valueType: 'Amount', coverageTier: '', dependantScope: 'None', limitPeriod: 'Annual' });
+  expect(draftProblem(draft, PARKING)).toBeNull();
+  expect(inputFromDraft(draft)).toMatchObject({ componentCode: 'BEN_PARKING', valueType: 'Amount', amount: 1200, coverageTier: null, dependantScope: 'None', limitPeriod: 'Annual' });
+  expect(text(draft)).toBe('{amount} a year');
+});
+
+test('a customer-added count reads as a plain number, not "1 × " with no class', () => {
+  const count = { ...blankDraft(PARKING, 'g1'), state: 'offered' as const, valueType: 'Quantity' as const, quantity: '2' };
+  expect(draftProblem(count, PARKING)).toBeNull();
+  expect(inputFromDraft(count)).toMatchObject({ valueType: 'Quantity', quantity: 2, coverageTier: null });
+  expect(summarise(count, sar)).toEqual([{ key: plainQuantityPeriodKeys.Annual, values: { count: '2' } }]);
+  expect(draftProblem({ ...count, quantity: '0' }, PARKING)).toBe('Enter how many (1 to 99).');
+  // A built-in count keeps its class.
+  const ticket = { ...blankDraft(TICKET, 'g1'), state: 'offered' as const, quantity: '1', coverageTier: 'Economy' };
+  expect(summarise(ticket, sar)[0]).toEqual({ key: quantityPeriodKeys.Annual, values: { count: '1', class: tierKeys.Economy } });
+});
+
+// ── Guided flow ──
+const LOAN = component({ code: 'LOAN_CAR', isLoanFacility: true, group: 'Facility' });
+const two = grades.slice(0, 2);
+const draftsFor = (list: MatrixComponent[], set: Record<string, CellDraft['state']> = {}) =>
+  Object.fromEntries(list.flatMap(c => two.map(g => {
+    const k = cellKey(g.id, c.code);
+    return [k, { ...blankDraft(c, g.id), state: set[k] ?? 'unset' }];
+  })));
+
+test('the step strip counts the values still needed, in screen order, and skips loans and skipped benefits', () => {
+  const list = [HOUSING, PER_DIEM, LOAN];
+  const drafts = draftsFor(list, { [cellKey('g1', 'HOUSING')]: 'offered' });
+  const p = guideProgress(list, two, drafts, new Set(), () => false);
+  expect(p).toEqual({ total: 4, set: 1, nextKey: cellKey('g2', 'HOUSING') });
+  // A benefit this company skips needs no value; one already published to start later counts as set.
+  expect(guideProgress(list, two, drafts, new Set([cellKey('g2', 'HOUSING')]), c => c === 'PER_DIEM')).toEqual({ total: 2, set: 2, nextKey: null });
+});
+
+test('"Save & next" moves past the current cell and wraps round to the first one still empty', () => {
+  const list = [HOUSING, PER_DIEM];
+  const drafts = draftsFor(list, { [cellKey('g2', 'PER_DIEM')]: 'offered' });
+  expect(guideProgress(list, two, drafts, new Set(), () => false, cellKey('g1', 'PER_DIEM')).nextKey).toBe(cellKey('g1', 'HOUSING'));
+  expect(guideProgress(list, two, drafts, new Set(), () => false, cellKey('g1', 'HOUSING')).nextKey).toBe(cellKey('g2', 'HOUSING'));
+  // The cell being edited is never its own "next", even while it is still empty.
+  const onlyOne = draftsFor([HOUSING], { [cellKey('g2', 'HOUSING')]: 'offered' });
+  expect(guideProgress([HOUSING], two, onlyOne, new Set(), () => false, cellKey('g1', 'HOUSING')).nextKey).toBeNull();
+});
+
+test('unpublished edits are kept and come back only while the value they started from is unchanged', () => {
+  const fresh = draftsFor([PER_DIEM]);
+  const k1 = cellKey('g1', 'PER_DIEM'); const k2 = cellKey('g2', 'PER_DIEM');
+  const edited = { ...fresh, [k1]: { ...fresh[k1], state: 'offered' as const, amount: '150' } };
+  const saved = savedFrom(edited, fresh);
+  expect(Object.keys(saved)).toEqual([k1]);
+  // A reload with the same server values brings the edit back.
+  expect(restoreDrafts(fresh, saved)).toMatchObject({ restored: 1, drafts: { [k1]: { amount: '150' } } });
+  // Someone else published a value for that cell meanwhile: the old edit is dropped, never laid over the new value.
+  const changedOnServer = { ...fresh, [k1]: { ...fresh[k1], state: 'notOffered' as const } };
+  expect(restoreDrafts(changedOnServer, saved)).toEqual({ drafts: changedOnServer, restored: 0 });
+  // A damaged entry, or a cell that no longer exists, is ignored.
+  expect(restoreDrafts(fresh, { [k2]: { draft: null as never, base: fresh[k2] }, gone: saved[k1] }).restored).toBe(0);
+  expect(draftStorageKey('', null)).toBe('kynex.benefitsByGrade.drafts.v1:group:current');
+});
+
+// ── Excel / CSV ──
+test('the grid exports by code and imports back to the same values', () => {
+  const list = [HOUSING, TICKET, PER_DIEM, LOAN];
+  const drafts = draftsFor(list);
+  drafts[cellKey('g1', 'HOUSING')] = { ...drafts[cellKey('g1', 'HOUSING')], state: 'offered', valueType: 'PercentOfBasic', percent: '25' };
+  drafts[cellKey('g2', 'HOUSING')] = { ...drafts[cellKey('g2', 'HOUSING')], state: 'offered', valueType: 'InKind' };
+  drafts[cellKey('g1', 'AIR_TICKET')] = { ...drafts[cellKey('g1', 'AIR_TICKET')], state: 'offered', quantity: '2', coverageTier: 'Business' };
+  drafts[cellKey('g2', 'PER_DIEM')] = { ...drafts[cellKey('g2', 'PER_DIEM')], state: 'notOffered' };
+  const csv = gridToCsv(list, two, drafts);
+  expect(csv).toBe('Benefit,G1,G2\r\nHOUSING,25%,In kind\r\nAIR_TICKET,2x Business,\r\nPER_DIEM,,Not offered\r\n');
+  const back = importGrid(csv, list, two);
+  expect(back.errors).toEqual([]);
+  expect(back.patches).toEqual([
+    { key: cellKey('g1', 'HOUSING'), patch: { state: 'offered', valueType: 'PercentOfBasic', percent: '25' } },
+    { key: cellKey('g2', 'HOUSING'), patch: { state: 'offered', valueType: 'InKind' } },
+    { key: cellKey('g1', 'AIR_TICKET'), patch: { state: 'offered', valueType: 'Quantity', quantity: '2', coverageTier: 'Business' } },
+    { key: cellKey('g2', 'PER_DIEM'), patch: { state: 'notOffered' } },
+  ]);
+});
+
+test('pasted Excel cells are read by grade and benefit name too, with Arabic digits and thousands separators', () => {
+  const pasted = 'Benefit\tGrade 1\tG2\nPer diem\t١٬٥٠٠\t1,250.50\nبدل السكن\t٢٥٪\t\n';
+  const housing = { ...HOUSING, nameEn: 'Housing allowance', nameAr: 'بدل السكن' };
+  expect(importGrid(pasted, [housing, PER_DIEM], two)).toEqual({ errors: [], patches: [
+    { key: cellKey('g1', 'PER_DIEM'), patch: { state: 'offered', valueType: 'Amount', amount: '1500' } },
+    { key: cellKey('g2', 'PER_DIEM'), patch: { state: 'offered', valueType: 'Amount', amount: '1250.5' } },
+    { key: cellKey('g1', 'HOUSING'), patch: { state: 'offered', valueType: 'PercentOfBasic', percent: '25' } },
+  ] });
+});
+
+test('a value the benefit does not allow is reported with its row and column, never guessed', () => {
+  const r = importGrid('Benefit,G1,G9\nHOUSING,Not offered,10\nPER_DIEM,25%,\nUNKNOWN,1,\nMEDICAL,Z,\n', [HOUSING, PER_DIEM, MEDICAL], two);
+  expect(r.patches).toEqual([]);
+  expect(r.errors.map(e => [e.row, e.column, e.message])).toEqual([
+    [2, 2, 'This benefit is required by law and cannot be Not offered.'],
+    [2, 3, 'This grade is not in the grid.'],
+    [3, 2, 'This benefit cannot be a percentage of basic salary.'],
+    [4, 1, 'This benefit is not in the grid.'],
+    [5, 2, 'This value could not be read.'],
+  ]);
+  expect(parseCellText('150%', HOUSING).error).toBe('Enter a percentage of basic salary above 0 and at most 100.');
+  expect(parseCellText('B', MEDICAL).patch).toEqual({ state: 'offered', valueType: 'CoverageTier', coverageTier: 'B' });
+  expect(parseCellText('3x First', TICKET).error).toBe('That class does not apply to this benefit.');
+  expect(splitTable('"A, B",C\n"x ""y""",\n')).toEqual([['A, B', 'C'], ['x "y"', '']]);
 });

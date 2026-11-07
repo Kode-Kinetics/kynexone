@@ -212,6 +212,7 @@ export function Sidebar({ isOpen, isCollapsed, onClose, onToggleCollapse, naviga
               (item) =>
                 canSee(item.requiredPermissions) &&
                 (!item.requiredFeatureKey || isFeatureEnabled(item.requiredFeatureKey)) &&
+                (!item.hiddenWhenFeatureKey || !isFeatureEnabled(item.hiddenWhenFeatureKey)) &&
                 (!item.path || verdictForPath(item.path).allowed) &&
                 (!item.groupAccountOnly || canSeeGroupItem) &&
                 (!item.requiresSetupSection || canOpenSetup),

@@ -1,6 +1,10 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useLocale } from '@/src/contexts/LocaleContext';
+import { SalaryAllowancesEditor } from '@/src/components/payroll/SalaryAllowancesEditor';
+import { gradeLinesFrom } from '@/src/hooks/useCashAllowanceCatalog';
+import { decodeValue, encodeValue } from '@/src/lib/salaryAllowances';
 import { formatAmount } from '@/src/lib/hire/money';
 import { isFixedTerm, parseAmount } from '@/src/lib/hire/payload';
 import { bankNameFor } from '@/src/lib/hire/iban';
@@ -23,7 +27,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
+export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, allowanceCatalog, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
   canOverrideChecksum: boolean; resident: boolean; onResident: (v: boolean) => void; onIdBlur: () => void;
 }) {
   const { t, locale } = useLocale();
@@ -31,6 +35,8 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
   const contract = referenceOptions(lookups.refs.contractType, locale, CONTRACT_FALLBACK, form.contractType);
   const grade = lookups.grades.find(g => g.id === form.gradeId);
   const basic = parseAmount(form.basic);
+  // What the grade gives (what an untouched section means: the server fills a first package from it).
+  const gradeLines = useMemo(() => gradeLinesFrom(allowanceCatalog.catalog, form.gradeId), [allowanceCatalog.catalog, form.gradeId]);
   const outOfBand = !!grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary);
   const klass = nationalityClass(form.nationalityCode);
   const idType = (form.idType || defaultIdType(form.nationalityCode, resident) || '') as IdType | '';
@@ -83,6 +89,10 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
         {money('housing', t('Housing allowance'))}
         {money('transport', t('Transport allowance'))}
         {money('other', t('Other allowance'))}
+        <SalaryAllowancesEditor idPrefix="hire-allowances" baseline={gradeLines} baselineKind="grade" noGrade={!form.gradeId}
+          value={decodeValue(form.allowances)} onChange={v => set('allowances', encodeValue(v))} basic={basic} currency={currency}
+          catalog={allowanceCatalog.catalog} onRetry={allowanceCatalog.retry} showProblems={!!errorFor('allowances')} />
+        {errorFor('allowances') && <p role="alert" className="text-sm text-red-600 sm:col-span-2">{errorFor('allowances')}</p>}
         {outOfBand && <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 sm:col-span-2 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">{t('The basic salary is outside the pay band of the grade. You can still save; you will be asked for a reason.')}</p>}
       </Section>
       <Section title={t('Identity documents')}>

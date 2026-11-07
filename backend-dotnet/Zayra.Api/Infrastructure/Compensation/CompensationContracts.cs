@@ -39,7 +39,9 @@ public sealed record SubmitCompWorksheetRequest(int Version);
 
 public sealed record WithdrawCompAwardRequest(string Reason);
 public sealed record ApplyCompCycleRequest(bool AcknowledgeRetroCost = false);
-public sealed record ReverseCompAwardRequest(DateOnly EffectiveDate, string Reason, bool AcknowledgeLockedPeriods = false);
+/// <param name="ReductionConsentReference">The employee's written agreement, only for a reversal that would take pay BELOW what it was before the award (a
+/// reversal that only restores the pre-award package needs none).</param>
+public sealed record ReverseCompAwardRequest(DateOnly EffectiveDate, string Reason, bool AcknowledgeLockedPeriods = false, string? ReductionConsentReference = null);
 
 public sealed record MapBenchmarkRowRequest(Guid? DesignationId, Guid? GradeId);
 

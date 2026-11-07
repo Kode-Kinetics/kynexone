@@ -33,6 +33,7 @@ import { HireBasicsStep } from './steps/HireBasicsStep';
 import type { AppliedTemplate } from './TemplatePicker';
 import { planTemplate, planUndo } from '@/src/lib/hire/hireTemplate';
 import type { HireTemplate } from '@/src/api/onboardingTemplates';
+import { useCashAllowanceCatalog } from '@/src/hooks/useCashAllowanceCatalog';
 import { JobPayDocsStep } from './steps/JobPayDocsStep';
 import { PersonContactStep } from './steps/PersonContactStep';
 import { ReviewStep } from './steps/ReviewStep';
@@ -179,6 +180,7 @@ export function HireWizard() {
     () => ({ today, emailDomain: company?.emailDomain || undefined, companyCountry, designationGrade, departmentCostCentreId: costCentre.departmentCostCentreId, overrideId: draftOverrideId, canManageCostCentre: costCentre.canManage }),
     [today, company, companyCountry, designationGrade, costCentre.departmentCostCentreId, costCentre.canManage, draftOverrideId],
   );
+  const allowanceCatalog = useCashAllowanceCatalog({ companyId: form.companyId, asOf: form.startDate });
   const issues = useMemo(() => {
     const local = validateHire(form, ctx, 'create');
     return [...local, ...serverIssues.filter(s => !local.some(l => l.field === s.field))];
@@ -427,7 +429,7 @@ export function HireWizard() {
   };
 
   // ── render ──────────────────────────────────────────────────────────────
-  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany, banks, costCentre };
+  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany, banks, allowanceCatalog, costCentre };
   const label = (s: number) => t(STEP_LABELS[s - 1]);
   const canOverride = hasPermission('employees.override_validation');
   const savedText = saveState === 'saving' || saveState === 'pending' ? t('Saving…') : saveState === 'saved' && savedAt ? t('Saved {time}', { time: clock(savedAt, zone, locale) }) : saveState === 'error' ? t('Not saved yet. It will retry on your next change.') : '';

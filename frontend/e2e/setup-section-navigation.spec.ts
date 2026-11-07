@@ -17,9 +17,10 @@ const WRITER_SECTIONS = {
   // and payroll read, so those modules' settings are listed in their groups (lib/setupModuleSections.ts).
   'Time & leave': ['Leave types', 'Leave policies', 'Holiday calendars'],
   'Pay & benefits': ['Payslip templates'],
-  // Notifications sits with the employee services (one area taxonomy, 2026-10-26), ahead of the module sections.
-  'Talent & employee services': ['Notifications', 'Onboarding checklists'],
-  'Payroll & compliance': ['Country rules', 'Statutory rules', 'Fiscal years', 'Payroll accounting', 'Tax policies'],
+  // Notifications sits with the employee services (one area taxonomy, 2026-10-26). Since the menu follows the one
+  // navigation order (SETUP_SECTION_ORDER, 2026-11-06), Onboarding checklists comes first, as in Setup's other views.
+  'Talent & employee services': ['Onboarding checklists', 'Notifications'],
+  'Payroll & compliance': ['Payroll accounting', 'Fiscal years', 'Country rules', 'Statutory rules', 'Tax policies'],
   Workspace: ['Drop-down lists', 'Record numbering', 'Email delivery', 'Workspace settings', 'Audit log'],
 } as const;
 const ALL_WRITER_SECTIONS = Object.values(WRITER_SECTIONS).flat();

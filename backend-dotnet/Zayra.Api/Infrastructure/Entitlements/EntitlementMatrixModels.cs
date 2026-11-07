@@ -9,7 +9,9 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 // Release A slice R1 — the shapes the benefits-by-grade matrix API reads and writes. Owned by R1.
 
 /// <summary>Who is acting, as the matrix service needs it. Built by the controller from the request.</summary>
-public sealed record MatrixActor(Guid TenantId, Guid? UserId, EntityScopeContext Scope, string? IpAddress);
+/// <param name="IsFinance">The caller holds the Finance permission (<c>payroll.approve</c>): a cash allowance they add is confirmed at once, and only
+/// such a caller reaches the confirm and correct actions (the controller's permission gate). Never read from a request body.</param>
+public sealed record MatrixActor(Guid TenantId, Guid? UserId, EntityScopeContext Scope, string? IpAddress, bool IsFinance = false);
 
 /// <summary>A service outcome the controller returns as-is: an HTTP status and its body.</summary>
 public sealed record MatrixResult(int Status, object Body)
@@ -36,7 +38,17 @@ public sealed record MatrixComponentDto(
     string Code, string NameEn, string NameAr, string Class, string Floor, string Group,
     IReadOnlyList<string> AllowedValueTypes, IReadOnlyList<string> AllowedCoverageTiers, IReadOnlyList<string> AllowedDependantScopes,
     IReadOnlyList<string> AllowedLimitPeriods, string? DefaultLimitPeriod,
-    bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason);
+    bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason, bool IsCustom = false,
+    CashAllowanceInfoDto? CashAllowance = null, IReadOnlyList<AllowanceWarningDto>? Warnings = null);
+
+/// <summary>What Finance and the grid need to know about a customer-defined cash allowance (<c>ALW_*</c>): whether it is still waiting for Finance to
+/// confirm it, and the GL driver and end-of-service setting in effect (for the version dated <paramref name="EffectiveFrom"/>; null = since the start).</summary>
+public sealed record CashAllowanceInfoDto(
+    bool FinancePending, DateTime? FinanceConfirmedAtUtc, string? GlDriverKey, bool EosbIncluded, string? EosbExclusionCategory,
+    string? EosbExclusionReason, DateOnly? EffectiveFrom);
+
+/// <summary>A non-blocking caution about a cash allowance's end-of-service or GOSI treatment. <c>Code</c> is stable for the UI; <c>Message</c> is plain words.</summary>
+public sealed record AllowanceWarningDto(string Code, string Message);
 
 /// <param name="Inherited">A company view showing the group default (no company value of its own).</param>
 /// <param name="NextChangeOn">The start of a later, already-published version in the same scope, if any.</param>
@@ -89,6 +101,31 @@ public sealed class MatrixCellInput
 }
 
 public sealed record PublishMatrixRequest(Guid? CompanyId, DateOnly EffectiveFrom, List<MatrixCellInput>? Cells);
+
+/// <summary>What a benefit the customer adds is: a non-paying contract benefit (<c>BEN_*</c>) or a monthly cash allowance paid in salary (<c>ALW_*</c>).</summary>
+public static class BenefitKinds
+{
+    public const string Contract = "Contract";
+    public const string Cash = "Cash";
+}
+
+/// <summary>A benefit the customer adds to Benefits by grade. The English name is required (it makes the code); Arabic is optional.
+/// <paramref name="Kind"/> is <see cref="BenefitKinds.Contract"/> (the default) or <see cref="BenefitKinds.Cash"/>. A cash allowance also needs the
+/// GL driver its expense posts to, and — when it is left out of the end-of-service wage — the reason.</summary>
+public sealed record CreateBenefitRequest(
+    string? NameEn, string? NameAr, string? Kind = BenefitKinds.Contract, string? GlDriverKey = null,
+    bool EosbIncluded = true, string? EosbExclusionReason = null, string? EosbExclusionCategory = null);
+
+/// <summary>Finance confirms a cash allowance somebody without Finance rights added. Every field is optional: left out, it is confirmed as it was entered.
+/// Finance may change the GL driver and the end-of-service setting while confirming (the same rules as adding it).</summary>
+public sealed record ConfirmAllowanceRequest(
+    string? GlDriverKey = null, bool? EosbIncluded = null, string? EosbExclusionCategory = null, string? EosbExclusionReason = null);
+
+/// <summary>Finance changes a confirmed cash allowance's GL driver and/or end-of-service setting from the first day of a month (never a locked period).
+/// <paramref name="Reason"/> is required and audited with the old and new values.</summary>
+public sealed record CorrectAllowanceRequest(
+    DateOnly? EffectiveFrom, string? Reason, string? GlDriverKey = null, bool? EosbIncluded = null,
+    string? EosbExclusionCategory = null, string? EosbExclusionReason = null);
 
 public sealed record SetOfferingRequest(Guid CompanyId, string ComponentCode, bool Offered, DateOnly EffectiveFrom);
 

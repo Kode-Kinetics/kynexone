@@ -766,29 +766,36 @@ public partial class FinanceGlController : ControllerBase
         if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
         if (!IsValidPeriod(period)) return BadRequest(new { message = "Period must be in YYYY-MM format." });
 
-        // IgnoreQueryFilters is intentional: scope authorised above (ScopeError); WHERE re-applies exact
-        // tenant+company scope so the upsert targets the right scope's row, never another tenant's.
-        var existing = await _db.GlPeriodCloses.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == companyId && p.Period == period, ct);
-        if (existing is not null && existing.Status == GlPeriodStatuses.Closed)
-            return Ok(ToPeriodDto(existing));   // idempotent — already closed
-
-        var before = existing?.Status ?? GlPeriodStatuses.Open;
-        if (existing is null)
+        // A closed period makes the month "committed" for PayComponentPolicy.LatestCommittedPeriodAsync, exactly like an approved run, so it is written under the
+        // "entitlements.matrix" lock a cash-allowance correction holds (same scope, tenant, aggregate = tenant): the two can never interleave. Lock order across
+        // the system: run row FOR UPDATE -> company cost-accounting lock -> entitlements.matrix; this path holds none of the first two. Transaction-scoped, so
+        // it is released at the commit, and nothing remote runs under it.
+        return await FinanceDecisionSerializer.SerializeAsync<IActionResult>(_db, Zayra.Api.Infrastructure.Entitlements.EntitlementMatrixService.LockScope, tid.Value, tid.Value, async () =>
         {
-            existing = new GlPeriodClose { TenantId = tid.Value, CompanyId = companyId, Period = period };
-            _db.GlPeriodCloses.Add(existing);
-        }
-        existing.Status = GlPeriodStatuses.Closed;
-        existing.ClosedAtUtc = DateTime.UtcNow;
-        existing.ClosedByUserId = this.GetUserId();
-        existing.ClosedByName = UserName();
-        existing.ClosedReason = req?.Reason;
-        existing.UpdatedAtUtc = DateTime.UtcNow;
-        await WriteAudit("finance.gl.period.closed", "GlPeriodClose", existing.Id.ToString(), companyId,
-            new { period, companyId, before, after = GlPeriodStatuses.Closed, reason = req?.Reason }, ct);
-        await _db.SaveChangesAsync(ct);
-        return Ok(ToPeriodDto(existing));
+            // IgnoreQueryFilters is intentional: scope authorised above (ScopeError); WHERE re-applies exact
+            // tenant+company scope so the upsert targets the right scope's row, never another tenant's.
+            var existing = await _db.GlPeriodCloses.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(p => p.TenantId == tid && p.CompanyId == companyId && p.Period == period, ct);
+            if (existing is not null && existing.Status == GlPeriodStatuses.Closed)
+                return Ok(ToPeriodDto(existing));   // idempotent — already closed
+
+            var before = existing?.Status ?? GlPeriodStatuses.Open;
+            if (existing is null)
+            {
+                existing = new GlPeriodClose { TenantId = tid.Value, CompanyId = companyId, Period = period };
+                _db.GlPeriodCloses.Add(existing);
+            }
+            existing.Status = GlPeriodStatuses.Closed;
+            existing.ClosedAtUtc = DateTime.UtcNow;
+            existing.ClosedByUserId = this.GetUserId();
+            existing.ClosedByName = UserName();
+            existing.ClosedReason = req?.Reason;
+            existing.UpdatedAtUtc = DateTime.UtcNow;
+            await WriteAudit("finance.gl.period.closed", "GlPeriodClose", existing.Id.ToString(), companyId,
+                new { period, companyId, before, after = GlPeriodStatuses.Closed, reason = req?.Reason }, ct);
+            await _db.SaveChangesAsync(ct);
+            return Ok(ToPeriodDto(existing));
+        }, ct);
     }
 
     /// <summary>Reopens a closed period. Needs finance.gl.period.reopen (Admin by default) and is refused

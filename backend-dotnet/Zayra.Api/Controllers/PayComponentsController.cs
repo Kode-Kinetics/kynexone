@@ -239,6 +239,15 @@ public class PayComponentsController : ControllerBase
         var errors = PayComponentPolicy.ValidateShape(def);
         if (skipReservedCode) errors.Remove("code"); // identity is immutable; it was validated when created
         if (errors.Count > 0) return ValidationProblemBody(errors);
+        // A cash allowance (ALW_*) is paid from the employee's salary lines; a component on its code would be paid again beside it. Checked on update too,
+        // so a component that already shadows one cannot be edited into staying live.
+        if (await PayComponentPolicy.IsCashAllowanceCodeAsync(_db, tenantId, def.Code, ct))
+            return Conflict(new
+            {
+                error = PayComponentPolicy.AllowanceCodeReservedError,
+                message = $"'{def.Code}' is a monthly cash allowance set up in Benefits by grade, which pays it from each employee's salary. " +
+                          "A pay component cannot use its code: it would be paid twice. Choose another code.",
+            });
         if (await PeriodGuardAsync(tenantId, companyId, def.EffectiveFrom, ct) is { } committed) return committed;
         var glError = await PayComponentPolicy.ValidateGlDriverAsync(_db, tenantId, companyId, def.ComponentType, def.GlDriverKey, ct);
         return glError is null ? null : ValidationProblemBody(new() { ["glDriverKey"] = glError });
