@@ -248,3 +248,66 @@ test('the panel retries through the retry action, not by restarting the run', ()
   const src = fs.readFileSync(path.resolve(__dirname, '../src/components/attendance/AttendanceRecordPanel.tsx'), 'utf8').replace(/\s+/g, ' ');
   expect(src).toContain("type: 'retry'");
 });
+
+// Finding 3: the server names a refusal by the employee's code, or "#<id>" when it never resolved a code
+// (inactive/deleted employee, unreadable local time). Never mark anyone recorded without a positive signal.
+const started = (n: number, days = 1) => massRunReducer(initialMassRun, { type: 'start', people: people(n), days, chunksTotal: 1 });
+
+test('a refusal named "#<id>" is correlated to that employee by id', () => {
+  let s = started(3);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2, 3], result: result({ created: 2, failed: 1, errors: [{ employeeCode: '#2', date: '2026-11-01', message: 'Employee is not active.' }] }) });
+  s = massRunReducer(s, { type: 'end' });
+  expect(s.people.map((p) => p.status)).toEqual(['done', 'notDone', 'done']);
+  expect(s.people[1].reasons).toEqual(['Employee is not active.']);
+  expect(recordedIds(s)).toEqual([1, 3]);
+  expect(retryIds(s)).toEqual([2]);
+});
+
+test('an id refusal on only some of the days is partly recorded', () => {
+  let s = started(2, 2);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2], result: result({ created: 3, failed: 1, errors: [{ employeeCode: '#1', date: '2026-11-02', message: 'Local time is not valid.' }] }) });
+  expect(s.people.map((p) => p.status)).toEqual(['partial', 'done']);
+});
+
+test('a "#" refusal that cannot be correlated leaves the chunk unconfirmed: nobody is marked recorded, all are retryable', () => {
+  let s = started(3);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2, 3], result: result({ created: 2, failed: 1, errors: [{ employeeCode: '#', date: '2026-11-01', message: 'Employee not found.' }] }) });
+  s = massRunReducer(s, { type: 'end' });
+  expect(s.people.map((p) => p.status)).toEqual(['notDone', 'notDone', 'notDone']);
+  expect(s.people[0].reasons).toEqual(['Employee not found.']);
+  expect(recordedIds(s)).toEqual([]);
+  expect(retryIds(s)).toEqual([1, 2, 3]);
+  expect(runSummary(s)).toMatchObject({ done: 0, notDone: 3, percent: 100 });
+});
+
+test('an id that is not in the chunk is uncorrelated too', () => {
+  let s = started(2);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2], result: result({ failed: 1, errors: [{ employeeCode: '#99', date: '2026-11-01', message: 'Employee not found.' }] }) });
+  expect(s.people.map((p) => p.status)).toEqual(['notDone', 'notDone']);
+});
+
+test('people with their own named refusal keep it when another refusal in the chunk is uncorrelated', () => {
+  let s = started(3);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2, 3], result: result({ failed: 2, errors: [
+    { employeeCode: 'E-1', date: '2026-11-01', message: 'Payroll is locked for this date.' },
+    { employeeCode: '#', date: '2026-11-01', message: 'Employee not found.' },
+  ] }) });
+  expect(s.people[0]).toMatchObject({ status: 'notDone', reasons: ['Payroll is locked for this date.'] });
+  expect(s.people[1]).toMatchObject({ status: 'notDone', reasons: ['Employee not found.'] });
+  expect(s.people[2]).toMatchObject({ status: 'notDone', reasons: ['Employee not found.'] });
+});
+
+test('"#" never matches a person: a clean chunk with no refusals is still recorded', () => {
+  let s = started(2);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2], result: result({ created: 2 }) });
+  expect(s.people.map((p) => p.status)).toEqual(['done', 'done']);
+});
+
+test('the refusal of an uncorrelated chunk is taken back out of the counter when it is retried', () => {
+  let s = started(2);
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1, 2], result: result({ failed: 1, errors: [{ employeeCode: '#', date: '2026-11-01', message: 'Employee not found.' }] }) });
+  s = massRunReducer(s, { type: 'end' });
+  expect(runSummary(s).refused).toBe(1);
+  s = massRunReducer(s, { type: 'retry', ids: retryIds(s), chunksTotal: 1 });
+  expect(runSummary(s).refused).toBe(0);
+});

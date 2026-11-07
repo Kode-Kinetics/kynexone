@@ -88,18 +88,38 @@ export function massRunReducer(state: MassRunState, action: MassRunAction): Mass
     }
     case 'chunkDone': {
       const ids = new Set(action.ids);
-      const refusals = new Map<string, { dates: Set<string>; reasons: string[]; rows: number }>();
+      const inChunk = state.people.filter((p) => ids.has(p.id));
+      const idByCode = new Map(inChunk.map((p) => [p.code.trim().toLowerCase(), p.id]));
+      const refusals = new Map<number, { dates: Set<string>; reasons: string[]; rows: number }>();
+      const unattributed = { rows: 0, reasons: [] as string[] };
       for (const e of action.result.errors) {
-        const key = (e.employeeCode ?? '').trim().toLowerCase();
-        const entry = refusals.get(key) ?? { dates: new Set<string>(), reasons: [], rows: 0 };
+        // The server names a refusal by the employee's code, or "#<id>" when it never resolved a code (an employee who
+        // became inactive or was deleted, an unreadable local time); a bare "#" names nobody. Id first, then code.
+        const code = (e.employeeCode ?? '').trim().toLowerCase();
+        const named = /^#(\d+)$/.exec(code);
+        const personId = named && ids.has(Number(named[1])) ? Number(named[1]) : idByCode.get(code);
+        if (personId === undefined) {
+          unattributed.rows += 1;
+          if (e.message) unattributed.reasons.push(e.message);
+          continue;
+        }
+        const entry = refusals.get(personId) ?? { dates: new Set<string>(), reasons: [], rows: 0 };
         entry.rows += 1;
         entry.dates.add(e.date ?? '');
         if (e.message) entry.reasons.push(e.message);
-        refusals.set(key, entry);
+        refusals.set(personId, entry);
       }
       // `failed` counts punches and each error row is one person-day, so a person's share is their rows of the total.
       const perRow = action.result.errors.length > 0 ? action.result.failed / action.result.errors.length : 0;
+      // A refusal that names nobody in this chunk means the server could not say who was skipped. Without a positive signal
+      // nobody it did not name can be called recorded, so they are refused (and retryable) together with the reason it gave.
+      const unconfirmed = unattributed.rows > 0 ? inChunk.filter((p) => !refusals.has(p.id)) : [];
+      const unconfirmedIds = new Set(unconfirmed.map((p) => p.id));
+      const unconfirmedShare = unconfirmed.length > 0 ? Math.round(unattributed.rows * perRow) : 0;
       const refusedBy = { ...state.refusedBy };
+      unconfirmed.forEach((p, i) => {
+        refusedBy[p.id] = Math.floor(unconfirmedShare / unconfirmed.length) + (i < unconfirmedShare % unconfirmed.length ? 1 : 0);
+      });
       return {
         ...state,
         chunksDone: state.chunksDone + 1,
@@ -109,7 +129,8 @@ export function massRunReducer(state: MassRunState, action: MassRunAction): Mass
         refusedBy,
         people: state.people.map((p) => {
           if (!ids.has(p.id)) return p;
-          const refused = refusals.get(p.code.trim().toLowerCase());
+          if (unconfirmedIds.has(p.id)) return { ...p, status: 'notDone', reasons: unique(unattributed.reasons) };
+          const refused = refusals.get(p.id);
           if (!refused) return { ...p, status: 'done', reasons: [] };
           refusedBy[p.id] = Math.round(refused.rows * perRow);
           return { ...p, status: refused.dates.size >= state.days ? 'notDone' : 'partial', reasons: unique(refused.reasons) };
