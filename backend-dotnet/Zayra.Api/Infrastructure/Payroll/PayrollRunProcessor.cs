@@ -713,9 +713,15 @@ public sealed class PayrollRunProcessor
         // in the payroll run could ever have read them, because the run did not know the day type.
         var periodOvertimeRequests = await Op(_db.OvertimeRequests).AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
-            .Select(r => new { r.Id, r.WorkDate })
+            .Select(r => new { r.Id, r.WorkDate, r.OvertimePolicyId })
             .ToListAsync(cancellationToken);
         var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        // OVT-04: overtime worked in this period that is still awaiting approval - surfaced as a warning (same query in /validate).
+        var pendingOvertimeByEmp = await Op(_db.OvertimeRequests).AsNoTracking()
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null))
+                && r.WorkDate >= periodStart && r.WorkDate <= periodEnd && r.Status.StartsWith("Pending") && employeeIdsForRun.Contains(r.EmployeeId))
+            .GroupBy(r => r.EmployeeId).Select(g => new { EmployeeId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x.Count, cancellationToken);
         var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
         // The company's own holidays (active calendars, company-wide or this company's), read by the same function attendance uses.
         var periodPublicHolidays = await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, company.Id, periodStart, periodEnd, cancellationToken);
@@ -736,6 +742,19 @@ public sealed class PayrollRunProcessor
         var standardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240;
         var otPolicyBasis = otPolicy?.HourlyRateBasis;
         var otPolicyFixedHourlyRate = otPolicy?.FixedHourlyRate ?? 0m;
+        // OVT-05: each overtime request is priced under the policy that was applied to IT. The default above is
+        // only the fallback for a request with no (or an unreadable) policy. No active/deleted filter here: a
+        // policy turned off since the request was filed is still the one that request was approved under.
+        var otDefaultTerms = new OvertimePolicyTerms(otPolicyBasis, otPolicyFixedHourlyRate, standardMonthlyHours);
+        var otRequestPolicyIds = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.OvertimePolicyId);
+        var otPolicyIdsInUse = otRequestPolicyIds.Values.Where(v => v.HasValue).Select(v => v!.Value).Distinct().ToList();
+        var otTermsByPolicy = otPolicyIdsInUse.Count == 0
+            ? new Dictionary<Guid, OvertimePolicyTerms>()
+            : (await _db.OvertimePolicies.AsNoTracking()
+                .Where(p => p.TenantId == tenantId && otPolicyIdsInUse.Contains(p.Id))
+                .Select(p => new { p.Id, p.HourlyRateBasis, p.FixedHourlyRate, p.StandardMonthlyHours })
+                .ToListAsync(cancellationToken))
+                .ToDictionary(p => p.Id, p => new OvertimePolicyTerms(p.HourlyRateBasis, p.FixedHourlyRate, p.StandardMonthlyHours));
 
         // ── OT/LOP statutory rules from country pack config ───────────────────
         // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
@@ -769,6 +788,8 @@ public sealed class PayrollRunProcessor
         var otBaseIsFullWage = otContext.BaseIsFullWage;
         // Hourly-rate divisor: the statutory hours, unless the company's OT policy is more generous.
         standardMonthlyHours = OvertimeStatutoryContextResolver.EffectiveMonthlyHours(standardMonthlyHours, otContext.StandardMonthlyHoursOverride);
+        // The fallback terms carry the RAW policy hours: HourRate applies the statutory override itself, per policy.
+        otDefaultTerms = otDefaultTerms with { StandardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240 };
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(
@@ -1039,6 +1060,21 @@ public sealed class PayrollRunProcessor
             employees, includesRecurringPay, periodStart, periodEnd, cancellationToken);
         approvedAdjustments.RemoveAll(BenefitPayroll.IsBenefit);
         approvedAdjustments.AddRange(benefitAdjustments);
+        // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
+        // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
+        // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.
+        var lateOvertimeMode = await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
+            tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        var lateOvertime = await OvertimeLateSettlement.StageAsync(_db, run,
+            await PriorPeriodOvertimeFinder.FindSettleableAsync(_db, tenantId, company.Id, employeeIdsForRun, periodStart,
+                cancellationToken, lateOvertimeMode, includesRecurringPay, id),
+            cancellationToken);
+        if (lateOvertime.Count > 0)
+        {
+            var lateAdjustmentIds = lateOvertime.Select(x => x.Adjustment.Id).ToHashSet();
+            approvedAdjustments.RemoveAll(a => lateAdjustmentIds.Contains(a.Id)); // a re-process already loaded the reused row
+            approvedAdjustments.AddRange(lateOvertime.Select(x => x.Adjustment));
+        }
         var benefitGl = benefitAdjustments.Count > 0
             ? await LoadGlResolutionContextAsync(tenantId, company.Id, cancellationToken) : null;
         PayComponentLine AdjustmentLine(PayrollAdjustment adjustment)
@@ -1204,9 +1240,6 @@ public sealed class PayrollRunProcessor
             var otBaseHourly = standardMonthlyHours > 0
                 ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
-            // The full-wage hourly rate, for the GrossSalary policy basis. Identical to otBaseHourly
-            // wherever ot.hourly_base is already "wage" (KSA), so nothing moves there.
-            var otWageHourly = standardMonthlyHours > 0 ? fullWageForOt / standardMonthlyHours : 0m;
             // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
             // floor for the day actually worked. It was previously preferred unconditionally whenever
             // non-zero, which made it a back door around the statutory rate: an approved request on a
@@ -1218,10 +1251,10 @@ public sealed class PayrollRunProcessor
             // tenant was shown one number by the overtime module and paid this one.
             // The `otBaseHourly > 0` gate is widened to admit a configured fixed rate: with no salary
             // structure the statutory base is zero, but a configured rate is still a real amount owed.
-            var overtimePay = empOtImpacts.Count > 0 && (otBaseHourly > 0m || otPolicyFixedHourlyRate > 0m)
-                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                    otPolicyBasis, otPolicyFixedHourlyRate,
-                    otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).HourPay), 2)
+            // OVT-05: every impact is priced with its OWN request's policy (basis, fixed rate, monthly hours).
+            var otRates = empOtImpacts.ToDictionary(x => x.Id, x => OtRate(x));
+            var overtimePay = empOtImpacts.Count > 0
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * otRates[x.Id].HourPay), 2)
                 : 0m;
 
             // The payslip line must describe the arithmetic that actually produced the money. The
@@ -1232,27 +1265,23 @@ public sealed class PayrollRunProcessor
                 ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
                 : otMultiplier;
 
-            // For the same reason, the hourly rate on the line and on the payslip record must be the
-            // base the money was actually computed on — the statutory base, or the tenant's
-            // configured base where it beat it. Weighted the same way, and collapsing to
-            // otBaseHourly exactly when no configured base applies, so an unaffected run's label and
-            // PayrollSlip.HourlyRate are byte-identical.
+            // The hourly rate on the line and on the payslip record must be the base the money was
+            // actually computed on, weighted the same way (collapses to otBaseHourly when no policy differs).
             var otEffectiveBaseHourly = otHours > 0m
-                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                      otPolicyBasis, otPolicyFixedHourlyRate,
-                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).BaseHourly) / otHours
+                ? empOtImpacts.Sum(x => x.Hours * otRates[x.Id].BaseHourly) / otHours
                 : otBaseHourly;
 
-            // The SECOND term of the hour, weighted identically: what the × (multiplier − 1) uplift is
-            // measured on. Art. 107's "50% of his BASIC wage" is a separate base from the first term,
-            // and without it on the line the payslip could only state a rate × multiplier shape that
-            // the money was never computed with. Collapses to `hourlyRate` (basic hourly) wherever no
-            // configured base applies, which is every statutory run.
+            // The SECOND term of the hour, weighted identically: what the x (multiplier - 1) uplift is
+            // measured on (Art. 107's "50% of his BASIC wage").
             var otEffectiveUpliftHourly = otHours > 0m
-                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                      otPolicyBasis, otPolicyFixedHourlyRate,
-                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).UpliftBasisHourly) / otHours
+                ? empOtImpacts.Sum(x => x.Hours * otRates[x.Id].UpliftBasisHourly) / otHours
                 : hourlyRate;
+
+            OvertimeStatutoryCalculator.OvertimeHourRate OtRate(OvertimePayrollImpact impact) =>
+                OvertimeImpactPricing.HourRate(
+                    OvertimeImpactPricing.TermsFor(impact.OvertimeRequestId, otRequestPolicyIds, otTermsByPolicy, otDefaultTerms),
+                    otContext.StandardMonthlyHoursOverride, otBaseIsFullWage,
+                    fullBasic, fullWageForOt, OtEffectiveMultiplier(impact));
 
             decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
             {
@@ -2010,10 +2039,19 @@ public sealed class PayrollRunProcessor
                 .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
+            // OVT-04: the prior-period overtime this run pays as back pay leaves PendingPayroll here, with this run's id, in the same
+            // transaction as the slips that carry the money. Same compare-and-swap: only a row still PendingPayroll and unowned is taken.
+            var lateImpactIds = lateOvertime.Select(x => x.Source.ImpactId).ToList();
+            foreach (var x in lateOvertime)
+                Witness(PayrollConsumptionArtifacts.OvertimeImpact, x.Source.ImpactId, x.Source.EmployeeId, x.Source.Amount, "PendingPayroll");
+            var markedLateOvertime = lateImpactIds.Count == 0 ? 0 : await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && lateImpactIds.Contains(x.Id) && x.Status == "PendingPayroll" && x.PayrollRunId == null)
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+
             // The message deliberately does not claim WHO changed the impacts: an ambiguous-commit retry of a
             // run that did commit also lands here (its own commit marked them), and reloading shows that.
             if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count
-                || markedOvertime != consumedOtIds.Count)
+                || markedOvertime != consumedOtIds.Count || markedLateOvertime != lateImpactIds.Count)
                 throw new PayrollProcessAbortException(409, new
                 {
                     error    = "payroll_impacts_changed_concurrently",
@@ -2024,6 +2062,8 @@ public sealed class PayrollRunProcessor
                     leaveMarked        = markedLeave,
                     overtimeExpected   = consumedOtIds.Count,
                     overtimeMarked     = markedOvertime,
+                    lateOvertimeExpected = lateImpactIds.Count,
+                    lateOvertimeMarked   = markedLateOvertime,
                 });
         }
         // Adjustments are NOT gated: they are already `PayrollRunId == id`-scoped, i.e. attached to THIS
@@ -2037,6 +2077,9 @@ public sealed class PayrollRunProcessor
         await _db.PayrollAdjustments
             .Where(x => x.TenantId == tenantId && consumedAdjustmentIds.Contains(x.Id))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+        // The back-pay adjustments staged above are tracked and not yet saved (the update above cannot reach a row that is not in the
+        // table), so they are consumed on the entity; the witness above recorded them as Approved for a void/reopen to restore.
+        foreach (var late in lateOvertime) late.Adjustment.Status = "Processed";
         var consumedEncashmentIds = approvedAdjustments
             .Where(a => employeeIdsForRun.Contains(a.EmployeeId)
                 && a.SourceType == PayrollAdjustmentSources.LeaveEncashment
@@ -2092,7 +2135,9 @@ public sealed class PayrollRunProcessor
             // Rule 11b — approved overtime from an earlier period that no run has paid (the run above
             // loads only this period's impacts, so these would otherwise stay PendingPayroll silently).
             PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
-                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken),
+                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken,
+                lateOvertimeMode, includesRecurringPay, id),
+            OvertimeLateApprovalMode       = lateOvertimeMode,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
             EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,
@@ -2101,6 +2146,7 @@ public sealed class PayrollRunProcessor
             YtdPreCutoverExcludedEmployeeIds        = ytdSources.PreCutoverSlipsExcludedEmployeeIds,
             YtdSuggestedCutover                     = ytdSources.SuggestedCutover,
             Exclusions                              = runPopulation.Exclusions,
+            PendingOvertimeRequestsByEmployee       = pendingOvertimeByEmp,
             NotEligibleSelections                   = runPopulation.NotEligible,
             SiblingRunCount                         = siblingRuns.Count,
             StatutoryComputedIncrementally          = statutoryComputedIncrementally,
@@ -2946,6 +2992,9 @@ public sealed class PayrollRunProcessor
             "TRANSPORT"        => "EARN:TRANSPORT",
             "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
             "OVERTIME"         => "EARN:OVERTIME",
+            // Overtime approved after its period closed is carried forward as an adjustment (code
+            // ADJ_ + "Overtime Back Pay"); it is still overtime expense, not "other earnings".
+            "ADJ_OVERTIME_BACK_PAY" => "EARN:OVERTIME",
             // POD-C3 — arrears are the SAME expense as the component they settle, just paid late. Routing
             // them to EARN:OTHER (5099) would move a retro basic-salary increase out of Basic Salary
             // Expense and quietly distort every payroll cost report. The GL stays balanced either way —

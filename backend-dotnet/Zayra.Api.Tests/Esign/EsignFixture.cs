@@ -56,6 +56,7 @@ public sealed class EsignFixture : IAsyncLifetime
     public Guid CompanyId { get; private set; }
     public string HrToken { get; private set; } = null!;          // employees.read + employees.write + employees.documents + employees.sensitive
     public string HrNoDocsToken { get; private set; } = null!;    // employees.write only
+    public string HrNoSensitiveToken { get; private set; } = null!;   // employees.read + write + documents, NOT employees.sensitive
     public Guid HrUserId { get; private set; }
     public const string HrOwnPassword = "Hr-Own-Passw0rd!xyz";
     public string HrPassword => HrOwnPassword;
@@ -87,18 +88,20 @@ public sealed class EsignFixture : IAsyncLifetime
         db.TenantSubscriptions.Add(new TenantSubscription { TenantId = TenantId, Plan = "Enterprise", Status = "Active", MaxEmployees = 1000 });
         var hrManager = new Role { TenantId = TenantId, Name = "HR Manager", NormalizedName = "HR MANAGER" };
         db.Roles.Add(hrManager);
-        var hr = Staff("hr", withPassword: true, scope); var noDocs = Staff("hrnodocs", false, scope);
-        db.Users.AddRange(hr, noDocs);
-        db.Set<UserRole>().AddRange(new UserRole { UserId = hr.Id, RoleId = hrManager.Id }, new UserRole { UserId = noDocs.Id, RoleId = hrManager.Id });
+        var hr = Staff("hr", withPassword: true, scope); var noDocs = Staff("hrnodocs", false, scope); var noSensitive = Staff("hrnosensitive", false, scope);
+        db.Users.AddRange(hr, noDocs, noSensitive);
+        db.Set<UserRole>().AddRange(new UserRole { UserId = hr.Id, RoleId = hrManager.Id }, new UserRole { UserId = noDocs.Id, RoleId = hrManager.Id }, new UserRole { UserId = noSensitive.Id, RoleId = hrManager.Id });
         db.Set<UserPermissionOverride>().AddRange(
             Grant(hr.Id, "employees.read"), Grant(hr.Id, "employees.write"), Grant(hr.Id, "employees.documents"), Grant(hr.Id, "employees.sensitive"),
-            Grant(noDocs.Id, "employees.write"), Grant(noDocs.Id, "employees.read"));
+            Grant(noDocs.Id, "employees.write"), Grant(noDocs.Id, "employees.read"),
+            Grant(noSensitive.Id, "employees.read"), Grant(noSensitive.Id, "employees.write"), Grant(noSensitive.Id, "employees.documents"));
         HrUserId = hr.Id;
         await db.SaveChangesAsync();
         await TestApprovalConfig.EnsureDeciderAsync(db, TenantId);
         var tokens = scope.ServiceProvider.GetRequiredService<ITokenService>();
         HrToken = await MintAsync(db, tokens, hr.Id);
         HrNoDocsToken = await MintAsync(db, tokens, noDocs.Id);
+        HrNoSensitiveToken = await MintAsync(db, tokens, noSensitive.Id);
     }
 
     private User Staff(string name, bool withPassword, IServiceScope scope) => new()

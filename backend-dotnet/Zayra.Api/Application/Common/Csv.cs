@@ -39,10 +39,8 @@ public sealed class CsvShapeException : InvalidOperationException
     {
         var first = mismatches.Count > 0 ? mismatches[0] : new CsvShapeMismatch(0, 0);
         if (first.UnterminatedQuote)
-            return $"CSV row {first.RowNumber} has a line break inside a quoted cell (a multi-line address or note). "
-                 + "The importer reads exactly one row per line, so the rest of that cell would be read as a new, "
-                 + "shifted row. Remove the line breaks inside that cell (replace them with a space or a comma) and "
-                 + "import again."
+            return $"CSV row {first.RowNumber} opens a quoted cell that is never closed, so everything after it would be read "
+                 + "as part of that one cell. Close the quote (or remove the stray quote character) and import again."
                  + (mismatches.Count > 1 ? $" {mismatches.Count - 1} other row(s) of the file are also mis-shaped." : string.Empty)
                  + " Nothing in this file has been imported.";
         var others = mismatches.Skip(1).Take(10).Select(m => $"row {m.RowNumber} ({m.CellCount})").ToList();
@@ -59,8 +57,8 @@ public sealed class CsvShapeException : InvalidOperationException
 /// <summary>One data row whose cell count differs from the header's.</summary>
 /// <param name="RowNumber">1-based line number in the file, counting the header as line 1.</param>
 /// <param name="CellCount">How many cells the row actually has.</param>
-/// <param name="UnterminatedQuote">The line ends inside a quoted cell: the cell carried a line break, which this
-/// one-row-per-line reader cannot take (the cell count is then meaningless, so the message says so instead).</param>
+/// <param name="UnterminatedQuote">The row opens a quoted cell that the file never closes (the cell count is then
+/// meaningless, so the message says so instead).</param>
 public sealed record CsvShapeMismatch(int RowNumber, int CellCount, bool UnterminatedQuote = false);
 
 /// <summary>
@@ -127,24 +125,19 @@ public static class Csv
     public static List<Dictionary<string, string>> Parse(string content)
     {
         var rows = new List<Dictionary<string, string>>();
-        var lines = SplitLines(content);
+        var lines = SplitRecords(content);
         if (lines.Count == 0) return rows;
-        var headers = ParseLine(lines[0]);
+        var headers = ParseLine(lines[0].Text);
         List<CsvShapeMismatch>? mismatches = null;
         for (var i = 1; i < lines.Count; i++)
         {
-            if (string.IsNullOrWhiteSpace(lines[i])) continue;
-            var cells = ParseLine(lines[i]);
-            var unterminated = EndsInsideQuotes(lines[i]);
+            if (string.IsNullOrWhiteSpace(lines[i].Text)) continue;
+            var cells = ParseLine(lines[i].Text);
+            var unterminated = lines[i].Unterminated;
             if (cells.Count != headers.Count || unterminated)
             {
-                // Keep reading: every bad row is named at once, and none of the file is returned. A line that ends
-                // inside a quoted cell is the first half of a multi-line cell; its continuation lines are skipped
-                // with it rather than each reported as a separate shifted row.
-                (mismatches ??= new List<CsvShapeMismatch>()).Add(new CsvShapeMismatch(i + 1, cells.Count, unterminated));
-                if (unterminated)
-                    while (i + 1 < lines.Count && !EndsInsideQuotes(lines[i + 1])) i++;
-                if (unterminated && i + 1 < lines.Count) i++; // the line that closes the quote
+                // Keep reading: every bad row is named at once, and none of the file is returned.
+                (mismatches ??= new List<CsvShapeMismatch>()).Add(new CsvShapeMismatch(lines[i].LineNumber, cells.Count, unterminated));
                 continue;
             }
             if (mismatches is not null) continue;
@@ -220,8 +213,36 @@ public static class Csv
         return content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList();
     }
 
-    /// <summary>True when the line ends with a quoted cell still open (an odd number of quote characters).</summary>
-    private static bool EndsInsideQuotes(string line) => line.Count(c => c == '"') % 2 == 1;
+    /// <summary>One CSV record: its text (quoted cells may span physical lines), the 1-based physical line it
+    /// starts on, and whether it ends inside a quoted cell that the file never closes.</summary>
+    private readonly record struct CsvRecord(string Text, int LineNumber, bool Unterminated);
+
+    /// <summary>
+    /// Splits the file into RFC-4180 records: a physical line break ends a record only OUTSIDE a quoted cell, so a
+    /// quoted cell may carry line breaks (a multi-line address or note) and the export's own output reads back.
+    /// A doubled quote inside a cell keeps the quote count's parity, so parity alone says whether a quote is open.
+    /// </summary>
+    private static List<CsvRecord> SplitRecords(string content)
+    {
+        if (content.Length > 0 && content[0] == ByteOrderMark) content = content[1..];
+        var physical = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var records = new List<CsvRecord>();
+        var sb = new StringBuilder();
+        var startLine = 1;
+        var open = false;
+        for (var i = 0; i < physical.Length; i++)
+        {
+            if (sb.Length == 0 && !open) startLine = i + 1;
+            else sb.Append('\n');
+            sb.Append(physical[i]);
+            if (physical[i].Count(c => c == '"') % 2 == 1) open = !open;
+            if (open) continue;
+            records.Add(new CsvRecord(sb.ToString(), startLine, false));
+            sb.Clear();
+        }
+        if (open) records.Add(new CsvRecord(sb.ToString(), startLine, true));
+        return records;
+    }
 
     private static List<string> ParseLine(string line, char delimiter = ',')
     {

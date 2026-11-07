@@ -1429,6 +1429,22 @@ public class EmployeeManagementService : IEmployeeManagementService
         }).Where(x => x.MissingDocumentTypes.Count > 0).ToList();
     }
 
+    /// <summary>
+    /// Protected documents (identity, payroll, contract) are downloadable only with employees.sensitive, so the metadata routes
+    /// must not let a caller without it re-type one to a neutral category (and then download it), or file a neutral document
+    /// INTO a protected category. Refused when the document is protected before the change, or would be after it.
+    /// </summary>
+    private static void RequireSensitiveForProtectedDocument(EmployeeDocument doc, RequestContext context, string? newType = null, string? newCategory = null)
+    {
+        var wasProtected = EmployeeDocumentSensitivity.IsSensitive(doc.DocumentType, doc.DocumentCategory);
+        var willBeProtected = wasProtected;
+        if (newType is not null || newCategory is not null)
+            willBeProtected = EmployeeDocumentSensitivity.IsSensitive(newType ?? doc.DocumentType, newCategory ?? doc.DocumentCategory);
+        if (!wasProtected && !willBeProtected) return;
+        if (context.Permissions?.Contains("employees.sensitive", StringComparer.OrdinalIgnoreCase) == true) return;
+        throw new SensitiveDocumentAccessException();
+    }
+
     public async Task<EmployeeDocument?> UpdateDocumentAsync(Guid tenantId, int employeeId, Guid documentId, UpdateDocumentMetadataRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
@@ -1438,6 +1454,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!string.IsNullOrWhiteSpace(request.DocumentType) && request.DocumentType != doc.DocumentType
             && (request.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType || doc.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType))
             throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
+        RequireSensitiveForProtectedDocument(doc, context,
+            string.IsNullOrWhiteSpace(request.DocumentType) ? null : request.DocumentType.Trim(), request.DocumentCategory);
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
         if (request.DocumentCategory is not null || !string.IsNullOrWhiteSpace(request.DocumentType))
@@ -1459,6 +1477,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        RequireSensitiveForProtectedDocument(doc, context);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Verified";
@@ -1484,6 +1503,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        RequireSensitiveForProtectedDocument(doc, context);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Rejected";
@@ -1507,6 +1527,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (doc is null) return false;
         await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
         await Zayra.Api.Application.Esign.SignedDocumentGuard.EnsureMutableAsync(_db, tenantId, documentId, cancellationToken);   // P4
+        RequireSensitiveForProtectedDocument(doc, context);
 
         doc.IsDeleted = true;
         doc.DeletedAtUtc = DateTime.UtcNow;
