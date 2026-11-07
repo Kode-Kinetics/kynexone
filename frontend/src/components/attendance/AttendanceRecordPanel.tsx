@@ -22,12 +22,13 @@ import {
 } from '../../lib/attendanceBulkEntry';
 import {
   initialMassRun,
-  isTransientBulkError,
   massRunReducer,
   planChunks,
   recordedIds,
   retryIds,
+  runChunks,
   runSummary,
+  trackMounted,
   type PersonStatus,
 } from '../../lib/attendanceMassRun';
 import { selectedIds, type Selection } from '../../lib/attendanceSelection';
@@ -70,7 +71,7 @@ export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded 
 const STATUS_TONE: Record<PersonStatus, 'emerald' | 'amber' | 'rose' | 'slate'> = { done: 'emerald', partial: 'amber', notDone: 'rose', waiting: 'slate' };
 /** A long range refused for the same rule repeats one reason per day: show the first few, then a count. */
 const MAX_REASONS_SHOWN = 2;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded: () => void }) {
   const { t } = useLocale();
@@ -92,7 +93,8 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
   const processAskedRef = useRef<{ scope: 'all' | 'selected'; expected: number }>({ scope: 'selected', expected: 0 });
   const process = useAttendanceProcessJob(onRecorded);
 
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Set on setup, not just cleared on cleanup: Strict Mode runs setup, cleanup, setup again on the same ref.
+  useEffect(() => trackMounted(mountedRef), []);
 
   const running = run.phase === 'running';
   const state = massEntryState({ employees: selection.size, fromDate, toDate, inTime, outTime, reason, busy: running, canWrite: true });
@@ -115,26 +117,16 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
     const chunks = planChunks(people.map((p) => p.id));
     stopRef.current = false;
     dispatch({ type: 'start', people, days: inclusiveDays(entry.fromDate, entry.toDate) ?? 1, chunksTotal: chunks.length });
-    let recorded = 0;
-    for (const chunk of chunks) {
-      if (stopRef.current || !mountedRef.current) break;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const result = normaliseBulkEntryResult(await attendanceApi.events.bulkEntry({ employeeIds: chunk, ...entry }));
-          recorded += result.created;
-          if (mountedRef.current) dispatch({ type: 'chunkDone', ids: chunk, result });
-          break;
-        } catch (err) {
-          // Each chunk is idempotent (a repeat comes back "already recorded"), so a lost answer or a busy company is retried.
-          if (isTransientBulkError(err) && attempt < 2 && !stopRef.current) { await sleep(800 * (attempt + 1)); continue; }
-          if (mountedRef.current) dispatch({ type: 'chunkFailed', ids: chunk, message: describeBulkError(err, t) });
-          break;
-        }
-      }
-    }
-    if (!mountedRef.current) return;
-    dispatch({ type: 'end' });
-    if (recorded > 0) onRecorded();
+    const { recorded, finished } = await runChunks({
+      chunks,
+      sendChunk: async (ids) => normaliseBulkEntryResult(await attendanceApi.events.bulkEntry({ employeeIds: ids, ...entry })),
+      dispatch,
+      isStopped: () => stopRef.current,
+      isMounted: () => mountedRef.current,
+      describeError: (err) => describeBulkError(err, t),
+      sleep,
+    });
+    if (finished && recorded > 0) onRecorded();
   }, [onRecorded, t]);
 
   const submit = () => {

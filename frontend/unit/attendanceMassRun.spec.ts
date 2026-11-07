@@ -5,9 +5,14 @@ import {
   massRunReducer,
   planChunks,
   retryIds,
+  runChunks,
   runSummary,
+  trackMounted,
+  type MassRunAction,
   type MassRunState,
 } from '../src/lib/attendanceMassRun';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const people = (n: number) => Array.from({ length: n }, (_, i) => ({ id: i + 1, code: `E-${i + 1}`, name: `Person ${i + 1}` }));
 const result = (over: Partial<{ created: number; duplicates: number; failed: number; errors: Array<{ employeeCode: string; date: string; message: string }> }> = {}) =>
@@ -127,4 +132,64 @@ test('only network failures, 5xx, 409 (busy) and 429 are retried automatically',
   expect(isTransientBulkError({ response: { status: 429 } })).toBe(true);
   expect(isTransientBulkError({ response: { status: 400 } })).toBe(false);
   expect(isTransientBulkError({ response: { status: 403 } })).toBe(false);
+});
+
+// Finding 1: React Strict Mode (dev) runs effect setup, cleanup, setup again on the same refs.
+test('trackMounted sets the flag on setup, so Strict Mode setup-cleanup-setup leaves the panel mounted', () => {
+  const ref = { current: false };
+  const cleanup1 = trackMounted(ref);
+  expect(ref.current).toBe(true);
+  cleanup1();
+  expect(ref.current).toBe(false);
+  const cleanup2 = trackMounted(ref);
+  expect(ref.current).toBe(true);
+  cleanup2();
+  expect(ref.current).toBe(false);
+});
+
+test('the panel wires its mounted flag through trackMounted (no cleanup-only effect)', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/components/attendance/AttendanceRecordPanel.tsx'), 'utf8').replace(/\s+/g, ' ');
+  expect(src).toMatch(/useEffect\(\(\) => trackMounted\(mountedRef\), \[\]\)/);
+  expect(src).not.toMatch(/useEffect\(\(\) => \(\) => \{ mountedRef\.current = false; \}, \[\]\)/);
+});
+
+test('after a Strict Mode double effect the run still sends every chunk and dispatches end', async () => {
+  const mounted = { current: true };
+  trackMounted(mounted)();   // setup + cleanup, as the dev double-invoke does
+  trackMounted(mounted);     // setup again; refs are preserved
+  const actions: MassRunAction[] = [];
+  const sent: number[][] = [];
+  const out = await runChunks({
+    chunks: [[1], [2]],
+    sendChunk: async (ids) => { sent.push(ids); return result({ created: 1 }); },
+    dispatch: (a) => actions.push(a),
+    isStopped: () => false,
+    isMounted: () => mounted.current,
+    describeError: String,
+    sleep: async () => {},
+  });
+  expect(sent).toEqual([[1], [2]]);
+  expect(out).toEqual({ recorded: 2, finished: true });
+  expect(actions.map((a) => a.type)).toEqual(['chunkDone', 'chunkDone', 'end']);
+});
+
+test('a really unmounted panel sends nothing more and dispatches nothing', async () => {
+  const actions: MassRunAction[] = [];
+  const out = await runChunks({
+    chunks: [[1]], sendChunk: async () => result(), dispatch: (a) => actions.push(a),
+    isStopped: () => false, isMounted: () => false, describeError: String, sleep: async () => {},
+  });
+  expect(actions).toEqual([]);
+  expect(out.finished).toBe(false);
+});
+
+test('runChunks retries a transient failure, then reports a permanent one as chunkFailed', async () => {
+  const actions: MassRunAction[] = [];
+  let calls = 0;
+  await runChunks({
+    chunks: [[1], [2]],
+    sendChunk: async (ids) => { calls++; if (ids[0] === 1 && calls === 1) throw new Error('Network Error'); if (ids[0] === 2) throw { response: { status: 400 } }; return result({ created: 1 }); },
+    dispatch: (a) => actions.push(a), isStopped: () => false, isMounted: () => true, describeError: () => 'bad', sleep: async () => {},
+  });
+  expect(actions.map((a) => a.type)).toEqual(['chunkDone', 'chunkFailed', 'end']);
 });

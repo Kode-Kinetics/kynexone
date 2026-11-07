@@ -147,3 +147,49 @@ export function isTransientBulkError(err: unknown): boolean {
   if (status === undefined) return true;
   return status >= 500 || status === 409 || status === 429;
 }
+
+/**
+ * Effect body for a "still mounted" flag. It must set the flag on setup, not only clear it on cleanup: React Strict Mode (dev)
+ * runs setup, cleanup, setup again on the same ref, and a cleanup-only effect would leave the flag false for good.
+ */
+export function trackMounted(ref: { current: boolean }): () => void {
+  ref.current = true;
+  return () => { ref.current = false; };
+}
+
+export interface RunChunksDeps {
+  chunks: number[][];
+  sendChunk: (ids: number[]) => Promise<BulkEntryResultShape>;
+  dispatch: (action: MassRunAction) => void;
+  isStopped: () => boolean;
+  isMounted: () => boolean;
+  describeError: (err: unknown) => string;
+  sleep: (ms: number) => Promise<void>;
+}
+
+/**
+ * Sends the chunks one after another, dispatching what the server answered. Each chunk is idempotent (a repeat comes back
+ * "already recorded"), so a lost answer or a busy company is retried. Ends with `end` unless the panel went away.
+ */
+export async function runChunks(deps: RunChunksDeps): Promise<{ recorded: number; finished: boolean }> {
+  const { chunks, sendChunk, dispatch, isStopped, isMounted, describeError, sleep } = deps;
+  let recorded = 0;
+  for (const chunk of chunks) {
+    if (isStopped() || !isMounted()) break;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await sendChunk(chunk);
+        recorded += result.created;
+        if (isMounted()) dispatch({ type: 'chunkDone', ids: chunk, result });
+        break;
+      } catch (err) {
+        if (isTransientBulkError(err) && attempt < 2 && !isStopped()) { await sleep(800 * (attempt + 1)); continue; }
+        if (isMounted()) dispatch({ type: 'chunkFailed', ids: chunk, message: describeError(err) });
+        break;
+      }
+    }
+  }
+  if (!isMounted()) return { recorded, finished: false };
+  dispatch({ type: 'end' });
+  return { recorded, finished: true };
+}
