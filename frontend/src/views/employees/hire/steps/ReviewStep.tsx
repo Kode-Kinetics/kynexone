@@ -12,6 +12,8 @@ import { reviewWarnings } from '@/src/lib/hire/reviewWarnings';
 import { SERVER_CODE_KEYS } from '@/src/lib/hire/problem';
 import { referenceOptions } from '@/src/lib/referenceLists';
 import type { ReferenceValue } from '@/src/lib/referenceLists';
+import { gradeLinesFrom } from '@/src/hooks/useCashAllowanceCatalog';
+import { decodeValue, describeLines, lineName } from '@/src/lib/salaryAllowances';
 import type { StepProps } from '../types';
 import { CONTRACT_FALLBACK, EMPLOYMENT_FALLBACK } from './JobPayDocsStep';
 import { GENDER_FALLBACK, MARITAL_FALLBACK } from './PersonContactStep';
@@ -43,7 +45,7 @@ function Block({ name, onEdit, children }: { name: string; onEdit: () => void; c
   );
 }
 
-export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
+export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, allowanceCatalog, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
   const { t, locale } = useLocale();
   const ar = locale === 'ar';
   const nat = buildCountryOptions().find(o => o.code === form.nationalityCode);
@@ -79,6 +81,17 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
   const designationGrade = designationGradeId ? { gradeId: designationGradeId, gradeCode: lookups.grades.find(g => g.id === designationGradeId)?.code ?? '' } : undefined;
   const warnings = reviewWarnings(form, { today, designationGrade });
   if (grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary)) warnings.push('grade_band_out_of_range');
+  // The monthly cash allowances this hire will have: the person's own lines, or (untouched) the grade's, which the server fills in on create.
+  const allowanceRows = decodeValue(form.allowances);
+  const allowanceLines = allowanceRows ?? gradeLinesFrom(allowanceCatalog.catalog, form.gradeId);
+  const allowanceChoices = allowanceCatalog.catalog.status === 'ready' ? allowanceCatalog.catalog.choices : [];
+  const allowanceSummary = allowanceRows === null && allowanceLines.length === 0 ? '' : describeLines(allowanceLines, basic, {
+    none: t('None'),
+    name: line => lineName(line, allowanceChoices, locale),
+    money: n => formatAmount(n, currency, locale),
+    amount: amount => t('{amount} a month', { amount }),
+    percent: (rate, amount) => t('{rate}% of basic = {amount} a month', { rate, amount }),
+  });
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
   const workEmail = composeWorkEmail(form.workEmail) ?? '';
   const missing = [
@@ -130,6 +143,7 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
         <Row label={t('IBAN')} value={form.iban.trim() ? normalizeIban(form.iban) : ''} ltr />
         {bank && <Row label={t('Bank')} value={bank} />}
         <Row label={t('Basic salary')} value={money(form.basic)} ltr />
+        {allowanceSummary && <Row label={t('Other monthly allowances')} value={allowanceSummary} />}
       </Block>
       <Block name={t('Documents')} onEdit={() => onEdit(3)}>
         {form.idType && <Row label={t('ID type')} value={t(ID_TYPES[form.idType] ?? form.idType)} />}

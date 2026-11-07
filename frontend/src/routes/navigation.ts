@@ -68,7 +68,8 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { label: 'Payroll', icon: WalletCards, path: '/payroll', requiredPermissions: ['payroll.read'], requiredFeatureKey: 'payroll' },
       { label: 'Loans & Advances', icon: Landmark, path: '/loans', requiredPermissions: ['loans.self', 'loans.read', 'loans.write'] },
-      { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'] },
+      // Release A tenants set every benefit in Benefits by grade (it adds benefits too); the old administration screen is out of their menu.
+      { label: 'Benefits', icon: HeartPulse, path: '/benefits', requiredPermissions: ['employees.write'], hiddenWhenFeatureKey: 'release_a' },
       // Release A (release_a opt-in flag): benefits by grade and contract renewals.
       { label: 'Benefits by grade', icon: Layers3, path: '/benefits/by-grade', requiredPermissions: ['entitlements.read'], requiredFeatureKey: 'release_a' },
       { label: 'Contract renewals', icon: FileSignature, path: '/contract-renewals', requiredPermissions: ['contracts.renewal.read'], requiredFeatureKey: 'release_a' },

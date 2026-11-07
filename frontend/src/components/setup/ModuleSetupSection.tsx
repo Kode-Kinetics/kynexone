@@ -50,6 +50,11 @@ const ShiftPolicy = dynamic(() => import('../../views/ShiftsPage').then(module =
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.ShiftSetupPanel section="policy" onDirtyChange={onDirtyChange} />;
   return Panel;
 }));
+// Jobs & headcount: Benefits by grade, the same grid the Finance & Talent menu opens (one screen, two ways in).
+const GradeBenefits = dynamic(() => import('../../views/BenefitsByGradePage').then(module => {
+  const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.BenefitsByGradePage embedded onDirtyChange={onDirtyChange} />;
+  return Panel;
+}));
 const PayrollRules = dynamic(() => import('../payroll/PayrollRulesPanel').then(module => {
   const Panel = ({ onDirtyChange }: ModuleSetupPanelProps) => <module.PayrollRulesPanel onDirtyChange={onDirtyChange} />;
   return Panel;
@@ -118,6 +123,7 @@ function pending(id: SetupModuleSectionId): Panel {
 
 const PANELS: Record<SetupModuleSectionId, Panel> = {
   openingBalances: OpeningBalances,
+  gradeBenefits: GradeBenefits,
   leaveTypes: LeaveTypes,
   leavePolicies: LeavePolicies,
   holidayCalendars: HolidayCalendars,

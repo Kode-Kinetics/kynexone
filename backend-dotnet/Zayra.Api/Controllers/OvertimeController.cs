@@ -15,6 +15,7 @@ using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Payroll;
+using Zayra.Api.Infrastructure.Policy;
 using Zayra.Api.Infrastructure.WorkWeek;
 using Zayra.Api.Models;
 
@@ -31,10 +32,13 @@ public class OvertimeController : ControllerBase
     private readonly IWorkWeekService _workWeek;
     private readonly IStatutoryRuleReader _ruleReader;
     private readonly IConfiguration? _configuration;
+    private readonly IPolicySettings _policy;
 
-    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null)
+    public OvertimeController(ZayraDbContext db, IDataScopeService scopeService, IHrmHierarchyService hierarchyService, IWorkWeekService? workWeek = null, IStatutoryRuleReader? ruleReader = null, IConfiguration? configuration = null, IPolicySettings? policySettings = null)
     {
         _configuration = configuration;
+        // Optional like the others so existing callers/tests keep working; DI supplies the registered one.
+        _policy = policySettings ?? new PolicySettingsService(db);
         _db = db;
         _scopeService = scopeService;
         _hierarchyService = hierarchyService;
@@ -404,9 +408,20 @@ public class OvertimeController : ControllerBase
         if (employee is null) return BadRequest(new { message = "Employee not found." });
         if (req.EndTimeUtc <= req.StartTimeUtc) return BadRequest(new { message = "End time must be after start time." });
         if (string.IsNullOrWhiteSpace(req.Reason)) return BadRequest(new { message = "A reason is required." });
-        var policy = req.OvertimePolicyId.HasValue
-            ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
+        // The policy is decided HERE, from the employee, because payroll pays under the policy stored on the request.
+        // Self-service (no overtime.write) never chooses one: a client-supplied id is ignored, so an employee cannot file
+        // under a generous policy written for another grade or branch. Overtime administration may name one, but only a
+        // policy that applies to this employee (same tenant, active, branch/department/grade unset or matching).
+        var activePolicies = _db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted);
+        OvertimePolicy? policy;
+        if (req.OvertimePolicyId.HasValue && User.HasPermission("overtime.write"))
+        {
+            policy = await activePolicies.FirstOrDefaultAsync(x => x.Id == req.OvertimePolicyId, ct);
+            if (policy is null || !OvertimePolicyDefault.Applies(policy, employee.BranchId, employee.DepartmentId, employee.GradeId))
+                return UnprocessableEntity(new { code = "overtime_policy_not_applicable", message = "That overtime policy does not apply to this employee's branch, department and grade." });
+        }
+        else
+            policy = await OvertimePolicyDefault.ForEmployee(activePolicies, employee.BranchId, employee.DepartmentId, employee.GradeId).FirstOrDefaultAsync(ct);
         if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
         if (req.OvertimeTypeId.HasValue && !await _db.OvertimeTypes.AnyAsync(x => x.TenantId == tenantId && x.Id == req.OvertimeTypeId && x.IsActive, ct))
             return BadRequest(new { message = "Overtime type not found or inactive." });
@@ -511,13 +526,19 @@ public class OvertimeController : ControllerBase
         var tenantId = RequireTenant();
         if (req.FromDate > req.ToDate || req.ToDate.DayNumber - req.FromDate.DayNumber > 366)
             return BadRequest(new { message = "Attendance detection range must be between 1 and 367 days." });
-        // The policy is RESOLVED, exactly as the manual door resolves it: by id within this tenant,
-        // active and not deleted, else the tenant's active default. Without this the limits below
-        // would have nothing to apply, and the id on the request was never checked at all.
-        var policy = req.OvertimePolicyId.HasValue
-            ? await _db.OvertimePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == req.OvertimePolicyId && x.IsActive && !x.IsDeleted, ct)
-            : await OvertimePolicyDefault.Order(_db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted)).FirstOrDefaultAsync(ct);
-        if (policy is null) return BadRequest(new { message = "An active overtime policy is required." });
+        // The policy is RESOLVED per employee, as the manual door resolves it: it must apply to the employee's branch,
+        // department and grade. A policy named on the request is a preference for the employees it applies to; it is never
+        // stamped on an employee it does not apply to (they get the policy that does). An id that is not an active policy of
+        // this tenant is refused outright, as it always was.
+        var activePolicies = _db.OvertimePolicies.AsNoTracking().Where(x => x.TenantId == tenantId && x.IsActive && !x.IsDeleted);
+        OvertimePolicy? preferred = null;
+        if (req.OvertimePolicyId.HasValue)
+        {
+            preferred = await activePolicies.FirstOrDefaultAsync(x => x.Id == req.OvertimePolicyId, ct);
+            if (preferred is null) return BadRequest(new { message = "An active overtime policy is required." });
+        }
+        else if (!await activePolicies.AnyAsync(ct))
+            return BadRequest(new { message = "An active overtime policy is required." });
         var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
         var dailyQuery = _db.AttendanceDailyRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate >= req.FromDate && x.WorkDate <= req.ToDate && x.OvertimeMinutes > 0);
@@ -527,6 +548,23 @@ public class OvertimeController : ControllerBase
             // never displaced by a later one depending on how the database felt about returning rows.
             .OrderBy(x => x.EmployeeId).ThenBy(x => x.WorkDate)
             .ToListAsync(ct);
+        // Branch / department / grade of the employees in range, to decide which policy applies to each.
+        var rangeEmployeeIds = daily.Select(x => x.EmployeeId).Distinct().ToList();
+        var employeeScopes = await _db.Employees.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && rangeEmployeeIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.BranchId, x.DepartmentId, x.GradeId })
+            .ToDictionaryAsync(x => x.Id, ct);
+        var policyByEmployee = new Dictionary<int, OvertimePolicy?>();
+        async Task<OvertimePolicy?> PolicyForAsync(int employeeId)
+        {
+            if (policyByEmployee.TryGetValue(employeeId, out var known)) return known;
+            employeeScopes.TryGetValue(employeeId, out var sc);
+            OvertimePolicy? resolved = preferred is not null && OvertimePolicyDefault.Applies(preferred, sc?.BranchId, sc?.DepartmentId, sc?.GradeId)
+                ? preferred
+                : await OvertimePolicyDefault.ForEmployee(activePolicies, sc?.BranchId, sc?.DepartmentId, sc?.GradeId).FirstOrDefaultAsync(ct);
+            policyByEmployee[employeeId] = resolved;
+            return resolved;
+        }
         var created = new List<OvertimeRequest>();
         var exceptions = new List<AttendanceException>();
         // Minutes already committed against each employee's monthly cap, including the requests this
@@ -537,6 +575,9 @@ public class OvertimeController : ControllerBase
         {
             var exists = await _db.OvertimeRequests.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == record.EmployeeId && x.WorkDate == record.WorkDate && x.Source == "Attendance", ct);
             if (exists) continue;
+            // No active policy applies to this employee: there is nothing to price or limit the overtime under, so none is raised.
+            var policy = await PolicyForAsync(record.EmployeeId);
+            if (policy is null) continue;
 
             var monthKey = (record.EmployeeId, record.WorkDate.Year, record.WorkDate.Month);
             if (!monthToDate.TryGetValue(monthKey, out var consumed))
@@ -668,6 +709,11 @@ public class OvertimeController : ControllerBase
             var approvedMinutes = req.ApprovedMinutes > 0 ? req.ApprovedMinutes : request.RequestedMinutes;
             if (approvedMinutes <= 0 || approvedMinutes > request.RequestedMinutes)
                 return BadRequest(new { message = "Approved minutes must be positive and cannot exceed requested minutes." });
+            // OVT-04: a work date whose payroll period has already closed is settled per overtime.late_approval_mode.
+            // Decided BEFORE anything is mutated, so a refusal leaves the request exactly as it was.
+            var (lateRefusal, backPayRun) = await ResolveLateApprovalAsync(tenantId, request, req.Notes, ct);
+            if (lateRefusal is not null) return lateRefusal;
+
             _db.OvertimeApprovals.Add(NewOvertimeApproval(
                 tenantId, request.Id, "Final", "Approved", req.Notes));
             request.Status = "Approved";
@@ -676,6 +722,45 @@ public class OvertimeController : ControllerBase
             request.DecidedAtUtc = DateTime.UtcNow;
             var calc = await Calculate(request, ct);
             _db.OvertimeCalculations.Add(calc);
+            if (backPayRun is not null)
+            {
+                // Carried into the next open run as a prior-period adjustment. The impact row stays (marked
+                // CarriedForward) so the request can never also be paid by a run or converted to comp-off, but it
+                // is not PendingPayroll: no run will pick it up a second time. The closed period is never touched.
+                var reason = req.Notes!.Trim();
+                var backPaySnapshot = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        overtimeRequestId = request.Id,
+                        originalWorkDate = request.WorkDate.ToString("yyyy-MM-dd"),
+                        originalPeriod = request.WorkDate.ToString("yyyy-MM"),
+                        carriedToPeriod = $"{backPayRun.Year}-{backPayRun.Month:00}",
+                        reason,
+                        approvedMinutes = calc.ApprovedMinutes,
+                        multiplier = calc.Multiplier,
+                        amount = calc.Amount,
+                        overtimePolicyId = request.OvertimePolicyId,
+                    });
+                _db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
+                {
+                    TenantId = tenantId, OvertimeRequestId = request.Id, EmployeeId = request.EmployeeId,
+                    Minutes = calc.ApprovedMinutes, Amount = calc.Amount, ApprovedMultiplier = calc.Multiplier,
+                    Status = "CarriedForward",
+                });
+                _db.PayrollAdjustments.Add(new PayrollAdjustment
+                {
+                    TenantId = tenantId, PayrollRunId = backPayRun.Id, EmployeeId = request.EmployeeId,
+                    AdjustmentType = "Overtime Back Pay", Amount = calc.Amount, Status = "Approved",
+                    Reason = $"Overtime back pay for work date {request.WorkDate:yyyy-MM-dd} (closed period {request.WorkDate:yyyy-MM}): {reason}",
+                    SourceType = PayrollAdjustmentSources.OvertimeBackPay, SourceId = request.Id,
+                    SourceSnapshotJson = backPaySnapshot,
+                });
+                await SaveAudit("overtime.request.backpay_carried", "OvertimeRequest", request.Id.ToString(), ct, new
+                {
+                    originalWorkDate = request.WorkDate.ToString("yyyy-MM-dd"), reason,
+                    carriedToRunId = backPayRun.Id, carriedToPeriod = $"{backPayRun.Year}-{backPayRun.Month:00}", amount = calc.Amount,
+                });
+            }
+            else
             _db.OvertimePayrollImpacts.Add(new OvertimePayrollImpact
             {
                 TenantId = tenantId,
@@ -823,26 +908,38 @@ public class OvertimeController : ControllerBase
         if (req.CompOffDays <= 0) return BadRequest(new { message = "Comp-off days must be positive." });
         // OVT-01: the days are bounded by the hours actually approved, over the working day. Unbounded days
         // let one hour of overtime mint any amount of paid leave.
-        var maxDays = MaxCompOffDays(request.ApprovedMinutes);
-        if (req.CompOffDays > maxDays)
+        var capMode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeCompoffCapMode, ct);
+        var maxDays = string.Equals(capMode, "Fractional", StringComparison.Ordinal)
+            ? MaxCompOffDaysFractional(request.ApprovedMinutes)
+            : MaxCompOffDays(request.ApprovedMinutes);
+        // The grant is made at the precision the tables keep (two decimals), rounded DOWN, and the cap applies to that figure: a four-decimal grant would be
+        // stored rounded (60 minutes = 0.125 stored as 0.13, over the cap) or as 0.00 (cash withdrawn, no leave). Never more than earned, never zero.
+        var grantedDays = RoundCompOffDown(req.CompOffDays);
+        if (grantedDays <= 0m || maxDays <= 0m)
+            return UnprocessableEntity(new
+            {
+                code = "compoff_below_minimum",
+                message = $"{request.ApprovedMinutes} approved minutes is too little to convert to comp-off: leave is recorded in hundredths of a day, and this rounds to 0.00. The overtime stays payable as cash.",
+            });
+        if (grantedDays > maxDays)
             return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
             return Conflict(new { message = "This overtime request has already been converted to comp-off." });
         // OVT-01: the same overtime must never be both cash and leave. Cash already paid cannot be taken back
         // here; cash still waiting for payroll is withdrawn in the same save as the credit.
         var impacts = await _db.OvertimePayrollImpacts.Where(x => x.TenantId == tenantId && x.OvertimeRequestId == request.Id).ToListAsync(ct);
-        if (impacts.Any(x => x.Status == "Processed" || x.PayrollRunId != null))
+        if (impacts.Any(x => x.Status is "Processed" or "CarriedForward" || x.PayrollRunId != null))
             return Conflict(new { message = "This overtime has already been paid through payroll and cannot be converted to comp-off." });
         _db.OvertimePayrollImpacts.RemoveRange(impacts);
         await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
-        var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = req.CompOffDays, Status = "Approved" };
+        var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = grantedDays, Status = "Approved" };
         _db.OvertimeCompOffConversions.Add(compOff);
         _db.CompOffCredits.Add(new CompOffCredit
         {
             TenantId = tenantId, EmployeeId = request.EmployeeId, EmployeeName = request.EmployeeName,
             OvertimeCompOffConversionId = compOff.Id,
             WorkedDate = request.WorkDate, WorkType = "Overtime", HoursWorked = compOff.OvertimeHours,
-            DaysEarned = req.CompOffDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
+            DaysEarned = grantedDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
             ApprovedAtUtc = DateTime.UtcNow
         });
         await SaveAudit("overtime.compoff.created", "OvertimeCompOffConversion", compOff.Id.ToString(), ct);
@@ -873,6 +970,14 @@ public class OvertimeController : ControllerBase
     /// </summary>
     internal static decimal MaxCompOffDays(int approvedMinutes) =>
         Math.Max(1m, Math.Ceiling(approvedMinutes / 60m / CompOffHoursPerWorkingDay));
+
+    /// <summary>overtime.compoff_cap_mode = Fractional: exactly the approved hours over the working day, no whole-day rounding.</summary>
+    internal static decimal MaxCompOffDaysFractional(int approvedMinutes) =>
+        RoundCompOffDown(approvedMinutes / 60m / CompOffHoursPerWorkingDay);
+
+    /// <summary>Comp-off days at the precision <c>overtime_comp_off_conversions.comp_off_days</c> and <c>comp_off_credits.days_earned</c> keep (numeric(x,2)),
+    /// rounded DOWN so a stored grant never exceeds what was earned or the cap.</summary>
+    internal static decimal RoundCompOffDown(decimal days) => Math.Floor(days * 100m) / 100m;
 
     [HttpGet("reports/summary")]
     public async Task<ActionResult<object>> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
@@ -905,15 +1010,25 @@ public class OvertimeController : ControllerBase
         var salary = await _db.EmployeeSalaryStructures.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == request.EmployeeId && x.IsActive && x.EffectiveDate <= request.WorkDate).OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
         var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.EmployeeId, ct);
         var basic = salary?.BasicSalary ?? employee?.Salary ?? 0m;
-        var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance;
+        // The customer-defined monthly cash allowances are part of the full wage here exactly as in the payroll run (which prices overtime on the same package).
+        var cashAllowances = salary is null ? 0m
+            : (await _db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == salary.Id).Select(x => x.Amount).ToListAsync(ct)).Sum();
+        var gross = salary is null ? basic : salary.BasicSalary + salary.HousingAllowance + salary.TransportAllowance + salary.FoodAllowance + salary.MobileAllowance + salary.OtherAllowance + cashAllowances;
 
         // Weekend categorisation is config-driven (WorkWeekService): the employee's company
         // resolves the rest days, not a hard-coded Fri/Sat — which was wrong for UAE (Sat/Sun)
         // and any non-default tenant.
-        var workWeek = await _workWeek.ResolveAsync(tenantId, employee?.CompanyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
+        // A legacy employee has no company stamp; payroll resolves the tenant's single active company for them, so
+        // every company-specific lookup below must use that same company or approval and pay disagree.
+        var companyId = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, employee?.CompanyId, ct);
+        var workWeek = await _workWeek.ResolveAsync(tenantId, companyId, string.IsNullOrWhiteSpace(employee?.CountryCode) ? null : employee!.CountryCode, ct);
+        // The holiday question is answered by the SAME function attendance and payroll use (active calendars,
+        // company-wide or the employing company's). This method used to read PublicHolidays directly, so a date on an
+        // inactive or a sister company's calendar was a 2.0× holiday here, stamped as ApprovedMultiplier, and paid
+        // at 2.0 by a payroll run that itself considered it an ordinary 1.5× day.
         var dayCategory = OvertimeStatutoryCalculator.DayCategory(
             request.WorkDate,
-            await IsPublicHoliday(tenantId, request.WorkDate, ct),
+            await IsPublicHoliday(tenantId, companyId, request.WorkDate, ct),
             workWeek.IsWeekend(request.WorkDate.DayOfWeek));
 
         // ── The statutory context: the SAME rule keys, fallbacks and arithmetic the payroll run
@@ -921,8 +1036,8 @@ public class OvertimeController : ControllerBase
         //    Before this, the controller computed basic ÷ StandardMonthlyHours × policy-multiplier
         //    and never read a statutory rule, so it reported 112.50 for the canonical 60/40 Saudi
         //    overtime hour that payroll paid at 162.50 (Art. 107: hourly WAGE + 50% of BASIC).
-        var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, employee?.CompanyId, employee?.CountryCode, ct);
-        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct, companyId: employee?.CompanyId);
+        var (packCc, packJur) = await ResolveCountryPackAsync(tenantId, companyId, employee?.CountryCode, ct);
+        var otContext = await _ruleReader.ResolveAsync(packCc, packJur, request.WorkDate, tenantId, ct, companyId: companyId);
 
         // The divisor: the same rule payroll applies — statutory hours unless the policy is more generous.
         var standardMonthlyHours = OvertimeStatutoryContextResolver.EffectiveMonthlyHours(policy.StandardMonthlyHours, otContext.StandardMonthlyHoursOverride);
@@ -1024,8 +1139,8 @@ public class OvertimeController : ControllerBase
         return (cc ?? string.Empty, company?.Jurisdiction ?? string.Empty);
     }
 
-    private Task<bool> IsPublicHoliday(Guid tenantId, DateOnly date, CancellationToken ct) =>
-        _db.PublicHolidays.AnyAsync(x => x.TenantId == tenantId && x.Date == date && !x.IsOptional, ct);
+    private async Task<bool> IsPublicHoliday(Guid tenantId, Guid? companyId, DateOnly date, CancellationToken ct) =>
+        (await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, companyId, date, date, ct)).Contains(date);
 
     private async Task<decimal> ResolveRegularDayDefaultMultiplierAsync(Guid tenantId, CancellationToken ct)
     {
@@ -1076,6 +1191,78 @@ public class OvertimeController : ControllerBase
         DecidedByUserId = GetUserId(),
         DecidedAtUtc = DateTime.UtcNow
     };
+
+    /// <summary>
+    /// OVT-04. Null refusal and null run = the period is open, approve as usual. A closed period either refuses (409
+    /// <c>overtime_period_closed</c>, naming the next open period) or, in BackPay mode with a reason and an open run
+    /// to carry into, returns that run.
+    /// </summary>
+    private async Task<(ActionResult? Refusal, PayrollRun? CarryRun)> ResolveLateApprovalAsync(
+        Guid tenantId, OvertimeRequest request, string? reason, CancellationToken ct)
+    {
+        if (!await AttendancePayrollLock.IsLockedAsync(_db, tenantId, request.EmployeeId, request.WorkDate, ct))
+            return (null, null);
+
+        // First month after the work date's month that is not itself closed (bounded, so a wide lock cannot loop).
+        var next = new DateOnly(request.WorkDate.Year, request.WorkDate.Month, 1).AddMonths(1);
+        for (var i = 0; i < 36 && await AttendancePayrollLock.IsLockedAsync(_db, tenantId, request.EmployeeId, next, ct); i++)
+            next = next.AddMonths(1);
+        var nextOpen = new { year = next.Year, month = next.Month, label = $"{next.Year}-{next.Month:00}" };
+        var closed = $"{request.WorkDate.Year}-{request.WorkDate.Month:00}";
+
+        var mode = await _policy.GetEnumAsync(tenantId, PolicyRegistry.OvertimeLateApprovalMode, ct);
+        if (!string.Equals(mode, "BackPay", StringComparison.Ordinal))
+            return (Conflict(new
+            {
+                code = "overtime_period_closed",
+                message = $"The {closed} payroll period is closed. This overtime stays pending; it can be settled in the next open period, {nextOpen.label}.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+
+        if (string.IsNullOrWhiteSpace(reason))
+            return (BadRequest(new
+            {
+                code = "overtime_backpay_reason_required",
+                message = $"The {closed} payroll period is closed. A reason is required to pay this overtime as back pay in {nextOpen.label}.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+
+        var stampedCompanyId = request.CompanyId
+            ?? await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Resolve the employee's legal entity to find the payroll run overtime back pay is carried into.")
+                .Where(e => e.Id == request.EmployeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        // A legacy employee with no company belongs to the tenant's only active company, as payroll treats them; with several
+        // active companies this stays null and the carry refuses rather than guess.
+        var companyId = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, stampedCompanyId, ct);
+        var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "Finding the open run an employee's late overtime is carried into: the approver's company scope must not hide it.")
+            .Where(r => r.CompanyId == companyId && r.Year == next.Year && r.Month == next.Month
+                && r.Status == "Draft" && r.LockedAtUtc == null
+                // A period-owning run (Regular or Replacement, the types PriorPeriodOvertimeFinder counts): once the month's
+                // Regular run is voided its Replacement is the open run, and a Supplementary run is never a destination.
+                && (r.RunType == PayrollRunTypes.Regular || r.RunType == PayrollRunTypes.Replacement))
+            .OrderBy(r => r.CreatedAtUtc).FirstOrDefaultAsync(ct);
+        if (run is null)
+            return (Conflict(new
+            {
+                code = "overtime_backpay_no_open_run",
+                message = $"The {closed} payroll period is closed and there is no open payroll run for {nextOpen.label} to carry this overtime into. Create that run, then approve again; the request stays pending.",
+                nextOpenPeriod = nextOpen,
+            }), null);
+        // The run pays only its own population (PayrollRunProcessor loads adjustments for those employees alone), so an adjustment carried into a run
+        // that excludes this employee would never be paid, and the CarriedForward impact would hide the overtime from every later run and rule 11b. Ask the
+        // processor's own selection rule; nothing is carried when the run would not pay the employee, and the request stays pending.
+        var selections = await ScopedBypass.TenantWide(_db.PayrollRunEmployeeSelections, tenantId,
+                "Reading the destination run's include/exclude selection, whatever the approver's company scope, to see whether the run pays this employee.")
+            .Where(s => s.PayrollRunId == run.Id).AsNoTracking().ToListAsync(ct);
+        if (!PayrollRunProcessor.RunSelectionIntent.From(selections).Admits(request.EmployeeId))
+            return (Conflict(new
+            {
+                code = "overtime_backpay_employee_not_in_run",
+                message = $"The {closed} payroll period is closed and the open {nextOpen.label} payroll run does not pay this employee (they are excluded from it or it names other employees only), so back pay carried into it would never be paid. Add the employee to that run, then approve again; the request stays pending.",
+                nextOpenPeriod = nextOpen,
+                runId = run.Id,
+            }), null);
+        return (null, run);
+    }
 
     private async Task<bool> TrySaveDecisionAsync(CancellationToken ct)
     {

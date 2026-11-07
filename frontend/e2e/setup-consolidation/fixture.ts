@@ -85,6 +85,10 @@ export interface MovedSection {
   /** Something only the module's real editor shows once loaded. */
   ready: (page: Page) => Locator;
   mocks?: ApiMocks;
+  /** Feature flags switched OFF for the tenant (the fixture's default is every flag on): a section that exists only without a flag runs this way. */
+  disabledKeys?: string[];
+  /** Appended to the describe title, to tell a flag variant from the default run of the same section. */
+  titleSuffix?: string;
   /** For a module that keeps its daily work: its page, the tab that must be gone, and its settings door. */
   module?: { path: string; goneTab: string; door: string };
 }
@@ -93,16 +97,16 @@ const heading = (page: Page) => page.locator('#setup-section-heading');
 
 export function movedSectionSpecs(sections: readonly MovedSection[]) {
   for (const section of sections) {
-    test.describe(section.label, () => {
+    test.describe(`${section.label}${section.titleSuffix ?? ''}`, () => {
       test(`${section.old} leads to Setup → ${section.label}`, async ({ page }) => {
-        const { errors } = await boot(page, { url: section.old, mocks: section.mocks });
+        const { errors } = await boot(page, { url: section.old, mocks: section.mocks, disabledKeys: section.disabledKeys });
         await expect(page).toHaveURL(new RegExp(`/setup\\?tab=${section.id}(&|$)`));
         await expect(heading(page)).toHaveText(section.label, { timeout: 30_000 });
         expect(errors, 'No application runtime errors').toEqual([]);
       });
 
       test(`Setup lists ${section.label} under ${section.group} and opens the module's own editor`, async ({ page }) => {
-        const { errors, writes } = await boot(page, { url: '/setup', mocks: section.mocks });
+        const { errors, writes } = await boot(page, { url: '/setup', mocks: section.mocks, disabledKeys: section.disabledKeys });
         await expect(page.locator('nav.setup-page-nav')).toBeAttached({ timeout: 30_000 });
         const list = setupSectionEntries(page).getByRole('list', { name: section.group, exact: true });
         await expect(list.getByRole('link', { name: section.label, exact: true })).toBeAttached();
@@ -120,7 +124,7 @@ export function movedSectionSpecs(sections: readonly MovedSection[]) {
       if (section.module) {
         const module = section.module;
         test(`${module.path} keeps its daily work, drops the ${module.goneTab} tab and links to its settings`, async ({ page }) => {
-          const { errors } = await boot(page, { url: module.path, mocks: section.mocks });
+          const { errors } = await boot(page, { url: module.path, mocks: section.mocks, disabledKeys: section.disabledKeys });
           const door = page.getByRole('link', { name: module.door, exact: true });
           await expect(door).toBeVisible({ timeout: 30_000 });
           await expect(page.getByRole('tab', { name: module.goneTab, exact: true })).toHaveCount(0);
@@ -133,7 +137,7 @@ export function movedSectionSpecs(sections: readonly MovedSection[]) {
       }
 
       test(`an employee is not given ${section.label}`, async ({ page }) => {
-        await boot(page, { persona: EMPLOYEE, url: `/setup?tab=${section.id}`, mocks: section.mocks });
+        await boot(page, { persona: EMPLOYEE, url: `/setup?tab=${section.id}`, mocks: section.mocks, disabledKeys: section.disabledKeys });
         await expect(page.getByTestId('setup-no-sections').or(page.getByText('Access Denied'))).toBeVisible({ timeout: 30_000 });
         await expect(page.locator(`[data-module-section="${section.id}"]`)).toHaveCount(0);
       });

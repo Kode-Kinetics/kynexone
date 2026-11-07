@@ -108,10 +108,29 @@ public sealed class ArrearsEngine
         var windowRunIds = windowRuns.Select(r => r.Id).ToList();
         var periodOfRun  = windowRuns.ToDictionary(r => r.Id, r => (r.Year, r.Month));
 
+        // ── Customer-defined monthly cash allowances (ALW_*) ─────────────────────────────────────────
+        // Each is its own component here: entitled from the allowance row on the salary record now effective for P, paid from its own earning line,
+        // settled on ARREARS_<code>. Only a code that IS an allowance definition counts (a legacy pay component that happens to start with ALW_ is
+        // paid by the catalogue and is not on a salary record). A tenant with no definition loads nothing and nothing below moves.
+        var allowanceCodes = (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
+                    "Back pay settles each cash allowance on its own code; the definitions are tenant-wide, removed ones included (history).")
+                .AsNoTracking()
+                .Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage
+                         && c.Code.StartsWith("ALW_"))
+                .Select(c => c.Code).ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
+        var paidCodes = allowanceCodes.Count == 0 ? SalaryComponentCodes : SalaryComponentCodes.Concat(allowanceCodes).ToArray();
+        var assignmentIds = assignments.Select(a => a.Id).ToList();
+        var allowanceRows = allowanceCodes.Count == 0
+            ? Enumerable.Empty<EmployeeSalaryAllowance>().ToLookup(x => x.SalaryStructureId)
+            : (await _db.EmployeeSalaryAllowances.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && assignmentIds.Contains(x.SalaryStructureId)).ToListAsync(ct))
+                .ToLookup(x => x.SalaryStructureId);
+
         // ── paid(P): the CLEAN witness ───────────────────────────────────────────────────────────────
         var paidRows = await _db.PayrollEarnings.AsNoTracking()
             .Where(e => e.TenantId == tenantId && windowRunIds.Contains(e.PayrollRunId)
-                     && empIds.Contains(e.EmployeeId) && SalaryComponentCodes.Contains(e.ComponentCode))
+                     && empIds.Contains(e.EmployeeId) && paidCodes.Contains(e.ComponentCode))
             .Select(e => new { e.PayrollRunId, e.EmployeeId, e.ComponentCode, e.Amount })
             .ToListAsync(ct);
         var paid = new Dictionary<(int Emp, int Y, int M, string Code), decimal>();
@@ -203,6 +222,20 @@ public sealed class ArrearsEngine
                     ["TRANSPORT"]        = policy.Prorates(ProratedComponentCodes.Transport)       ? pkg.Transport       : assignment.TransportAllowance,
                     ["OTHER_ALLOWANCES"] = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? pkg.OtherAllowances : assignment.FoodAllowance + assignment.MobileAllowance + assignment.OtherAllowance,
                 };
+                // The cash allowances this period is entitled to (prorated as OTHER_ALLOWANCES is), plus any that was PAID for it and is no longer
+                // on the record (entitled 0, so the difference is a retro removal and is handled as every other decrease).
+                var codes = SalaryComponentCodes;
+                if (allowanceCodes.Count > 0)
+                {
+                    foreach (var line in allowanceRows[assignment.Id])
+                        entitled[line.Code] = policy.Prorates(ProratedComponentCodes.OtherAllowances)
+                            ? ProrationCalculator.ApplyScalar(line.Amount, pr.Factor) : line.Amount;
+                    foreach (var code in allowanceCodes)
+                        if (!entitled.ContainsKey(code)
+                            && (paid.GetValueOrDefault((emp.EmployeeId, py, pm, code)) != 0m || settled.GetValueOrDefault((emp.EmployeeId, py, pm, code)) != 0m))
+                            entitled[code] = 0m;
+                    codes = SalaryComponentCodes.Concat(entitled.Keys.Where(k => !SalaryComponentCodes.Contains(k)).OrderBy(k => k, StringComparer.Ordinal)).ToArray();
+                }
 
                 // ── ARREARS TOP UP A PAID MONTH. THEY NEVER PAY AN UNPAID ONE. ───────────────────────
                 // Requirement 4 is explicit: arrears "must never silently re-pay a whole month". If the
@@ -233,7 +266,7 @@ public sealed class ArrearsEngine
                 // ── Per-component deltas, then ONE decision per (employee, period) ───────────────────
                 var deltas = new Dictionary<string, (decimal Entitled, decimal Paid, decimal Settled, decimal Delta)>(StringComparer.Ordinal);
                 decimal net = 0m;
-                foreach (var code in SalaryComponentCodes)
+                foreach (var code in codes)
                 {
                     var e = Math.Round(entitled[code], 2);
                     var p = Math.Round(paid.GetValueOrDefault((emp.EmployeeId, py, pm, code)), 2);
@@ -251,7 +284,7 @@ public sealed class ArrearsEngine
                 {
                     // Retro DECREASE. Persisted with its covered period, never netted into pay, and the
                     // run refuses. B2's ADDITIVE-ONLY posture, applied verbatim.
-                    foreach (var code in SalaryComponentCodes)
+                    foreach (var code in codes)
                     {
                         var d = deltas[code];
                         if (d.Delta == 0m) continue;
@@ -266,7 +299,7 @@ public sealed class ArrearsEngine
                 // net > 0: distribute it over the POSITIVE components pro rata, so a component that went
                 // DOWN (a package restructure moving money between basic and housing) offsets the increase
                 // instead of being paid twice. Σ(settled lines) == net, exactly.
-                var positives = SalaryComponentCodes.Where(c => deltas[c].Delta > 0m).ToList();
+                var positives = codes.Where(c => deltas[c].Delta > 0m).ToList();
                 var positiveTotal = positives.Sum(c => deltas[c].Delta);
                 if (positives.Count == 0 || positiveTotal <= 0m) continue;
 

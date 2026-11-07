@@ -82,7 +82,7 @@ test('setup_owned_destinations_carry_the_section_label_and_route_labels_are_unch
   const expectedLabels: Record<string, string> = {
     people: 'Employee records and contracts', contractRenewals: 'Contract renewals', recruitment: 'Recruitment and workforce planning',
     attendance: 'Attendance operations', shifts: 'Shift rosters', overtime: 'Overtime requests', timesheets: 'Project timesheets',
-    leave: 'Leave requests and balances', gradeBenefits: 'Benefits by grade', merit: 'Merit planning and benchmarks',
+    leave: 'Leave requests and balances', merit: 'Merit planning and benchmarks',
     payroll: 'Payroll and salary structures', benefits: 'Benefit enrolments', loans: 'Loans and advances',
     learning: 'Learning catalogue and rules', engagement: 'Engagement survey templates', performance: 'Performance cycles',
     succession: 'Succession and development', hrRequests: 'Request center', hrLetters: 'HR letters', offboarding: 'Offboarding and settlement',

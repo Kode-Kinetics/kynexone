@@ -173,6 +173,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked per-screen contract suite (Screen Standard 8g); assertions a screen does not meet yet are test.fixme with the cause in the title, executed nightly with the other route-mocked suites."
     },
+    "playwright.salary-allowances.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
     "playwright.setup-consolidation.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."

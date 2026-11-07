@@ -2,6 +2,7 @@
 
 import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, CheckCircle2, HeartPulse, Loader2, Plus, RefreshCw, Search, ShieldCheck, UserPlus, XCircle,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ export function BenefitsPage() {
   const canEnroll = canManagePlans || hasRole('HR Officer');
   const canRecordMoney = hasPermission('employees.approve');
   const releaseA = useReleaseA();
+  const router = useRouter();
   const canApplyException = canRecordMoney && !releaseA;
   const canProposeAdditional = hasPermission('employees.write') && !releaseA;
 
@@ -78,6 +80,12 @@ export function BenefitsPage() {
 
   const activePlans = plans.filter((p) => p.isActive);
 
+  // A Release A tenant sets every benefit — and adds new ones — in Benefits by grade. With nothing left here (no plans, no
+  // enrolments made before) this screen has no job, so it hands over instead of showing an empty page with nowhere to go.
+  const handedOver = releaseA && !loading && !error && plans.length === 0 && enrollments.length === 0;
+  useEffect(() => { if (handedOver) router.replace('/benefits/by-grade'); }, [handedOver, router]);
+  if (handedOver) return <div className="h-40 kx-skeleton rounded-2xl" aria-busy="true" aria-label={t('Loading benefits by grade')} />;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -101,7 +109,7 @@ export function BenefitsPage() {
       </div>
 
       {/* One home for what each grade receives. This page is the enrolment desk; the grade rules are not edited here. */}
-      <BenefitsByGradeDoor variant="panel" intro={t('What each grade receives (housing, transport, tickets, medical, education) is set in Benefits by grade, not here. This page is for enrolments and contributions.')} />
+      <BenefitsByGradeDoor variant="panel" testId="benefits-moved-note" intro={t('What each grade receives (housing, transport, tickets, medical, education) is set in Benefits by grade, not here. This page is for enrolments and contributions.')} />
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">

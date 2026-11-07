@@ -147,6 +147,11 @@ export const quantityPeriodKeys: Record<string, string> = {
   Annual: '{count} × {class} a year', PerDay: '{count} × {class} a day', Lifetime: '{count} × {class} once',
 };
 
+/** The same count with no class to name (a benefit the customer added has none), as one sentence. */
+export const plainQuantityPeriodKeys: Record<string, string> = {
+  Annual: '{count} a year', PerDay: '{count} a day', Lifetime: '{count} once',
+};
+
 /** The "Resets" picker's choices. */
 export const periodChoiceKeys: Record<string, string> = {
   Monthly: 'Every month', Annual: 'Every year', PerDay: 'Every day', PerTerm: 'Every contract year', Lifetime: 'Once only',
@@ -173,7 +178,10 @@ export function summarise(d: CellDraft, money: (n: number) => string): SummaryPa
     case 'InKind': parts.push({ key: 'Provided in kind' }); break;
     case 'CoverageTier': parts.push({ key: tierKeys[d.coverageTier] ?? d.coverageTier }); break;
     case 'Quantity':
-      parts.push({ key: (period && quantityPeriodKeys[period]) || '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? '' } });
+      // A built-in count has a class (Economy, Business); one the customer added does not, so it is just the number.
+      parts.push(d.coverageTier
+        ? { key: (period && quantityPeriodKeys[period]) || '{count} × {class}', values: { count: d.quantity, class: tierKeys[d.coverageTier] ?? d.coverageTier } }
+        : { key: (period && plainQuantityPeriodKeys[period]) || '{count}', values: { count: d.quantity } });
       break;
     default: parts.push({ key: 'Eligible' });
   }
@@ -246,4 +254,187 @@ export function monthStarts(today: string, count: number): string[] {
     month++;
   }
   return out;
+}
+
+// ── Guided flow ───────────────────────────────────────────────────────────────────────────────────
+
+/** Where the grid stands for the step strip: grade values set out of the ones that need one, and the next one to set. */
+export interface GuideProgress { total: number; set: number; nextKey: string | null }
+
+/**
+ * Counts the values the grid still needs and finds the next one, in the order the screen shows them (benefit by benefit,
+ * grade by grade). Loan facilities (set in Loans) and benefits a company skips need none; a value already published to
+ * start later counts as set. With `after`, the next one AFTER that cell, wrapping round, so "Save & next" moves on.
+ */
+export function guideProgress(components: MatrixComponent[], grades: MatrixGrade[], drafts: Drafts,
+  scheduled: ReadonlySet<string>, skipped: (code: string) => boolean, after?: string | null): GuideProgress {
+  const keys: string[] = [];
+  for (const c of components) {
+    if (c.isLoanFacility || skipped(c.code)) continue;
+    for (const g of grades) keys.push(cellKey(g.id, c.code));
+  }
+  const open = (k: string) => drafts[k]?.state === 'unset' && !scheduled.has(k);
+  const set = keys.filter(k => !open(k)).length;
+  const start = after ? keys.indexOf(after) + 1 : 0;
+  const ordered = [...keys.slice(start), ...keys.slice(0, start)];
+  return { total: keys.length, set, nextKey: ordered.find(k => k !== after && open(k)) ?? null };
+}
+
+/** Unpublished edits kept in the browser, so a reload, a new benefit or leaving the page does not lose them. Each edit is
+ * stored with the value it started from (`base`): it is restored only while the server still holds that value. */
+export type SavedDrafts = Record<string, { draft: CellDraft; base: CellDraft }>;
+
+export const draftStorageKey = (scope: string, asOf: string | null) => `kynex.benefitsByGrade.drafts.v1:${scope || 'group'}:${asOf || 'current'}`;
+
+export function savedFrom(drafts: Drafts, original: Drafts): SavedDrafts {
+  const saved: SavedDrafts = {};
+  for (const [k, d] of Object.entries(drafts)) {
+    const base = original[k];
+    if (base && !sameDraft(d, base)) saved[k] = { draft: d, base };
+  }
+  return saved;
+}
+
+export function restoreDrafts(fresh: Drafts, saved: SavedDrafts | null | undefined): { drafts: Drafts; restored: number } {
+  if (!saved) return { drafts: fresh, restored: 0 };
+  const drafts = { ...fresh };
+  let restored = 0;
+  for (const [k, entry] of Object.entries(saved)) {
+    if (!fresh[k] || !entry?.draft || !entry.base || !sameDraft(entry.base, fresh[k])) continue;
+    drafts[k] = entry.draft;
+    restored++;
+  }
+  return { drafts, restored };
+}
+
+// ── Excel / CSV in and out ────────────────────────────────────────────────────────────────────────
+
+/**
+ * The grid as text, one benefit per row and one grade per column, keyed by codes so a file round-trips whatever the
+ * language: `Benefit,G1,G2…` then `HOUSING,25%,25%,…`. A value is written the way an admin types it in Excel: an amount
+ * (`1500`), a percentage of basic (`25%`), `In kind`, a count (`2x`, or `1x Economy` with a class), a class of cover
+ * (`B`), or `Not offered`. Empty means not set. Loan limits are set in Loans and are left out. Conditions and dependants
+ * are not in the file: an import changes values only and keeps a cell's conditions as they are.
+ */
+export function cellText(d: CellDraft): string {
+  if (d.state === 'notOffered') return 'Not offered';
+  if (d.state !== 'offered') return '';
+  switch (d.valueType) {
+    case 'Amount': return d.amount;
+    case 'PercentOfBasic': return `${d.percent}%`;
+    case 'InKind': return 'In kind';
+    case 'CoverageTier': return d.coverageTier;
+    case 'Quantity': return d.coverageTier ? `${d.quantity}x ${d.coverageTier}` : `${d.quantity}x`;
+    default: return '';
+  }
+}
+
+const csvField = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+
+export function gridToCsv(components: MatrixComponent[], grades: MatrixGrade[], drafts: Drafts): string {
+  const rows = [['Benefit', ...grades.map(g => g.code)]];
+  for (const c of components.filter(x => !x.isLoanFacility))
+    rows.push([c.code, ...grades.map(g => { const d = drafts[cellKey(g.id, c.code)]; return d ? cellText(d) : ''; })]);
+  return rows.map(r => r.map(csvField).join(',')).join('\r\n') + '\r\n';
+}
+
+/** Splits pasted Excel cells (tab-separated) or a CSV file into rows of cells; quoted fields may hold commas and line breaks. */
+export function splitTable(text: string): string[][] {
+  const clean = text.replace(/^﻿/, '');
+  const firstLine = clean.split(/\r?\n/)[0] ?? '';
+  const sep = firstLine.includes('\t') ? '\t' : ',';
+  const rows: string[][] = []; let row: string[] = []; let field = ''; let quoted = false;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (quoted) {
+      if (ch === '"' && clean[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"' && field === '') quoted = true;
+    else if (ch === sep) { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && clean[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field !== '' || row.length > 0) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(cell => cell.trim() !== ''));
+}
+
+/** Arabic-Indic and Persian digits, the Arabic decimal and thousands marks, read as ASCII. */
+const asciiDigits = (v: string) => v
+  .replace(/[٠-٩]/g, ch => String(ch.charCodeAt(0) - 0x0660))
+  .replace(/[۰-۹]/g, ch => String(ch.charCodeAt(0) - 0x06F0))
+  .replace(/٫/g, '.').replace(/[٬,\s]/g, '');
+
+const NOT_OFFERED = /^(not offered|no|n\/a|-|غير مقدمة|غير مقدَّمة|لا)$/i;
+const IN_KIND = /^(in kind|in-kind|عيني|عيناً|عينًا|عينا)$/i;
+
+export interface GridImportError { row: number; column: number; benefit: string; grade: string; message: string }
+export interface GridImport { patches: { key: string; patch: Partial<CellDraft> }[]; errors: GridImportError[] }
+
+/** One typed value for one benefit, as a draft change, or an i18n-key error. Never guesses a value type the benefit forbids. */
+export function parseCellText(raw: string, c: MatrixComponent): { patch?: Partial<CellDraft>; error?: string } {
+  const text = raw.trim();
+  if (!text) return {};
+  const allowed = (v: MatrixValueType) => c.allowedValueTypes.includes(v);
+  if (NOT_OFFERED.test(text)) return c.isFloor ? { error: 'This benefit is required by law and cannot be Not offered.' } : { patch: { state: 'notOffered' } };
+  if (IN_KIND.test(text)) return allowed('InKind') ? { patch: { state: 'offered', valueType: 'InKind' } } : { error: 'This benefit cannot be given in kind.' };
+  const tier = c.allowedCoverageTiers.find(x => x.toLowerCase() === text.toLowerCase());
+  if (tier && allowed('CoverageTier')) return { patch: { state: 'offered', valueType: 'CoverageTier', coverageTier: tier } };
+  const percent = /^(.+?)\s*[%٪]$/.exec(text);
+  if (percent) {
+    const n = asciiDigits(percent[1]);
+    if (!allowed('PercentOfBasic')) return { error: 'This benefit cannot be a percentage of basic salary.' };
+    return /^\d+(\.\d+)?$/.test(n) && Number(n) > 0 && Number(n) <= 100
+      ? { patch: { state: 'offered', valueType: 'PercentOfBasic', percent: String(Number(n)) } }
+      : { error: 'Enter a percentage of basic salary above 0 and at most 100.' };
+  }
+  const count = /^(?:[x×]\s*(\S+)|(\S+?)\s*[x×])(?:\s+(.+))?$/i.exec(text);
+  if (count) {
+    if (!allowed('Quantity')) return { error: 'This benefit is not given as a number of items.' };
+    const n = asciiDigits(count[1] ?? count[2]);
+    if (!/^\d+$/.test(n) || Number(n) < 1 || Number(n) > 99) return { error: 'Enter how many (1 to 99).' };
+    const cls = count[3]?.trim();
+    const tierFor = cls ? c.allowedCoverageTiers.find(x => x.toLowerCase() === cls.toLowerCase()) : undefined;
+    if (cls && !tierFor) return { error: 'That class does not apply to this benefit.' };
+    return { patch: { state: 'offered', valueType: 'Quantity', quantity: n, ...(tierFor ? { coverageTier: tierFor } : {}) } };
+  }
+  const n = asciiDigits(text);
+  if (/^\d+(\.\d{1,2})?$/.test(n) && Number(n) > 0) {
+    if (allowed('Amount')) return { patch: { state: 'offered', valueType: 'Amount', amount: String(Number(n)) } };
+    if (allowed('Quantity') && /^\d+$/.test(n) && Number(n) <= 99) return { patch: { state: 'offered', valueType: 'Quantity', quantity: n } };
+    return { error: 'This benefit is not given as an amount.' };
+  }
+  return { error: 'This value could not be read.' };
+}
+
+/**
+ * Reads pasted Excel cells or a CSV file into draft changes. The first row names the grades (code or name), the first
+ * column the benefits (code, or the English or Arabic name). Nothing is published: the changes land in the grid as
+ * unpublished edits, and every value that could not be read is reported with its row and column.
+ */
+export function importGrid(text: string, components: MatrixComponent[], grades: MatrixGrade[]): GridImport {
+  const [header, ...body] = splitTable(text);
+  const result: GridImport = { patches: [], errors: [] };
+  if (!header) return result;
+  const norm = (v: string) => v.trim().toLowerCase();
+  const gradeAt = header.map((h, i) => i === 0 ? undefined : grades.find(g => [g.code, g.name, g.nameAr ?? ''].some(x => x && norm(x) === norm(h))));
+  body.forEach((cells, r) => {
+    const label = cells[0] ?? '';
+    const c = components.find(x => !x.isLoanFacility && [x.code, x.nameEn, x.nameAr].some(n => n && norm(n) === norm(label)));
+    if (!c) {
+      if (label.trim()) result.errors.push({ row: r + 2, column: 1, benefit: label, grade: '', message: 'This benefit is not in the grid.' });
+      return;
+    }
+    cells.slice(1).forEach((cell, i) => {
+      const g = gradeAt[i + 1];
+      if (!cell.trim()) return;
+      if (!g) { result.errors.push({ row: r + 2, column: i + 2, benefit: c.code, grade: header[i + 1] ?? '', message: 'This grade is not in the grid.' }); return; }
+      const parsed = parseCellText(cell, c);
+      if (parsed.error) result.errors.push({ row: r + 2, column: i + 2, benefit: c.code, grade: g.code, message: parsed.error });
+      else if (parsed.patch) result.patches.push({ key: cellKey(g.id, c.code), patch: parsed.patch });
+    });
+  });
+  return result;
 }

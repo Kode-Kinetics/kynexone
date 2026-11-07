@@ -713,9 +713,15 @@ public sealed class PayrollRunProcessor
         // in the payroll run could ever have read them, because the run did not know the day type.
         var periodOvertimeRequests = await Op(_db.OvertimeRequests).AsNoTracking()
             .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null)) && r.WorkDate >= periodStart && r.WorkDate <= periodEnd)
-            .Select(r => new { r.Id, r.WorkDate })
+            .Select(r => new { r.Id, r.WorkDate, r.OvertimePolicyId })
             .ToListAsync(cancellationToken);
         var periodOvertimeRequestIds = periodOvertimeRequests.Select(r => r.Id).ToList();
+        // OVT-04: overtime worked in this period that is still awaiting approval - surfaced as a warning (same query in /validate).
+        var pendingOvertimeByEmp = await Op(_db.OvertimeRequests).AsNoTracking()
+            .Where(r => r.TenantId == tenantId && (r.CompanyId == company.Id || (allowLegacyUnscopedEmployees && r.CompanyId == null))
+                && r.WorkDate >= periodStart && r.WorkDate <= periodEnd && r.Status.StartsWith("Pending") && employeeIdsForRun.Contains(r.EmployeeId))
+            .GroupBy(r => r.EmployeeId).Select(g => new { EmployeeId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.EmployeeId, x => x.Count, cancellationToken);
         var overtimeWorkDates = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.WorkDate);
         // The company's own holidays (active calendars, company-wide or this company's), read by the same function attendance uses.
         var periodPublicHolidays = await CompanyPayrollRules.HolidayDatesAsync(_db, tenantId, company.Id, periodStart, periodEnd, cancellationToken);
@@ -736,6 +742,19 @@ public sealed class PayrollRunProcessor
         var standardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240;
         var otPolicyBasis = otPolicy?.HourlyRateBasis;
         var otPolicyFixedHourlyRate = otPolicy?.FixedHourlyRate ?? 0m;
+        // OVT-05: each overtime request is priced under the policy that was applied to IT. The default above is
+        // only the fallback for a request with no (or an unreadable) policy. No active/deleted filter here: a
+        // policy turned off since the request was filed is still the one that request was approved under.
+        var otDefaultTerms = new OvertimePolicyTerms(otPolicyBasis, otPolicyFixedHourlyRate, standardMonthlyHours);
+        var otRequestPolicyIds = periodOvertimeRequests.ToDictionary(r => r.Id, r => r.OvertimePolicyId);
+        var otPolicyIdsInUse = otRequestPolicyIds.Values.Where(v => v.HasValue).Select(v => v!.Value).Distinct().ToList();
+        var otTermsByPolicy = otPolicyIdsInUse.Count == 0
+            ? new Dictionary<Guid, OvertimePolicyTerms>()
+            : (await _db.OvertimePolicies.AsNoTracking()
+                .Where(p => p.TenantId == tenantId && otPolicyIdsInUse.Contains(p.Id))
+                .Select(p => new { p.Id, p.HourlyRateBasis, p.FixedHourlyRate, p.StandardMonthlyHours })
+                .ToListAsync(cancellationToken))
+                .ToDictionary(p => p.Id, p => new OvertimePolicyTerms(p.HourlyRateBasis, p.FixedHourlyRate, p.StandardMonthlyHours));
 
         // ── OT/LOP statutory rules from country pack config ───────────────────
         // Read from StatutoryRule table (tenant-overridable).  Fallback defaults are
@@ -769,6 +788,8 @@ public sealed class PayrollRunProcessor
         var otBaseIsFullWage = otContext.BaseIsFullWage;
         // Hourly-rate divisor: the statutory hours, unless the company's OT policy is more generous.
         standardMonthlyHours = OvertimeStatutoryContextResolver.EffectiveMonthlyHours(standardMonthlyHours, otContext.StandardMonthlyHoursOverride);
+        // The fallback terms carry the RAW policy hours: HourRate applies the statutory override itself, per policy.
+        otDefaultTerms = otDefaultTerms with { StandardMonthlyHours = otPolicy?.StandardMonthlyHours ?? 240 };
         // LOP day-rate divisor: basic ÷ lopDayDivisor per absent day.
         // [FLAG-COMPLIANCE-KSA: basic/30 is common KSA practice but court precedent varies — VERIFY]
         var lopDayDivisor = (int)(await _ruleReader.GetDecimalAsync(
@@ -798,6 +819,25 @@ public sealed class PayrollRunProcessor
         var payComponents = useComponentEngine
             ? await LoadPayComponentsAsync(tenantId, company.Id, periodStart, cancellationToken)
             : (IReadOnlyList<PayComponent>)Array.Empty<PayComponent>();
+
+        // ── Customer-defined monthly cash allowances (ALW_*) ─────────────────────────────────────────
+        // The money is the employee's own approved salary lines (employee_salary_allowances on the salary record in force), never the
+        // catalogue: the ALW_ definition is a grade-package row the engine emits nothing for. Loaded once, read-only, so safe across an
+        // execution-strategy retry. A tenant with no rows loads an empty lookup and nothing below moves.
+        var salaryRecordIds = salaryAssignments.Select(x => x.Id).Distinct().ToList();
+        var cashAllowancesByRecord = (salaryRecordIds.Count == 0
+                ? new List<EmployeeSalaryAllowance>()
+                : await _db.EmployeeSalaryAllowances.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && salaryRecordIds.Contains(x.SalaryStructureId))
+                    .ToListAsync(cancellationToken))
+            .ToLookup(x => x.SalaryStructureId);
+        var cashAllowanceCodes = cashAllowancesByRecord.SelectMany(g => g).Select(x => x.Code).Distinct().ToList();
+        // The definition VERSION in effect for the period start (a Finance correction of the GL driver applies from a month on): every employee's line in
+        // this run posts to the driver the definition has for this period.
+        var cashAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, cashAllowanceCodes, cancellationToken);
+        var cashAllowanceDefinitions = cashAllowanceCodes
+            .Select(code => CashAllowanceDefinitions.InEffect(cashAllowanceVersions[code], periodStart))
+            .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
 
         // ════ POD-C3 ══════════════════════════════════════════════════════════════════════════════
         // Everything from here to the transaction is INERT for a run with no joiner, no leaver and no
@@ -913,6 +953,23 @@ public sealed class PayrollRunProcessor
                     "arrears line. [FLAG-COMPLIANCE-KSA]"));
         }
         var arrearsByEmp = arrears.Settled.GroupBy(l => l.EmployeeId).ToDictionary(g => g.Key, g => g.ToList());
+
+        // ── Back pay for a customer-defined cash allowance ───────────────────────────────────────────
+        // An ARREARS_ALW_* line settles an allowance that was in force in a locked period, which is NOT necessarily on the salary record in force
+        // now (a one-off keyed backdated, then a later record without it). Its definition is therefore loaded for every such code, not only for the
+        // codes on current records — and a removed or switched-off definition still counts, because the expense it posts to does not go away.
+        // Nothing below posts such a line to a fallback account: a code with no definition or no GL driver refuses the run.
+        var arrearsAllowanceCodes = arrears.Settled
+            .Select(l => PayrollArrearsComponents.SourceComponent(l.ComponentCode))
+            .Where(c => Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(c))
+            .Distinct().ToList();
+        // Which version of the definition: the one in effect for THIS run's period — back pay posts in the current period's journal, so it goes to the
+        // GL driver the definition has now. (The covered period's end-of-service flag is irrelevant: arrears never feed the end-of-service wage.) A live
+        // definition wins over a removed one, and a version in effect over one that is not.
+        var arrearsAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, arrearsAllowanceCodes, cancellationToken, includeRemoved: true);
+        var arrearsAllowanceDefinitions = arrearsAllowanceCodes
+            .Select(code => CashAllowanceDefinitions.ForPeriod(arrearsAllowanceVersions[code], periodStart))
+            .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
 
         // ── POD-B3 HANDOFF: the 1420 receivable a prior void recognised ──────────────────────────────
         // Explicit per-run flag, default OFF: recovering an overpayment out of someone's salary is an act
@@ -1039,6 +1096,55 @@ public sealed class PayrollRunProcessor
             employees, includesRecurringPay, periodStart, periodEnd, cancellationToken);
         approvedAdjustments.RemoveAll(BenefitPayroll.IsBenefit);
         approvedAdjustments.AddRange(benefitAdjustments);
+        // OVT-04 / rule 11b: with overtime.late_approval_mode = BackPay, this run pays approved overtime from an EARLIER period whose own
+        // run already consumed that month, as an "Overtime Back Pay" adjustment line. The matching impacts are marked Processed below,
+        // in this same transaction, so no later run (or rule 11b) can pay or flag them again. Refuse mode stages nothing.
+        var lateOvertimeMode = await new Zayra.Api.Infrastructure.Policy.PolicySettingsService(_db).GetEnumAsync(
+            tenantId, Zayra.Api.Infrastructure.Policy.PolicyRegistry.OvertimeLateApprovalMode, cancellationToken);
+        var lateOvertime = await OvertimeLateSettlement.StageAsync(_db, run,
+            await PriorPeriodOvertimeFinder.FindSettleableAsync(_db, tenantId, company.Id, employeeIdsForRun, periodStart,
+                cancellationToken, lateOvertimeMode, includesRecurringPay, id),
+            cancellationToken);
+        if (lateOvertime.Count > 0)
+        {
+            var lateAdjustmentIds = lateOvertime.Select(x => x.Adjustment.Id).ToHashSet();
+            approvedAdjustments.RemoveAll(a => lateAdjustmentIds.Contains(a.Id)); // a re-process already loaded the reused row
+            approvedAdjustments.AddRange(lateOvertime.Select(x => x.Adjustment));
+        }
+        // Defence in depth: late overtime carried into THIS run at approval is paid through the adjustment loader above, which reads only the run's own
+        // population. If the employee has since dropped out of it (HR excluded them, the allow-list no longer names them, their employment window is empty),
+        // the adjustment would stay attached and never be paid, and nothing would ever offer the overtime again (the prior-period finder reads PendingPayroll
+        // impacts only). Return the request to PendingPayroll and detach the adjustment, exactly as a void does, so a run that does pay the employee settles it.
+        var orphanBackPay = await _db.PayrollAdjustments
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.SourceType == PayrollAdjustmentSources.OvertimeBackPay
+                        && a.SourceId != null && a.Status == "Approved" && !employeeIdsForRun.Contains(a.EmployeeId))
+            .ToListAsync(cancellationToken);
+        if (orphanBackPay.Count > 0)
+        {
+            var orphanRequestIds = orphanBackPay.Select(a => a.SourceId!.Value).ToList();
+            var orphanImpacts = await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && x.Status == "CarriedForward" && orphanRequestIds.Contains(x.OvertimeRequestId))
+                .ToListAsync(cancellationToken);
+            foreach (var impact in orphanImpacts)
+            {
+                impact.Status = "PendingPayroll";
+                impact.PayrollRunId = null;
+                impact.ProcessedAtUtc = null;
+            }
+            foreach (var adjustment in orphanBackPay)
+                _db.AuditLogs.Add(new AuditLog
+                {
+                    TenantId = tenantId, CompanyId = run.CompanyId, EntityName = "OvertimeRequest",
+                    EntityId = adjustment.SourceId!.Value.ToString(), Action = "overtime.request.backpay_released_by_run",
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        runId = id, employeeId = adjustment.EmployeeId, amount = adjustment.Amount, adjustmentId = adjustment.Id,
+                        reason = "The employee is not in this run's population, so the run cannot pay the back pay it was carried into.",
+                    }),
+                    CreatedAtUtc = DateTime.UtcNow,
+                });
+            _db.PayrollAdjustments.RemoveRange(orphanBackPay);
+        }
         var benefitGl = benefitAdjustments.Count > 0
             ? await LoadGlResolutionContextAsync(tenantId, company.Id, cancellationToken) : null;
         PayComponentLine AdjustmentLine(PayrollAdjustment adjustment)
@@ -1124,6 +1230,41 @@ public sealed class PayrollRunProcessor
             var transport = policy.Prorates(ProratedComponentCodes.Transport)       ? proratedPkg.Transport       : fullTransport;
             var otherAllowances = policy.Prorates(ProratedComponentCodes.OtherAllowances) ? proratedPkg.OtherAllowances : fullOther;
             var gross = basic + housing + transport + otherAllowances;
+            // ── Customer-defined cash allowances: the salary record's own lines, prorated exactly as OTHER_ALLOWANCES is ────────
+            // Kept OUT of `gross`, `otherAllowances` and the statutory input on purpose: `gross` is the base PercentOfGross components
+            // follow and `otherAllowances` is a slot of the covered-wage input, and neither may move for an allowance. They join the slip
+            // aggregates and net below, exactly as configured earnings do. A supplemental run pays no recurring wage, so none.
+            var cashAllowances = new List<(string Code, string Name, decimal Amount, string GlDriverKey, bool Taxable, string Terms)>();
+            if (includesRecurringPay && salary is not null)
+                foreach (var allowance in cashAllowancesByRecord[salary.Id].OrderBy(x => x.Code, StringComparer.Ordinal))
+                {
+                    // A line with no live definition, or a definition with no GL driver, is corrupt data: paying it would post to a fallback
+                    // account (EARN:OTHER) nobody chose. Refuse the run and say whose line it is.
+                    // Defence in depth: a definition Finance has not confirmed is refused here as well, whichever door it came through.
+                    if (!cashAllowanceDefinitions.TryGetValue(allowance.Code, out var definition) || string.IsNullOrWhiteSpace(definition.GlDriverKey)
+                        || definition.FinanceConfirmedAtUtc is null)
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_definition_invalid",
+                            message = $"{e.FullName} ({e.EmployeeCode}) has the monthly allowance {allowance.Code} on their salary, but " +
+                                      (definition is null
+                                          ? "that allowance no longer exists in Benefits by grade."
+                                          : definition.FinanceConfirmedAtUtc is null
+                                              ? "Finance has not confirmed its definition."
+                                              : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                      " Nothing was saved. Restore the allowance or remove the line from the salary, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = allowance.Code,
+                        });
+                    var amount = policy.Prorates(ProratedComponentCodes.OtherAllowances)
+                        ? ProrationCalculator.ApplyScalar(allowance.Amount, factor) : allowance.Amount;
+                    if (amount > 0m)
+                        cashAllowances.Add((allowance.Code, definition.NameEn, amount, definition.GlDriverKey!, definition.IsTaxable, CashAllowanceDefinitions.Terms(definition)));
+                }
+            var cashAllowanceTotal = cashAllowances.Sum(x => x.Amount);
+            var cashAllowanceTaxable = cashAllowances.Where(x => x.Taxable).Sum(x => x.Amount);
+            // The FULL monthly amount of the lines on the salary record, for every base that is "the whole package": an absent day, short hours and
+            // overtime on a full-wage base are priced on the monthly RATE, never on a prorated or supplemental-run figure. 0 without any line.
+            var fullCashAllowances = salary is null ? 0m : cashAllowancesByRecord[salary.Id].Sum(x => x.Amount);
             var fixedDeduction = policy.Prorates(ProratedComponentCodes.FixedDeduction)
                 ? ProrationCalculator.ApplyScalar(fullFixedDeduction, factor)
                 : fullFixedDeduction;
@@ -1137,8 +1278,9 @@ public sealed class PayrollRunProcessor
             // The wage every absence-type deduction is priced on: basic by default, or the company's full monthly package
             // (Setup -> Payroll rules). ONE base feeds the absent day, late/early short hours and unpaid leave, so the
             // three never disagree on the same payslip.
+            // The customer's monthly cash allowances are part of the full package, so on the Gross base they price an absent day too (basic-only: unchanged).
             var lopBase = CompanyPayrollRules.AbsenceDeductionBaseAmount(
-                companyPayrollRules.AbsenceDeductionBase, fullBasic, fullHousing, fullTransport, fullOther);
+                companyPayrollRules.AbsenceDeductionBase, fullBasic, fullHousing, fullTransport, fullOther + fullCashAllowances);
             var shortHoursHourlyRate = standardMonthlyHours > 0 ? lopBase / standardMonthlyHours : 0m;
 
             // ── Short-hours deduction (late/early) at hourly rate ─────────────
@@ -1200,13 +1342,10 @@ public sealed class PayrollRunProcessor
             // jurisdiction whose ot.hourly_base is "wage" it is the full-wage hourly rate, not basic.
             // The full monthly wage is used for the same reason the basic hourly rate is: a joiner's
             // overtime must not be paid at a fraction of their real hourly rate.
-            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther;
+            var fullWageForOt = fullBasic + fullHousing + fullTransport + fullOther + fullCashAllowances;
             var otBaseHourly = standardMonthlyHours > 0
                 ? (otBaseIsFullWage ? fullWageForOt : fullBasic) / standardMonthlyHours
                 : 0m;
-            // The full-wage hourly rate, for the GrossSalary policy basis. Identical to otBaseHourly
-            // wherever ot.hourly_base is already "wage" (KSA), so nothing moves there.
-            var otWageHourly = standardMonthlyHours > 0 ? fullWageForOt / standardMonthlyHours : 0m;
             // A per-request ApprovedMultiplier is honoured only where it is at or above the statutory
             // floor for the day actually worked. It was previously preferred unconditionally whenever
             // non-zero, which made it a back door around the statutory rate: an approved request on a
@@ -1218,10 +1357,10 @@ public sealed class PayrollRunProcessor
             // tenant was shown one number by the overtime module and paid this one.
             // The `otBaseHourly > 0` gate is widened to admit a configured fixed rate: with no salary
             // structure the statutory base is zero, but a configured rate is still a real amount owed.
-            var overtimePay = empOtImpacts.Count > 0 && (otBaseHourly > 0m || otPolicyFixedHourlyRate > 0m)
-                ? Math.Round(empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                    otPolicyBasis, otPolicyFixedHourlyRate,
-                    otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).HourPay), 2)
+            // OVT-05: every impact is priced with its OWN request's policy (basis, fixed rate, monthly hours).
+            var otRates = empOtImpacts.ToDictionary(x => x.Id, x => OtRate(x));
+            var overtimePay = empOtImpacts.Count > 0
+                ? Math.Round(empOtImpacts.Sum(x => x.Hours * otRates[x.Id].HourPay), 2)
                 : 0m;
 
             // The payslip line must describe the arithmetic that actually produced the money. The
@@ -1232,27 +1371,23 @@ public sealed class PayrollRunProcessor
                 ? empOtImpacts.Sum(x => x.Hours * OtEffectiveMultiplier(x)) / otHours
                 : otMultiplier;
 
-            // For the same reason, the hourly rate on the line and on the payslip record must be the
-            // base the money was actually computed on — the statutory base, or the tenant's
-            // configured base where it beat it. Weighted the same way, and collapsing to
-            // otBaseHourly exactly when no configured base applies, so an unaffected run's label and
-            // PayrollSlip.HourlyRate are byte-identical.
+            // The hourly rate on the line and on the payslip record must be the base the money was
+            // actually computed on, weighted the same way (collapses to otBaseHourly when no policy differs).
             var otEffectiveBaseHourly = otHours > 0m
-                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                      otPolicyBasis, otPolicyFixedHourlyRate,
-                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).BaseHourly) / otHours
+                ? empOtImpacts.Sum(x => x.Hours * otRates[x.Id].BaseHourly) / otHours
                 : otBaseHourly;
 
-            // The SECOND term of the hour, weighted identically: what the × (multiplier − 1) uplift is
-            // measured on. Art. 107's "50% of his BASIC wage" is a separate base from the first term,
-            // and without it on the line the payslip could only state a rate × multiplier shape that
-            // the money was never computed with. Collapses to `hourlyRate` (basic hourly) wherever no
-            // configured base applies, which is every statutory run.
+            // The SECOND term of the hour, weighted identically: what the x (multiplier - 1) uplift is
+            // measured on (Art. 107's "50% of his BASIC wage").
             var otEffectiveUpliftHourly = otHours > 0m
-                ? empOtImpacts.Sum(x => x.Hours * OvertimeStatutoryCalculator.ResolveHourRate(
-                      otPolicyBasis, otPolicyFixedHourlyRate,
-                      otBaseHourly, otWageHourly, hourlyRate, OtEffectiveMultiplier(x)).UpliftBasisHourly) / otHours
+                ? empOtImpacts.Sum(x => x.Hours * otRates[x.Id].UpliftBasisHourly) / otHours
                 : hourlyRate;
+
+            OvertimeStatutoryCalculator.OvertimeHourRate OtRate(OvertimePayrollImpact impact) =>
+                OvertimeImpactPricing.HourRate(
+                    OvertimeImpactPricing.TermsFor(impact.OvertimeRequestId, otRequestPolicyIds, otTermsByPolicy, otDefaultTerms),
+                    otContext.StandardMonthlyHoursOverride, otBaseIsFullWage,
+                    fullBasic, fullWageForOt, OtEffectiveMultiplier(impact));
 
             decimal OtEffectiveMultiplier(OvertimePayrollImpact impact)
             {
@@ -1310,7 +1445,7 @@ public sealed class PayrollRunProcessor
                         factor)
                     : basic;
                 // F2 — a configured earning flagged IsTaxable is taxable income. 0 for every tenant without one.
-                taxableBase += configuredTaxableEarnings + benefitTaxableEarnings;
+                taxableBase += configuredTaxableEarnings + benefitTaxableEarnings + cashAllowanceTaxable;
                 taxDeduction = Math.Round(taxableBase * incomeTaxRate / 100m, 2);
             }
 
@@ -1478,7 +1613,7 @@ public sealed class PayrollRunProcessor
                                      + taxDeduction + gosiEmployeeTotal + adjustmentDeductions + totalBonusTax
                                      + settlementDeductionTotal + configuredDeductions;
             var earningsForPeriod = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal
-                                  + settlementEarningTotal + configuredEarnings;
+                                  + settlementEarningTotal + configuredEarnings + cashAllowanceTotal;
             var affordable = Math.Round(earningsForPeriod - deductionsBeforeDebt, 2);
 
             var loanTakenById = new Dictionary<Guid, decimal>();
@@ -1640,14 +1775,14 @@ public sealed class PayrollRunProcessor
                 // POD-C1 — the settlement's earnings ride the SAME aggregate as bonus/adjustment/arrears do,
                 // so NetSalary, the WPS/SIF amount and the payment batch total all pick them up with no new
                 // machinery. (The statutory base is untouched — see the GOSI decision on FinalSettlement.)
-                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
-                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                OtherAllowances = otherAllowances + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
+                GrossSalary = gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
                 Deductions = deductions,
                 NetSalary = netSalary,
                 EmployeeStatutoryTotal = statutoryResult.TotalEmployeeDeduction,
                 EmployerStatutoryTotal = statutoryResult.TotalEmployerContribution,
                 LoanDeductions = totalLoanDeduction,
-                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings,
+                YtdGross = ytdGross + gross + overtimePay + totalBonusGross + adjustmentEarnings + arrearsTotal + settlementEarningTotal + configuredEarnings + cashAllowanceTotal,
                 YtdDeductions = ytdDeduct + deductions,
                 YtdNet = ytdNet + netSalary,
                 Status = "Draft",
@@ -1777,6 +1912,19 @@ public sealed class PayrollRunProcessor
                     ? payComponents
                     : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
+                // Defence in depth against paying one code twice. The catalog API refuses a component on a cash allowance's code, but a row written
+                // before that rule (or by a path that skipped it) can still be in the store: the engine would pay its configured amount here and the
+                // allowance loop below would pay the employee's own line, both entering gross and net. Refuse the run rather than pay both.
+                foreach (var allowance in cashAllowances)
+                    if (computation.Earnings.Any(l => string.Equals(l.Code, allowance.Code, StringComparison.Ordinal)))
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_code_shadowed",
+                            message = $"{e.FullName} ({e.EmployeeCode}) has the monthly allowance {allowance.Code} on their salary, but a pay component with the same code " +
+                                      "would also pay them this month, so they would be paid twice. Nothing was saved. Retire the pay component (Payroll → Pay components) " +
+                                      "or give the allowance another code, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = allowance.Code,
+                        });
                 // POD-C3 — the proration narrative is applied to the ENGINE'S OUTPUT rather than inside
                 // the engine, so PayComponentEngine itself is untouched and the golden-master/equivalence
                 // tests keep their meaning. WithProrationNote is the identity function when the note is
@@ -1793,6 +1941,13 @@ public sealed class PayrollRunProcessor
                         glDriverKey: line.GlDriverKey);
             }
 
+            // ── Customer-defined cash allowances: ONE earning line each, emitted OUTSIDE both branches ──────────────────────────
+            // Like arrears and settlements, neither the legacy block nor the component engine owns them, so the two stay identical. Each
+            // line carries its definition's own GL driver (never the EARN:OTHER fallback), so the expense lands where the customer chose.
+            foreach (var allowance in cashAllowances)
+                AddEarning(tenantId, id, e.Id, allowance.Code, allowance.Name,
+                    allowance.Amount, "Salary", glDriverKey: allowance.GlDriverKey, definitionTerms: allowance.Terms);
+
             // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
             // Emitted OUTSIDE both branches, exactly like POD-B1b's bonus withholding, so the legacy
             // block and the component engine stay provably identical (neither owns arrears). One line per
@@ -1803,9 +1958,32 @@ public sealed class PayrollRunProcessor
                                            .ThenBy(a => a.ComponentCode, StringComparer.Ordinal))
             {
                 if (line.Amount <= 0m) continue;
+                // Back pay for a customer-defined cash allowance is named after it and posts to ITS GL driver (the definition's own), never EARN:OTHER.
+                PayComponent? arrearsAllowance = null;
+                if (Zayra.Api.Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(PayrollArrearsComponents.SourceComponent(line.ComponentCode)))
+                {
+                    var allowanceCode = PayrollArrearsComponents.SourceComponent(line.ComponentCode);
+                    // Same refusal as a current line: an allowance with no definition, or a definition with no GL driver, would post to a fallback
+                    // account nobody chose. Refuse the run and say whose back pay it is.
+                    if (!arrearsAllowanceDefinitions.TryGetValue(allowanceCode, out arrearsAllowance) || string.IsNullOrWhiteSpace(arrearsAllowance.GlDriverKey)
+                        || arrearsAllowance.FinanceConfirmedAtUtc is null)
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_definition_invalid",
+                            message = $"{e.FullName} ({e.EmployeeCode}) is owed back pay ({line.ComponentCode}, {line.CoveredYear}-{line.CoveredMonth:D2}) for the monthly allowance {allowanceCode}, but " +
+                                      (arrearsAllowance is null
+                                          ? "that allowance no longer exists in Benefits by grade."
+                                          : arrearsAllowance.FinanceConfirmedAtUtc is null
+                                              ? "Finance has not confirmed its definition."
+                                              : "its definition has no GL driver, so its expense has nowhere to post.") +
+                                      " Nothing was saved. Restore the allowance, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = line.ComponentCode,
+                        });
+                }
                 AddEarning(tenantId, id, e.Id, line.ComponentCode,
-                    $"Arrears — {PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
-                    line.Amount, "Arrears");
+                    $"Arrears — {arrearsAllowance?.NameEn ?? PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
+                    line.Amount, "Arrears", glDriverKey: string.IsNullOrWhiteSpace(arrearsAllowance?.GlDriverKey) ? null : arrearsAllowance!.GlDriverKey,
+                    definitionTerms: arrearsAllowance is null ? null : CashAllowanceDefinitions.Terms(arrearsAllowance));
                 arrearsLinesToPersist.Add(line);
             }
 
@@ -2010,10 +2188,19 @@ public sealed class PayrollRunProcessor
                 .Where(x => x.TenantId == tenantId && consumedOtIds.Contains(x.Id) && x.Status != "Processed")
                 .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
 
+            // OVT-04: the prior-period overtime this run pays as back pay leaves PendingPayroll here, with this run's id, in the same
+            // transaction as the slips that carry the money. Same compare-and-swap: only a row still PendingPayroll and unowned is taken.
+            var lateImpactIds = lateOvertime.Select(x => x.Source.ImpactId).ToList();
+            foreach (var x in lateOvertime)
+                Witness(PayrollConsumptionArtifacts.OvertimeImpact, x.Source.ImpactId, x.Source.EmployeeId, x.Source.Amount, "PendingPayroll");
+            var markedLateOvertime = lateImpactIds.Count == 0 ? 0 : await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && lateImpactIds.Contains(x.Id) && x.Status == "PendingPayroll" && x.PayrollRunId == null)
+                .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed").SetProperty(p => p.PayrollRunId, id).SetProperty(p => p.ProcessedAtUtc, DateTime.UtcNow), cancellationToken);
+
             // The message deliberately does not claim WHO changed the impacts: an ambiguous-commit retry of a
             // run that did commit also lands here (its own commit marked them), and reloading shows that.
             if (markedAttendance != attendanceImpactIds.Count || markedLeave != leaveImpactIds.Count
-                || markedOvertime != consumedOtIds.Count)
+                || markedOvertime != consumedOtIds.Count || markedLateOvertime != lateImpactIds.Count)
                 throw new PayrollProcessAbortException(409, new
                 {
                     error    = "payroll_impacts_changed_concurrently",
@@ -2024,6 +2211,8 @@ public sealed class PayrollRunProcessor
                     leaveMarked        = markedLeave,
                     overtimeExpected   = consumedOtIds.Count,
                     overtimeMarked     = markedOvertime,
+                    lateOvertimeExpected = lateImpactIds.Count,
+                    lateOvertimeMarked   = markedLateOvertime,
                 });
         }
         // Adjustments are NOT gated: they are already `PayrollRunId == id`-scoped, i.e. attached to THIS
@@ -2037,6 +2226,9 @@ public sealed class PayrollRunProcessor
         await _db.PayrollAdjustments
             .Where(x => x.TenantId == tenantId && consumedAdjustmentIds.Contains(x.Id))
             .ExecuteUpdateAsync(x => x.SetProperty(p => p.Status, "Processed"), cancellationToken);
+        // The back-pay adjustments staged above are tracked and not yet saved (the update above cannot reach a row that is not in the
+        // table), so they are consumed on the entity; the witness above recorded them as Approved for a void/reopen to restore.
+        foreach (var late in lateOvertime) late.Adjustment.Status = "Processed";
         var consumedEncashmentIds = approvedAdjustments
             .Where(a => employeeIdsForRun.Contains(a.EmployeeId)
                 && a.SourceType == PayrollAdjustmentSources.LeaveEncashment
@@ -2089,6 +2281,12 @@ public sealed class PayrollRunProcessor
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
             HolidayCalendarCoversPeriod    = await CompanyPayrollRules.HasHolidayInPeriodAsync(
                 _db, tenantId, company?.Id, periodStart, periodEnd, cancellationToken),
+            // Rule 11b — approved overtime from an earlier period that no run has paid (the run above
+            // loads only this period's impacts, so these would otherwise stay PendingPayroll silently).
+            PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
+                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken,
+                lateOvertimeMode, includesRecurringPay, id),
+            OvertimeLateApprovalMode       = lateOvertimeMode,
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
             EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,
@@ -2097,6 +2295,7 @@ public sealed class PayrollRunProcessor
             YtdPreCutoverExcludedEmployeeIds        = ytdSources.PreCutoverSlipsExcludedEmployeeIds,
             YtdSuggestedCutover                     = ytdSources.SuggestedCutover,
             Exclusions                              = runPopulation.Exclusions,
+            PendingOvertimeRequestsByEmployee       = pendingOvertimeByEmp,
             NotEligibleSelections                   = runPopulation.NotEligible,
             SiblingRunCount                         = siblingRuns.Count,
             StatutoryComputedIncrementally          = statutoryComputedIncrementally,
@@ -2657,6 +2856,27 @@ public sealed class PayrollRunProcessor
         return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
 
+    /// <summary>
+    /// The operator's include/exclude intent for one run, and THE rule for who it admits: any Include row makes the run an allow-list (only the named
+    /// employees), and an Exclude row removes an employee either way. <see cref="ResolveRunPopulationAsync"/> applies it to the eligible set at Process;
+    /// the late-overtime approval asks it whether a Draft run would pay an employee before carrying back pay into that run.
+    /// </summary>
+    internal sealed class RunSelectionIntent
+    {
+        private readonly HashSet<int> _include;
+        private readonly HashSet<int> _exclude;
+
+        private RunSelectionIntent(HashSet<int> include, HashSet<int> exclude) { _include = include; _exclude = exclude; }
+
+        public static RunSelectionIntent From(IEnumerable<PayrollRunEmployeeSelection> selections) => new(
+            selections.Where(s => s.Mode == PayrollRunSelectionModes.Include).Select(s => s.EmployeeId).ToHashSet(),
+            selections.Where(s => s.Mode == PayrollRunSelectionModes.Exclude).Select(s => s.EmployeeId).ToHashSet());
+
+        public bool IsAllowList => _include.Count > 0;
+        public bool IsExcluded(int employeeId) => _exclude.Contains(employeeId);
+        public bool Admits(int employeeId) => !_exclude.Contains(employeeId) && (!IsAllowList || _include.Contains(employeeId));
+    }
+
     /// <summary>The resolved population of a run plus every unhonoured/deliberate deviation from it.</summary>
     internal sealed record RunPopulation(
         List<Employee> Employees,
@@ -2688,13 +2908,10 @@ public sealed class PayrollRunProcessor
             return new RunPopulation(eligible, new(), new(), selections, "AllEligible");
 
         var eligibleById = eligible.ToDictionary(e => e.Id);
-        var includeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Include).Select(s => s.EmployeeId).ToHashSet();
-        var excludeIds = selections.Where(s => s.Mode == PayrollRunSelectionModes.Exclude).Select(s => s.EmployeeId).ToHashSet();
+        var intent = RunSelectionIntent.From(selections);
 
-        var mode = includeIds.Count > 0 ? "AllowList" : "DenyList";
-        var population = (includeIds.Count > 0 ? eligible.Where(e => includeIds.Contains(e.Id)) : eligible.AsEnumerable())
-            .Where(e => !excludeIds.Contains(e.Id))
-            .ToList();
+        var mode = intent.IsAllowList ? "AllowList" : "DenyList";
+        var population = eligible.Where(e => intent.Admits(e.Id)).ToList();
         var populationIds = population.Select(e => e.Id).ToHashSet();
 
         var exclusions  = new List<PayrollRunExclusion>();
@@ -2723,11 +2940,11 @@ public sealed class PayrollRunProcessor
 
         // An eligible employee dropped by ALLOW-LIST mode without ever being named is still a hold-out and
         // must be reported — silence here is exactly the "silently unpay the company" failure mode.
-        if (includeIds.Count > 0)
+        if (intent.IsAllowList)
         {
             foreach (var e in eligible)
             {
-                if (populationIds.Contains(e.Id) || excludeIds.Contains(e.Id)) continue;
+                if (populationIds.Contains(e.Id) || intent.IsExcluded(e.Id)) continue;
                 exclusions.Add(new PayrollRunExclusion(e.Id, e.EmployeeCode, e.FullName,
                     "Not named in this run's allow-list."));
             }
@@ -2927,8 +3144,8 @@ public sealed class PayrollRunProcessor
     internal static string WithProrationNote(string name, string note)
         => string.IsNullOrEmpty(note) ? name : $"{name} ({note})";
 
-    internal void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null) =>
-        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey });
+    internal void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null, string? definitionTerms = null) =>
+        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey, DefinitionTerms = definitionTerms });
 
     internal void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false, string? glDriverKey = null) =>
         _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution, GlDriverKey = glDriverKey });
@@ -2942,6 +3159,9 @@ public sealed class PayrollRunProcessor
             "TRANSPORT"        => "EARN:TRANSPORT",
             "OTHER_ALLOWANCES" => "EARN:OTHER_ALLOWANCES",
             "OVERTIME"         => "EARN:OVERTIME",
+            // Overtime approved after its period closed is carried forward as an adjustment (code
+            // ADJ_ + "Overtime Back Pay"); it is still overtime expense, not "other earnings".
+            "ADJ_OVERTIME_BACK_PAY" => "EARN:OVERTIME",
             // POD-C3 — arrears are the SAME expense as the component they settle, just paid late. Routing
             // them to EARN:OTHER (5099) would move a retro basic-salary increase out of Basic Salary
             // Expense and quietly distort every payroll cost report. The GL stays balanced either way —

@@ -28,6 +28,9 @@ namespace Zayra.Api.Infrastructure.Payroll;
 /// </summary>
 public static class PayrollValidationEngine
 {
+    /// <summary>PAY-08 — nationality text that is neither Saudi, GCC nor a known country.</summary>
+    public const string NationalityUnrecognised = "NATIONALITY_UNRECOGNISED";
+
     /// <summary>
     /// S1/A2(c) — the LAST-RESORT default only. The ceiling was a compiled constant checked against a
     /// tenant-overridable statutory rule: when GOSI moves the ceiling, the rule updates and a compiled
@@ -61,6 +64,9 @@ public static class PayrollValidationEngine
     /// contributory wage (SAR 1,500 annuities / SAR 400 occupational hazards, secondary sources).</summary>
     public const string GosiBelowMinimumContributoryWage = "GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE";
 
+    /// <summary>Rule 11b — approved overtime dated before this run's period that no run has paid (Error, overridable).</summary>
+    public const string PriorPeriodOvertimeUnpaid = "OVERTIME_PRIOR_PERIOD_UNPAID";
+
     /// <summary>
     /// Warning: an attendance day this period was recomputed after payroll paid it and now differs from what was paid
     /// (an unresolved <c>PaidAttendanceChanged</c> attendance exception). Never blocks; the difference is a payroll
@@ -74,6 +80,25 @@ public static class PayrollValidationEngine
     /// says out loud what it is not deducting, and HR can correct the punches before it is approved.
     /// </summary>
     public const string NoHolidayCalendar = "WARN_NO_HOLIDAY_CALENDAR";
+
+    /// <summary>
+    /// Warning, never blocks: overtime for this period is still awaiting approval. Once the period closes it can only
+    /// be settled late (per <c>overtime.late_approval_mode</c>), so HR is told before the run is approved.
+    /// </summary>
+    public const string OvertimePendingApproval = "WARN_OVERTIME_PENDING_APPROVAL";
+    /// <summary>
+    /// The tail of rule 11b's message, naming where the behaviour lives. In Refuse mode nothing pays the overtime automatically; in
+    /// BackPay mode a run that pays recurring items would have paid it, so reaching here means this run does not (a supplemental run)
+    /// or the overtime could not be priced (no amount) or is held by an adjustment on another run.
+    /// </summary>
+    private static string LateApprovalAdvice(PayrollValidationContext ctx) =>
+        string.Equals(ctx.OvertimeLateApprovalMode, "BackPay", StringComparison.Ordinal)
+            ? $"The company setting overtime.late_approval_mode is BackPay, which pays such overtime in the next run that pays recurring items; " +
+              "this run does not, or the overtime has no amount to pay or is already attached to another run. Settle it through the overtime record. " +
+              "If it was already settled outside payroll, override this error with a written basis."
+            : $"The company setting overtime.late_approval_mode is {ctx.OvertimeLateApprovalMode}, so no run pays it automatically: settle it through the overtime record, " +
+              "or set overtime.late_approval_mode to BackPay so the next run pays it. If it was already settled outside payroll, override this error with a written basis.";
+
     public const string MissingPunchHeld = Zayra.Api.Infrastructure.Attendance.AttendanceImpactReconciliation.HeldCode;
     private const int GosiRateStalenessThresholdMonths = 18;
 
@@ -281,6 +306,17 @@ public static class PayrollValidationEngine
                 Warn("MISSING_NATIONALITY",
                     $"Employee {slip.EmployeeCode} has no nationality recorded. " +
                     "Nationality drives GOSI classification (Saudi vs GCC vs expat) and must be set before processing.",
+                    slip.EmployeeId);
+
+            // PAY-08: free text that is not Saudi, GCC or a known country is NEVER guessed. DeriveClassification would read
+            // it as an expatriate (no GOSI), so a typo for "Saudi" would silently drop the contribution. An Error, because
+            // the figure on the slip may be wrong; overridable with a reason (a real but unlisted nationality is a judgement).
+            if (isKsa && emp is not null && !string.IsNullOrWhiteSpace(emp.Nationality)
+                && Zayra.Api.Application.Onboarding.NationalityClasses.Of(emp.Nationality) == Zayra.Api.Application.Onboarding.NationalityClasses.Unknown)
+                Err(NationalityUnrecognised,
+                    $"Employee {slip.EmployeeCode} has the nationality \"{emp.Nationality.Trim()}\", which is not recognised as Saudi, GCC or a known country, " +
+                    "so GOSI cannot be classified and it was NOT assumed to be an expatriate. Correct the nationality on the employee record " +
+                    "(pick it from the list) and reprocess the run, or confirm the classification with a reason.",
                     slip.EmployeeId);
 
             // Rule 2: GOSI rate check — KSA runs only
@@ -609,6 +645,13 @@ public static class PayrollValidationEngine
                     emp.Id);
         }
 
+        // ── Rule 10c: overtime still pending approval for this period ────────────
+        foreach (var pending in ctx.PendingOvertimeRequestsByEmployee.Where(kv => kv.Value > 0).OrderBy(kv => kv.Key))
+            Warn(OvertimePendingApproval,
+                $"{CodeFor(pending.Key)}: {pending.Value} overtime request(s) worked in {ctx.Run.Year}-{ctx.Run.Month:D2} are still " +
+                "awaiting approval. Approve or reject them before this period is closed; after that they can only be settled late, " +
+                "as the company's late-approval setting allows.", pending.Key);
+
         // ── Rule 10a: no public holiday entered for the period ───────────────────
         // WARN only, never a block: holidays are entered per the company's own policy (Eid dates move with the
         // moon and are announced late), so a month with none may be right. It is raised so it is never silent:
@@ -662,6 +705,35 @@ public static class PayrollValidationEngine
                     "Set basic salary before approving this run.",
                     kvp.Key);
             }
+        }
+
+        // ── Rule 11b: approved overtime from an EARLIER period that no run has paid ─────────────────
+        // ERROR (overridable with a written reason). The run pays only the impacts whose work date falls
+        // inside its own period, so overtime approved after that period's run locked stayed
+        // "PendingPayroll" for ever and nobody was told. The run names it and refuses to approve past it
+        // silently.
+        //
+        // The text deliberately does NOT point at a payroll adjustment: nothing moves the overtime impact out
+        // of PendingPayroll or links it to an adjustment, so paying it that way leaves the impact open to be
+        // paid again. The settlement path is the overtime record; an override is for overtime already settled
+        // outside payroll, and carries the written basis.
+        foreach (var byEmp in ctx.PriorPeriodUnpaidOvertime.GroupBy(x => x.EmployeeId))
+        {
+            empById.TryGetValue(byEmp.Key, out var otEmp);
+            var minutes = byEmp.Sum(x => x.Minutes);
+            var dates = string.Join(", ", byEmp.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")));
+            // Overtime filed under another company (the employee moved after filing it) is never paid by this run, in any mode:
+            // say so, rather than advising a setting that cannot pay it.
+            var otherCompany = byEmp.Where(x => x.OtherCompanyStamp).ToList();
+            var otherCompanyNote = otherCompany.Count == 0 ? string.Empty
+                : $" {otherCompany.Sum(x => x.Minutes) / 60m:0.00##} h of it ({string.Join(", ", otherCompany.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")))}) " +
+                  "belongs to another company's period (the request is recorded under the company the employee used to work for), so no run of this company pays it: " +
+                  "settle it through the overtime record, or override this error with a written basis if it was already settled.";
+            Err(PriorPeriodOvertimeUnpaid,
+                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
+                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it." +
+                (otherCompany.Count == byEmp.Count() ? string.Empty : " " + LateApprovalAdvice(ctx)) + otherCompanyNote,
+                byEmp.Key);
         }
 
         // ── Rule 12 (POD-B2 / M2): cross-run double-pay of recurring salary ───────
@@ -826,6 +898,12 @@ public sealed record PayrollValidationContext(
     /// </summary>
     public IReadOnlySet<int> UnverifiedImportedBankDetails { get; init; } = new HashSet<int>();
 
+    /// <summary>
+    /// Overtime requests still awaiting approval per employee, for work dates in this pay period. Process and
+    /// /validate must populate it identically. Empty (the default) raises nothing.
+    /// </summary>
+    public IReadOnlyDictionary<int, int> PendingOvertimeRequestsByEmployee { get; init; } = new Dictionary<int, int>();
+
     /// <summary>Total approved OT hours per employee in this pay period.</summary>
     public IReadOnlyDictionary<int, decimal> OvertimeHoursByEmployee { get; init; } =
         new Dictionary<int, decimal>();
@@ -946,6 +1024,16 @@ public sealed record PayrollValidationContext(
     /// holiday is an absence and work on it is paid as an ordinary day.
     /// </summary>
     public bool? HolidayCalendarCoversPeriod { get; init; }
+
+    /// <summary>
+    /// Approved overtime impacts still <c>PendingPayroll</c> whose work date is BEFORE this run's period (Rule 11b,
+    /// <see cref="PayrollValidationEngine.PriorPeriodOvertimeUnpaid"/>). MUST be populated identically by Process and
+    /// /validate (<see cref="PriorPeriodOvertimeFinder"/>), which replaces the stored results wholesale.
+    /// </summary>
+    public IReadOnlyList<PriorPeriodOvertime> PriorPeriodUnpaidOvertime { get; init; } = Array.Empty<PriorPeriodOvertime>();
+
+    /// <summary>The tenant's <c>overtime.late_approval_mode</c> (Refuse | BackPay), named in rule 11b's message.</summary>
+    public string OvertimeLateApprovalMode { get; init; } = "Refuse";
 }
 
 /// <summary>

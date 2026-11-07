@@ -46,6 +46,14 @@ public static class EmployeeChangeBaseline
     private const string ProfilePrefix = "profile:";
     private const string SalaryPrefix = "salary:";
 
+    /// <summary>
+    /// The baseline key of the allowance lines on the salary schedule. It is also the FORMAT VERSION MARKER: a baseline sealed before allowances were part of it has
+    /// no such key. <see cref="Drifted"/> does not count that absence as a change (an old baseline must not be refused just because the format grew), so such a baseline
+    /// verifies exactly as it did — it simply holds no allowance state to compare. Every baseline sealed from now on carries the key and detects an allowance added,
+    /// changed or removed in between. Data Protection's purpose string is NOT bumped: that would make every stored baseline unreadable, which fails them all.
+    /// </summary>
+    public const string AllowancePrefix = "allowances:";
+
     /// <summary>Reads row-backed salary data as well as the scalar/profile fields in the same baseline.</summary>
     public static async Task<IReadOnlyDictionary<string, string>?> CaptureAsync(
         ZayraDbContext db, Employee employee, EmployeePayrollProfile? profile, IEnumerable<string> keys, CancellationToken ct)
@@ -57,8 +65,9 @@ public static class EmployeeChangeBaseline
         if (keyList.Contains(EmployeeSalaryBreakdownChanges.Key))
         {
             values[EmployeePrefix + EmployeeSalaryBreakdownChanges.Key] = Canonical(employee.Salary);
-            values[SalaryPrefix + EmployeeSalaryBreakdownChanges.Key] = EmployeeSalaryBreakdownChanges.CanonicalSchedule(
-                await EmployeeSalaryBreakdownChanges.ReadScheduleAsync(db, employee, ct));
+            var schedule = await EmployeeSalaryBreakdownChanges.ReadScheduleAsync(db, employee, ct);
+            values[SalaryPrefix + EmployeeSalaryBreakdownChanges.Key] = EmployeeSalaryBreakdownChanges.CanonicalSchedule(schedule);
+            values[AllowancePrefix + EmployeeSalaryBreakdownChanges.Key] = EmployeeSalaryBreakdownChanges.CanonicalAllowances(schedule);
         }
         return values;
     }
@@ -121,6 +130,8 @@ public static class EmployeeChangeBaseline
     {
         if (current is null) return baseline.Keys.Select(FieldName).Distinct(StringComparer.Ordinal).ToList();
         return baseline.Keys.Union(current.Keys, StringComparer.Ordinal)
+            // A baseline sealed before allowances were part of it has no allowance key: that is the old format, not a change (see AllowancePrefix).
+            .Where(k => !(k.StartsWith(AllowancePrefix, StringComparison.Ordinal) && !baseline.ContainsKey(k)))
             .Where(k => !current.TryGetValue(k, out var now)
                         || !((baseline.TryGetValue(k, out var before) && string.Equals(before, now, StringComparison.Ordinal))
                              || (alsoExpected is not null && alsoExpected.TryGetValue(k, out var scheduled)

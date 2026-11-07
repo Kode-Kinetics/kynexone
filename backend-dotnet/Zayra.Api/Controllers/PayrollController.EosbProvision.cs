@@ -101,6 +101,9 @@ public partial class PayrollController
             .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
         // The catalog version in effect for the month being measured — the wage on the period-end date.
         var components = await LoadPayComponentsAsync(tenantId, companyId, periodStart, ct);
+        // The cash allowances on each salary record in force whose definition counts in the end-of-service wage (none for most tenants).
+        var eosbCashAllowances = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.EosbIncludedAsync(
+            _db, tenantId, salaries.Values.Select(x => x.Id).ToList(), periodStart, ct);
         var carriedStarts = (await _db.EmployeeEosbOpeningBalances.AsNoTracking()
                 .Where(x => x.TenantId == tenantId && employeeIds.Contains(x.EmployeeId) && x.PriorServiceStartDate != null)
                 .Select(x => new { x.EmployeeId, x.AsAtDate, x.PriorServiceStartDate })
@@ -129,7 +132,9 @@ public partial class PayrollController
 
             var (serviceStart, _) = PickEosbServiceStart(employee, carriedStarts.GetValueOrDefault(employee.Id));
             if (serviceStart > periodEnd) continue;
-            var wageBasis = EosbWageBasisFrom(components, salaries.GetValueOrDefault(employee.Id), employee);
+            var salaryOfEmployee = salaries.GetValueOrDefault(employee.Id);
+            var wageBasis = EosbWageBasisFrom(components, salaryOfEmployee, employee,
+                salaryOfEmployee is null ? null : eosbCashAllowances.GetValueOrDefault(salaryOfEmployee.Id));
             var unpaid = UnpaidLeaveDaysWithin(
                 unpaidRequests.GetValueOrDefault(employee.Id) ?? new List<(DateOnly, DateOnly, decimal)>(),
                 serviceStart, periodEnd);
@@ -143,7 +148,7 @@ public partial class PayrollController
             obligations.Add(new EosbObligation(
                 employee.Id, employee.EmployeeCode, result.TotalGratuity, carried,
                 IsCatchUp: history.Count == 0,
-                WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.ConfiguredWage,
+                WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.FallbackWage,
                 ServiceYears: (decimal)years, Rule: result.ApplicableRule,
                 CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
         }

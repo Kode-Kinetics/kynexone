@@ -5,7 +5,7 @@ import { defineConfig, devices } from '@playwright/test';
 // checkout, so it exercises the code under review rather than a prebuilt image.
 const port = Number(process.env.MATRIX_FIXTURE_PORT ?? 5197);
 export default defineConfig({
-  testDir: '.', testMatch: /benefits-by-grade-matrix\.spec\.ts/, workers: 1, retries: 0,
+  testDir: '.', testMatch: /(benefits-by-grade-matrix|benefits-cash-allowance-finance)\.spec\.ts/, workers: 1, retries: 0,
   reporter: 'list', timeout: 120_000,
   outputDir: '/tmp/kynex-matrix-playwright-results',
   use: { baseURL: `http://localhost:${port}`, trace: 'retain-on-failure', actionTimeout: 15_000 },

@@ -245,7 +245,7 @@ public class R4RenewalRadarTests
     [InlineData("Saudi", "Egyptian", null)]   // contradiction → confirm
     [InlineData("", "Bahraini", null)]        // GCC national → confirm
     [InlineData("", "", null)]                // nothing on file → confirm
-    [InlineData("", "Saudi national", null)]  // not a recognised spelling → confirm, never guessed
+    [InlineData("", "Saudi national", "Saudi")]  // owner-approved alias: "Saudi National" is Saudi
     [InlineData("", "Unknown", null)]
     [InlineData("", "-", null)]
     [InlineData("", "Suadi", null)]           // a typo is not Saudi and not "non-Saudi" either

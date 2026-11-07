@@ -49,9 +49,15 @@ public static class PayrollValidationOverridePolicy
         // A dual national or a GOSI exemption certificate is a real, documentable judgement.
         "GOSI_MISSING_FOR_SAUDI",
         "GOSI_APPLIED_TO_EXPAT",
+        // PAY-08 — free-text nationality the pack cannot place (not Saudi, GCC or a known country). The approver may
+        // confirm the classification with a reason; without that the run does not approve.
+        PayrollValidationEngine.NationalityUnrecognised,
         // Overtime hours approved against a zero basic (allowance-only contractor) — the approver can
         // state the rate basis rather than being blocked out of the month.
         "OT_RATE_UNRESOLVED",
+        // Approved overtime from an earlier period that no run paid — overridable when it was settled outside
+        // payroll (or is being paid by an adjustment in this run), with the basis recorded.
+        PayrollValidationEngine.PriorPeriodOvertimeUnpaid,
         // A lapsed salary assignment on someone the run is not actually paying a structure-derived wage to.
         "MISSING_SALARY_STRUCTURE",
         // Company country set at the group rather than the entity — a configuration judgement, and the

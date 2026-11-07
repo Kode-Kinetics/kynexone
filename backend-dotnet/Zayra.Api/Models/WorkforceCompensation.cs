@@ -401,6 +401,13 @@ public class PayrollEarning : ITenantOwned
     /// run that has already been processed.
     /// </summary>
     public string? GlDriverKey { get; set; }
+    /// <summary>
+    /// The paying terms of the customer-defined cash allowance definition (<see cref="PayComponent"/> version) this line was calculated with, pinned at
+    /// Process from the very version the processor read (see <c>CashAllowanceDefinitions.Terms</c>). Null on every other line. Approval compares it with the
+    /// version applicable to the run's month today, so a correction that landed after the definitions were read is caught however its timestamp compares
+    /// with the run's completion time.
+    /// </summary>
+    public string? DefinitionTerms { get; set; }
     /// <summary>Cost-accounting M1: the cost centre stamped on this line at Lock (null = uncosted).</summary>
     public Guid? CostCenterId { get; set; }
     /// <summary>Cost-accounting M1: how <see cref="CostCenterId"/> was resolved — Employee, Position, Department,
@@ -619,6 +626,8 @@ public class PayrollAdjustment : ITenantOwned
 public static class PayrollAdjustmentSources
 {
     public const string LeaveEncashment = "LeaveEncashment";
+    /// <summary>OVT-04: overtime approved after its own period closed, carried into the next open run.</summary>
+    public const string OvertimeBackPay = "OvertimeBackPay";
 }
 
 public class PayrollApproval : ITenantOwned

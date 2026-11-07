@@ -81,11 +81,11 @@ export const csvFile = (...rows: string[]): string => [TEMPLATE_HEADER, ...rows]
 
 // ── Employees ───────────────────────────────────────────────────────────────────────────────────────
 
-export interface Emp { id: number; code: string }
+export interface Emp { id: number; code: string; name?: string }
 
 const numericSuffix = (code: string): number => Number(/(\d+)$/.exec(code)?.[1] ?? 0);
 
-interface EmployeePage { items?: Array<{ id?: number; employeeCode?: string }>; total?: number }
+interface EmployeePage { items?: Array<{ id?: number; employeeCode?: string; fullName?: string }>; total?: number }
 
 export async function activeEmployees(api: APIRequestContext, token: string): Promise<Emp[]> {
   const found: Emp[] = [];
@@ -94,7 +94,7 @@ export async function activeEmployees(api: APIRequestContext, token: string): Pr
     if (response.status() !== 200) throw new Error(`GET /api/employees -> ${response.status()}: ${(await response.text()).slice(0, 200)}`);
     const body = await response.json() as EmployeePage;
     const items = body.items ?? [];
-    for (const e of items) if (typeof e.id === 'number' && e.employeeCode) found.push({ id: e.id, code: e.employeeCode });
+    for (const e of items) if (typeof e.id === 'number' && e.employeeCode) found.push({ id: e.id, code: e.employeeCode, name: e.fullName });
     if (items.length === 0 || found.length >= (body.total ?? 0)) break;
   }
   return found.sort((a, b) => numericSuffix(a.code) - numericSuffix(b.code));

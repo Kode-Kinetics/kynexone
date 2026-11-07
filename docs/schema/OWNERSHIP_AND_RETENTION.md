@@ -362,6 +362,7 @@ RLS: shape (a) for all three, plus the company-scope predicate for the two tier-
 | `grade_entitlements` | S | Close-only. Loans and frozen packages keep a witness id into it, so a cell is never deleted. |
 | `employee_entitlements` | S | Labour-law evidence of the package agreed for each term. Anonymise with the employee only after the S minimum. |
 | `contract_renewal_cases` | S | Evidence of a renewal decision, its notice and its Qiwa outcome. The referenced Qiwa evidence and notice documents must be retained at least as long. |
+| `employee_salary_allowances` | S | Owner: **Payroll Engineering**. The monthly cash allowances a salary record pays; kept as long as the salary record it belongs to (RESTRICT FK). RLS shape (a). |
 
 ### T. Selfie attendance and biometric consent (selfie attendance v2)
 

@@ -265,6 +265,18 @@ public sealed class KsaEndOfServiceCalculator : IEndOfServiceCalculator
         // Tenant configuration can only RAISE the base above statute, never lower it.
         decimal wage = Math.Max(statutoryBase, input.ConfiguredEosbWage);
 
+        // The employee's own cash allowances that the customer's definition counts in the end-of-service wage are ADDED to that wage, not
+        // folded into the configured wage above: the greater-of would otherwise lose them whenever statute is the larger. They are regular
+        // monthly cash increments (Art. 2), separate from the housing/transport/other slots, so nothing is counted twice.
+        if (input.AdditionalEosbWage > 0m)
+        {
+            wage += input.AdditionalEosbWage;
+            notices.Add($"[COUNSEL-KSA] The cash allowance(s) {string.Join(", ", input.AdditionalEosbWageCodes)}, together {input.AdditionalEosbWage:N2} a month, " +
+                        "were ADDED to the Art. 84 last-wage base because their definition is marked as counting in end of service " +
+                        "(Art. 2: \"the basic wage plus all other due increments\"). They are in addition to the statutory base " +
+                        $"({statutoryBase:N2}) or the configured wage ({input.ConfiguredEosbWage:N2}), whichever is greater.");
+        }
+
         if (includeTransport && input.Salary.TransportAllowance > 0m)
             notices.Add($"[COUNSEL-KSA] The transport allowance ({input.Salary.TransportAllowance:N2}) is INCLUDED in the " +
                         "Art. 84 last-wage base by default (Art. 2: \"the basic wage plus all other due increments\"). " +

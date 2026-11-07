@@ -168,6 +168,7 @@ public class DocumentStorageSecurityTests
                 new Claim("is_group_scope", "true"),
                 new Claim("permission", "employees.read"),
                 new Claim("permission", "employees.documents"),
+                new Claim("permission", "employees.sensitive"),   // a contract file is a protected category
             }, "Test")),
         },
     };

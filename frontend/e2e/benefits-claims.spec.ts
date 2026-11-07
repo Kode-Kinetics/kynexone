@@ -15,7 +15,7 @@ async function boot(page: Page, options: { readonly?: boolean; noReceipt?: boole
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url()), path = url.pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', ...(options.noPayrollWrite ? [] : ['payroll.write']), 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
+    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', 'entitlements.read', ...(options.noPayrollWrite ? [] : ['payroll.write']), 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
     if (path === '/api/features/disabled-keys') return reply(options.releaseA ? [] : ['release_a']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === `${base}/plans` && req.method() === 'POST') { saves.push(req.postDataJSON()); return reply({ id: 'new-plan', ...req.postDataJSON(), policyVersion: 1 }); }
@@ -478,18 +478,23 @@ test('re-creating a payslip line that already exists selects it instead of dead-
   expect(errors).toEqual([]);
 });
 
-test('with Release A the plan form sends no payment policy and points to Benefits by grade', async ({ page }) => {
+test('with Release A there is no benefit plan form or payment policy: the old address hands over to Benefits by grade', async ({ page }) => {
   const { saves, errors } = await boot(page, { releaseA: true });
   await page.goto('/setup?tab=benefitPlans');
-  await page.getByRole('button', { name: 'Add benefit plan', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'New benefit plan' });
-  await expect(dialog.getByTestId('plan-payment-in-benefits-by-grade')).toBeVisible();
-  await expect(dialog.getByLabel('How this benefit works', { exact: true })).toHaveCount(0);
-  await dialog.getByLabel('Plan code').fill('TST-CSL'); await dialog.getByLabel('Plan name').fill('Test Casual Allowance');
-  await dialog.getByRole('button', { name: 'Create plan', exact: true }).click();
-  await expect(dialog).toHaveCount(0);
-  expect(saves).toHaveLength(1);
-  expect(saves[0]).toMatchObject({ code: 'TST-CSL', name: 'Test Casual Allowance', currency: 'SAR' });
-  expect(saves[0]).not.toHaveProperty('paymentPolicy');
+  // Benefit plans is retired for a Release A tenant: Setup bounces to an available section and says so.
+  await expect(page).toHaveURL(/unavailable=benefitPlans/);
+  await expect(page.locator('[data-module-section="benefitPlans"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add benefit plan', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'New benefit plan' })).toHaveCount(0);
+  await expect(page.getByLabel('How this benefit works', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('plan-payment-in-benefits-by-grade')).toHaveCount(0);
+  // The benefits screen keeps the enrolments made before (this fixture has a plan) and points to Benefits by grade, where benefits are set.
+  await page.goto('/benefits');
+  const note = page.getByTestId('benefits-moved-note');
+  await expect(note).toBeVisible();
+  await expect(note.getByRole('link', { name: 'Open Benefits by grade', exact: true })).toHaveAttribute('href', '/benefits/by-grade');
+  await expect(page.getByRole('link', { name: 'Benefit settings', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add benefit plan', exact: true })).toHaveCount(0);
+  expect(saves, 'No benefit plan is created').toHaveLength(0);
   expect(errors).toEqual([]);
 });

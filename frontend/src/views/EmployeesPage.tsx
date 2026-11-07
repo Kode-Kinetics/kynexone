@@ -20,6 +20,9 @@ import { EmployeePackagePanel } from '../components/entitlements/EmployeePackage
 import { EmployeeBenefitsPanel } from '../components/benefits/EmployeeBenefitsPanel';
 import { EmployeeDeductionsPanel } from '../components/deductions/EmployeeDeductionsPanel';
 import { useReleaseA } from '../lib/releaseA';
+import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
+import { gradeLinesFrom, useCashAllowanceCatalog } from '../hooks/useCashAllowanceCatalog';
+import { allowanceProblems, allowancesForRequest, allowancesNeedBasic, BASIC_FIRST_KEY, shownLines, totalMonthly, type AllowanceValue } from '../lib/salaryAllowances';
 import { SALARY_AMOUNT_FIELDS, applyGradeSalaryDefaults, grossPackage, mergeGradeSalary, monthlySalaryField, type SalaryAmountField, type SalaryAmounts } from '../lib/gradeSalaryDefaults';
 import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { DevelopmentPlanPanel } from '../components/succession/DevelopmentPlanPanel';
@@ -1054,7 +1057,19 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     for (const field of SALARY_AMOUNT_FIELDS) typed[field] = form.salaryBreakdown?.[field] ?? undefined;
     return gradePayScaleReady ? mergeGradeSalary(typed, gradePayScale) : typed;
   }, [form.salaryBreakdown, gradePayScaleReady, gradePayScale]);
-  const salaryTotal = useMemo(() => grossPackage(effectiveSalary), [effectiveSalary]);
+  const amountsTotal = useMemo(() => grossPackage(effectiveSalary), [effectiveSalary]);
+  // Monthly cash allowances (ALW_*, Benefits by grade). Untouched (null) sends no `allowances`: the server fills them from the grade, as it does
+  // for the other blank lines. The gross, the range check and the review count them, so they never show less than payroll will pay.
+  const [allowanceValue, setAllowanceValue] = useState<AllowanceValue>(null);
+  const [showAllowanceProblems, setShowAllowanceProblems] = useState(false);
+  const allowanceCatalog = useCashAllowanceCatalog({ companyId: selectedFormCompany?.id ?? form.companyId, asOf: form.salaryBreakdown?.effectiveDate || form.joiningDate, enabled: formOpen });
+  const gradeAllowanceLines = useMemo(() => gradeLinesFrom(allowanceCatalog.catalog, form.gradeId), [allowanceCatalog.catalog, form.gradeId]);
+  const shownAllowances = shownLines(gradeAllowanceLines, allowanceValue);
+  const allowanceTotal = totalMonthly(shownAllowances, effectiveSalary.basicSalary);
+  const salaryTotal = useMemo(() => Math.round((amountsTotal + allowanceTotal) * 100) / 100, [amountsTotal, allowanceTotal]);
+  useEffect(() => {
+    if (!formOpen) { setAllowanceValue(null); setShowAllowanceProblems(false); }
+  }, [formOpen]);
   const gradeFilledSalary = gradePayScaleReady && Object.keys(gradeSalaryFill).length > 0;
   const gradeLinesOutsideMonthlySalary = gradePayScaleReady
     ? gradePayScale.filter((line) => line.isActive && monthlySalaryField(line) === null).map((line) => line.componentName || line.componentCode)
@@ -1360,6 +1375,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     if (step === 3 && selectedGrade && salaryTotal > 0 && ((selectedGrade.minSalary > 0 && salaryTotal < selectedGrade.minSalary) || (selectedGrade.maxSalary > 0 && salaryTotal > selectedGrade.maxSalary))) {
       message = `Salary package must be within ${selectedGrade.currency} ${wizardFormat.number(selectedGrade.minSalary)} - ${wizardFormat.number(selectedGrade.maxSalary)} for ${selectedGrade.code}.`;
     }
+    if (step === 3 && !message && allowancesNeedBasic(allowanceValue, effectiveSalary.basicSalary)) {
+      message = t(BASIC_FIRST_KEY);
+    }
+    if (step === 3 && !message && Object.keys(allowanceProblems(shownAllowances, effectiveSalary.basicSalary)).length > 0) {
+      setShowAllowanceProblems(true);
+      message = t('Fix the allowance lines that show a message before saving.');
+    }
     const invalid = createFormRef.current?.querySelector<HTMLInputElement>(`[data-employee-step="${step}"] input:invalid`);
     if (!message && invalid) message = `${invalid.closest('label')?.querySelector('span')?.textContent?.trim() || 'This field'}: ${invalid.validationMessage}`;
     if (!message) return true;
@@ -1512,6 +1534,17 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       setFormError(`Salary package must be within ${selectedGrade.currency} ${selectedGrade.minSalary.toLocaleString()} - ${selectedGrade.maxSalary.toLocaleString()} for ${selectedGrade.code}.`);
       return;
     }
+    if (allowancesNeedBasic(allowanceValue, effectiveSalary.basicSalary)) {
+      setFormStep(3);
+      setFormError(t(BASIC_FIRST_KEY));
+      return;
+    }
+    if (Object.keys(allowanceProblems(shownAllowances, effectiveSalary.basicSalary)).length > 0) {
+      setShowAllowanceProblems(true);
+      setFormStep(3);
+      setFormError(t('Fix the allowance lines that show a message before saving.'));
+      return;
+    }
     const departmentCostCentreId = departments.find((item) => item.id === form.departmentId)?.costCenterId ?? '';
     createSaveLock.current = true;
     setSaving(true);
@@ -1533,6 +1566,14 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         }
       }
       const payload = cleanPayload(form, { canManage: canManageCostCentres, departmentCostCentreId });
+      // Only an edit sends `allowances` (a list, [] removes them all); untouched leaves it out so the server fills the package from the grade.
+      const allowanceLines = allowancesForRequest(allowanceValue);
+      if (allowanceLines) {
+        payload.salaryBreakdown = {
+          ...(payload.salaryBreakdown ?? { currency: form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || undefined }),
+          allowances: allowanceLines,
+        };
+      }
       if (acknowledgeDuplicate) payload.acknowledgeDuplicate = true;
       if (acknowledgeProbationOverLimit) payload.acknowledgeProbationOverLimit = true;
       const created = await employeesApi.create(payload);
@@ -3004,6 +3045,9 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
             <Input label="Other allowance" type="number" value={String(form.salaryBreakdown?.otherAllowance ?? '')} onChange={(v) => setSalaryField('otherAllowance', v)} />
             <Input label="Fixed deduction" type="number" value={String(form.salaryBreakdown?.fixedDeduction ?? '')} onChange={(v) => setSalaryField('fixedDeduction', v)} />
             </EmployeeAdditionalDetails>
+            <SalaryAllowancesEditor idPrefix="create-salary-allowances" baseline={gradeAllowanceLines} baselineKind="grade" noGrade={!form.gradeId}
+              value={allowanceValue} onChange={setAllowanceValue} basic={effectiveSalary.basicSalary} currency={form.salaryBreakdown?.currency || form.payrollProfile?.salaryCurrency || currencyCode}
+              catalog={allowanceCatalog.catalog} onRetry={allowanceCatalog.retry} showProblems={showAllowanceProblems} />
           </Section>
 
           </EmployeeCreatePanel>

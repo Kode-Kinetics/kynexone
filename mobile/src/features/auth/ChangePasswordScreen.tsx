@@ -12,10 +12,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
 import { Controller, useForm } from 'react-hook-form';
-import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { authApi } from '@/api/adapters';
 import { DEFAULT_MIN_PASSWORD_LENGTH } from '@/auth/welcomeCode';
+import { makeChangePasswordSchema, type ChangePasswordFormData } from '@/auth/formSchemas';
 import { haptics } from '@/utils/haptics';
 import {
   GlassTextField,
@@ -28,16 +28,9 @@ import {
 import { useTheme } from '@/theme/ThemeProvider';
 
 // Messages are translation keys (account.password.errors.*), resolved where they are shown.
-const schema = z.object({
-  currentPassword: z.string().min(1, 'currentRequired'),
-  newPassword: z.string().min(DEFAULT_MIN_PASSWORD_LENGTH, 'tooShort'),
-  confirmPassword: z.string().min(1, 'confirmRequired'),
-}).refine((data) => data.newPassword === data.confirmPassword, {
-  message: 'mismatch',
-  path: ['confirmPassword'],
-});
+const schema = makeChangePasswordSchema(DEFAULT_MIN_PASSWORD_LENGTH);
 type ErrorKey = 'currentRequired' | 'tooShort' | 'confirmRequired' | 'mismatch';
-type FormData = z.infer<typeof schema>;
+type FormData = ChangePasswordFormData;
 
 export default function ChangePasswordScreen() {
   const navigation = useNavigation();

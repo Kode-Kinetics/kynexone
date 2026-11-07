@@ -71,6 +71,8 @@ public sealed class EmployeeEffectiveChangePostgresTests(PostgresFixture fx)
         {
             basicSalary = 5000m, housingAllowance = 1200m, transportAllowance = 300m, foodAllowance = 100m,
             mobileAllowance = 50m, otherAllowance = 200m, fixedDeduction = 25m,
+            // A new fixed deduction takes more out of the employee's pay, so the package carries the written agreement it needs.
+            reductionConsentReference = "AMEND-2026-025",
             salaryStructureCode = "FUTURE-PACKAGE", currency = "SAR", effectiveDate = effective.ToString("yyyy-MM-dd"),
         });
         await using (var db = fx.CreateDb())

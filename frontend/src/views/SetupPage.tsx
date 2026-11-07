@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
 import { notifyApiError } from '../api/client';
 import { Award, Building2, GitBranch, Layers, Landmark, Tag, Plus, Pencil, Trash2, Database, Hash, Settings, Globe, Calendar, MapPin, Bell, ClipboardList, UserPlus, ChevronRight, ListChecks, Upload, Eye, EyeOff, ShieldCheck, LayoutGrid, FileText, Users, BookOpen, Mail,
-  AlarmClockCheck, BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
+  AlarmClockCheck, BadgeCheck, Blocks, CalendarClock, CalendarDays, Clock3, CreditCard, DatabaseBackup, FileSignature, Fingerprint, Gift, HeartPulse, HelpCircle, KeyRound, Languages, Layers3, Lock, Palette, Percent, Scale, ScrollText, Star, Table2, TimerReset, UserCheck, UserCog, Wallet } from 'lucide-react';
 import { InfoTip } from '../components/InfoTip';
 import { deriveWorkEmailLocalPart, assembleWorkEmail } from '../api/employees';
 import { SetupStudioWorkspace } from '../components/setup/SetupStudioWorkspace';
@@ -96,7 +96,7 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
-import { SETUP_RELATED_SECTIONS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, resolveSetupArea, setupNavigationModel, unavailableSectionRedirect, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
+import { SETUP_RELATED_SECTIONS, SETUP_SECTION_GROUPS, SETUP_SETTING_SECTIONS, SETUP_TOOLS, inNavigationOrder, resolveSetupArea, setupNavigationModel, unavailableSectionRedirect, type SetupSection, type SetupSectionId, type SetupSettingId } from '../lib/setupAreas';
 import { SETUP_MODULE_SECTIONS, isSetupModuleSectionId, type SetupModuleSectionId } from '../lib/setupModuleSections';
 import { ModuleSetupSection, setupSectionHasFailed } from '../components/setup/ModuleSetupSection';
 import { resolveSetupPath, serializeSetupPath, type SetupStudioPath } from '../lib/setupPathState';
@@ -129,7 +129,7 @@ const moduleIcons: Record<SetupModuleSectionId, React.ElementType> = {
   openingBalances: DatabaseBackup,
   leaveTypes: CalendarDays, leavePolicies: ScrollText, holidayCalendars: Calendar, shiftDefinitions: Clock3, shiftPolicy: CalendarClock, attendanceRules: AlarmClockCheck,
   overtimePolicies: TimerReset, attendanceDevices: Fingerprint,
-  benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText, payrollRules: Scale, bankWps: Landmark,
+  gradeBenefits: Layers3, benefitPlans: HeartPulse, loanTypes: Landmark, loanPolicies: Scale, advancePolicy: Wallet, bonusTypes: Gift, payslipTemplates: FileText, payrollRules: Scale, bankWps: Landmark,
   onboardingChecklists: ListChecks, onboardingChecklistTemplates: ClipboardList, hireTemplates: UserPlus, performanceScorecards: Star, letterTemplates: FileSignature, engagementPrivacy: EyeOff,
   taxPolicies: Percent, complianceProfiles: ShieldCheck, saudiCompliance: BadgeCheck,
   users: Users, roles: UserCog, permissionMatrix: Table2, permissions: KeyRound, permissionGrantors: UserCheck,
@@ -1166,6 +1166,8 @@ function GradesTab() {
     <>
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
+      {/* The guided path continues: grades first, then what each grade gets, in the section right below this one. */}
+      {benefitsByGrade && items.length > 0 && <BenefitsByGradeDoor className="mb-3" intro={t('Next, set what each grade gets: allowances, contract benefits and facilities.')} />}
       <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Grade')} loading={loading} loadError={loadError} onRetry={load} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
@@ -2615,7 +2617,7 @@ export function SetupPage() {
   // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
   const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status });
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
-  const visibleTabs = tabs.filter(tab => navigationModel.settings.some(section => section.id === tab.id));
+  const visibleTabs = inNavigationOrder(tabs, navigationModel.settings);
   const tabParam = searchParams?.get('tab');
   // A reader opens on their first section: someone who only configures a module (loans, users, the workspace) lands
   // on that module's settings, not on a Companies list they cannot read.

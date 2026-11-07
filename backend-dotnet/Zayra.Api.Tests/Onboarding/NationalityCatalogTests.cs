@@ -11,7 +11,8 @@ public class NationalityCatalogTests
     public void NationalityCatalog_ExactMatchOnly_SuadiUnresolved()
     {
         NationalityCatalog.TryResolve("Suadi").Should().BeNull();
-        NationalityCatalog.TryResolve("Saudi national").Should().BeNull();
+        // "Saudi National" is the owner-approved free-text alias (policy wave, SaudiNationality): it resolves to Saudi. A typo and a compound stay unresolved.
+        NationalityCatalog.TryResolve("Saudi national")!.Iso2.Should().Be("SA");
         NationalityCatalog.TryResolve("Sudanese Saudi-born").Should().BeNull();
         NationalityCatalog.TryResolve("").Should().BeNull();
         NationalityCatalog.TryResolve(null).Should().BeNull();

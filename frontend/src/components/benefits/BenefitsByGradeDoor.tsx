@@ -15,7 +15,7 @@ import { useReleaseA } from '../../lib/releaseA';
  *   inline  one sentence with the link, inside a form or panel
  *   panel   a block of its own (the /benefits page header)
  */
-export function BenefitsByGradeDoor({ intro, variant = 'inline', className = '' }: { intro: string; variant?: 'inline' | 'panel'; className?: string }) {
+export function BenefitsByGradeDoor({ intro, variant = 'inline', className = '', testId }: { intro: string; variant?: 'inline' | 'panel'; className?: string; testId?: string }) {
   const t = useT();
   const { hasPermission } = useAuth();
   const releaseA = useReleaseA();
@@ -26,13 +26,13 @@ export function BenefitsByGradeDoor({ intro, variant = 'inline', className = '' 
   if (allowed) {
     return variant === 'panel'
       ? (
-        <div data-benefits-door className={`surface flex flex-wrap items-center justify-between gap-3 p-4 ${className}`.trim()}>
+        <div data-benefits-door data-testid={testId} className={`surface flex flex-wrap items-center justify-between gap-3 p-4 ${className}`.trim()}>
           <p className="min-w-0 flex-1 text-body text-fg-muted">{intro}</p>
           <Link href="/benefits/by-grade" className="btn-secondary">{t('Open Benefits by grade')}</Link>
         </div>
       )
       : (
-        <p data-benefits-door className={`text-meta text-fg-muted ${className}`.trim()}>
+        <p data-benefits-door data-testid={testId} className={`text-meta text-fg-muted ${className}`.trim()}>
           {intro}{' '}
           <Link href="/benefits/by-grade" className="font-semibold text-primary-fg underline">{t('Open Benefits by grade')}</Link>
         </p>

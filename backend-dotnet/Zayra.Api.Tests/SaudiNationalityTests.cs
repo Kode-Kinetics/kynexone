@@ -23,6 +23,16 @@ public class SaudiNationalityTests
     [InlineData("Kingdom of Saudi Arabia")]
     [InlineData("سعودى")]
     [InlineData(" المملكة العربية السعودية ")]
+    [InlineData("Saudi National")]
+    [InlineData(" saudi national ")]
+    [InlineData("Saudi Citizen")]
+    [InlineData("KSA National")]
+    [InlineData("Saudi  National")]
+    [InlineData("سعودي الجنسية")]
+    [InlineData("سعودية الجنسية")]
+    [InlineData("سعوديه")]
+    [InlineData("السعودي")]
+    [InlineData("سعـودي")]
     public void Every_saudi_spelling_classifies_as_saudi_for_gosi(string nationality)
     {
         GosiCalculationService.DeriveClassification(nationality).Should().Be(GosiClassifications.Saudi);
@@ -37,6 +47,8 @@ public class SaudiNationalityTests
     [InlineData("Saudi-born Egyptian")]
     [InlineData("Non-Saudi")]
     [InlineData("Saudis")]
+    [InlineData("Non Saudi National")]
+    [InlineData("سوداني")]
     [InlineData("")]
     [InlineData(null)]
     public void Match_is_exact_after_normalising_never_a_substring(string? nationality)

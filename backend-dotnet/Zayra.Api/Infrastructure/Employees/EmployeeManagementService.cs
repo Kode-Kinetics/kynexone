@@ -72,7 +72,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
         => SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, null, page, pageSize, cancellationToken);
 
-    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false, string? branch = null, string? designation = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -82,13 +82,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
         var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
         var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(x.Status)));
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim();
-            query = query.Where(x => x.EmployeeCode.Contains(term) || x.FullName.Contains(term) || x.EnglishName.Contains(term) || x.ArabicName.Contains(term) || x.WorkEmail.Contains(term));
-        }
+        query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
+        query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
@@ -124,6 +121,9 @@ public class EmployeeManagementService : IEmployeeManagementService
             // Wave A D3: the detail shows where payroll posts the cost, never the cached copy (which a legacy writer may have left stale).
             CostCenter = costCentreResolution.Code ?? string.Empty,
         };
+        // The allowance lines carry their names, so the screen that shows them needs no access to the benefit catalogue.
+        if (detail.SalaryBreakdown?.Allowances is { Count: > 0 } onFile)
+            detail = detail with { SalaryBreakdown = detail.SalaryBreakdown with { Allowances = await SalaryAllowanceLines.NamedAsync(_db, tenantId, onFile, cancellationToken) } };
         // A new hire's first package waits for Finance as a pending request: no salary row exists yet, but the pay HR typed must not look
         // lost when the draft is reopened. It is shown (marked Pending, never as approved pay) to exactly the callers who see applied pay.
         if (includeSensitive && detail.SalaryBreakdown is null
@@ -131,8 +131,15 @@ public class EmployeeManagementService : IEmployeeManagementService
         {
             var structureCode = await _db.SalaryStructures.AsNoTracking()
                 .Where(s => s.TenantId == tenantId && s.Id == pending.SalaryStructureId).Select(s => s.Code).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+            // Staged lines that cannot be read are shown as "not stated", never as lines and never as an error: a corrupt staged package must not
+            // make the whole employee page fail (the approver still sees, and can reject, the change itself).
+            List<SalaryAllowanceLine>? stagedLines;
+            try { stagedLines = SalaryAllowanceLines.Deserialize(pending.AllowancesJson); }
+            catch (JsonException) { stagedLines = null; }
+            if (stagedLines is { Count: > 0 }) stagedLines = await SalaryAllowanceLines.NamedAsync(_db, tenantId, stagedLines, cancellationToken);
             var staged = new EmployeeSalaryBreakdownRequest(pending.BasicSalary, pending.HousingAllowance, pending.TransportAllowance, pending.FoodAllowance,
-                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency);
+                pending.MobileAllowance, pending.OtherAllowance, pending.FixedDeduction, structureCode, pending.EffectiveDate, pending.Currency,
+                stagedLines);
             detail = detail with
             {
                 SalaryBreakdown = staged,
@@ -1429,6 +1436,22 @@ public class EmployeeManagementService : IEmployeeManagementService
         }).Where(x => x.MissingDocumentTypes.Count > 0).ToList();
     }
 
+    /// <summary>
+    /// Protected documents (identity, payroll, contract) are downloadable only with employees.sensitive, so the metadata routes
+    /// must not let a caller without it re-type one to a neutral category (and then download it), or file a neutral document
+    /// INTO a protected category. Refused when the document is protected before the change, or would be after it.
+    /// </summary>
+    private static void RequireSensitiveForProtectedDocument(EmployeeDocument doc, RequestContext context, string? newType = null, string? newCategory = null)
+    {
+        var wasProtected = EmployeeDocumentSensitivity.IsSensitive(doc.DocumentType, doc.DocumentCategory);
+        var willBeProtected = wasProtected;
+        if (newType is not null || newCategory is not null)
+            willBeProtected = EmployeeDocumentSensitivity.IsSensitive(newType ?? doc.DocumentType, newCategory ?? doc.DocumentCategory);
+        if (!wasProtected && !willBeProtected) return;
+        if (context.Permissions?.Contains("employees.sensitive", StringComparer.OrdinalIgnoreCase) == true) return;
+        throw new SensitiveDocumentAccessException();
+    }
+
     public async Task<EmployeeDocument?> UpdateDocumentAsync(Guid tenantId, int employeeId, Guid documentId, UpdateDocumentMetadataRequest request, RequestContext context, CancellationToken cancellationToken)
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
@@ -1438,6 +1461,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!string.IsNullOrWhiteSpace(request.DocumentType) && request.DocumentType != doc.DocumentType
             && (request.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType || doc.DocumentType == Zayra.Api.Infrastructure.Benefits.BenefitClaims.ReceiptType))
             throw new InvalidOperationException("Benefit receipt document type is assigned by the secure receipt upload and cannot be renamed.");
+        RequireSensitiveForProtectedDocument(doc, context,
+            string.IsNullOrWhiteSpace(request.DocumentType) ? null : request.DocumentType.Trim(), request.DocumentCategory);
 
         if (!string.IsNullOrWhiteSpace(request.DocumentType)) doc.DocumentType = request.DocumentType.Trim();
         if (request.DocumentCategory is not null || !string.IsNullOrWhiteSpace(request.DocumentType))
@@ -1459,6 +1484,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        RequireSensitiveForProtectedDocument(doc, context);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Verified";
@@ -1484,6 +1510,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
+        RequireSensitiveForProtectedDocument(doc, context);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Rejected";
@@ -1507,6 +1534,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (doc is null) return false;
         await Zayra.Api.Infrastructure.Benefits.BenefitClaims.EnsureReceiptMutableAsync(_db, tenantId, documentId, cancellationToken);
         await Zayra.Api.Application.Esign.SignedDocumentGuard.EnsureMutableAsync(_db, tenantId, documentId, cancellationToken);   // P4
+        RequireSensitiveForProtectedDocument(doc, context);
 
         doc.IsDeleted = true;
         doc.DeletedAtUtc = DateTime.UtcNow;
@@ -2052,11 +2080,14 @@ public class EmployeeManagementService : IEmployeeManagementService
         var problems = new List<string>();
         foreach (var allowance in allowances)
         {
+            // A code with no salary slot of its own is a bug, not "other pay": a customer-defined allowance (ALW_*) is a salary LINE (below), and a
+            // contract benefit (BEN_*) never reaches the salary at all. Nothing is ever defaulted into Other allowance.
             var supplied = allowance.Field switch
             {
                 "HousingAllowance" => request.HousingAllowance,
                 "TransportAllowance" => request.TransportAllowance,
-                _ => request.OtherAllowance,
+                "OtherAllowance" => request.OtherAllowance,
+                _ => throw new InvalidOperationException($"{allowance.ComponentCode} has no salary field ({allowance.Field}); it cannot be filled in from the grade."),
             };
             if (supplied is not null) continue;
             var name = EntitlementComponentRules.For(allowance.ComponentCode)?.NameEn ?? allowance.ComponentCode;
@@ -2071,8 +2102,19 @@ public class EmployeeManagementService : IEmployeeManagementService
             {
                 "HousingAllowance" => filled with { HousingAllowance = cash },
                 "TransportAllowance" => filled with { TransportAllowance = cash },
-                _ => filled with { OtherAllowance = cash },
+                "OtherAllowance" => filled with { OtherAllowance = cash },
+                _ => throw new InvalidOperationException($"{allowance.ComponentCode} has no salary field ({allowance.Field}); it cannot be filled in from the grade."),
             };
+        }
+        // The customer-defined cash allowances (ALW_*) the grade offers become PROPOSED LINES, only when the salary did not state any (null: an
+        // explicit list, even an empty one, is the operator's own and is kept). A grade with no value for one simply has no line for it — unlike the
+        // three standard allowances, an allowance the grade does not offer is not an omission. A percentage needs a basic to apply to.
+        if (request.Allowances is null)
+        {
+            var lines = await EntitlementMatrixService.CashAllowanceLinesAsync(_db, tenantId, gradeId, employee.CompanyId, effectiveDate, cancellationToken);
+            foreach (var line in lines.Where(l => l.Basis == AllowanceBases.PercentOfBasic && basic <= 0m))
+                problems.Add($"{await AllowanceNameAsync(tenantId, line.Code!, cancellationToken)}: it is a percentage of basic salary, and no basic salary was entered");
+            if (lines.Count > 0) filled = filled with { Allowances = lines };
         }
         if (problems.Count > 0)
             throw new InvalidOperationException(
@@ -2082,6 +2124,10 @@ public class EmployeeManagementService : IEmployeeManagementService
     }
 
 
+
+    private async Task<string> AllowanceNameAsync(Guid tenantId, string code, CancellationToken ct) =>
+        await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId, "Names a cash allowance in a refusal message; tenant-wide definition.")
+            .AsNoTracking().Where(c => c.CompanyId == null && c.Code == code).Select(c => c.NameEn).FirstOrDefaultAsync(ct) ?? code;
 
     private static decimal GrossSalary(EmployeeSalaryBreakdownRequest? salary)
         => (salary?.BasicSalary ?? 0m)

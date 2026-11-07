@@ -1317,7 +1317,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // SaveChanges commits them in one relational transaction with the change request, so there is no
         // window in which Employee.BankIban is new while EmployeePayrollProfile.Iban is stale.
         var unknownApproved = await EmployeeChangeApplier.ApplyApprovedChangeAsync(
-            _db, approval.TenantId, employee, changes, approverId, cancellationToken);
+            _db, approval.TenantId, employee, changes, approverId, cancellationToken, change.Id);
         // ESTABLISHMENT GUARD (path "approval" via generic decide): authoritative re-check at
         // apply. A block throws BEFORE DecideAsync saves anything, so the approval request stays
         // Pending and the change stays PendingApproval — re-approve after a budget raise. The 409

@@ -141,6 +141,18 @@ public sealed record EndOfServiceInput(
     public decimal ConfiguredEosbWage { get; init; }
 
     /// <summary>
+    /// The employee's own monthly cash allowances (customer-defined <c>ALW_*</c> lines on the salary record) whose definition counts in the
+    /// end-of-service wage. Carried SEPARATELY from <see cref="ConfiguredEosbWage"/> because a pack takes the greater of its statutory base
+    /// and the configured wage, which would lose an allowance folded into the latter whenever statute is the larger. A pack that awards on
+    /// a wider "last wage" (KSA Art. 84) adds this on top; a pack that awards on basic by law (UAE Art. 51, Qatar Art. 54) does not, and
+    /// says so in a notice. Zero for an employee without any.
+    /// </summary>
+    public decimal AdditionalEosbWage { get; init; }
+
+    /// <summary>The codes behind <see cref="AdditionalEosbWage"/>, for the notice a pack writes.</summary>
+    public IReadOnlyList<string> AdditionalEosbWageCodes { get; init; } = Array.Empty<string>();
+
+    /// <summary>
     /// S1/A8 — calendar days of UNPAID leave taken inside the service period. UAE Decree-Law 33/2021
     /// Art. 51 excludes these from the service period for gratuity expressly; KSA and Qatar turn on
     /// "continuous service" and are configurable per pack (see <c>eosb.exclude_unpaid_leave</c>).

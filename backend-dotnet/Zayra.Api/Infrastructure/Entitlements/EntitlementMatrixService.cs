@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Contracts;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Application.Entitlements;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -34,12 +35,22 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
 {
     /// <summary>One lock per tenant for every matrix write: publish, offering switch and import.</summary>
     public const string LockScope = "entitlements.matrix";
+
+    /// <summary>Test seam: runs inside a correction after its first committed-period check and before the final one that guards the write.</summary>
+    internal Func<Task>? BeforeCorrectionSaveHook { get; set; }
+
+    /// <summary>How far ahead of the current month a Finance correction may start.</summary>
+    public const int MaxCorrectionMonthsAhead = 12;
     public const string AuditPublished = "entitlements.matrix.published";
     public const string AuditReverted = "entitlements.matrix.reverted_to_group";
     /// <summary>A not-yet-started version that nothing cites, replaced (or dropped for the group default) on its own start date.</summary>
     public const string AuditSuperseded = "entitlements.matrix.superseded";
     public const string AuditSkipped = "entitlements.offering.skipped";
     public const string AuditOffered = "entitlements.offering.offered";
+    public const string AuditBenefitAdded = "entitlements.benefit.added";
+    public const string AuditBenefitRemoved = "entitlements.benefit.removed";
+    public const string AuditBenefitConfirmed = "entitlements.benefit.confirmed";
+    public const string AuditBenefitCorrected = "entitlements.benefit.corrected";
     public const string SourceRuleMatrix = "BenefitsByGradeMatrix";
     public const string SourceRuleImport = "LegacyPayScaleImport";
     public const string GapNotificationEntity = "EntitlementMatrixGap";
@@ -121,6 +132,75 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 Percentage = a.ValueType == GradeEntitlementValueTypes.PercentOfBasic ? Math.Round((a.Rate ?? 0m) * 100m, 4) : 0m,
             });
 
+    /// <summary>
+    /// The customer-defined monthly cash allowances (<c>ALW_*</c>) a grade's matrix values describe, as proposed salary lines: the company cell over the
+    /// group cell in force on <paramref name="asOf"/>, an amount or a percentage of basic, for allowances whose definition is live. A value in kind,
+    /// "Not offered" and a grade with no value have no line, and a contract benefit (<c>BEN_*</c>) or an unknown code never has one: only a live cash
+    /// allowance definition reaches a salary. A percentage carries its rate; the server works the amount out on the proposed basic.
+    /// </summary>
+    public static async Task<IReadOnlyList<SalaryAllowanceLine>> CashAllowanceLinesAsync(ZayraDbContext db, Guid tid, Guid gradeId, Guid? companyId,
+        DateOnly asOf, CancellationToken ct)
+    {
+        var cells = await ScopedBypass.TenantWide(db.GradeEntitlements, tid,
+                "Salary prefill reads the group cell and the employee's company cell for each cash allowance; the caller authorised the employee.")
+            .AsNoTracking()
+            .Where(x => x.GradeId == gradeId && x.PayComponentCode.StartsWith(EntitlementComponentRules.AllowancePrefix)
+                && (x.CompanyId == null || x.CompanyId == companyId) && x.EffectiveFrom <= asOf && (x.EffectiveTo == null || x.EffectiveTo >= asOf))
+            .ToListAsync(ct);
+        if (cells.Count == 0) return [];
+        var codes = cells.Select(c => c.PayComponentCode).Distinct().ToList();
+        var live = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LiveDefinitionCodesAsync(db, tid, codes, ct);
+        return cells
+            .GroupBy(c => c.PayComponentCode, StringComparer.Ordinal)
+            .Where(g => live.Contains(g.Key))
+            .Select(g => g.OrderByDescending(c => c.CompanyId.HasValue).First())
+            .Where(c => c.Eligible && (c.ValueType == GradeEntitlementValueTypes.Amount || c.ValueType == GradeEntitlementValueTypes.PercentOfBasic))
+            .OrderBy(c => c.PayComponentCode, StringComparer.Ordinal)
+            .Select(c => c.ValueType == GradeEntitlementValueTypes.PercentOfBasic
+                ? new SalaryAllowanceLine(c.PayComponentCode, AllowanceBases.PercentOfBasic, c.Rate, null)
+                : new SalaryAllowanceLine(c.PayComponentCode, AllowanceBases.Amount, null, c.Amount))
+            .ToList();
+    }
+
+    /// <summary>One GL driver as the "Add a benefit → cash allowance" screen offers it. No account numbers, no balances.</summary>
+    public sealed record CashGlDriverDto(string Key, string Label, string? LabelAr, bool Usable, string? ReasonCode, string? Reason);
+
+    /// <summary>
+    /// The earning GL drivers, each marked usable or not for a cash allowance by exactly the rule <see cref="CreateBenefitAsync"/> applies
+    /// (<c>PayComponentPolicy.ValidateGlDriverAsync</c>: active Earning driver, not reserved, not an employer-expense pair, mapped to an account in
+    /// every company, not a control account). It answers HR, who does not hold the finance GL permissions, without handing out the chart.
+    /// </summary>
+    public async Task<IReadOnlyList<CashGlDriverDto>> CashGlDriversAsync(Guid tid, CancellationToken ct)
+    {
+        var rows = (await ScopedBypass.TenantWide(db.GlDrivers, tid, "The earning drivers a cash allowance may name, listed for the benefit screen; tenant-wide rows only.")
+                .AsNoTracking()
+                .Where(d => d.CompanyId == null && d.IsActive && d.Category == GlDriverCategories.Earning)
+                .Select(d => new { d.Key, d.Label, d.SortOrder }).ToListAsync(ct))
+            .GroupBy(d => d.Key, StringComparer.Ordinal).Select(g => g.First()).OrderBy(d => d.SortOrder).ThenBy(d => d.Key, StringComparer.Ordinal)
+            .ToList();
+        var candidates = rows.Select(d => (d.Key, d.Label)).ToList();
+        // The compiled catalogue's earning drivers are valid targets too (the validator falls back to them), whether or not the tenant has seeded a row.
+        foreach (var driver in PayrollGlCatalog.Drivers.Where(d => d.Key.StartsWith("EARN:", StringComparison.Ordinal)))
+            if (!candidates.Any(c => c.Key == driver.Key)) candidates.Add((driver.Key, driver.Label));
+
+        var faults = await PayComponentPolicy.CheckGlDriversAsync(db, tid, null, PayComponentTypes.Earning, candidates.Select(c => c.Key).ToList(), ct);
+        return candidates.Select(c =>
+        {
+            var fault = faults[c.Key];
+            // Fixed words per fault, never the validator's message: that one can carry an account number.
+            var (code, reason) = fault?.Code switch
+            {
+                null => ((string?)null, (string?)null),
+                PayComponentPolicy.GlDriverFaultCodes.Reserved => (fault.Code, "Reserved for statutory and recovery postings."),
+                PayComponentPolicy.GlDriverFaultCodes.EmployerPair => (fault.Code, "A statutory employer posting rule, not for an allowance."),
+                PayComponentPolicy.GlDriverFaultCodes.Unmapped => (fault.Code, "Not linked to an account yet. Ask Finance to map it."),
+                PayComponentPolicy.GlDriverFaultCodes.ProtectedAccount => (fault.Code, "Posts to a control account that allowances cannot use."),
+                _ => (fault.Code, "Not available for an allowance."),
+            };
+            return new CashGlDriverDto(c.Key, c.Label, null, fault is null, code, reason);
+        }).ToList();
+    }
+
     /// <summary>A wage component pays through payroll, so a company row for it would shadow the payroll catalogue.
     /// The matrix therefore never writes a skip marker for one; "Not offered" cells express it instead.</summary>
     public static bool CanSkipHere(EntitlementComponentRule rule) =>
@@ -144,6 +224,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         var today = await clock.TodayAsync(tid, ct);
         var grades = await ActiveGradesAsync(tid, ct);
         var rules = await ComponentRulesAsync(tid, ct);
+        // Each cash allowance's Finance state and current GL driver / end-of-service answer, so the grid can say "pending Finance".
+        var cashInfo = (await CustomBenefitsAsync(tid, ct)).Where(b => b.Cash).ToDictionary(b => b.Code, b => b.Info, StringComparer.Ordinal);
         var codes = rules.Select(r => r.Code).ToArray();
         var cells = await ScopedBypass.TenantWide(db.GradeEntitlements, tid,
                 "The matrix shows the group cells and the requested company's own; company access was checked by the caller.")
@@ -218,7 +300,7 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
 
         return new EntitlementMatrixDto(asOf, today, companyId, currency,
             grades.Select(g => new MatrixGradeDto(g.Id, g.Code, g.Name, g.NameAr, g.Level)).ToList(),
-            rules.Select(ToDto).ToList(), cellDtos, offerings, gaps);
+            rules.Select(r => ToDto(r, cashInfo.GetValueOrDefault(r.Code))).ToList(), cellDtos, offerings, gaps);
     }
 
     /// <summary>
@@ -282,6 +364,9 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         foreach (var dup in req.Cells.GroupBy(c => (c.GradeId, c.ComponentCode)).Where(g => g.Count() > 1))
             errors.Add(new MatrixCellError(dup.Key.GradeId, dup.Key.ComponentCode, "duplicate_cell", "This benefit appears more than once for the grade.", null));
         var accepted = new List<(MatrixCellInput Input, EntitlementComponentRule Rule, Grade Grade)>();
+        var customList = await CustomBenefitsAsync(tid, ct);
+        var customBenefits = customList.Select(c => c.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pendingFinance = customList.Where(c => c.Cash && c.Info!.FinancePending).Select(c => c.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var cell in req.Cells)
         {
             var grade = grades.FirstOrDefault(g => g.Id == cell.GradeId);
@@ -291,9 +376,16 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                 continue;
             }
             var rule = EntitlementComponentRules.For(cell.ComponentCode);
-            if (rule == null)
+            // A customer-added code is real only while its definition row exists: no values for a benefit nobody created or that was removed.
+            if (rule == null || (EntitlementComponentRules.IsCustom(rule.Code) && !customBenefits.Contains(rule.Code)))
             {
                 errors.Add(Error(cell, "unknown_component", "This benefit isn't in the catalogue."));
+                continue;
+            }
+            // A cash allowance Finance has not confirmed shows in the grid but takes no values: nothing can reach a salary until Finance has checked its GL driver.
+            if (pendingFinance.Contains(rule.Code))
+            {
+                errors.Add(Error(cell, "allowance_pending_finance", "This allowance is waiting for Finance to confirm it. Its grade values can be set once Finance has confirmed it."));
                 continue;
             }
             if (cell.UseGroupDefault && req.CompanyId is null)
@@ -651,6 +743,439 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         return matrix.Offerings.Single(o => o.ComponentCode == rule.Code);
     }
 
+    // ── Customer-added benefits ───────────────────────────────────────────────────────────────────
+
+    /// <summary>A tenant-wide row that is a customer-added contract benefit (<c>BEN_*</c>, type Benefit) or cash allowance (<c>ALW_*</c>, an
+    /// Earning grade-package definition). Anything else on an ALW_ code (a legacy pay component) is not one.</summary>
+    private static System.Linq.Expressions.Expression<Func<PayComponent, bool>> IsCustomRow() => x =>
+        x.CompanyId == null
+        && ((x.Code.StartsWith(EntitlementComponentRules.CustomPrefix) && x.ComponentType == PayComponentTypes.Benefit)
+            || (x.Code.StartsWith(EntitlementComponentRules.AllowancePrefix) && x.ComponentType == PayComponentTypes.Earning
+                && x.CalcMethod == PayComponentCalcMethods.GradePackage));
+
+    /// <summary>One benefit or cash allowance the customer added. <see cref="Info"/> is set for a cash allowance only.</summary>
+    private sealed record CustomBenefit(string Code, string NameEn, string NameAr, CashAllowanceInfoDto? Info)
+    {
+        public bool Cash => Info is not null;
+    }
+
+    /// <summary>The active benefits and cash allowances this tenant added (tenant-wide <c>BEN_*</c> and <c>ALW_*</c> rows), oldest first. Never a company row.
+    /// A cash allowance is one entry however many effective-dated versions it has: the version in effect today (else the latest) speaks for it.</summary>
+    private async Task<List<CustomBenefit>> CustomBenefitsAsync(Guid tid, CancellationToken ct)
+    {
+        var today = await clock.TodayAsync(tid, ct);
+        var rows = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefits the customer added are one catalogue across the tenant.")
+            .AsNoTracking()
+            .Where(x => !x.IsDeleted && x.IsActive)
+            .Where(IsCustomRow())
+            .OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Code)
+            .ToListAsync(ct);
+        return rows.GroupBy(x => x.Code, StringComparer.Ordinal)
+            .Select(g =>
+            {
+                var shown = CashAllowanceDefinitions.Current(g, today) ?? g.First();
+                return new CustomBenefit(shown.Code, shown.NameEn, shown.NameAr,
+                    EntitlementComponentRules.IsAllowance(shown.Code) ? InfoOf(shown) : null);
+            }).ToList();
+    }
+
+    private static CashAllowanceInfoDto InfoOf(PayComponent row) =>
+        new(row.FinanceConfirmedAtUtc is null, row.FinanceConfirmedAtUtc, row.GlDriverKey, row.EosbIncluded, row.EosbExclusionCategory, row.EosbExclusionReason, row.EffectiveFrom);
+
+    /// <summary>The code a name makes: <paramref name="prefix"/> (<c>BEN_</c> or <c>ALW_</c>) plus its English letters and digits, upper-cased, other runs becoming one underscore.
+    /// Null when the name has no English letter or digit to make one from.</summary>
+    public static string? CustomCodeFor(string? nameEn, string prefix = EntitlementComponentRules.CustomPrefix)
+    {
+        var slug = new System.Text.StringBuilder();
+        var gap = false;
+        foreach (var ch in (nameEn ?? string.Empty).ToUpperInvariant())
+        {
+            if (ch is >= 'A' and <= 'Z' or >= '0' and <= '9')
+            {
+                if (gap && slug.Length > 0) slug.Append('_');
+                slug.Append(ch);
+                gap = false;
+            }
+            else gap = true;
+        }
+        if (slug.Length == 0) return null;
+        var room = (prefix == EntitlementComponentRules.AllowancePrefix ? EntitlementComponentRules.AllowanceCodeMaxLength : EntitlementComponentRules.CustomCodeMaxLength) - prefix.Length;
+        return prefix + (slug.Length > room ? slug.ToString(0, room).TrimEnd('_') : slug.ToString());
+    }
+
+    public const int EosbReasonMaxLength = 500;
+
+    /// <summary>
+    /// Adds a benefit to the grid for every grade and company. Two kinds:
+    /// <list type="bullet">
+    /// <item><b>Contract</b> (default, <c>BEN_*</c>): a non-paying contract benefit — a tenant <c>pay_components</c> row (type Benefit,
+    /// class Contractual, every payroll flag off) that <c>PayComponentEngine.IsNonPaying</c> drops, so a payroll run is unchanged by it.</item>
+    /// <item><b>Cash</b> (<c>ALW_*</c>): a monthly cash allowance paid in salary — an Earning, QiwaWage, <c>GradePackage</c> row the engine
+    /// never pays (the money comes only from an employee's approved salary lines). GOSI is off and WPS on, both fixed; it needs the GL driver
+    /// its expense posts to (validated exactly like a pay component's), and a reason if it is left out of the end-of-service wage.</item>
+    /// </list>
+    /// Names are unique across both. Its grade values are then set and published like any other cell. Needs access to every company.
+    /// </summary>
+    public Task<MatrixResult> CreateBenefitAsync(MatrixActor actor, CreateBenefitRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            var kind = string.IsNullOrWhiteSpace(req.Kind) ? BenefitKinds.Contract : req.Kind.Trim();
+            var cash = string.Equals(kind, BenefitKinds.Cash, StringComparison.OrdinalIgnoreCase);
+            if (!cash && !string.Equals(kind, BenefitKinds.Contract, StringComparison.OrdinalIgnoreCase))
+                return Bad("kind_invalid", "A benefit is either a contract benefit or a monthly cash allowance.");
+            var nameEn = (req.NameEn ?? string.Empty).Trim();
+            var nameAr = (req.NameAr ?? string.Empty).Trim();
+            // Either language will do: an admin who works in Arabic names it in Arabic. The other name falls back to the given one.
+            if (nameEn.Length == 0 && nameAr.Length == 0) return Bad("name_required", "Give the benefit a name.");
+            if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
+            if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
+            if (nameEn.Length == 0) nameEn = nameAr;
+            if (nameAr.Length == 0) nameAr = nameEn;
+            var shown = nameEn;
+
+            // A cash allowance is money: its GL driver and its end-of-service treatment are decided here, never defaulted.
+            string? driver = null, eosbReason = null, eosbCategory = null;
+            if (cash)
+            {
+                driver = (req.GlDriverKey ?? string.Empty).Trim();
+                if (driver.Length == 0)
+                    return Bad("gl_driver_required", "Choose the GL driver this allowance's expense posts to.");
+                // Included: no category or note is kept. Excluded: a category (and a note, required for "Other").
+                var (eosbProblem, category, note) = CashAllowanceDefinitions.NormalizeEosb(req.EosbIncluded, req.EosbExclusionCategory, req.EosbExclusionReason);
+                if (eosbProblem is not null) return Bad(eosbProblem.Code, eosbProblem.Message);
+                (eosbCategory, eosbReason) = (category, note);
+            }
+
+            // One name, one benefit — across contract benefits and cash allowances: a name already used by one the customer added (in either
+            // language) is refused, and a removed one of the SAME kind with the same name comes back instead of a second row.
+            var prefix = cash ? EntitlementComponentRules.AllowancePrefix : EntitlementComponentRules.CustomPrefix;
+            var custom = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefits and allowances the customer added, removed ones too, to keep names unique.")
+                .Where(IsCustomRow())
+                .ToListAsync(ct);
+            bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+            var named = custom.Where(x => Same(x.NameEn, nameEn) || Same(x.NameAr, nameAr) || Same(x.NameEn, nameAr) || Same(x.NameAr, nameEn)).ToList();
+            if (named.Any(x => !x.IsDeleted))
+                return Conflict("benefit_exists", $"A benefit called \"{shown}\" already exists. Choose a different name.");
+
+            // The code comes from the English letters and digits of the name; a name with none (Arabic only) gets a short unique code.
+            var code = named.FirstOrDefault(x => x.Code.StartsWith(prefix, StringComparison.Ordinal))?.Code
+                ?? CustomCodeFor(nameEn, prefix) ?? CustomCodeFor(nameAr, prefix)
+                ?? prefix + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+
+            // The code is unique across everything in the tenant's pay catalogue, not just the benefits: a clash would put two meanings on one code.
+            var sameCode = ScopedBypass.TenantWide(db.PayComponents, tid, "A new benefit code must not collide with any pay component code of the tenant.")
+                .AsNoTracking().Where(x => x.Code == code);
+            var clash = cash
+                ? await sameCode.Where(x => !(x.CompanyId == null && x.ComponentType == PayComponentTypes.Earning && x.CalcMethod == PayComponentCalcMethods.GradePackage)).AnyAsync(ct)
+                : await sameCode.Where(x => x.ComponentType != PayComponentTypes.Benefit).AnyAsync(ct);
+            var sameType = custom.Where(x => x.Code == code).ToList();
+            if (clash || sameType.Any(x => !x.IsDeleted))
+                return Conflict("benefit_exists", $"A benefit called \"{shown}\" already exists. Choose a different name.");
+
+            if (cash && await PayComponentPolicy.ValidateGlDriverAsync(db, tid, null, PayComponentTypes.Earning, driver!, ct) is { } glProblem)
+                return Bad("gl_driver_invalid", glProblem);
+
+            await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tid, ct);
+            // A removed one with the same name comes back, so the unique key is never broken. An allowance can have several effective-dated versions: the
+            // latest one comes back, and keeps the date it starts on (another removed version of the code already holds the start-of-time slot).
+            var row = sameType.OrderByDescending(x => x.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
+            var revived = row != null;
+            if (row == null)
+            {
+                row = new PayComponent { TenantId = tid, CompanyId = null, Code = code, CreatedBy = actor.UserId };
+                db.PayComponents.Add(row);
+            }
+            row.NameEn = nameEn; row.NameAr = nameAr.Length == 0 ? nameEn : nameAr;
+            // Every field that could make a contract benefit pay is set to the non-paying value, exactly as a grade loan limit's row is.
+            // A cash allowance is an earning that the engine still never pays (GradePackage emits nothing): payroll reads the salary lines.
+            row.ComponentType = cash ? PayComponentTypes.Earning : PayComponentTypes.Benefit;
+            row.CalcMethod = cash ? PayComponentCalcMethods.GradePackage : PayComponentCalcMethods.Fixed; row.Value = null;
+            row.ProviderKey = null; row.StructureField = null; row.GlDriverKey = driver; row.FormulaExpression = null;
+            row.IsTaxable = false; row.GosiSubject = false; row.WpsIncluded = cash; row.EosbIncluded = cash && req.EosbIncluded; row.EmitWhenZero = false;
+            row.EosbExclusionReason = eosbReason;
+            row.IsFamily = false; row.IsStatutory = false; row.IsSystem = false; row.IsActive = true; row.IsDeleted = false;
+            row.EntitlementClass = cash ? PayEntitlementClasses.QiwaWage : PayEntitlementClasses.Contractual;
+            row.StatutoryFloor = PayStatutoryFloors.None; row.IsOffered = true;
+            row.EffectiveTo = null;
+            row.DisplayOrder = 9100; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
+            // A cash allowance is money: Finance confirms it before it is used. Someone who already holds the Finance permission confirms it by adding it
+            // (nobody else is needed); anyone else leaves it "pending Finance", and the person who added it can never confirm it (maker is not checker).
+            row.EosbExclusionCategory = eosbCategory;
+            row.FinanceConfirmedAtUtc = null; row.FinanceConfirmedByUserId = null;
+            if (cash)
+            {
+                row.CreatedBy = actor.UserId;   // the maker of THIS definition (a removed one coming back is a new proposal)
+                if (actor.IsFinance && actor.UserId is not null) { row.FinanceConfirmedAtUtc = DateTime.UtcNow; row.FinanceConfirmedByUserId = actor.UserId; }
+            }
+            var warnings = cash ? CashAllowanceDefinitions.Warnings(nameEn, row.NameAr, row.EosbIncluded, eosbCategory, atCreation: true) : [];
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitAdded, row.Id, cash
+                ? new
+                {
+                    componentCode = code, nameEn, nameAr = row.NameAr, kind = BenefitKinds.Cash, glDriverKey = driver, eosbIncluded = row.EosbIncluded,
+                    eosbExclusionCategory = eosbCategory, eosbExclusionReason = eosbReason,
+                    financeConfirmed = row.FinanceConfirmedAtUtc is not null, warnings = warnings.Select(w => w.Code).ToArray(),
+                }
+                : (object)new { componentCode = code, nameEn, nameAr = row.NameAr }));
+            await db.SaveChangesAsync(ct);
+            return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), cash ? InfoOf(row) : null, cash ? warnings : null));
+        }, ct);
+
+    // ── Finance confirms and corrects a cash allowance ───────────────────────────────────────────
+
+    private static MatrixResult Forbidden(string error, string message) => new(StatusCodes.Status403Forbidden, new { error, message });
+
+    /// <summary>The GL driver and end-of-service answer a confirm or a correction ends with: what the caller sent, else what the definition has.</summary>
+    private sealed record AllowanceTerms(string Driver, bool EosbIncluded, string? Category, string? Note);
+
+    private static AllowanceTerms TermsOf(PayComponent row) =>
+        new(row.GlDriverKey ?? string.Empty, row.EosbIncluded, row.EosbExclusionCategory, row.EosbExclusionReason);
+
+    /// <summary>The terms after applying the optional changes of a confirm or correct request to <paramref name="row"/>; a refusal if they do not hold together.
+    /// Nothing sent = the same terms. A changed driver is validated exactly as adding the allowance validates it; an unchanged one too when confirming
+    /// (<paramref name="validateUnchangedDriver"/>: a driver can lose its account mapping after the allowance was added, and Finance must not confirm a posting
+    /// that has nowhere to go).</summary>
+    private async Task<(MatrixResult? Problem, AllowanceTerms Terms)> ResolveTermsAsync(
+        Guid tid, PayComponent row, string? glDriverKey, bool? eosbIncluded, string? category, string? note, bool validateUnchangedDriver, CancellationToken ct)
+    {
+        var current = TermsOf(row);
+        var driver = string.IsNullOrWhiteSpace(glDriverKey) ? current.Driver : glDriverKey.Trim();
+        if (driver.Length == 0) return (Bad("gl_driver_required", "Choose the GL driver this allowance's expense posts to."), current);
+        var included = eosbIncluded ?? current.EosbIncluded;
+        var eosbTouched = eosbIncluded.HasValue || category is not null || note is not null;
+        var terms = new AllowanceTerms(driver, current.EosbIncluded, current.Category, current.Note);
+        if (eosbTouched)
+        {
+            var sameSide = included == current.EosbIncluded;
+            var (problem, normalizedCategory, normalizedNote) = CashAllowanceDefinitions.NormalizeEosb(
+                included, category ?? (sameSide ? current.Category : null), note ?? (sameSide ? current.Note : null));
+            if (problem is not null) return (Bad(problem.Code, problem.Message), current);
+            terms = terms with { EosbIncluded = included, Category = normalizedCategory, Note = normalizedNote };
+        }
+        if ((validateUnchangedDriver || driver != current.Driver)
+            && await PayComponentPolicy.ValidateGlDriverAsync(db, tid, null, PayComponentTypes.Earning, driver, ct) is { } glProblem)
+            return (Bad("gl_driver_invalid", glProblem), current);
+        return (null, terms);
+    }
+
+    private static object TermsAudit(AllowanceTerms t) => new { glDriverKey = t.Driver, eosbIncluded = t.EosbIncluded, eosbExclusionCategory = t.Category, eosbExclusionReason = t.Note };
+
+    /// <summary>
+    /// Finance confirms a cash allowance that was added without Finance rights ("pending Finance"). One action confirms the GL driver and the end-of-service
+    /// setting, and Finance may change either in the same step (the same rules as adding it). Maker is not checker: the person who added it can never confirm it.
+    /// Needs access to every company (the definition is for the whole group). Audited with the old and new terms.
+    /// </summary>
+    public Task<MatrixResult> ConfirmBenefitAsync(MatrixActor actor, string code, ConfirmAllowanceRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            if (!actor.IsFinance || actor.UserId is null)
+                return Forbidden("finance_required", "Only a Finance approver can confirm a cash allowance.");
+            code = (code ?? string.Empty).Trim().ToUpperInvariant();
+            if (!EntitlementComponentRules.IsAllowance(code))
+                return Conflict("not_a_cash_allowance", "Only a monthly cash allowance needs Finance to confirm it.");
+            var versions = (await CashAllowanceDefinitions.VersionsAsync(db, tid, [code], ct, tracked: true)).SelectMany(g => g).ToList();
+            if (versions.Count == 0)
+                return new MatrixResult(StatusCodes.Status404NotFound, new { error = "unknown_component", message = "This allowance isn't in the catalogue." });
+            var row = versions.OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).First();
+            if (row.FinanceConfirmedAtUtc is not null)
+                return Conflict("already_confirmed", "Finance has already confirmed this allowance.");
+            if (row.CreatedBy == actor.UserId)
+                return Forbidden("maker_cannot_confirm", "You added this allowance, so a different Finance approver must confirm it.");
+
+            var (problem, terms) = await ResolveTermsAsync(tid, row, req.GlDriverKey, req.EosbIncluded, req.EosbExclusionCategory, req.EosbExclusionReason, validateUnchangedDriver: true, ct);
+            if (problem is not null) return problem;
+            var before = TermsOf(row);
+            row.GlDriverKey = terms.Driver; row.EosbIncluded = terms.EosbIncluded;
+            row.EosbExclusionCategory = terms.Category; row.EosbExclusionReason = terms.Note;
+            row.FinanceConfirmedAtUtc = DateTime.UtcNow; row.FinanceConfirmedByUserId = actor.UserId;
+            row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
+            var warnings = CashAllowanceDefinitions.Warnings(row.NameEn, row.NameAr, row.EosbIncluded, row.EosbExclusionCategory, atCreation: false);
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitConfirmed, row.Id, new
+            {
+                componentCode = code, addedBy = row.CreatedBy, confirmedBy = actor.UserId, before = TermsAudit(before), after = TermsAudit(terms),
+                changed = before != terms, warnings = warnings.Select(w => w.Code).ToArray(),
+            }));
+            await db.SaveChangesAsync(ct);
+            return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), InfoOf(row), warnings));
+        }, ct);
+
+    /// <summary>
+    /// Finance changes a confirmed cash allowance's GL driver and/or end-of-service setting FROM the first day of a month, with a reason. It is a new
+    /// effective-dated version: the version in effect is closed the day before and the new one opens (never rewritten), and every reader — the payroll run,
+    /// back pay, end of service, the remove guard — picks the version in effect for its own date. Refused for any month on or before the latest payroll period
+    /// any company has approved, locked, paid or closed in the GL, and while a later version is already scheduled. Audited with the old and new terms and the reason.
+    /// </summary>
+    public Task<MatrixResult> CorrectBenefitAsync(MatrixActor actor, string code, CorrectAllowanceRequest req, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            if (!actor.IsFinance || actor.UserId is null)
+                return Forbidden("finance_required", "Only a Finance approver can correct a cash allowance.");
+            code = (code ?? string.Empty).Trim().ToUpperInvariant();
+            if (!EntitlementComponentRules.IsAllowance(code))
+                return Conflict("not_a_cash_allowance", "Only a monthly cash allowance can be corrected here.");
+            if (req.EffectiveFrom is not DateOnly from) return Bad("effective_from_required", "Choose the month the change starts from.");
+            if (from.Day != 1) return Bad("effective_from_not_month_start", "A change starts on the first day of a month.");
+            var reason = (req.Reason ?? string.Empty).Trim();
+            if (reason.Length == 0) return Bad("reason_required", "Say why you are changing it.");
+            if (reason.Length > CashAllowanceDefinitions.NoteMaxLength) return Bad("reason_too_long", $"Keep the reason under {CashAllowanceDefinitions.NoteMaxLength} characters.");
+            if (CashAllowanceDefinitions.HasUnsafeCharacters(reason)) return Bad("reason_invalid", "The reason can't contain control or text-direction override characters.");
+            // A far-future start would sit as the "later version" and block every correction after it with no way to cancel it: at most twelve months ahead.
+            var today = await clock.TodayAsync(tid, ct);
+            var latestStart = new DateOnly(today.Year, today.Month, 1).AddMonths(MaxCorrectionMonthsAhead);
+            if (from > latestStart)
+                return Bad("effective_from_too_far", $"A change can start at most {MaxCorrectionMonthsAhead} months ahead, so no later than {latestStart:yyyy-MM}.");
+
+            var versions = (await CashAllowanceDefinitions.VersionsAsync(db, tid, [code], ct, tracked: true)).SelectMany(g => g).ToList();
+            if (versions.Count == 0)
+                return new MatrixResult(StatusCodes.Status404NotFound, new { error = "unknown_component", message = "This allowance isn't in the catalogue." });
+            var head = versions.OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).First();
+            if (head.FinanceConfirmedAtUtc is null)
+                return Conflict("not_confirmed", "Confirm this allowance first. A correction changes a confirmed allowance; while confirming, you can change its GL driver or end-of-service setting directly.");
+
+            // Retroactive changes to a committed period are refused: the earliest month is the one after the latest period any company has approved or locked.
+            // Read here (inside the matrix lock) and again just before anything is changed, so a run approved in between is seen.
+            async Task<MatrixResult?> CommittedPeriodRefusalAsync()
+            {
+                if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, null, ct) is not DateOnly committed || from > committed) return null;
+                return new MatrixResult(StatusCodes.Status409Conflict, new
+                {
+                    error = "period_committed",
+                    message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid for at least one company, so a change from {from:yyyy-MM} would rewrite a closed period. "
+                        + $"The earliest month you can change it from is {committed.AddMonths(1):yyyy-MM}.",
+                    earliestEffectiveFrom = committed.AddMonths(1),
+                });
+            }
+            if (await CommittedPeriodRefusalAsync() is { } committedRefusal) return committedRefusal;
+            if (versions.FirstOrDefault(v => v.EffectiveFrom is DateOnly f && f > from) is { } later)
+                return Conflict("later_version_exists", $"A change from {later.EffectiveFrom:yyyy-MM} is already scheduled. Choose a month after it.");
+
+            var (problem, terms) = await ResolveTermsAsync(tid, head, req.GlDriverKey, req.EosbIncluded, req.EosbExclusionCategory, req.EosbExclusionReason, validateUnchangedDriver: false, ct);
+            if (problem is not null) return problem;
+            var before = TermsOf(head);
+            if (before == terms) return Bad("nothing_to_change", "That is how the allowance is already set. Change the GL driver or the end-of-service setting.");
+
+            // The last look before the write: nothing below awaits until SaveChanges, and nothing has been changed yet, so a refusal here saves nothing.
+            if (BeforeCorrectionSaveHook is { } beforeSave) await beforeSave();
+            if (await CommittedPeriodRefusalAsync() is { } lateRefusal) return lateRefusal;
+
+            PayComponent result;
+            var inPlace = head.EffectiveFrom == from;
+            if (inPlace)
+            {
+                // The version being corrected itself starts in this month, which no committed period reaches, so no pay was decided on it: amend it.
+                result = head;
+                result.GlDriverKey = terms.Driver; result.EosbIncluded = terms.EosbIncluded;
+                result.EosbExclusionCategory = terms.Category; result.EosbExclusionReason = terms.Note;
+                result.UpdatedAtUtc = DateTime.UtcNow; result.UpdatedBy = actor.UserId;
+            }
+            else
+            {
+                head.EffectiveTo = from.AddDays(-1);
+                head.UpdatedAtUtc = DateTime.UtcNow; head.UpdatedBy = actor.UserId;
+                result = new PayComponent
+                {
+                    TenantId = tid, CompanyId = null, Code = code, NameEn = head.NameEn, NameAr = head.NameAr,
+                    ComponentType = head.ComponentType, CalcMethod = head.CalcMethod, Value = null, ProviderKey = null, StructureField = null, FormulaExpression = null,
+                    GlDriverKey = terms.Driver, IsTaxable = head.IsTaxable, GosiSubject = head.GosiSubject, WpsIncluded = head.WpsIncluded, EmitWhenZero = head.EmitWhenZero,
+                    EosbIncluded = terms.EosbIncluded, EosbExclusionCategory = terms.Category, EosbExclusionReason = terms.Note,
+                    IsFamily = head.IsFamily, IsStatutory = head.IsStatutory, IsSystem = head.IsSystem, IsActive = head.IsActive, IsDeleted = false,
+                    EntitlementClass = head.EntitlementClass, StatutoryFloor = head.StatutoryFloor, IsOffered = head.IsOffered, DisplayOrder = head.DisplayOrder,
+                    EffectiveFrom = from, EffectiveTo = null,
+                    // Finance already confirmed the allowance; the new version carries that confirmation, the correction's own record is the audit row.
+                    FinanceConfirmedAtUtc = head.FinanceConfirmedAtUtc, FinanceConfirmedByUserId = head.FinanceConfirmedByUserId,
+                    CreatedBy = actor.UserId, UpdatedAtUtc = DateTime.UtcNow, UpdatedBy = actor.UserId,
+                };
+                db.PayComponents.Add(result);
+            }
+            var warnings = CashAllowanceDefinitions.Warnings(result.NameEn, result.NameAr, result.EosbIncluded, result.EosbExclusionCategory, atCreation: false);
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitCorrected, result.Id, new
+            {
+                componentCode = code, effectiveFrom = from, reason, before = TermsAudit(before), after = TermsAudit(terms), amendedInPlace = inPlace,
+                previousVersionId = inPlace ? (Guid?)null : head.Id, warnings = warnings.Select(w => w.Code).ToArray(),
+            }));
+            await db.SaveChangesAsync(ct);
+            return Ok(new
+            {
+                component = ToDto(EntitlementComponentRules.CustomRuleFor(code, result.NameEn, result.NameAr), InfoOf(result), warnings),
+                staleRuns = await PayComponentPolicy.StaleRunsAsync(db, tid, null, from, ct),
+            });
+        }, ct);
+
+    /// <summary>
+    /// Takes away a benefit or cash allowance that was added by mistake. Only one nobody has used: no grade value in any version (not even
+    /// "Not offered"), in no employee's package and (an allowance) on no employee's salary record. A used one is set to "Not offered"
+    /// instead, which keeps the history.
+    /// </summary>
+    public Task<MatrixResult> RemoveBenefitAsync(MatrixActor actor, string code, CancellationToken ct) =>
+        FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
+        {
+            var tid = actor.TenantId;
+            if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
+            code = (code ?? string.Empty).Trim().ToUpperInvariant();
+            if (!EntitlementComponentRules.IsCustom(code))
+                return Conflict("built_in_benefit", "Only a benefit you added yourself can be removed.");
+            var cash = EntitlementComponentRules.IsAllowance(code);
+            var ofCode = ScopedBypass.TenantWide(db.PayComponents, tid, "The tenant's own row for a benefit it added, with any company switches on it.")
+                .Where(x => x.Code == code && !x.IsDeleted);
+            var rows = cash
+                ? await ofCode.Where(x => x.ComponentType == PayComponentTypes.Earning && x.CalcMethod == PayComponentCalcMethods.GradePackage).ToListAsync(ct)
+                : await ofCode.Where(x => x.ComponentType == PayComponentTypes.Benefit).ToListAsync(ct);
+            if (!rows.Any(x => x.CompanyId == null))
+                return new MatrixResult(StatusCodes.Status404NotFound, new { error = "unknown_component", message = "This benefit isn't in the catalogue." });
+            var hasValues = await ScopedBypass.TenantWide(db.GradeEntitlements, tid, "A benefit with any grade value, in any version, can't be removed.")
+                .AnyAsync(x => x.PayComponentCode == code, ct);
+            var inPackages = await ScopedBypass.TenantWide(db.EmployeeEntitlements, tid, "A benefit in any employee's package can't be removed.")
+                .AnyAsync(x => x.PayComponentCode == code, ct);
+            // A cash allowance is also used once it sits on any salary record, or while a pending salary change proposes it (Finance would
+            // otherwise be asked to approve a line whose definition no longer exists). The staged lines are JSON, so they are read here and
+            // compared in memory: a text search inside jsonb does not translate safely across providers.
+            var onSalary = cash && await db.EmployeeSalaryAllowances.AnyAsync(x => x.TenantId == tid && x.Code == code, ct);
+            // Every place a proposal can name the allowance is read, and an unreadable one FAILS CLOSED: a salary change HR proposed, and a salary
+            // package in an Approvals employee change (pending, or approved and waiting for its effective date). Staging takes this same lock
+            // (SalaryAllowanceLines.LockForStagingAsync), so nothing is staged between this read and the removal below.
+            var named = false;
+            var unreadable = false;
+            if (cash)
+            {
+                var stagedLines = await ScopedBypass.TenantWide(db.SalaryChangeRequests, tid,
+                        "A cash allowance a pending salary change names can't be removed; the guard reads every company's pending changes.")
+                    .AsNoTracking()
+                    .Where(x => x.Status == SalaryChangeRequest.Pending && x.AllowancesJson != null)
+                    .Select(x => x.AllowancesJson).ToListAsync(ct);
+                foreach (var json in stagedLines)
+                {
+                    var names = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Names(json, code);
+                    if (names is null) unreadable = true; else if (names == true) named = true;
+                }
+                var stagedChanges = await db.EmployeeChangeRequests.AsNoTracking()
+                    .Where(x => x.TenantId == tid && (x.Status == EmployeeChangeStatuses.PendingApproval || x.Status == EmployeeChangeStatuses.ApprovedPendingEffectiveDate))
+                    .Select(x => x.ProposedChangesJson).ToListAsync(ct);
+                foreach (var json in stagedChanges)
+                {
+                    var names = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ChangeNames(json, code);
+                    if (names is null) unreadable = true; else if (names == true) named = true;
+                }
+            }
+            if (named)
+                return Conflict("benefit_in_use", "A salary change that is waiting for approval still includes this allowance, so it can't be removed. Decide or withdraw that change first.");
+            if (unreadable)
+                return Conflict("allowance_lines_unreadable", "A salary change that is waiting for approval has allowance lines that cannot be read, so it can't be checked against this allowance. Nothing was removed. Decide or withdraw that change first.");
+            if (hasValues || inPackages || onSalary)
+                return Conflict("benefit_in_use", "This benefit already has values for grades or is in employees' packages or salaries, so it can't be removed. Set it to Not offered for every grade instead.");
+            foreach (var row in rows)
+            {
+                row.IsDeleted = true; row.UpdatedAtUtc = DateTime.UtcNow; row.UpdatedBy = actor.UserId;
+            }
+            db.AuditLogs.Add(Audit(actor, null, AuditBenefitRemoved, rows.First(x => x.CompanyId == null).Id, new { componentCode = code }));
+            await db.SaveChangesAsync(ct);
+            return Ok(new { removed = code });
+        }, ct);
+
     // ── Legacy import (grade_pay_scale_components, benefit_eligibility_rules) ────────────────────
 
     /// <summary>
@@ -837,11 +1362,13 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
         await ScopedBypass.TenantWide(db.Companies, tid, "Group completeness is checked against every active company.")
             .Where(x => !x.IsDeleted && x.IsActive).Select(x => x.Id).ToListAsync(ct);
 
-    /// <summary>The catalogue's benefits, plus the loan facilities of grade-limited loan types (shown read-only, named as
+    /// <summary>The catalogue's benefits, the benefits the customer added, plus the loan facilities of grade-limited loan types (shown read-only, named as
     /// the loan type is). A catalogue loan facility no loan type uses yet is left out: it has nowhere to be set.</summary>
     private async Task<List<EntitlementComponentRule>> ComponentRulesAsync(Guid tid, CancellationToken ct)
     {
         var rules = EntitlementComponentRules.Catalogue.Where(r => !r.IsLoanFacility).ToList();
+        foreach (var custom in await CustomBenefitsAsync(tid, ct))
+            rules.Add(EntitlementComponentRules.CustomRuleFor(custom.Code, custom.NameEn, string.IsNullOrWhiteSpace(custom.NameAr) ? custom.NameEn : custom.NameAr));
         var loans = await db.LoanTypes.AsNoTracking()
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.EntitlementComponentCode != null)
             .Select(x => new { Code = x.EntitlementComponentCode!, x.NameEn, x.NameAr }).ToListAsync(ct);
@@ -860,10 +1387,10 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
             .Where(x => x.CompanyId == companyId && !x.IsDeleted && !x.IsOffered)
             .ToListAsync(ct);
 
-    private static MatrixComponentDto ToDto(EntitlementComponentRule r) =>
+    private static MatrixComponentDto ToDto(EntitlementComponentRule r, CashAllowanceInfoDto? cash = null, IReadOnlyList<AllowanceWarningDto>? warnings = null) =>
         new(r.Code, r.NameEn, r.NameAr, r.Class, r.Floor, GroupOf(r), r.AllowedValueTypes, r.AllowedCoverageTiers,
             r.AllowedDependantScopes, r.AllowedLimitPeriods, r.DefaultLimitPeriod, r.IsFloor, CanSkipHere(r), r.IsLoanFacility,
-            BlockReasonDto.For(FloorCode(r.Floor)));
+            BlockReasonDto.For(FloorCode(r.Floor)), EntitlementComponentRules.IsCustom(r.Code), cash, warnings);
 
     private static MatrixCellDto ToDto(GradeEntitlement c, Guid? viewCompanyId, DateOnly? nextChange) =>
         new(c.GradeId, c.PayComponentCode, c.Id, c.CompanyId.HasValue, viewCompanyId.HasValue && !c.CompanyId.HasValue, c.Eligible, c.ValueType,
@@ -906,7 +1433,8 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
     private static AuditLog Audit(MatrixActor actor, Guid? companyId, string action, Guid entityId, object metadata) => new()
     {
         TenantId = actor.TenantId, CompanyId = companyId, UserId = actor.UserId, Action = action,
-        EntityName = action.StartsWith("entitlements.offering", StringComparison.Ordinal) ? "PayComponent" : "GradeEntitlement",
+        EntityName = action.StartsWith("entitlements.offering", StringComparison.Ordinal)
+            || action.StartsWith("entitlements.benefit", StringComparison.Ordinal) ? "PayComponent" : "GradeEntitlement",
         EntityId = entityId.ToString(), IpAddress = actor.IpAddress, CreatedAtUtc = DateTime.UtcNow,
         Metadata = JsonSerializer.Serialize(metadata),
     };

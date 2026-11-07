@@ -489,6 +489,24 @@ public static class CompanyPayrollRules
         await db.SaveChangesAsync(ct);
     }
 
+    /// <summary>
+    /// The company payroll treats as an employee's employing company. An employee stamped with a company is in it. A legacy
+    /// employee with no stamp belongs to the tenant's ONLY active company, the same single-company fallback
+    /// <c>PayrollRunProcessor</c> applies to a run with no company (<c>legacySingleCompanyScope</c>); with several active
+    /// companies payroll refuses to guess (<c>company_not_resolved</c>), so this returns null rather than pick one.
+    /// Anything that must classify a day or read a company rule the way payroll will pays it asks here first.
+    /// </summary>
+    public static async Task<Guid?> EffectiveCompanyIdAsync(ZayraDbContext db, Guid tenantId, Guid? employeeCompanyId, CancellationToken ct)
+    {
+        if (employeeCompanyId.HasValue) return employeeCompanyId;
+        var active = await db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
+            .Select(c => c.Id)
+            .Take(2)
+            .ToListAsync(ct);
+        return active.Count == 1 ? active[0] : null;
+    }
+
     /// <summary>Dates of the non-optional public holidays in the window that apply to this company: from an active calendar
     /// that is company-wide or the company's own. Attendance and payroll both read holidays through this one query.</summary>
     public static async Task<HashSet<DateOnly>> HolidayDatesAsync(
