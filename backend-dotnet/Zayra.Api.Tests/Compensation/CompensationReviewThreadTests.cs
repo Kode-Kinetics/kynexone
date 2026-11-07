@@ -32,6 +32,8 @@ public sealed class CompensationReviewThreadTests(PostgresFixture fx)
     private sealed class RaceOnFirstInsert(string connectionString, Guid tenant, int employeeId, DateOnly date) : DbCommandInterceptor
     {
         public int Fired;
+        /// <summary>The other writer's salary row, which carries one allowance line.</summary>
+        public static readonly Guid RivalRowId = Guid.NewGuid();
 
         public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
             InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
@@ -42,11 +44,16 @@ public sealed class CompensationReviewThreadTests(PostgresFixture fx)
                 await using (var rival = new NpgsqlConnection(connectionString))
                 {
                     await rival.OpenAsync(cancellationToken);
-                    await using var cmd = new NpgsqlCommand("INSERT INTO employee_salary_structures (id, tenant_id, employee_id, salary_structure_id, basic_salary, housing_allowance, transport_allowance, food_allowance, mobile_allowance, other_allowance, fixed_deduction, effective_date, currency, is_active, created_at_utc, housing_basis, transport_basis) VALUES (gen_random_uuid(), @t, @e, gen_random_uuid(), 7400, 0, 0, 0, 0, 0, 0, @d, 'SAR', true, now(), 'Amount', 'Amount')", rival);
+                    await using var cmd = new NpgsqlCommand("INSERT INTO employee_salary_structures (id, tenant_id, employee_id, salary_structure_id, basic_salary, housing_allowance, transport_allowance, food_allowance, mobile_allowance, other_allowance, fixed_deduction, effective_date, currency, is_active, created_at_utc, housing_basis, transport_basis) VALUES (@id, @t, @e, gen_random_uuid(), 7400, 0, 0, 0, 0, 0, 0, @d, 'SAR', true, now(), 'Amount', 'Amount')", rival);
                     cmd.Parameters.AddWithValue("t", tenant);
                     cmd.Parameters.AddWithValue("e", employeeId);
                     cmd.Parameters.AddWithValue("d", date);
+                    cmd.Parameters.AddWithValue("id", RivalRowId);
                     await cmd.ExecuteNonQueryAsync(cancellationToken);
+                    await using var line = new NpgsqlCommand("INSERT INTO employee_salary_allowances (id, tenant_id, salary_structure_id, code, basis, rate, amount) VALUES (gen_random_uuid(), @t, @s, 'ALW_RIVAL', 'Amount', NULL, 250)", rival);
+                    line.Parameters.AddWithValue("t", tenant);
+                    line.Parameters.AddWithValue("s", RivalRowId);
+                    await line.ExecuteNonQueryAsync(cancellationToken);
                 }
                 throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected);
             }
@@ -87,6 +94,9 @@ public sealed class CompensationReviewThreadTests(PostgresFixture fx)
         await using var verify = fx.CreateDb();
         var rows = await verify.EmployeeSalaryStructures.AsNoTracking().Where(s => s.EmployeeId == w.E["B6"] && s.EffectiveDate == date).ToListAsync();
         rows.Should().ContainSingle().Which.BasicSalary.Should().Be(7400m, "the other writer's row is kept as written");
+        rows[0].IsActive.Should().BeTrue("the other writer's row was not deactivated");
+        (await verify.EmployeeSalaryAllowances.AsNoTracking().Where(a => a.SalaryStructureId == RaceOnFirstInsert.RivalRowId).ToListAsync())
+            .Should().ContainSingle().Which.Should().Match<EmployeeSalaryAllowance>(a => a.Code == "ALW_RIVAL" && a.Amount == 250m, "the other writer's allowance line survives too");
         (await verify.EmployeeSalaryStructures.AsNoTracking().CountAsync(s => s.EmployeeId == w.E["B5"] && s.EffectiveDate == date)).Should().Be(0, "nothing from the file was applied");
     }
 

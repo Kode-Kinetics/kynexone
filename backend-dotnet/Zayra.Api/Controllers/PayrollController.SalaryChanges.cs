@@ -30,18 +30,33 @@ public partial class PayrollController
 
     internal static class SalaryChangeDto
     {
-        public static object Project(SalaryChangeRequest c) => new
+        /// <param name="allowances">The change's customer-defined cash allowance lines (<see cref="Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync"/>):
+        /// <c>currentAllowances</c> are the lines on the salary record in force now, <c>proposedAllowances</c> the lines the change leaves, and
+        /// <c>allowancesCarriedForward</c> says the proposal did not mention allowances, so the proposed ones are the current ones carried over.</param>
+        public static object Project(SalaryChangeRequest c, Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView? allowances = null) => new
         {
             c.Id, c.BatchId, c.Source, c.EmployeeId, c.EmployeeCode, c.EmployeeName, c.SalaryStructureId,
             c.BasicSalary, c.HousingAllowance, c.TransportAllowance, c.FoodAllowance, c.MobileAllowance, c.OtherAllowance, c.FixedDeduction,
             c.EffectiveDate, c.Currency, c.PreviousBasicSalary, c.Status,
             c.RequestedByName, c.RequestedAtUtc, c.DecidedByName, c.DecidedAtUtc, c.DecisionNote, c.AppliedAssignmentId,
+            CurrentAllowances = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).Current,
+            ProposedAllowances = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).Proposed,
+            AllowancesCarriedForward = (allowances ?? Zayra.Api.Infrastructure.Payroll.SalaryAllowanceView.None).CarriedForward,
+            // Against the salary record in force (worked out when read, never stored): a change that lowers the pay or any one item needs the employee's
+            // written agreement (reductionConsentReference); one that changes any pay item or allowance line changes the contract wage (amend it on Qiwa).
+            IsReduction = allowances?.Insight?.IsReduction ?? false,
+            ReductionConsentReference = c.ReductionConsentReference,
+            ReducedItems = allowances?.Insight?.ReducedItems ?? (IReadOnlyList<Zayra.Api.Infrastructure.Payroll.ReducedItem>)[],
+            CurrentMonthlyPay = allowances?.Insight?.CurrentMonthlyPay ?? 0m,
+            ProposedMonthlyPay = allowances?.Insight?.ProposedMonthlyPay ?? 0m,
+            ChangesContractWage = allowances?.Insight?.ChangesContractWage ?? false,
         };
     }
 
     /// <summary>Stages a validated change as Pending. An older pending change for the same employee and date is superseded.</summary>
     private async Task<SalaryChangeRequest> StageSalaryChangeAsync(
-        Guid tenantId, Employee employee, Guid structureId, EmployeeSalaryStructureRequest req, string source, Guid? batchId, CancellationToken ct)
+        Guid tenantId, Employee employee, Guid structureId, EmployeeSalaryStructureRequest req, string source, Guid? batchId, CancellationToken ct,
+        string? allowancesJson = null, string? reductionConsentReference = null)
     {
         var superseded = await _db.SalaryChangeRequests
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employee.Id && x.EffectiveDate == req.EffectiveDate && x.Status == SalaryChangeRequest.Pending)
@@ -70,6 +85,9 @@ public partial class PayrollController
             TransportAllowance = req.TransportAllowance, FoodAllowance = req.FoodAllowance, MobileAllowance = req.MobileAllowance,
             OtherAllowance = req.OtherAllowance, FixedDeduction = req.FixedDeduction, EffectiveDate = req.EffectiveDate,
             Currency = req.Currency ?? string.Empty, PreviousBasicSalary = previous,
+            // null = the change does not mention allowances (carried forward on approval); "[]" = remove them all; otherwise exactly these lines.
+            AllowancesJson = allowancesJson,
+            ReductionConsentReference = Zayra.Api.Infrastructure.Payroll.SalaryReductions.CleanReference(reductionConsentReference),
             RequestedByUserId = GetUserId(), RequestedByName = GetUserName(),
         };
         _db.SalaryChangeRequests.Add(change);
@@ -98,7 +116,8 @@ public partial class PayrollController
         if (batchId.HasValue) q = q.Where(x => x.BatchId == batchId);
         if (!scope.IsUnrestricted) q = q.Where(x => scope.AllowedEmployeeIds!.Contains(x.EmployeeId));
         var items = await q.OrderByDescending(x => x.RequestedAtUtc).Take(500).ToListAsync(ct);
-        return Ok(items.Select(SalaryChangeDto.Project));
+        var allowanceViews = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync(_db, tenantId, items, ct);
+        return Ok(items.Select(c => SalaryChangeDto.Project(c, allowanceViews.GetValueOrDefault(c.Id))));
     }
 
     [HttpPost("salary-changes/{id:guid}/approve")]
@@ -144,7 +163,8 @@ public partial class PayrollController
             await PayrollAudit("payroll.employee_salary.change_cancelled", "SalaryChangeRequest", change.Id.ToString(),
                 new { employeeId = change.EmployeeId, requestedBy = change.RequestedByUserId }, ct);
             await _db.SaveChangesAsync(ct);
-            return Ok(SalaryChangeDto.Project(change));
+            var allowanceViews = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], ct);
+            return Ok(SalaryChangeDto.Project(change, allowanceViews.GetValueOrDefault(change.Id)));
         }, ct);
     }
 }

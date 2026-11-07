@@ -49,6 +49,31 @@ test.describe('resume from the real draft shape', () => {
   });
 });
 
+test.describe('the staged allowance lines of a resumed draft', () => {
+  const payloadCtx = { companyCountry: 'SA', currency: 'SAR', emailDomain: 'example.com' };
+  const withLines = (allowances: unknown) => ({ ...real, salaryBreakdown: { ...real.salaryBreakdown, allowances } });
+
+  test('the real draft states none (null): untouched, nothing is sent, the server fills from the grade', () => {
+    const f = formFromEmployee(real, ctx);
+    expect(f.allowances).toBe('');
+    expect('allowances' in buildCreateRequest(f, payloadCtx).salaryBreakdown!).toBe(false);
+  });
+  test('an explicit empty list is the person\'s own choice: resumed as such and sent again as [] on the next save', () => {
+    const f = formFromEmployee(withLines([]), ctx);
+    expect(f.allowances).not.toBe('');
+    expect(buildCreateRequest(f, payloadCtx).salaryBreakdown!.allowances).toEqual([]);
+  });
+  test('an absent property is untouched, like null', () => {
+    const { allowances: _omit, ...rest } = real.salaryBreakdown;
+    const f = formFromEmployee({ ...real, salaryBreakdown: rest }, ctx);
+    expect(f.allowances).toBe('');
+  });
+  test('staged lines are kept and sent back as they were', () => {
+    const f = formFromEmployee(withLines([{ code: 'ALW_CAR', basis: 'Amount', amount: 500 }]), ctx);
+    expect(buildCreateRequest(f, payloadCtx).salaryBreakdown!.allowances).toEqual([{ code: 'ALW_CAR', basis: 'Amount', amount: 500 }]);
+  });
+});
+
 test.describe('different person', () => {
   test('confirming sends acknowledgeDuplicate together with the reason', () => {
     const body = buildCreateRequest({ ...formFromEmployee(real, ctx) }, { companyCountry: 'SA', currency: 'SAR' }, { duplicateOverrideReason: 'Different person, different date of birth' });

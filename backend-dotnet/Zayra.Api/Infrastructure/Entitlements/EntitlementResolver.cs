@@ -166,7 +166,9 @@ public sealed class EntitlementResolver : IEntitlementResolver
         if (employee.GradeId is not null) codes.Add(EntitlementComponentRules.Medical);
         codes.AddRange(standard.Select(s => s.ComponentCode));
         codes.AddRange(frozen.Select(f => f.PayComponentCode));
-        codes = codes.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        // A customer-defined cash allowance (ALW_*) is paid from the salary record's own allowance lines, not from the salary columns this
+        // view reads wage cash from: until it has its own line here it stays out rather than show another figure against it.
+        codes = codes.Where(c => !EntitlementComponentRules.IsAllowance(c)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         var lines = new List<PackageLine>();
         var reasons = new Dictionary<string, PackageReason>(StringComparer.OrdinalIgnoreCase);

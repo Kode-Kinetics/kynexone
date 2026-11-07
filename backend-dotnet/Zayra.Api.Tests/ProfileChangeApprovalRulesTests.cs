@@ -1,0 +1,81 @@
+using FluentAssertions;
+using Zayra.Api.Infrastructure.Employees;
+using Zayra.Api.Infrastructure.Policy;
+
+namespace Zayra.Api.Tests;
+
+/// <summary>PEO-03 — which profile fields go through approval is driven by employees.profile_change_approval_fields.</summary>
+public class ProfileChangeApprovalRulesTests
+{
+    private static readonly IReadOnlyList<string> Default =
+        PolicyRegistry.ParseCsv(PolicyRegistry.Get(PolicyRegistry.EmployeesProfileChangeApprovalFields).Default);
+
+    [Fact]
+    public void Default_list_includes_nationality()
+        => Default.Should().Contain("nationality");
+
+    [Theory]
+    [InlineData("bankIban")]
+    [InlineData("idNumber")]          // policy name: national_id
+    [InlineData("passportNumber")]
+    [InlineData("salary")]
+    [InlineData("iqamaNumber")]
+    [InlineData("sponsorName")]
+    [InlineData("nationality")]
+    public void Default_list_gates_the_existing_fields(string field)
+        => ProfileChangeApprovalRules.RequiresApproval(field, Default).Should().BeTrue();
+
+    [Theory]
+    [InlineData("phone")]
+    [InlineData("preferredName")]
+    [InlineData("emergencyContactPhone")]
+    public void The_self_service_personal_details_stay_gated_by_default_for_self_service_only(string field)
+    {
+        ProfileChangeApprovalRules.RequiresApproval(field, Default).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApprovalForHrEdit(field, Default).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("workLocation")]
+    [InlineData("jobTitle")]
+    public void Fields_outside_the_list_apply_directly(string field)
+        => ProfileChangeApprovalRules.RequiresApproval(field, Default).Should().BeFalse();
+
+    [Fact]
+    public void A_field_added_to_the_list_is_gated()
+        => ProfileChangeApprovalRules.RequiresApprovalForHrEdit("workLocation", new[] { "work_location" }).Should().BeTrue();
+
+    [Fact]
+    public void A_snake_case_name_matches_the_camel_case_field()
+        => ProfileChangeApprovalRules.RequiresApproval("emergencyContactPhone", new[] { "emergency_contact_phone" }).Should().BeTrue();
+
+    [Fact]
+    public void Removing_a_policy_governed_field_lets_it_apply_directly()
+    {
+        ProfileChangeApprovalRules.RequiresApproval("nationality", new[] { "salary" }).Should().BeFalse();
+        ProfileChangeApprovalRules.RequiresApproval("iqamaNumber", Array.Empty<string>()).Should().BeFalse();
+    }
+
+    // Security review M1: pay, bank and identity fields are an approval floor the stored list cannot lower.
+    [Theory]
+    [InlineData("salary")]
+    [InlineData("bankIban")]
+    [InlineData("bank_iban")]
+    [InlineData("passportNumber")]
+    [InlineData("passport_number")]
+    [InlineData("idNumber")]
+    [InlineData("national_id")]
+    public void The_floor_fields_need_approval_even_when_the_stored_list_is_empty(string field)
+    {
+        ProfileChangeApprovalRules.RequiresApproval(field, Array.Empty<string>()).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApprovalForHrEdit(field, Array.Empty<string>()).Should().BeTrue();
+        ProfileChangeApprovalRules.RequiresApproval(field, new[] { "nationality" }).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("gosiReference")]
+    [InlineData("salaryBreakdown")]
+    [InlineData("medicalInformation")]
+    public void Structural_fields_outside_the_policy_vocabulary_stay_gated_even_with_an_empty_list(string field)
+        => ProfileChangeApprovalRules.RequiresApproval(field, Array.Empty<string>()).Should().BeTrue();
+}

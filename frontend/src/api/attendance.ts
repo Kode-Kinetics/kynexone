@@ -219,8 +219,8 @@ export interface AttendanceBulkEntryRequest {
   /** yyyy-MM-dd, tenant calendar day. */
   fromDate: string;
   toDate: string;
-  /** HH:mm in the tenant time zone. An out time not after the in time means the next day. */
-  inTime: string;
+  /** HH:mm in the tenant time zone. An out time not after the in time means the next day. At least one of the two is required. */
+  inTime?: string;
   outTime?: string;
   reason: string;
   verificationMethod?: string;

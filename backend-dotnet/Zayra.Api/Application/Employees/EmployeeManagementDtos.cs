@@ -89,7 +89,11 @@ public record EmployeeSalaryBreakdownRequest(
     decimal? FixedDeduction,
     string? SalaryStructureCode,
     DateOnly? EffectiveDate,
-    string? Currency);
+    string? Currency,
+    // Monthly cash allowances (ALW_*): null = not mentioned (carried forward from the current salary record, or filled from the grade for a first package).
+    IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? Allowances = null,
+    // The employee's written agreement to a reduction (a reference, up to 200 characters). Required when this package lowers the pay against the record in force.
+    string? ReductionConsentReference = null);
 
 public record EmployeeComplianceRecordRequest(
     [Required, MaxLength(10)] string CountryCode,
@@ -172,6 +176,8 @@ public record EmployeeDetailDto
     /// activated, so its username was kept — the two now differ. A live login's username is changed through
     /// security administration, never by an employee edit.</summary>
     public bool LoginUsernameDiffers { get; init; }
+    /// <summary>Set on a create or edit response: the national-ID / iqama prefix contradicts the nationality. Advisory only, never a refusal.</summary>
+    public IReadOnlyList<string>? IdentityWarnings { get; init; }
     /// <summary>Set on a create response only: the new work email is already an existing login's username. A warning,
     /// not a refusal — check it is the same person before linking that login to this record.</summary>
     public bool WorkEmailHasExistingLogin { get; init; }
@@ -763,10 +769,17 @@ public record EmployeeDocumentDto
 /// types override a missing or misleading client category, so legacy rows and today's category-free
 /// Passport upload payload fail closed. Normalization is case-, spacing-, punctuation-, and alias-insensitive.
 /// </summary>
+/// <summary>Thrown when a caller without employees.sensitive tries to change, verify, reject or archive a protected document, or to move one into or out of a protected category.</summary>
+public sealed class SensitiveDocumentAccessException : Exception
+{
+    public SensitiveDocumentAccessException() : base("This document is protected (identity, payroll or contract). Changing it needs the employees.sensitive permission.") { }
+}
+
 public static class EmployeeDocumentSensitivity
 {
     public const string Identity = "Identity";
     public const string Payroll = "Payroll";
+    public const string Contract = "Contract";
 
     private static readonly HashSet<string> IdentityCategories = new(StringComparer.Ordinal)
     {
@@ -776,6 +789,12 @@ public static class EmployeeDocumentSensitivity
     private static readonly HashSet<string> PayrollCategories = new(StringComparer.Ordinal)
     {
         "payroll", "payrolldocument", "payrolldocuments", "payrollandbank", "salaryandpayroll",
+    };
+
+    // Contracts carry the pay terms, so they are protected like identity and payroll documents.
+    private static readonly HashSet<string> ContractCategories = new(StringComparer.Ordinal)
+    {
+        "contract", "contracts", "employmentcontract", "employmentcontracts", "contractdocument", "contractdocuments",
     };
 
     // Exact server-owned registry. Values include the current remote/fallback field-catalog labels,
@@ -818,6 +837,10 @@ public static class EmployeeDocumentSensitivity
         "Fixed deduction", "FixedDeduction",
         "MOL personal ID", "MolId");
 
+    private static readonly HashSet<string> ContractDocumentTypes = ExactRegistry(
+        "Contract", "Employment Contract", "Signed Contract", "Signed employment contract", "Labour Contract", "Labor Contract",
+        "Qiwa Contract", "عقد", "عقد العمل", "عقد عمل");
+
     public static bool IsSensitive(string? documentType, string? category) =>
         CanonicalSensitiveCategory(documentType, category) is not null;
 
@@ -830,10 +853,12 @@ public static class EmployeeDocumentSensitivity
         var typeKey = Normalize(documentType);
         if (IdentityDocumentTypes.Contains(typeKey)) return Identity;
         if (PayrollDocumentTypes.Contains(typeKey)) return Payroll;
+        if (ContractDocumentTypes.Contains(typeKey)) return Contract;
 
         var categoryKey = Normalize(category);
         if (IdentityCategories.Contains(categoryKey)) return Identity;
         if (PayrollCategories.Contains(categoryKey)) return Payroll;
+        if (ContractCategories.Contains(categoryKey)) return Contract;
         return null;
     }
 

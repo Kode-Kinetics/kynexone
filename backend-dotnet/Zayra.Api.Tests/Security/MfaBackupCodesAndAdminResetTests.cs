@@ -445,8 +445,9 @@ public sealed class MfaBackupCodesAndAdminResetTests
                 400, MfaErrorCodes.CodeInvalid);
         }
         IReadOnlyList<string> fresh;
+        var appCode = Totp.Now(who.Secret);
         await using (var db = kit.NewDb())
-            fresh = CodesOf(await SignedIn(kit, db, who.UserId).RegenerateBackupCodes(new MfaRegenerateBackupCodesRequest(Totp.Now(who.Secret)), CancellationToken.None));
+            fresh = CodesOf(await SignedIn(kit, db, who.UserId).RegenerateBackupCodes(new MfaRegenerateBackupCodesRequest(appCode), CancellationToken.None));
 
         fresh.Should().HaveCount(10).And.NotIntersectWith(who.Codes);
         var after = await UserAsync(kit, who.UserId);
@@ -454,9 +455,10 @@ public sealed class MfaBackupCodesAndAdminResetTests
         after.MfaLastTotpStep.Should().NotBeNull("the code that proved it is spent");
         (await AuditsAsync(kit, "auth.mfa.backup_codes_generated")).Should().Contain(a => a.Metadata!.Contains("\"via\":\"regenerate\""));
 
-        // The same app code cannot regenerate twice (replay).
+        // The same app code cannot regenerate twice (replay). Replay the code already sent, not "the current code":
+        // if the 30-second window rolled over in between, the current code is a new one the server rightly accepts.
         await using (var db = kit.NewDb())
-            ShouldBeCoded(await SignedIn(kit, db, who.UserId).RegenerateBackupCodes(new MfaRegenerateBackupCodesRequest(Totp.Now(who.Secret)), CancellationToken.None),
+            ShouldBeCoded(await SignedIn(kit, db, who.UserId).RegenerateBackupCodes(new MfaRegenerateBackupCodesRequest(appCode), CancellationToken.None),
                 400, MfaErrorCodes.CodeInvalid);
 
         ShouldBeCoded((await VerifyAsync(kit, await ChallengeAsync(kit), backup: who.Codes[0])).Result, 400, MfaErrorCodes.CodeInvalid);

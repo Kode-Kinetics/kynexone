@@ -31,6 +31,12 @@ import { costCentreErrorKind, costCentreRefusalKey } from '../../lib/employeeCos
 import { pickServerMessage } from '../../lib/glCostAccounting';
 import { useLiveGrades } from '../../hooks/useLiveGrades';
 import { designationChoices } from '../../lib/employeeDesignationChoices';
+import { SalaryAllowancesEditor } from '../../components/payroll/SalaryAllowancesEditor';
+import { useCashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
+import { ALLOWANCES_KEY, REDUCTION_REFERENCE_KEY } from '../../lib/employeeEditDraft';
+import { SalaryReductionNotice } from '../../components/payroll/SalaryReductionNotice';
+import { formatAmount } from '../../lib/hire/money';
+import { describeLines, encodeValue, lineName, parseDecimal, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -91,7 +97,22 @@ export function EmployeeEditFlow({
     () => (key: string, value: string) => (isReferenceKey(key) ? referenceLabel(referenceLists[key], value, locale) : value),
     [referenceLists, locale],
   );
-  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved, formatValue });
+  // The monthly cash allowances (ALW_*): drawn by their own editor on the Salary step. Untouched, nothing about them is sent.
+  const { catalog: allowanceCatalog, retry: retryAllowanceCatalog } = useCashAllowanceCatalog({ enabled: canSeeSensitive && canWrite });
+  const salaryCurrency = employee.salaryBreakdown?.currency || employee.payrollProfile?.salaryCurrency || '';
+  const describeAllowanceChange = useCallback((before: readonly AllowanceDraftLine[], after: readonly AllowanceDraftLine[], basic: number | undefined) => {
+    const choices = allowanceCatalog.status === 'ready' ? allowanceCatalog.choices : [];
+    const words = {
+      none: t('None'),
+      name: (line: AllowanceDraftLine) => lineName(line, choices, locale),
+      money: (n: number) => formatAmount(n, salaryCurrency, locale),
+      amount: (amount: string) => t('{amount} a month', { amount }),
+      percent: (rate: string, amount: string) => t('{rate}% of basic = {amount} a month', { rate, amount }),
+    };
+    const say = (lines: readonly AllowanceDraftLine[]) => describeLines(lines, basic, words);
+    return t('From {before} to {after}', { before: say(before), after: say(after) });
+  }, [allowanceCatalog, locale, salaryCurrency, t]);
+  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved, formatValue, describeAllowanceChange });
   const salaryBlockedByStructure = structureInvalid && draft.salaryPackageChanged;
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
 
@@ -326,6 +347,21 @@ export function EmployeeEditFlow({
                       )}
                     </label>;
                   })}
+                  {index === 3 && draft.fields.some(field => field.key === ALLOWANCES_KEY) && (
+                    <SalaryAllowancesEditor idPrefix="edit-salary-allowances" baseline={draft.allowanceBaseline} baselineKind="record"
+                      value={draft.allowanceEdit} onChange={value => draft.setField(ALLOWANCES_KEY, encodeValue(value))}
+                      basic={parseDecimal(draft.form['salaryBreakdown.basicSalary'] ?? '')} currency={draft.form['salaryBreakdown.currency'] || salaryCurrency}
+                      catalog={allowanceCatalog} onRetry={retryAllowanceCatalog} showProblems={draft.allowanceProblemsShown} />
+                  )}
+                  {index === 3 && draft.lowersPay && (
+                    <SalaryReductionNotice idPrefix="edit-salary-reduction" items={draft.reductionItems}
+                      currentTotal={draft.reduction.isReduction ? draft.reduction.currentTotal : undefined}
+                      proposedTotal={draft.reduction.isReduction ? draft.reduction.proposedTotal : undefined}
+                      currency={draft.form['salaryBreakdown.currency'] || salaryCurrency} reference={draft.reference}
+                      onReference={value => draft.setField(REDUCTION_REFERENCE_KEY, value)}
+                      problem={draft.referenceProblem ? t(draft.referenceProblem) : null} focusToken={draft.referenceFocus}
+                      lineLabel={(code) => lineName({ code, ...(draft.allowanceBaseline.find(l => l.code.toUpperCase() === code.toUpperCase()) ?? {}) }, allowanceCatalog.status === 'ready' ? allowanceCatalog.choices : [], locale)} />
+                  )}
                 </fieldset>
               </EmployeeCreatePanel>
             ))}

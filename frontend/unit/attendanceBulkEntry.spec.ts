@@ -59,10 +59,15 @@ test('button label names what will be created', () => {
 
 const ok = { employees: 2, fromDate: '2026-06-01', toDate: '2026-06-02', inTime: '09:00', outTime: '', reason: 'Biometric outage', busy: false, canWrite: true };
 
-test('submit state: needs permission, in time, a reason and a valid plan; out time optional', () => {
+test('submit state: needs permission, an in or an out time (or both), a reason and a valid plan', () => {
   expect(massEntryState(ok).canSubmit).toBe(true);
   expect(massEntryState({ ...ok, canWrite: false }).canSubmit).toBe(false);
   expect(massEntryState({ ...ok, inTime: '' }).canSubmit).toBe(false);
+  expect(massEntryState({ ...ok, inTime: '', outTime: '17:00' }).canSubmit).toBe(true);
+  expect(massEntryState({ ...ok, inTime: '', outTime: '17:00' }).plan.punches).toBe(4); // 2 employees x 2 days x out only
+  expect(massEntryState({ ...ok, inTime: '', outTime: '17:00' }).overnight).toBe(false);
+  expect(massEntryState({ ...ok, inTime: '09:00', outTime: '17:00' }).plan.punches).toBe(8);
+  expect(massEntryState({ ...ok, inTime: '', outTime: '' }).canSubmit).toBe(false);
   expect(massEntryState({ ...ok, reason: '   ' }).canSubmit).toBe(false);
   expect(massEntryState({ ...ok, employees: 0 }).canSubmit).toBe(false);
   expect(massEntryState({ ...ok, busy: true }).canSubmit).toBe(false);

@@ -51,6 +51,7 @@ jobs:
               playwright.grade-package.config.ts
               playwright.benefit-defaults.config.ts
               playwright.matrix.config.ts
+              playwright.salary-allowances.config.ts
           - name: people-and-ess
             configs: >-
               playwright.employee-import.config.ts
@@ -97,6 +98,7 @@ jobs:
       PAY_APPROVALS_BASE_URL: http://127.0.0.1:5197
       PAYROLL_CC_BASE_URL: http://127.0.0.1:5197
       GRADE_PACKAGE_BASE_URL: http://127.0.0.1:5197
+      SALARY_ALLOWANCES_PORT: '5197'
       LEAVE_BASE_URL: http://127.0.0.1:5197
       LEARNING_BASE_URL: http://127.0.0.1:5197
       SETUP_EXPERIENCE_BASE_URL: http://127.0.0.1:5197

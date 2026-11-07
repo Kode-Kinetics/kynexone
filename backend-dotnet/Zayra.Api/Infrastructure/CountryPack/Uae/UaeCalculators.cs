@@ -94,6 +94,9 @@ public sealed class UaeMainlandEndOfServiceCalculator : IEndOfServiceCalculator
         decimal dailyRate = basic / 30m;
 
         var notices = new List<string>();
+        if (input.AdditionalEosbWage > 0m)
+            notices.Add($"[CERT-UAE] The cash allowance(s) {string.Join(", ", input.AdditionalEosbWageCodes)} ({input.AdditionalEosbWage:N2} a month) are " +
+                        "marked as counting in end of service but were NOT counted: UAE Decree-Law 33/2021 Art. 51 awards the gratuity on the basic wage only.");
         decimal serviceYears = ServiceYears(input.ServiceStartDate, input.ServiceEndDate);
 
         // ── S1/A8: unpaid leave is EXCLUDED from the service period ───────────────────────────────
@@ -229,6 +232,9 @@ public sealed class UaeDifcEndOfServiceCalculator : IEndOfServiceCalculator
 
         // DIFC gratuity, like UAE mainland, is on BASIC only.
         decimal basic = input.Salary.Basic;
+        if (input.AdditionalEosbWage > 0m)
+            notices.Add($"[CERT-DIFC] The cash allowance(s) {string.Join(", ", input.AdditionalEosbWageCodes)} ({input.AdditionalEosbWage:N2} a month) are " +
+                        "marked as counting in end of service but were NOT counted: the DIFC gratuity and DEWS are measured on the basic wage only.");
         var cutOver = await CutOverAsync(eff, ct);
 
         // ── The grandfathered, EMPLOYER-PAYABLE portion: service before the cut-over ──────────────

@@ -7,7 +7,7 @@ import * as path from 'path';
 const read = (f: string) => fs.readFileSync(path.resolve(__dirname, '../src/components/attendance', f), 'utf8');
 
 test('no bulk panel (or the multi-select) renders a <form>: Enter can never submit them', () => {
-  for (const f of ['AttendanceMassEntryPanel.tsx', 'AttendanceProcessPanel.tsx', 'AttendanceCsvImportPanel.tsx', 'EmployeeMultiSelect.tsx']) {
+  for (const f of ['AttendanceRecordPanel.tsx', 'ProcessJobProgress.tsx', 'AttendanceProcessPanel.tsx', 'AttendanceCsvImportPanel.tsx', 'EmployeeMultiSelect.tsx']) {
     expect(read(f), f).not.toMatch(/<form[\s>]/);
     expect(read(f), f).not.toContain('type="submit"');
   }
@@ -18,4 +18,12 @@ test('Enter in the multi-select search box is swallowed as well', () => {
   // behaviour (Enter sends no request) is proven in the browser by e2e/attendance-bulk-ui.spec.ts.
   const src = read('EmployeeMultiSelect.tsx').replace(/\s+/g, ' ');
   expect(src).toMatch(/onKeyDown=\{[^}]*['"]Enter['"][^}]*preventDefault\(\)/);
+});
+
+test('Enter in the mass-entry reason box is swallowed too', () => {
+  const src = read('AttendanceRecordPanel.tsx').replace(/\s+/g, ' ');
+  const start = src.indexOf('<input id={`${ids}-reason`}');
+  expect(start).toBeGreaterThan(-1);
+  const element = src.slice(start, src.indexOf('/>', start));
+  expect(element).toMatch(/onKeyDown=\{[^}]*['"]Enter['"][^}]*preventDefault\(\)/);
 });

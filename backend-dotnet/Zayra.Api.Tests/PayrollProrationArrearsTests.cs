@@ -788,7 +788,7 @@ public class PayrollProrationArrearsTests
 
     // ══ HARNESS ════════════════════════════════════════════════════════════════════════════════
 
-    private static (ZayraDbContext db, SqliteConnection conn) CreateDb()
+    internal static (ZayraDbContext db, SqliteConnection conn) CreateDb()
     {
         var conn = new SqliteConnection("DataSource=:memory:");
         conn.Open();
@@ -797,7 +797,7 @@ public class PayrollProrationArrearsTests
         return (db, conn);
     }
 
-    private static PayrollController Ctrl(ZayraDbContext db, Guid tenantId)
+    internal static PayrollController Ctrl(ZayraDbContext db, Guid tenantId)
     {
         var claims = new List<Claim>
         {
@@ -819,7 +819,7 @@ public class PayrollProrationArrearsTests
         return ctrl;
     }
 
-    private static async Task<(Guid companyId, Employee a, Employee b)> SeedAsync(ZayraDbContext db, Guid tenantId)
+    internal static async Task<(Guid companyId, Employee a, Employee b)> SeedAsync(ZayraDbContext db, Guid tenantId)
     {
         var company = new Company
         {
@@ -865,7 +865,7 @@ public class PayrollProrationArrearsTests
         return (company.Id, a, b);
     }
 
-    private static PayrollRun AddRun(ZayraDbContext db, Guid tenantId, Guid? companyId, int year, int month,
+    internal static PayrollRun AddRun(ZayraDbContext db, Guid tenantId, Guid? companyId, int year, int month,
         string runType = PayrollRunTypes.Regular, string status = "Draft")
     {
         var run = new PayrollRun

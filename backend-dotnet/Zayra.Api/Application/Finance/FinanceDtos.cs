@@ -302,9 +302,13 @@ public record SalaryStructureAssignmentDto(
     DateOnly EffectiveDate,
     string Currency,
     bool IsActive,
-    DateTime CreatedAtUtc)
+    DateTime CreatedAtUtc,
+    // The record's customer-defined monthly cash allowance lines ({code, nameEn, nameAr, basis, rate, amount}), named so the Assign Salary screen needs no catalogue
+    // access. Pay, so gated exactly like the slot amounts above: null when the viewer may not see amounts, an empty list for a record that carries none.
+    IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? Allowances = null)
 {
-    public static SalaryStructureAssignmentDto Project(EmployeeSalaryStructure e, bool includeSensitive) => new(
+    public static SalaryStructureAssignmentDto Project(EmployeeSalaryStructure e, bool includeSensitive,
+        IReadOnlyList<Zayra.Api.Models.SalaryAllowanceLine>? allowances = null) => new(
         e.Id, e.EmployeeId, e.SalaryStructureId,
         includeSensitive ? e.BasicSalary        : null,
         includeSensitive ? e.HousingAllowance   : null,
@@ -313,5 +317,6 @@ public record SalaryStructureAssignmentDto(
         includeSensitive ? e.MobileAllowance    : null,
         includeSensitive ? e.OtherAllowance     : null,
         includeSensitive ? e.FixedDeduction     : null,
-        e.EffectiveDate, e.Currency, e.IsActive, e.CreatedAtUtc);
+        e.EffectiveDate, e.Currency, e.IsActive, e.CreatedAtUtc,
+        includeSensitive ? allowances ?? [] : null);
 }

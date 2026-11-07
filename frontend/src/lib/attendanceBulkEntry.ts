@@ -52,9 +52,11 @@ export interface MassEntryPlan {
   problem: MassEntryProblem;
 }
 
-export function massEntryPlan(input: { employees: number; fromDate: string; toDate: string; hasOutTime: boolean }): MassEntryPlan {
+export function massEntryPlan(input: { employees: number; fromDate: string; toDate: string; hasOutTime: boolean; hasInTime?: boolean }): MassEntryPlan {
   const days = inclusiveDays(input.fromDate, input.toDate);
-  const base = { employees: input.employees, days: days ?? 0, punches: input.employees * (days ?? 0) * (input.hasOutTime ? 2 : 1) };
+  // Without an in time only the out punch is written; an in time is assumed when not stated (the original contract).
+  const perDay = Math.max(1, (input.hasInTime === false ? 0 : 1) + (input.hasOutTime ? 1 : 0));
+  const base = { employees: input.employees, days: days ?? 0, punches: input.employees * (days ?? 0) * perDay };
   if (input.employees <= 0) return { ...base, problem: 'no-employees' };
   if (days === null) return { ...base, problem: 'bad-range' };
   if (input.employees > MASS_ENTRY_MAX_EMPLOYEES) return { ...base, problem: 'too-many-employees' };
@@ -83,13 +85,15 @@ export interface MassEntryState {
 
 const HH_MM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/** In and out are each optional, but at least one is needed: an out alone is the everyday "forgot to punch out" fix. */
 export function massEntryState(input: MassEntryStateInput): MassEntryState {
+  const hasIn = HH_MM.test(input.inTime);
   const hasOut = HH_MM.test(input.outTime);
-  const plan = massEntryPlan({ employees: input.employees, fromDate: input.fromDate, toDate: input.toDate, hasOutTime: hasOut });
+  const plan = massEntryPlan({ employees: input.employees, fromDate: input.fromDate, toDate: input.toDate, hasOutTime: hasOut, hasInTime: hasIn });
   const reason = input.reason.trim();
-  const canSubmit = input.canWrite && !input.busy && plan.problem === null && HH_MM.test(input.inTime)
-    && (input.outTime === '' || hasOut) && reason.length > 0 && reason.length <= MASS_ENTRY_MAX_REASON;
-  return { plan, canSubmit, overnight: hasOut && HH_MM.test(input.inTime) && input.outTime <= input.inTime };
+  const canSubmit = input.canWrite && !input.busy && plan.problem === null && (hasIn || hasOut)
+    && (input.inTime === '' || hasIn) && (input.outTime === '' || hasOut) && reason.length > 0 && reason.length <= MASS_ENTRY_MAX_REASON;
+  return { plan, canSubmit, overnight: hasOut && hasIn && input.outTime <= input.inTime };
 }
 
 /**

@@ -583,7 +583,7 @@ public sealed class PayrollVoidService
                 .SetProperty(p => p.PublishedAtUtc, (DateTime?)null), ct);
 
         // ── 8. Operational restores, money-out first ───────────────────────────────────────────────
-        var opState = await RestoreOperationalStateAsync(tenantId, run, runId, ct);
+        var opState = await RestoreOperationalStateAsync(tenantId, run, runId, ct, runIsRetired: true);
 
         // ── POD-B1b-FIX (P1-4) — re-open the BONUSES this run consumed ────────────────────────────────
         // The GL contras above reverse the run's BonusPayrollClearing lines and flag the originals
@@ -829,10 +829,11 @@ public sealed class PayrollVoidService
     /// witness rows Process wrote (<see cref="PayrollRunConsumption"/>).
     ///
     /// <para>Also used by <c>POST runs/{id}/reopen</c>, which is the SAME unwind minus the ledger: one
-    /// implementation so "voided" and "reopened" can never restore different things.</para>
+    /// implementation so "voided" and "reopened" can never restore different things. <paramref name="runIsRetired"/> is true
+    /// only for a void: it additionally returns approval-time carried overtime to PendingPayroll for the replacement run.</para>
     /// </summary>
     internal async Task<OperationalRestoreResult> RestoreOperationalStateAsync(
-        Guid tenantId, PayrollRun run, Guid runId, CancellationToken ct)
+        Guid tenantId, PayrollRun run, Guid runId, CancellationToken ct, bool runIsRetired = false)
     {
         var result = new OperationalRestoreResult();
 
@@ -1174,6 +1175,32 @@ public sealed class PayrollVoidService
             result.AdjustmentsReleased = await _db.PayrollAdjustments
                 .Where(a => a.TenantId == tenantId && a.PayrollRunId == runId && a.Status == "Processed")
                 .ExecuteUpdateAsync(s => s.SetProperty(p => p.Status, "Approved"), ct);
+        }
+
+        // Overtime carried forward at APPROVAL (late approval in BackPay mode) has a CarriedForward impact and a back-pay
+        // adjustment attached to this run, and neither a run stamp nor a consumption witness on the impact. Restoring only the
+        // adjustment left the impact CarriedForward: the replacement run loads adjustments for its own id and the prior-period
+        // finder reads PendingPayroll only, so nothing ever paid or flagged it. A run this voided did not pay it, so the impact
+        // returns to PendingPayroll, exactly as a run-time back-pay settlement does; the adjustment stays on the voided run
+        // and the replacement rebinds it (OvertimeLateSettlement.StageAsync), so it is paid once. A REOPEN keeps the run and its
+        // adjustment, which the re-process pays again, so the impact stays CarriedForward there (runIsRetired is false).
+        var carriedRequestIds = !runIsRetired ? new List<Guid>() : await _db.PayrollAdjustments
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == runId
+                        && a.SourceType == PayrollAdjustmentSources.OvertimeBackPay && a.SourceId != null)
+            .Select(a => a.SourceId!.Value)
+            .ToListAsync(ct);
+        if (carriedRequestIds.Count > 0)
+        {
+            var carried = await _db.OvertimePayrollImpacts
+                .Where(x => x.TenantId == tenantId && x.Status == "CarriedForward" && carriedRequestIds.Contains(x.OvertimeRequestId))
+                .ToListAsync(ct);
+            foreach (var row in carried)
+            {
+                row.Status = "PendingPayroll";
+                row.PayrollRunId = null;
+                row.ProcessedAtUtc = null;
+                result.ImpactsReleased++;
+            }
         }
 
         // The witnesses have been replayed; a re-Process of this run writes a fresh set.

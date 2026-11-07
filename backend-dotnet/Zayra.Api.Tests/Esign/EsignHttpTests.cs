@@ -311,6 +311,22 @@ public class EsignHttpTests(EsignFixture fx)
         wrongEmployee.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    // "Protected" decides who may read and change a document; it must not make an employment contract unsignable.
+    [Fact]
+    public async Task AProtectedContract_IsSignableForHrWithEmployeesSensitive_AndNotForHrWithout()
+    {
+        var e = await fx.NewEmployeeAsync();
+        var contract = await fx.NewDocumentAsync(e, requireSignature: false, type: "Employment contract");
+
+        using var without = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{e.Id}/signature-requests", fx.HrNoSensitiveToken, new { documentId = contract.Id });
+        without.StatusCode.Should().Be(HttpStatusCode.Forbidden, "a protected document needs employees.sensitive to be put out for signature");
+        (await fx.WithDbAsync(db => db.EmployeeDocuments.IgnoreQueryFilters().AsNoTracking().SingleAsync(d => d.Id == contract.Id))).SignatureRequiredAtUtc.Should().BeNull();
+
+        using var with = await fx.SendAsync(HttpMethod.Post, $"/api/employees/{e.Id}/signature-requests", fx.HrToken, new { documentId = contract.Id });
+        with.StatusCode.Should().Be(HttpStatusCode.Created, await with.Content.ReadAsStringAsync());
+        (await fx.WithDbAsync(db => db.EmployeeDocuments.IgnoreQueryFilters().AsNoTracking().SingleAsync(d => d.Id == contract.Id))).SignatureRequiredAtUtc.Should().NotBeNull();
+    }
+
     [Fact]
     public async Task SignedDocumentAndCertificate_CannotBeEditedOrArchived()
     {

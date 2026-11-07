@@ -16,6 +16,7 @@ import { GL_AND_RATES_PERMISSIONS } from './setupAccess';
  */
 export type SetupModuleSectionId =
   | 'openingBalances'
+  | 'gradeBenefits'
   | 'leaveTypes' | 'leavePolicies' | 'holidayCalendars' | 'shiftDefinitions' | 'shiftPolicy' | 'attendanceRules' | 'overtimePolicies' | 'attendanceDevices'
   | 'benefitPlans' | 'loanTypes' | 'loanPolicies' | 'advancePolicy' | 'bonusTypes' | 'payslipTemplates' | 'payrollRules' | 'bankWps'
   | 'onboardingChecklists' | 'onboardingChecklistTemplates' | 'hireTemplates' | 'performanceScorecards' | 'letterTemplates' | 'engagementPrivacy'
@@ -23,7 +24,7 @@ export type SetupModuleSectionId =
   | 'users' | 'roles' | 'permissionMatrix' | 'permissions' | 'permissionGrantors' | 'approvalAuthorities' | 'approvalDelegations' | 'signInSecurity' | 'accessLog'
   | 'localization' | 'branding' | 'helpText' | 'modules' | 'planBilling';
 
-export type SetupModuleGroupId = 'getStarted' | 'timeLeave' | 'payBenefits' | 'talentServices' | 'payrollCompliance' | 'accessSecurity' | 'workspace';
+export type SetupModuleGroupId = 'getStarted' | 'jobsHeadcount' | 'timeLeave' | 'payBenefits' | 'talentServices' | 'payrollCompliance' | 'accessSecurity' | 'workspace';
 
 export interface SetupModuleSection {
   id: SetupModuleSectionId;
@@ -35,6 +36,8 @@ export interface SetupModuleSection {
   /** The module's own page: its on/off switch is read for this path. */
   modulePath: string;
   featureKey?: string;
+  /** A feature flag that RETIRES the section when on: the tenant configures this in another section instead. */
+  hiddenWhenFeatureKey?: string;
 }
 
 export interface SetupModuleAccess {
@@ -68,8 +71,12 @@ export const SETUP_MODULE_SECTIONS: readonly SetupModuleSection[] = [
   { id: 'overtimePolicies', group: 'timeLeave', label: msg('Overtime policies'), description: msg('Overtime rates, caps and approval rules.'), permissions: ['overtime.read', 'overtime.write'], roles: ['Admin', 'HR Manager'], modulePath: '/overtime', featureKey: 'overtime' },
   { id: 'attendanceDevices', group: 'timeLeave', label: msg('Attendance devices'), description: msg('Biometric devices and other punch sources, and their connection keys.'), permissions: ['attendance.read', 'attendance.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Auditor'], modulePath: '/attendance' },
 
-  // Pay & benefits
-  { id: 'benefitPlans', group: 'payBenefits', label: msg('Benefit plans'), description: msg('The benefits on offer and their eligibility rules.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Finance', 'Auditor'], modulePath: '/benefits' },
+  // Jobs & headcount. A grade is the employee's master pay package: what each grade gets sits directly under Grades. The same
+  // grid opens from the Finance & Talent menu (/benefits/by-grade); there is one screen, with two ways in.
+  { id: 'gradeBenefits', group: 'jobsHeadcount', label: msg('Benefits by grade'), description: msg('What each grade gets: allowances, contract benefits and facilities, for every company.'), permissions: ['entitlements.read'], modulePath: '/benefits/by-grade', featureKey: 'release_a' },
+
+  // Pay & benefits. Benefit plans are retired for a Release A tenant: its benefits are set in Benefits by grade.
+  { id: 'benefitPlans', group: 'payBenefits', label: msg('Benefit plans'), description: msg('The benefits on offer and their eligibility rules.'), permissions: ['employees.write'], roles: ['Admin', 'HR Manager', 'HR Officer', 'Finance', 'Auditor'], modulePath: '/benefits', hiddenWhenFeatureKey: 'release_a' },
   { id: 'loanTypes', group: 'payBenefits', label: msg('Loan types'), description: msg('The kinds of loan employees can request.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'loanPolicies', group: 'payBenefits', label: msg('Loan policies'), description: msg('Loan limits by grade, instalments and eligibility.'), permissions: LOANS, roles: ['Admin', 'HR Manager', 'HR Director'], modulePath: '/loans' },
   { id: 'advancePolicy', group: 'payBenefits', label: msg('Salary advance policy'), description: msg('How much can be advanced, how often, and how it is repaid.'), permissions: LOANS, roles: ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'], modulePath: '/loans' },
@@ -123,6 +130,7 @@ export function moduleSectionAvailable(section: SetupModuleSection, access: Setu
   // Until the module switches are known, a module's settings are not offered (ModuleGate waits the same way).
   if (access.flagStatus === 'loading') return false;
   if (section.featureKey && !access.isFeatureEnabled(section.featureKey)) return false;
+  if (section.hiddenWhenFeatureKey && access.isFeatureEnabled(section.hiddenWhenFeatureKey)) return false;
   return access.verdictForPath(section.modulePath).allowed;
 }
 

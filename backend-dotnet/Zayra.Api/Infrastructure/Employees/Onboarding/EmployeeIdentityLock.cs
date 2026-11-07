@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Employees;
 
 namespace Zayra.Api.Infrastructure.Employees.Onboarding;
 
@@ -60,8 +61,11 @@ public static class EmployeeIdentityLock
     {
         await AcquireAsync(db, tenantId, probe, ct);
         if (acknowledged || !db.Database.IsNpgsql()) return;
+        // "Possible" (same name, nothing else) is advisory by definition and never refuses a commit, even sequentially.
+        // Treating it as a refusal here made a create fail whenever the capped name-only list differed between the
+        // pre-check and this re-read (any tenant with more than ten people sharing a normalised name).
         var fresh = (await detector.FindAsync(tenantId, probe, ct))
-            .Where(m => !alreadySeen.Contains(m.EmployeeId))
+            .Where(m => m.MatchType != DuplicateMatchTypes.Possible && !alreadySeen.Contains(m.EmployeeId))
             .ToList();
         if (fresh.Count > 0) throw new DuplicatePersonException(fresh);
     }
