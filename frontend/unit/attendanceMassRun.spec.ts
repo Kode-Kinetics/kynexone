@@ -4,6 +4,7 @@ import {
   isTransientBulkError,
   massRunReducer,
   planChunks,
+  recordedIds,
   retryIds,
   runChunks,
   runSummary,
@@ -192,4 +193,58 @@ test('runChunks retries a transient failure, then reports a permanent one as chu
     dispatch: (a) => actions.push(a), isStopped: () => false, isMounted: () => true, describeError: () => 'bad', sleep: async () => {},
   });
   expect(actions.map((a) => a.type)).toEqual(['chunkDone', 'chunkFailed', 'end']);
+});
+
+// Finding 2: Retry must keep the people who were already recorded.
+const firstPassWithOneFailure = (): MassRunState => {
+  let s: MassRunState = massRunReducer(initialMassRun, { type: 'start', people: people(3), days: 1, chunksTotal: 3 });
+  s = massRunReducer(s, { type: 'chunkDone', ids: [1], result: result({ created: 1 }) });
+  s = massRunReducer(s, { type: 'chunkDone', ids: [2], result: result({ failed: 1, errors: [{ employeeCode: 'E-2', date: '2026-11-01', message: 'Payroll is locked for this date.' }] }) });
+  s = massRunReducer(s, { type: 'chunkDone', ids: [3], result: result({ created: 1 }) });
+  return massRunReducer(s, { type: 'end' });
+};
+
+test('retry keeps the earlier successes in the results and resends only the unsuccessful ones', () => {
+  let s = firstPassWithOneFailure();
+  expect(retryIds(s)).toEqual([2]);
+  s = massRunReducer(s, { type: 'retry', ids: retryIds(s), chunksTotal: 1 });
+  expect(s.phase).toBe('running');
+  expect(s.people.map((p) => [p.id, p.status])).toEqual([[1, 'done'], [2, 'waiting'], [3, 'done']]);
+  expect(s.people[1].reasons).toEqual([]);
+  // progress counts the people already answered, so a retry of 1 in 3 starts at 67% and does not drop to 0
+  expect(runSummary(s)).toMatchObject({ total: 3, done: 2, waiting: 1, percent: 67 });
+  s = massRunReducer(s, { type: 'chunkDone', ids: [2], result: result({ created: 1 }) });
+  s = massRunReducer(s, { type: 'end' });
+  expect(s.phase).toBe('finished');
+  expect(s.people.map((p) => p.status)).toEqual(['done', 'done', 'done']);
+  expect(recordedIds(s)).toEqual([1, 2, 3]);
+  expect(retryIds(s)).toEqual([]);
+  expect(runSummary(s)).toMatchObject({ total: 3, done: 3, percent: 100, created: 3, refused: 0 });
+});
+
+test('a retry that is refused again does not double-count the refusal', () => {
+  let s = firstPassWithOneFailure();
+  expect(runSummary(s).refused).toBe(1);
+  s = massRunReducer(s, { type: 'retry', ids: [2], chunksTotal: 1 });
+  expect(runSummary(s).refused).toBe(0);   // the old refusal is being re-tried, not still outstanding
+  s = massRunReducer(s, { type: 'chunkDone', ids: [2], result: result({ failed: 1, errors: [{ employeeCode: 'E-2', date: '2026-11-01', message: 'Payroll is locked for this date.' }] }) });
+  s = massRunReducer(s, { type: 'end' });
+  expect(runSummary(s)).toMatchObject({ done: 2, notDone: 1, percent: 100, refused: 1 });
+  expect(recordedIds(s)).toEqual([1, 3]);
+  expect(retryIds(s)).toEqual([2]);
+});
+
+test('stopping a retry leaves the unsent retried people waiting and keeps the earlier successes', () => {
+  let s = firstPassWithOneFailure();
+  s = massRunReducer(s, { type: 'retry', ids: [2], chunksTotal: 1 });
+  s = massRunReducer(s, { type: 'requestStop' });
+  s = massRunReducer(s, { type: 'end' });
+  expect(s.phase).toBe('stopped');
+  expect(recordedIds(s)).toEqual([1, 3]);
+  expect(retryIds(s)).toEqual([2]);
+});
+
+test('the panel retries through the retry action, not by restarting the run', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/components/attendance/AttendanceRecordPanel.tsx'), 'utf8').replace(/\s+/g, ' ');
+  expect(src).toContain("type: 'retry'");
 });

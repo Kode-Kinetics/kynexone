@@ -111,12 +111,14 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
     }
   })();
 
-  const send = useCallback(async (people: Array<{ id: number; code: string; name: string }>) => {
+  /** `retry` resends a subset of the run on screen: everyone else keeps their status, so the results and "Process now" still cover them. */
+  const send = useCallback(async (people: Array<{ id: number; code: string; name: string }>, retry = false) => {
     const entry = sentRef.current;
     if (!entry || people.length === 0) return;
     const chunks = planChunks(people.map((p) => p.id));
     stopRef.current = false;
-    dispatch({ type: 'start', people, days: inclusiveDays(entry.fromDate, entry.toDate) ?? 1, chunksTotal: chunks.length });
+    if (retry) dispatch({ type: 'retry', ids: people.map((p) => p.id), chunksTotal: chunks.length });
+    else dispatch({ type: 'start', people, days: inclusiveDays(entry.fromDate, entry.toDate) ?? 1, chunksTotal: chunks.length });
     const { recorded, finished } = await runChunks({
       chunks,
       sendChunk: async (ids) => normaliseBulkEntryResult(await attendanceApi.events.bulkEntry({ employeeIds: ids, ...entry })),
@@ -139,7 +141,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
 
   const retry = () => {
     const again = new Set(retryIds(run));
-    void send(run.people.filter((p) => again.has(p.id)).map(({ id, code, name }) => ({ id, code, name })));
+    void send(run.people.filter((p) => again.has(p.id)).map(({ id, code, name }) => ({ id, code, name })), true);
   };
 
   const processNow = () => {

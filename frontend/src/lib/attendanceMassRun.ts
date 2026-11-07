@@ -27,11 +27,15 @@ export interface MassRunState {
   created: number;
   duplicates: number;
   refused: number;
+  /** Refused punches per person (an estimate from the chunk's totals), so a retry can take them back out of `refused`. */
+  refusedBy: Record<number, number>;
   stopRequested: boolean;
 }
 
 export type MassRunAction =
   | { type: 'start'; people: Array<{ id: number; code: string; name: string }>; days: number; chunksTotal: number }
+  /** Resend only `ids` (the unsuccessful people): everyone else keeps their status and results. */
+  | { type: 'retry'; ids: number[]; chunksTotal: number }
   | { type: 'chunkDone'; ids: number[]; result: BulkEntryResultShape }
   | { type: 'chunkFailed'; ids: number[]; message: string }
   | { type: 'requestStop' }
@@ -39,7 +43,7 @@ export type MassRunAction =
   | { type: 'reset' };
 
 export const initialMassRun: MassRunState = {
-  phase: 'idle', people: [], days: 0, chunksTotal: 0, chunksDone: 0, created: 0, duplicates: 0, refused: 0, stopRequested: false,
+  phase: 'idle', people: [], days: 0, chunksTotal: 0, chunksDone: 0, created: 0, duplicates: 0, refused: 0, refusedBy: {}, stopRequested: false,
 };
 
 /**
@@ -66,26 +70,48 @@ export function massRunReducer(state: MassRunState, action: MassRunAction): Mass
         chunksTotal: action.chunksTotal,
         people: action.people.map((p) => ({ ...p, status: 'waiting', reasons: [] })),
       };
+    case 'retry': {
+      const again = new Set(action.ids);
+      const taken = action.ids.reduce((sum, id) => sum + (state.refusedBy[id] ?? 0), 0);
+      const refusedBy = { ...state.refusedBy };
+      for (const id of again) delete refusedBy[id];
+      return {
+        ...state,
+        phase: 'running',
+        chunksTotal: action.chunksTotal,
+        chunksDone: 0,
+        refused: Math.max(0, state.refused - taken),
+        refusedBy,
+        stopRequested: false,
+        people: state.people.map((p) => (again.has(p.id) ? { ...p, status: 'waiting', reasons: [] } : p)),
+      };
+    }
     case 'chunkDone': {
       const ids = new Set(action.ids);
-      const refusals = new Map<string, { dates: Set<string>; reasons: string[] }>();
+      const refusals = new Map<string, { dates: Set<string>; reasons: string[]; rows: number }>();
       for (const e of action.result.errors) {
         const key = (e.employeeCode ?? '').trim().toLowerCase();
-        const entry = refusals.get(key) ?? { dates: new Set<string>(), reasons: [] };
+        const entry = refusals.get(key) ?? { dates: new Set<string>(), reasons: [], rows: 0 };
+        entry.rows += 1;
         entry.dates.add(e.date ?? '');
         if (e.message) entry.reasons.push(e.message);
         refusals.set(key, entry);
       }
+      // `failed` counts punches and each error row is one person-day, so a person's share is their rows of the total.
+      const perRow = action.result.errors.length > 0 ? action.result.failed / action.result.errors.length : 0;
+      const refusedBy = { ...state.refusedBy };
       return {
         ...state,
         chunksDone: state.chunksDone + 1,
         created: state.created + action.result.created,
         duplicates: state.duplicates + action.result.duplicates,
         refused: state.refused + action.result.failed,
+        refusedBy,
         people: state.people.map((p) => {
           if (!ids.has(p.id)) return p;
           const refused = refusals.get(p.code.trim().toLowerCase());
           if (!refused) return { ...p, status: 'done', reasons: [] };
+          refusedBy[p.id] = Math.round(refused.rows * perRow);
           return { ...p, status: refused.dates.size >= state.days ? 'notDone' : 'partial', reasons: unique(refused.reasons) };
         }),
       };
