@@ -1804,6 +1804,9 @@ public partial class PayrollController : ControllerBase
             GosiRatesEffectiveFrom         = await GosiRatesEffectiveFromAsync(company.CountryCode, cancellationToken),
             HolidayCalendarCoversPeriod    = await CompanyPayrollRules.HasHolidayInPeriodAsync(
                 _db, tenantId, company.Id, valPeriodStart, valPeriodEnd, cancellationToken),
+            // Same finder as Process, so /validate (which replaces the findings wholesale) keeps Rule 11b.
+            PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
+                _db, tenantId, company.Id, employeeIdsForValidation, valPeriodStart, cancellationToken),
             EmployeesAlreadyPaidRecurringThisPeriod = valAlreadyPaidEmpIds,
             // Mid-year cutover — re-derived with the SAME loader Process used; /validate replaces the
             // stored results wholesale, so omitting it would silently drop Rule 14b.
