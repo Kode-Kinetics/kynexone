@@ -208,6 +208,11 @@ public sealed class EmployeeWorkspaceAuthorizationTests
         { "Payslip", "pay roll" },
         { "Certificate", "IDENTITY" },
         { "Certificate", "salary and payroll" },
+        // Contracts carry pay terms: protected like identity and payroll documents.
+        { "Contract", null },
+        { "Employment Contract", "General" },
+        { "Certificate", "Contract" },
+        { "Certificate", "employment contracts" },
     };
 
     public static TheoryData<string, string> ProductionCatalogSensitiveDocumentTypes => new()
@@ -626,6 +631,8 @@ public sealed class EmployeeWorkspaceAuthorizationTests
     [InlineData("Identity", true, true, true, 200)]
     [InlineData("Payroll", true, true, false, 403)]
     [InlineData("Payroll", true, true, true, 200)]
+    [InlineData("Contract", true, true, false, 403)]
+    [InlineData("Contract", true, true, true, 200)]
     public async Task RawDocumentDownload_RequiresReadAndDocuments_AndSensitiveForProtectedCategories(
         string category, bool canRead, bool canManageDocuments, bool canReadSensitive, int expected)
     {
@@ -636,7 +643,7 @@ public sealed class EmployeeWorkspaceAuthorizationTests
         {
             TenantId = tenantId,
             EmployeeId = employee.Id,
-            DocumentType = category == "General" ? "Certificate" : "Passport",
+            DocumentType = category is "General" or "Contract" ? "Certificate" : "Passport",
             DocumentCategory = category,
             FileName = "record.pdf",
             ContentType = "application/pdf",

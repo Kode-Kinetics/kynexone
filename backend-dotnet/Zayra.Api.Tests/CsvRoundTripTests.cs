@@ -164,20 +164,36 @@ public class CsvRoundTripTests
     }
 
     /// <summary>
-    /// Known limitation, asserted so it stays known: a cell containing a newline round-trips at the CELL
-    /// level (above), but <c>Csv.Parse</c> splits the file on physical newlines BEFORE honouring quotes,
-    /// so a multi-line cell is REFUSED as a shape error rather than silently mis-imported. Refusal is the
-    /// safe half of the behaviour and is what this file's <see cref="CsvShapeException"/> contract
-    /// promises; making it parse would change line splitting for every importer and is out of scope here.
+    /// RFC-4180: a quoted cell may hold line breaks, and the whole-file parser keeps them. It used to split the file
+    /// on physical newlines BEFORE honouring quotes and refuse any multi-line cell (PEO-07); the export has always
+    /// quoted such a cell, so the product could not import its own export.
     /// </summary>
     [Fact]
-    public void A_cell_containing_a_newline_is_refused_by_the_whole_file_parser_not_mis_imported()
+    public void A_cell_containing_a_newline_round_trips_through_the_whole_file_parser()
     {
         var csv = Csv.Build(
             new[] { "EmployeeCode", "Notes" },
-            new[] { (IReadOnlyList<object?>)new object?[] { "EMP-003", "Line one\nLine two" } });
+            new[]
+            {
+                (IReadOnlyList<object?>)new object?[] { "EMP-003", "Line one\nLine two" },
+                new object?[] { "EMP-004", "Plain" },
+            });
 
-        Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
+        var parsed = Csv.Parse(csv);
+
+        parsed.Should().HaveCount(2);
+        parsed[0]["Notes"].Should().Be("Line one\nLine two");
+        parsed[1]["EmployeeCode"].Should().Be("EMP-004");
+    }
+
+    /// <summary>A file saved with Windows line endings reads an embedded break as a single line feed.</summary>
+    [Fact]
+    public void A_windows_file_with_a_multi_line_cell_parses_with_the_break_normalised()
+    {
+        var parsed = Csv.Parse("EmployeeCode,Notes\r\nE1,\"Line one\r\nLine two\"\r\nE2,Fine\r\n");
+
+        parsed.Should().HaveCount(2);
+        parsed[0]["Notes"].Should().Be("Line one\nLine two");
     }
 
     /// <summary>
@@ -204,17 +220,39 @@ public class CsvRoundTripTests
             .And.Contain("Also wrong: row 5 (2), row 6 (4)");
     }
 
-    /// <summary>A quoted cell holding a line break (a multi-line address) is named as exactly that, not as a
-    /// "thousands separator" cell-count problem, and its continuation line is not reported as a second bad row.</summary>
+    /// <summary>A multi-line address in a quoted cell is one cell of one row; the rows around it are untouched.</summary>
     [Fact]
-    public void A_multi_line_quoted_cell_gets_a_message_that_says_so()
+    public void A_multi_line_quoted_cell_is_read_as_one_cell()
     {
         var csv = "EmployeeCode,FullName,Address\nE1,Fine,Riyadh\nE2,Split,\"King Fahd Road\nRiyadh\"\nE3,Fine,Jeddah\n";
+
+        var parsed = Csv.Parse(csv);
+
+        parsed.Select(r => r["EmployeeCode"]).Should().Equal("E1", "E2", "E3");
+        parsed[1]["Address"].Should().Be("King Fahd Road\nRiyadh");
+    }
+
+    /// <summary>A quote that is opened and never closed still refuses the file, named as exactly that, at the row where it opens.</summary>
+    [Fact]
+    public void A_quoted_cell_that_is_never_closed_is_refused_and_named()
+    {
+        var csv = "EmployeeCode,FullName,Address\nE1,Fine,Riyadh\nE2,Split,\"King Fahd Road\nRiyadh\n";
 
         var ex = Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
 
         ex.RowNumber.Should().Be(3);
         ex.Mismatches.Should().ContainSingle().Which.UnterminatedQuote.Should().BeTrue();
-        ex.Message.Should().Contain("CSV row 3 has a line break inside a quoted cell").And.NotContain("thousands separator");
+        ex.Message.Should().Contain("CSV row 3 opens a quoted cell that is never closed").And.NotContain("thousands separator");
+    }
+
+    /// <summary>The row number of a bad row after a multi-line cell is its physical line in the file.</summary>
+    [Fact]
+    public void A_shape_error_after_a_multi_line_cell_reports_the_physical_line()
+    {
+        var csv = "A,B\n\"x\ny\",1\nbad\n";
+
+        var ex = Assert.Throws<CsvShapeException>(() => Csv.Parse(csv));
+
+        ex.RowNumber.Should().Be(4);
     }
 }

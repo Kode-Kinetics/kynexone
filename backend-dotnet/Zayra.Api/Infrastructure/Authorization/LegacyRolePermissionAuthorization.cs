@@ -194,7 +194,28 @@ public static class LegacyRolePermissionResolver
         if (action is null) return null;
         var methods = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.HttpMethodMetadata>()?.HttpMethods
                       ?? Array.Empty<string>();
-        return Resolve(action.ControllerName, action.ActionName, methods) is { } inferred ? new[] { inferred } : null;
+        return ResolveAllFor(action.ControllerName, action.ActionName, methods);
+    }
+
+    /// <summary>PAY-10: the register and payslip READS. <c>payroll.slips.read</c> opens them without opening any export;
+    /// the keys they already needed stay accepted so no existing role loses access (the run-wide bundle is the exception).</summary>
+    private static readonly IReadOnlyDictionary<string, string[]> PayslipReadActions =
+        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Payroll.Slips"] = ["payroll.read", "payroll.slips.read"],
+            ["Payroll.ListPayslips"] = ["payroll.read", "payroll.slips.read"],
+            ["Payroll.Register"] = ["payroll.read", "payroll.slips.read"],
+            // One payslip PDF is a read of one person's slip, so slips.read keeps opening it. The run-wide ZIP is a bulk
+            // export of every payslip in the run: payroll.export only ("no export" is what slips.read promises).
+            ["Payroll.DownloadSlipPdf"] = ["payroll.export", "payroll.slips.read"],
+            ["Payroll.DownloadRunPdfBundle"] = ["payroll.export"],
+        };
+
+    /// <summary>Every permission that satisfies the inferred gate for this action (one, except the payslip reads above).</summary>
+    public static IReadOnlyList<string>? ResolveAllFor(string controller, string action, IReadOnlyList<string> httpMethods)
+    {
+        if (PayslipReadActions.TryGetValue($"{controller}.{action}", out var payslipReads)) return payslipReads;
+        return Resolve(controller, action, httpMethods) is { } inferred ? new[] { inferred } : null;
     }
 
     public static string? Resolve(string controller, string action, IReadOnlyList<string> httpMethods)
