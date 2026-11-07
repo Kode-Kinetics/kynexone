@@ -1851,6 +1851,19 @@ public sealed class PayrollRunProcessor
                     ? payComponents
                     : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
+                // Defence in depth against paying one code twice. The catalog API refuses a component on a cash allowance's code, but a row written
+                // before that rule (or by a path that skipped it) can still be in the store: the engine would pay its configured amount here and the
+                // allowance loop below would pay the employee's own line, both entering gross and net. Refuse the run rather than pay both.
+                foreach (var allowance in cashAllowances)
+                    if (computation.Earnings.Any(l => string.Equals(l.Code, allowance.Code, StringComparison.Ordinal)))
+                        throw new PayrollProcessAbortException(422, new
+                        {
+                            error = "cash_allowance_code_shadowed",
+                            message = $"{e.FullName} ({e.EmployeeCode}) has the monthly allowance {allowance.Code} on their salary, but a pay component with the same code " +
+                                      "would also pay them this month, so they would be paid twice. Nothing was saved. Retire the pay component (Payroll → Pay components) " +
+                                      "or give the allowance another code, then process the run again.",
+                            employeeId = e.Id, employeeCode = e.EmployeeCode, componentCode = allowance.Code,
+                        });
                 // POD-C3 — the proration narrative is applied to the ENGINE'S OUTPUT rather than inside
                 // the engine, so PayComponentEngine itself is untouched and the golden-master/equivalence
                 // tests keep their meaning. WithProrationNote is the identity function when the note is

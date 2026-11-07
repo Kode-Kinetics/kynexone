@@ -243,6 +243,111 @@ public class CashAllowancePayrollTests
         (await db.PayrollSlips.AsNoTracking().AnyAsync(s => s.RunId == run.Id)).Should().BeFalse();
     }
 
+    // ══ 7b. One code, one meaning: a configured-value component may never shadow a cash allowance ═══
+
+    [Theory]
+    [InlineData(false, PayComponentTypes.Earning)]
+    [InlineData(false, PayComponentTypes.Deduction)]
+    [InlineData(true, PayComponentTypes.Earning)]
+    [InlineData(true, PayComponentTypes.Deduction)]
+    public async Task APayComponent_WithTheCodeOfACashAllowance_IsRefused_InAnyScopeAndOfAnyType(bool companyScoped, string type)
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        var driver = type == PayComponentTypes.Earning ? Driver : "DED:UNION";
+        var controller = new PayComponentsController(h.Db) { ControllerContext = h.Context() };
+        var companyId = companyScoped ? h.Facility.Id : (Guid?)null;
+
+        var shadow = await controller.Create(companyId,
+            new PayComponentsController.CreateRequest(Code, "Car again", null, type, PayComponentCalcMethods.Fixed, 700m, driver, Mx.Nov1), CancellationToken.None);
+
+        Mx.Status(shadow).Should().Be(409, Mx.Describe(shadow));
+        Mx.Error(shadow).Should().Be("allowance_code_reserved");
+        (await h.Db.PayComponents.CountAsync(c => c.Code == Code)).Should().Be(1, "only the allowance definition exists");
+
+        // Control: the same request under a code no allowance holds is accepted.
+        var control = await controller.Create(companyId,
+            new PayComponentsController.CreateRequest("CAR_FIXED", "Car fixed", null, type, PayComponentCalcMethods.Fixed, 700m, driver, Mx.Nov1), CancellationToken.None);
+        Mx.Status(control).Should().Be(200, Mx.Describe(control));
+    }
+
+    [Fact]
+    public async Task AShadowingComponentAlreadyInTheStore_CannotBeChanged_ButAnOrdinaryOneCan()
+    {
+        await using var h = await Mx.Create();
+        Mx.Status(await h.AddCash("Car", driver: Driver)).Should().Be(200);
+        var shadow = new PayComponent
+        {
+            TenantId = h.Tid, CompanyId = h.Facility.Id, Code = Code, NameEn = "Car again", NameAr = "Car again", ComponentType = PayComponentTypes.Earning,
+            CalcMethod = PayComponentCalcMethods.Fixed, Value = 700m, GlDriverKey = Driver, EffectiveFrom = new DateOnly(2026, 1, 1),
+        };
+        var ordinary = new PayComponent
+        {
+            TenantId = h.Tid, CompanyId = h.Facility.Id, Code = "CAR_FIXED", NameEn = "Car fixed", NameAr = "Car fixed", ComponentType = PayComponentTypes.Earning,
+            CalcMethod = PayComponentCalcMethods.Fixed, Value = 700m, GlDriverKey = Driver, EffectiveFrom = new DateOnly(2026, 1, 1),
+        };
+        h.Db.PayComponents.AddRange(shadow, ordinary);
+        await h.Db.SaveChangesAsync();
+        var controller = new PayComponentsController(h.Db) { ControllerContext = h.Context() };
+
+        var refused = await controller.Update(shadow.Id, new PayComponentsController.UpdateRequest(null, null, null, 800m, null, Mx.Nov1), CancellationToken.None);
+        Mx.Status(refused).Should().Be(409, Mx.Describe(refused));
+        Mx.Error(refused).Should().Be("allowance_code_reserved");
+
+        var allowed = await controller.Update(ordinary.Id, new PayComponentsController.UpdateRequest(null, null, null, 800m, null, Mx.Nov1), CancellationToken.None);
+        Mx.Status(allowed).Should().Be(200, Mx.Describe(allowed));
+    }
+
+    [Theory]
+    [InlineData(false, PayComponentTypes.Earning)]
+    [InlineData(true, PayComponentTypes.Earning)]
+    [InlineData(false, PayComponentTypes.Deduction)]
+    [InlineData(true, PayComponentTypes.Deduction)]
+    public async Task ACashAllowance_WhoseCodeAConfiguredValueComponentAlreadyHolds_IsRefused(bool companyScoped, string type)
+    {
+        await using var h = await Mx.Create();
+        h.Db.PayComponents.Add(new PayComponent
+        {
+            TenantId = h.Tid, CompanyId = companyScoped ? h.Facility.Id : null, Code = Code, NameEn = "Car again", NameAr = "Car again", ComponentType = type,
+            CalcMethod = PayComponentCalcMethods.Fixed, Value = 700m, GlDriverKey = Driver, EffectiveFrom = new DateOnly(2026, 1, 1),
+        });
+        await h.Db.SaveChangesAsync();
+
+        var added = await h.AddCash("Car", driver: Driver);
+
+        Mx.Status(added).Should().Be(409, Mx.Describe(added));
+        Mx.Error(added).Should().Be("benefit_exists");
+        (await h.Db.PayComponents.CountAsync(c => c.Code == Code)).Should().Be(1, "no allowance definition was written beside the component");
+    }
+
+    [Fact]
+    public async Task WhenAComponentAndAnAllowanceLineShareACode_TheRunRefuses_InsteadOfPayingBoth()
+    {
+        var (db, conn) = PayrollProrationArrearsTests.CreateDb();
+        await using var _ = conn; await using var __ = db;
+        var tid = Guid.NewGuid();
+        var (companyId, a, _) = await PayrollProrationArrearsTests.SeedAsync(db, tid);
+        await AddDefinitionAsync(db, tid);
+        // The shadow: legacy data (written before the API refused it) — a company Fixed earning on the allowance's own code.
+        db.PayComponents.Add(new PayComponent
+        {
+            TenantId = tid, CompanyId = companyId, Code = Code, NameEn = "Car again", NameAr = "Car again", ComponentType = PayComponentTypes.Earning,
+            CalcMethod = PayComponentCalcMethods.Fixed, Value = 700m, GlDriverKey = Driver, EffectiveFrom = new DateOnly(2026, 1, 1),
+        });
+        await GiveAsync(db, a.Id, Code, 500m);
+        var run = PayrollProrationArrearsTests.AddRun(db, tid, companyId, 2026, 6);
+        await db.SaveChangesAsync();
+
+        var result = await PayrollProrationArrearsTests.Ctrl(db, tid).Process(run.Id, CancellationToken.None);
+
+        var refusal = result.Should().BeOfType<ObjectResult>().Subject;
+        refusal.StatusCode.Should().Be(422);
+        var body = JsonSerializer.Serialize(refusal.Value);
+        body.Should().Contain("cash_allowance_code_shadowed").And.Contain(a.EmployeeCode).And.Contain(Code).And.Contain("Nothing was saved");
+        (await db.PayrollEarnings.AsNoTracking().AnyAsync(e => e.PayrollRunId == run.Id)).Should().BeFalse("nothing is paid or saved");
+        (await db.PayrollSlips.AsNoTracking().AnyAsync(s => s.RunId == run.Id)).Should().BeFalse();
+    }
+
     // ══ 8. The definition ═══════════════════════════════════════════════════════════════════════
 
     [Fact]

@@ -85,6 +85,22 @@ public static class PayComponentPolicy
         || ReservedPrefixes.Any(p => code.StartsWith(p, StringComparison.Ordinal))
         || PayComponentGuard.IsStatutoryComponentCode(code);
 
+    /// <summary>The stable error code for a pay component refused because its code belongs to a customer-defined cash allowance.</summary>
+    public const string AllowanceCodeReservedError = "allowance_code_reserved";
+
+    /// <summary>
+    /// True when <paramref name="code"/> is the code of a customer-defined cash allowance (<c>ALW_*</c>: a tenant-wide Earning, GradePackage definition from
+    /// Benefits by grade) in this tenant, a removed one included (it comes back under the same code). A pay component may never take such a code, in any
+    /// scope or of any type: the allowance is paid from the employee's own salary lines, so a configured-value component on the same code would be paid
+    /// on top of it, and GL routing groups both under the one code.
+    /// </summary>
+    public static Task<bool> IsCashAllowanceCodeAsync(ZayraDbContext db, Guid tenantId, string code, CancellationToken ct) =>
+        ScopedBypass.TenantWide(db.PayComponents, tenantId,
+                "A code is one identity across the tenant: any scope's cash allowance definition (including removed ones) reserves it against a pay component.")
+            .AsNoTracking()
+            .AnyAsync(c => c.Code == code && c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning
+                        && c.CalcMethod == PayComponentCalcMethods.GradePackage, ct);
+
     /// <summary>Shape validation that needs no database. Returns field → message.</summary>
     public static Dictionary<string, string> ValidateShape(Definition d)
     {
