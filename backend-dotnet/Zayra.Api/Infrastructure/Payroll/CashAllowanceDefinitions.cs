@@ -44,6 +44,23 @@ public static class CashAllowanceDefinitions
         versions.Where(v => v.IsActive && !v.IsDeleted && v.IsInEffect(date))
                 .OrderByDescending(v => v.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
 
+    /// <summary>
+    /// The version a payroll run for the period starting <paramref name="periodStart"/> reads (and back pay in that run): the live version in effect for that
+    /// month; failing that a not-removed one, a switched-on one, then the latest. Versions outside the month never win over one in effect. Removed rows must be
+    /// in <paramref name="versions"/> (<c>includeRemoved</c>) for the fallbacks to see them, because the expense a removed definition posts to does not go away.
+    /// </summary>
+    public static PayComponent? ForPeriod(IEnumerable<PayComponent> versions, DateOnly periodStart) =>
+        versions.OrderByDescending(c => !c.IsDeleted && c.IsInEffect(periodStart)).ThenBy(c => c.IsDeleted).ThenByDescending(c => c.IsActive)
+            .ThenByDescending(c => c.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault();
+
+    /// <summary>
+    /// The paying terms of a version a run was calculated with: the GL driver its expense posts to and the end-of-service answer (included, or the
+    /// category it is left out under). Pinned on the run's allowance lines at Process; approval compares it with the terms of the version applicable
+    /// to the run's month now. Dates and audit stamps are NOT terms: closing a version for a later month's correction changes neither.
+    /// </summary>
+    public static string Terms(PayComponent version) =>
+        $"gl={version.GlDriverKey}|eosb={(version.EosbIncluded ? 1 : 0)}|cat={version.EosbExclusionCategory}";
+
     /// <summary>The version a screen shows as "the definition": the one in effect on <paramref name="today"/>, else the latest not removed (a definition
     /// whose only version is scheduled for later, or was closed), else the latest of all.</summary>
     public static PayComponent? Current(IEnumerable<PayComponent> versions, DateOnly today)

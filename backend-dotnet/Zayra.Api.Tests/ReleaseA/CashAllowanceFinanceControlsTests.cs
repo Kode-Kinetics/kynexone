@@ -1260,11 +1260,11 @@ public class CashAllowanceFinanceControlsTests
         return run;
     }
 
-    /// <summary>A correction written after the run was processed (the version row, as the Correct door writes it).</summary>
-    private static async Task CorrectAfterAsync(World w, PayrollRun run, DateOnly from)
+    /// <summary>A correction written after the run was processed (the version row, as the Correct door writes it): by default it moves the GL driver.</summary>
+    private static async Task CorrectAfterAsync(World w, PayrollRun run, DateOnly from, string driver = "EARN:CAR2", bool eosb = true)
     {
         var processedAt = (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).ProcessedAtUtc!.Value;
-        var row = await AddDefinitionAsync(w.Db, w.Tid, Car, "EARN:CAR", "Car allowance", "5210", driverRow: false, from: from);
+        var row = await AddDefinitionAsync(w.Db, w.Tid, Car, driver, "Car allowance", "5211", driverRow: false, eosb: eosb, from: from);
         row.CreatedAtUtc = processedAt.AddMilliseconds(1);   // just after the run was processed; a re-process is later still
         await w.Db.SaveChangesAsync();
         w.Db.ChangeTracker.Clear();
@@ -1300,6 +1300,93 @@ public class CashAllowanceFinanceControlsTests
         (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
         w.Db.ChangeTracker.Clear();
         (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task ACorrectionWrittenBeforeTheRunWasMarkedProcessed_ButAfterItReadTheDefinitions_StillMakesItStale()
+    {
+        // Process does not take the matrix lock: Finance can correct the GL driver after the processor loaded the definitions and before it stamps
+        // ProcessedAtUtc. The correction's timestamp is then EARLIER than the run's, yet the slips were calculated on the old definition.
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        var processedAt = (await w.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).ProcessedAtUtc!.Value;
+        var row = await AddDefinitionAsync(w.Db, w.Tid, Car, "EARN:CAR2", "Car allowance", "5211", driverRow: false, from: new DateOnly(2026, 6, 1));
+        row.CreatedAtUtc = processedAt.AddMilliseconds(-5);
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        var refused = await ApproveAsync(w, run.Id);
+
+        refused.Should().BeOfType<ConflictObjectResult>(Describe(refused));
+        Body(refused).GetProperty("error").GetString().Should().Be("payroll_run_stale_definition");
+    }
+
+    [Fact]
+    public async Task AnEndOfServiceOnlyCorrectionOfTheVersionInUse_MakesTheRunStale()
+    {
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        var version = await w.Db.PayComponents.SingleAsync(c => c.Code == Car);
+        version.EosbIncluded = false; version.EosbExclusionCategory = "Reimbursement"; version.UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1);
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<ConflictObjectResult>();
+    }
+
+    [Fact]
+    public async Task ALaterMonthsCorrection_ThatOnlyClosesTheVersionTheRunUsed_DoesNotMakeThatRunStale()
+    {
+        // A November version in use; a December correction closes it (EffectiveTo, UpdatedAtUtc move) and opens a new one. November's terms are unchanged.
+        await using var w = await NewWorld(definition: false);
+        var november = await AddDefinitionAsync(w.Db, w.Tid, Car, CarDriver, "Car allowance", "5210", from: new DateOnly(2026, 1, 1));
+        await GiveAsync(w, w.A, Car, 500m);
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 11);
+        await w.Db.SaveChangesAsync();
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+
+        var v1 = await w.Db.PayComponents.SingleAsync(c => c.Id == november.Id);
+        v1.EffectiveTo = new DateOnly(2026, 11, 30); v1.UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1);
+        var v2 = await AddDefinitionAsync(w.Db, w.Tid, Car, "EARN:CAR2", "Car allowance", "5211", driverRow: false, from: new DateOnly(2026, 12, 1));
+        v2.CreatedAtUtc = DateTime.UtcNow.AddMinutes(1);
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task AVersionThatEndedBeforeTheRunsMonth_IsIgnored_WhenItIsAmendedLater()
+    {
+        await using var w = await NewWorld(definition: false);
+        var old = await AddDefinitionAsync(w.Db, w.Tid, Car, "EARN:CAR2", "Car allowance", "5211", from: new DateOnly(2026, 1, 1), to: new DateOnly(2026, 5, 31));
+        await AddDefinitionAsync(w.Db, w.Tid, Car, CarDriver, "Car allowance", "5210", driverRow: false, from: new DateOnly(2026, 6, 1));
+        await GiveAsync(w, w.A, Car, 500m);
+        var run = PayrollProrationArrearsTests.AddRun(w.Db, w.Tid, w.CompanyId, 2026, 6);
+        await w.Db.SaveChangesAsync();
+        (await PayrollProrationArrearsTests.Ctrl(w.Db, w.Tid).Process(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        w.Db.ChangeTracker.Clear();
+
+        var ended = await w.Db.PayComponents.SingleAsync(c => c.Id == old.Id);
+        ended.EosbIncluded = false; ended.EosbExclusionCategory = "Reimbursement"; ended.UpdatedAtUtc = DateTime.UtcNow.AddMinutes(1);
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task ARunWhoseAllowanceLinesCarryNoRecordOfTheDefinitionTheyUsed_IsTreatedAsStale()
+    {
+        // Fail closed: if the run cannot show what it was computed with, it is processed again rather than approved on a guess.
+        await using var w = await NewWorld();
+        var run = await ProcessedRunWithCarAsync(w);
+        foreach (var line in await w.Db.PayrollEarnings.Where(e => e.PayrollRunId == run.Id && e.ComponentCode == Car).ToListAsync()) line.DefinitionTerms = null;
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        (await ApproveAsync(w, run.Id)).Should().BeOfType<ConflictObjectResult>();
     }
 
     [Fact]

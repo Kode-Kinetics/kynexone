@@ -968,9 +968,7 @@ public sealed class PayrollRunProcessor
         // definition wins over a removed one, and a version in effect over one that is not.
         var arrearsAllowanceVersions = await CashAllowanceDefinitions.VersionsAsync(_db, tenantId, arrearsAllowanceCodes, cancellationToken, includeRemoved: true);
         var arrearsAllowanceDefinitions = arrearsAllowanceCodes
-            .Select(code => arrearsAllowanceVersions[code]
-                .OrderByDescending(c => !c.IsDeleted && c.IsInEffect(periodStart)).ThenBy(c => c.IsDeleted).ThenByDescending(c => c.IsActive)
-                .ThenByDescending(c => c.EffectiveFrom ?? DateOnly.MinValue).FirstOrDefault())
+            .Select(code => CashAllowanceDefinitions.ForPeriod(arrearsAllowanceVersions[code], periodStart))
             .Where(d => d is not null).ToDictionary(d => d!.Code, d => d!, StringComparer.Ordinal);
 
         // ── POD-B3 HANDOFF: the 1420 receivable a prior void recognised ──────────────────────────────
@@ -1202,7 +1200,7 @@ public sealed class PayrollRunProcessor
             // Kept OUT of `gross`, `otherAllowances` and the statutory input on purpose: `gross` is the base PercentOfGross components
             // follow and `otherAllowances` is a slot of the covered-wage input, and neither may move for an allowance. They join the slip
             // aggregates and net below, exactly as configured earnings do. A supplemental run pays no recurring wage, so none.
-            var cashAllowances = new List<(string Code, string Name, decimal Amount, string GlDriverKey, bool Taxable)>();
+            var cashAllowances = new List<(string Code, string Name, decimal Amount, string GlDriverKey, bool Taxable, string Terms)>();
             if (includesRecurringPay && salary is not null)
                 foreach (var allowance in cashAllowancesByRecord[salary.Id].OrderBy(x => x.Code, StringComparer.Ordinal))
                 {
@@ -1226,7 +1224,7 @@ public sealed class PayrollRunProcessor
                     var amount = policy.Prorates(ProratedComponentCodes.OtherAllowances)
                         ? ProrationCalculator.ApplyScalar(allowance.Amount, factor) : allowance.Amount;
                     if (amount > 0m)
-                        cashAllowances.Add((allowance.Code, definition.NameEn, amount, definition.GlDriverKey!, definition.IsTaxable));
+                        cashAllowances.Add((allowance.Code, definition.NameEn, amount, definition.GlDriverKey!, definition.IsTaxable, CashAllowanceDefinitions.Terms(definition)));
                 }
             var cashAllowanceTotal = cashAllowances.Sum(x => x.Amount);
             var cashAllowanceTaxable = cashAllowances.Where(x => x.Taxable).Sum(x => x.Amount);
@@ -1914,7 +1912,7 @@ public sealed class PayrollRunProcessor
             // line carries its definition's own GL driver (never the EARN:OTHER fallback), so the expense lands where the customer chose.
             foreach (var allowance in cashAllowances)
                 AddEarning(tenantId, id, e.Id, allowance.Code, allowance.Name,
-                    allowance.Amount, "Salary", glDriverKey: allowance.GlDriverKey);
+                    allowance.Amount, "Salary", glDriverKey: allowance.GlDriverKey, definitionTerms: allowance.Terms);
 
             // ── POD-C3: ARREARS LINES — ITEMISED PER COVERED PERIOD ─────────────────────────────────
             // Emitted OUTSIDE both branches, exactly like POD-B1b's bonus withholding, so the legacy
@@ -1950,7 +1948,8 @@ public sealed class PayrollRunProcessor
                 }
                 AddEarning(tenantId, id, e.Id, line.ComponentCode,
                     $"Arrears — {arrearsAllowance?.NameEn ?? PayrollArrearsComponents.Label(line.ComponentCode)} ({line.CoveredYear}-{line.CoveredMonth:D2})",
-                    line.Amount, "Arrears", glDriverKey: string.IsNullOrWhiteSpace(arrearsAllowance?.GlDriverKey) ? null : arrearsAllowance!.GlDriverKey);
+                    line.Amount, "Arrears", glDriverKey: string.IsNullOrWhiteSpace(arrearsAllowance?.GlDriverKey) ? null : arrearsAllowance!.GlDriverKey,
+                    definitionTerms: arrearsAllowance is null ? null : CashAllowanceDefinitions.Terms(arrearsAllowance));
                 arrearsLinesToPersist.Add(line);
             }
 
@@ -3093,8 +3092,8 @@ public sealed class PayrollRunProcessor
     internal static string WithProrationNote(string name, string note)
         => string.IsNullOrEmpty(note) ? name : $"{name} ({note})";
 
-    internal void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null) =>
-        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey });
+    internal void AddEarning(Guid tenantId, Guid runId, int employeeId, string code, string name, decimal amount, string source, string? glDriverKey = null, string? definitionTerms = null) =>
+        _db.PayrollEarnings.Add(new PayrollEarning { TenantId = tenantId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, GlDriverKey = glDriverKey, DefinitionTerms = definitionTerms });
 
     internal void AddDeduction(Guid tenantId, Guid companyId, Guid runId, int employeeId, string code, string name, decimal amount, string source, bool isEmployerContribution = false, string? glDriverKey = null) =>
         _db.PayrollDeductions.Add(new PayrollDeduction { TenantId = tenantId, CompanyId = companyId, PayrollRunId = runId, EmployeeId = employeeId, ComponentCode = code, ComponentName = name, Amount = amount, Source = source, IsEmployerContribution = isEmployerContribution, GlDriverKey = glDriverKey });

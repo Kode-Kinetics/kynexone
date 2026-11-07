@@ -26758,6 +26758,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("cost_center_source");
 
+                    b.Property<string>("DefinitionTerms")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("definition_terms");
+
                     b.Property<int>("EmployeeId")
                         .HasColumnType("integer")
                         .HasColumnName("employee_id");
