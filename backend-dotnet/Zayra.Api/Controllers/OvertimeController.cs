@@ -1219,7 +1219,10 @@ public class OvertimeController : ControllerBase
         var companyId = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, stampedCompanyId, ct);
         var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "Finding the open run an employee's late overtime is carried into: the approver's company scope must not hide it.")
             .Where(r => r.CompanyId == companyId && r.Year == next.Year && r.Month == next.Month
-                && r.Status == "Draft" && r.LockedAtUtc == null && r.RunType == PayrollRunTypes.Regular)
+                && r.Status == "Draft" && r.LockedAtUtc == null
+                // A period-owning run (Regular or Replacement, the types PriorPeriodOvertimeFinder counts): once the month's
+                // Regular run is voided its Replacement is the open run, and a Supplementary run is never a destination.
+                && (r.RunType == PayrollRunTypes.Regular || r.RunType == PayrollRunTypes.Replacement))
             .OrderBy(r => r.CreatedAtUtc).FirstOrDefaultAsync(ct);
         if (run is null)
             return (Conflict(new

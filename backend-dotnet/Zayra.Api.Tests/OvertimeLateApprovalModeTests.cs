@@ -210,4 +210,32 @@ public class OvertimeLateApprovalModeTests
         (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
         (await w.Db.OvertimeRequests.AsNoTracking().SingleAsync()).Status.Should().Be("PendingManager");
     }
+
+    [Fact]
+    public async Task BackPay_CarriesIntoADraftReplacementRun_WhenTheRegularRunWasVoided()
+    {
+        var (w, r) = await ArrangeAsync("BackPay", openRun: false);
+        w.Db.PayrollRuns.Add(new PayrollRun { TenantId = w.TenantId, Year = 2026, Month = 7, Status = "Voided", RunType = PayrollRunTypes.Regular });
+        var replacement = new PayrollRun { TenantId = w.TenantId, Year = 2026, Month = 7, Status = "Draft", RunType = PayrollRunTypes.Replacement };
+        w.Db.PayrollRuns.Add(replacement);
+        await w.Db.SaveChangesAsync();
+
+        (await Approve(w, r, "late")).Should().BeOfType<OkObjectResult>();
+
+        (await w.Db.PayrollAdjustments.AsNoTracking().SingleAsync()).PayrollRunId.Should().Be(replacement.Id);
+    }
+
+    [Fact]
+    public async Task BackPay_NeverCarriesIntoASupplementalRun()
+    {
+        var (w, r) = await ArrangeAsync("BackPay", openRun: false);
+        w.Db.PayrollRuns.Add(new PayrollRun { TenantId = w.TenantId, Year = 2026, Month = 7, Status = "Draft", RunType = PayrollRunTypes.Supplementary, IncludesRecurringPay = false });
+        await w.Db.SaveChangesAsync();
+
+        var result = await Approve(w, r, "late");
+
+        result.Should().BeOfType<ConflictObjectResult>();
+        Body(result).Code.Should().Be("overtime_backpay_no_open_run");
+        (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
+    }
 }
