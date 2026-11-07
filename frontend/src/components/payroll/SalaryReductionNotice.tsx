@@ -68,7 +68,14 @@ export function SalaryReductionNotice({
   const generated = useId();
   const id = `${idPrefix}-${generated.replace(/:/g, '')}`;
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (focusToken > 0) ref.current?.focus(); }, [focusToken]);
+  // Two frames on purpose: when the refusal also moves a wizard to this step, the step panel moves focus to its own heading one frame after it
+  // becomes active, and the field must be focused after that or it loses focus straight away.
+  useEffect(() => {
+    if (focusToken <= 0) return;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => { inner = requestAnimationFrame(() => ref.current?.focus()); });
+    return () => { cancelAnimationFrame(outer); cancelAnimationFrame(inner); };
+  }, [focusToken]);
   return (
     <section className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100 sm:col-span-2"
       aria-labelledby={`${id}-heading`} data-testid="salary-reduction-notice">

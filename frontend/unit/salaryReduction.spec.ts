@@ -145,6 +145,18 @@ test('the server refusal of a reduction without its reference, on a proposal (40
   expect(reductionRefusal({ response: { status: 400, data: { error: 'reduction_consent_required', reducedItems: 'nonsense' } } })).toMatchObject({ items: [] });
 });
 
+test('the employee update refuses a reduction the form missed (422) with the same code, items and sentence the salary endpoints use', () => {
+  const reducedItems = [{ item: 'BASIC', from: 6000, to: 5500 }];
+  const message = 'Lowering an employee\'s pay needs their written agreement; enter its reference. (BASIC 6,000.00 to 5,500.00) No change was applied.';
+  expect(reductionRefusal({ response: { status: 422, data: { error: 'reduction_consent_required', code: 'reduction_consent_required', message, reducedItems } } }))
+    .toEqual({ kind: 'required', message, items: reducedItems });
+  // A server that has not been updated yet answers the same refusal as a generic 422 invalid_payroll_change: the sentence still says what it is.
+  expect(reductionRefusal({ response: { status: 422, data: { error: 'invalid_payroll_change', message } } }))
+    .toEqual({ kind: 'required', message, items: [] });
+  // Any other invalid payroll change is not a reduction.
+  expect(reductionRefusal({ response: { status: 422, data: { error: 'invalid_payroll_change', message: 'Basic salary must be greater than zero. No change was applied.' } } })).toBeNull();
+});
+
 test('every sentence of the reduction notice has Arabic, with the same placeholders', () => {
   const keys = [...Object.values(SLOT_LABEL_KEYS),
     'This lowers the employee’s pay', 'The employee’s written agreement is needed before their pay goes down.', '{item} goes from {from} to {to} a month.',

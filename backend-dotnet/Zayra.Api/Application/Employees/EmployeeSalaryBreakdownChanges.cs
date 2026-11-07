@@ -98,7 +98,7 @@ public static class EmployeeSalaryBreakdownChanges
             if (Zayra.Api.Infrastructure.Payroll.SalaryReductions.RequireConsent(reduction, salary.ReductionConsentReference) is { } noConsent
                 && !(restoresSalaryRowId is Guid preAwardRow
                      && await Zayra.Api.Infrastructure.Compensation.MeritAwardReversals.RestoresPreAwardPayAsync(db, reductionTenant, preAwardRow, reduction, ct)))
-                throw new InvalidOperationException(noConsent.Message);
+                throw new Zayra.Api.Infrastructure.Payroll.SalaryReductionConsentRequiredException(noConsent, reduction.Items);
         }
         var wholePay = Gross(salary) + allowances.Total;
         if (wholePay > MaximumGrossSalary) throw new InvalidOperationException("Gross salary exceeds the supported amount.");

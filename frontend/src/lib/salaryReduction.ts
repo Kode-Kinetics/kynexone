@@ -164,9 +164,12 @@ const readItems = (value: unknown): ReducedItem[] => (Array.isArray(value) ? val
   .filter((x): x is { item: string; from: unknown; to: unknown } => !!x && typeof (x as { item?: unknown }).item === 'string')
   .map(x => ({ item: x.item, from: Number(x.from) || 0, to: Number(x.to) || 0 }));
 
+const LEGACY_REQUIRED_SENTENCE = /^Lowering an employee['’]s pay needs their written agreement/;
+
 /**
  * The server's refusal of a reduction without its consent reference: 400 `{ code: "reduction_consent_required", message, reducedItems }` when a
- * proposal is made, or 409 `{ error: "salary_change_stale", code: "reduction_consent_required", reducedItems }` when Finance approves one.
+ * proposal is made, or 409 `{ error: "salary_change_stale", code: "reduction_consent_required", reducedItems }` when Finance approves one,
+ * or 422 `{ error: "reduction_consent_required", code, message, reducedItems }` from the employee update.
  */
 export function reductionRefusal(err: unknown): ReductionRefusal | null {
   const data = (err as { response?: { data?: { error?: unknown; code?: unknown; message?: unknown; reducedItems?: unknown } } })?.response?.data;
@@ -174,6 +177,9 @@ export function reductionRefusal(err: unknown): ReductionRefusal | null {
   const codes = [data.code, data.error].filter((c): c is string => typeof c === 'string');
   const message = typeof data.message === 'string' ? data.message : '';
   if (codes.includes('reduction_consent_required')) return { kind: 'required', message, items: readItems(data.reducedItems) };
+  // The employee update (PUT /api/employees/{id}) answers 422 with the same code. A server that predates that answered this refusal as a generic
+  // 422 `invalid_payroll_change` (the frontend can be deployed first), so its sentence is recognised too; it carries no items.
+  if (data.error === 'invalid_payroll_change' && LEGACY_REQUIRED_SENTENCE.test(message)) return { kind: 'required', message, items: [] };
   if (codes.includes('reduction_consent_reference_too_long')) return { kind: 'tooLong', message, items: [] };
   if (codes.includes('reduction_consent_reference_too_short')) return { kind: 'tooShort', message, items: [] };
   return null;

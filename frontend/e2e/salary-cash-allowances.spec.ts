@@ -494,4 +494,37 @@ test.describe('Employee profile and Edit employee', () => {
     await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('1000');
     await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);
   });
+
+  test('when the server judges a raise to be a reduction (422 reduction_consent_required), the form returns to Salary with the reference field open and focused', async ({ page }) => {
+    const message = 'Lowering an employee\'s pay needs their written agreement; enter its reference. (BASIC 6,000.00 to 5,500.00) No change was applied.';
+    const refusal = { error: 'reduction_consent_required', code: 'reduction_consent_required', message, reducedItems: [{ item: 'BASIC', from: 6000, to: 5500 }] };
+    const fixture = await bootEmployeeWorkspaceFixture(page, { permissions, disabledFeatures: [] });
+    await withMatrix(page);
+    // Registered after the fixture's, so it answers first: the first save is refused the way the server refuses a reduction the form cannot see
+    // (a future-dated record makes a raise today a reduction to the server), the retry with the reference goes through.
+    const puts: Array<{ changes: { salaryBreakdown: Record<string, unknown> } }> = [];
+    await page.route('**/api/employees/901', route => {
+      if (route.request().method() !== 'PUT') return route.fallback();
+      puts.push(route.request().postDataJSON());
+      return puts.length === 1 ? route.fulfill({ status: 422, json: refusal }) : route.fallback();
+    });
+    await page.goto('/people/901/edit?section=pay-benefits&panel=salary');
+    const flow = page.getByTestId('employee-edit-flow');
+    await flow.locator('[id="edit-field-salaryBreakdown.housingAllowance"]').fill('1200');
+    await expect(flow.getByTestId('salary-reduction-notice')).toHaveCount(0);   // the form sees a raise
+    await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
+    await flow.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect.poll(() => puts.length).toBe(1);
+    expect(Object.keys(puts[0].changes.salaryBreakdown)).not.toContain('reductionConsentReference');
+    await expect(flow.getByRole('button', { name: /^Step 4: Salary/ })).toHaveAttribute('aria-current', 'step');
+    await expect(flow.getByTestId('salary-reduction-notice')).toBeVisible();
+    await expect(flow.getByLabel('Employee’s written agreement reference')).toBeFocused();
+    await expect(flow.getByText(message)).toBeVisible();
+    await flow.getByLabel('Employee’s written agreement reference').fill('QIWA-9');
+    await flow.getByRole('button', { name: /^Step 6: Review/ }).click();
+    await flow.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect.poll(() => puts.length).toBe(2);
+    expect(puts[1].changes.salaryBreakdown.reductionConsentReference).toBe('QIWA-9');
+    expect(fixture.mutations.filter(m => m.method === 'PUT')).toHaveLength(1);   // only the retry reached the fixture
+  });
 });

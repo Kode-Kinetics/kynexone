@@ -32,6 +32,17 @@ public sealed record ReductionResult(bool IsReduction, decimal CurrentTotal, dec
 }
 
 /// <summary>
+/// Thrown where a salary package is validated deep inside a workflow (employee update, approval apply, merit planning) and it lowers pay without the employee's
+/// agreement reference. It IS an <see cref="InvalidOperationException"/> (every existing catch still sees the same refusal, same message), but it keeps the stable
+/// code and the items that go down, so an endpoint can answer the structured refusal the salary endpoints give instead of a generic invalid-change error.
+/// </summary>
+public sealed class SalaryReductionConsentRequiredException(AllowanceProblem problem, IReadOnlyList<ReducedItem> items) : InvalidOperationException(problem.Message)
+{
+    public string Code { get; } = problem.Code;
+    public IReadOnlyList<ReducedItem> Items { get; } = items;
+}
+
+/// <summary>
 /// The rule that lowering an employee's pay needs their written agreement. "Pay" is the six slots and every cash allowance line (a percentage resolved on
 /// the proposed basic, carried lines included); the fixed deduction is not pay, but a HIGHER one (or a new one) lowers take-home pay and counts as a reduction
 /// too. A proposal is a reduction when the total goes down OR any single item goes down or disappears OR the fixed deduction goes up. It must then carry a consent reference (the signed amendment, the Qiwa request number: free text up to 200), or it is refused.

@@ -647,7 +647,7 @@ public class CashAllowanceFinanceControlsTests
                 "\"fixedDeduction\":0,\"effectiveDate\":\"2026-07-01\",\"currency\":\"SAR\"" + (consent is null ? "" : ",\"reductionConsentReference\":\"" + consent + "\"") + "}")).RootElement.Clone(),
         };
 
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(9_000m, null), default));
+        var refused = await Assert.ThrowsAnyAsync<InvalidOperationException>(() => EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(9_000m, null), default));
         refused.Message.Should().Contain("written agreement");
 
         await EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(9_000m, "AMEND-9"), default);
@@ -1073,7 +1073,7 @@ public class CashAllowanceFinanceControlsTests
                 "{\"basicSalary\":10000,\"housingAllowance\":2000,\"transportAllowance\":1000,\"foodAllowance\":0,\"mobileAllowance\":0,\"otherAllowance\":0," +
                 "\"fixedDeduction\":300,\"effectiveDate\":\"2026-07-01\",\"currency\":\"SAR\"" + (consent is null ? "" : ",\"reductionConsentReference\":\"" + consent + "\"") + "}")).RootElement.Clone(),
         };
-        (await Assert.ThrowsAsync<InvalidOperationException>(() => EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(null), default)))
+        (await Assert.ThrowsAnyAsync<InvalidOperationException>(() => EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes(null), default)))
             .Message.Should().Contain("written agreement");
         await EmployeeSalaryBreakdownChanges.ValidateAsync(w.Db, employee, Changes("AMEND-DED-2"), default);
     }

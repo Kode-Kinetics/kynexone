@@ -4101,6 +4101,11 @@ public class EmployeesController : ControllerBase
             }
         }
         catch (SalaryStructureRefusedException ex) { return SalaryStructureRefused(ex, " No change was applied."); }
+        // The same refusal the salary endpoints give (code + what goes down), so the edit form can open the reference field instead of showing a dead end.
+        catch (Zayra.Api.Infrastructure.Payroll.SalaryReductionConsentRequiredException ex)
+        {
+            return UnprocessableEntity(new { error = ex.Code, code = ex.Code, message = ex.Message + " No change was applied.", reducedItems = ex.Items });
+        }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // A package change is applied only on the word of a payroll.approve holder who is neither the maker nor this employee (the Approvals
         // decision enforces it): with nobody else able to give it, the request could never be decided, so it is refused now.

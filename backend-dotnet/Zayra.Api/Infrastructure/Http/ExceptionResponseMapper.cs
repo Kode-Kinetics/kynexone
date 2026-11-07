@@ -18,6 +18,9 @@ public static class ExceptionResponseMapper
         // An end-of-service wage that would silently leave out a salary line whose allowance definition is gone: refused, never understated.
         Zayra.Api.Infrastructure.Payroll.CashAllowanceDefinitionMissingException orphan =>
             (StatusCodes.Status422UnprocessableEntity, "cash_allowance_definition_invalid", orphan.Message),
+        // A pay reduction with no written-agreement reference that reached the global handler: the same stable code the salary endpoints answer with.
+        Zayra.Api.Infrastructure.Payroll.SalaryReductionConsentRequiredException consent =>
+            (StatusCodes.Status400BadRequest, consent.Code, consent.Message),
         // Field encryption: the tenant's keys are revoked (423) or temporarily unavailable (503) - never a 500, never key detail.
         Zayra.Api.Infrastructure.FieldEncryption.FieldEncryptionUnavailableException fe => (fe.StatusCode, fe.Code, fe.SafeMessage),
         // Another writer saved the same organisation code first (the unique index refused this save): a conflict, not a fault.
