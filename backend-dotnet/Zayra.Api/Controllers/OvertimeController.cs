@@ -912,7 +912,16 @@ public class OvertimeController : ControllerBase
         var maxDays = string.Equals(capMode, "Fractional", StringComparison.Ordinal)
             ? MaxCompOffDaysFractional(request.ApprovedMinutes)
             : MaxCompOffDays(request.ApprovedMinutes);
-        if (req.CompOffDays > maxDays)
+        // The grant is made at the precision the tables keep (two decimals), rounded DOWN, and the cap applies to that figure: a four-decimal grant would be
+        // stored rounded (60 minutes = 0.125 stored as 0.13, over the cap) or as 0.00 (cash withdrawn, no leave). Never more than earned, never zero.
+        var grantedDays = RoundCompOffDown(req.CompOffDays);
+        if (grantedDays <= 0m || maxDays <= 0m)
+            return UnprocessableEntity(new
+            {
+                code = "compoff_below_minimum",
+                message = $"{request.ApprovedMinutes} approved minutes is too little to convert to comp-off: leave is recorded in hundredths of a day, and this rounds to 0.00. The overtime stays payable as cash.",
+            });
+        if (grantedDays > maxDays)
             return BadRequest(new { message = $"Comp-off days cannot exceed {maxDays:0.##} for {request.ApprovedMinutes} approved minutes ({CompOffHoursPerWorkingDay:0.##} hours per working day)." });
         if (await _db.OvertimeCompOffConversions.AnyAsync(x => x.TenantId == tenantId && x.OvertimeRequestId == req.OvertimeRequestId && x.Status != "Rejected", ct))
             return Conflict(new { message = "This overtime request has already been converted to comp-off." });
@@ -923,14 +932,14 @@ public class OvertimeController : ControllerBase
             return Conflict(new { message = "This overtime has already been paid through payroll and cannot be converted to comp-off." });
         _db.OvertimePayrollImpacts.RemoveRange(impacts);
         await SaveAudit("overtime.compoff.cash_withdrawn", "OvertimeRequest", request.Id.ToString(), ct);
-        var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = req.CompOffDays, Status = "Approved" };
+        var compOff = new OvertimeCompOffConversion { TenantId = tenantId, OvertimeRequestId = req.OvertimeRequestId, EmployeeId = request.EmployeeId, OvertimeHours = Math.Round(request.ApprovedMinutes / 60m, 2), CompOffDays = grantedDays, Status = "Approved" };
         _db.OvertimeCompOffConversions.Add(compOff);
         _db.CompOffCredits.Add(new CompOffCredit
         {
             TenantId = tenantId, EmployeeId = request.EmployeeId, EmployeeName = request.EmployeeName,
             OvertimeCompOffConversionId = compOff.Id,
             WorkedDate = request.WorkDate, WorkType = "Overtime", HoursWorked = compOff.OvertimeHours,
-            DaysEarned = req.CompOffDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
+            DaysEarned = grantedDays, Status = "Approved", ApprovedByName = User.Identity?.Name ?? "HR",
             ApprovedAtUtc = DateTime.UtcNow
         });
         await SaveAudit("overtime.compoff.created", "OvertimeCompOffConversion", compOff.Id.ToString(), ct);
@@ -964,7 +973,11 @@ public class OvertimeController : ControllerBase
 
     /// <summary>overtime.compoff_cap_mode = Fractional: exactly the approved hours over the working day, no whole-day rounding.</summary>
     internal static decimal MaxCompOffDaysFractional(int approvedMinutes) =>
-        Math.Round(approvedMinutes / 60m / CompOffHoursPerWorkingDay, 4);
+        RoundCompOffDown(approvedMinutes / 60m / CompOffHoursPerWorkingDay);
+
+    /// <summary>Comp-off days at the precision <c>overtime_comp_off_conversions.comp_off_days</c> and <c>comp_off_credits.days_earned</c> keep (numeric(x,2)),
+    /// rounded DOWN so a stored grant never exceeds what was earned or the cap.</summary>
+    internal static decimal RoundCompOffDown(decimal days) => Math.Floor(days * 100m) / 100m;
 
     [HttpGet("reports/summary")]
     public async Task<ActionResult<object>> Summary([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken ct)
