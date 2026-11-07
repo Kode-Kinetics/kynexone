@@ -319,10 +319,12 @@ test('workspace declining replacement preserves a dirty manual task form', async
   await extractAndOpenWorkspace(page);
   await page.getByPlaceholder('Task title', { exact: true }).fill('Unrelated manual task');
   await page.getByTitle('Due offset days', { exact: true }).fill('9');
-  let confirmation = '';
-  page.once('dialog', async dialog => { confirmation = dialog.message(); await dialog.dismiss(); });
   await page.getByRole('button', { name: 'Fill existing task form', exact: true }).click();
-  expect(confirmation).toContain('unsaved values');
+  // The question is the shared confirm dialog now, not a native one; Cancel is the default and leaves the form alone.
+  const question = page.getByRole('dialog', { name: /unsaved values/ });
+  await expect(question).toBeVisible();
+  await question.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(question).toHaveCount(0);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Unrelated manual task');
   await expect(page.getByTitle('Due offset days', { exact: true })).toHaveValue('9');
   expect(state.writes.filter(write => write.path.startsWith('/api/recruitment/'))).toEqual([]);
