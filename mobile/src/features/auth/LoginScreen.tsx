@@ -20,7 +20,7 @@ import Animated, {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Controller, useForm } from 'react-hook-form';
-import { z } from 'zod';
+import { loginSchema, type LoginFormData } from '@/auth/formSchemas';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -43,16 +43,6 @@ import { haptics } from '@/utils/haptics';
 import { SignInLanguageToggle } from './SignInLanguageToggle';
 import { loginErrorKey, type LoginErrorKey } from './loginError';
 
-/* The company ID is asked for only when needed (a link that names it, or the server answering
-   `workspace_required`), so it is validated in onSubmit rather than by the schema. Messages are
-   translation keys, resolved where they are shown. */
-const loginSchema = z.object({
-  tenantId: z.string(),
-  username: z.string().refine((value) => value.trim().length > 0, 'signin.emailRequired'),
-  password: z.string().min(1, 'signin.passwordRequired'),
-});
-
-type LoginFormData = z.infer<typeof loginSchema>;
 type Props = NativeStackScreenProps<AuthStackParamList, 'Login'>;
 
 /**

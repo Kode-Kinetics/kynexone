@@ -44,7 +44,8 @@ export const authMeSchema = obj({
   email: text,
   fullName: text,
   roles: list(z.union([z.string(), looseObj])).nullish(),
-  permissions: z.unknown(),
+  // zod 4: a bare z.unknown() key is required; the adapters tolerate a missing one.
+  permissions: z.unknown().optional(),
   accessMode: text,
   requiresPasswordSetup: flag,
 });
