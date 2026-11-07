@@ -462,6 +462,74 @@ public class OvertimeLateSettlementRunTests
         (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).Status.Should().Be("PendingPayroll");
     }
 
+    /// <summary>What the approval endpoint wrote for a late approval: a CarriedForward impact and an Approved back-pay adjustment on the open run.</summary>
+    private static async Task AddApprovalTimeCarryAsync(ZayraDbContext db, Seed s, PayrollRun intoRun)
+    {
+        db.PayrollAdjustments.Add(new PayrollAdjustment
+        {
+            TenantId = s.TenantId, PayrollRunId = intoRun.Id, EmployeeId = s.Emp.Id, AdjustmentType = OvertimeLateSettlement.AdjustmentType,
+            Amount = 150m, Status = "Approved", Reason = "Approved late", SourceType = PayrollAdjustmentSources.OvertimeBackPay, SourceId = s.RequestId,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private static async Task<PayrollRun> AddReplacementAsync(ZayraDbContext db, Seed s, int month)
+    {
+        var replacement = new PayrollRun
+        {
+            TenantId = s.TenantId, CompanyId = s.CompanyId, Year = 2026, Month = month, Status = "Draft", RunType = PayrollRunTypes.Replacement,
+            CreatedByUserId = Preparer,
+        };
+        db.PayrollRuns.Add(replacement);
+        await db.SaveChangesAsync();
+        return replacement;
+    }
+
+    [Fact]
+    public async Task CarriedAtApproval_ThenProcessedAndVoided_IsPaidExactlyOnceByTheReplacementRun()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, OvertimeLateSettlement.BackPay, impactStatus: "CarriedForward");
+        await AddApprovalTimeCarryAsync(db, s, s.June);
+        await ProcessOkAsync(db, s, s.June);
+        (await BackPayLines(db, s.June.Id)).Should().ContainSingle("premise: the approval-time adjustment paid it in June");
+
+        var voided = await new PayrollVoidService(db).VoidAsync(s.June.Id, s.TenantId, null, "test", "wrong run", CancellationToken.None);
+        voided.IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+
+        (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).Status
+            .Should().Be("PendingPayroll", "the voided run did not pay it: it is unpaid and discoverable again");
+        var replacement = await AddReplacementAsync(db, s, month: 6);
+        await ProcessOkAsync(db, s, replacement);
+
+        var lines = await BackPayLines(db);
+        lines.Should().ContainSingle(l => l.PayrollRunId == replacement.Id, "the replacement pays the overtime");
+        (await BackPayLines(db, s.June.Id)).Should().ContainSingle("the voided run's line is untouched history");
+        (await db.PayrollAdjustments.AsNoTracking().CountAsync(a => a.TenantId == s.TenantId)).Should().Be(1, "one adjustment per request: rebound, not duplicated");
+        (await db.PayrollAdjustments.AsNoTracking().SingleAsync(a => a.TenantId == s.TenantId)).PayrollRunId.Should().Be(replacement.Id);
+        (await db.OvertimePayrollImpacts.AsNoTracking().SingleAsync(i => i.Id == s.ImpactId)).Status.Should().Be("Processed");
+    }
+
+    [Fact]
+    public async Task CarriedAtApproval_ThenVoided_IsFlaggedByRule11b_WhileTheReplacementIsNotYetProcessed_InRefuseMode()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var s = await ArrangeAsync(db, OvertimeLateSettlement.Refuse, impactStatus: "CarriedForward");
+        await AddApprovalTimeCarryAsync(db, s, s.June);
+        await ProcessOkAsync(db, s, s.June);
+        (await new PayrollVoidService(db).VoidAsync(s.June.Id, s.TenantId, null, "test", "wrong run", CancellationToken.None)).IsVoided.Should().BeTrue();
+        db.ChangeTracker.Clear();
+        await AddReplacementAsync(db, s, month: 6);
+
+        var flagged = await PriorPeriodOvertimeFinder.FindAsync(db, s.TenantId, s.CompanyId, new[] { s.Emp.Id }, new DateOnly(2026, 6, 1),
+            CancellationToken.None, OvertimeLateSettlement.Refuse);
+
+        flagged.Should().ContainSingle().Which.OvertimeRequestId.Should().Be(s.RequestId);
+    }
+
     private sealed class LateScope : IDataScopeService
     {
         public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
