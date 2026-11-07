@@ -169,4 +169,45 @@ public class OvertimeLateApprovalModeTests
 
         Body(await Approve(w, r)).Json.Should().Contain("2026-08");
     }
+
+    private static Company NewCompany(Guid tenantId, bool active = true) => new()
+    {
+        TenantId = tenantId, LegalNameEn = $"Co {Guid.NewGuid():N}", CountryCode = "SAU", Jurisdiction = "KSA-mainland",
+        RegistrationNumber = $"REG-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = active,
+    };
+
+    [Fact]
+    public async Task BackPay_LegacyEmployeeWithNoCompany_InASingleCompanyTenant_FindsTheDraftRunOfThatCompany()
+    {
+        var (w, r) = await ArrangeAsync("BackPay", openRun: false);
+        var company = NewCompany(w.TenantId);
+        w.Db.Companies.Add(company);
+        w.Db.PayrollRuns.Add(new PayrollRun { TenantId = w.TenantId, CompanyId = company.Id, Year = 2026, Month = 7, Status = "Draft" });
+        await w.Db.SaveChangesAsync();
+        r.CompanyId.Should().BeNull("premise: a legacy request");
+        w.Subject.CompanyId.Should().BeNull("premise: a legacy employee");
+
+        var result = await Approve(w, r, "late");
+
+        result.Should().BeOfType<OkObjectResult>("payroll treats a legacy employee as the tenant's only company's");
+        var julyRun = await w.Db.PayrollRuns.AsNoTracking().SingleAsync();
+        (await w.Db.PayrollAdjustments.AsNoTracking().SingleAsync()).PayrollRunId.Should().Be(julyRun.Id);
+    }
+
+    [Fact]
+    public async Task BackPay_LegacyEmployeeWithNoCompany_InAMultiCompanyTenant_RefusesToGuess()
+    {
+        var (w, r) = await ArrangeAsync("BackPay", openRun: false);
+        var a = NewCompany(w.TenantId);
+        w.Db.Companies.AddRange(a, NewCompany(w.TenantId));
+        w.Db.PayrollRuns.Add(new PayrollRun { TenantId = w.TenantId, CompanyId = a.Id, Year = 2026, Month = 7, Status = "Draft" });
+        await w.Db.SaveChangesAsync();
+
+        var result = await Approve(w, r, "late");
+
+        result.Should().BeOfType<ConflictObjectResult>();
+        Body(result).Code.Should().Be("overtime_backpay_no_open_run");
+        (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
+        (await w.Db.OvertimeRequests.AsNoTracking().SingleAsync()).Status.Should().Be("PendingManager");
+    }
 }

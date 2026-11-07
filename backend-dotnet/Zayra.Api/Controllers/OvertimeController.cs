@@ -1211,9 +1211,12 @@ public class OvertimeController : ControllerBase
                 nextOpenPeriod = nextOpen,
             }), null);
 
-        var companyId = request.CompanyId
+        var stampedCompanyId = request.CompanyId
             ?? await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Resolve the employee's legal entity to find the payroll run overtime back pay is carried into.")
                 .Where(e => e.Id == request.EmployeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        // A legacy employee with no company belongs to the tenant's only active company, as payroll treats them; with several
+        // active companies this stays null and the carry refuses rather than guess.
+        var companyId = await CompanyPayrollRules.EffectiveCompanyIdAsync(_db, tenantId, stampedCompanyId, ct);
         var run = await ScopedBypass.TenantWide(_db.PayrollRuns, tenantId, "Finding the open run an employee's late overtime is carried into: the approver's company scope must not hide it.")
             .Where(r => r.CompanyId == companyId && r.Year == next.Year && r.Month == next.Month
                 && r.Status == "Draft" && r.LockedAtUtc == null && r.RunType == PayrollRunTypes.Regular)
