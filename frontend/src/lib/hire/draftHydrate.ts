@@ -90,7 +90,9 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
     iban: text(d.payrollProfile?.iban) || text(d.bankIban), molId: text(d.payrollProfile?.molId),
     basic: amount(d.salaryBreakdown?.basicSalary), housing: amount(d.salaryBreakdown?.housingAllowance), transport: amount(d.salaryBreakdown?.transportAllowance), other: amount(d.salaryBreakdown?.otherAllowance),
     // The lines already staged with this draft's package are kept as the person's own, so saving again sends them rather than filling from the grade.
-    allowances: d.salaryBreakdown?.allowances?.length ? encodeValue(linesFromWire(d.salaryBreakdown.allowances)) : '',
+    // An explicit empty list ([]) is a choice too — every grade allowance was removed on purpose — and is resumed as "[]", never as untouched (''),
+    // which would let the server put the grade's allowances back. Only a missing or null list is untouched.
+    allowances: Array.isArray(d.salaryBreakdown?.allowances) ? encodeValue(linesFromWire(d.salaryBreakdown.allowances)) : '',
     ...(primary
       ? { idType: primary[0], idNumber: primary[1], idExpiry: text(primary[2]), passportNumber: passport, passportExpiry: day(d.passportExpiryDate) }
       : passport ? { idType: 'passport' as const, idNumber: passport, idExpiry: day(d.passportExpiryDate) } : {}),
