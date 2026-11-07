@@ -56,7 +56,8 @@ public sealed class SalaryChangeDecisionService
             if (refusal is not null) return refusal;
             await _db.SaveChangesAsync(ct);
             await RestampFirstPackageEmployeesAsync(tenantId, [change], ct);
-            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change));
+            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change,
+                (await SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], ct)).GetValueOrDefault(change.Id)));
         }, ct);
 
     public async Task<IActionResult> RejectAsync(Guid tenantId, Guid id, SalaryDecisionActor actor, string? note,
@@ -70,7 +71,8 @@ public sealed class SalaryChangeDecisionService
             if (refusal is not null) return refusal;
             await _db.SaveChangesAsync(ct);
             await RestampFirstPackageEmployeesAsync(tenantId, [change], ct);
-            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change));
+            return new OkObjectResult(PayrollController.SalaryChangeDto.Project(change,
+                (await SalaryAllowanceLines.ViewsAsync(_db, tenantId, [change], ct)).GetValueOrDefault(change.Id)));
         }, ct);
 
     /// <summary>Decides every pending row of one import. Rows the caller may not decide stay pending and are reported.</summary>
@@ -175,6 +177,42 @@ public sealed class SalaryChangeDecisionService
         });
     }
 
+    /// <summary>
+    /// Approving <paramref name="change"/> makes it the record in force just before the next approved record dated after it. When that later record would
+    /// lower pay against this one (a slot, an allowance line or the whole pay down, or a higher fixed deduction), was not already a reduction against what
+    /// precedes it today, and carries no written-agreement reference, the approval is refused so Finance decides the order consciously
+    /// (<c>later_change_becomes_reduction</c>, naming the later change's effective date). Null when there is no such record or nothing lowers.
+    /// </summary>
+    private async Task<IActionResult?> LaterRecordBecomesReductionAsync(Guid tenantId, SalaryChangeRequest change, IReadOnlyCollection<ResolvedAllowanceLine> newLines, CancellationToken ct)
+    {
+        var later = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == change.EmployeeId && x.IsActive && x.EffectiveDate > change.EffectiveDate)
+                .ToListAsync(ct))
+            .OrderBy(x => x.EffectiveDate).ThenByDescending(x => x.CreatedAtUtc).FirstOrDefault();
+        if (later is null) return null;
+        var laterLines = (await SalaryAllowanceLines.LoadAsync(_db, tenantId, [later.Id], ct))[later.Id].Select(l => (l.Code, l.Amount)).ToList();
+
+        var afterThisApproval = SalaryReductions.Compare(PaySlots.Of(change), newLines.Select(l => (l.Code, l.Amount)).ToList(), PaySlots.Of(later), laterLines);
+        if (!afterThisApproval.IsReduction) return null;
+        // Already a reduction against what precedes it today: not something this approval introduces.
+        var (before, beforeLines) = await SalaryAllowanceLines.InForceAsync(_db, tenantId, change.EmployeeId, later.EffectiveDate.AddDays(-1), ct);
+        if (before is not null
+            && SalaryReductions.Compare(PaySlots.Of(before), beforeLines.Select(l => (l.Code, l.Amount)).ToList(), PaySlots.Of(later), laterLines).IsReduction)
+            return null;
+        // The later record's own agreement, kept on the change that produced it.
+        var reference = await _db.SalaryChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.AppliedAssignmentId == later.Id).Select(x => x.ReductionConsentReference).FirstOrDefaultAsync(ct);
+        if (SalaryReductions.CleanReference(reference) is not null) return null;
+        return new ConflictObjectResult(new
+        {
+            error = "later_change_becomes_reduction",
+            message = $"Approving this would make the salary change already approved from {later.EffectiveDate:yyyy-MM-dd} lower the employee's pay, and that change has no written agreement reference. "
+                      + "Approve the changes in date order, or reject this one and propose it again.",
+            laterEffectiveDate = later.EffectiveDate.ToString("yyyy-MM-dd"),
+            reducedItems = afterThisApproval.Items,
+        });
+    }
+
     /// <summary>Checks the separation-of-duties rules and applies or rejects. Returns null on success, else the refusal to send.</summary>
     private async Task<IActionResult?> DecideAsync(Guid tenantId, SalaryChangeRequest change, string decision, string? note, SalaryDecisionActor actor,
         Func<int, bool>? canDecideEmployee, CancellationToken ct, bool overrideGradeRange = false)
@@ -210,10 +248,52 @@ public sealed class SalaryChangeDecisionService
             // new package, and a grade whose range changed (or an employee moved to another grade) is checked again here.
             if (employee.Status is EmployeeStatuses.Terminated or EmployeeStatuses.Exited or EmployeeStatuses.Archived)
                 return new ConflictObjectResult(new { error = "salary_change_stale", message = $"The employee is now {employee.Status}, so this package cannot be applied. Reject it." });
+            // Another writer's row for this employee and date is detected FIRST, before any check that could refuse the decision on its own terms (consent,
+            // allowances, grade range): after a retried attempt (a transient failure such as a deadlock) the rival's row is "the record in force", and judging this
+            // change against it would hold the row as "lowers pay" instead of refusing the whole decision as the conflict it is.
+            var raceKey = (change.EmployeeId, change.EffectiveDate);
+            var activeNow = (await _db.EmployeeSalaryStructures.AsNoTracking()
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == change.EmployeeId && x.IsActive && x.EffectiveDate == change.EffectiveDate)
+                    .Select(x => x.Id).ToListAsync(ct)).ToHashSet();
+            if (_seenSalaryRows.TryGetValue(raceKey, out var seenBefore) && !seenBefore.SetEquals(activeNow))
+                throw new SalaryImportRaceException(raceKey);
+            _seenSalaryRows[raceKey] = activeNow;
+            // The customer-defined cash allowances the new record will carry, resolved NOW against what is live and in force: stated lines are checked
+            // again (a definition removed or switched off since the proposal refuses the approval), and a proposal that did not mention allowances
+            // carries the current record's lines — read before the replaced row is switched off below. Nothing is written for a refused decision.
+            List<SalaryAllowanceLine>? statedLines;
+            try { statedLines = SalaryAllowanceLines.Deserialize(change.AllowancesJson); }
+            catch (JsonException)
+            { return new ConflictObjectResult(new { error = "salary_change_stale", message = "This change's allowance lines cannot be read. Reject it and propose it again." }); }
+            var allowanceLines = await SalaryAllowanceLines.ResolveForProposalAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, change.BasicSalary, statedLines, ct,
+                slotsGross: change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance);
+            if (allowanceLines.Problem is { } allowanceProblem)
+                return new ConflictObjectResult(new
+                {
+                    error = "salary_change_stale",
+                    message = allowanceProblem.Message + " Reject this change, or fix the allowance and approve again.",
+                    code = allowanceProblem.Code,
+                });
+            // Lowering pay needs the employee's written agreement, and whether this IS a reduction is judged against the record in force NOW (it can have
+            // moved since the proposal): a change that was fine when staged, or staged by a path with no reference, is refused here if it lowers the pay.
+            var reduction = await SalaryReductions.EvaluateAsync(_db, tenantId, change.EmployeeId, change.EffectiveDate, PaySlots.Of(change), allowanceLines.Lines, ct);
+            if (SalaryReductions.RequireConsent(reduction, change.ReductionConsentReference) is { } noConsent)
+                return new ConflictObjectResult(new
+                {
+                    error = "salary_change_stale",
+                    message = noConsent.Message + " Reject this change, or propose it again with the reference.",
+                    code = noConsent.Code,
+                    reducedItems = reduction.Items,
+                });
+            // The same rule seen from the other side: this approval changes what the NEXT record (already approved, dated after this one) is measured against.
+            // A later record that was fine against the old predecessor can become a reduction against this one, with nobody having agreed to it.
+            if (await LaterRecordBecomesReductionAsync(tenantId, change, allowanceLines.Lines, ct) is { } laterReduction)
+                return laterReduction;
             if (employee.GradeId.HasValue)
             {
                 var grade = await _db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == tenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
-                var gross = change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance - change.FixedDeduction;
+                var gross = change.BasicSalary + change.HousingAllowance + change.TransportAllowance + change.FoodAllowance + change.MobileAllowance + change.OtherAllowance
+                            + allowanceLines.Total - change.FixedDeduction;
                 var below = grade is not null && grade.MinSalary > 0 && gross < grade.MinSalary;
                 var above = grade is not null && grade.MaxSalary > 0 && gross > grade.MaxSalary;
                 if (below || above)
@@ -258,6 +338,7 @@ public sealed class SalaryChangeDecisionService
                 EffectiveDate = change.EffectiveDate, Currency = change.Currency, CreatedBy = change.RequestedByUserId,
             };
             _db.EmployeeSalaryStructures.Add(assignment);
+            _db.EmployeeSalaryAllowances.AddRange(SalaryAllowanceLines.RowsFor(tenantId, assignment.Id, allowanceLines.Lines));
             change.AppliedAssignmentId = assignment.Id;
             if (firstPackage)
             {
@@ -267,7 +348,14 @@ public sealed class SalaryChangeDecisionService
                 await EmployeeSalaryBreakdownWriter.ApplyFirstPackageEffectsAsync(_db, employee, structure, change, ct);
             }
             Audit(tenantId, actor, "payroll.employee_salary.assigned", "EmployeeSalaryStructure", assignment.Id.ToString(),
-                new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId });
+                reduction.IsReduction
+                    ? new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId,
+                        allowances = allowanceLines.Lines, allowancesCarriedForward = allowanceLines.Carried,
+                        isReduction = true, reducedItems = reduction.Items, reductionConsentReference = change.ReductionConsentReference }
+                    : allowanceLines.Lines.Count == 0
+                    ? new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId }
+                    : (object)new { employeeId = change.EmployeeId, basicSalary = change.BasicSalary, requestId = change.Id, requestedBy = change.RequestedByUserId, approvedBy = userId,
+                        allowances = allowanceLines.Lines, allowancesCarriedForward = allowanceLines.Carried });
         }
         else
         {

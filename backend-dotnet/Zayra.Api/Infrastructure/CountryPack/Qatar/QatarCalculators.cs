@@ -103,6 +103,9 @@ public sealed class QatarEndOfServiceCalculator : IEndOfServiceCalculator
         decimal dailyRate = basic / 30m;
 
         var notices = new List<string>();
+        if (input.AdditionalEosbWage > 0m)
+            notices.Add($"[CERT-QAT] The cash allowance(s) {string.Join(", ", input.AdditionalEosbWageCodes)} ({input.AdditionalEosbWage:N2} a month) are " +
+                        "marked as counting in end of service but were NOT counted: Qatar Law 14/2004 Art. 54 awards the gratuity on the basic wage only.");
         decimal serviceYears = ServiceYears(input.ServiceStartDate, input.ServiceEndDate);
 
         // ── S1/A8: unpaid leave and the service period ────────────────────────────────────────────

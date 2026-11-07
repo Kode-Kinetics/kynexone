@@ -3,6 +3,7 @@ import type { HireForm } from './hireForm';
 import { parseMobile } from './phone';
 import { normalizeDigits } from './saudiId';
 import { normalizeIban } from './iban';
+import { decodeValue, requestLines } from '../salaryAllowances';
 import { createCostCentreFields } from '../employeeCostCentre';
 
 export interface AcknowledgedWarning { code: string; reason: string }
@@ -64,7 +65,10 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
   const mobile = blank(form.mobileNational) ? undefined : parseMobile(form.mobileNational, form.mobileCountry || ctx.companyCountry)?.e164;
   const num = (v: string) => { const n = parseAmount(v); return n && n > 0 ? n : undefined; };
   const salary = { basicSalary: num(form.basic), housingAllowance: num(form.housing), transportAllowance: num(form.transport), otherAllowance: num(form.other) };
-  const hasSalary = Object.values(salary).some(v => v !== undefined);
+  const hasAmounts = Object.values(salary).some(v => v !== undefined);
+  // Untouched (''): no `allowances` property at all, so the server fills the first package from the grade. Only an edit sends a list; [] removes them all.
+  const allowanceRows = decodeValue(form.allowances);
+  const hasSalary = hasAmounts || allowanceRows !== null;
   const iban = blank(form.iban) ? undefined : normalizeIban(form.iban);
   const hasPayroll = !!iban || !blank(form.molId);
   const idDigits = form.idType === 'passport' || form.idType === 'gccId' ? form.idNumber.trim().toUpperCase() : normalizeDigits(form.idNumber);
@@ -101,7 +105,7 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),
     payrollProfile: hasPayroll ? { iban, molId: opt(form.molId), salaryCurrency: ctx.currency } : undefined,
-    salaryBreakdown: hasSalary ? { ...salary, currency: ctx.currency } : undefined,
+    salaryBreakdown: hasSalary ? { ...salary, currency: ctx.currency, ...(allowanceRows ? { allowances: requestLines(allowanceRows) } : {}) } : undefined,
     complianceRecords: records.length ? records : undefined,
     acknowledgedWarnings: extras.acknowledgedWarnings?.length ? extras.acknowledgedWarnings : undefined,
     duplicateOverrideReason: extras.duplicateOverrideReason,

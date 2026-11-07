@@ -174,7 +174,7 @@ public static class EmployeeChangeApplier
     /// </summary>
     public static async Task<IReadOnlyList<string>> ApplyApprovedChangeAsync(
         ZayraDbContext db, Guid tenantId, Employee employee, IReadOnlyDictionary<string, JsonElement> changes,
-        Guid? actorUserId, CancellationToken ct)
+        Guid? actorUserId, CancellationToken ct, Guid? changeRequestId = null)
     {
         // A "costCenter" code is resolved and validated first, so a refused patch has touched nothing. Wave A D2: no approval path carries a
         // keep/drop decision, so moving someone who has their own cost centre fails closed here (422 cost_centre_decision_required) rather than
@@ -183,7 +183,7 @@ public static class EmployeeChangeApplier
         var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
         var unknown = Apply(employee, changes);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
-        await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct);
+        await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct, changeRequestId);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, attribution, ct);
         await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(db, tenantId, employee, attributionBefore, ct);
         await EmployeeOrgFieldResolver.StageAttributionAuditAsync(db, tenantId, employee, attributionBefore, actorUserId, ct);

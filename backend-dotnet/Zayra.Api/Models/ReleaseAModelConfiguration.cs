@@ -181,6 +181,30 @@ internal static class ReleaseAModelConfiguration
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         });
 
+        // ── NEW employee_salary_allowances: customer-defined monthly cash allowances (ALW_*) on the salary record ─────────────
+        // Tenant-owned (RLS shape a; live bridge: the ITenantOwned query filter). The FK carries the tenant so a row can only
+        // belong to its own tenant's salary record. RESTRICT: salary records are superseded, never deleted, and an allowance
+        // that was paid is history.
+        modelBuilder.Entity<EmployeeSalaryAllowance>(entity =>
+        {
+            entity.ToTable("employee_salary_allowances", t =>
+            {
+                t.HasCheckConstraint("ck_employee_salary_allowances__basis", "basis IN ('Amount','PercentOfBasic')");
+                t.HasCheckConstraint("ck_employee_salary_allowances__rate_pair", "(basis = 'PercentOfBasic') = (rate IS NOT NULL)");
+                t.HasCheckConstraint("ck_employee_salary_allowances__rate_range", "rate IS NULL OR (rate > 0 AND rate <= 1)");
+                t.HasCheckConstraint("ck_employee_salary_allowances__amount_positive", "amount > 0");
+            });
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Code).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Basis).HasMaxLength(14).IsRequired();
+            entity.Property(x => x.Rate).HasPrecision(7, 4);
+            entity.Property(x => x.Amount).HasPrecision(14, 2);
+            // Serves the run (all allowances of the salary records in force) and keeps one line per allowance per salary record.
+            entity.HasIndex(x => new { x.TenantId, x.SalaryStructureId, x.Code }).IsUnique();
+            entity.HasOne<EmployeeSalaryStructure>().WithMany().HasForeignKey(x => new { x.TenantId, x.SalaryStructureId })
+                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        });
+
         // ── NEW employee_entitlements (rev 8.3 §2.2) ─────────────────────────────────────────────────
         modelBuilder.Entity<EmployeeEntitlement>(entity =>
         {

@@ -15,8 +15,14 @@ import {
 import { employeesApi } from '../../api/employees';
 import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
 import { workEmailLocalProblem, workEmailProblemKey } from '../../lib/employeeAccess';
+import { linesFromWire, decodeValue, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 import type { CostCentreDecision, EditCostCentrePatch } from '../../lib/employeeCostCentre';
 import {
+  NO_REDUCTION, consentReferenceProblem, proposalReduction, reductionBlock, reductionRefusal, type ReductionRefusal,
+} from '../../lib/salaryReduction';
+import {
+  ALLOWANCES_KEY,
+  REDUCTION_REFERENCE_KEY,
   buildEmployeeEditChanges,
   buildEmployeeEditSnapshot,
   buildSalaryBreakdownChange,
@@ -47,12 +53,21 @@ export function employeeEditStep(field: EmployeeEditField): number {
   return 0;
 }
 
+/**
+ * The monthly cash allowances: tracked in the draft like any salary field (so a change counts as a salary change, awaits approval and
+ * blocks navigation), but drawn by SalaryAllowancesEditor rather than as an input, hence hidden from the generic field list.
+ */
+const ALLOWANCES_FIELD: EmployeeEditField = { key: ALLOWANCES_KEY, label: 'Other monthly allowances', section: 'Salary', sensitive: true, hidden: true };
+
+/** The employee's written agreement to a pay reduction: tracked in the draft, drawn by SalaryReductionNotice, and only when the proposal lowers the pay. */
+const REDUCTION_REFERENCE_FIELD: EmployeeEditField = { key: REDUCTION_REFERENCE_KEY, label: 'Employee’s written agreement reference', section: 'Salary', sensitive: true, hidden: true };
+
 function fieldsForEmployee(employee: EmployeeDetail, catalog: ResolvedFieldCatalog, canSeeSensitive: boolean) {
   const country = normalizeCountryCode(employee.countryCode);
   const base = editFieldsForCountry(catalog, country);
   const withSalary = Object.prototype.hasOwnProperty.call(employee, 'salaryBreakdown')
     && (employee.salaryBreakdown != null || Number(employee.salary ?? 0) <= 0)
-    ? [...base.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS]
+    ? [...base.filter(field => field.key !== 'salary'), ...SALARY_BREAKDOWN_EDIT_FIELDS, ALLOWANCES_FIELD, REDUCTION_REFERENCE_FIELD]
     : base;
   return withSalary.filter(field => canSeeSensitive || (!field.sensitive && !MASKED_KEYS.has(field.key) && !field.key.startsWith('salaryBreakdown.')));
 }
@@ -95,6 +110,7 @@ export function useEmployeeEditDraft({
   initialStep,
   onSaved,
   formatValue,
+  describeAllowanceChange,
 }: {
   employee: EmployeeDetail;
   canWrite: boolean;
@@ -103,6 +119,8 @@ export function useEmployeeEditDraft({
   onSaved(status: number): Promise<void> | void;
   /** How the review shows a stored value — e.g. a reference-list code as its label in the reader's language. */
   formatValue?: (key: string, value: string) => string;
+  /** The review's words for a change to the monthly allowances ("From … to …"), in the reader's language. */
+  describeAllowanceChange?: (before: readonly AllowanceDraftLine[], after: readonly AllowanceDraftLine[], basic: number | undefined) => string;
 }) {
   const [catalog, setCatalog] = useState<ResolvedFieldCatalog>(LOCAL_FIELD_CATALOG);
   const fields = useMemo(() => fieldsForEmployee(employee, catalog, canSeeSensitive), [employee, catalog, canSeeSensitive]);
@@ -112,6 +130,12 @@ export function useEmployeeEditDraft({
   const [step, setStepState] = useState(initialStep);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
+  // Show each allowance line's own problem once a save or a step change was refused over them.
+  const [allowanceProblemsShown, setAllowanceProblemsShown] = useState(false);
+  // A pay reduction needs the employee's written agreement reference: shown as a problem once a save was refused over it.
+  const [referenceProblemShown, setReferenceProblemShown] = useState(false);
+  const [serverReduction, setServerReduction] = useState<ReductionRefusal | null>(null);
+  const [referenceFocus, setReferenceFocus] = useState(0);
   const [costCentreIntent, setCostCentreIntentState] = useState<CostCentreIntent>(NO_INTENT);
 
   useEffect(() => {
@@ -134,10 +158,36 @@ export function useEmployeeEditDraft({
   const intentDirty = costCentreIntent.choice !== undefined || costCentreIntent.decision !== undefined || costCentreIntent.reason !== '';
   const dirty = dirtyKeys.length > 0 || intentDirty;
 
+  // Whether the proposal lowers the pay against the record in force (what the profile shows now). A first package waiting for Finance is not in force.
+  const salaryTouched = changedKeys.some(key => key.startsWith('salaryBreakdown.') && key !== REDUCTION_REFERENCE_KEY);
+  const allowanceText = form[ALLOWANCES_KEY];
+  const reduction = useMemo(() => {
+    const record = employee.salaryBreakdown;
+    if (!salaryTouched || !record || employee.salaryApprovalState === 'Pending') return NO_REDUCTION;
+    const number = (key: string) => Number((form[`salaryBreakdown.${key}`] ?? '').trim()) || 0;
+    return proposalReduction(
+      { basicSalary: record.basicSalary ?? 0, housingAllowance: record.housingAllowance ?? 0, transportAllowance: record.transportAllowance ?? 0,
+        foodAllowance: record.foodAllowance ?? 0, mobileAllowance: record.mobileAllowance ?? 0, otherAllowance: record.otherAllowance ?? 0, allowances: record.allowances },
+      { basicSalary: number('basicSalary'), housingAllowance: number('housingAllowance'), transportAllowance: number('transportAllowance'),
+        foodAllowance: number('foodAllowance'), mobileAllowance: number('mobileAllowance'), otherAllowance: number('otherAllowance') },
+      decodeValue(allowanceText),
+    );
+  }, [employee.salaryBreakdown, employee.salaryApprovalState, salaryTouched, form, allowanceText]);
+  const lowersPay = reduction.isReduction || serverReduction?.kind === 'required';
+  const reductionItems = reduction.isReduction ? reduction.items : serverReduction?.items ?? [];
+  const reference = form[REDUCTION_REFERENCE_KEY] ?? '';
+  // A reference typed for a proposal that no longer lowers the pay is not sent and does not count as a change.
+  useEffect(() => {
+    if (!lowersPay && reference !== '') setForm(current => ({ ...current, [REDUCTION_REFERENCE_KEY]: '' }));
+  }, [lowersPay, reference]);
+
   const discard = useCallback(() => {
     setForm({ ...original });
     setCostCentreIntentState(NO_INTENT);
     setNotice('');
+    setAllowanceProblemsShown(false);
+    setReferenceProblemShown(false);
+    setServerReduction(null);
   }, [original]);
 
   const setCostCentreIntent = useCallback((next: Partial<CostCentreIntent>) => {
@@ -176,11 +226,15 @@ export function useEmployeeEditDraft({
         }
       } catch (error) {
         setNotice(error instanceof Error ? error.message : 'Review the salary values and try again.');
+        if (decodeValue(form[ALLOWANCES_KEY]) !== null) setAllowanceProblemsShown(true);
         return false;
       }
+      // Lowering the pay needs the employee's written agreement: said on this step, where the field is.
+      const blocked = reductionBlock({ isReduction: lowersPay }, reference);
+      if (blocked) { setNotice(blocked); setReferenceProblemShown(true); setReferenceFocus(n => n + 1); return false; }
     }
     return true;
-  }, [availableFields, changedKeys, form, unavailableKeys.length]);
+  }, [availableFields, changedKeys, form, lowersPay, reference, unavailableKeys.length]);
 
   const setStep = useCallback((next: number) => {
     if (saving) return;
@@ -200,6 +254,7 @@ export function useEmployeeEditDraft({
       changes = buildEmployeeEditChanges(form, availableFields, changedKeys);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Review the changed values and try again.');
+      if (decodeValue(form[ALLOWANCES_KEY]) !== null) setAllowanceProblemsShown(true);
       return;
     }
     const salaryChanged = changedKeys.some(key => key.startsWith('salaryBreakdown.'));
@@ -218,9 +273,17 @@ export function useEmployeeEditDraft({
       setCostCentreIntentState(NO_INTENT);
       await onSaved(response.status);
     } catch (error) {
-      const target = costCentre?.onError?.(error) ?? null;
-      if (target !== null) setStepState(target);
-      else setNotice(errorMessage(error));
+      const reduced = reductionRefusal(error);
+      if (reduced) {
+        // The server judged it a reduction, or refused the reference: back to the Salary step, where the field is.
+        if (reduced.kind === 'required') setServerReduction(reduced);
+        setReferenceProblemShown(true); setReferenceFocus(n => n + 1); setStepState(3);
+        setNotice(reduced.message || 'Lowering an employee’s pay needs their written agreement; enter its reference.');
+      } else {
+        const target = costCentre?.onError?.(error) ?? null;
+        if (target !== null) setStepState(target);
+        else setNotice(errorMessage(error));
+      }
     } finally {
       setSaving(false);
     }
@@ -231,12 +294,25 @@ export function useEmployeeEditDraft({
     return (value && formatValue ? formatValue(field.key, value) : value) || 'Not provided';
   }, [form, formatValue, original]);
 
+  // What the allowances are on the record now (what untouched means), and what the person has edited them to.
+  const allowanceBaseline = useMemo(() => linesFromWire(employee.salaryBreakdown?.allowances), [employee.salaryBreakdown]);
+  const allowanceEdit = decodeValue(form[ALLOWANCES_KEY]);
+  const allowanceRows = (): Array<[string, string]> => {
+    if (!changedKeys.includes(ALLOWANCES_KEY) || !allowanceEdit || !describeAllowanceChange) return [];
+    const basic = Number((form['salaryBreakdown.basicSalary'] ?? '').trim());
+    return [['Other monthly allowances · Approval', describeAllowanceChange(allowanceBaseline, allowanceEdit, Number.isFinite(basic) && basic > 0 ? basic : undefined)]];
+  };
+
   const reviewSections = EMPLOYEE_EDIT_STEP_LABELS.slice(0, 5).map((title, index) => ({
     title,
-    rows: availableFields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => [
-      field.sensitive && changedKeys.includes(field.key) ? `${field.label} · Approval` : field.label,
-      changedKeys.includes(field.key) ? `From ${displayValue(field, true)} to ${displayValue(field)}` : displayValue(field),
-    ] as [string, string]),
+    rows: [
+      ...availableFields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => [
+        field.sensitive && changedKeys.includes(field.key) ? `${field.label} · Approval` : field.label,
+        changedKeys.includes(field.key) ? `From ${displayValue(field, true)} to ${displayValue(field)}` : displayValue(field),
+      ] as [string, string]),
+      ...(index === 3 ? allowanceRows() : []),
+      ...(index === 3 && lowersPay ? [['Employee’s written agreement reference', reference] as [string, string]] : []),
+    ],
   }));
 
   return {
@@ -254,6 +330,17 @@ export function useEmployeeEditDraft({
     setCostCentreIntent,
     salaryPackageChanged: changedKeys.some(key => key.startsWith('salaryBreakdown.')),
     salaryEffectiveDate: form['salaryBreakdown.effectiveDate'] ?? '',
+    allowanceBaseline,
+    allowanceEdit,
+    allowanceProblemsShown,
+    /** The pay reduction this proposal is (against the record in force), and what the reference field needs. */
+    reduction,
+    lowersPay,
+    reductionItems,
+    reference,
+    referenceProblem: !referenceProblemShown ? null
+      : lowersPay && !reference.trim() ? 'Enter the employee’s written agreement reference before saving.' : consentReferenceProblem(reference),
+    referenceFocus,
     setField,
     setStep,
     save,

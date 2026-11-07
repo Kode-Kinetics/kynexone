@@ -129,6 +129,7 @@ export function AppLayout({ children, theme, onToggleTheme }: AppLayoutProps) {
       const navMatch = commandNavigationItems.find((nav) => nav.path === item.path);
       // A feature-flagged screen (e.g. Release A, off unless enabled) is offered only when its flag is on.
       if (navMatch?.requiredFeatureKey && !isFeatureEnabled(navMatch.requiredFeatureKey)) return false;
+      if (navMatch?.hiddenWhenFeatureKey && isFeatureEnabled(navMatch.hiddenWhenFeatureKey)) return false;
       if (navMatch?.requiresSetupSection && !canOpenSetup) return false;
       if (!navMatch?.requiredPermissions?.length) return true;
       // Any one of them, as the sidebar, ProtectedRoute and the page gates read the same list.

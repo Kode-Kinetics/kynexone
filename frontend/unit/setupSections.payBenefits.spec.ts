@@ -10,7 +10,8 @@ import { SETUP_MODULE_SECTIONS, moduleSectionAvailable, type SetupModuleAccess }
 const persona = (roles: string[], permissions: string[]): SetupModuleAccess => ({
   hasPermission: key => permissions.includes(key),
   hasRole: role => roles.includes(role),
-  isFeatureEnabled: () => true,
+  // A tenant without Release A: with it on, Benefit plans is retired in favour of Benefits by grade (setupConsolidation.spec).
+  isFeatureEnabled: key => key !== 'release_a',
   verdictForPath: () => ({ allowed: true }),
   flagStatus: 'ready',
 });

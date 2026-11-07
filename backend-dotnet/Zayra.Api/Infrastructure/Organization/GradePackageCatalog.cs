@@ -48,6 +48,9 @@ public static class GradePackageCatalog
     /// <summary>True when a catalogue row may be used as a grade package line (see the class summary).</summary>
     public static bool IsPackageComponent(PayComponent c) =>
         c.IsActive && !c.IsDeleted && c.IsOffered && !c.IsStatutory && !c.IsFamily && string.IsNullOrEmpty(c.ProviderKey)
+        // A customer-defined cash allowance (ALW_*) is a grade-package definition too, but its money is paid only from an employee's
+        // approved salary lines; this legacy editor would carry it into the salary columns (OTHER_ALLOWANCES) with no approval.
+        && !Infrastructure.Entitlements.EntitlementComponentRules.IsAllowance(c.Code)
         && (c.CalcMethod == PayComponentCalcMethods.GradePackage && Types.Contains(c.ComponentType)
             || c.CalcMethod == PayComponentCalcMethods.StructureField && c.StructureField is { } field && SalaryColumnFields.Contains(field)
                && c.ComponentType is PayComponentTypes.Earning or PayComponentTypes.Deduction);

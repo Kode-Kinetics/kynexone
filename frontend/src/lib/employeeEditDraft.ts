@@ -1,7 +1,21 @@
 import type { EmployeeDetail, EmployeeSalaryBreakdownRequest } from '../api/employees';
 import type { EmployeeEditField, ResolvedFieldCatalog } from '../api/employeeFieldCatalog';
 
+import { allowanceProblems, decodeValue, requestLines, totalMonthly } from './salaryAllowances';
+import { consentReferenceProblem } from './salaryReduction';
+
 export type EmployeeEditDraft = Record<string, string>;
+
+/**
+ * The monthly cash allowances ride in the same draft as the other salary fields, as text: '' while the person has not touched them
+ * (nothing is sent, so the server carries the current lines forward), otherwise the rows as JSON (lib/salaryAllowances encodeValue).
+ */
+export const ALLOWANCES_KEY = 'salaryBreakdown.allowances';
+/**
+ * The employee's written agreement to a pay reduction rides in the same draft, as text: '' until the proposal lowers the pay. It is sent only
+ * with a salary package (`salaryBreakdown.reductionConsentReference`), and the draft clears it when the proposal no longer lowers the pay.
+ */
+export const REDUCTION_REFERENCE_KEY = 'salaryBreakdown.reductionConsentReference';
 export type EmployeeEditChanges = Record<string, string | number | null | EmployeeSalaryBreakdownRequest>;
 
 /** Only these flat update keys are stored exclusively on the payroll profile. */
@@ -24,6 +38,7 @@ export function buildEmployeeEditSnapshot(
   const snapshot: EmployeeEditDraft = {};
 
   for (const field of fields) {
+    if (field.key === ALLOWANCES_KEY || field.key === REDUCTION_REFERENCE_KEY) { snapshot[field.key] = ''; continue; }
     // D3: the cached `costCenter` string is written inconsistently by the server; the resolution is what payroll costs to.
     let raw = field.key === 'costCenter' ? employee.costCentreResolution?.code ?? '' : source[field.key];
     if (field.key.startsWith('salaryBreakdown.')) {
@@ -105,11 +120,23 @@ export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSal
     salary[key] = number;
   }
   if (!salary.basicSalary || salary.basicSalary <= 0) throw new Error('Basic salary must be greater than zero.');
-  const gross = amounts.filter(key => key !== 'fixedDeduction').reduce((total, key) => total + (salary[key] ?? 0), 0);
+  // Untouched allowances stay out of the request, so the server carries the current lines forward; touched ones go as exactly the lines shown.
+  const allowances = decodeValue(form[ALLOWANCES_KEY]);
+  if (allowances && Object.keys(allowanceProblems(allowances, salary.basicSalary)).length > 0) throw new Error('Fix the allowance lines that show a message before saving.');
+  const gross = amounts.filter(key => key !== 'fixedDeduction').reduce((total, key) => total + (salary[key] ?? 0), 0)
+    + (allowances ? totalMonthly(allowances, salary.basicSalary) : 0);
   if ((salary.fixedDeduction ?? 0) > gross) throw new Error('Fixed deduction cannot exceed the gross salary.');
+  // Only a reduction needs the reference; the draft clears it otherwise, and the server ignores it when the pay does not go down.
+  const consent = (form[REDUCTION_REFERENCE_KEY] ?? '').trim();
+  const consentProblem = consentReferenceProblem(consent);
+  if (consentProblem) throw new Error(consentProblem);
   const date = value('effectiveDate');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) throw new Error('Choose a valid salary effective date.');
   if (!/^[A-Z]{3}$/.test(value('currency'))) throw new Error('Choose a salary currency.');
   if (value('salaryStructureCode').length > 80) throw new Error('Salary structure code must be 80 characters or fewer.');
-  return { ...salary, currency: value('currency'), effectiveDate: date, salaryStructureCode: value('salaryStructureCode') };
+  return {
+    ...salary, currency: value('currency'), effectiveDate: date, salaryStructureCode: value('salaryStructureCode'),
+    ...(allowances ? { allowances: requestLines(allowances) } : {}),
+    ...(consent ? { reductionConsentReference: consent } : {}),
+  };
 }

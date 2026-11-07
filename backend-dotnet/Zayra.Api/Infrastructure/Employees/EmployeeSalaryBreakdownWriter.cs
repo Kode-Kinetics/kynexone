@@ -55,6 +55,12 @@ public static class EmployeeSalaryBreakdownWriter
                                             join activeStructure in db.SalaryStructures on activeRow.SalaryStructureId equals activeStructure.Id
                                             where activeRow.TenantId == employee.TenantId && activeRow.EmployeeId == employee.Id && activeRow.IsActive
                                             select activeStructure.Code).Distinct().ToListAsync(cancellationToken);
+        // The customer-defined monthly cash allowances the new record carries: the lines the request states, or — when it does not mention
+        // allowances — the current record's, carried forward (read BEFORE the replaced row is switched off, so a same-date record's own lines
+        // are what is carried). A change of basic never drops an allowance; an explicit empty list removes them.
+        var allowanceLines = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ResolveForProposalAsync(
+            db, employee.TenantId.Value, employee.Id, effectiveDate, salary.BasicSalary ?? 0m, request?.Allowances, cancellationToken, slotsGross: GrossSalary(salary));
+        if (allowanceLines.Problem is { } allowanceProblem) throw new InvalidOperationException(allowanceProblem.Message);
         foreach (var prior in replaced) prior.IsActive = false;
 
         structure ??= await CreateDefaultStructureAsync(db, employee, grade, request, structureCode, effectiveDate, releaseA, components, context, cancellationToken);
@@ -75,6 +81,7 @@ public static class EmployeeSalaryBreakdownWriter
             CreatedBy = context.UserId
         };
         db.EmployeeSalaryStructures.Add(assignment);
+        db.EmployeeSalaryAllowances.AddRange(Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.RowsFor(employee.TenantId.Value, assignment.Id, allowanceLines.Lines));
         employee.Salary = GrossSalary(salary);
         employee.PayrollProfileCode = string.IsNullOrWhiteSpace(employee.PayrollProfileCode) ? structure.Code : employee.PayrollProfileCode;
         await MirrorStructureReferenceAsync(db, employee, structure.Code, previousStructureCodes, cancellationToken);
@@ -100,6 +107,20 @@ public static class EmployeeSalaryBreakdownWriter
         if (string.IsNullOrWhiteSpace(structureCode)) structureCode = DefaultStructureCode(grade);
         var structure = await ResolveStructureAsync(db, employee, grade, structureCode, cancellationToken)
                         ?? await CreateDefaultStructureAsync(db, employee, grade, request, structureCode, effectiveDate, releaseA, components, context, cancellationToken);
+        // The first package's allowance lines: as stated (validated now, so a bad line is refused when it is entered, not at approval). Not mentioned
+        // stages none: nothing is carried from a record that does not exist yet, and Finance's approval carries whatever is in force by then.
+        string? allowancesJson = null;
+        if (request?.Allowances is not null)
+        {
+            // Naming an allowance takes the tenant lock a remove of it holds (the caller's transaction, before the lines are checked against the live
+            // definitions), so the allowance cannot be removed between this check and the commit of the staged package.
+            if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(request.Allowances))
+                await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
+            var (resolvedLines, problem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
+                db, employee.TenantId.Value, request.Allowances, salary.BasicSalary ?? 0m, cancellationToken, GrossSalary(salary));
+            if (problem is not null) throw new InvalidOperationException(problem.Message);
+            allowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(resolvedLines);
+        }
         var makerName = context.UserId is Guid maker
             ? await db.Users.AsNoTracking().Where(u => u.TenantId == employee.TenantId && u.Id == maker).Select(u => u.FullName).FirstOrDefaultAsync(cancellationToken) ?? string.Empty
             : string.Empty;
@@ -112,7 +133,7 @@ public static class EmployeeSalaryBreakdownWriter
             FoodAllowance = salary.FoodAllowance ?? 0m, MobileAllowance = salary.MobileAllowance ?? 0m, OtherAllowance = salary.OtherAllowance ?? 0m,
             FixedDeduction = salary.FixedDeduction ?? 0m, EffectiveDate = effectiveDate,
             Currency = Clean(request?.Currency) is { Length: > 0 } currency ? currency.ToUpperInvariant() : structure.Currency,
-            PreviousBasicSalary = null, RequestedByUserId = context.UserId, RequestedByName = makerName,
+            PreviousBasicSalary = null, AllowancesJson = allowancesJson, RequestedByUserId = context.UserId, RequestedByName = makerName,
         };
         // A draft saved again: the same figures keep the pending request (no duplicate); different figures replace it, so Finance only
         // ever decides the latest proposal. The replacing writer becomes the maker, so they can never approve it.
@@ -121,10 +142,31 @@ public static class EmployeeSalaryBreakdownWriter
             .Where(x => x.EmployeeId == employee.Id && x.Status == SalaryChangeRequest.Pending
                 && (x.Source == SalaryChangeSources.NewHire || x.Source == SalaryChangeSources.EmployeeImport))
             .ToListAsync(cancellationToken);
+        // A draft saved again WITHOUT stating allowances keeps the lines the pending package already carries (a percentage re-worked on the
+        // new basic): re-saving the form must not silently drop an allowance. An explicit list, even an empty one, is the writer's own.
+        var carriedFrom = request?.Allowances is null
+            ? pending.Where(x => x.AllowancesJson != null).OrderByDescending(x => x.RequestedAtUtc).FirstOrDefault()
+            : null;
+        // Corrupt stored lines can't be carried (nor silently dropped): refuse in words; stating the allowances again replaces them.
+        if (carriedFrom is not null && !Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.TryDeserialize(carriedFrom.AllowancesJson, out _))
+            throw new InvalidOperationException(
+                "The monthly allowances on this employee's pending salary can't be read, so they can't be kept. Enter the allowances again and save.");
+        if (carriedFrom is not null
+            && Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Deserialize(carriedFrom.AllowancesJson) is { } carriedLines)
+        {
+            var asStated = carriedLines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
+            if (Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.NamesAny(asStated))
+                await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.LockForStagingAsync(db, employee.TenantId.Value, cancellationToken);
+            var (keptLines, keptProblem) = await Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.ValidateAsync(
+                db, employee.TenantId.Value, asStated, change.BasicSalary, cancellationToken, GrossSalary(salary));
+            if (keptProblem is not null) throw new InvalidOperationException(keptProblem.Message);
+            change.AllowancesJson = Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.Serialize(keptLines);
+        }
         var same = pending.FirstOrDefault(x => x.SalaryStructureId == change.SalaryStructureId && x.BasicSalary == change.BasicSalary
             && x.HousingAllowance == change.HousingAllowance && x.TransportAllowance == change.TransportAllowance && x.FoodAllowance == change.FoodAllowance
             && x.MobileAllowance == change.MobileAllowance && x.OtherAllowance == change.OtherAllowance && x.FixedDeduction == change.FixedDeduction
-            && x.EffectiveDate == change.EffectiveDate && string.Equals(x.Currency, change.Currency, StringComparison.Ordinal));
+            && x.EffectiveDate == change.EffectiveDate && string.Equals(x.Currency, change.Currency, StringComparison.Ordinal)
+            && Zayra.Api.Infrastructure.Payroll.SalaryAllowanceLines.SameStaged(x.AllowancesJson, change.AllowancesJson));
         if (same is not null) return same;
         foreach (var old in pending)
         {
