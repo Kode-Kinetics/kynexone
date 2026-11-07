@@ -8,16 +8,20 @@ import { ALL_PERMISSIONS, boot, type Persona } from '../setup-consolidation/fixt
  */
 const reader: Persona = { roles: ['HR Manager'], permissions: [...ALL_PERMISSIONS, 'entitlements.read'] };
 const noEntitlements: Persona = { roles: ['HR Manager'], permissions: ALL_PERMISSIONS.filter(p => !p.startsWith('entitlements')) };
+// A Release A tenant with no plan and no enrolment is sent straight to Benefits by grade; the enrolment desk (and its door) is
+// for a tenant that still has enrolments made before, so the fixture has one plan.
+const plan = { id: 'edu', companyId: 'fixture-company', code: 'EDU', name: 'Child Education', planType: 'Education', classification: 'Discretionary', currency: 'SAR', effectiveFrom: '2026-01-01', effectiveTo: null, requiresEnrollment: true, isActive: true, paymentPolicy: null, policyVersion: 1 };
+const mocks = { '/api/compensation/benefits/plans': [plan] };
 
 test('/benefits links to Benefits by grade for someone who can open it', async ({ page }) => {
-  await boot(page, { persona: reader, url: '/benefits' });
+  await boot(page, { persona: reader, url: '/benefits', mocks });
   const door = page.locator('[data-benefits-door]');
   await expect(door).toBeVisible({ timeout: 30_000 });
   await expect(door.getByRole('link', { name: 'Open Benefits by grade' })).toHaveAttribute('href', '/benefits/by-grade');
 });
 
 test('/benefits tells someone without entitlements.read what they cannot see and who can grant it, with no dead link', async ({ page }) => {
-  await boot(page, { persona: noEntitlements, url: '/benefits' });
+  await boot(page, { persona: noEntitlements, url: '/benefits', mocks });
   const door = page.locator('[data-benefits-door="restricted"]');
   await expect(door).toBeVisible({ timeout: 30_000 });
   await expect(door).toContainText("You can't see Benefits by grade");
