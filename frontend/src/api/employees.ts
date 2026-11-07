@@ -818,6 +818,9 @@ export const employeesApi = {
       // (one page each) and merged by id — enough for a picker, not for a paged list.
       status?: string | readonly string[];
       department?: string;
+      /** Exact branch name (the list's branch column) and exact job title. */
+      branch?: string;
+      designation?: string;
       // Server-side readiness worklist filter (the "Needs info" deep-link). `readiness` ∈
       // Blocked | NeedsAttention | NotReady | Ready. `gapType`/`importBatchId` narrow to a
       // specific typed gap from a specific import batch (e.g. link:manager from batch X).

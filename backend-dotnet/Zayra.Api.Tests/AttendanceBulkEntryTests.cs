@@ -55,6 +55,37 @@ public sealed class AttendanceBulkEntryTests
         k.Events().Should().ContainSingle().Which.PunchDirection.Should().Be("In");
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task WithNoInTime_OnlyTheOutPunchIsCreated_OnThatDay(string? inTime)
+    {
+        // The everyday single-person fix: the employee forgot to punch out.
+        var k = await CreateAsync();
+
+        var result = await k.Service().BulkEntryAsync(k.TenantId, Entry(new[] { k.Report.Id }, Wednesday, Wednesday, inTime: inTime, outTime: "17:00"), k.Authority(), k.Context(), default);
+
+        (result.Requested, result.Created, result.Failed).Should().Be((1, 1, 0));
+        var only = k.Events().Should().ContainSingle().Which;
+        only.PunchDirection.Should().Be("Out");
+        only.PunchTimestampUtc.Should().Be(new DateTime(2026, 6, 10, 14, 0, 0, DateTimeKind.Utc), "17:00 Riyadh on the same day: with no in time there is no overnight to infer");
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "")]
+    [InlineData(" ", " ")]
+    public async Task NeitherAnInNorAnOutTime_IsA400_AndNothingIsWritten(string? inTime, string? outTime)
+    {
+        var k = await CreateAsync();
+
+        var result = await k.Controller().BulkEntry(Entry(new[] { k.Report.Id }, Wednesday, Wednesday, inTime, outTime), default);
+
+        JsonSerializer.Serialize(Assert.IsType<BadRequestObjectResult>(result.Result).Value).Should().Contain("in time or an out time");
+        (await k.Db.AttendanceRawEvents.CountAsync()).Should().Be(0);
+    }
+
     [Fact]
     public async Task AnOutTimeBeforeTheInTime_IsTheNextDay_AnOvernightShift()
     {
@@ -267,9 +298,8 @@ public sealed class AttendanceBulkEntryTests
     [Theory]
     [InlineData("25:00", "17:00")]
     [InlineData("8am", "17:00")]
-    [InlineData("", "17:00")]
-    [InlineData(null, "17:00")]
     [InlineData("08:00", "five")]
+    [InlineData(null, "five")]
     public async Task AnUnreadableTime_IsA400(string? inTime, string? outTime)
     {
         var k = await CreateAsync();

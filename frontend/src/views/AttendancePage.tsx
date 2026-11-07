@@ -5,7 +5,6 @@ import {
   Activity,
   AlertTriangle,
   Lightbulb,
-  CalendarClock,
   CheckCircle2,
   Clock,
   Database,
@@ -31,7 +30,7 @@ import { employeesApi } from '../api/employees';
 import { SelfieViewerModal } from '../components/attendance/SelfieViewerModal';
 import { AttendanceExceptionsPanel } from '../components/attendance/AttendanceExceptionsPanel';
 import { AttendanceCsvImportPanel } from '../components/attendance/AttendanceCsvImportPanel';
-import { AttendanceMassEntryPanel } from '../components/attendance/AttendanceMassEntryPanel';
+import { AttendanceRecordPanel } from '../components/attendance/AttendanceRecordPanel';
 import { AttendanceProcessPanel } from '../components/attendance/AttendanceProcessPanel';
 import { useT } from '../hooks/useT';
 import { msg } from '../i18n/translations';
@@ -342,65 +341,65 @@ export function AttendancePage() {
 
       <TabPanel idPrefix="attendance" tabId={activeTab}>
       {activeTab === 'dashboard' && (
-        <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
-          <div className="space-y-5">
-            {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <Kpi label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" />
-                <Kpi label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
-                <Kpi label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" />
-                <Kpi label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
-              </div>
-            )}
+        <div className="space-y-5">
+          {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
+            // One slim strip, not four cards: the day's counts at a glance, leaving the height for recording and the records.
+            <dl aria-label={t('Attendance at a glance')} className="surface grid grid-cols-2 divide-slate-100 px-2 py-1.5 sm:grid-cols-4 sm:divide-x dark:divide-white/[0.06] rtl:sm:divide-x-reverse">
+              <KpiInline label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" />
+              <KpiInline label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
+              <KpiInline label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" />
+              <KpiInline label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
+            </dl>
+          )}
 
-            <div className={canPunch ? "grid gap-5 lg:grid-cols-[360px_1fr]" : "grid gap-5"}>
-              {canPunch && (
-<form onSubmit={submitPunch} className="surface p-4">
-                <SectionTitle icon={CalendarClock} title={t('Web / Mobile / Kiosk Punch')} subtitle={selectedEmployee ? `${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}` : t('Select an employee from live records')} />
-                <div className="mt-4 space-y-3">
-                  {canPunchForOthers && <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />}
-                  <div className="grid grid-cols-2 gap-3">
-                    <select value={punchSource} onChange={(e) => setPunchSource(e.target.value as 'web' | 'mobile' | 'kiosk')} className="select w-full" aria-label={t('Punch source')}>
-                      <option value="web">{t('Web punch')}</option>
-                      <option value="mobile">{t('Mobile punch')}</option>
-                      <option value="kiosk">{t('Kiosk/tablet punch')}</option>
-                    </select>
-                    <select value={punchDirection} onChange={(e) => setPunchDirection(e.target.value)} className="select w-full" aria-label={t('Punch direction')}>
-                      <option value="In">{directionLabel(t, 'In')}</option>
-                      <option value="Out">{directionLabel(t, 'Out')}</option>
-                      <option value="BreakIn">{directionLabel(t, 'BreakIn')}</option>
-                      <option value="BreakOut">{directionLabel(t, 'BreakOut')}</option>
-                    </select>
-                  </div>
-                  <button type="submit" disabled={saving || !punchEmployeeId || !!loadErrors.employees} className="btn-primary w-full justify-center"><Clock className="h-4 w-4" />{t('Save Punch')}</button>
-                </div>
+          <AttendanceRecordPanel
+            single={canPunch ? (
+              <form onSubmit={submitPunch} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_170px_170px_auto] lg:items-center">
+                {canPunchForOthers
+                  ? <EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} />
+                  : <p className="text-sm text-slate-600 dark:text-slate-300">{selectedEmployee ? `${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}` : t('Select an employee from live records')}</p>}
+                <select value={punchSource} onChange={(e) => setPunchSource(e.target.value as 'web' | 'mobile' | 'kiosk')} className="select w-full" aria-label={t('Punch source')}>
+                  <option value="web">{t('Web punch')}</option>
+                  <option value="mobile">{t('Mobile punch')}</option>
+                  <option value="kiosk">{t('Kiosk/tablet punch')}</option>
+                </select>
+                <select value={punchDirection} onChange={(e) => setPunchDirection(e.target.value)} className="select w-full" aria-label={t('Punch direction')}>
+                  <option value="In">{directionLabel(t, 'In')}</option>
+                  <option value="Out">{directionLabel(t, 'Out')}</option>
+                  <option value="BreakIn">{directionLabel(t, 'BreakIn')}</option>
+                  <option value="BreakOut">{directionLabel(t, 'BreakOut')}</option>
+                </select>
+                <button type="submit" disabled={saving || !punchEmployeeId || !!loadErrors.employees} className="btn-primary justify-center"><Clock className="h-4 w-4" />{t('Save Punch')}</button>
               </form>
-)}
+            ) : null}
+            canMass={massEntryAllowed(hasPermission)}
+            canProcess={canProcess}
+            onRecorded={load}
+          />
 
-              {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} />}
-            </div>
-          </div>
-
-          <div className="space-y-5">
-            <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
-              {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
-                <div className="space-y-3">
-                  {deviceSync.length === 0 && <Empty text={t('No attendance devices configured yet.')} />}
-                  {deviceSync.slice(0, 6).map((device) => (
-                  <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-slate-100 p-3 dark:border-white/10">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">{device.vendor} · {device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</p>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+            {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} />}
+            <div className="space-y-5">
+              <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
+                {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
+                  <div className="space-y-3">
+                    {deviceSync.length === 0 && <Empty text={t('No attendance devices configured yet.')} />}
+                    {deviceSync.slice(0, 6).map((device) => (
+                    <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-slate-100 p-3 dark:border-white/10">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">{device.vendor} · {device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</p>
+                      </div>
+                      <StatusChip label={enumLabel(t, 'Status', device.status || 'Never')} tone={statusTone(device.status || 'Never')} dot />
                     </div>
-                    <StatusChip label={enumLabel(t, 'Status', device.status || 'Never')} tone={statusTone(device.status || 'Never')} dot />
+                    ))}
                   </div>
-                  ))}
-                </div>
-              )}
-            </Panel>
-            <Panel title={t('Exceptions')} action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}>
-              {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights.slice(0, 5)} />}
-            </Panel>
+                )}
+              </Panel>
+              <Panel title={t('Exceptions')} action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}>
+                {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights.slice(0, 5)} />}
+              </Panel>
+            </div>
           </div>
         </div>
       )}
@@ -430,7 +429,6 @@ export function AttendancePage() {
             </form>
 )}
             {canManageSources && <AttendanceCsvImportPanel onImported={load} />}
-            <AttendanceMassEntryPanel canWrite={massEntryAllowed(hasPermission)} onRecorded={load} />
           </div>
           <Panel title={t('Raw Punch Logs')} action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}>
             {rawUnavailable ? <DomainUnavailable message={rawUnavailable} /> : <RawTable rows={rawEvents} canViewSelfie={hasPermission('attendance.evidence.view')} />}
@@ -528,6 +526,18 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
         <span className={`grid h-9 w-9 place-items-center rounded-lg ${color}`}><Icon className="h-4 w-4" /></span>
       </div>
       <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">{value === 'Unavailable' ? t('Unavailable') : value}</p>
+    </div>
+  );
+}
+
+/** A count in the slim strip: icon, label and number on one line. */
+function KpiInline({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof Activity; tone: 'emerald' | 'rose' | 'amber' | 'blue' }) {
+  const color = { emerald: 'text-emeraldZ bg-emeraldZ/10', rose: 'text-rose-500 bg-rose-500/10', amber: 'text-amber-500 bg-amber-500/10', blue: 'text-sapphire bg-sapphire/10' }[tone];
+  return (
+    <div className="flex items-center gap-2.5 px-3 py-1.5">
+      <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><Icon className="h-3.5 w-3.5" aria-hidden="true" /></span>
+      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</dt>
+      <dd className="ms-auto text-lg font-semibold tabular-nums text-slate-950 dark:text-white">{value}</dd>
     </div>
   );
 }

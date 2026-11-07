@@ -72,7 +72,7 @@ public class EmployeeManagementService : IEmployeeManagementService
     public Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, int page, int pageSize, CancellationToken cancellationToken)
         => SearchAsync(tenantId, search, status, department, readiness, importBatchId, gapType, null, page, pageSize, cancellationToken);
 
-    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PagedResult<EmployeeListItemDto>> SearchAsync(Guid tenantId, string? search, string? status, string? department, string? readiness, Guid? importBatchId, string? gapType, string? access, int page, int pageSize, CancellationToken cancellationToken, bool includeSensitive = false, string? branch = null, string? designation = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -82,13 +82,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
         var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
         var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(x.Status)));
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim();
-            query = query.Where(x => x.EmployeeCode.Contains(term) || x.FullName.Contains(term) || x.EnglishName.Contains(term) || x.ArabicName.Contains(term) || x.WorkEmail.Contains(term));
-        }
+        query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);
+        query = EmployeeSearch.ApplyFilters(query, _db.Branches, branch, designation);
         // SERVER-SIDE readiness / import-gap filter — the whole dataset, so the deep-link works past page 1.
         query = EmployeeReadinessQuery.ApplyReadinessFilter(query, _db, tenantId, readiness, importBatchId, gapType);
         query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
