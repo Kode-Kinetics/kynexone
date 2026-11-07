@@ -61,6 +61,9 @@ public static class PayrollValidationEngine
     /// contributory wage (SAR 1,500 annuities / SAR 400 occupational hazards, secondary sources).</summary>
     public const string GosiBelowMinimumContributoryWage = "GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE";
 
+    /// <summary>Rule 11b — approved overtime dated before this run's period that no run has paid (Error, overridable).</summary>
+    public const string PriorPeriodOvertimeUnpaid = "OVERTIME_PRIOR_PERIOD_UNPAID";
+
     /// <summary>
     /// Warning: an attendance day this period was recomputed after payroll paid it and now differs from what was paid
     /// (an unresolved <c>PaidAttendanceChanged</c> attendance exception). Never blocks; the difference is a payroll
@@ -664,6 +667,28 @@ public static class PayrollValidationEngine
             }
         }
 
+        // ── Rule 11b: approved overtime from an EARLIER period that no run has paid ─────────────────
+        // ERROR (overridable with a written reason). The run pays only the impacts whose work date falls
+        // inside its own period, so overtime approved after that period's run locked stayed
+        // "PendingPayroll" for ever and nobody was told. The run names it and refuses to approve past it
+        // silently.
+        //
+        // The text deliberately does NOT point at a payroll adjustment: nothing moves the overtime impact out
+        // of PendingPayroll or links it to an adjustment, so paying it that way leaves the impact open to be
+        // paid again. The settlement path is the overtime record; an override is for overtime already settled
+        // outside payroll, and carries the written basis.
+        foreach (var byEmp in ctx.PriorPeriodUnpaidOvertime.GroupBy(x => x.EmployeeId))
+        {
+            empById.TryGetValue(byEmp.Key, out var otEmp);
+            var minutes = byEmp.Sum(x => x.Minutes);
+            var dates = string.Join(", ", byEmp.Select(x => x.WorkDate).Distinct().OrderBy(d => d).Select(d => d.ToString("yyyy-MM-dd")));
+            Err(PriorPeriodOvertimeUnpaid,
+                $"Employee {otEmp?.EmployeeCode ?? byEmp.Key.ToString()} has {minutes / 60m:0.00##} h of approved overtime from an " +
+                $"earlier pay period ({dates}) that no payroll run has paid. This run pays only its own period's overtime and will not pay it. " +
+                "Settle it through the overtime record. If it was already settled outside payroll, override this error with a written basis.",
+                byEmp.Key);
+        }
+
         // ── Rule 12 (POD-B2 / M2): cross-run double-pay of recurring salary ───────
         // ERROR — the only control in this codebase that looks ACROSS runs. Rule 4's DUPLICATE_EMPLOYEE
         // is within-run only, and "non-Regular runs skip recurring pay" is a convention, not a guard: one
@@ -946,6 +971,13 @@ public sealed record PayrollValidationContext(
     /// holiday is an absence and work on it is paid as an ordinary day.
     /// </summary>
     public bool? HolidayCalendarCoversPeriod { get; init; }
+
+    /// <summary>
+    /// Approved overtime impacts still <c>PendingPayroll</c> whose work date is BEFORE this run's period (Rule 11b,
+    /// <see cref="PayrollValidationEngine.PriorPeriodOvertimeUnpaid"/>). MUST be populated identically by Process and
+    /// /validate (<see cref="PriorPeriodOvertimeFinder"/>), which replaces the stored results wholesale.
+    /// </summary>
+    public IReadOnlyList<PriorPeriodOvertime> PriorPeriodUnpaidOvertime { get; init; } = Array.Empty<PriorPeriodOvertime>();
 }
 
 /// <summary>

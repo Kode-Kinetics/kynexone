@@ -2089,6 +2089,10 @@ public sealed class PayrollRunProcessor
             GosiRatesEffectiveFrom         = gosiRatesEffectiveFrom,
             HolidayCalendarCoversPeriod    = await CompanyPayrollRules.HasHolidayInPeriodAsync(
                 _db, tenantId, company?.Id, periodStart, periodEnd, cancellationToken),
+            // Rule 11b — approved overtime from an earlier period that no run has paid (the run above
+            // loads only this period's impacts, so these would otherwise stay PendingPayroll silently).
+            PriorPeriodUnpaidOvertime      = await PriorPeriodOvertimeFinder.FindAsync(
+                _db, tenantId, company.Id, employeeIdsForRun, periodStart, cancellationToken),
             // POD-B2 — multi-run-per-period facts. Written INSIDE the Process transaction, after the wipe
             // at the top of the strategy delegate, so re-processing never duplicates them.
             EmployeesAlreadyPaidRecurringThisPeriod = alreadyPaidRecurringEmpIds,
