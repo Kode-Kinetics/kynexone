@@ -156,6 +156,44 @@ export interface LeaveRequest {
   separateEventReason?: string | null;
 }
 
+/**
+ * One row of the leave approvals queue (GET /api/leave/requests/awaiting-decision): a request the viewer may
+ * decide now at whatever step it is (`kind: 'Decision'`), or a cancellation of approved leave the viewer may
+ * decide (`kind: 'Cancellation'`: approve the cancellation, or keep the leave).
+ */
+export interface LeaveAwaitingDecision {
+  id: string;
+  employeeId: number;
+  employeeName: string;
+  departmentName: string;
+  designationTitle: string;
+  leaveTypeId: string;
+  leaveTypeName: string;
+  startDate: string;
+  endDate: string;
+  totalDays: number;
+  status: string;
+  reason: string;
+  isEmergency: boolean;
+  submittedAtUtc: string | null;
+  kind: 'Decision' | 'Cancellation';
+  cancellationReason: string | null;
+  cancellationRequestedAtUtc: string | null;
+}
+
+/** A cancellation of approved leave on the leave detail: where it stands and, while pending, who holds it. */
+export interface LeaveCancellationState {
+  id: string;
+  status: 'Pending' | 'Approved' | 'Rejected' | string;
+  reason: string;
+  requestedAtUtc: string;
+  reviewedByName: string;
+  reviewNotes: string;
+  reviewedAtUtc: string | null;
+  /** The people who may decide it now (empty once decided). */
+  awaiting: string[];
+}
+
 export interface LeaveApproval {
   id: string;
   leaveRequestId: string;
@@ -415,6 +453,18 @@ export const leaveRequestsApi = {
       client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>
     client.get<LeaveRequest>(`/api/leave/requests/${id}`).then(r => r.data),
+  /** The request with its steps and, for approved leave someone asked to cancel, where that cancellation stands. */
+  detail: (id: string) =>
+    client.get<{ request: LeaveRequest; approvals: LeaveApproval[]; cancellation: LeaveCancellationState | null }>(`/api/leave/requests/${id}`).then(r => r.data),
+  /** Everything the viewer may decide now: pending requests at any step they hold, and pending cancellations. */
+  awaitingDecision: (params: { companyId?: string; branchId?: string } = {}) =>
+    client.get<LeaveAwaitingDecision[]>('/api/leave/requests/awaiting-decision', { params }).then(r => r.data),
+  /** Approve an employee's request to cancel approved leave: the leave is cancelled and its days released. */
+  approveCancellation: (id: string, notes?: string) =>
+    client.post<LeaveRequest>(`/api/leave/requests/${id}/cancel-approve`, { notes }).then(r => r.data),
+  /** Refuse an employee's request to cancel approved leave: the leave stays approved ("Keep leave"). */
+  rejectCancellation: (id: string, notes?: string) =>
+    client.post<LeaveRequest>(`/api/leave/requests/${id}/cancel-reject`, { notes }).then(r => r.data),
   create: (body: {
     employeeId: number; employeeName: string; departmentName?: string; designationTitle?: string;
     leaveTypeId: string; policyId?: string; startDate: string; endDate: string;

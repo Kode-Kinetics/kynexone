@@ -212,7 +212,9 @@ test.describe('no screen reads one oversized page as the whole list', () => {
       expect(people).toContain(call);
     }
     expect(read('src/components/DraftPlacementFix.tsx')).not.toContain('page <= 20');
-    expect(read('src/views/LeavePage.tsx')).toContain("leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter })");
+    // The leave approvals queue is the server's whole "may decide now" list (every step, plus cancellations), not
+    // one status page: it used to be listAll({ status: 'PendingManagerApproval' }) and hid every HR-step request.
+    expect(read('src/views/LeavePage.tsx')).toContain('leaveRequestsApi.awaitingDecision(groupFilter).then(all => {');
     expect(read('src/views/HrLettersPage.tsx')).toContain('hrLettersApi.allRequests({ status })');
   });
 });
