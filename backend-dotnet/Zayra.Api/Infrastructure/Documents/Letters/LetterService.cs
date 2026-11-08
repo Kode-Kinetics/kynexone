@@ -14,6 +14,17 @@ public class LetterService : ILetterService
         DocumentFonts.EnsureRegistered();
     }
 
+    /// <summary>
+    /// Width of every right-hand amount column on the payslip: room for "12,345,678.90" at 9pt.
+    ///
+    /// The amount is aligned with <c>Text(...).AlignRight()</c> (the paragraph aligns itself inside the
+    /// fixed-width cell). The previous <c>ConstantItem(70).AlignRight().Text(...)</c> aligned the cell
+    /// content AND let the paragraph keep its measured box, so QuestPDF 2025.1 shifted every amount right by
+    /// the free space of the cell a second time: "10,000.00" ended 25pt past its column and ran into the
+    /// Deductions labels, and "SAR 12,281.25" ran past the page edge and was cut off.
+    /// </summary>
+    private const float AmountColumnWidth = 80;
+
     public Task<byte[]> GeneratePayslipPdfAsync(PayslipData data, CancellationToken cancellationToken = default)
     {
         var b = data.Branding ?? new();
@@ -70,7 +81,11 @@ public class LetterService : ILetterService
                 // Arabic labels a few lines above, which previously had no font that could draw
                 // them anywhere but a developer laptop.
                 page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3)
-                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
+                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily)
+                    // No ligatures in the PDF text. Lato draws "ti" as one ligature glyph that the
+                    // embedded font subset gives no Unicode mapping, so copy, search, screen readers and
+                    // parsers read "Designation" as "Designaon" and "Deductions" as "Deducons".
+                    .DisableFontFeature(FontFeatures.StandardLigatures));
 
                 page.Header().Column(col =>
                 {
@@ -132,16 +147,16 @@ public class LetterService : ILetterService
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
                                     r.RelativeItem().Text(e.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{e.Amount:N2}");
+                                    r.ConstantItem(AmountColumnWidth).Text($"{e.Amount:N2}").AlignRight();
                                 });
                             c.Item().Background(Colors.Green.Lighten3).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(grossLabel).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{grossTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{grossTotal:N2}").AlignRight().SemiBold();
                             });
                         });
 
-                        row.ConstantItem(20);
+                        row.ConstantItem(24); // gutter between the two tables
 
                         // Deductions
                         row.RelativeItem().Column(c =>
@@ -153,12 +168,12 @@ public class LetterService : ILetterService
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
                                     r.RelativeItem().Text(d.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{d.Amount:N2}");
+                                    r.ConstantItem(AmountColumnWidth).Text($"{d.Amount:N2}").AlignRight();
                                 });
                             c.Item().Background(Colors.Red.Lighten3).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(deductTotalLbl).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{deductionTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{deductionTotal:N2}").AlignRight().SemiBold();
                             });
                         });
                     });
@@ -167,7 +182,9 @@ public class LetterService : ILetterService
                     col.Item().PaddingTop(12).Background(primaryColor).Padding(10).Row(row =>
                     {
                         row.RelativeItem().Text(netLabel).FontSize(12).Bold().FontColor(Colors.White);
-                        row.ConstantItem(120).AlignRight().Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White);
+                        // AutoItem: the figure takes the width it needs. A fixed 120pt box clipped
+                        // "SAR 12,281.25" to "SAR 12,28" (see AmountColumnWidth).
+                        row.AutoItem().Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White);
                     });
 
                     // Employer contributions — what the employer pays ON TOP of this salary (e.g. GOSI
@@ -181,12 +198,12 @@ public class LetterService : ILetterService
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
                                     r.RelativeItem().Text(ec.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{ec.Amount:N2}");
+                                    r.ConstantItem(AmountColumnWidth).Text($"{ec.Amount:N2}").AlignRight();
                                 });
                             c.Item().Background(Colors.Grey.Lighten2).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(employerTotLbl).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{employerTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{employerTotal:N2}").AlignRight().SemiBold();
                             });
                         });
                     }
@@ -198,11 +215,16 @@ public class LetterService : ILetterService
                 {
                     var footerText = !string.IsNullOrWhiteSpace(ar ? b.FooterTextAr : b.FooterTextEn)
                         ? (ar ? b.FooterTextAr : b.FooterTextEn)
-                        : "Generated by Zayra HRMS";
+                        : "Generated by KynexOne HRMS";
                     t.Span($"{footerText} — ").FontSize(7).FontColor(Colors.Grey.Medium);
                     t.Span((data.GeneratedOn ?? DateTime.UtcNow).ToString("dd MMM yyyy HH:mm") + " UTC").FontSize(7).FontColor(Colors.Grey.Medium);
                 });
             });
+        }).WithMetadata(new DocumentMetadata
+        {
+            Title = $"{payslipLabel} {monthName}",
+            Creator = "KynexOne HRMS",
+            Producer = "KynexOne HRMS",
         });
 
         return Task.FromResult(doc.GeneratePdf());
