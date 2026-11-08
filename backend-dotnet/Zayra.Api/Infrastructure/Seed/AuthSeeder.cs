@@ -244,7 +244,10 @@ public class AuthSeeder : IAuthSeeder
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
-            "payroll.rates.read", "payroll.rates.manage"
+            "payroll.rates.read", "payroll.rates.manage",
+            // Owner decision 3: the bulk payslip bundle and the bank / WPS file are produced by the roles that run the money. Existing tenants
+            // receive it once from migration 20261108052950_GrantPayrollExportToFinanceRoles (not by a boot backfill, so a removal sticks).
+            "payroll.export"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -287,7 +290,9 @@ public class AuthSeeder : IAuthSeeder
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
-            "compensation.read", "compensation.approve"
+            "compensation.read", "compensation.approve",
+            // Owner decision 3 (see Payroll Manager above): exports the bulk payslip bundle and the bank / WPS file.
+            "payroll.export"
         }), 8, true, cancellationToken);
 
         // Level 9 — Compliance Officer: compliance and contracts
