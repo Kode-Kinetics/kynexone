@@ -98,12 +98,12 @@ public class RecruitmentService : IRecruitmentService
 <body>
 <div class=""page"">
   <div class=""header"">
-    <div class=""brand"">Zayra<span>HR</span></div>
+    <div class=""brand"">KynexOne<span>HR</span></div>
     <div class=""date-block""><div>{today}</div><div>Confidential</div></div>
   </div>
   <div class=""badge"">OFFER OF EMPLOYMENT</div>
   <p>Dear <span class=""highlight"">{candidateName}</span>,</p>
-  <p>We are pleased to extend this offer of employment to you at <strong>Zayra AI Workforce</strong>. After careful consideration of your application and interviews, we are confident you will be a valuable addition to our team.</p>
+  <p>We are pleased to extend this offer of employment to you. After careful consideration of your application and interviews, we are confident you will be a valuable addition to our team.</p>
   <h2>Position Details</h2>
   <table>
     <tr><td width=""40%"">Job Title</td><td><strong>{jobTitle}</strong></td></tr>
@@ -131,7 +131,7 @@ public class RecruitmentService : IRecruitmentService
     <div class=""sig""><div class=""sig-line"">Authorized Signatory<br/>Human Resources</div></div>
     <div class=""sig""><div class=""sig-line"">Candidate Acceptance<br/>{candidateName}</div></div>
   </div>
-  <div class=""footer"">System-generated offer letter &mdash; Zayra AI Workforce &mdash; Confidential</div>
+  <div class=""footer"">System-generated offer letter &mdash; KynexOne HRMS &mdash; Confidential</div>
 </div>
 </body>
 </html>";

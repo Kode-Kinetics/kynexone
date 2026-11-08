@@ -1,3 +1,4 @@
+using Zayra.Api.Infrastructure.Documents.Letters;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
@@ -52,7 +53,7 @@ public static class InvoicePdfService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(40);
-                page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3));
+                page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3).TextLayerSafe());
 
                 // ── Header ────────────────────────────────────────────────────
                 page.Header().Column(col =>

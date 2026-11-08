@@ -76,4 +76,22 @@ public static class DocumentFonts
     /// any codepoint Lato cannot draw. Mixed "SAR 15,000 — ريال" strings resolve per-run.
     /// </summary>
     public static string[] Chain => [LatinFamily, ArabicFamily];
+
+    // KNOWN LIMITATION - the Arabic text layer. Arabic is already drawn by the embedded Noto Sans Arabic (its cmap
+    // has the Arabic block and 772 presentation forms), yet a PDF's Arabic text extracts garbled (copy / search /
+    // screen readers). Skia's PDF backend writes a per-glyph ToUnicode map built from the font's reverse cmap, so the
+    // contextual glyphs that shaping substitutes in (many initial/medial forms, ligatures) have no mapping and extract
+    // as glyph ids, and what does map comes back as presentation forms in VISUAL order, not the logical letters.
+    // Swapping the font does not change that: the repo ships no other Arabic-capable TTF (IBM Plex Sans Arabic exists
+    // only as woff2 in frontend/app/fonts, which Skia cannot load), and fonts must not be downloaded. A real fix needs
+    // per-cluster ActualText, i.e. a different PDF writer. Latin text, digits and amounts extract correctly.
+
+    /// <summary>
+    /// Every generated document's base text style goes through this. Lato draws "ti" (and "ff", "fi", "fl")
+    /// as one ligature glyph that the PDF's embedded subset gives no Unicode mapping, so copy, search, screen
+    /// readers and downstream parsers read "Designation" as "Designaon". New documents call this inside
+    /// <c>page.DefaultTextStyle(...)</c>; <c>PdfTextLayerRatchetTests</c> fails the build for one that does not.
+    /// </summary>
+    public static QuestPDF.Infrastructure.TextStyle TextLayerSafe(this QuestPDF.Infrastructure.TextStyle style)
+        => QuestPDF.Fluent.TextStyleExtensions.DisableFontFeature(style, FontFeatures.StandardLigatures);
 }

@@ -70,7 +70,7 @@ public record TemplateLetterData(
     DateTime IssuedOn
 );
 
-public record PayslipLineItem(string Name, decimal Amount, string Type);
+public record PayslipLineItem(string Name, decimal Amount, string Type, string? NameAr = null);
 
 /// <summary>
 /// The line types a payslip carries (<see cref="PayslipLineItem.Type"/> and the stored

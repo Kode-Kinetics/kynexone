@@ -14,12 +14,45 @@ public class LetterService : ILetterService
         DocumentFonts.EnsureRegistered();
     }
 
+    /// <summary>
+    /// Width of every right-hand amount column on the payslip: room for "12,345,678.90" at 9pt.
+    ///
+    /// The amount is aligned with <c>Text(...).AlignRight()</c> (the paragraph aligns itself inside the
+    /// fixed-width cell). The previous <c>ConstantItem(70).AlignRight().Text(...)</c> aligned the cell
+    /// content AND let the paragraph keep its measured box, so QuestPDF 2025.1 shifted every amount right by
+    /// the free space of the cell a second time: "10,000.00" ended 25pt past its column and ran into the
+    /// Deductions labels, and "SAR 12,281.25" ran past the page edge and was cut off.
+    /// </summary>
+    private const float AmountColumnWidth = 80;
+
+    /// <summary>Width of the NET PAY figure in its banner.</summary>
+    private const float NetColumnWidth = 170;
+
     public Task<byte[]> GeneratePayslipPdfAsync(PayslipData data, CancellationToken cancellationToken = default)
     {
         var b = data.Branding ?? new();
-        var ar = b.Locale is "ar" or "bilingual";
+        // Three variants. "ar": Arabic labels AND a mirrored (right-to-left) layout. "bilingual": the
+        // left-to-right layout with "English / Arabic" labels and both sentences. Anything else: English.
+        var ar = b.Locale == "ar";
+        var bi = b.Locale == "bilingual";
+        var rtl = ar;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
 
-        var monthName = new DateTime(data.PayYear, data.PayMonth, 1).ToString("MMMM yyyy");
+        // The page's culture must never pick the digits or month names (an Arabic-culture host would print
+        // Arabic-Indic digits); English months are invariant, Arabic months come from PayslipArabic.
+        var monthEn = new DateTime(data.PayYear, data.PayMonth, 1).ToString("MMMM yyyy", inv);
+        var monthAr = PayslipArabic.MonthYear(data.PayYear, data.PayMonth);
+        var monthName = ar ? monthAr : bi ? $"{monthEn} / {monthAr}" : monthEn;
+
+        // L: one label in the variant's language(s).
+        string L(string en, string arText) => ar ? arText : bi ? $"{en} / {arText}" : en;
+        string ItemText(PayslipLineItem i)
+        {
+            if (!ar && !bi) return i.Name;
+            var arName = PayslipArabic.ItemName(i.Name, i.NameAr);
+            return ar ? arName : string.Equals(arName, i.Name, StringComparison.Ordinal) ? i.Name : $"{i.Name} / {arName}";
+        }
+
         var earnings   = data.Items.Where(i => i.Type == PayslipLineTypes.Earning).ToList();
         // Employee deductions only. Employer contributions are an employer cost: they get their own
         // section below and are never part of the deductions total, so gross − deductions = net pay.
@@ -42,22 +75,52 @@ public class LetterService : ILetterService
         // renderer must never interpret a persisted, client-controlled key as a local path.
         var logoBytes = b.LogoBytes;
 
-        var earningsLabel   = ar ? "المستحقات"   : "EARNINGS";
-        var deductionsLabel = ar ? "الاستقطاعات" : "DEDUCTIONS";
-        var grossLabel      = ar ? "الإجمالي"    : "Gross Total";
-        var deductTotalLbl  = ar ? "إجمالي الاستقطاعات" : "Total Deductions";
-        var netLabel        = ar ? "صافي الراتب"  : "NET PAY";
-        var noDeductLbl     = ar ? "لا توجد استقطاعات" : "No deductions";
-        var employerLabel   = ar ? "مساهمات صاحب العمل (لا تُخصم من راتبك)" : "EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOUR PAY)";
-        var employerTotLbl  = ar ? "إجمالي مساهمات صاحب العمل" : "Total employer contributions";
-        var empLabel        = ar ? "الموظف"       : "Employee";
-        var codeLabel       = ar ? "الكود"        : "Code";
-        var deptLabel       = ar ? "القسم"        : "Department";
-        var desigLabel      = ar ? "المسمى"       : "Designation";
-        var periodLabel     = ar ? "فترة الراتب"  : "Pay Period";
-        var currencyLabel   = ar ? "العملة"       : "Currency";
-        var payslipLabel    = ar ? "كشف راتب"     : "Payslip";
-        var noLabel         = ar ? "رقم"          : "No";
+        var earningsLabel   = L("EARNINGS", "المستحقات");
+        var deductionsLabel = L("DEDUCTIONS", "الاستقطاعات");
+        var grossLabel      = L("Gross Total", "الإجمالي");
+        var deductTotalLbl  = L("Total Deductions", "إجمالي الاستقطاعات");
+        var netLabel        = L("NET PAY", "صافي الراتب");
+        var noDeductLbl     = L("No deductions", "لا توجد استقطاعات");
+        var employerLabel   = L("EMPLOYER CONTRIBUTIONS (NOT DEDUCTED FROM YOUR PAY)", "مساهمات صاحب العمل (لا تُخصم من راتبك)");
+        var employerTotLbl  = L("Total employer contributions", "إجمالي مساهمات صاحب العمل");
+        var empLabel        = L("Employee", "الموظف");
+        var codeLabel       = L("Code", "الكود");
+        var deptLabel       = L("Department", "القسم");
+        var desigLabel      = L("Designation", "المسمى");
+        var periodLabel     = L("Pay Period", "فترة الراتب");
+        var currencyLabel   = L("Currency", "العملة");
+        var payslipLabel    = L("Payslip", "كشف راتب");
+        var noLabel         = L("No", "رقم");
+
+        // Label and value are SEPARATE cells: in one paragraph the bidi algorithm moves the colon of an Arabic
+        // label to the wrong side of the value (":الموظف").
+        // Fixed-width label cell: QuestPDF 2025.1 collapses an AutoItem to nothing in a right-to-left row,
+        // which made every label (and the NET PAY amount) vanish from the Arabic payslip.
+        var labelWidth = ar ? 54f : 58f;
+        void Field(ColumnDescriptor col, string label, string value, bool strong = false)
+        {
+            if (bi)
+            {
+                // "English / Arabic" labels are too wide for a side-by-side cell: stack label over value.
+                col.Item().PaddingBottom(2).Column(c =>
+                {
+                    c.Item().Text(label).FontSize(7).FontColor(Colors.Grey.Darken1);
+                    var v = c.Item().Text(value);
+                    if (strong) v.SemiBold();
+                });
+                return;
+            }
+            col.Item().Row(r =>
+            {
+                var l = r.ConstantItem(labelWidth).Text($"{label}:");
+                var v = r.RelativeItem().PaddingLeft(3).PaddingRight(3).Text(value);
+                if (strong) { l.SemiBold(); v.SemiBold(); }
+            });
+        }
+
+        var generatedOn = data.GeneratedOn ?? DateTime.UtcNow;
+        string StampEn() => generatedOn.ToString("dd MMM yyyy HH:mm", inv) + " UTC";
+        string StampAr() => PayslipArabic.Stamp(generatedOn);
 
         var doc = Document.Create(container =>
         {
@@ -65,12 +128,17 @@ public class LetterService : ILetterService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(35);
+                if (rtl) page.ContentFromRightToLeft();
                 // SHARED PAYSLIP PDF — minimal change, flagged in the stream notes. The only
                 // edit is the font chain: Lato for Latin, the embedded Noto Sans Arabic for the
                 // Arabic labels a few lines above, which previously had no font that could draw
                 // them anywhere but a developer laptop.
+                // TextLayerSafe: no ligatures. Lato draws "ti" as one ligature glyph that the embedded font
+                // subset gives no Unicode mapping, so copy, search, screen readers and parsers read
+                // "Designation" as "Designaon" and "Deductions" as "Deducons".
                 page.DefaultTextStyle(s => s.FontSize(9).FontColor(Colors.Grey.Darken3)
-                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
+                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily)
+                    .TextLayerSafe());
 
                 page.Header().Column(col =>
                 {
@@ -82,20 +150,40 @@ public class LetterService : ILetterService
 
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text(data.CompanyName).FontSize(14).Bold().FontColor(primaryColor);
-                            if (!string.IsNullOrWhiteSpace(data.CompanyNameAr))
-                                c.Item().Text(data.CompanyNameAr).FontSize(11).FontColor(primaryColor);
+                            // Arabic variant leads with the Arabic company name when there is one.
+                            var primaryName = ar && !string.IsNullOrWhiteSpace(data.CompanyNameAr) ? data.CompanyNameAr : data.CompanyName;
+                            var secondaryName = ar && !string.IsNullOrWhiteSpace(data.CompanyNameAr) ? data.CompanyName : data.CompanyNameAr;
+                            c.Item().Text(primaryName).FontSize(14).Bold().FontColor(primaryColor);
+                            if (!string.IsNullOrWhiteSpace(secondaryName))
+                                c.Item().Text(secondaryName).FontSize(11).FontColor(primaryColor);
                             if (!string.IsNullOrWhiteSpace(b.HeaderTextEn))
                                 c.Item().Text(b.HeaderTextEn).FontSize(8).FontColor(Colors.Grey.Darken1);
-                            if (ar && !string.IsNullOrWhiteSpace(b.HeaderTextAr))
+                            if ((ar || bi) && !string.IsNullOrWhiteSpace(b.HeaderTextAr))
                                 c.Item().Text(b.HeaderTextAr).FontSize(8).FontColor(Colors.Grey.Darken1);
                             c.Item().Text(payslipLabel).FontSize(11).SemiBold().FontColor(Colors.Grey.Darken1);
                         });
-                        row.ConstantItem(120).AlignRight().Column(c =>
+                        if (rtl)
                         {
-                            c.Item().Text(monthName).FontSize(11).SemiBold();
-                            c.Item().Text($"{noLabel}: {data.PayslipNumber}").FontSize(8).FontColor(Colors.Grey.Medium);
-                        });
+                            // Mirrored: the period block sits on the left; its lines start at the right edge of the
+                            // block, as the English block's lines start at its left edge.
+                            row.ConstantItem(120).Column(c =>
+                            {
+                                c.Item().Text(monthName).FontSize(11).SemiBold();
+                                c.Item().Row(r =>
+                                {
+                                    r.ConstantItem(24).Text($"{noLabel}:").FontSize(8).FontColor(Colors.Grey.Medium);
+                                    r.RelativeItem().PaddingRight(3).Text(data.PayslipNumber).FontSize(8).FontColor(Colors.Grey.Medium);
+                                });
+                            });
+                        }
+                        else
+                        {
+                            row.ConstantItem(bi ? 170 : 120).AlignRight().Column(c =>
+                            {
+                                c.Item().Text(monthName).FontSize(11).SemiBold();
+                                c.Item().Text($"{noLabel}: {data.PayslipNumber}").FontSize(8).FontColor(Colors.Grey.Medium);
+                            });
+                        }
                     });
                     col.Item().PaddingVertical(6).LineHorizontal(1).LineColor(accentColor);
                 });
@@ -107,41 +195,41 @@ public class LetterService : ILetterService
                     {
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"{empLabel}: {data.EmployeeName}").SemiBold();
-                            c.Item().Text($"{codeLabel}: {data.EmployeeCode}");
+                            Field(c, empLabel, data.EmployeeName, strong: true);
+                            Field(c, codeLabel, data.EmployeeCode);
                         });
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"{deptLabel}: {data.Department}");
-                            c.Item().Text($"{desigLabel}: {data.Designation}");
+                            Field(c, deptLabel, data.Department);
+                            Field(c, desigLabel, data.Designation);
                         });
                         row.RelativeItem().Column(c =>
                         {
-                            c.Item().Text($"{periodLabel}: {monthName}");
-                            c.Item().Text($"{currencyLabel}: {data.Currency}");
+                            Field(c, periodLabel, monthName);
+                            Field(c, currencyLabel, data.Currency);
                         });
                     });
 
                     col.Item().PaddingTop(12).Row(row =>
                     {
-                        // Earnings
+                        // Earnings (first child: left in English, right when mirrored)
                         row.RelativeItem().Column(c =>
                         {
                             c.Item().Background(Colors.Green.Lighten4).Padding(6).Text(earningsLabel).Bold().FontSize(8);
                             foreach (var e in earnings)
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
-                                    r.RelativeItem().Text(e.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{e.Amount:N2}");
+                                    r.RelativeItem().Text(ItemText(e));
+                                    r.ConstantItem(AmountColumnWidth).Text($"{e.Amount:N2}").AlignEnd();
                                 });
                             c.Item().Background(Colors.Green.Lighten3).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(grossLabel).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{grossTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{grossTotal:N2}").AlignEnd().SemiBold();
                             });
                         });
 
-                        row.ConstantItem(20);
+                        row.ConstantItem(24); // gutter between the two tables
 
                         // Deductions
                         row.RelativeItem().Column(c =>
@@ -152,13 +240,13 @@ public class LetterService : ILetterService
                             foreach (var d in deductions)
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
-                                    r.RelativeItem().Text(d.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{d.Amount:N2}");
+                                    r.RelativeItem().Text(ItemText(d));
+                                    r.ConstantItem(AmountColumnWidth).Text($"{d.Amount:N2}").AlignEnd();
                                 });
                             c.Item().Background(Colors.Red.Lighten3).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(deductTotalLbl).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{deductionTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{deductionTotal:N2}").AlignEnd().SemiBold();
                             });
                         });
                     });
@@ -167,7 +255,9 @@ public class LetterService : ILetterService
                     col.Item().PaddingTop(12).Background(primaryColor).Padding(10).Row(row =>
                     {
                         row.RelativeItem().Text(netLabel).FontSize(12).Bold().FontColor(Colors.White);
-                        row.ConstantItem(120).AlignRight().Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White);
+                        // 170pt end-aligned: room for "SAR 12,345,678.90" at 13pt bold. A fixed 120pt box clipped
+                        // "SAR 12,281.25" to "SAR 12,28" (see AmountColumnWidth).
+                        row.ConstantItem(NetColumnWidth).Text($"{data.Currency} {netPay:N2}").FontSize(13).Bold().FontColor(Colors.White).AlignEnd();
                     });
 
                     // Employer contributions — what the employer pays ON TOP of this salary (e.g. GOSI
@@ -180,29 +270,55 @@ public class LetterService : ILetterService
                             foreach (var ec in employerContributions)
                                 c.Item().BorderBottom(0.5f).BorderColor(Colors.Grey.Lighten2).Padding(4).Row(r =>
                                 {
-                                    r.RelativeItem().Text(ec.Name);
-                                    r.ConstantItem(70).AlignRight().Text($"{ec.Amount:N2}");
+                                    r.RelativeItem().Text(ItemText(ec));
+                                    r.ConstantItem(AmountColumnWidth).Text($"{ec.Amount:N2}").AlignEnd();
                                 });
                             c.Item().Background(Colors.Grey.Lighten2).Padding(5).Row(r =>
                             {
                                 r.RelativeItem().Text(employerTotLbl).SemiBold();
-                                r.ConstantItem(70).AlignRight().Text($"{employerTotal:N2}").SemiBold();
+                                r.ConstantItem(AmountColumnWidth).Text($"{employerTotal:N2}").AlignEnd().SemiBold();
                             });
                         });
                     }
 
-                    col.Item().PaddingTop(20).Text("This is a system-generated payslip and is valid without a signature.").FontSize(7).FontColor(Colors.Grey.Medium).Italic();
+                    col.Item().PaddingTop(20).Column(c =>
+                    {
+                        if (!ar)
+                            c.Item().Text("This is a system-generated payslip and is valid without a signature.").FontSize(7).FontColor(Colors.Grey.Medium).Italic();
+                        if (ar || bi)
+                        {
+                            var arabicDisclaimer = c.Item().Text(PayslipArabic.Disclaimer).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                            if (bi) arabicDisclaimer.AlignRight(); // bilingual is left-to-right: the Arabic line hugs the right margin
+                        }
+                    });
                 });
 
-                page.Footer().AlignCenter().Text(t =>
+                page.Footer().Column(col =>
                 {
-                    var footerText = !string.IsNullOrWhiteSpace(ar ? b.FooterTextAr : b.FooterTextEn)
-                        ? (ar ? b.FooterTextAr : b.FooterTextEn)
-                        : "Generated by Zayra HRMS";
-                    t.Span($"{footerText} — ").FontSize(7).FontColor(Colors.Grey.Medium);
-                    t.Span((data.GeneratedOn ?? DateTime.UtcNow).ToString("dd MMM yyyy HH:mm") + " UTC").FontSize(7).FontColor(Colors.Grey.Medium);
+                    string Pick(string tenant, string fallback) => !string.IsNullOrWhiteSpace(tenant) ? tenant : fallback;
+                    if (!ar)
+                        col.Item().AlignCenter().Text(t =>
+                        {
+                            t.Span($"{Pick(b.FooterTextEn, "Generated by KynexOne HRMS")} — ").FontSize(7).FontColor(Colors.Grey.Medium);
+                            t.Span(StampEn()).FontSize(7).FontColor(Colors.Grey.Medium);
+                        });
+                    if (ar || bi)
+                    {
+                        var footerItem = col.Item();
+                        var arabicFooter = (bi ? footerItem : footerItem.AlignCenter()).Text(Pick(b.FooterTextAr, PayslipArabic.Footer)).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                        if (bi) arabicFooter.AlignRight();
+                    }
+                    if (ar)
+                        // The date is its own line: in the same paragraph as the sentence its Latin "UTC" and digits
+                        // were reordered around the Arabic month and the footer read "... — 07 UTC 09:30 2026 نوفمبر".
+                        col.Item().AlignCenter().Text(StampAr()).FontSize(7).FontColor(Colors.Grey.Medium);
                 });
             });
+        }).WithMetadata(new DocumentMetadata
+        {
+            Title = $"{(ar ? "كشف راتب" : "Payslip")} {(ar ? monthAr : monthEn)}",
+            Creator = "KynexOne HRMS",
+            Producer = "KynexOne HRMS",
         });
 
         return Task.FromResult(doc.GeneratePdf());
@@ -216,7 +332,7 @@ public class LetterService : ILetterService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(50);
-                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.5f));
+                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.5f).TextLayerSafe());
 
                 page.Header().Column(col =>
                 {
@@ -309,7 +425,7 @@ public class LetterService : ILetterService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(50);
-                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.6f));
+                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.6f).TextLayerSafe());
 
                 page.Header().Column(col =>
                 {
@@ -375,7 +491,7 @@ public class LetterService : ILetterService
             {
                 page.Size(PageSizes.A4);
                 page.Margin(50);
-                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.6f));
+                page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).LineHeight(1.6f).TextLayerSafe());
 
                 page.Header().Column(col =>
                 {
@@ -480,7 +596,8 @@ public class LetterService : ILetterService
                     .FontSize(10)
                     .LineHeight(1.5f)
                     .FontColor(Colors.Grey.Darken4)
-                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
+                    .FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily)
+                    .TextLayerSafe());
 
                 // ── Letterhead ────────────────────────────────────────────────────────
                 page.Header().Column(col =>
