@@ -26,7 +26,7 @@ import type {
   LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest, StatutoryLeaveContext,
   PublicHolidayCalendar, PublicHoliday, LeaveBlackoutDate,
   LeaveEncashmentRequest, CompOffCredit, AbsenceRecord,
-  LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard, LeaveAwaitingDecision,
+  LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard, LeaveAwaitingDecision, LeaveWaiting,
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
@@ -293,7 +293,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
     // A six-row preview beside "View all": what THIS viewer may decide now, at any step (the approvals tab's own
     // list), not just the manager step.
     leaveRequestsApi.awaitingDecision(groupFilter)
-      .then(all => { const rows = Array.isArray(all) ? all : []; setPending(rows.slice(0, 6)); setPendingTotal(rows.length); })
+      .then(all => { const rows = Array.isArray(all?.items) ? all.items : []; setPending(rows.slice(0, 6)); setPendingTotal(rows.length); })
       .catch(() => {})
       .finally(() => setPendingLoaded(true));
   }, [groupFilter.companyId, groupFilter.branchId]);
@@ -831,6 +831,55 @@ function MyRequestsTab() {
 
 // ── Approvals Tab ─────────────────────────────────────────────────────────────
 
+/**
+ * Read-only: pending leave the viewer can see but does not decide, with the step it is at and who holds it. HR
+ * Officers and Supervisors see leave without deciding it; deciders see what is waiting on someone else. No buttons.
+ */
+function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: GroupFilter; reloadKey?: number }) {
+  const { t, locale } = useLocale();
+  const [rows, setRows] = useState<LeaveWaiting[]>([]);
+  const [total, setTotal] = useState(0);
+  const [cut, setCut] = useState(false);
+  const { companyId, branchId } = groupFilter;
+  useEffect(() => {
+    leaveRequestsApi.waitingOnOthers({ companyId, branchId })
+      .then(r => { setRows(r.items); setTotal(r.total); setCut(r.truncated); })
+      .catch(() => { setRows([]); setCut(false); });
+  }, [companyId, branchId, reloadKey]);
+  if (rows.length === 0) return null;
+  const holder = (r: LeaveWaiting) =>
+    r.holderNames.length > 0 ? `${r.holderNames.join(', ')} (${r.holderRole})` : r.holderRole;
+  return (
+    <section aria-label={t('Waiting on others')} data-testid="leave-waiting-on-others" className="space-y-3 pt-2">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Waiting on others')}</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('You can see these, but someone else decides them.')}</p>
+      </div>
+      {cut && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+          {t('Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.', { shown: (1000).toLocaleString(locale), total: total.toLocaleString(locale) })}
+        </p>
+      )}
+      <ul className="surface divide-y divide-slate-100 dark:divide-white/5">
+        {rows.map(r => (
+          <li key={`${r.kind}-${r.id}`} data-testid="leave-waiting-row" className="flex flex-wrap items-start justify-between gap-3 px-5 py-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-slate-900 dark:text-white">{r.employeeName}</p>
+                <StatusBadge status={r.status} />
+              </div>
+              <p className="text-xs text-slate-500">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400" data-testid="leave-waiting-holder">
+              {r.stepNumber != null ? `${t('At step {step}', { step: r.stepNumber })} · ` : ''}{t('Waiting for {holder}', { holder: holder(r) })}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
   // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
@@ -839,6 +888,10 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   // Everything THIS viewer may decide now, from the server: requests at any step they hold (manager, HR, a
   // named person) and employees' requests to cancel approved leave. The tab used to list one status.
   const [requests, setRequests] = useState<LeaveAwaitingDecision[]>([]);
+  // How many requests are pending in the viewer's scope, and whether the server stopped reading at its cap.
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [queueCut, setQueueCut] = useState(false);
+  const { t, locale } = useLocale();
   const [loading, setLoading] = useState(true);
   const [rejectModal, setRejectModal] = useState<LeaveAwaitingDecision | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -849,13 +902,13 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const load = () => {
     setLoading(true);
     leaveRequestsApi.awaitingDecision(groupFilter).then(all => {
-      setRequests(all); setLoadError(null); setLoading(false);
+      setRequests(all.items); setQueueTotal(all.total); setQueueCut(all.truncated); setLoadError(null); setLoading(false);
       // Saudi statutory leave is decided with the employee's earlier leave of the same kind in view.
-      const decisions = all.filter(r => r.kind === 'Decision');
+      const decisions = all.items.filter(r => r.kind === 'Decision');
       if (decisions.length > 0)
         leaveRequestsApi.statutoryHistory(decisions.map(r => r.id)).then(setHistory).catch(() => setHistory({}));
       else setHistory({});
-    }).catch(e => { setRequests([]); setLoadError(e); setLoading(false); });
+    }).catch(e => { setRequests([]); setQueueCut(false); setLoadError(e); setLoading(false); });
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
   const cancellation = useLeaveCancellationDecision(load);
@@ -869,6 +922,11 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>}
+      {loadError == null && queueCut && (
+        <p role="status" data-testid="leave-queue-cut" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          {t('Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.', { shown: (1000).toLocaleString(locale), total: queueTotal.toLocaleString(locale) })}
+        </p>
+      )}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
         <LoadFailure what="Pending approvals" error={loadError} />
       ) : requests.length === 0 ? (
@@ -916,6 +974,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
           ))}
         </div>
       )}
+      <WaitingOnOthers groupFilter={groupFilter} reloadKey={requests.length} />
       {rejectModal && (
         <Modal title={`Reject Leave — ${rejectModal.employeeName}`} onClose={() => setRejectModal(null)}>
           <div className="space-y-4">

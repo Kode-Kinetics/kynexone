@@ -106,7 +106,7 @@ export function LeaveCancellationQueue() {
   const [items, setItems] = useState<LeaveAwaitingDecision[]>([]);
   const load = useCallback(() => {
     leaveRequestsApi.awaitingDecision()
-      .then(all => setItems((Array.isArray(all) ? all : []).filter(i => i.kind === 'Cancellation')))
+      .then(all => setItems((Array.isArray(all?.items) ? all.items : []).filter(i => i.kind === 'Cancellation')))
       .catch(() => setItems([]));
   }, []);
   useEffect(() => { load(); }, [load]);
