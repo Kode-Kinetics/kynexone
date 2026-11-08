@@ -397,14 +397,20 @@ test('same_scope_company_refresh_keeps_newest_response', async ({ page }) => {
   await boot(page, { area: 'organization', setting: 'branches' });
   const held: Route[] = [];
   await page.route('**/api/companies?**', route => { held.push(route); });
+  // Setup also re-reads the companies when its own inputs settle after first paint, so a read the test did not provoke can
+  // land in `held` beside the two it does (CI saw 3, a slow machine 2). Never assert an exact total: the read made for
+  // the SECOND event is the last one held, and every other held read is older than it and must lose to it.
   await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
-  await expect.poll(() => held.length).toBe(1);
+  await expect.poll(() => held.length).toBeGreaterThanOrEqual(1);
+  const heldBeforeSecond = held.length;
   await page.evaluate(() => window.dispatchEvent(new Event('kynexone:companies-changed')));
-  await expect.poll(() => held.length).toBe(2);
+  await expect.poll(() => held.length).toBeGreaterThan(heldBeforeSecond);
+  const newest = held[held.length - 1];
+  const older = held.slice(0, -1);
   const company = (name: string) => ({ items: [{ id: 'fixture-company', legalNameEn: name, countryCode: 'SAU', defaultCurrency: 'SAR', isActive: true }], total: 1 });
-  await held[1].fulfill({ json: company('Newest company name') });
+  await newest.fulfill({ json: company('Newest company name') });
   await expect(page.getByTestId('setup-studio-workspace').getByText('Newest company name', { exact: true }).first()).toBeVisible();
-  await held[0].fulfill({ json: company('Stale company name') });
+  for (const route of older) await route.fulfill({ json: company('Stale company name') });
   await page.getByRole('button', { name: 'Add Branch', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('option', { name: 'Newest company name', exact: true })).toBeAttached();
   await expect(page.getByRole('option', { name: 'Stale company name', exact: true })).toHaveCount(0);
