@@ -4440,6 +4440,8 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<PendingDocumentsPage>> PendingDocumentVerification([FromServices] IEmployeeManagementService employeeManagement,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
     {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
         var visible = await ResolveVisibleEmployeeIdsAsync(cancellationToken);
         return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken));
     }

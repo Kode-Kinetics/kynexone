@@ -1774,9 +1774,9 @@ public class PlatformController : ControllerBase
         if (tenant is null) return NotFound(new { message = "Tenant not found." });
         if (!tenant.IsActive || tenant.Slug.Contains("__deleted_", StringComparison.Ordinal))
             return Conflict(new { error = "tenant_not_active", message = "The tenant is suspended or deleted, so its companies cannot be activated." });
-        // SYSTEM CONTEXT: tenant scope intentionally bypassed (platform console); the tenant is an explicit predicate.
-        var company = await _db.Companies.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
+        // Platform console: the caller has no tenant of their own, so the company filter is dropped; the tenant is pinned by the helper.
+        var company = await ScopedBypass.TenantWide(_db.Companies, tenantId, "platform admin activates a company stuck in Draft (G-013)")
+            .FirstOrDefaultAsync(c => c.Id == companyId && !c.IsDeleted, ct);
         if (company is null) return NotFound(new { message = "Company not found." });
         if (company.ApprovalStatus != CompanyApprovalStatuses.Draft)
             return Conflict(new { error = "company_not_draft", message = "Only a company still in Draft can be activated here." });
