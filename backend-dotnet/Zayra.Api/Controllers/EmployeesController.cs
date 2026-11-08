@@ -5322,6 +5322,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeTransferDto>> RequestTransfer(int id, EmployeeTransferCreateRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await CallerIsTransferSubjectAsync(RequireTenant(), id, cancellationToken)) return TransferSubjectRefusal("request");
         // Wave A security L1: the transfer's reason is the one its approval audits the kept override with.
         if (!string.IsNullOrWhiteSpace(request.Reason) && EmployeeOrgFieldResolver.HasInvalidReasonCharacters(request.Reason))
         {
@@ -5360,14 +5361,20 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<EmployeeTransferViewDto>>> PendingTransfers(CancellationToken cancellationToken)
     {
         var tenantId = RequireTenant();
-        var open = await _db.EmployeeTransferRequests.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && OpenTransferStatuses.Contains(x.Status))
-            .OrderBy(x => x.CreatedAtUtc).Take(200).ToListAsync(cancellationToken);
         var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
+        // The caller's scope is applied BEFORE the cap, so a busy tenant's older transfers about people the caller cannot see never push theirs out.
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        var openQuery = _db.EmployeeTransferRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && OpenTransferStatuses.Contains(x.Status));
+        if (scope.AllowedEmployeeIds is { } allowed)
+            openQuery = openQuery.Where(x => allowed.Contains(x.EmployeeId));
+        var open = await openQuery.OrderBy(x => x.CreatedAtUtc).Take(200).ToListAsync(cancellationToken);
         var mine = new List<EmployeeTransferRequest>();
         foreach (var transfer in open)
             if (MayDecideTransferStep(TransferAwaitingStep(transfer.Status), transfer, callerEmployeeId)
-                && await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken))
+                && await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)
+                // A transfer about the caller is not waiting on the caller.
+                && !await CallerIsTransferSubjectAsync(tenantId, transfer.EmployeeId, cancellationToken))
                 mine.Add(transfer);
         IReadOnlyList<EmployeeTransferViewDto> views = await BuildTransferViewsAsync(mine, callerEmployeeId, cancellationToken);
         return new ActionResult<IReadOnlyList<EmployeeTransferViewDto>>(views);
@@ -5448,6 +5455,8 @@ public class EmployeesController : ControllerBase
         if (TransferAwaitingStep(transfer.Status) is null)
             return Conflict(new { message = $"Transfer is in '{transfer.Status}' status and can no longer be withdrawn." });
         if (!MayWithdrawTransfer(transfer)) return Forbid();
+        // The person who asked for it may take it back; the employee it is about may not cancel a decision on their own record.
+        if (await CallerIsTransferSubjectAsync(tenantId, transfer.EmployeeId, cancellationToken)) return TransferSubjectRefusal("withdraw");
         var reason = request.Reason?.Trim() ?? string.Empty;
         if (reason.Length > 1000) return BadRequest(new { message = "The reason can be at most 1000 characters." });
 
@@ -5477,6 +5486,7 @@ public class EmployeesController : ControllerBase
         if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != "PendingHrApproval")
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot be HR-approved." });
+        if (await CallerIsTransferSubjectAsync(tenantId, transfer.EmployeeId, cancellationToken)) return TransferSubjectRefusal("approve");
         var employee = await _db.Employees.FirstOrDefaultAsync(x => x.Id == transfer.EmployeeId && x.TenantId == tenantId, cancellationToken);
         if (employee is null) return NotFound();
 
@@ -5864,12 +5874,18 @@ public class EmployeesController : ControllerBase
         var deciderNames = deciderIds.Count == 0 ? new Dictionary<Guid, string>() : await _db.Users.AsNoTracking()
             .Where(u => u.TenantId == tenantId && deciderIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName, cancellationToken);
         var callerUserId = GetUserId();
+        // The transfers that are about the caller: their own employee, or any login linked to one of the employees.
+        var subjectTransfers = new HashSet<Guid>();
+        foreach (var subjectId in transfers.Select(x => x.EmployeeId).Distinct())
+            if (callerEmployeeId == subjectId || await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, callerUserId, subjectId, cancellationToken))
+                foreach (var about in transfers.Where(x => x.EmployeeId == subjectId)) subjectTransfers.Add(about.Id);
 
         return transfers.Select(t =>
         {
             var step = TransferAwaitingStep(t.Status);
             var holder = step switch { "CurrentManager" => NameOf(t.CurrentManagerEmployeeId), "NewManager" => NameOf(t.NewManagerEmployeeId), _ => null };
-            var canDecide = MayDecideTransferStep(step, t, callerEmployeeId);
+            var isSubject = callerEmployeeId == t.EmployeeId || subjectTransfers.Contains(t.Id);
+            var canDecide = !isSubject && MayDecideTransferStep(step, t, callerEmployeeId);
             var outcome = outcomes.FirstOrDefault(h => h.EmployeeId == t.EmployeeId && h.FieldName == $"Transfer {t.Id}");
             return new EmployeeTransferViewDto(
                 EmployeeTransferDto.Project(t),
@@ -5878,7 +5894,7 @@ public class EmployeesController : ControllerBase
                 NameOf(t.CurrentManagerEmployeeId), NameOf(t.NewManagerEmployeeId),
                 step, holder, canDecide,
                 CanReject: canDecide && callerEmployeeId != t.EmployeeId,
-                CanWithdraw: step is not null && MayWithdrawTransfer(t),
+                CanWithdraw: step is not null && !isSubject && MayWithdrawTransfer(t),
                 DecisionReason: outcome is null || string.IsNullOrWhiteSpace(outcome.Reason) ? null : outcome.Reason,
                 DecidedByName: outcome?.CreatedByUserId is Guid by && deciderNames.TryGetValue(by, out var name) ? name : null);
         }).ToList();
@@ -5939,6 +5955,17 @@ public class EmployeesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// True when the caller IS the employee the transfer is about: by the employee on their token, or by any login linked to them. The
+    /// employee a transfer is about never requests, approves, applies or withdraws it, whatever their role (strict separation of duties).
+    /// </summary>
+    private async Task<bool> CallerIsTransferSubjectAsync(Guid tenantId, int subjectEmployeeId, CancellationToken cancellationToken) =>
+        await GetCallerEmployeeId(cancellationToken) == subjectEmployeeId
+        || await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), subjectEmployeeId, cancellationToken);
+
+    private static BadRequestObjectResult TransferSubjectRefusal(string action) =>
+        new(SubjectDecisionBar.Refusal($"This transfer is about you. Someone else has to {action} it."));
+
     /// <summary>The requester, or a holder of employees.approve (who may act on any transfer in their data scope).</summary>
     private bool MayWithdrawTransfer(EmployeeTransferRequest transfer) =>
         (transfer.RequestedByUserId is Guid requester && requester == GetUserId()) || User.HasPermission("employees.approve");
@@ -5986,6 +6013,7 @@ public class EmployeesController : ControllerBase
         if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
         if (transfer.Status != expectedStatus)
             return BadRequest(new { message = $"Transfer is in '{transfer.Status}' status and cannot move to '{nextStatus}'." });
+        if (await CallerIsTransferSubjectAsync(transfer.TenantId, transfer.EmployeeId, cancellationToken)) return TransferSubjectRefusal("approve");
         // employees.approve (not a role name) is the HR bypass, so a per-user Deny on it is honoured.
         if (!User.HasPermission("employees.approve"))
         {
