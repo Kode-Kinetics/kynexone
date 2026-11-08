@@ -240,8 +240,10 @@ public sealed class EntitlementResolver : IEntitlementResolver
                 "Whether the employee's company offers each component: its own row, else the tenant row.")
             .AsNoTracking()
             .Where(x => codes.Contains(x.Code) && !x.IsDeleted && (x.CompanyId == null || x.CompanyId == companyId))
-            .Select(x => new { x.Code, x.CompanyId, x.IsOffered })
+            .Select(x => new { x.Code, x.CompanyId, x.IsOffered, x.IsActive, x.EffectiveFrom, x.EffectiveTo })
             .ToListAsync(ct);
+        // A customer-added benefit outside its effective window, or switched off, is not offered (feature benefit_definition_v1; off = as before).
+        var definitionOn = await EntitlementMatrixService.BenefitDefinitionEnabledAsync(_db, tenantId, ct);
         var loanOffer = await LoanOfferingAsync(tenantId, companyId, codes, ct);
 
         return chosen.Select(cell =>
@@ -256,6 +258,12 @@ public sealed class EntitlementResolver : IEntitlementResolver
                     .OrderByDescending(x => x.CompanyId.HasValue).FirstOrDefault();
                 // A component that can never be skipped (floors and paid wage components) is always offered.
                 offered = (rule is not null && !EntitlementComponentRules.CanBeSkipped(rule) && !rule.IsLoanFacility) || own is null || own.IsOffered;
+                if (definitionOn && EntitlementComponentRules.IsCustom(cell.PayComponentCode))
+                {
+                    var tenantRows = offerings.Where(x => x.CompanyId == null && string.Equals(x.Code, cell.PayComponentCode, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (tenantRows.Count > 0 && !tenantRows.Any(r => r.IsActive && (r.EffectiveFrom == null || r.EffectiveFrom <= asOf) && (r.EffectiveTo == null || r.EffectiveTo >= asOf)))
+                        offered = false;
+                }
             }
             return new GradeStandardLine(cell.PayComponentCode, rule?.Class ?? cell.EntitlementClass, rule?.Floor ?? PayStatutoryFloors.None,
                 offered, cell.Eligible, cell.ValueType, cell.Amount, cell.Rate, cell.MaxOutstandingAmount, cell.CoverageTier, cell.Quantity,

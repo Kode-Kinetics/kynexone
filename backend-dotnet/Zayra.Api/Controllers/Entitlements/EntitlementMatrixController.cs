@@ -98,6 +98,25 @@ public sealed class EntitlementMatrixController : ControllerBase
         this.GetTenantId() is null ? Unauthorized() : (IActionResult)Result(await matrix.CreateBenefitAsync(Actor(), req, ct));
 
     /// <summary>
+    /// PUT /api/entitlements/components/{code} — edits the definition of a benefit the customer added (names, category, policy class, dates, active),
+    /// with <c>expectedVersion</c> from the matrix read (409 <c>stale_definition</c> when someone else changed it first). Same permission and group
+    /// scope as adding it; serialised with every other matrix write; audited with the old and new values. Behind the <c>benefit_definition_v1</c> feature.
+    /// A cash allowance's money terms are not editable here once Finance has confirmed it (they go through Finance's correction), and changing the
+    /// dates or policy class of one without the Finance permission puts it back to "pending Finance". The response carries an <c>ETag</c>.
+    /// </summary>
+    [HttpPut("components/{code}")]
+    [HasPermission("entitlements.manage")]
+    public async Task<IActionResult> UpdateBenefit([FromServices] EntitlementMatrixService matrix, string code, [FromBody] UpdateBenefitRequest req,
+        CancellationToken ct)
+    {
+        if (this.GetTenantId() is null) return Unauthorized();
+        var result = await matrix.UpdateBenefitAsync(Actor(), code, req, ct);
+        if (result.IsSuccess && result.Body is MatrixComponentDto { Definition: { } definition })
+            Response.Headers.ETag = $"\"{definition.Version}\"";
+        return Result(result);
+    }
+
+    /// <summary>
     /// GET /api/entitlements/components/cash-gl-drivers — the earning GL drivers a monthly cash allowance may name, each marked <c>usable</c> (or not, with
     /// a plain reason), judged by exactly the rule <c>POST /components</c> applies to a cash benefit. It exists so the person adding the benefit
     /// (HR, who holds <c>entitlements.manage</c> but not the finance GL permissions) can choose a driver without being handed the chart of accounts:
