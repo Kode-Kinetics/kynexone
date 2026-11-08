@@ -57,6 +57,7 @@ export const profileApi = {
     emergencyContactPhone?: string;
   }) => _profileApi.requestProfileUpdate(changes),
 
+  myChangeRequests: () => _profileApi.getMyChangeRequests(),
   uploadPhoto: _profileApi.uploadProfilePhoto,
   photoSource: _profileApi.photoSource,
 };

@@ -26,9 +26,10 @@ export type ApprovalKind =
   | 'RECRUITMENT'
   | 'APPRAISAL'
   | 'EMPLOYEE_CHANGE'
+  | 'TRANSFER'
   | 'OTHER';
 
-export type InboxSource = 'workflow' | 'overtime';
+export type InboxSource = 'workflow' | 'overtime' | 'transfer';
 
 export interface PriorDecision {
   stepOrder: number | null;
@@ -44,6 +45,18 @@ export interface OvertimeFacts {
   endUtc: string | null;
   minutes: number | null;
   reason: string | null;
+}
+
+export type TransferStep = 'CurrentManager' | 'NewManager' | 'Hr';
+
+/** What a transfer moves to and which step the caller is deciding. */
+export interface TransferFacts {
+  awaitingStep: TransferStep;
+  target: string | null;
+  effectiveDate: string | null;
+  reason: string | null;
+  /** The server's word: the caller may reject this step (never the employee themselves). */
+  canReject: boolean;
 }
 
 export interface InboxItem {
@@ -73,6 +86,8 @@ export interface InboxItem {
   changeSummary: string | null;
   priorDecisions: PriorDecision[];
   overtime: OvertimeFacts | null;
+  /** Set on a transfer; absent on every other source. */
+  transfer?: TransferFacts | null;
 }
 
 export type DecisionVerb = 'approved' | 'rejected' | 'returned' | 'other';
@@ -101,6 +116,7 @@ export function approvalKind(entityName?: string | null): ApprovalKind {
   if (v.includes('PAYROLL')) return 'PAYROLL';
   if (v.includes('REQUISITION') || v.includes('RECRUIT')) return 'RECRUITMENT';
   if (v.includes('APPRAISAL')) return 'APPRAISAL';
+  if (v.includes('TRANSFER')) return 'TRANSFER';
   if (v.includes('EMPLOYEE')) return 'EMPLOYEE_CHANGE';
   return 'OTHER';
 }
@@ -158,6 +174,74 @@ export function mapWorkflowApproval(raw: Raw): InboxItem {
     priorDecisions: mapPriorDecisions(raw?.decisions),
     overtime: null,
   };
+}
+
+const TRANSFER_STEPS: readonly string[] = ['CurrentManager', 'NewManager', 'Hr'];
+
+/**
+ * One row of GET /api/employees/transfers/pending (the transfers whose CURRENT step the caller may decide). Transfers are
+ * not approval requests, so this is their own source. Null when the row is not the caller's to decide.
+ */
+export function mapTransferApproval(raw: Raw): InboxItem | null {
+  const transfer = raw?.transfer as Raw;
+  const step = str(raw?.awaitingStep);
+  if (!transfer || raw?.canDecide !== true || !step || !TRANSFER_STEPS.includes(step)) return null;
+  const id = str(transfer.id) ?? '';
+  if (!id) return null;
+  return {
+    key: `transfer:${id}`,
+    source: 'transfer',
+    id,
+    entityId: id,
+    kind: 'TRANSFER',
+    title: null,
+    subject: null,
+    requesterName: str(raw?.employeeName),
+    requesterEmployeeId: num(transfer.employeeId),
+    submittedAt: str(transfer.createdAtUtc),
+    dueAt: null,
+    isOverdue: false,
+    stepOrder: null,
+    canDecide: true,
+    blockedReason: null,
+    changeSummary: null,
+    priorDecisions: [],
+    overtime: null,
+    transfer: {
+      awaitingStep: step as TransferStep,
+      target: str(transfer.newDepartment) ?? str(transfer.newBranch) ?? str(transfer.newDesignation),
+      effectiveDate: str(transfer.effectiveDate),
+      reason: str(transfer.reason),
+      canReject: raw?.canReject === true,
+    },
+  };
+}
+
+const APPROVE_SEGMENT: Record<TransferStep, string> = {
+  CurrentManager: 'approve-current-manager',
+  NewManager: 'approve-new-manager',
+  Hr: 'approve-hr',
+};
+
+/** The endpoint and body for one decision on a transfer. Reject needs the reason (the server refuses without one). */
+export function transferDecision(
+  item: Pick<InboxItem, 'id' | 'transfer'>,
+  decision: 'approve' | 'reject',
+  comment: string | undefined,
+): { path: string; body: { reason: string } | undefined } {
+  const step = item.transfer?.awaitingStep;
+  if (!step) throw new Error('This transfer is not waiting for a decision.');
+  if (decision === 'approve') return { path: `/employees/transfers/${item.id}/${APPROVE_SEGMENT[step]}`, body: undefined };
+  const reason = comment?.trim() ?? '';
+  if (!reason) throw new Error('A reason is required to reject a transfer.');
+  return { path: `/employees/transfers/${item.id}/reject`, body: { reason } };
+}
+
+/** The true state after a decision: only HR's approval applies the move; a manager's sends it on. */
+export function transferOutcome(step: TransferStep, decision: 'approve' | 'reject'): DecisionOutcome {
+  if (decision === 'reject') return { kind: 'rejected' };
+  if (step === 'Hr') return { kind: 'approved' };
+  return { kind: 'movedOn', next: step === 'NewManager' ? { type: 'role', name: 'HR Manager' } : null };
 }
 
 /** Overtime statuses a line manager decides. PendingHR belongs to HR and is not in the manager's inbox. */
