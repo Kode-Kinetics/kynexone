@@ -851,8 +851,8 @@ for (const changedDraft of ['English name changed and restored', 'Arabic name ma
       expectedArabic = 'محمد عمرو';
       await arabicName.fill(expectedArabic);
     } else {
-      page.once('dialog', prompt => prompt.accept());
       await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Discard this employee draft?', exact: true }).getByRole('button', { name: 'Discard draft', exact: true }).click();
       await expect(dialog).toHaveCount(0);
       await page.goto('/people/new');
       await expect(dialog.getByRole('heading', { name: headings[0], exact: true })).toBeVisible();

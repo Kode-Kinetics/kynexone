@@ -40,7 +40,7 @@ export function ActivityPanel({ feed }: { feed: ActivityFeedItem[] }) {
       <nav aria-label={t('Shortcuts')} className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:col-span-5 xl:grid-cols-2 xl:self-start">
         {SHORTCUTS.map(({ label, to, icon: Icon, tone }, i) => (
           <Link key={to} href={to}
-            className="wg-press wg-tile3d wg-rise group flex flex-col items-start gap-2 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface)] p-3 outline-none focus-visible:ring-2 focus-visible:ring-sapphire"
+            className="wg-press wg-rise group flex flex-col items-start gap-2 rounded-xl border border-[color:var(--wg-line)] bg-[color:var(--wg-surface)] p-3 shadow-e1 outline-none transition-colors duration-fast ease-standard hover:border-line-strong hover:bg-surface-sunken focus-visible:ring-2 focus-visible:ring-sapphire"
             style={{ animationDelay: `${i * 60}ms` }}>
             <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${tone}`}><Icon className="h-4 w-4" aria-hidden /></span>
             <span className="text-body-sm font-semibold text-slate-900 group-hover:text-sapphire dark:text-white dark:group-hover:text-blue-300">{t(label)}</span>

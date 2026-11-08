@@ -1,5 +1,7 @@
 'use client';
 
+import { BenefitsByGradeDoor } from './BenefitsByGradeDoor';
+import { useBusyKeys } from '@/src/hooks/useBusyKeys';
 import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
@@ -234,13 +236,14 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
   }, [plan.id]);
   useEffect(() => { void loadRules(); }, [loadRules]);
 
-  const deactivate = async (rule: BenefitEligibilityRule) => {
+  const { run: runRule, isBusy: ruleBusy } = useBusyKeys();
+  const deactivate = (rule: BenefitEligibilityRule) => runRule(`deactivate:${rule.id}`, async () => {
     try {
       await benefitsApi.deactivateRule(plan.id, rule.id);
       toast.success('Eligibility rule deactivated.');
       void loadRules();
     } catch (e) { toast.error(benefitsErrorMessage(e, 'Could not deactivate the rule.')); }
-  };
+  });
 
   const activeRules = (rules ?? []).filter((r) => r.isActive);
 
@@ -278,10 +281,9 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
             : rulesFrozen ? 'Configure grade defaults in Benefits by grade. Existing rules remain available for reference.' : 'New employees automatically receive the benefits configured for their grade, subject to the effective dates and eligibility conditions below.'}
         </p>
         {rulesFrozen && (
-          <p data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2 text-caption text-slate-600 dark:text-slate-300">
-            {t('Which grades get a benefit is now set in Benefits by grade. These rules are kept for reference.')}{' '}
-            <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>
-          </p>
+          <div data-testid="rules-moved" className="mb-2 rounded-xl border border-sapphire/30 bg-sapphire/[0.04] px-3 py-2">
+            <BenefitsByGradeDoor intro={t('Which grades get a benefit is now set in Benefits by grade. These rules are kept for reference.')} />
+          </div>
         )}
         {adding && canEditRules && (
           <AddRuleForm planId={plan.id} planFrom={plan.effectiveFrom} companies={companies} grades={grades}
@@ -312,7 +314,7 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
                 <div className="flex items-center gap-2">
                   <StatusPill active={r.isActive} />
                   {canEditRules && r.isActive && (
-                    <button type="button" onClick={() => void deactivate(r)} className="rounded-lg p-1 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-500/[0.08] dark:hover:text-rose-300" aria-label="Deactivate rule">
+                    <button type="button" onClick={() => void deactivate(r)} disabled={ruleBusy(`deactivate:${r.id}`)} aria-busy={ruleBusy(`deactivate:${r.id}`) || undefined} className="rounded-lg p-1 disabled:opacity-50 text-rose-500 hover:bg-rose-50 hover:text-rose-700 dark:text-rose-400 dark:hover:bg-rose-500/[0.08] dark:hover:text-rose-300" aria-label="Deactivate rule">
                       <CircleSlash className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -536,7 +538,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
           </label>
         </div>
         {releaseA
-          ? <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600 dark:bg-white/5 dark:text-slate-300" data-testid="plan-payment-in-benefits-by-grade">{t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+          ? <div className="rounded-lg bg-slate-50 p-3 dark:bg-white/5" data-testid="plan-payment-in-benefits-by-grade"><BenefitsByGradeDoor intro={t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} /></div>
           : <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />}
         {editing && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Code and company scope identify the plan to existing enrolments and cannot be changed.')}</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">

@@ -101,6 +101,11 @@ import { EMPLOYEE_REFERENCE_TYPES, EMPTY_EMPLOYEE_REFERENCE_LISTS, loadEmployeeR
 import { referenceCode, referenceDefault, referenceLabel, referenceOptions, type ReferenceOption } from '../lib/referenceLists';
 import { writeEmployeeCreateResume } from '../lib/employeeCreateDraft';
 import { useLiveGrades } from '../hooks/useLiveGrades';
+import { useConfirm } from '../components/ui/useConfirm';
+import { PlanLimitNote } from '../components/ui/PlanLimitNote';
+import { useNavigationGuard } from '../contexts/NavigationGuardContext';
+import { setFlashResult } from '../lib/flashResult';
+import { refusalFromError } from '../lib/refusal';
 
 type StatusFilter = '' | 'Draft' | 'Pre-boarding' | 'Active' | 'Probation' | 'Confirmed' | 'On leave' | 'Suspended' | 'Resigned' | 'Notice period' | 'Terminated' | 'Retired' | 'Absconded' | 'Inactive' | 'Blacklisted';
 type DetailTab = 'personal' | 'employment' | 'payroll' | 'benefits' | 'package' | 'deductions' | 'compliance' | 'documents' | 'history' | 'transfers' | 'development';
@@ -329,6 +334,9 @@ interface EmployeeUsageData {
 export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } = {}) {
   const wizardFormat = useFormat();
   const { t, locale } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  // Client-side navigation (guarded), not window.location.assign: a hard navigation threw away the SPA state.
+  const navigation = useNavigationGuard();
   const directoryQuery = usePeopleDirectoryQuery();
   const { currencyCode } = useTenantSettings();
   const { hasPermission, hasRole, user } = useAuth();
@@ -835,11 +843,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const welcome = useWelcomeCodes(useCallback(() => {
     setAccessRefresh((n) => n + 1);
     if (createOnly && welcomeReturnEmployeeId) {
-      window.location.assign(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
+      navigation.push(employeeWorkspaceHref(welcomeReturnEmployeeId, { section: 'access-onboarding' }));
       return;
     }
     void load();
-  }, [createOnly, load, welcomeReturnEmployeeId]));
+  }, [createOnly, load, navigation, welcomeReturnEmployeeId]));
 
   /** Every employee matching the current filter, page by page (for "all matching" selections). */
   const resolveAllMatching = async (): Promise<EmployeeListItem[]> => {
@@ -1585,7 +1593,13 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
               : formStep === 4 ? 'compliance-documents'
                 : 'pay-benefits';
           writeEmployeeCreateResume(window.localStorage, { employeeId: created.id, section });
-          window.location.assign(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
+          // The save is confirmed on the screen the user lands on: what changed, where they are, the one next action.
+          setFlashResult(window.sessionStorage, {
+            changed: t('{name} was saved as a draft.', { name }),
+            where: t('You are on the draft record, at the step where you stopped.'),
+            next: { label: t('Back to the People list'), href: '/people' },
+          }, `/people/${created.id}/edit`);
+          navigation.push(`/people/${created.id}/edit?section=${section}&returnTo=%2Fpeople`);
           return;
         }
         await load();
@@ -1760,7 +1774,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   // gated behind an explicit confirm and offered only for STRONG (near-certain) matches.
   const mergeInto = async (intoEmployeeId: number, targetLabel: string) => {
     if (!selectedId) return;
-    if (!confirm(`Merge this record into ${targetLabel}? This record will be closed as a duplicate — its pending approvals are cancelled and its payroll footprint deactivated. History is kept and linked for audit.`)) return;
+    if (!(await confirm({
+      title: t('Merge this record into {target}?', { target: targetLabel }),
+      message: t('This record is closed as a duplicate: its pending approvals are cancelled and its payroll footprint is deactivated. History is kept and linked for audit.'),
+      confirmLabel: t('Merge records'),
+    }))) return;
     setDupResolving(true);
     setDupNotice('');
     try {
@@ -1788,16 +1806,20 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const unavailableEditNotice = t('Some edited fields are no longer available. Revert changes or close this window to discard the draft, then reopen the record.');
   const formChanged = JSON.stringify(form) !== JSON.stringify(formOriginal);
 
-  const closeEditModal = (): boolean => {
+  const closeEditModal = async (): Promise<boolean> => {
     if (editSaving) return false;
-    if (dirtyEditKeys.length > 0 && !confirm(t('Discard unsaved employee changes?'))) return false;
+    if (dirtyEditKeys.length > 0 && !(await confirm({
+      title: t('Discard unsaved employee changes?'),
+      message: t('Your edits to this employee have not been saved and will be lost.'),
+      confirmLabel: t('Discard changes'),
+    }))) return false;
     setEditOpen(false);
     return true;
   };
 
   const openFullProfile = async () => {
     const id = editEmployeeId ?? selectedEmployee?.id;
-    if (!id || !closeEditModal()) return;
+    if (!id || !(await closeEditModal())) return;
     await openDetail(id, true);
   };
 
@@ -1871,7 +1893,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      window.location.assign(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
+      navigation.push(id ? employeeWorkspaceHref(id, { section: 'overview' }) : '/people');
       return;
     }
     if (thenOpen && id) void openDetail(id);
@@ -1892,16 +1914,20 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     await welcome.issue([id], { names: { [id]: name }, delivery, companyEmails: !!access?.emailDelivery });
   };
 
-  const closeCreateModal = () => {
+  const closeCreateModal = async () => {
     if (saving) return;
     if (createdEmployee) { finishCreated(); return; }
-    if (formChanged && !confirm('Discard this employee draft?')) return;
+    if (formChanged && !(await confirm({
+      title: t('Discard this employee draft?'),
+      message: t('The details you entered have not been saved and will be lost.'),
+      confirmLabel: t('Discard draft'),
+    }))) return;
     createGeneration.current++;
     setCheckingDuplicate(false);
     setFormOpen(false);
     setFormError('');
     setDuplicateWarning([]);
-    if (createOnly) window.location.assign('/people');
+    if (createOnly) navigation.push('/people');
   };
 
   // ── Duplicate warning actions (create path — no new record exists yet) ──
@@ -1913,7 +1939,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setFormOpen(false);
     setFormError('');
     if (createOnly) {
-      window.location.assign(employeeWorkspaceHref(employeeId, { section: 'overview' }));
+      navigation.push(employeeWorkspaceHref(employeeId, { section: 'overview' }));
       return;
     }
     openDetail(employeeId);
@@ -1923,7 +1949,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
     setDuplicateWarning([]);
     setFormOpen(false);
     if (createOnly) {
-      window.location.assign(`/people/${employeeId}/edit?section=personal`);
+      navigation.push(`/people/${employeeId}/edit?section=personal`);
       return;
     }
     setFormError('');
@@ -1999,14 +2025,19 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
   const deleteEmployee = async () => {
     if (!selectedId || !detail) return;
-    if (!confirm(`Delete ${detail.fullName}'s record? It will be hidden from all lists; history is kept for audit.`)) return;
+    if (!(await confirm({
+      title: t('Delete {name}?', { name: detail.fullName }),
+      message: t('The record is hidden from all lists. History is kept for audit.'),
+      confirmLabel: t('Delete employee'),
+    }))) return;
     try {
       await employeesApi.remove(selectedId);
       setSelectedId(null);
       setDetail(null);
       await load();
-    } catch {
-      setError('Could not delete the employee. Only Admins can delete records.');
+    } catch (e) {
+      // The server's own reason (a payroll lock, a scope refusal), not "Only Admins" whatever it said.
+      setError(refusalFromError(e, { what: t('The employee record was not deleted') }, t, locale));
     }
   };
 
@@ -2205,6 +2236,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const activateGateBlocked = !isReinstatement && activationBlockers > 0;
   return (
     <div className={createOnly ? 'h-0 overflow-hidden' : 'space-y-5'}>
+      {confirmDialog}
       {subscriptionBanner && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:border-amber-800 dark:text-amber-300">
           {subscriptionBanner}
@@ -2213,7 +2245,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
 
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Employee Management</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Employee Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
             {view === 'current'
               ? loading ? 'Loading employee records…' : error ? 'Employee records unavailable' : `${total} employee records`
@@ -2263,21 +2295,18 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   });
                 }}
               />
-              {canWriteEmployees && <div className="relative group">
+              {canWriteEmployees && <div className="flex flex-col items-start gap-1">
                 <button
                   type="button"
-                  onClick={() => { if (!atEmployeeLimit) window.location.assign('/people/new'); }}
+                  onClick={() => { if (!atEmployeeLimit) navigation.push('/people/new'); }}
                   disabled={atEmployeeLimit}
+                  aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason' : undefined}
                   className="btn-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Plus className="h-4 w-4" />
                   Add Employee
                 </button>
-                {atEmployeeLimit && usage && (
-                  <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
-                    Employee limit reached ({usage.activeEmployees}/{usage.maxEmployees}). Upgrade your plan to add more employees.
-                  </div>
-                )}
+                {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} />}
               </div>}
             </>
           )}
@@ -2492,7 +2521,10 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                           })}
                         >Clear filters</button>
                       ) : canWriteEmployees ? (
-                        <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit}><Plus className="h-4 w-4" />Add Employee</button>
+                        <>
+                          <button type="button" className="btn-primary mt-4" onClick={openCreateEmployee} disabled={atEmployeeLimit} aria-describedby={atEmployeeLimit && usage ? 'employee-limit-reason-empty' : undefined}><Plus className="h-4 w-4" />Add Employee</button>
+                          {atEmployeeLimit && usage && <PlanLimitNote id="employee-limit-reason-empty" kind="employees" used={usage.activeEmployees} max={usage.maxEmployees} className="mx-auto mt-2" />}
+                        </>
                       ) : null}
                     </td></tr>
                   )}
@@ -2569,11 +2601,11 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
       )}
 
       <Modal isOpen={editOpen} title={canEditEmployees ? t('Edit Employee — {name}', { name: selectedEmployee?.fullName ?? '' }) : t('Employee record — {name}', { name: selectedEmployee?.fullName ?? '' })}
-        size="wizard" onClose={closeEditModal}
+        size="wizard" onClose={() => void closeEditModal()}
         headerContent={<EmployeeCreateProgress steps={employeeWindowSteps} step={editStep} onStepChange={changeEditStep} busy={editSaving} allowAll />}
         footer={
           <div className="flex w-full items-center justify-between gap-3">
-            <button type="button" onClick={closeEditModal} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
+            <button type="button" onClick={() => void closeEditModal()} disabled={editSaving} className="btn-secondary disabled:opacity-60">{t(canEditEmployees ? 'Cancel' : 'Close')}</button>
             <div className="flex items-center gap-2">
               {editStep > 0 && <button type="button" onClick={() => changeEditStep(editStep - 1)} disabled={editSaving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}
               {editStep < EMPLOYEE_EDIT_STEPS.length - 1 ? (
@@ -2585,7 +2617,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                   {editSaving ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Check className="h-4 w-4" aria-hidden="true" />}
                   {t(editSaving ? 'Saving...' : 'Save changes')}
                 </button>
-              ) : <button type="button" onClick={closeEditModal} className="btn-primary">{t('Done')}</button>}
+              ) : <button type="button" onClick={() => void closeEditModal()} className="btn-primary">{t('Done')}</button>}
             </div>
           </div>
         }
@@ -2665,7 +2697,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         </form>
       </Modal>
 
-      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={closeCreateModal}
+      <Modal isOpen={formOpen} title="Add Employee" size={createdEmployee ? 'md' : 'wizard'} onClose={() => void closeCreateModal()}
         headerContent={!createdEmployee && <EmployeeCreateProgress step={formStep} onStepChange={changeCreateStep} busy={createBusy} visibleSteps={createStepOrder} visitedSteps={visitedCreateSteps} />}
         footer={createdEmployee ? (
         <>
@@ -2692,7 +2724,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
         </>
       ) : (
           <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:justify-between">
-            <button type="button" onClick={closeCreateModal} disabled={saving} className="btn-secondary justify-self-start disabled:opacity-60">Cancel</button>
+            <button type="button" onClick={() => void closeCreateModal()} disabled={saving} className="btn-secondary justify-self-start disabled:opacity-60">Cancel</button>
             <button type="button" onClick={() => void saveEmployee(false, true)} disabled={createBusy || formCompanyMissingCountry} className="justify-self-end px-1 py-2 text-xs font-semibold text-slate-600 hover:underline disabled:opacity-60 dark:text-slate-300 sm:me-auto sm:ms-2">{saving && pendingCreateExit ? t('Saving...') : t('Save draft and exit')}</button>
             <div className="col-span-2 flex items-center justify-end gap-2">
               {formStep > 0 && <button type="button" onClick={() => changeCreateStep(previousCreateStep)} disabled={createBusy} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />{t('Back')}</button>}

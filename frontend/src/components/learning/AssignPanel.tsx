@@ -1,5 +1,6 @@
 'use client';
 
+import { useBusyKeys } from '@/src/hooks/useBusyKeys';
 import { pickable } from '../../lib/pickable';
 import { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
@@ -192,6 +193,7 @@ function RulesSection({ paths, targets }: { paths: LearningPath[]; targets: Reco
   const [days, setDays] = useState('30');
   const [busy, setBusy] = useState(false);
   const [applied, setApplied] = useState<BulkResult | null>(null);
+  const { run, isBusy } = useBusyKeys();
 
   const load = useCallback(async () => {
     try { setRules(await learningApi.rules()); } catch (e) { toast.error(learningError(e, t)); setRules([]); }
@@ -256,8 +258,8 @@ function RulesSection({ paths, targets }: { paths: LearningPath[]; targets: Reco
               <span className="flex items-center gap-2">
                 <StatusChip label={r.isActive ? t('Active') : t('Switched off')} tone={r.isActive ? 'emerald' : 'slate'} />
                 {r.isActive && (
-                  <button type="button" className="btn-secondary text-xs"
-                    onClick={async () => { try { await learningApi.deactivateRule(r.id); toast.success(t('Rule switched off.')); await load(); } catch (e) { toast.error(learningError(e, t)); } }}>
+                  <button type="button" className="btn-secondary text-xs" disabled={isBusy(`off:${r.id}`)} aria-busy={isBusy(`off:${r.id}`) || undefined}
+                    onClick={() => void run(`off:${r.id}`, async () => { try { await learningApi.deactivateRule(r.id); toast.success(t('Rule switched off.')); await load(); } catch (e) { toast.error(learningError(e, t)); } })}>
                     {t('Switch off')}
                   </button>
                 )}

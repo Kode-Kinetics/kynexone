@@ -85,7 +85,7 @@ export default function GroupDashboardPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Group Overview</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Group Overview')}</h1>
           <p className="text-xs text-slate-400">{companies.length} legal entit{companies.length === 1 ? 'y' : 'ies'} in view</p>
         </div>
         {createCompany}

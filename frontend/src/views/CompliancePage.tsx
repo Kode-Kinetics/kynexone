@@ -3,6 +3,8 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
+import { useBusyKeys } from '../hooks/useBusyKeys';
+import { notifyRefusal } from '../lib/refusal';
 import {
   FileText, Shield, Globe, AlertTriangle, BarChart3, Lightbulb,
   Plus, CheckCircle, Clock, XCircle, RefreshCw, FileWarning,
@@ -485,6 +487,8 @@ function VisaPassportTab({ initialSubTab = 'visa' }: { initialSubTab?: 'visa' | 
 // ── Renewals Tab ──────────────────────────────────────────────────────────────
 
 function RenewalsTab() {
+  const { t, locale } = useLocale();
+  const { run, isBusy } = useBusyKeys();
   const [statusFilter, setStatusFilter] = useState('');
   // Every renewal is a task someone owns; the queue is read in full, not the server's first 20.
   const list = useFullList<ComplianceRenewal>(() => complianceRenewalsApi.listAll({ status: statusFilter || undefined }));
@@ -493,9 +497,11 @@ function RenewalsTab() {
 
   useEffect(() => { void list.reload(); }, [statusFilter, list.reload]);
 
-  const advance = async (id: string, status: string) => {
-    try { await complianceRenewalsApi.updateStatus(id, status); load(); } catch (e) { notifyApiError(e); }
-  };
+  // One request per row however often it is clicked; a refusal says what did not change and what to do.
+  const advance = (id: string, status: string) => run(`row:${id}`, async () => {
+    try { await complianceRenewalsApi.updateStatus(id, status); load(); }
+    catch (e) { notifyRefusal(e, { what: t('The renewal status was not changed'), fix: t('Reload the list to see its current status.') }, t, locale); }
+  });
 
   const STATUS_COLORS: Record<string, string> = {
     Pending: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
@@ -537,14 +543,14 @@ function RenewalsTab() {
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLORS[r.status] ?? ''}`}>{r.status}</span>
                   {r.status === 'Pending' && (
-                    <button type="button" onClick={() => advance(r.id, 'InProgress')}
-                      className="rounded-lg border border-slate-200 dark:border-white/10 px-2 py-1 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5">
+                    <button type="button" onClick={() => void advance(r.id, 'InProgress')} disabled={isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined}
+                      className="rounded-lg border disabled:opacity-50 border-slate-200 dark:border-white/10 px-2 py-1 text-xs text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-white/5">
                       Start
                     </button>
                   )}
                   {r.status === 'InProgress' && (
-                    <button type="button" onClick={() => advance(r.id, 'Renewed')}
-                      className="rounded-lg bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">
+                    <button type="button" onClick={() => void advance(r.id, 'Renewed')} disabled={isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined}
+                      className="rounded-lg disabled:opacity-50 bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700">
                       Mark Renewed
                     </button>
                   )}
@@ -857,6 +863,7 @@ type Tab = 'dashboard' | 'contracts' | 'visa' | 'passports' | 'renewals' | 'expi
 const TAB_KEYS: Tab[] = ['dashboard', 'contracts', 'visa', 'passports', 'renewals', 'expiry', 'employee-documents', 'ai', 'jawazat'];
 
 export default function CompliancePage() {
+  const { t } = useLocale();
   const params = useSearchParams();
   const requested = params.get('tab');
   const [tab, setTab] = useState<Tab>(
@@ -877,7 +884,7 @@ export default function CompliancePage() {
   return (
     <div className="space-y-5 p-4 sm:p-6">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Document & Compliance Management</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Document & Compliance Management')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Manage contracts, visas, passports, work permits, and GCC compliance documentation.
         </p>

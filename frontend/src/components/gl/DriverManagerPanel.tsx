@@ -13,6 +13,7 @@ import {
   type GlDriverRequest,
   type GlResolveRow,
 } from '../../api/financeGl';
+import { WriteBlockedNote } from '../ui/WriteBlockedNote';
 import { useT } from '../../hooks/useT';
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
@@ -261,11 +262,12 @@ export function DriverManagerPanel({ scope, scopeName, canManage, canAuthorPredi
           </p>
         </div>
         {canManage && (
-          <button type="button" onClick={openCreate} disabled={!writable} className="btn-primary text-xs disabled:opacity-60">
+          <button type="button" onClick={openCreate} disabled={!writable} aria-describedby={res.ready ? undefined : 'gl-drivers-blocked'} className="btn-primary text-xs disabled:opacity-60">
             <Plus className="h-3.5 w-3.5" aria-hidden /> {t('Add driver')}
           </button>
         )}
       </div>
+      {canManage && <WriteBlockedNote id="gl-drivers-blocked" ready={res.ready} className="mb-3" />}
 
       <PanelState
         loading={res.loading && !res.data}
@@ -340,7 +342,7 @@ export function DriverManagerPanel({ scope, scopeName, canManage, canAuthorPredi
                       <div className="flex items-center justify-end gap-1.5">
                         {editable ? (
                           <>
-                            <button type="button" onClick={() => openEdit(d)} disabled={!writable} className="btn-secondary h-7 whitespace-nowrap px-2 text-xs disabled:opacity-60">
+                            <button type="button" onClick={() => openEdit(d)} disabled={!writable} aria-describedby={res.ready ? undefined : 'gl-drivers-blocked'} className="btn-secondary h-7 whitespace-nowrap px-2 text-xs disabled:opacity-60">
                               <Pencil className="h-3 w-3" aria-hidden /> {d.isSystem ? t('Edit label & fallback') : t('Edit')}
                             </button>
                             {!d.isSystem && (

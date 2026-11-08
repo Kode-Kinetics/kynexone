@@ -31,7 +31,7 @@ export function ProcessJobProgress({ poll, asked }: Props) {
               aria-valuenow={percent === null ? undefined : Math.round(percent)}
               className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10"
             >
-              <div className={`h-full rounded-full bg-sapphire ${percent === null ? 'w-1/3 animate-pulse' : ''}`} style={percent === null ? undefined : { width: `${percent}%` }} />
+              <div className={`h-full rounded-full ${percent === null ? 'kx-skeleton w-1/3' : 'bg-sapphire'}`} style={percent === null ? undefined : { width: `${percent}%` }} />
             </div>
             {percent !== null && <span className="w-10 text-end text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{Math.round(percent)}%</span>}
           </div>

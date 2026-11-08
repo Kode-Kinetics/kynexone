@@ -30,6 +30,7 @@ import { evaluatePasswordRequirements, type PasswordPolicy } from '../lib/passwo
 import { assignBlock, canGrantPermission, editBlock, isSelf, localizedRefusal } from '../lib/accessCeiling';
 import { localReturnPathOrNull } from '../lib/publicAuth';
 import { useLocale } from '../contexts/LocaleContext';
+import { PlanLimitNote } from '../components/ui/PlanLimitNote';
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCompany } from '../contexts/CompanyContext';
 import { LinkEmployeeLoginDialog } from '../components/access/LinkEmployeeLoginDialog';
@@ -357,20 +358,17 @@ export function UsersTab() {
         <button onClick={load} className="rounded-lg border border-slate-200 p-2 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-700">
           <RefreshCw className="h-4 w-4 text-slate-500" />
         </button>
-        <div className="relative group">
+        <div className="flex flex-col items-start gap-1">
           <button
             type="button"
             onClick={() => { if (!atUserLimit) setShowCreate(true); }}
             disabled={atUserLimit}
+            aria-describedby={atUserLimit && usage ? 'user-limit-reason' : undefined}
             className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus className="h-4 w-4" /> Create User
           </button>
-          {atUserLimit && usage && (
-            <div className="absolute bottom-full start-0 mb-1.5 w-64 rounded-lg bg-slate-800 px-3 py-2 text-xs text-white shadow-lg hidden group-hover:block z-10">
-              User limit reached ({usage.activeUsers}/{usage.maxUsers}). Upgrade your plan to add more users.
-            </div>
-          )}
+          {atUserLimit && usage && <PlanLimitNote id="user-limit-reason" kind="users" used={usage.activeUsers} max={usage.maxUsers} />}
         </div>
         <button
           type="button"

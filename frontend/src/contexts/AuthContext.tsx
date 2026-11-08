@@ -298,6 +298,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** `useAuth` for components that also render outside an authenticated shell (null there). */
+export function useOptionalAuth() {
+  return useContext(AuthContext);
+}
+
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');

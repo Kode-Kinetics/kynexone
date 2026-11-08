@@ -5,7 +5,7 @@ import { useFormat } from '../hooks/useFormat';
 import type { Formatter } from '../lib/format';
 import { Modal as SharedModal } from '../components/Modal';
 import { enumLabel } from '../i18n/enumLabel';
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import { useAuth } from '../contexts/AuthContext';
 import { EmployeePicker } from '../components/EmployeePicker';
 import type { SelectedEmployee } from '../components/EmployeePicker';
@@ -104,15 +104,6 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
     <SharedModal isOpen title={title} onClose={onClose} size={wide ? 'lg' : 'md'} closeLabel={t('Close')}>
       {children}
     </SharedModal>
-  );
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  return (
-    <div>
-      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">{label}{info && <InfoTip text={info} fieldKey={infoKey} />}</label>
-      {children}
-    </div>
   );
 }
 

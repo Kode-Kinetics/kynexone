@@ -1,0 +1,174 @@
+{
+ "totals": {
+  "withInfo": 22,
+  "noInfo": 0,
+  "withoutInfo": 410
+ },
+ "files": {
+  "app/platform/tenants/[id]/billing/page.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 23
+  },
+  "app/platform/tenants/[id]/users/page.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/components/attendance/AttendanceDevicesPanel.tsx": {
+   "withInfo": 4,
+   "noInfo": 0,
+   "withoutInfo": 16
+  },
+  "src/components/compensation/BenchmarksPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/components/compensation/CycleWorkspace.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 12
+  },
+  "src/components/engagement/SurveyBuilder.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 11
+  },
+  "src/components/engagement/TemplateBuilder.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 5
+  },
+  "src/components/gl/AccountsMappingsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 13
+  },
+  "src/components/gl/CompanyRatesPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 7
+  },
+  "src/components/gl/CostAccountingPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 4
+  },
+  "src/components/gl/DriverManagerPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 14
+  },
+  "src/components/gl/ErpApiKeysPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 5
+  },
+  "src/components/gl/StatutoryRatesPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 7
+  },
+  "src/components/learning/AssignPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 5
+  },
+  "src/components/learning/CourseCatalog.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 14
+  },
+  "src/components/learning/PathsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 8
+  },
+  "src/components/learning/RecordsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/components/OfferLetterDesigner.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 18
+  },
+  "src/components/succession/CalibrationPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 8
+  },
+  "src/components/succession/DevelopmentPlanPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/components/succession/NominationsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 4
+  },
+  "src/components/succession/PoolsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 6
+  },
+  "src/components/succession/PositionsPanel.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 4
+  },
+  "src/views/employees/EmployeePersonalSection.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/views/HrLettersPage.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 14
+  },
+  "src/views/LeavePage.tsx": {
+   "withInfo": 9,
+   "noInfo": 0,
+   "withoutInfo": 48
+  },
+  "src/views/LoginPage.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 11
+  },
+  "src/views/OvertimePage.tsx": {
+   "withInfo": 5,
+   "noInfo": 0,
+   "withoutInfo": 18
+  },
+  "src/views/PayrollPage.tsx": {
+   "withInfo": 4,
+   "noInfo": 0,
+   "withoutInfo": 9
+  },
+  "src/views/PerformancePage.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 55
+  },
+  "src/views/SaudiComplianceConfig.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 20
+  },
+  "src/views/SuccessionPositionPage.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 2
+  },
+  "src/views/WelcomePage.tsx": {
+   "withInfo": 0,
+   "noInfo": 0,
+   "withoutInfo": 4
+  }
+ }
+}

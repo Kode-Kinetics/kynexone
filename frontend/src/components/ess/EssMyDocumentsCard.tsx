@@ -7,6 +7,7 @@ import { useFormat } from '@/src/hooks/useFormat';
 import { documentStatusWords, documentVerificationState } from '@/src/lib/documentVerification';
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssLoadError } from './EssParts';
+import { Skeleton } from '@/src/components/ui/Skeleton';
 
 const TONE = { pending: 'amber', verified: 'emerald', approved: 'emerald', rejected: 'rose', expired: 'rose', other: 'slate' } as const;
 
@@ -31,7 +32,7 @@ export function EssMyDocumentsCard() {
       {error ? (
         <EssLoadError error={error} onRetry={() => void load()} />
       ) : documents === null ? (
-        <div className="h-16 animate-pulse rounded-xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" />
+        <div role="status" aria-busy="true"><Skeleton className="h-16 w-full rounded-xl" /></div>
       ) : documents.length === 0 ? (
         <EssEmpty text={t('You have not given HR any documents yet.')} />
       ) : (

@@ -77,6 +77,19 @@ public partial class CashAllowanceReviewFixTests
         shown.Allowances.Should().ContainSingle().Which.NameEn.Should().Be("Car allowance");
         masked.BasicSalary.Should().BeNull();
         masked.Allowances.Should().BeNull("the lines are pay: as hidden as the amounts");
-        JsonSerializer.Serialize(masked, Web).Should().NotContain("Car allowance").And.NotContain(Car).And.NotContain("500");
+        // Check values, not the raw JSON text: a substring check for "500" also matched random GUIDs such as "a6500a55-…"
+        // (a ~1-in-140 CI flake). No string value may name the allowance and no number may carry its amount.
+        var values = LeafValues(JsonSerializer.SerializeToElement(masked, Web)).ToList();
+        values.Where(v => v.ValueKind == JsonValueKind.String).Select(v => v.GetString()!)
+            .Should().NotContain(s => s.Contains("Car allowance") || s.Contains(Car));
+        values.Where(v => v.ValueKind == JsonValueKind.Number).Select(v => v.GetDecimal())
+            .Should().NotContain(500m, "the allowance amount is pay and stays hidden");
     }
+
+    private static IEnumerable<JsonElement> LeafValues(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => element.EnumerateObject().SelectMany(p => LeafValues(p.Value)),
+        JsonValueKind.Array => element.EnumerateArray().SelectMany(LeafValues),
+        _ => [element],
+    };
 }

@@ -1,0 +1,174 @@
+import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { translate } from '../src/i18n/translations';
+import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, placeInfoTip, popoverEdgesAtInlineStart, resolveInfoText, stripRequiredMarker } from '../src/lib/infoTip';
+import { renderComponent } from './support/ssr';
+
+/**
+ * The `i` affordance (Screen Standard 3b): a real button, described by its popover, English and Arabic through t(),
+ * 24 px (44 on coarse pointers), dismissible with Esc, hoverable, and no developer `key:` line for ordinary users.
+ */
+const render = (props: Record<string, unknown>) => renderComponent('src/components/InfoTip.tsx', 'InfoTip', props);
+const source = readFileSync(join(__dirname, '..', 'src', 'components', 'InfoTip.tsx'), 'utf8');
+
+test('it is a button whose accessible name says what it is about, described by its popover', () => {
+  const html = render({ text: 'Sets the benefits and loan limits this employee is entitled to.', label: 'Grade', fieldKey: 'employees.grade' });
+  expect(html).toContain('<button type="button"');
+  expect(html).toContain('aria-label="About Grade"');
+  const describedBy = /aria-describedby="([^"]+)"/.exec(html)?.[1];
+  expect(describedBy).toBeTruthy();
+  expect(html).toContain(`id="${describedBy}"`);
+  expect(html).toContain('role="tooltip"');
+  expect(html).toContain('Sets the benefits and loan limits this employee is entitled to.');
+});
+
+test('the required-field asterisk is never part of the i-help name, so it cannot collide with the control name', () => {
+  expect(stripRequiredMarker('Leave Type *')).toBe('Leave Type');
+  expect(stripRequiredMarker('Leave Type*')).toBe('Leave Type');
+  expect(stripRequiredMarker('نوع الإجازة *')).toBe('نوع الإجازة');
+  expect(stripRequiredMarker('Grade')).toBe('Grade');
+  expect(stripRequiredMarker('Rate * (SAR)')).toBe('Rate * (SAR)');
+  const html = render({ text: 'Pick one.', label: 'Leave Type *', fieldKey: 'leave.type' });
+  expect(html).toContain('aria-label="About Leave Type"');
+  expect(html).not.toContain('About Leave Type *');
+});
+
+test('without a label it still has a name', () => {
+  expect(render({ text: 'Something useful.' })).toContain('aria-label="More information"');
+});
+
+test('the developer `key:` line is never printed to ordinary users', () => {
+  const html = render({ text: 'Text.', fieldKey: 'employees.grade' });
+  expect(html).not.toContain('employees.grade');
+  expect(html).not.toMatch(/key:/i);
+});
+
+test('only the Setup permission sees the field key (the one that edits per-company help text)', () => {
+  expect(FIELD_KEY_PERMISSION).toBe('security.manage');
+  expect(canSeeFieldKey(() => true, 'employees.grade')).toBe(true);
+  expect(canSeeFieldKey(permission => permission === 'employees.write', 'employees.grade')).toBe(false);
+  expect(canSeeFieldKey(() => true, undefined)).toBe(false);
+  expect(canSeeFieldKey(null, 'employees.grade')).toBe(false);
+});
+
+test('a per-company override replaces the built-in text and is shown as the company wrote it; the built-in goes through t()', () => {
+  const t = (key: string) => (key === 'Built in.' ? 'مدمج.' : key);
+  expect(resolveInfoText('Built in.', 'Company wording.', t)).toBe('Company wording.');
+  expect(resolveInfoText('Built in.', undefined, t)).toBe('مدمج.');
+  expect(resolveInfoText('Built in.', '   ', t)).toBe('مدمج.');
+});
+
+test('English and Arabic exist for the labels it prints', () => {
+  for (const key of ['About {field}', 'More information', 'Field key']) {
+    expect(translate('ar', key, { field: 'x' }), key).not.toBe(key);
+  }
+  expect(translate('ar', 'About {field}', { field: 'الدرجة' })).toContain('الدرجة');
+  expect(source).toMatch(/t\('About \{field\}'/);
+  expect(source).toMatch(/resolveInfoText\(text,/);
+});
+
+test('the popover is at most 280 px, anchored to the inline-start edge, and flips at the viewport edge', () => {
+  expect(INFO_TIP_MAX_WIDTH).toBe(280);
+  expect(source).toContain('max-w-[280px]');
+  expect(source).toMatch(/start-0/);
+  // LTR: the popover grows to the right; it flips when its right edge passes the viewport.
+  expect(flipsAtViewportEdge({ left: 900, right: 1220 }, 1200, 'ltr')).toBe(true);
+  expect(flipsAtViewportEdge({ left: 100, right: 380 }, 1200, 'ltr')).toBe(false);
+  // RTL grows to the left; it flips when its left edge passes 0.
+  expect(flipsAtViewportEdge({ left: -12, right: 268 }, 1200, 'rtl')).toBe(true);
+  expect(flipsAtViewportEdge({ left: 400, right: 680 }, 1200, 'rtl')).toBe(false);
+});
+
+test('hit area is 24 px, 44 on coarse pointers; it opens on hover, focus and tap and Esc dismisses it', () => {
+  expect(source).toContain('h-6 w-6');
+  expect(source).toContain('[@media(pointer:coarse)]:h-11');
+  expect(source).toContain('[@media(pointer:coarse)]:w-11');
+  for (const handler of ['onMouseEnter', 'onMouseLeave', 'onFocus', 'onBlur', 'onClick']) expect(source, handler).toContain(handler);
+  expect(source).toContain("'Escape'");
+  // WCAG 1.4.13: the popover must stay open while hovered, so it is a child of the hover target and not pointer-events-none.
+  expect(source).not.toContain('pointer-events-none');
+});
+
+test('placement is measured from the icon, not from the popover, so it is the same on every open (LTR and RTL)', () => {
+  const placement = (anchor: { left: number; right: number }, width: number, vw: number, dir: 'ltr' | 'rtl') =>
+    flipsAtViewportEdge(popoverEdgesAtInlineStart(anchor, width, dir), vw, dir);
+  // LTR icon near the right edge: a 280 px popover anchored at its start would pass the viewport, so it flips.
+  const nearRight = { left: 1100, right: 1124 };
+  // RTL icon near the left edge: anchored at its start (the right side of the icon) it would pass x = 0.
+  const nearLeft = { left: 70, right: 94 };
+  for (const [anchor, dir] of [[nearRight, 'ltr'], [nearLeft, 'rtl']] as const) {
+    const opens = [1, 2, 3, 4].map(() => placement(anchor, 280, 1200, dir));
+    expect(opens, `${dir}: every open decides the same`).toEqual([true, true, true, true]);
+  }
+  // Plenty of room: never flips, however often it opens.
+  expect([1, 2, 3].map(() => placement({ left: 300, right: 324 }, 280, 1200, 'ltr'))).toEqual([false, false, false]);
+  expect([1, 2, 3].map(() => placement({ left: 800, right: 824 }, 280, 1200, 'rtl'))).toEqual([false, false, false]);
+  expect(popoverEdgesAtInlineStart({ left: 100, right: 124 }, 280, 'ltr')).toEqual({ left: 100, right: 380 });
+  expect(popoverEdgesAtInlineStart({ left: 500, right: 524 }, 280, 'rtl')).toEqual({ left: 244, right: 524 });
+});
+
+test('the component measures the icon (not the popover) in a layout effect', () => {
+  expect(source).toContain('placeInfoTip(anchor, popover.current.offsetWidth');
+  expect(source).not.toMatch(/popover\.current\.getBoundingClientRect/);
+});
+
+/** Physical edges of the popover given the icon rect and what placeInfoTip returned (offset is from the icon's inline-start edge). */
+const edgesOf = (anchor: { left: number; right: number }, p: { width: number; offset: number }, dir: 'ltr' | 'rtl') =>
+  dir === 'rtl' ? { left: anchor.right - p.offset - p.width, right: anchor.right - p.offset } : { left: anchor.left + p.offset, right: anchor.left + p.offset + p.width };
+
+test('a 280 px popover beside an icon at x=150-174 on a 320 px screen is fully inside the viewport (8 px margin), LTR and RTL', () => {
+  const anchor = { left: 150, right: 174 };
+  for (const dir of ['ltr', 'rtl'] as const) {
+    const p = placeInfoTip(anchor, 280, 320, dir);
+    const edges = edgesOf(anchor, p, dir);
+    expect(p.width, dir).toBe(280);
+    expect(edges.left, `${dir} left`).toBeGreaterThanOrEqual(8);
+    expect(edges.right, `${dir} right`).toBeLessThanOrEqual(312);
+  }
+});
+
+test('a popover wider than the screen is capped to the viewport minus the margins and still fits', () => {
+  for (const dir of ['ltr', 'rtl'] as const) {
+    for (const anchor of [{ left: 150, right: 174 }, { left: 2, right: 26 }, { left: 294, right: 318 }]) {
+      const p = placeInfoTip(anchor, 400, 320, dir);
+      const edges = edgesOf(anchor, p, dir);
+      expect(p.width, dir).toBe(304);
+      expect(edges.left, `${dir} ${anchor.left} left`).toBeGreaterThanOrEqual(8);
+      expect(edges.right, `${dir} ${anchor.left} right`).toBeLessThanOrEqual(312);
+    }
+  }
+});
+
+test('an icon hard against either edge never pushes the popover out of the viewport', () => {
+  for (const dir of ['ltr', 'rtl'] as const) {
+    for (const vw of [320, 375, 768, 1200]) {
+      for (const anchor of [{ left: 0, right: 24 }, { left: 4, right: 28 }, { left: vw - 24, right: vw }, { left: vw - 28, right: vw - 4 }, { left: vw / 2 - 12, right: vw / 2 + 12 }]) {
+        const p = placeInfoTip(anchor, 280, vw, dir);
+        const edges = edgesOf(anchor, p, dir);
+        expect(edges.left, `${dir} vw=${vw} icon=${anchor.left} left`).toBeGreaterThanOrEqual(8);
+        expect(edges.right, `${dir} vw=${vw} icon=${anchor.left} right`).toBeLessThanOrEqual(vw - 8);
+      }
+    }
+  }
+});
+
+test('desktop placement is unchanged: anchored to the inline-start edge when it fits, to the inline-end edge when it would pass the far edge', () => {
+  // Room: inline-start anchored, no offset.
+  expect(placeInfoTip({ left: 300, right: 324 }, 280, 1200, 'ltr')).toEqual({ width: 280, offset: 0 });
+  expect(placeInfoTip({ left: 800, right: 824 }, 280, 1200, 'rtl')).toEqual({ width: 280, offset: 0 });
+  // Icon near the right edge in LTR: grows leftwards from the icon's right edge (right edge flush with the icon's).
+  expect(edgesOf({ left: 1100, right: 1124 }, placeInfoTip({ left: 1100, right: 1124 }, 280, 1200, 'ltr'), 'ltr')).toEqual({ left: 844, right: 1124 });
+  // Icon near the left edge in RTL: grows rightwards from the icon's left edge.
+  expect(edgesOf({ left: 70, right: 94 }, placeInfoTip({ left: 70, right: 94 }, 280, 1200, 'rtl'), 'rtl')).toEqual({ left: 70, right: 350 });
+});
+
+test('the same inputs give the same placement on every call', () => {
+  const calls = [1, 2, 3, 4].map(() => placeInfoTip({ left: 150, right: 174 }, 280, 320, 'ltr'));
+  expect(new Set(calls.map(c => JSON.stringify(c))).size).toBe(1);
+});
+
+test('the component applies the pure placement (width cap and inline offset) from a layout effect', () => {
+  expect(source).toContain('placeInfoTip');
+  expect(source).toContain('insetInlineStart');
+});

@@ -5,6 +5,7 @@ import { CalendarX2, Pencil, Plus } from 'lucide-react';
 import { notifyApiError } from '../../api/client';
 import { financeRatesApi, type CompanyRate, type CompanyRateRequest, type RateRegistryEntry } from '../../api/financeRates';
 import { useFormat } from '../../hooks/useFormat';
+import { WriteBlockedNote } from '../ui/WriteBlockedNote';
 import { useT } from '../../hooks/useT';
 import { useAppToast } from '../ui/AppToast';
 import { Modal } from '../Modal';
@@ -276,7 +277,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         {/* A recorded-only rate can only be cleaned up: a new value would change nobody's pay. */}
         {!isRecordedOnly(r) && (
-          <button type="button" onClick={() => openEdit(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+          <button type="button" onClick={() => openEdit(r)} disabled={!writable} aria-describedby={res.ready ? undefined : 'gl-rates-blocked'} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
             <Pencil className="h-3 w-3" aria-hidden /> {t('Change value')}
           </button>
         )}
@@ -290,7 +291,7 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
             {t('Delete')}
           </button>
         ) : (
-          <button type="button" onClick={() => openEnd(r)} disabled={!writable} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
+          <button type="button" onClick={() => openEnd(r)} disabled={!writable} aria-describedby={res.ready ? undefined : 'gl-rates-blocked'} className="btn-secondary h-7 px-2 text-xs disabled:opacity-60">
             <CalendarX2 className="h-3 w-3" aria-hidden /> {t('End-date')}
           </button>
         )}
@@ -308,11 +309,12 @@ export function CompanyRatesPanel({ scope, scopeName, canManage, currency }: Pro
           </p>
         </div>
         {canManage && (
-          <button type="button" onClick={openCreate} disabled={!writable || appliedRegistry.length === 0} className="btn-primary text-xs disabled:opacity-60">
+          <button type="button" onClick={openCreate} disabled={!writable || appliedRegistry.length === 0} aria-describedby={canManage && !res.ready ? 'gl-rates-blocked' : undefined} className="btn-primary text-xs disabled:opacity-60">
             <Plus className="h-3.5 w-3.5" aria-hidden /> {t('Add rate')}
           </button>
         )}
       </div>
+      {canManage && <WriteBlockedNote id="gl-rates-blocked" ready={res.ready} className="mb-3" />}
 
       <PanelState
         loading={res.loading && !res.data}

@@ -34,19 +34,21 @@ test('rollout checkboxes: real defaults, one confirmation for the whole save, an
   await expect(page.getByText('Rollout (opt-in)', { exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.locator('#feature-recruitment')).toBeChecked();
   await expect(page.locator('#feature-release_a')).not.toBeChecked();
-  const messages: string[] = [];
-  page.once('dialog', d => { messages.push(d.message()); void d.dismiss(); });
   await page.locator('#feature-release_a').check();
   await page.getByRole('button', { name: 'Save changes' }).click();
-  await expect.poll(() => messages.length).toBe(1);
-  expect(messages[0]).toContain('Release A: entitlements & renewals');
-  expect(messages[0]).toContain('Rollout features change what this live tenant');
+  // One confirmation for the whole save, in the shared accessible dialog (not a native one); Cancel changes nothing.
+  const question = page.getByRole('dialog', { name: /Save these changes for/ });
+  await expect(question).toBeVisible();
+  await expect(question).toContainText('Release A: entitlements & renewals');
+  await expect(question).toContainText('Rollout features change what this live tenant');
+  await question.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(question).toHaveCount(0);
   expect(puts).toEqual([]);
   await page.getByRole('button', { name: 'Discard' }).click();
   await expect(page.locator('#feature-release_a')).not.toBeChecked();
-  page.once('dialog', d => { messages.push(d.message()); void d.accept(); });
   await page.locator('#feature-learning').check();
   await page.getByRole('button', { name: 'Save changes' }).click();
+  await page.getByRole('dialog', { name: /Save these changes for/ }).getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(page.locator('#feature-learning')).toBeChecked();
   expect(puts).toEqual([{ key: 'learning', body: { isEnabled: true } }]);
 });

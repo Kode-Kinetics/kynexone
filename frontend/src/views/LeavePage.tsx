@@ -5,7 +5,7 @@ import {
   acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
   type FloorCheck,
 } from '../lib/belowMinimum';
-import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
@@ -29,7 +29,7 @@ import type {
   LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard, LeaveAwaitingDecision, LeaveWaiting,
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
@@ -39,6 +39,8 @@ import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { useConfirm } from '../components/ui/useConfirm';
+import { useBusyKeys } from '../hooks/useBusyKeys';
+import { notifyRefusal } from '../lib/refusal';
 import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
@@ -145,29 +147,6 @@ function Modal({ title, onClose, children, wide }: {
   title: string; onClose: () => void; children: React.ReactNode; wide?: boolean;
 }) {
   return <SharedModal isOpen title={title} onClose={onClose} size={wide ? 'wizard' : 'md'}>{children}</SharedModal>;
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  const generatedId = useId();
-  let controlId = generatedId;
-  let associated = false;
-  const associateControl = (nodes: ReactNode): ReactNode => Children.map(nodes, node => {
-    if (!isValidElement(node)) return node;
-    const element = node as ReactElement<{ id?: string; children?: ReactNode }>;
-    if (!associated && typeof element.type === 'string' && ['input', 'select', 'textarea'].includes(element.type)) {
-      associated = true;
-      controlId = element.props.id ?? generatedId;
-      return cloneElement(element, { id: controlId });
-    }
-    return element.props.children ? cloneElement(element, {}, associateControl(element.props.children)) : element;
-  });
-  const controls = associateControl(children);
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300"><label htmlFor={controlId}>{label}</label>{info && <InfoTip text={info} fieldKey={infoKey} />}</div>
-      {controls}
-    </div>
-  );
 }
 
 const inp = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
@@ -737,6 +716,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 // ── My Requests Tab ───────────────────────────────────────────────────────────
 
 function MyRequestsTab() {
+  const { t, locale } = useLocale();
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  const { run, isBusy } = useBusyKeys();
   const [statusFilter, setStatusFilter] = useState('');
   const [cancelModal, setCancelModal] = useState<LeaveRequest | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -749,14 +731,30 @@ function MyRequestsTab() {
   useEffect(load, [statusFilter, list.reload]);
   const requestCount = list.total ?? requests.length;
 
-  const withdraw = async (id: string) => { try { await leaveRequestsApi.withdraw(id); load(); } catch (e) { notifyApiError(e, 'Withdrawal failed.'); } };
+  // Withdrawing retracts your own request: a confirmation, and one request however many times it is clicked.
+  const withdraw = async (id: string) => {
+    if (!(await confirm({
+      title: t('Withdraw this leave request?'),
+      message: t('The request is retracted before anyone decides it. You can submit a new one later.'),
+      confirmLabel: t('Withdraw request'),
+    }))) return;
+    await run(`withdraw:${id}`, async () => {
+      try { await leaveRequestsApi.withdraw(id); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The leave request was not withdrawn'), fix: t('Reload the list to see its current status.') }, t, locale); }
+    });
+  };
   const cancel = async () => {
     if (!cancelModal || !cancelReason) return;
-    try { await leaveRequestsApi.cancel(cancelModal.id, cancelReason); setCancelModal(null); load(); } catch (e) { notifyApiError(e, 'Cancellation failed.'); }
+    const id = cancelModal.id;
+    await run(`cancel:${id}`, async () => {
+      try { await leaveRequestsApi.cancel(id, cancelReason); setCancelModal(null); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The cancellation was not requested'), fix: t('Check the reason and try again.') }, t, locale); }
+    });
   };
 
   return (
     <div className="space-y-4">
+      {confirmDialog}
       <div className="flex flex-wrap items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All Statuses</option>
@@ -798,7 +796,9 @@ function MyRequestsTab() {
                 <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge status={r.status} />
                   {['Submitted', 'PendingManagerApproval'].includes(r.status) && (
-                    <button type="button" className={btn.sm} onClick={() => withdraw(r.id)}>Withdraw</button>
+                    <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => void withdraw(r.id)} disabled={isBusy(`withdraw:${r.id}`)} aria-busy={isBusy(`withdraw:${r.id}`) || undefined}>
+                      {isBusy(`withdraw:${r.id}`) ? t('Withdrawing…') : t('Withdraw')}
+                    </button>
                   )}
                   {r.status === 'Approved' && (
                     <button type="button" className={btn.sm} onClick={() => { setCancelModal(r); setCancelReason(''); }}>Cancel</button>
@@ -820,7 +820,7 @@ function MyRequestsTab() {
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setCancelModal(null)}>Back</button>
-              <button type="button" className={btn.danger} onClick={cancel}>Request Cancellation</button>
+              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={cancel} disabled={isBusy(`cancel:${cancelModal.id}`)} aria-busy={isBusy(`cancel:${cancelModal.id}`) || undefined}>Request Cancellation</button>
             </div>
           </div>
         </Modal>
@@ -892,6 +892,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const [queueTotal, setQueueTotal] = useState(0);
   const [queueCut, setQueueCut] = useState(false);
   const { t, locale } = useLocale();
+  const { run, isBusy } = useBusyKeys();
   const [loading, setLoading] = useState(true);
   const [rejectModal, setRejectModal] = useState<LeaveAwaitingDecision | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -913,10 +914,18 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
   const cancellation = useLeaveCancellationDecision(load);
 
-  const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch (e) { notifyApiError(e, 'Approval failed.'); } };
+  // One request per decision: Approve and Reject on a row are disabled while either is running.
+  const approve = (id: string) => run(`decide:${id}`, async () => {
+    try { await leaveRequestsApi.approve(id); load(); }
+    catch (e) { notifyRefusal(e, { what: t('The leave request was not approved'), fix: t('Reload the queue: it may have been decided already.') }, t, locale); }
+  });
   const reject = async () => {
     if (!rejectModal || !rejectReason) return;
-    try { await leaveRequestsApi.reject(rejectModal.id, rejectReason); setRejectModal(null); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); }
+    const id = rejectModal.id;
+    await run(`decide:${id}`, async () => {
+      try { await leaveRequestsApi.reject(id, rejectReason); setRejectModal(null); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The leave request was not rejected'), fix: t('Reload the queue: it may have been decided already.') }, t, locale); }
+    });
   };
 
   return (
@@ -964,8 +973,10 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     : <>
                         <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
                         {canDecide && <div className="flex gap-2">
-                          <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectReason(''); }}>Reject</button>
-                          <button type="button" className={btn.primary} onClick={() => approve(r.id)}>Approve</button>
+                          <button type="button" className={`${btn.ghost} disabled:opacity-50`} onClick={() => { setRejectModal(r); setRejectReason(''); }} disabled={isBusy(`decide:${r.id}`)}>Reject</button>
+                          <button type="button" className={`${btn.primary} disabled:opacity-50`} onClick={() => void approve(r.id)} disabled={isBusy(`decide:${r.id}`)} aria-busy={isBusy(`decide:${r.id}`) || undefined}>
+                            {isBusy(`decide:${r.id}`) ? t('Approving…') : t('Approve')}
+                          </button>
                         </div>}
                       </>}
                 </div>
@@ -983,7 +994,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             </Field>
             <div className="flex justify-end gap-2">
               <button type="button" className={btn.ghost} onClick={() => setRejectModal(null)}>Cancel</button>
-              <button type="button" className={btn.danger} onClick={reject}>Reject Request</button>
+              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={reject} disabled={isBusy(`decide:${rejectModal.id}`)} aria-busy={isBusy(`decide:${rejectModal.id}`) || undefined}>Reject Request</button>
             </div>
           </div>
         </Modal>
@@ -2006,6 +2017,9 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
 
 function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const { hasPermission } = useAuth();
+  const { t, locale } = useLocale();
+  const { ask, dialog: confirmDialog } = useConfirm();
+  const { run, isBusy } = useBusyKeys();
   const [payrollRuns, setPayrollRuns] = useState<PayrollRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<Record<string, string>>({});
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -2048,23 +2062,49 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     setSaving(false);
   };
 
-  const hrApprove = async (id: string) => { try { await encashmentApi.hrApprove(id); load(); } catch (e) { notifyApiError(e, 'HR approval failed.'); } };
+  const hrApprove = (id: string) => run(`row:${id}`, async () => {
+    try { await encashmentApi.hrApprove(id); load(); }
+    catch (e) { notifyRefusal(e, { what: t('The encashment request was not approved'), fix: t('Reload the list: it may have been decided already.') }, t, locale); }
+  });
   const payrollApprove = async (id: string) => {
     const payrollRunId = selectedRun[id];
     if (!payrollRunId) return;
-    try { await encashmentApi.payrollApprove(id, payrollRunId); load(); }
-    catch (e) { notifyApiError(e, 'Payroll approval failed. Verify the run is open and matches the employee legal entity.'); }
+    await run(`row:${id}`, async () => {
+      try { await encashmentApi.payrollApprove(id, payrollRunId); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The payroll approval was not recorded'), fix: t('Check that the run is open and belongs to the same legal entity as the employee.') }, t, locale); }
+    });
   };
+  // Void and reject ask for a reason in a real dialog (they were native prompt() calls, and cancelling the prompt still rejected).
   const voidEncashment = async (id: string) => {
-    const reason = prompt('Void reason (required):')?.trim() ?? '';
-    if (reason.length < 5) return;
-    try { await encashmentApi.void(id, reason); load(); }
-    catch (e) { notifyApiError(e, 'Void failed. If payroll was processed, void or reopen the payroll run first.'); }
+    const answer = await ask({
+      title: t('Void this encashment?'),
+      message: t('The payout is cancelled. If payroll has already processed it, void or reopen the payroll run first.'),
+      confirmLabel: t('Void encashment'),
+      reason: { required: true, minLength: 5, label: t('Void reason') },
+    });
+    if (!answer.confirmed) return;
+    await run(`row:${id}`, async () => {
+      try { await encashmentApi.void(id, answer.reason); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The encashment was not voided'), fix: t('If payroll was processed, void or reopen the payroll run first.') }, t, locale); }
+    });
   };
-  const reject = async (id: string) => { const n = prompt('Rejection notes:') ?? ''; try { await encashmentApi.reject(id, n); load(); } catch (e) { notifyApiError(e, 'Rejection failed.'); } };
+  const reject = async (id: string) => {
+    const answer = await ask({
+      title: t('Reject this encashment request?'),
+      message: t('The request is marked as rejected. Add notes so the employee knows why.'),
+      confirmLabel: t('Reject request'),
+      reason: { required: false, label: t('Rejection notes') },
+    });
+    if (!answer.confirmed) return;
+    await run(`row:${id}`, async () => {
+      try { await encashmentApi.reject(id, answer.reason); load(); }
+      catch (e) { notifyRefusal(e, { what: t('The encashment request was not rejected'), fix: t('Reload the list: it may have been decided already.') }, t, locale); }
+    });
+  };
 
   return (
     <div className="space-y-4">
+      {confirmDialog}
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-slate-400">{loading ? '' : `${encashmentCount} encashment request${encashmentCount !== 1 ? 's' : ''}`}</p>
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Request Encashment</button>
@@ -2088,8 +2128,8 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 <StatusBadge status={r.status} />
                 {r.status === 'Pending' && canHrApprove && (
                   <div className="flex gap-2">
-                    <button type="button" className={btn.primary} onClick={() => hrApprove(r.id)}>HR Approve</button>
-                    <button type="button" className={btn.danger} onClick={() => reject(r.id)}>Reject</button>
+                    <button type="button" className={`${btn.primary} disabled:opacity-50`} onClick={() => void hrApprove(r.id)} disabled={isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined}>HR Approve</button>
+                    <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void reject(r.id)} disabled={isBusy(`row:${r.id}`)}>Reject</button>
                   </div>
                 )}
                 {r.status === 'HRApproved' && canPayrollApprove && (
@@ -2107,13 +2147,13 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                         </option>
                       ))}
                     </select>
-                    <button type="button" className={btn.primary} disabled={!selectedRun[r.id]} onClick={() => payrollApprove(r.id)}>
+                    <button type="button" className={`${btn.primary} disabled:opacity-50`} disabled={!selectedRun[r.id] || isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined} onClick={() => void payrollApprove(r.id)}>
                       Payroll Approve
                     </button>
                   </div>
                 )}
                 {r.status === 'PayrollApproved' && canVoid && (
-                  <button type="button" className={btn.danger} onClick={() => voidEncashment(r.id)}>Void</button>
+                  <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void voidEncashment(r.id)} disabled={isBusy(`row:${r.id}`)}>Void</button>
                 )}
               </div>
             </div>

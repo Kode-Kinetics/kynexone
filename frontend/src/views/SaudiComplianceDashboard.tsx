@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import {
   ShieldCheck, AlertTriangle, CheckCircle, XCircle, RefreshCw, Banknote,
   FileWarning, Users, Wifi, TrendingUp, ExternalLink, Info,
@@ -9,6 +10,7 @@ import {
 import client from '../api/client';
 import { useLocale } from '../contexts/LocaleContext';
 import { pluralize } from '../lib/plural';
+import { complianceActionLabel, resolveComplianceRoute } from '../lib/complianceRoutes';
 import {
   READINESS_UNKNOWN_LABEL, formatReadinessPercent, readinessCaption, readinessToneClass,
 } from '../lib/complianceDisplay';
@@ -358,6 +360,7 @@ function OverallScoreCard({ overall, qiwa, wps, gosi }: {
 // ── Action center ─────────────────────────────────────────────────────────────
 
 function ActionCenter({ items }: { items: ActionItem[] }) {
+  const { t } = useLocale();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   if (items.length === 0) {
@@ -414,12 +417,12 @@ function ActionCenter({ items }: { items: ActionItem[] }) {
                   {expanded === item.id ? 'Less' : 'More'}
                 </button>
                 {item.route && item.canAct && (
-                  <a
-                    href={item.route}
+                  <Link
+                    href={resolveComplianceRoute(item.route)}
                     className="flex items-center gap-1 rounded-lg border border-sapphire/30 px-2.5 py-1 text-xs font-semibold text-sapphire hover:bg-sapphire/5 dark:border-cyanAccent/30 dark:text-cyanAccent dark:hover:bg-cyanAccent/5"
                   >
-                    Fix <ExternalLink className="h-3 w-3" />
-                  </a>
+                    {t(complianceActionLabel(item.route))} <ExternalLink className="h-3 w-3" />
+                  </Link>
                 )}
               </div>
             </div>
@@ -808,6 +811,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 ];
 
 export function SaudiComplianceDashboard() {
+  const { t } = useLocale();
   const [tab, setTab] = useState<Tab>('dashboard');
 
   return (
@@ -815,7 +819,7 @@ export function SaudiComplianceDashboard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-6 w-6 text-sapphire dark:text-cyanAccent" />
-          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">Saudi Compliance Command Center</h1>
+          <h1 className="text-xl font-semibold text-slate-800 dark:text-slate-100">{t('Saudi Compliance Command Center')}</h1>
         </div>
         <ModuleSettingsLink sections={['saudiCompliance']} label={msg('Saudi compliance settings')} />
       </div>

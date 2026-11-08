@@ -239,7 +239,7 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
           <div className="flex items-center gap-2">
             <div role="progressbar" aria-label={t('Mass entry progress')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={summary.percent}
               className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
-              <div className={`h-full rounded-full transition-[width] duration-300 ${barColour}`} style={{ width: `${summary.percent}%` }} />
+              <div className={`h-full rounded-full transition-[width] duration-base ${barColour}`} style={{ width: `${summary.percent}%` }} />
             </div>
             <span className="w-10 text-end text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{summary.percent}%</span>
           </div>

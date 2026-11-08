@@ -1,5 +1,6 @@
 'use client';
 
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createPortal } from 'react-dom';
@@ -1166,9 +1167,7 @@ function GradesTab() {
       <UnassignedCompanyNotice count={unassignedCount} onShow={() => setCompanyFilter(UNASSIGNED_FILTER)} />
       {removal.notice}
       {/* The guided path continues: grades first, then what each grade gets, in the section right below this one. */}
-      {benefitsByGrade && items.length > 0 && <p className="mb-3 rounded-lg border border-sapphire/30 bg-sapphire/5 p-2 text-sm text-slate-700 dark:text-slate-200">
-        {t('Next, set what each grade gets: allowances, contract benefits and facilities.')}{' '}
-        <Link href="/setup?tab=gradeBenefits" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link></p>}
+      {benefitsByGrade && items.length > 0 && <BenefitsByGradeDoor className="mb-3" intro={t('Next, set what each grade gets: allowances, contract benefits and facilities.')} />}
       <TableShell columns={[msg('Code'), msg('Name'), msg('Company'), msg('Band'), msg('Level'), msg('Pay Range'), msg('Status')]} onAdd={access.canWrite ? openNew : undefined} writeBlockedReason={access.writeBlockedReason} addLabel={msg('Add Grade')} loading={loading} loadError={loadError} onRetry={load} empty={shown.length === 0} emptyLabel={msg('No grades yet')} emptyHint={msg('Add your first grade, or import a CSV.')}
         filter={<><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /><ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={items.filter((x) => !x.isActive).length} /></>}
         actions={
@@ -1225,8 +1224,7 @@ function GradesTab() {
               <FormField label={t('Currency')}><input value={form.currency ?? ''} onChange={(e) => f('currency', e.target.value)} className="input w-full" placeholder={t('Company currency')} /></FormField>
             </div>
             {benefitsByGrade
-              ? <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('Allowances and benefits for this grade are set in Benefits by grade.')}{' '}
-                <Link href="/setup?tab=gradeBenefits" className="text-sapphire underline">{t('Open Benefits by grade')}</Link></p>
+              ? <BenefitsByGradeDoor className="mt-2" intro={t('Allowances and benefits for this grade are set in Benefits by grade.')} />
               : <GradePackageEditor companyId={form.companyId ?? editing?.companyId ?? null} components={payScale} onChange={setPayScale}
                   minSalary={form.minSalary} maxSalary={form.maxSalary} currency={form.currency || undefined} onCatalogue={setCatalogue} />}
           </div>
