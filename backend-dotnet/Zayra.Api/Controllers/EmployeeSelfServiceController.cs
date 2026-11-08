@@ -61,14 +61,17 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly IDocumentStorage? _documentStorage;
     private readonly TimeProvider _clock;
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
     // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
-        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
+        _notifications = notifications;
         _policySettings = policySettings;
         // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
         _clock = clock ?? TimeProvider.System;
@@ -849,6 +852,9 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             return BadRequest(new { message = ex.Message });
         }
+        // Self-Service used to notify nobody: the approver found out only by opening a queue. Same path as the Leave screen.
+        if (_notifications is not null)
+            await Zayra.Api.Infrastructure.Leave.LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId, leave, cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
         return Created($"/api/ess/leave/request/{leave.Id}", leave);
     }
