@@ -26,7 +26,7 @@ import type {
   LeaveType, LeavePolicy, EmployeeLeaveBalance, LeaveRequest, StatutoryLeaveContext,
   PublicHolidayCalendar, PublicHoliday, LeaveBlackoutDate,
   LeaveEncashmentRequest, CompOffCredit, AbsenceRecord,
-  LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard,
+  LeaveCalendarEntry, LeaveAIInsight, LeaveDashboard, LeaveAwaitingDecision, LeaveWaiting,
 } from '../api/leave';
 import { ImportExportToolbar, downloadCsv } from '../components/ImportExportToolbar';
 import { InfoTip } from '../components/InfoTip';
@@ -44,6 +44,7 @@ import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
 import { EnumLabel, type EnumName } from '../components/EnumLabel';
@@ -106,6 +107,7 @@ const STATUS_COLORS: Record<string, string> = {
   Approved: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
   Rejected: 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400',
   Cancelled: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
+  CancellationRequested: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
   Withdrawn: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
   PayrollProcessed: 'bg-teal-50 text-teal-700 dark:bg-teal-500/10 dark:text-teal-400',
   Pending: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
@@ -268,7 +270,7 @@ function LoadFailure({ what, error }: { what: string; error: unknown }) {
 function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab) => void; groupFilter?: GroupFilter }) {
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
-  const [pending, setPending] = useState<LeaveRequest[]>([]);
+  const [pending, setPending] = useState<LeaveAwaitingDecision[]>([]);
   const [pendingTotal, setPendingTotal] = useState<number | null>(null);
   // Whether each list has ANSWERED yet — not whether it came back empty. Both start `[]`, so
   // without this the screen said "No employees on leave today." and showed a hard 0 while the
@@ -288,9 +290,10 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
       // `finally`, not `then`: a failed call has also stopped loading. It degrades to the empty
       // statement rather than spinning forever, which is what the KPI fallback already assumed.
       .finally(() => setOnLeaveLoaded(true));
-    // A six-row preview beside "View all"; the count comes from the server total, not the rows shown.
-    leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter, pageSize: 6 })
-      .then(r => { setPending(Array.isArray(r?.items) ? r.items.slice(0, 6) : []); setPendingTotal(typeof r?.total === 'number' ? r.total : null); })
+    // A six-row preview beside "View all": what THIS viewer may decide now, at any step (the approvals tab's own
+    // list), not just the manager step.
+    leaveRequestsApi.awaitingDecision(groupFilter)
+      .then(all => { const rows = Array.isArray(all?.items) ? all.items : []; setPending(rows.slice(0, 6)); setPendingTotal(rows.length); })
       .catch(() => {})
       .finally(() => setPendingLoaded(true));
   }, [groupFilter.companyId, groupFilter.branchId]);
@@ -757,7 +760,7 @@ function MyRequestsTab() {
       <div className="flex flex-wrap items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">All Statuses</option>
-          {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', 'Approved', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
+          {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', 'Approved', 'CancellationRequested', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
             <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>
           ))}
         </select>
@@ -828,14 +831,69 @@ function MyRequestsTab() {
 
 // ── Approvals Tab ─────────────────────────────────────────────────────────────
 
+/**
+ * Read-only: pending leave the viewer can see but does not decide, with the step it is at and who holds it. HR
+ * Officers and Supervisors see leave without deciding it; deciders see what is waiting on someone else. No buttons.
+ */
+function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: GroupFilter; reloadKey?: number }) {
+  const { t, locale } = useLocale();
+  const [rows, setRows] = useState<LeaveWaiting[]>([]);
+  const [total, setTotal] = useState(0);
+  const [cut, setCut] = useState(false);
+  const { companyId, branchId } = groupFilter;
+  useEffect(() => {
+    leaveRequestsApi.waitingOnOthers({ companyId, branchId })
+      .then(r => { setRows(r.items); setTotal(r.total); setCut(r.truncated); })
+      .catch(() => { setRows([]); setCut(false); });
+  }, [companyId, branchId, reloadKey]);
+  if (rows.length === 0) return null;
+  const holder = (r: LeaveWaiting) =>
+    r.holderNames.length > 0 ? `${r.holderNames.join(', ')} (${r.holderRole})` : r.holderRole;
+  return (
+    <section aria-label={t('Waiting on others')} data-testid="leave-waiting-on-others" className="space-y-3 pt-2">
+      <div>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Waiting on others')}</h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('You can see these, but someone else decides them.')}</p>
+      </div>
+      {cut && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+          {t('Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.', { shown: (1000).toLocaleString(locale), total: total.toLocaleString(locale) })}
+        </p>
+      )}
+      <ul className="surface divide-y divide-slate-100 dark:divide-white/5">
+        {rows.map(r => (
+          <li key={`${r.kind}-${r.id}`} data-testid="leave-waiting-row" className="flex flex-wrap items-start justify-between gap-3 px-5 py-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium text-slate-900 dark:text-white">{r.employeeName}</p>
+                <StatusBadge status={r.status} />
+              </div>
+              <p className="text-xs text-slate-500">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400" data-testid="leave-waiting-holder">
+              {r.stepNumber != null ? `${t('At step {step}', { step: r.stepNumber })} · ` : ''}{t('Waiting for {holder}', { holder: holder(r) })}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
   // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
   const { hasPermission } = useAuth();
   const canDecide = hasPermission('leave.approve');
-  const [requests, setRequests] = useState<LeaveRequest[]>([]);
+  // Everything THIS viewer may decide now, from the server: requests at any step they hold (manager, HR, a
+  // named person) and employees' requests to cancel approved leave. The tab used to list one status.
+  const [requests, setRequests] = useState<LeaveAwaitingDecision[]>([]);
+  // How many requests are pending in the viewer's scope, and whether the server stopped reading at its cap.
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [queueCut, setQueueCut] = useState(false);
+  const { t, locale } = useLocale();
   const [loading, setLoading] = useState(true);
-  const [rejectModal, setRejectModal] = useState<LeaveRequest | null>(null);
+  const [rejectModal, setRejectModal] = useState<LeaveAwaitingDecision | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [history, setHistory] = useState<Record<string, StatutoryLeaveContext>>({});
   // A failed load says so; "No pending approvals" after a failure would tell a manager the queue is clear.
@@ -843,16 +901,17 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   const load = () => {
     setLoading(true);
-    // The whole queue: an approver used to see only the first 25 pending requests.
-    leaveRequestsApi.listAll({ status: 'PendingManagerApproval', ...groupFilter }).then(all => {
-      setRequests(all); setLoadError(null); setLoading(false);
+    leaveRequestsApi.awaitingDecision(groupFilter).then(all => {
+      setRequests(all.items); setQueueTotal(all.total); setQueueCut(all.truncated); setLoadError(null); setLoading(false);
       // Saudi statutory leave is decided with the employee's earlier leave of the same kind in view.
-      if (all.length > 0)
-        leaveRequestsApi.statutoryHistory(all.map(r => r.id)).then(setHistory).catch(() => setHistory({}));
+      const decisions = all.items.filter(r => r.kind === 'Decision');
+      if (decisions.length > 0)
+        leaveRequestsApi.statutoryHistory(decisions.map(r => r.id)).then(setHistory).catch(() => setHistory({}));
       else setHistory({});
-    }).catch(e => { setRequests([]); setLoadError(e); setLoading(false); });
+    }).catch(e => { setRequests([]); setQueueCut(false); setLoadError(e); setLoading(false); });
   };
   useEffect(load, [groupFilter.companyId, groupFilter.branchId]);
+  const cancellation = useLeaveCancellationDecision(load);
 
   const approve = async (id: string) => { try { await leaveRequestsApi.approve(id); load(); } catch (e) { notifyApiError(e, 'Approval failed.'); } };
   const reject = async () => {
@@ -863,6 +922,11 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>}
+      {loadError == null && queueCut && (
+        <p role="status" data-testid="leave-queue-cut" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          {t('Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.', { shown: (1000).toLocaleString(locale), total: queueTotal.toLocaleString(locale) })}
+        </p>
+      )}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
         <LoadFailure what="Pending approvals" error={loadError} />
       ) : requests.length === 0 ? (
@@ -873,10 +937,13 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       ) : (
         <div className="space-y-3">
           {requests.map(r => (
-            <div key={r.id} className="surface p-5">
+            <div key={`${r.kind}-${r.id}`} data-testid={r.kind === 'Cancellation' ? 'leave-approval-cancellation' : 'leave-approval-decision'} className="surface p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
+                    <StatusBadge status={r.status} />
+                  </div>
                   <p className="text-xs text-slate-400">{r.departmentName} · {r.designationTitle}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-slate-300">{r.leaveTypeName}</span>
@@ -884,21 +951,30 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</span>
                     {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
-                  {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
-                  <StatutoryLeaveHistory context={history[r.id]} />
+                  {r.kind === 'Cancellation'
+                    ? <LeaveCancellationDetail item={r} />
+                    : <>
+                        {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
+                        <StatutoryLeaveHistory context={history[r.id]} />
+                      </>}
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
-                  <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
-                  {canDecide && <div className="flex gap-2">
-                    <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectReason(''); }}>Reject</button>
-                    <button type="button" className={btn.primary} onClick={() => approve(r.id)}>Approve</button>
-                  </div>}
+                  {r.kind === 'Cancellation'
+                    ? <LeaveCancellationActions item={r} busy={cancellation.busyId === r.id} onApprove={cancellation.approve} onKeep={cancellation.keep} />
+                    : <>
+                        <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
+                        {canDecide && <div className="flex gap-2">
+                          <button type="button" className={btn.ghost} onClick={() => { setRejectModal(r); setRejectReason(''); }}>Reject</button>
+                          <button type="button" className={btn.primary} onClick={() => approve(r.id)}>Approve</button>
+                        </div>}
+                      </>}
                 </div>
               </div>
             </div>
           ))}
         </div>
       )}
+      <WaitingOnOthers groupFilter={groupFilter} reloadKey={requests.length} />
       {rejectModal && (
         <Modal title={`Reject Leave — ${rejectModal.employeeName}`} onClose={() => setRejectModal(null)}>
           <div className="space-y-4">
@@ -912,6 +988,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
           </div>
         </Modal>
       )}
+      {cancellation.dialog}
     </div>
   );
 }

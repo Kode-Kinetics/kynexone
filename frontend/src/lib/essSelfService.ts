@@ -29,6 +29,18 @@ export function leaveStatus(status: string): { label: string; tone: StatusTone }
   }
 }
 
+/**
+ * Whom a pending cancellation of approved leave is waiting on, as an English t() key plus its params. The server
+ * lists the people who may decide it (the employee's line manager, HR, Admin); none listed still says it is waiting,
+ * so the status is never a bare "Cancellation requested" with no owner.
+ */
+export function cancellationHolders(awaiting: readonly string[] | null | undefined): { key: string; params?: { names: string } } {
+  const names = (awaiting ?? []).map((n) => n.trim()).filter(Boolean);
+  return names.length > 0
+    ? { key: 'Your cancellation request is with {names}.', params: { names: names.join(', ') } }
+    : { key: 'Your cancellation request is waiting for a decision.' };
+}
+
 /** A plain-language label (an English t() key) and a tone for an overtime request status. */
 export function overtimeStatus(status: string): { label: string; tone: StatusTone } {
   if (status.startsWith('Pending')) return { label: 'Waiting for approval', tone: 'amber' };

@@ -159,8 +159,9 @@ test.describe('leave history lists show one page at a time and say how many ther
     }
     // Counts above the lists come from the server total, not the rows on screen.
     for (const count of ['balances', 'requests', 'credits', 'absences']) expect(leave).toContain(`list.total ?? ${count}.length`);
-    // The dashboard preview asks for the six rows it shows and counts from the total.
-    expect(leave).toContain("leaveRequestsApi.list({ status: 'PendingManagerApproval', ...groupFilter, pageSize: 6 })");
+    // The dashboard preview shows six rows of what the viewer may decide and counts from the whole queue.
+    expect(leave).toContain('leaveRequestsApi.awaitingDecision(groupFilter)');
+    expect(leave).toContain('setPending(rows.slice(0, 6)); setPendingTotal(rows.length);');
   });
 });
 

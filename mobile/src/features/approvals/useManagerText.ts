@@ -60,6 +60,12 @@ export function useManagerText() {
 
     const outcome = (o: DecisionOutcome, item: InboxItem): string => {
       const vars = { subject: subject(item), name: requester(item) };
+      // A cancellation of approved leave has its own words: "approved" means the leave is cancelled, "rejected" that it stays.
+      if (item.cancellation) {
+        return o.kind === 'rejected'
+          ? t('manager.approvals.outcome.cancellationKept', vars)
+          : t('manager.approvals.outcome.cancellationApproved', vars);
+      }
       switch (o.kind) {
         case 'approved': return t('manager.approvals.outcome.approved', vars);
         case 'rejected': return t('manager.approvals.outcome.rejected', vars);

@@ -3,11 +3,11 @@
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { essActionsApi, type EssBalance } from '@/src/api/ess';
-import type { LeaveRequest, LeaveType } from '@/src/api/leave';
+import { leaveRequestsApi, type LeaveRequest, type LeaveType } from '@/src/api/leave';
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { canCancelLeave, leaveStatus } from '@/src/lib/essSelfService';
+import { canCancelLeave, cancellationHolders, leaveStatus } from '@/src/lib/essSelfService';
 import { isDeclarableLeave, isSaudiStatutoryLeave } from '@/src/lib/ksaStatutoryLeave';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
 import { requestFailureReason } from '@/src/lib/requestFailure';
@@ -33,6 +33,8 @@ export function MyLeavePage() {
   const [submitting, setSubmitting] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  // Who now holds each pending cancellation of approved leave (request id -> names), from the leave detail.
+  const [cancellationHolderNames, setCancellationHolders] = useState<Record<string, string[]>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,6 +53,16 @@ export function MyLeavePage() {
   }, [ownEmployeeId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // "Cancellation requested" alone left the employee not knowing whom it was waiting on.
+  useEffect(() => {
+    for (const r of requests.filter((x) => x.status === 'CancellationRequested')) {
+      if (cancellationHolderNames[r.id]) continue;
+      leaveRequestsApi.detail(r.id)
+        .then((d) => setCancellationHolders((prev) => ({ ...prev, [r.id]: d.cancellation?.awaiting ?? [] })))
+        .catch(() => setCancellationHolders((prev) => ({ ...prev, [r.id]: [] })));
+    }
+  }, [requests, cancellationHolderNames]);
 
   const selectedType = types.find((x) => x.id === form.leaveTypeId);
   const statutoryKind = selectedType ? isSaudiStatutoryLeave(selectedType.code, selectedType.nameEn, selectedType.category) : null;
@@ -225,6 +237,11 @@ export function MyLeavePage() {
                           </p>
                           {r.status === 'Rejected' && r.rejectionReason && (
                             <p className="text-xs text-rose-600 dark:text-rose-400">{r.rejectionReason}</p>
+                          )}
+                          {r.status === 'CancellationRequested' && cancellationHolderNames[r.id] && (
+                            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="cancellation-holders">
+                              {(() => { const h = cancellationHolders(cancellationHolderNames[r.id]); return h.params ? t('Your cancellation request is with {names}.', h.params) : t('Your cancellation request is waiting for a decision.'); })()}
+                            </p>
                           )}
                         </div>
                         <div className="flex items-center gap-2">

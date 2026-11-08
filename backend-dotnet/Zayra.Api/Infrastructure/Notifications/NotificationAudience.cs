@@ -87,8 +87,18 @@ public static class NotificationAudience
             _ => [role],
         };
         if (roles.Length == 0) return [];
-        var normalized = roles.Select(r => r.ToUpperInvariant()).ToArray();
+        return await RoleHoldersAsync(db, tenantId, roles, companyId, MaxQueueRecipients, ct);
+    }
 
+    /// <summary>
+    /// The active logins holding any of <paramref name="roles"/>, limited to those whose company access covers
+    /// <paramref name="companyId"/> (group-scope logins always qualify). The role query behind
+    /// <see cref="QueueHoldersAsync"/>, for callers that apply their own further filter before capping.
+    /// </summary>
+    public static async Task<IReadOnlyList<Guid>> RoleHoldersAsync(ZayraDbContext db, Guid tenantId, IEnumerable<string> roles,
+        Guid? companyId, int take, CancellationToken ct)
+    {
+        var normalized = roles.Select(r => r.Trim().ToUpperInvariant()).ToArray();
         return await (
                 from user in db.Users.AsNoTracking()
                 join assignment in db.UserRoles.AsNoTracking() on user.Id equals assignment.UserId
@@ -102,7 +112,7 @@ public static class NotificationAudience
                 select user.Id)
             .Distinct()
             .OrderBy(id => id)
-            .Take(MaxQueueRecipients)
+            .Take(take)
             .ToListAsync(ct);
     }
 
