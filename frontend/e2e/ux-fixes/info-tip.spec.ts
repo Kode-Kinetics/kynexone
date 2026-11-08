@@ -14,7 +14,7 @@ const open = async (page: Parameters<typeof boot>[0], persona: Persona, locale: 
 
 test('keyboard focus opens the popover, Esc dismisses it, focus stays on the icon', async ({ page }) => {
   await open(page, withoutSetup);
-  const icon = page.getByRole('button', { name: 'About Leave Type *' });
+  const icon = page.getByRole('button', { name: 'About Leave Type', exact: true });
   await icon.focus();
   const tip = page.getByRole('tooltip').filter({ hasText: 'The category of leave' });
   await expect(tip).toBeVisible();
@@ -26,7 +26,7 @@ test('keyboard focus opens the popover, Esc dismisses it, focus stays on the ico
 
 test('the popover stays open while the pointer moves onto it', async ({ page }) => {
   await open(page, withoutSetup);
-  const icon = page.getByRole('button', { name: 'About Leave Type *' });
+  const icon = page.getByRole('button', { name: 'About Leave Type', exact: true });
   await icon.hover();
   const tip = page.getByRole('tooltip').filter({ hasText: 'The category of leave' });
   await expect(tip).toBeVisible();
@@ -38,7 +38,7 @@ test('the popover stays open while the pointer moves onto it', async ({ page }) 
 
 test('an ordinary user never sees the developer key; the Setup permission holder does', async ({ page }) => {
   await open(page, withoutSetup);
-  await page.getByRole('button', { name: 'About Leave Type *' }).focus();
+  await page.getByRole('button', { name: 'About Leave Type', exact: true }).focus();
   await expect(page.getByRole('tooltip').filter({ hasText: 'The category of leave' })).toBeVisible();
   await expect(page.getByText(/key:/i)).toHaveCount(0);
   await expect(page.getByText('leave.leave_type')).toHaveCount(0);
@@ -46,13 +46,13 @@ test('an ordinary user never sees the developer key; the Setup permission holder
 
 test('the Setup permission holder sees the field key', async ({ page }) => {
   await open(page, withSetup);
-  await page.getByRole('button', { name: 'About Leave Type *' }).focus();
+  await page.getByRole('button', { name: 'About Leave Type', exact: true }).focus();
   await expect(page.getByText('leave.leave_type')).toBeVisible();
 });
 
 test('the hit area is 24 px on a mouse (44 px on a coarse pointer, by the media rule)', async ({ page }) => {
   await open(page, withoutSetup);
-  const box = await page.getByRole('button', { name: 'About Leave Type *' }).boundingBox();
+  const box = await page.getByRole('button', { name: 'About Leave Type', exact: true }).boundingBox();
   expect(box?.width).toBe(24);
   expect(box?.height).toBe(24);
 });

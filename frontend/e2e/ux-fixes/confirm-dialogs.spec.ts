@@ -43,6 +43,9 @@ test('a long reason is sent whole: the server sets no length limit on these reas
   await page.getByRole('tab', { name: 'Encashment' }).or(page.getByRole('button', { name: 'Encashment' })).first().click();
   await page.getByRole('button', { name: 'Void', exact: true }).click();
   const long = 'x'.repeat(800);
+  // The dialog moves focus to Cancel on the next animation frame; typing before that lands the first keys in the
+  // reason box and the rest on Cancel, so wait for the dialog to settle (focus on Cancel) before filling the reason.
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Cancel' })).toBeFocused();
   await page.getByTestId('confirm-reason').pressSequentially(long);
   const voidButton = page.getByRole('dialog').getByRole('button', { name: 'Void encashment' });
   await expect(voidButton).toBeEnabled();
