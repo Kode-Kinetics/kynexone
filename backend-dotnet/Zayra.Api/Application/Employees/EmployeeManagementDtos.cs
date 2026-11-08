@@ -787,6 +787,16 @@ public sealed class SensitiveDocumentAccessException : Exception
     public SensitiveDocumentAccessException() : base("This document is protected (identity, payroll or contract). Changing it needs the employees.sensitive permission.") { }
 }
 
+/// <summary>
+/// Separation of duties on a document decision (the owner's strict rule: the subject never decides). The employee whose document it is,
+/// and the user who uploaded it, may not verify or reject it, even holding employees.documents.
+/// </summary>
+public sealed class DocumentSelfVerificationException : Exception
+{
+    public const string Code = "document_self_verification";
+    public DocumentSelfVerificationException() : base("You cannot verify or reject this document: it is your own, or you uploaded it. Someone else in HR must decide.") { }
+}
+
 public static class EmployeeDocumentSensitivity
 {
     public const string Identity = "Identity";

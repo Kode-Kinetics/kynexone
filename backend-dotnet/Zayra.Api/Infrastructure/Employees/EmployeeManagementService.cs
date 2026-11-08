@@ -1480,11 +1480,21 @@ public class EmployeeManagementService : IEmployeeManagementService
         return doc;
     }
 
+    /// <summary>The subject never decides: neither a login of the employee the document belongs to, nor the user who uploaded it.</summary>
+    private async Task RequireNotSubjectOrUploaderAsync(EmployeeDocument doc, Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
+    {
+        if (context.UserId is not Guid actor) return;
+        if (doc.UploadedBy == actor) throw new DocumentSelfVerificationException();
+        var subjectLogins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, ct);
+        if (subjectLogins.Contains(actor)) throw new DocumentSelfVerificationException();
+    }
+
     public async Task<EmployeeDocument?> VerifyDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string? notes, RequestContext context, CancellationToken cancellationToken)
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
+        await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Verified";
@@ -1548,6 +1558,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
+        await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Rejected";

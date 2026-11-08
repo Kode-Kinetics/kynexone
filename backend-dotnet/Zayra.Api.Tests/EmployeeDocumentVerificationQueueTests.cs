@@ -293,6 +293,54 @@ public class EmployeeDocumentVerificationQueueTests
         rows.Single(r => r.DocumentType == "Degree").Should().Match<ESSDocumentDto>(r => r.ApprovalStatus == "Verified" && r.RejectionReason == null);
     }
 
+    // ── separation of duties: the subject never decides, and neither does the uploader ──────────
+
+    private static RequestContext CtxAs(World w, Guid userId) => new("127.0.0.1", "test", userId, w.TenantId, Permissions: ["employees.documents"]);
+
+    [Fact]
+    public async Task The_employee_whose_document_it_is_can_neither_verify_nor_reject_it_even_holding_the_permission()
+    {
+        var w = await SeedAsync();
+        var doc = Doc(w, w.Maya, "Medical certificate", "General");
+        w.Db.EmployeeDocuments.Add(doc);
+        await w.Db.SaveChangesAsync();
+
+        // Maya's own login, with employees.documents on her token, is still the subject.
+        await FluentActions.Awaiting(() => Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, CtxAs(w, w.MayaLogin), default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+        await FluentActions.Awaiting(() => Svc(w).RejectDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, "Blurry", CtxAs(w, w.MayaLogin), default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+
+        w.Db.ChangeTracker.Clear();
+        (await w.Db.EmployeeDocuments.AsNoTracking().SingleAsync(d => d.Id == doc.Id)).ApprovalStatus.Should().Be("Pending");
+    }
+
+    [Fact]
+    public async Task The_user_who_uploaded_the_document_can_neither_verify_nor_reject_it_but_a_third_user_can()
+    {
+        var w = await SeedAsync();
+        var doc = Doc(w, w.Maya, "Medical certificate", "General");
+        doc.UploadedBy = w.HrInScope;
+        w.Db.EmployeeDocuments.Add(doc);
+        await w.Db.SaveChangesAsync();
+
+        await FluentActions.Awaiting(() => Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, CtxAs(w, w.HrInScope), default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+        await FluentActions.Awaiting(() => Svc(w).RejectDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, "Blurry", CtxAs(w, w.HrInScope), default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+
+        var verified = await Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, CtxAs(w, w.HrWithSensitive), default);
+        verified!.ApprovalStatus.Should().Be("Verified");
+        verified.VerifiedBy.Should().Be(w.HrWithSensitive);
+    }
+
+    [Fact]
+    public void The_refusal_carries_a_stable_code_the_screen_can_show()
+    {
+        DocumentSelfVerificationException.Code.Should().Be("document_self_verification");
+        new DocumentSelfVerificationException().Message.Should().Contain("Someone else");
+    }
+
     [Fact]
     public async Task The_document_projection_says_whether_a_document_is_protected_even_when_its_type_is_masked()
     {

@@ -4454,6 +4454,7 @@ public class EmployeesController : ControllerBase
             return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
         }
         catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
+        catch (DocumentSelfVerificationException ex) { return StatusCode(403, new { code = DocumentSelfVerificationException.Code, message = ex.Message }); }
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
@@ -4467,6 +4468,7 @@ public class EmployeesController : ControllerBase
             return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
         }
         catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
+        catch (DocumentSelfVerificationException ex) { return StatusCode(403, new { code = DocumentSelfVerificationException.Code, message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
