@@ -1780,14 +1780,17 @@ public class PlatformController : ControllerBase
         if (company is null) return NotFound(new { message = "Company not found." });
         if (company.ApprovalStatus != CompanyApprovalStatuses.Draft)
             return Conflict(new { error = "company_not_draft", message = "Only a company still in Draft can be activated here." });
+        // A Draft can be older than another organisation's claim to its email domain; the same rule as creating a company applies at activation,
+        // so two active tenants never share one domain (sign-in routing by domain would stop working for both).
+        try { await Zayra.Api.Infrastructure.Organization.CompanyEmailDomainRules.EnsureClaimableAsync(_db, tenantId, company.EmailDomain, ct); }
+        catch (Zayra.Api.Infrastructure.Organization.EmailDomainRefusedException ex) { return StatusCode(ex.Status, new { error = ex.Code, code = ex.Code, message = ex.Message }); }
 
         company.ApprovalStatus = CompanyApprovalStatuses.Active;
         company.IsActive = true;
         company.UpdatedAtUtc = DateTime.UtcNow;
-        AuditTenant(tenantId, "CompanyActivatedByPlatform",
-            new { approvalStatus = CompanyApprovalStatuses.Draft, isActive = false },
-            new { approvalStatus = CompanyApprovalStatuses.Active, isActive = true, companyId = company.Id, name = company.LegalNameEn },
-            entityType: nameof(Company), entityId: company.Id.ToString());
+        AuditPlatformAction(tenantId, "CompanyActivatedByPlatform", nameof(Company), company.Id.ToString(),
+            new { previous = new { approvalStatus = CompanyApprovalStatuses.Draft, isActive = false },
+                  approvalStatus = CompanyApprovalStatuses.Active, isActive = true, companyId = company.Id, name = company.LegalNameEn });
         await _db.SaveChangesAsync(ct);
         return Ok(new { companyId = company.Id, company.ApprovalStatus, company.IsActive });
     }
