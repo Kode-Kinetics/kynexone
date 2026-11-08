@@ -21,6 +21,8 @@ export interface FixtureOptions {
   down?: Entity[];
   /** A grade's pay-scale lines answer 500 until `ctl.payScaleDown` is cleared. */
   payScaleDown?: boolean;
+  /** Designation-driven access: what GET /api/designations/access-options answers. Absent = the feature is off. */
+  access?: { enabled: boolean; canConfigure: boolean };
 }
 
 export interface Recorded { method: string; path: string; body: any }
@@ -41,7 +43,7 @@ const seed = {
     { id: 'de-old', companyId: 'co-sa', code: 'OLD', nameEn: 'Legacy Unit', nameAr: '', isActive: false },
   ],
   designations: () => [
-    { id: 'dg-swe', companyId: 'co-sa', code: 'SWE', titleEn: 'Software Engineer', titleAr: 'مهندس برمجيات', jobGrade: 'L3', gradeId: 'gr-5', jobLevel: 'Officer', jobDescription: '', isManagerRole: false, isActive: true },
+    { id: 'dg-swe', companyId: 'co-sa', code: 'SWE', titleEn: 'Software Engineer', titleAr: 'مهندس برمجيات', jobGrade: 'L3', gradeId: 'gr-5', jobLevel: 'Officer', jobDescription: '', isManagerRole: false, isActive: true, accessRoles: ['Payroll Officer'] },
     { id: 'dg-old', companyId: 'co-sa', code: 'OLD', titleEn: 'Retired Title', titleAr: '', jobGrade: '', isManagerRole: false, isActive: false },
   ],
   grades: () => [
@@ -101,6 +103,13 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     if (p === '/api/reference/countries') return reply([{ code: 'SA', name: 'Saudi Arabia' }, { code: 'AE', name: 'United Arab Emirates' }, { code: 'KW', name: 'Kuwait' }]);
     if (p === '/api/reference/currencies') return reply([{ code: 'SAR', name: 'Saudi Riyal' }]);
     if (p === '/api/features/disabled-keys') return reply(['release_a']);
+    if (p === '/api/designations/access-options') {
+      const a = options.access ?? { enabled: false, canConfigure: false };
+      return reply({
+        ...a,
+        roles: a.enabled && a.canConfigure ? [{ name: 'Payroll Officer', description: 'Runs payroll' }, { name: 'Manager', description: 'Approves for the team' }] : [],
+      });
+    }
     if (p === '/api/features/modules' || p === '/api/notifications') return reply([]);
 
     // The grade editor's own reads: no pay lines yet, and no pay components to pick from.

@@ -262,6 +262,17 @@ export interface DesignationDto {
   isActive: boolean;
   /** The company that owns the row (Addendum B). Null only for a legacy row not yet assigned to a company. */
   companyId?: string | null;
+  /** Designation-driven access: names of the existing roles this designation grants (never a privileged role). */
+  accessRoles?: string[];
+}
+
+/** What the Setup form may offer the signed-in user for designation-driven access. `canConfigure` needs security.manage. */
+export interface DesignationAccessOptions {
+  /** The designation_access feature is switched on for this tenant. */
+  enabled: boolean;
+  /** The caller may set designation access (holds security.manage). */
+  canConfigure: boolean;
+  roles: { name: string; description: string }[];
 }
 
 export interface DesignationRequest {
@@ -277,6 +288,8 @@ export interface DesignationRequest {
   isActive: boolean;
   /** Required when the tenant has more than one company; fixed once set (only an unassigned row may take one). */
   companyId?: string;
+  /** Omit (undefined) to leave the designation's roles untouched; [] clears them. Only sent by a user who may configure access. */
+  accessRoles?: string[];
 }
 
 export const designationsApi = {
@@ -290,6 +303,7 @@ export const designationsApi = {
   update: (id: string, data: DesignationRequest) =>
     client.put<DesignationDto>(`/api/designations/${id}`, data).then((r) => r.data),
   remove: (id: string) => client.delete(`/api/designations/${id}`),
+  accessOptions: () => client.get<DesignationAccessOptions>('/api/designations/access-options').then((r) => r.data),
   export: () => client.get<string>('/api/designations/export', { responseType: 'text' }).then((r) => r.data),
   importTemplate: () => client.get<string>('/api/designations/import-template', { responseType: 'text' }).then((r) => r.data),
   /** companyId: the company the file's rows belong to (required when the tenant has several). */
