@@ -5370,6 +5370,16 @@ public class EmployeesController : ControllerBase
             .Where(x => x.TenantId == tenantId && OpenTransferStatuses.Contains(x.Status));
         if (scope.AllowedEmployeeIds is { } allowed)
             openQuery = openQuery.Where(x => allowed.Contains(x.EmployeeId));
+        // The step rule is applied BEFORE the cap too (the query form of MayDecideTransferStep, below), so a long run of older transfers
+        // waiting on other approvers never pushes out one that waits on the caller. A transfer about the caller is left out here as well.
+        var canApprove = User.HasPermission("employees.approve");
+        var canManage = User.HasPermission("manager.approve");
+        openQuery = openQuery.Where(x =>
+            (canApprove && x.Status == "PendingHrApproval")
+            || (canManage && ((x.Status == "PendingCurrentManager" && (canApprove || (callerEmployeeId != null && x.CurrentManagerEmployeeId == callerEmployeeId)))
+                || (x.Status == "PendingNewManager" && (canApprove || (callerEmployeeId != null && x.NewManagerEmployeeId == callerEmployeeId))))));
+        if (callerEmployeeId is { } self)
+            openQuery = openQuery.Where(x => x.EmployeeId != self);
         var open = await openQuery.OrderBy(x => x.CreatedAtUtc).Take(200).ToListAsync(cancellationToken);
         var mine = new List<EmployeeTransferRequest>();
         foreach (var transfer in open)
@@ -5400,12 +5410,12 @@ public class EmployeesController : ControllerBase
     [HttpPost("transfers/{transferId:guid}/approve-current-manager")]
     [HasPermission("manager.approve")]
     public Task<IActionResult> ApproveCurrentManager(Guid transferId, CancellationToken cancellationToken) =>
-        AdvanceTransfer(transferId, "PendingCurrentManager", "PendingNewManager", x => x.CurrentManagerEmployeeId, x => x.CurrentManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
+        AdvanceTransfer(transferId, "PendingCurrentManager", "PendingNewManager", x => x.CurrentManagerEmployeeId, TransferStamp.CurrentManager, cancellationToken);
 
     [HttpPost("transfers/{transferId:guid}/approve-new-manager")]
     [HasPermission("manager.approve")]
     public Task<IActionResult> ApproveNewManager(Guid transferId, CancellationToken cancellationToken) =>
-        AdvanceTransfer(transferId, "PendingNewManager", "PendingHrApproval", x => x.NewManagerEmployeeId, x => x.NewManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
+        AdvanceTransfer(transferId, "PendingNewManager", "PendingHrApproval", x => x.NewManagerEmployeeId, TransferStamp.NewManager, cancellationToken);
 
     /// <summary>
     /// Rejects the transfer at the step it waits at, with a required reason. Who may: exactly who may approve that step
@@ -5434,9 +5444,15 @@ public class EmployeesController : ControllerBase
         if (reason.Length > 1000) return BadRequest(new { message = "The reason can be at most 1000 characters." });
 
         var previous = transfer.Status;
-        transfer.Status = TransferRejected;
-        AddTransferHistory(transfer, "TransferRejected", previous, reason);
-        await _db.SaveChangesAsync(cancellationToken);
+        var lost = await InTransferTransactionAsync(async () =>
+        {
+            if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previous, TransferRejected, TransferStamp.None, cancellationToken))
+                return TransferDecidedElsewhere();
+            AddTransferHistory(transfer, "TransferRejected", previous, reason);
+            await _db.SaveChangesAsync(cancellationToken);
+            return null;
+        }, cancellationToken);
+        if (lost is not null) return lost;
         await Audit("employee.transfer_rejected", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
         await NotifyTransferClosedBestEffortAsync(transfer, rejected: true, reason, cancellationToken);
         return Ok(EmployeeTransferDto.Project(transfer));
@@ -5464,9 +5480,15 @@ public class EmployeesController : ControllerBase
 
         var holders = await TransferStepHoldersAsync(transfer, cancellationToken);   // who held it, before the status changes
         var previous = transfer.Status;
-        transfer.Status = TransferWithdrawn;
-        AddTransferHistory(transfer, "TransferWithdrawn", previous, reason);
-        await _db.SaveChangesAsync(cancellationToken);
+        var lost = await InTransferTransactionAsync(async () =>
+        {
+            if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previous, TransferWithdrawn, TransferStamp.None, cancellationToken))
+                return TransferDecidedElsewhere();
+            AddTransferHistory(transfer, "TransferWithdrawn", previous, reason);
+            await _db.SaveChangesAsync(cancellationToken);
+            return null;
+        }, cancellationToken);
+        if (lost is not null) return lost;
         await Audit("employee.transfer_withdrawn", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
         try
         {
@@ -5498,77 +5520,85 @@ public class EmployeesController : ControllerBase
         // string-only write path that manufactured uncountable employees is gone.
         try
         {
-            var newBranchId = transfer.NewBranchId; var newBranchName = transfer.NewBranch;
-            if (newBranchId is null && !string.IsNullOrWhiteSpace(transfer.NewBranch))
-                (newBranchId, newBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, transfer.NewBranch, cancellationToken);
-            // Addendum B: names resolve within the company the employee lands in — the new branch's, else their own.
-            var landingCompanyId = employee.CompanyId;
-            if (newBranchId is Guid landingBranch)
-                landingCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
-                        "Transfer apply: the legal entity of the new branch decides which company's departments a name resolves in.")
-                    .AsNoTracking().Where(b => b.Id == landingBranch).Select(b => (Guid?)b.CompanyId)
-                    .FirstOrDefaultAsync(cancellationToken) ?? employee.CompanyId;
-            var newDeptId = transfer.NewDepartmentId; var newDeptName = transfer.NewDepartment;
-            if (newDeptId is null && !string.IsNullOrWhiteSpace(transfer.NewDepartment))
-                (newDeptId, newDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, transfer.NewDepartment, cancellationToken, landingCompanyId);
-            var newDesigId = transfer.NewDesignationId; var newDesigTitle = transfer.NewDesignation;
-            if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
-                (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
-
-            var transferAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
-            // Wave A (CTO decision): the shared move rule with an IMPLICIT keep. An override survives the transfer (the request carries no
-            // keep/drop decision; failing closed here would block every transfer of an overridden person) and the keep is audited with the
-            // transfer's reason and id. Someone without an override follows the new department; the cached code is refreshed either way.
-            var keptOverride = false;
-            if (newDeptId is not null)
+            // One unit: the claim on the status HR saw, the employee's changes and the history rows commit together or not at all. A decision
+            // that landed first (a rejection, a withdrawal) takes the row, and this one is told it lost with nothing applied.
+            var lost = await InTransferTransactionAsync(async () =>
             {
-                if (newDeptId != employee.DepartmentId)
-                {
-                    keptOverride = employee.CostCenterIsOverride;
-                    // Security L2: the implicit keep is re-validated as a new assignment in the employee's company, before anything is touched.
-                    if (keptOverride)
-                    {
-                        try
-                        {
-                            if (employee.CostCenterId is not Guid kept)
-                                throw new CostCentreRefException(CostCentreRefCodes.NotFound, "The cost centre was not found in this tenant.");
-                            await new CostCentreRefValidator(_db).EnsureAsync(tenantId, employee.CompanyId, kept, forNewAssignment: true, cancellationToken);
-                        }
-                        catch (CostCentreRefException ex)
-                        {
-                            return UnprocessableEntity(new
-                            {
-                                error = ex.Code, code = ex.Code,
-                                message = "This employee's own cost centre can no longer be used (" + ex.Message.TrimEnd('.') + "). Use Edit employee to keep another one or follow the department, with a reason, then approve the transfer again.",
-                                messageAr = "لم يعد بالإمكان استخدام مركز التكلفة الخاص بهذا الموظف. استخدم «تعديل الموظف» لاختيار مركز آخر أو لاتباع القسم مع ذكر السبب، ثم اعتمد النقل مرة أخرى.",
-                            });
-                        }
-                    }
-                    await EmployeeOrgFieldResolver.MoveDepartmentAsync(_db, tenantId, employee, newDeptId, keepOverride: true, cancellationToken);
-                }
-                employee.Department = newDeptName;
-            }
-            if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
-            if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
-            employee.UpdatedAtUtc = DateTime.UtcNow;
-            // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
-            // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
-            await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
-            await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken,
-                reason: transfer.Reason, decision: keptOverride ? EmployeeOrgFieldResolver.KeepDecision : null, transferId: transfer.Id);
-            transfer.Status = "ApprovedApplied";
-            transfer.HrApprovedAtUtc = DateTime.UtcNow;
-            await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
+                if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, "PendingHrApproval", "ApprovedApplied", TransferStamp.Hr, cancellationToken))
+                    return TransferDecidedElsewhere();
 
-            // ESTABLISHMENT GUARD (path "transfer"): inbound department/level consumes a seat;
-            // outbound frees implicitly (target-state evaluation with self-exclusion). On a block
-            // nothing persists — the transfer stays PendingHrApproval for re-approval after a raise.
-            await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
-                excludeEmployeeId: employee.Id, path: "transfer", Context(), async () =>
+                var newBranchId = transfer.NewBranchId; var newBranchName = transfer.NewBranch;
+                if (newBranchId is null && !string.IsNullOrWhiteSpace(transfer.NewBranch))
+                    (newBranchId, newBranchName) = await EmployeeOrgFieldResolver.ResolveBranchAsync(_db, tenantId, transfer.NewBranch, cancellationToken);
+                // Addendum B: names resolve within the company the employee lands in — the new branch's, else their own.
+                var landingCompanyId = employee.CompanyId;
+                if (newBranchId is Guid landingBranch)
+                    landingCompanyId = await ScopedBypass.TenantWide(_db.Branches, tenantId,
+                            "Transfer apply: the legal entity of the new branch decides which company's departments a name resolves in.")
+                        .AsNoTracking().Where(b => b.Id == landingBranch).Select(b => (Guid?)b.CompanyId)
+                        .FirstOrDefaultAsync(cancellationToken) ?? employee.CompanyId;
+                var newDeptId = transfer.NewDepartmentId; var newDeptName = transfer.NewDepartment;
+                if (newDeptId is null && !string.IsNullOrWhiteSpace(transfer.NewDepartment))
+                    (newDeptId, newDeptName) = await EmployeeOrgFieldResolver.ResolveDepartmentAsync(_db, tenantId, transfer.NewDepartment, cancellationToken, landingCompanyId);
+                var newDesigId = transfer.NewDesignationId; var newDesigTitle = transfer.NewDesignation;
+                if (newDesigId is null && !string.IsNullOrWhiteSpace(transfer.NewDesignation))
+                    (newDesigId, newDesigTitle) = await EmployeeOrgFieldResolver.ResolveDesignationAsync(_db, tenantId, transfer.NewDesignation, cancellationToken, landingCompanyId);
+
+                var transferAttributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
+                // Wave A (CTO decision): the shared move rule with an IMPLICIT keep. An override survives the transfer (the request carries no
+                // keep/drop decision; failing closed here would block every transfer of an overridden person) and the keep is audited with the
+                // transfer's reason and id. Someone without an override follows the new department; the cached code is refreshed either way.
+                var keptOverride = false;
+                if (newDeptId is not null)
                 {
-                    await _db.SaveChangesAsync(cancellationToken);
-                    return true;
-                }, cancellationToken);
+                    if (newDeptId != employee.DepartmentId)
+                    {
+                        keptOverride = employee.CostCenterIsOverride;
+                        // Security L2: the implicit keep is re-validated as a new assignment in the employee's company, before anything is touched.
+                        if (keptOverride)
+                        {
+                            try
+                            {
+                                if (employee.CostCenterId is not Guid kept)
+                                    throw new CostCentreRefException(CostCentreRefCodes.NotFound, "The cost centre was not found in this tenant.");
+                                await new CostCentreRefValidator(_db).EnsureAsync(tenantId, employee.CompanyId, kept, forNewAssignment: true, cancellationToken);
+                            }
+                            catch (CostCentreRefException ex)
+                            {
+                                return UnprocessableEntity(new
+                                {
+                                    error = ex.Code, code = ex.Code,
+                                    message = "This employee's own cost centre can no longer be used (" + ex.Message.TrimEnd('.') + "). Use Edit employee to keep another one or follow the department, with a reason, then approve the transfer again.",
+                                    messageAr = "لم يعد بالإمكان استخدام مركز التكلفة الخاص بهذا الموظف. استخدم «تعديل الموظف» لاختيار مركز آخر أو لاتباع القسم مع ذكر السبب، ثم اعتمد النقل مرة أخرى.",
+                                });
+                            }
+                        }
+                        await EmployeeOrgFieldResolver.MoveDepartmentAsync(_db, tenantId, employee, newDeptId, keepOverride: true, cancellationToken);
+                    }
+                    employee.Department = newDeptName;
+                }
+                if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
+                if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
+                employee.UpdatedAtUtc = DateTime.UtcNow;
+                // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
+                // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
+                await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
+                await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, transferAttributionBefore, GetUserId(), cancellationToken,
+                    reason: transfer.Reason, decision: keptOverride ? EmployeeOrgFieldResolver.KeepDecision : null, transferId: transfer.Id);
+                await AddHistory(employee, "TransferApproved", transfer.EffectiveDate, cancellationToken);
+
+                // ESTABLISHMENT GUARD (path "transfer"): inbound department/level consumes a seat;
+                // outbound frees implicitly (target-state evaluation with self-exclusion). On a block
+                // nothing persists — the transfer stays PendingHrApproval for re-approval after a raise.
+                await _establishmentGuard.EnforceAndExecuteAsync(tenantId, employee.DepartmentId, employee.DesignationId,
+                    excludeEmployeeId: employee.Id, path: "transfer", Context(), async () =>
+                    {
+                        await _db.SaveChangesAsync(cancellationToken);
+                        return true;
+                    }, cancellationToken);
+                return null;
+            }, cancellationToken);
+            if (lost is not null) return lost;
             if (employee.ManagerEmployeeId != transfer.NewManagerEmployeeId)
                 await hierarchy.SetManagerAsync(tenantId, employee.Id, transfer.NewManagerEmployeeId, Context(), cancellationToken);
             await Notify([transfer.RequestedByUserId, .. await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employee.Id, cancellationToken)],
@@ -5836,7 +5866,8 @@ public class EmployeesController : ControllerBase
     };
 
     /// <summary>
-    /// May the caller decide this step NOW? The approve endpoints' own rule, stated once for the lists: a manager step
+    /// May the caller decide this step NOW? The approve endpoints' own rule, stated once for the lists (PendingTransfers also states it as a
+    /// query predicate so it applies before that list's cap; keep the two in step): a manager step
     /// needs <c>manager.approve</c> plus either <c>employees.approve</c> (the HR bypass) or being the named manager;
     /// the HR step needs <c>employees.approve</c>. The endpoints still enforce this themselves; this only stops the
     /// screens offering a button the server would refuse.
@@ -6002,12 +6033,38 @@ public class EmployeesController : ControllerBase
         catch (Exception ex) { _logger?.LogWarning("Transfer {TransferId} was closed, but the notification failed ({ErrorType}).", transfer.Id, ex.GetType().Name); }
     }
 
+    /// <summary>The loser of two decisions that arrived together: another request already moved the transfer.</summary>
+    private ConflictObjectResult TransferDecidedElsewhere() => Conflict(new
+    {
+        message = "This transfer was decided by someone else a moment ago. Reload to see where it is.",
+        messageAr = "تم البتّ في هذا النقل من قبل شخص آخر قبل لحظات. أعد التحميل لمعرفة موضعه.",
+    });
+
+    /// <summary>
+    /// Runs a transfer transition's writes as one unit: committed when <paramref name="work"/> returns null, rolled back when it
+    /// returns a refusal or throws. The claim, the history rows and (for HR approval) the employee changes therefore land together
+    /// or not at all. EF InMemory (unit tests) has no transactions and runs the work directly.
+    /// </summary>
+    private async Task<IActionResult?> InTransferTransactionAsync(Func<Task<IActionResult?>> work, CancellationToken cancellationToken)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null) return await work();
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+            var refusal = await work();
+            if (refusal is not null) return refusal;   // disposed uncommitted: rolled back
+            await tx.CommitAsync(cancellationToken);
+            return (IActionResult?)null;
+        });
+    }
+
     private async Task<IActionResult> AdvanceTransfer(
         Guid transferId,
         string expectedStatus,
         string nextStatus,
         Func<EmployeeTransferRequest, int?> expectedManagerId,
-        Action<EmployeeTransferRequest> stamp,
+        TransferStamp stamp,
         CancellationToken cancellationToken)
     {
         var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == RequireTenant(), cancellationToken);
@@ -6023,8 +6080,8 @@ public class EmployeesController : ControllerBase
             if (callerEmployeeId is null || expectedManagerId(transfer) != callerEmployeeId)
                 return Forbid();
         }
-        stamp(transfer);
-        transfer.Status = nextStatus;
+        if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, expectedStatus, nextStatus, stamp, cancellationToken))
+            return TransferDecidedElsewhere();
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.transfer_advanced", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
         await NotifyTransferStepBestEffortAsync(transfer, tellRequester: true, cancellationToken);
