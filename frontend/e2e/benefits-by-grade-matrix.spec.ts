@@ -32,9 +32,24 @@ const cellNamed = (page: Page, locale: Locale, benefit: string, grade: string) =
   page.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit, grade, value: '' })}`) });
 const cellButton = (page: Page, locale: Locale, code: string, grade: string) => cellNamed(page, locale, benefitName(locale, code), grade);
 
-// The toolbar button (it carries aria-expanded); the step strip also offers an "Add a benefit" link-style button as a shortcut.
-const addBenefitButton = (page: Page, locale: Locale) =>
-  page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).and(page.locator('[aria-expanded]'));
+// The toolbar button, which opens the Add a benefit dialog. The dialog's own submit has the same words, so tests reach it through the dialog.
+const addBenefitButton = (page: Page, locale: Locale) => page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).first();
+const addDialog = (page: Page, locale: Locale) => page.getByRole('dialog', { name: say(locale, 'Add a benefit'), exact: true });
+const submitAdd = (page: Page, locale: Locale) => addDialog(page, locale).getByRole('button', { name: say(locale, 'Add benefit'), exact: true });
+/** The row's actions menu (Skip for this company, Correct GL, Remove benefit...). */
+const rowMenu = (page: Page, locale: Locale, benefit: string) => page.getByRole('button', { name: say(locale, 'Actions for {benefit}', { benefit }), exact: true });
+
+/** The box of something that slides in: read once it has stopped moving. */
+async function settledBox(locator: import('@playwright/test').Locator) {
+  let last = await locator.boundingBox();
+  for (let i = 0; i < 40; i++) {
+    await locator.page().waitForTimeout(50);
+    const next = await locator.boundingBox();
+    if (next && last && next.x === last.x && next.y === last.y && next.width === last.width) return next;
+    last = next;
+  }
+  return last;
+}
 
 async function shot(page: Page, name: string) {
   const dir = process.env.R1_SCREENSHOT_DIR ?? test.info().outputDir;
@@ -42,7 +57,7 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
 }
 
-async function boot(page: Page, locale: Locale) {
+async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[] } = {}) {
   const errors: string[] = [];
   const publishes: { dryRun: boolean; body: any }[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -53,12 +68,13 @@ async function boot(page: Page, locale: Locale) {
   await page.route('**/api/**', route => {
     const request = route.request(); const url = new URL(request.url()); const p = url.pathname;
     if (p === '/api/auth/me') return route.fulfill({ json: {
-      id: 'user-1', tenantId: 'tenant-1', tenantSlug: 'masar', fullName: 'Hala Al-Qahtani', roles: ['HR Director'], isGroupScope: true,
-      permissions: ['entitlements.read', 'entitlements.manage'],
+      id: 'user-1', tenantId: 'tenant-1', tenantSlug: 'masar', fullName: 'Hala Al-Qahtani', roles: options.roles ?? ['HR Director'], isGroupScope: true,
+      permissions: options.permissions ?? ['entitlements.read', 'entitlements.manage'],
       companies: companies.map((c, i) => ({ ...c, code: `M${i + 1}`, countryCode: 'SA', isActive: true })),
     } });
     if (p === '/api/entitlements/matrix' && request.method() === 'GET')
-      return route.fulfill({ json: url.searchParams.get('companyId') ? logisticsMatrix : groupMatrix });
+      return route.fulfill({ json: url.searchParams.get('companyId') ? (options.companyMatrix ?? logisticsMatrix) : (options.matrix ?? groupMatrix) });
+    if (p === '/api/compensation/benefits/plans') return route.fulfill({ json: options.plans ?? [] });
     if (p === '/api/entitlements/matrix' && request.method() === 'PUT') {
       const isDry = url.searchParams.get('dryRun') === 'true';
       publishes.push({ dryRun: isDry, body: request.postDataJSON() });
@@ -74,15 +90,37 @@ async function boot(page: Page, locale: Locale) {
   return { errors, publishes };
 }
 
+
+/** The published matrix with five more grades (G6-G10, valued like G5) and a second fixed monthly allowance, so the grid is wider than the screen and has a total. */
+function wideMatrix() {
+  const last = groupMatrix.grades.at(-1);
+  const extra = [6, 7, 8, 9, 10].map(n => ({ ...last, id: `00000000-0000-4000-8000-0000000000${String(n).padStart(2, '0')}`, code: `G${n}`, name: `Grade ${n}`, nameAr: `الدرجة ${n}`, level: last.level + n }));
+  const grades = [...groupMatrix.grades, ...extra];
+  const cells = [...groupMatrix.cells, ...extra.flatMap(g => groupMatrix.cells.filter((c: any) => c.gradeId === last.id).map((c: any) => ({ ...c, gradeId: g.id, cellId: `${c.cellId}-${g.code}` })))];
+  const phone = {
+    code: 'ALW_PHONE', nameEn: 'Phone allowance', nameAr: 'بدل هاتف', class: 'QiwaWage', floor: 'None', group: 'Wage',
+    allowedValueTypes: ['Amount', 'PercentOfBasic'], allowedCoverageTiers: [], allowedDependantScopes: ['None'], allowedLimitPeriods: ['Monthly'],
+    defaultLimitPeriod: 'Monthly', isFloor: false, canBeSkipped: false, isLoanFacility: false, floorReason: null, isCustom: true,
+  };
+  const phoneCells = grades.map(g => ({ ...cells.find((c: any) => c.componentCode === 'TRANSPORT' && c.valueType === 'Amount'), gradeId: g.id, componentCode: 'ALW_PHONE', cellId: `phone-${g.code}`, amount: 150 }));
+  return { ...groupMatrix, grades, cells: [...cells, ...phoneCells], components: [...groupMatrix.components, phone],
+    offerings: [...groupMatrix.offerings, { componentCode: 'ALW_PHONE', mode: 'Group', offered: true, skippedFrom: null, changesOn: null, canBeSkipped: false }] };
+}
+
 for (const locale of ['en', 'ar'] as const) {
   test.describe(`benefits by grade (${locale})`, () => {
     test('matrix editor: the published grid, its gaps and the floors that cannot be skipped', async ({ page }) => {
       const { errors } = await boot(page, locale);
       await expect(page.locator('html')).toHaveAttribute('dir', locale === 'ar' ? 'rtl' : 'ltr');
-      await expect(page.getByText(say(locale, '{count} grade value(s) still need setting.', { count: groupMatrix.gaps.length }))).toBeVisible();
+      // The status band says how many values are set and nothing it cannot back: no Finance, no unpublished changes, no later start.
+      const total = groupMatrix.grades.length * (groupMatrix.components.length);
+      await expect(page.getByTestId('matrix-status')).toContainText(say(locale, '{set} of {total} values set', { set: total - groupMatrix.gaps.length, total }));
       // The G3 housing value comes from the read model: 25% of basic, with a scheduled change on the date it carries.
       await expect(cellButton(page, locale, 'HOUSING', 'G3')).toBeVisible();
-      await expect(page.getByText(say(locale, 'Required by law')).first()).toBeVisible();
+      // "Required by law" is in the benefit's info, not printed in the column.
+      await expect(page.getByText(say(locale, 'Required by law'), { exact: true })).toBeHidden();
+      await page.getByRole('button', { name: say(locale, 'About {field}', { field: benefitName(locale, 'HOUSING') }) }).focus();
+      await expect(page.getByRole('tooltip').filter({ hasText: say(locale, 'Required by law') })).toBeVisible();
       await shot(page, `matrix-editor-${locale}`);
       expect(errors).toEqual([]);
     });
@@ -143,17 +181,30 @@ for (const locale of ['en', 'ar'] as const) {
       });
       const benefit = (locale === 'ar' ? parking.nameAr : parking.nameEn) as string;
 
+      // The old plan dialog's look: a dialog titled "Add a benefit" with a purpose line, opened from the toolbar, focus returns to it.
       await addBenefitButton(page, locale).click();
+      await expect(addDialog(page, locale)).toBeVisible();
+      await expect(addDialog(page, locale).getByText(say(locale, 'Add a benefit that every grade can receive. You set its value for each grade next.'))).toBeVisible();
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Parking');
       await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('موقف');
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await submitAdd(page, locale).click();
 
-      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit: locale === 'ar' ? 'موقف' : 'Parking' }))).toBeVisible();
+      // The result says what changed, where, and offers the one next step; the new row is marked New.
+      const banner = page.locator('[data-result]');
+      await expect(banner).toContainText(say(locale, '{benefit} was added.', { benefit: locale === 'ar' ? 'موقف' : 'Parking' }));
+      await expect(banner).toContainText(say(locale, 'Benefits by grade, group default. Not live until you publish values.'));
+      await expect(banner.getByRole('button', { name: say(locale, 'Set values for {benefit}', { benefit: locale === 'ar' ? 'موقف' : 'Parking' }), exact: true })).toBeVisible();
       expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: { nameEn: 'Parking', nameAr: 'موقف' } });
-      await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
+      await expect(page.getByRole('row').filter({ hasText: benefit }).getByTestId('row-chip')).toHaveText(say(locale, 'New'));
       // Every grade is a gap until it has a value, so the new benefit can't be silently missing from a package.
       await expect(page.getByRole('button', { name: new RegExp(`^${say(locale, '{benefit} for {grade}: {value}', { benefit, grade: 'G1', value: say(locale, 'Not set') })}`) })).toBeVisible();
-      await expect(page.getByText(say(locale, '{count} grade value(s) still need setting.', { count: withParking.gaps.length }))).toBeVisible();
+      await expect(page.getByTestId('matrix-status')).toContainText(say(locale, '{set} of {total} values set',
+        { set: groupMatrix.grades.length * groupMatrix.components.length - groupMatrix.gaps.length, total: groupMatrix.grades.length * withParking.components.length }));
+
+      // The banner's next step opens the first grade's value for the new benefit.
+      await banner.getByRole('button', { name: say(locale, 'Set values for {benefit}', { benefit }), exact: true }).click();
+      await expect(page.getByRole('dialog').getByRole('heading', { level: 2 })).toContainText(benefit);
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
 
       // Its cell offers what a contract benefit allows, and a count reads "number of items", not tickets.
       // The added benefit is not in the published fixture, so its cell is found by the name just created.
@@ -164,12 +215,13 @@ for (const locale of ['en', 'ar'] as const) {
       await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
       await shot(page, `add-benefit-${locale}`);
 
-      // Unused, so it can be removed again.
-      await page.getByRole('button', { name: say(locale, 'Remove benefit'), exact: true }).click();
+      // Unused, so it can be removed again (from the row's actions menu, with the existing confirmation).
+      await rowMenu(page, locale, benefit).click();
+      await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
       await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
       expect(calls[1]).toMatchObject({ path: '/api/entitlements/components/BEN_PARKING/remove' });
-      await expect(page.getByText(say(locale, 'Added by you'))).toHaveCount(0);
+      await expect(page.getByRole('row').filter({ hasText: benefit })).toHaveCount(0);
       expect(errors).toEqual([]);
     });
 
@@ -231,7 +283,7 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(page.getByText(say(locale, 'Each employee’s amount is set on their salary and approved by Finance before it’s paid.'))).toBeVisible();
 
       // Nothing is sent without the GL account, and the message sits at the field.
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await submitAdd(page, locale).click();
       await expect(page.getByText(say(locale, 'Choose the GL account this allowance posts to.'))).toBeVisible();
       await expect(glSelect).toBeFocused();
       expect(calls).toHaveLength(0);
@@ -242,33 +294,36 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(glSelect.locator('option[value="EARN:BASIC"]')).toContainText('Basic salary');
       await glSelect.selectOption('EARN:PHONE');
       await page.getByRole('radio', { name: say(locale, 'No, leave it out') }).check();
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await submitAdd(page, locale).click();
       await expect(page.getByText(say(locale, 'Choose why this allowance is left out of end of service pay.'))).toBeVisible();
       expect(calls).toHaveLength(0);
       const category = page.getByLabel(say(locale, 'Why is it left out? (required)'));
       await expect(category.getByRole('option')).toHaveCount(5); // Choose a reason + Reimbursement, Discretionary, Non-recurring, Other
       await category.selectOption('Other');
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await submitAdd(page, locale).click();
       await expect(page.getByText(say(locale, 'Say why this allowance is left out of end of service pay.'))).toBeVisible();
       expect(calls).toHaveLength(0);
       await category.selectOption('Reimbursement');
       await page.getByLabel(say(locale, 'Note (optional)')).fill('A reimbursement, not wage');
 
       // The server's refusal of the GL account is shown at the GL field, and the form stays open with what was typed.
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await submitAdd(page, locale).click();
       await expect(page.locator('#add-benefit-gl-error')).toContainText('EARN:PHONE');
       await expect(page.getByLabel(say(locale, 'Benefit name (English)'))).toHaveValue('Phone allowance');
       expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: {
         nameEn: 'Phone allowance', nameAr: 'بدل هاتف', kind: 'Cash', glDriverKey: 'EARN:PHONE', eosbIncluded: false, eosbExclusionCategory: 'Reimbursement', eosbExclusionReason: 'A reimbursement, not wage' } });
 
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
-      await expect(page.getByText(say(locale, '{benefit} was added. Set its value for each grade, then publish.', { benefit }))).toBeVisible();
+      await submitAdd(page, locale).click();
+      await expect(page.locator('[data-result]')).toContainText(say(locale, '{benefit} was added.', { benefit }));
       expect(calls).toHaveLength(2);
 
-      // It is a Wage row, added by the customer and paid in salary, with no company skip control.
-      await expect(page.getByText(say(locale, 'Added by you'))).toBeVisible();
-      await expect(page.getByText(say(locale, 'Paid in salary'), { exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: say(locale, 'Skip for this company') })).toHaveCount(0);
+      // It is a Wage row, added by the customer and paid in salary (a banknote icon with that name), with no company skip control.
+      const phoneRow = page.getByRole('row').filter({ hasText: benefit });
+      await expect(phoneRow.getByTestId('row-chip')).toHaveText(say(locale, 'New'));
+      await expect(phoneRow.getByRole('img', { name: say(locale, 'Paid in salary'), exact: true })).toBeVisible();
+      await rowMenu(page, locale, benefit).click();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Skip for this company') })).toHaveCount(0);
+      await page.keyboard.press('Escape');
       await cellNamed(page, locale, benefit, 'G1').click();
       await page.getByRole('radio', { name: say(locale, 'Offered'), exact: true }).check();
       // The server's rule decides what is on offer: an amount or a percentage of basic, monthly, nothing else.
@@ -283,7 +338,8 @@ for (const locale of ['en', 'ar'] as const) {
       await shot(page, `add-cash-allowance-${locale}`);
 
       // Remove works as for a contract benefit.
-      await page.getByRole('button', { name: say(locale, 'Remove benefit'), exact: true }).click();
+      await rowMenu(page, locale, benefit).click();
+      await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
       await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
       await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
       expect(calls[2]).toMatchObject({ path: '/api/entitlements/components/ALW_PHONE/remove' });
@@ -313,6 +369,203 @@ for (const locale of ['en', 'ar'] as const) {
       await page.getByText(say(locale, 'Bring in the old grade pay scales')).scrollIntoViewIfNeeded();
       await shot(page, `import-review-${locale}`);
       expect(errors).toEqual([]);
+    });
+
+    test('layout at 1366x768: one purpose line, the grid starts in the top half, and the toolbar is one row', async ({ page }) => {
+      await page.setViewportSize({ width: 1366, height: 768 });
+      const { errors } = await boot(page, locale);
+      // One purpose line (the screen's own), not the old paragraph, the scope sentence, the gap banner or the "outlined in amber" wording.
+      await expect(page.locator('[data-purpose]')).toHaveCount(1);
+      await expect(page.locator('[data-purpose]')).toHaveText(say(locale, 'Set what each grade receives, per company. Changes start on the date you choose when you publish.'));
+      await expect(page.getByText(say(locale, 'Set every benefit by grade in one place: housing, transport, tickets, medical cover, education and per diem.'))).toHaveCount(0);
+      await expect(page.getByText(/amber|العنبري|كهرمان/)).toHaveCount(0);
+      await expect(page.getByText(say(locale, 'Every grade has a value.'))).toHaveCount(0);
+      // Applies to, the filter, Add benefit and More share one row, and the step strip sits above it.
+      const toolbar = page.getByTestId('matrix-toolbar');
+      const strip = page.getByRole('navigation', { name: say(locale, 'Steps to set benefits by grade') });
+      const [t, a, add, more, st] = await Promise.all([toolbar, toolbar.getByRole('combobox', { name: say(locale, 'Applies to') }), toolbar.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }),
+        toolbar.getByRole('button', { name: say(locale, 'More'), exact: true }), strip].map(l => l.boundingBox()));
+      expect(Math.abs(a!.y - add!.y), 'Applies to and Add benefit are on one row').toBeLessThan(40);
+      expect(Math.abs(add!.y - more!.y)).toBeLessThan(20);
+      expect(st!.y + st!.height, 'the step tracker is above the toolbar').toBeLessThanOrEqual(t!.y + 1);
+      // The grid starts in the top half of a 768 px screen and shows at least five benefit rows without scrolling.
+      const table = await page.getByRole('table').boundingBox();
+      expect(table!.y, 'grid top').toBeLessThan(768 * 0.5);
+      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      let visible = 0;
+      for (let i = 0; i < await rows.count(); i++) { const b = await rows.nth(i).boundingBox(); if (b && b.y + b.height <= 768) visible++; }
+      expect(visible, 'benefit rows visible without scrolling').toBeGreaterThanOrEqual(5);
+      expect(errors).toEqual([]);
+    });
+
+    test('every value cell shows it can be edited: a pencil on a value, "+ Set value" on an empty one, no per-cell provenance text', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const cells = page.locator('button[data-cell]');
+      const count = await cells.count();
+      expect(count).toBe(groupMatrix.grades.length * groupMatrix.components.length);
+      for (let i = 0; i < count; i++) {
+        const cell = cells.nth(i);
+        const cue = await cell.locator('[data-testid="cell-pencil"], [data-testid="cell-set-value"]').count();
+        expect(cue, `cell ${i} has a pencil or "+ Set value"`).toBe(1);
+      }
+      await expect(page.getByTestId('cell-set-value')).toHaveCount(groupMatrix.gaps.length);
+      await expect(page.getByTestId('cell-set-value').first()).toHaveText(say(locale, 'Set value'));
+      // The company view: the mode is on the row, never repeated under 30 cells.
+      await page.getByRole('combobox', { name: say(locale, 'Applies to') }).selectOption(companies[1].id);
+      await expect(page.getByRole('row').filter({ hasText: benefitName(locale, 'PER_DIEM') }).getByTestId('row-chip')).toHaveText(say(locale, 'Tailored'));
+      await expect(page.getByText(say(locale, 'This company'), { exact: true })).toHaveCount(0);
+      await expect(page.getByText(say(locale, 'Group default'), { exact: true })).toHaveCount(0);
+      // The override is marked by a shape with a name, only in a tailored row.
+      await expect(page.getByTestId('cell-override')).toHaveCount(1);
+      await expect(page.getByTestId('cell-override').first()).toHaveText(say(locale, 'Set for this company'));
+      expect(errors).toEqual([]);
+    });
+
+    test('a row has at most one chip, and its actions are in a menu with targets of at least 24 px', async ({ page }) => {
+      const { errors } = await boot(page, locale, { matrix: undefined });
+      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      for (let i = 0; i < await rows.count(); i++) expect(await rows.nth(i).getByTestId('row-chip').count()).toBeLessThanOrEqual(1);
+      const trigger = rowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
+      const box = await trigger.boundingBox();
+      expect(box!.width).toBeGreaterThanOrEqual(24);
+      expect(box!.height).toBeGreaterThanOrEqual(24);
+      await trigger.click();
+      await expect(page.getByRole('menu')).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Mark the rest Not offered') })).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      expect(errors).toEqual([]);
+    });
+
+    test('the "Needs a value" filter keeps only benefits with an empty grade, and says it is on', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      const chip = page.getByRole('button', { name: say(locale, 'Needs a value ({count})', { count: new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size }), exact: true });
+      await expect(chip).toHaveAttribute('aria-pressed', 'false');
+      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      const before = await rows.count();
+      await chip.click();
+      await expect(chip).toHaveAttribute('aria-pressed', 'true');
+      expect(await rows.count()).toBeLessThan(before);
+      await expect(rows).toHaveCount(new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size);
+      await chip.click();
+      await expect(rows).toHaveCount(before);
+      expect(errors).toEqual([]);
+    });
+
+    test('a grid wider than the screen has a labelled scroller, says which grades are in view, and scrolls by a grade', async ({ page }) => {
+      await page.setViewportSize({ width: 1366, height: 768 });
+      const wide = wideMatrix();
+      const { errors } = await boot(page, locale, { matrix: wide });
+      const scroller = page.getByRole('region', { name: say(locale, 'Benefits by grade, scrolls sideways') });
+      await expect(scroller).toBeVisible();
+      await expect(scroller).toHaveAttribute('tabindex', '0');
+      const status = page.getByTestId('grades-status');
+      const re = (from: string) => new RegExp(say(locale, 'Grades {from}-{to} of {total}', { from: '@F', to: '@T', total: '10' }).replace('@F', from).replace('@T', '\\d+'));
+      await expect(status).toHaveText(re('1'));
+      const first = Number((await status.innerText()).match(/\d+/g)![1]);
+      expect(first, 'at least five grades are in view with both rails open').toBeGreaterThanOrEqual(5);
+      const next = page.getByRole('button', { name: say(locale, 'Show later grades'), exact: true });
+      const prev = page.getByRole('button', { name: say(locale, 'Show earlier grades'), exact: true });
+      await expect(prev).toBeDisabled();
+      await next.click();
+      await expect(status).not.toHaveText(re('1'));
+      await expect(prev).toBeEnabled();
+      // The fade at the end of the scroller says there is more; it is gone once the last grade is reached.
+      await expect(page.getByTestId('scroll-fade-end')).toBeVisible();
+      for (let i = 0; i < 10; i++) { if (await next.isEnabled()) await next.click({ timeout: 1_500 }).catch(() => undefined); } // it may turn off mid-click, on reaching the end
+      await expect(next).toBeDisabled();
+      await expect(page.getByTestId('scroll-fade-end')).toBeHidden();
+      // The monthly total row exists because two wage rows carry fixed amounts, and says what it adds.
+      const total = page.getByTestId('monthly-total-row');
+      await expect(total).toContainText(say(locale, 'Fixed monthly allowances (amounts only)'));
+      await shot(page, `wide-grid-${locale}`);
+      expect(errors).toEqual([]);
+    });
+
+    test('the monthly total is left out when it would add up a single row', async ({ page }) => {
+      const { errors } = await boot(page, locale);
+      await expect(page.getByTestId('monthly-total-row')).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test('the cell editor is a drawer on the end edge that is fully on screen, with the grid still behind it', async ({ page }) => {
+      await page.setViewportSize({ width: 1366, height: 768 });
+      const { errors } = await boot(page, locale);
+      await cellButton(page, locale, 'PER_DIEM', 'G5').click();
+      const drawer = page.getByRole('dialog');
+      await expect(drawer).toBeVisible();
+      const box = (await settledBox(drawer))!;
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.y + box.height).toBeLessThanOrEqual(768 + 1);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(1366 + 1);
+      if (locale === 'ar') expect(box.x, 'docks at the left (inline-end in Arabic)').toBeLessThan(2);
+      else expect(box.x + box.width, 'docks at the right').toBeGreaterThan(1366 - 2);
+      expect(box.width).toBeLessThan(700);
+      await expect(drawer.getByRole('heading', { level: 2 })).toContainText(benefitName(locale, 'PER_DIEM'));
+      await shot(page, `cell-drawer-${locale}`);
+      // Esc closes it and focus returns to the cell that opened it.
+      await page.keyboard.press('Escape');
+      await expect(drawer).toHaveCount(0);
+      await expect(cellButton(page, locale, 'PER_DIEM', 'G5')).toBeFocused();
+      expect(errors).toEqual([]);
+    });
+
+    test('a viewer who cannot change values sees no pencils, no + Set value, no Add benefit, and the cell still opens read-only', async ({ page }) => {
+      const { errors } = await boot(page, locale, { permissions: ['entitlements.read'] });
+      await expect(page.getByTestId('cell-pencil')).toHaveCount(0);
+      await expect(page.getByTestId('cell-set-value')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true })).toHaveCount(0);
+      await cellButton(page, locale, 'HOUSING', 'G3').click();
+      await expect(page.getByRole('dialog')).toBeVisible();
+      await expect(page.getByRole('dialog').getByRole('radio', { name: say(locale, 'Offered'), exact: true })).toBeDisabled();
+      expect(errors).toEqual([]);
+    });
+
+    test('a tenant with benefit plans from before finds them from the toolbar menu, read-only; one with none is not offered the link', async ({ page }) => {
+      const hr = { permissions: ['entitlements.read', 'entitlements.manage', 'employees.write'], roles: ['HR Manager'] };
+      const { errors } = await boot(page, locale, { ...hr, plans: [{ id: 'p1', code: 'MED', name: 'Medical', planType: 'Medical', classification: 'Discretionary', currency: 'SAR', effectiveFrom: '2026-01-01', isActive: true }] });
+      await page.getByRole('button', { name: say(locale, 'More'), exact: true }).click();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Open in Benefit plans') })).toHaveAttribute('href', '/setup?tab=benefitPlans');
+      expect(errors).toEqual([]);
+    });
+
+    test('with no plans from before there is no Benefit plans link', async ({ page }) => {
+      const { errors } = await boot(page, locale, { permissions: ['entitlements.read', 'entitlements.manage', 'employees.write'], roles: ['HR Manager'], plans: [] });
+      await page.getByRole('button', { name: say(locale, 'More'), exact: true }).click();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Export to Excel (CSV)') })).toBeVisible();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Open in Benefit plans') })).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test.describe('phone', () => {
+      test.use({ viewport: { width: 390, height: 844 } });
+      test('one grade at a time as cards: no sideways page scroll, a grade picker, and the drawer fits the screen', async ({ page }) => {
+        const { errors } = await boot(page, locale);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+        expect(overflow, 'the page does not scroll sideways').toBeLessThanOrEqual(0);
+        const cards = page.getByTestId('grade-cards');
+        await expect(cards).toBeVisible();
+        await expect(page.getByRole('table')).toHaveCount(0);
+        const picker = cards.getByRole('combobox', { name: say(locale, 'Grade') });
+        await picker.selectOption(gradeId('G3'));
+        await expect(cellButton(page, locale, 'HOUSING', 'G3')).toBeVisible();
+        await expect(cellButton(page, locale, 'HOUSING', 'G1')).toHaveCount(0);
+        // The toolbar's main control is not below a long preamble.
+        const add = await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).boundingBox();
+        expect(add!.y).toBeLessThan(844);
+        await cellButton(page, locale, 'HOUSING', 'G3').click();
+        const box = (await settledBox(page.getByRole('dialog')))!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(390 + 1);
+        expect(box.y + box.height).toBeLessThanOrEqual(844 + 1);
+        await shot(page, `phone-drawer-${locale}`);
+        await page.keyboard.press('Escape');
+        await shot(page, `phone-cards-${locale}`);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+        expect(errors).toEqual([]);
+      });
     });
   });
 }
