@@ -140,6 +140,25 @@ public class BenefitDefinitionRecheckTests
     }
 
     [Fact]
+    public async Task AStoredNameWithADirectionMark_DoesNotBlockLaterEditsOfOtherFields_ButANewNameWithOneIsRefused()
+    {
+        await using var h = await Bd.Create();
+        Component(await h.Add(Contract("Parking", b => b.Code = "PARK")));
+        // A name saved while the feature was off may carry a plain right-to-left mark.
+        var stored = await h.Db.PayComponents.SingleAsync(p => p.Code == "BEN_PARK");
+        stored.NameAr = "موقف\u200F";
+        await h.Db.SaveChangesAsync();
+        var version = (await h.Read(Bd.Nov1)).Components.Single(c => c.Code == "BEN_PARK").Definition!.Version;
+
+        var dates = await h.Put("BEN_PARK", new UpdateBenefitRequest(version, "Parking", null) { EffectiveFrom = Bd.Nov1, EffectiveTo = Bd.Oct31Next });
+        var renamed = await h.Put("BEN_PARK", new UpdateBenefitRequest(Component(dates).Definition!.Version, "Parking", "موقف\u200F2"));
+
+        Status(dates).Should().Be(200, Describe(dates));
+        (await h.Rows("BEN_PARK", tenantWideOnly: true)).Single().NameAr.Should().Be("موقف\u200F", "an untouched stored name is left as it was");
+        (Status(renamed), Error(renamed)).Should().Be((400, "name_invalid"));
+    }
+
+    [Fact]
     public async Task OrdinaryArabicAndEnglishText_StillPasses()
     {
         await using var h = await Bd.Create();

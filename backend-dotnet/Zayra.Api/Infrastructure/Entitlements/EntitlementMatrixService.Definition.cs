@@ -439,7 +439,10 @@ public sealed partial class EntitlementMatrixService
         var nameAr = Blank(req.NameAr) ?? head.NameAr;
         if (Blank(req.NameEn) is null && Blank(req.NameAr) is null) return Bad("name_required", "Give the benefit a name.");
         if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
-        if (CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameEn) || CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameAr))
+        // The strict rule applies to a name that is being CHANGED (per language): one saved earlier, while the feature was off, stays as it is and
+        // never blocks an edit of something else.
+        if ((nameEn != head.NameEn && CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameEn))
+            || (nameAr != head.NameAr && CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameAr)))
             return Bad("name_invalid", "A name can't contain control, invisible or text-direction characters.");
         var others = await ScopedBypass.TenantWide(db.PayComponents, tid, "The other benefits the customer added, removed ones excluded, to keep names unique.")
             .AsNoTracking().Where(IsCustomRow()).Where(x => !x.IsDeleted && x.Code != code).ToListAsync(ct);
