@@ -28,7 +28,7 @@ public sealed class PdfTextLayerRatchetTests
             var rel = Path.GetRelativePath(root!, file).Replace('\\', '/');
             if (rel.StartsWith("Migrations/") || rel.StartsWith("obj/") || rel.StartsWith("bin/")) continue;
             var src = File.ReadAllText(file);
-            var parts = src.Split("Document.Create(");
+            var parts = Regex.Split(src, @"(?<![A-Za-z])Document\.Create\(");
             for (var i = 1; i < parts.Length; i++)
             {
                 documents++;

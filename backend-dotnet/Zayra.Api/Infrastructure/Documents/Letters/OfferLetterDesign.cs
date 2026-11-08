@@ -249,7 +249,7 @@ public static class OfferLetterDesign
             page.Size(d.Landscape ? size.Landscape() : size);
             page.Margin(d.Margin); page.PageColor(d.BackgroundColor);
             if (d.Direction == "rtl") page.ContentFromRightToLeft();
-            page.DefaultTextStyle(t => t.FontFamily(Font(d.FontFamily), DocumentFonts.ArabicFamily).FontSize(d.FontSize).FontColor(d.TextColor).LineHeight(d.LineHeight));
+            page.DefaultTextStyle(t => t.FontFamily(Font(d.FontFamily), DocumentFonts.ArabicFamily).FontSize(d.FontSize).FontColor(d.TextColor).LineHeight(d.LineHeight).TextLayerSafe());
             if (d.PageBorder) page.Background().Padding(12).Border(1).BorderColor(d.AccentColor);
             page.Header().PaddingBottom(18).Column(c =>
             {

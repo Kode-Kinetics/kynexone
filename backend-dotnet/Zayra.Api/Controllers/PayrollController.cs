@@ -9507,6 +9507,9 @@ public partial class PayrollController : ControllerBase
             Branding:      branding
         );
 
+        if (branding?.Locale is "ar" or "bilingual")
+            data = data with { Items = (await PayslipLabelBook.LoadAsync(_db, tenantId, ct)).Apply(data.Items) };
+
         byte[] pdf;
         try { pdf = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(data, ct), ct); }
         catch (PdfConcurrencyException ex)
@@ -9612,6 +9615,8 @@ public partial class PayrollController : ControllerBase
             catch { /* non-fatal */ }
         }
 
+        var labelBook = await PayslipLabelBook.LoadAsync(_db, tenantId, ct);
+
         using var ms = new System.IO.MemoryStream();
         try
         {
@@ -9671,7 +9676,8 @@ public partial class PayrollController : ControllerBase
                     Branding:      branding
                 );
 
-                var pdf = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(data, ct), ct);
+                var rendered = branding?.Locale is "ar" or "bilingual" ? data with { Items = labelBook.Apply(data.Items) } : data;
+                var pdf = await _pdfGate.RenderAsync(() => _letters.GeneratePayslipPdfAsync(rendered, ct), ct);
                 var entry = zip.CreateEntry($"payslip-{slip.EmployeeCode}-{period}.pdf",
                     System.IO.Compression.CompressionLevel.Fastest);
                 await using var entryStream = entry.Open();

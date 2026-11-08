@@ -9,20 +9,28 @@ namespace Zayra.Api.Tests;
 
 public class PdfTextLayerTests
 {
+    private static async Task<byte[]> Sample(Task<byte[]> render, string name)
+    {
+        var pdf = await render;
+        var dir = Environment.GetEnvironmentVariable("PAYSLIP_SAMPLE_DIR");
+        if (!string.IsNullOrWhiteSpace(dir)) { Directory.CreateDirectory(dir); await File.WriteAllBytesAsync(Path.Combine(dir, name + ".pdf"), pdf); }
+        return pdf;
+    }
+
     private static string Text(byte[] pdf)
     {
         using var doc = PdfDocument.Open(pdf);
         return string.Concat(doc.GetPages().Select(p => p.Text)).Replace(" ", string.Empty);
     }
 
-    private static readonly string[] Broken = { "Designaon", "posion", "Posion", "Confidenal" };
+    private static readonly string[] Broken = { "Designaon", "posion", "Posion", "Confidenal", "expectaons", "Operaons" };
 
     [Fact]
     public async Task AppointmentLetter_TextLayer_HasTheRealWords()
     {
-        var pdf = await new LetterService().GenerateAppointmentLetterAsync(new LetterData(
+        var pdf = await Sample(new LetterService().GenerateAppointmentLetterAsync(new LetterData(
             "Test Employee", "EVT2-0004", "Operations", "Operations Coordinator",
-            new DateTime(2026, 1, 5), null, 10_000m, "SAR", "Evostel Test Company", "HR", new DateTime(2026, 1, 1)));
+            new DateTime(2026, 1, 5), null, 10_000m, "SAR", "Evostel Test Company", "HR", new DateTime(2026, 1, 1))), "letter-appointment");
         var text = Text(pdf);
         text.Should().Contain("Designation:").And.Contain("position").And.Contain("Confidential");
         foreach (var b in Broken) text.Should().NotContain(b);
@@ -35,7 +43,7 @@ public class PdfTextLayerTests
             "Test Employee", "EVT2-0004", "Operations", "Operations Coordinator",
             new DateTime(2024, 1, 5), new DateTime(2026, 1, 5), 10_000m, "SAR", "Evostel Test Company", "HR", new DateTime(2026, 1, 6)));
         var text = Text(pdf);
-        text.Should().Contain("Designation").And.Contain("position");
+        text.Should().Contain("expectations").And.Contain("Confidential").And.Contain("Operations");
         foreach (var b in Broken) text.Should().NotContain(b);
     }
 
