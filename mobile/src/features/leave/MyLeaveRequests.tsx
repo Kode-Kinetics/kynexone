@@ -39,6 +39,8 @@ export function MyLeaveRequests({ reloadKey, sent, onDismissSent, onRequestNew }
   const [items, setItems] = useState<MyLeaveRequest[]>([]);
   const [types, setTypes] = useState<LeaveTypeOption[]>([]);
   const [approvers, setApprovers] = useState<Record<string, NextApprover | null>>({});
+  // Who holds each pending request to cancel approved leave (request id -> names). Empty = waiting, nobody named.
+  const [holders, setHolders] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +72,14 @@ export function MyLeaveRequests({ reloadKey, sent, onDismissSent, onRequestNew }
           next[r.id] = result.status === 'fulfilled' ? result.value : null;
         });
         setApprovers(next);
+        const cancelling = mine.filter((r) => r.kind === 'cancellationPending');
+        const held = await Promise.allSettled(cancelling.map((r) => leaveRequestsApi.getCancellationHolders(r.id)));
+        const names: Record<string, string[]> = {};
+        cancelling.forEach((r, i) => {
+          const result = held[i];
+          names[r.id] = result.status === 'fulfilled' ? result.value : [];
+        });
+        setHolders(names);
       } catch (e) {
         setError(text.error(e));
       } finally {
@@ -106,6 +116,11 @@ export function MyLeaveRequests({ reloadKey, sent, onDismissSent, onRequestNew }
         : t('leavePay.leave.list.waitingForUnknown');
     return t('leavePay.leave.list.waitingFor', { who });
   };
+
+  const cancellationWaitingFor = (names: string[] | undefined) =>
+    names && names.length > 0
+      ? t('leavePay.leave.list.cancellationWith', { who: names.join(', ') })
+      : t('leavePay.leave.list.cancellationWaiting');
 
   const openAction = (request: MyLeaveRequest, action: LeaveAction) => {
     setTarget({ request, action });
@@ -164,7 +179,11 @@ export function MyLeaveRequests({ reloadKey, sent, onDismissSent, onRequestNew }
               key={r.id}
               request={r}
               typeName={typeName(r)}
-              waitingFor={r.kind === 'pending' ? waitingFor(approvers[r.id]) : null}
+              waitingFor={r.kind === 'pending'
+                ? waitingFor(approvers[r.id])
+                : r.kind === 'cancellationPending'
+                  ? cancellationWaitingFor(holders[r.id])
+                  : null}
               action={leaveActionFor(r.kind, r.startDate, today)}
               onAction={(action) => openAction(r, action)}
             />

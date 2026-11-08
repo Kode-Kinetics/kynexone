@@ -28,7 +28,7 @@ export type ApprovalKind =
   | 'EMPLOYEE_CHANGE'
   | 'OTHER';
 
-export type InboxSource = 'workflow' | 'overtime';
+export type InboxSource = 'workflow' | 'overtime' | 'leaveCancellation';
 
 export interface PriorDecision {
   stepOrder: number | null;
@@ -73,6 +73,8 @@ export interface InboxItem {
   changeSummary: string | null;
   priorDecisions: PriorDecision[];
   overtime: OvertimeFacts | null;
+  /** Set only for an employee's request to cancel approved leave: what they said, and when they asked. */
+  cancellation?: { reason: string | null; requestedAt: string | null } | null;
 }
 
 export type DecisionVerb = 'approved' | 'rejected' | 'returned' | 'other';
@@ -158,6 +160,56 @@ export function mapWorkflowApproval(raw: Raw): InboxItem {
     priorDecisions: mapPriorDecisions(raw?.decisions),
     overtime: null,
   };
+}
+
+/**
+ * One row of GET /api/leave/requests/awaiting-decision with kind "Cancellation": an employee asked to cancel leave
+ * that was already approved. It has no row in /approval-requests (cancellations are decided on the leave itself:
+ * POST /leave/requests/{id}/cancel-approve | cancel-reject), so it is its own inbox source. The server only returns
+ * the ones the caller may decide, so it is always decidable here.
+ */
+export function mapLeaveCancellation(raw: Raw): InboxItem {
+  const id = str(raw?.id) ?? '';
+  const requestedAt = str(raw?.cancellationRequestedAtUtc);
+  return {
+    key: `leaveCancellation:${id}`,
+    source: 'leaveCancellation',
+    id,
+    entityId: id,
+    kind: 'LEAVE',
+    title: null,
+    subject: str(raw?.leaveTypeName),
+    requesterName: str(raw?.employeeName),
+    requesterEmployeeId: num(raw?.employeeId),
+    // Waiting since the employee asked, not since the leave was filed.
+    submittedAt: requestedAt,
+    dueAt: null,
+    isOverdue: false,
+    stepOrder: null,
+    canDecide: true,
+    blockedReason: null,
+    changeSummary: null,
+    priorDecisions: [],
+    overtime: null,
+    cancellation: { reason: str(raw?.cancellationReason), requestedAt },
+  };
+}
+
+/**
+ * The cancellations in a GET /leave/requests/awaiting-decision answer ({ items, total, truncated }). `incomplete` is true
+ * when the server stopped reading at its cap, so the screen says the list may be missing some.
+ */
+export function leaveCancellationInbox(response: Raw): { items: InboxItem[]; incomplete: boolean } {
+  const rows = Array.isArray(response?.items) ? (response.items as Raw[]) : [];
+  return {
+    items: rows.filter((r) => str(r?.kind) === 'Cancellation').map(mapLeaveCancellation),
+    incomplete: response?.truncated === true,
+  };
+}
+
+/** Approve cancellation releases the days (final); Keep leave refuses the request and the leave stays approved. */
+export function leaveCancellationOutcome(decision: 'approve' | 'reject'): DecisionOutcome {
+  return decision === 'approve' ? { kind: 'approved' } : { kind: 'rejected' };
 }
 
 /** Overtime statuses a line manager decides. PendingHR belongs to HR and is not in the manager's inbox. */

@@ -27,6 +27,7 @@ import {
   type BalanceFacts,
   type DecisionOutcome,
   type InboxItem,
+  type InboxSource,
   type LeaveFacts,
   type MyDecision,
 } from './approvalModel';
@@ -65,7 +66,7 @@ export default function ApprovalsScreen({ route }: Props) {
 
   const [tab, setTab] = useState<Tab>('waiting');
   const [items, setItems] = useState<InboxItem[]>([]);
-  const [unavailable, setUnavailable] = useState<('workflow' | 'overtime')[]>([]);
+  const [unavailable, setUnavailable] = useState<InboxSource[]>([]);
   const [leaveFacts, setLeaveFacts] = useState<Record<string, LeaveFacts | null>>({});
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -219,7 +220,11 @@ export default function ApprovalsScreen({ route }: Props) {
               accessibilityLiveRegion="polite"
               style={[theme.typography.footnote, styles.partial, { color: theme.colors.status.warning.fg }]}
             >
-              {source === 'overtime' ? t('manager.approvals.partialOvertime') : t('manager.approvals.partialWorkflow')}
+              {source === 'overtime'
+                ? t('manager.approvals.partialOvertime')
+                : source === 'leaveCancellation'
+                  ? t('manager.approvals.partialCancellation')
+                  : t('manager.approvals.partialWorkflow')}
             </Text>
           ))}
         </View>
@@ -430,7 +435,9 @@ function ApprovalCard({
   const f = useFormat();
   const text = useManagerText();
   const what = useWhatLine(item, leave);
-  const kindLabel = item.subject ?? text.kind(item.kind);
+  const kindLabel = item.cancellation
+    ? t('manager.approvals.card.cancellation', { subject: item.subject ?? text.kind(item.kind) })
+    : item.subject ?? text.kind(item.kind);
   const meta = [
     item.submittedAt ? t('manager.approvals.card.submitted', { when: f.relative(item.submittedAt) }) : null,
     item.stepOrder !== null ? t('manager.approvals.card.step', { step: f.number(item.stepOrder) }) : null,
@@ -578,7 +585,8 @@ function DecisionSheet({
 
   const decide = async (decision: 'approve' | 'reject') => {
     if (!item || busy) return;
-    if (decision === 'reject' && !comment.trim()) {
+    // Keep leave refuses nothing the employee must act on, so it needs no reason; rejecting a request does.
+    if (decision === 'reject' && !item.cancellation && !comment.trim()) {
       setReasonMissing(true);
       haptics.error();
       inputRef.current?.focus();
@@ -633,7 +641,7 @@ function DecisionSheet({
               ) : null}
               <View style={styles.actionRow}>
                 <LiquidButton
-                  label={t('manager.approvals.sheet.reject')}
+                  label={item.cancellation ? t('manager.approvals.sheet.keepLeave') : t('manager.approvals.sheet.reject')}
                   icon="close"
                   variant="secondary"
                   onPress={() => void decide('reject')}
@@ -642,7 +650,7 @@ function DecisionSheet({
                   style={styles.flex}
                 />
                 <LiquidButton
-                  label={t('manager.approvals.sheet.approve')}
+                  label={item.cancellation ? t('manager.approvals.sheet.approveCancellation') : t('manager.approvals.sheet.approve')}
                   icon="checkmark"
                   variant="success"
                   onPress={() => void decide('approve')}
@@ -789,6 +797,12 @@ function DecisionSheet({
           ) : null}
 
           <View>
+            {item.cancellation ? (
+              <FactRow
+                label={t('manager.approvals.sheet.cancellationAsked')}
+                value={item.cancellation.reason ?? t('manager.approvals.sheet.cancellationNoReason')}
+              />
+            ) : null}
             {item.submittedAt ? <FactRow label={t('manager.approvals.sheet.submitted')} value={f.dateTime(item.submittedAt)} /> : null}
             {item.dueAt && !item.isOverdue ? <FactRow label={t('manager.approvals.sheet.due')} value={f.dateTime(item.dueAt)} /> : null}
             {item.source === 'workflow' ? (
@@ -814,14 +828,18 @@ function DecisionSheet({
             ) : null}
             <FactRow
               label={t('manager.approvals.sheet.source')}
-              value={item.source === 'overtime' ? t('manager.approvals.source.overtime') : t('manager.approvals.source.workflow')}
+              value={item.source === 'overtime'
+                ? t('manager.approvals.source.overtime')
+                : item.source === 'leaveCancellation'
+                  ? t('manager.approvals.source.leaveCancellation')
+                  : t('manager.approvals.source.workflow')}
             />
           </View>
 
           {canDecide ? (
             <View style={styles.commentBlock}>
               <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.approvals.sheet.commentLabel')}</Text>
-              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('manager.approvals.sheet.commentHint')}</Text>
+              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{item.cancellation ? t('manager.approvals.sheet.commentHintCancellation') : t('manager.approvals.sheet.commentHint')}</Text>
               <TextInput
                 ref={inputRef}
                 value={comment}

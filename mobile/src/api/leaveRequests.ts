@@ -11,7 +11,7 @@ import { apiGet, apiPost } from './client';
 import { fetchAllPages } from './paging';
 import { userStorage } from '@/storage';
 import { mapLeaveBalanceRow, type LeaveBalanceRow } from './leaveBalanceMapper';
-import { leaveStatusKind, nextApproverFrom, type ApproverKind, type LeaveStatusKind } from '@/features/leave/leaveLogic';
+import { cancellationHoldersFrom, leaveStatusKind, nextApproverFrom, type ApproverKind, type LeaveStatusKind } from '@/features/leave/leaveLogic';
 
 export type { LeaveBalanceRow } from './leaveBalanceMapper';
 export { mapLeaveBalanceRow, simpleBalanceEquation } from './leaveBalanceMapper';
@@ -124,6 +124,11 @@ export const leaveRequestsApi = {
   async getNextApprover(id: string): Promise<NextApprover | null> {
     const detail = await apiGet<any>(`/leave/requests/${id}`);
     return nextApproverFrom(Array.isArray(detail?.approvals) ? detail.approvals : []);
+  },
+
+  /** GET /leave/requests/{id} — who now holds the employee's pending request to cancel approved leave. */
+  async getCancellationHolders(id: string): Promise<string[]> {
+    return cancellationHoldersFrom(await apiGet<any>(`/leave/requests/${id}`));
   },
 
   /** POST /leave/requests/{id}/withdraw — a request not yet approved; releases the days held for it. */

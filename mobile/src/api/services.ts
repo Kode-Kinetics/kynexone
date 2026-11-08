@@ -56,6 +56,8 @@ import {
   balanceFacts,
   mapLeaveFacts,
   decidableOvertime,
+  leaveCancellationInbox,
+  leaveCancellationOutcome,
   mapOvertimeApproval,
   mapWorkflowApproval,
   mergeInbox,
@@ -65,6 +67,7 @@ import {
   type BalanceFacts,
   type DecisionOutcome,
   type InboxItem,
+  type InboxSource,
   type LeaveFacts,
   type MyDecision,
 } from '@/features/approvals/approvalModel';
@@ -1608,19 +1611,21 @@ export const approvalsApi = {
    * If one source fails the other is still shown and `unavailable` names the missing one, so a
    * partial list is never presented as complete.
    */
-  async getInbox(): Promise<{ items: InboxItem[]; unavailable: ('workflow' | 'overtime')[] }> {
+  async getInbox(): Promise<{ items: InboxItem[]; unavailable: InboxSource[] }> {
     const self = Number(await getCurrentEmployeeId());
     const selfId = Number.isFinite(self) && self > 0 ? self : null;
-    const [workflow, overtime] = await Promise.allSettled([
+    const [workflow, overtime, cancellations] = await Promise.allSettled([
       fetchAllPages<any>((page, pageSize) =>
         apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
       ),
       fetchAllPages<any>((page, pageSize) =>
         apiGet<BackendPaged<any>>(`/overtime/requests?status=PendingManager&page=${page}&pageSize=${pageSize}`)
       ),
+      // Employees' requests to cancel APPROVED leave: no row in /approval-requests, decided on the leave itself.
+      apiGet<any>('/leave/requests/awaiting-decision'),
     ]);
     if (workflow.status === 'rejected' && overtime.status === 'rejected') throw workflow.reason;
-    const unavailable: ('workflow' | 'overtime')[] = [];
+    const unavailable: InboxSource[] = [];
     const workflowItems = workflow.status === 'fulfilled' ? workflow.value.map(mapWorkflowApproval) : [];
     if (workflow.status === 'rejected') unavailable.push('workflow');
     let overtimeItems: InboxItem[] = [];
@@ -1651,7 +1656,16 @@ export const approvalsApi = {
       // 403 = this login has no overtime approval rights: nothing is missing, there is nothing to show.
       unavailable.push('overtime');
     }
-    return { items: mergeInbox(workflowItems, overtimeItems), unavailable };
+    let cancellationItems: InboxItem[] = [];
+    if (cancellations.status === 'fulfilled') {
+      const read = leaveCancellationInbox(cancellations.value);
+      cancellationItems = read.items;
+      // The server read stopped at its cap: say the list may be missing some rather than present it as complete.
+      if (read.incomplete) unavailable.push('leaveCancellation');
+    } else if (cancellations.reason?.response?.status !== 403) {
+      unavailable.push('leaveCancellation');
+    }
+    return { items: mergeInbox(workflowItems, overtimeItems, cancellationItems), unavailable };
   },
 
   /**
@@ -1730,6 +1744,11 @@ export const approvalsApi = {
   /** Approve or reject one inbox item through its own source's endpoint; returns the TRUE resulting state. */
   async decide(item: InboxItem, decision: 'approve' | 'reject', comment?: string): Promise<DecisionOutcome> {
     const notes = comment?.trim() || undefined;
+    if (item.source === 'leaveCancellation') {
+      // cancel-approve releases the days and cancels the leave; cancel-reject (Keep leave) leaves it approved.
+      await apiPost<any>(`/leave/requests/${item.id}/${decision === 'approve' ? 'cancel-approve' : 'cancel-reject'}`, { notes });
+      return leaveCancellationOutcome(decision);
+    }
     if (item.source === 'overtime') {
       // OvertimeDecisionRequest(int ApprovedMinutes, string? Notes): a manager approves the hours as requested.
       const r = await apiPost<any>(`/overtime/requests/${item.id}/${decision}`, {
