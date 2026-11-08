@@ -80,3 +80,27 @@ for (const locale of ['en', 'ar'] as const) {
     expect(new Set(placements).size, `placements ${placements.join(', ')}`).toBe(1);
   });
 }
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`${locale}: on a 320 px screen the long Leave Type explanation stays fully inside the viewport (8 px margin)`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await open(page, withoutSetup, locale);
+    const icon = page.getByRole('button', { name: /About Leave Type|حول/ }).first();
+    const tip = page.getByRole('tooltip').filter({ hasText: /The category of leave|فئة الإجازة|نوع الإجازة/ }).first();
+    // Put the icon mid-screen (x about 150-174) where neither edge has 280 px of room, so flipping alone is not enough.
+    await icon.evaluate(el => { (el.parentElement as HTMLElement).style.marginInlineStart = '120px'; });
+    const iconBox = await icon.boundingBox();
+    // Neither a start-anchored nor an end-anchored 280 px popover fits from here: it must be clamped, not just flipped.
+    expect(iconBox!.x, 'the icon sits where neither side has room').toBeGreaterThan(40);
+    expect(iconBox!.x + iconBox!.width).toBeLessThan(280);
+    for (let i = 0; i < 3; i++) {
+      await icon.focus();
+      await expect(tip).toBeVisible();
+      const box = await tip.boundingBox();
+      expect(box!.x, `open ${i}: left edge`).toBeGreaterThanOrEqual(7.5);
+      expect(box!.x + box!.width, `open ${i}: right edge`).toBeLessThanOrEqual(312.5);
+      await icon.blur();
+      await expect(tip).toBeHidden();
+    }
+  });
+}

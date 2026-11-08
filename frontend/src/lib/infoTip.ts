@@ -35,3 +35,33 @@ export function flipsAtViewportEdge(rect: { left: number; right: number }, viewp
 export function popoverEdgesAtInlineStart(anchor: { left: number; right: number }, width: number, dir: 'ltr' | 'rtl'): { left: number; right: number } {
   return dir === 'rtl' ? { left: anchor.right - width, right: anchor.right } : { left: anchor.left, right: anchor.left + width };
 }
+
+/** The popover keeps at least this far (px) from either viewport edge. */
+export const INFO_TIP_VIEWPORT_MARGIN = 8;
+
+/**
+ * Final popover geometry, always fully inside the viewport (with an 8 px margin). The width is capped at the viewport
+ * minus both margins; the popover is then anchored to the icon's inline-start edge if it fits there, else to the
+ * inline-end edge, else (a narrow screen where neither fits) pushed to the nearest position that is inside.
+ * `offset` is the distance, in px along the inline axis, from the icon's inline-start edge to the popover's inline-start
+ * edge (negative = further toward inline-start), so the component applies it as `inset-inline-start`. Pure and computed
+ * from the icon's rect and the popover's width only, so it is the same on every open, in LTR and RTL.
+ */
+export function placeInfoTip(
+  anchor: { left: number; right: number },
+  popoverWidth: number,
+  viewportWidth: number,
+  dir: 'ltr' | 'rtl',
+  margin: number = INFO_TIP_VIEWPORT_MARGIN,
+): { width: number; offset: number } {
+  const width = Math.max(0, Math.min(popoverWidth, viewportWidth - 2 * margin));
+  const min = margin;
+  const max = viewportWidth - margin - width; // the largest `left` that still fits
+  const fits = (left: number) => left >= min && left <= max;
+  // Candidate `left` edges: anchored at the inline-start edge of the icon, then at its inline-end edge.
+  const atStart = dir === 'rtl' ? anchor.right - width : anchor.left;
+  const atEnd = dir === 'rtl' ? anchor.left : anchor.right - width;
+  const left = fits(atStart) ? atStart : fits(atEnd) ? atEnd : Math.min(Math.max(atStart, min), Math.max(min, max));
+  const offset = dir === 'rtl' ? anchor.right - (left + width) : left - anchor.left;
+  return { width, offset };
+}

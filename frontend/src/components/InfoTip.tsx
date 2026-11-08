@@ -5,7 +5,10 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useOptionalAuth } from '../contexts/AuthContext';
 import { useHelpTexts } from '../contexts/HelpTextContext';
 import { useLocale } from '../contexts/LocaleContext';
-import { canSeeFieldKey, flipsAtViewportEdge, popoverEdgesAtInlineStart, resolveInfoText } from '../lib/infoTip';
+import { INFO_TIP_MAX_WIDTH, INFO_TIP_VIEWPORT_MARGIN, canSeeFieldKey, placeInfoTip, resolveInfoText } from '../lib/infoTip';
+
+/** The width cap: 280 px, or the viewport minus the margin on both sides when that is narrower. */
+const POPOVER_MAX_WIDTH = `min(${INFO_TIP_MAX_WIDTH}px, calc(100vw - ${2 * INFO_TIP_VIEWPORT_MARGIN}px))`;
 
 /**
  * The `i`: a short explanation next to a form field label (Screen Standard 3b).
@@ -16,7 +19,7 @@ import { canSeeFieldKey, flipsAtViewportEdge, popoverEdgesAtInlineStart, resolve
  *
  * Behaviour: a real button; the popover opens on hover, keyboard focus and tap, stays open while it is hovered
  * (WCAG 1.4.13: it is a child of the hover target, with no gap) and Esc dismisses it without moving focus. It is
- * anchored to the inline-start edge of the icon and flips at the viewport edge. The icon is 24 px, 44 on coarse
+ * anchored to the inline-start edge of the icon, flips to the inline-end edge, and is clamped inside the viewport on narrow screens. The icon is 24 px, 44 on coarse
  * pointers. The developer field key is shown only to holders of the Setup permission.
  *
  * Usage: <InfoTip label="Joining date" fieldKey="employees.joining_date" text="First working day. ..." />
@@ -33,7 +36,7 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
   const [focused, setFocused] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [dismissed, setDismissed] = useState(false);
-  const [flipped, setFlipped] = useState(false);
+  const [placement, setPlacement] = useState<{ width: number; offset: number } | null>(null);
   const popover = useRef<HTMLSpanElement>(null);
   const open = (hover || focused || pinned) && !dismissed;
 
@@ -50,14 +53,15 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
     return () => document.removeEventListener('keydown', onKey, true);
   }, [open]);
 
-  // Flip at the viewport edge: where would it sit anchored to the inline-start edge of the icon? Measured from the icon
-  // and the popover's width, so the decision is the same on every open whatever the popover is currently drawn as.
+  // Keep the popover inside the viewport: where does it sit anchored to the inline-start edge of the icon, then the
+  // inline-end edge, else clamped? Measured from the icon and the popover's width (capped in CSS to the viewport minus
+  // the margins, so the cap never depends on an earlier open), so the result is the same on every open.
   const button = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (!open || !button.current || !popover.current) return;
+    const viewport = window.innerWidth;
     const anchor = button.current.getBoundingClientRect();
-    const edges = popoverEdgesAtInlineStart(anchor, popover.current.offsetWidth, dir);
-    setFlipped(flipsAtViewportEdge(edges, window.innerWidth, dir));
+    setPlacement(placeInfoTip(anchor, popover.current.offsetWidth, viewport, dir));
   }, [open, dir]);
 
   const name = label ? t('About {field}', { field: label }) : t('More information');
@@ -88,7 +92,8 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
         id={id}
         role="tooltip"
         hidden={!open}
-        className={`absolute top-full z-50 w-max max-w-[280px] pt-1.5 text-start text-body-sm font-normal normal-case leading-snug tracking-normal ${flipped ? 'end-0' : 'start-0'}`}
+        className={`absolute top-full z-50 w-max max-w-[280px] pt-1.5 text-start text-body-sm font-normal normal-case leading-snug tracking-normal start-0`}
+        style={{ maxWidth: POPOVER_MAX_WIDTH, ...(placement ? { insetInlineStart: placement.offset } : null) }}
       >
         <span className="block rounded-lg border border-line bg-surface-overlay px-3 py-2 text-fg shadow-e2">
           {shown}

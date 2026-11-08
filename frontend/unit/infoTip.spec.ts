@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { translate } from '../src/i18n/translations';
-import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, popoverEdgesAtInlineStart, resolveInfoText } from '../src/lib/infoTip';
+import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, placeInfoTip, popoverEdgesAtInlineStart, resolveInfoText } from '../src/lib/infoTip';
 import { renderComponent } from './support/ssr';
 
 /**
@@ -98,6 +98,66 @@ test('placement is measured from the icon, not from the popover, so it is the sa
 });
 
 test('the component measures the icon (not the popover) in a layout effect', () => {
-  expect(source).toContain('popoverEdgesAtInlineStart');
+  expect(source).toContain('placeInfoTip(anchor, popover.current.offsetWidth');
   expect(source).not.toMatch(/popover\.current\.getBoundingClientRect/);
+});
+
+/** Physical edges of the popover given the icon rect and what placeInfoTip returned (offset is from the icon's inline-start edge). */
+const edgesOf = (anchor: { left: number; right: number }, p: { width: number; offset: number }, dir: 'ltr' | 'rtl') =>
+  dir === 'rtl' ? { left: anchor.right - p.offset - p.width, right: anchor.right - p.offset } : { left: anchor.left + p.offset, right: anchor.left + p.offset + p.width };
+
+test('a 280 px popover beside an icon at x=150-174 on a 320 px screen is fully inside the viewport (8 px margin), LTR and RTL', () => {
+  const anchor = { left: 150, right: 174 };
+  for (const dir of ['ltr', 'rtl'] as const) {
+    const p = placeInfoTip(anchor, 280, 320, dir);
+    const edges = edgesOf(anchor, p, dir);
+    expect(p.width, dir).toBe(280);
+    expect(edges.left, `${dir} left`).toBeGreaterThanOrEqual(8);
+    expect(edges.right, `${dir} right`).toBeLessThanOrEqual(312);
+  }
+});
+
+test('a popover wider than the screen is capped to the viewport minus the margins and still fits', () => {
+  for (const dir of ['ltr', 'rtl'] as const) {
+    for (const anchor of [{ left: 150, right: 174 }, { left: 2, right: 26 }, { left: 294, right: 318 }]) {
+      const p = placeInfoTip(anchor, 400, 320, dir);
+      const edges = edgesOf(anchor, p, dir);
+      expect(p.width, dir).toBe(304);
+      expect(edges.left, `${dir} ${anchor.left} left`).toBeGreaterThanOrEqual(8);
+      expect(edges.right, `${dir} ${anchor.left} right`).toBeLessThanOrEqual(312);
+    }
+  }
+});
+
+test('an icon hard against either edge never pushes the popover out of the viewport', () => {
+  for (const dir of ['ltr', 'rtl'] as const) {
+    for (const vw of [320, 375, 768, 1200]) {
+      for (const anchor of [{ left: 0, right: 24 }, { left: 4, right: 28 }, { left: vw - 24, right: vw }, { left: vw - 28, right: vw - 4 }, { left: vw / 2 - 12, right: vw / 2 + 12 }]) {
+        const p = placeInfoTip(anchor, 280, vw, dir);
+        const edges = edgesOf(anchor, p, dir);
+        expect(edges.left, `${dir} vw=${vw} icon=${anchor.left} left`).toBeGreaterThanOrEqual(8);
+        expect(edges.right, `${dir} vw=${vw} icon=${anchor.left} right`).toBeLessThanOrEqual(vw - 8);
+      }
+    }
+  }
+});
+
+test('desktop placement is unchanged: anchored to the inline-start edge when it fits, to the inline-end edge when it would pass the far edge', () => {
+  // Room: inline-start anchored, no offset.
+  expect(placeInfoTip({ left: 300, right: 324 }, 280, 1200, 'ltr')).toEqual({ width: 280, offset: 0 });
+  expect(placeInfoTip({ left: 800, right: 824 }, 280, 1200, 'rtl')).toEqual({ width: 280, offset: 0 });
+  // Icon near the right edge in LTR: grows leftwards from the icon's right edge (right edge flush with the icon's).
+  expect(edgesOf({ left: 1100, right: 1124 }, placeInfoTip({ left: 1100, right: 1124 }, 280, 1200, 'ltr'), 'ltr')).toEqual({ left: 844, right: 1124 });
+  // Icon near the left edge in RTL: grows rightwards from the icon's left edge.
+  expect(edgesOf({ left: 70, right: 94 }, placeInfoTip({ left: 70, right: 94 }, 280, 1200, 'rtl'), 'rtl')).toEqual({ left: 70, right: 350 });
+});
+
+test('the same inputs give the same placement on every call', () => {
+  const calls = [1, 2, 3, 4].map(() => placeInfoTip({ left: 150, right: 174 }, 280, 320, 'ltr'));
+  expect(new Set(calls.map(c => JSON.stringify(c))).size).toBe(1);
+});
+
+test('the component applies the pure placement (width cap and inline offset) from a layout effect', () => {
+  expect(source).toContain('placeInfoTip');
+  expect(source).toContain('insetInlineStart');
 });
