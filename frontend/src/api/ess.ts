@@ -123,6 +123,20 @@ export interface EssHrRequestDetail {
   responseStatus: string;
 }
 
+/** One of the employee's older (mobile) profile change requests, with where it stands. */
+export interface EssProfileChangeRequest {
+  id: string;
+  status: string;
+  createdAtUtc: string;
+  decidedAtUtc?: string | null;
+  /** The field names asked for, in the server's order. */
+  fields: string[];
+  /** What the employee asked for (they wrote it). */
+  changes: Record<string, string>;
+  /** HR's note when the request was sent back. */
+  reviewNote?: string | null;
+}
+
 export const essApi = {
   dashboard: () => client.get<EssDashboard>('/api/ess/dashboard').then((r) => r.data),
   profile: () => client.get('/api/ess/profile').then((r) => r.data),
@@ -130,6 +144,7 @@ export const essApi = {
   leaveBalance: () => client.get('/api/ess/leave/balance').then((r) => r.data),
   documents: () => client.get<EssDocument[]>('/api/ess/documents').then((r) => r.data),
   hrRequests: () => client.get<EssHrRequest[]>('/api/ess/hr-requests/my').then((r) => r.data),
+  profileChangeRequests: () => client.get<EssProfileChangeRequest[]>('/api/ess/profile-change-requests/mine').then((r) => r.data),
   hrRequestDetail: (id: string) => client.get<EssHrRequestDetail>(`/api/ess/hr-requests/${encodeURIComponent(id)}`).then((r) => r.data),
   addHrRequestComment: (id: string, comment: string) => client.post<EssHrRequestComment>(`/api/ess/hr-requests/${encodeURIComponent(id)}/comments`, { comment }).then((r) => r.data),
   createHrRequest: (payload: HrRequestPayload) => client.post('/api/ess/hr-requests', payload).then((r) => r.data),

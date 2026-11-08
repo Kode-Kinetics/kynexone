@@ -48,6 +48,7 @@ import { setupGuidedEntry } from './setupGuidedEntry';
 import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
 import { orgRowRemoval } from './orgRowRemoval';
+import { peopleDeadEnds } from './peopleDeadEnds';
 import { designMigration } from './designMigration';
 import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
@@ -100,6 +101,7 @@ const en: Dict = {
   ...orgRowRemoval.en,
   ...designMigration.en,
   ...setupRollout.en,
+  ...peopleDeadEnds.en,
   ...attendanceRules.en,
   ...payrollRules.en,
   ...gradePackage.en,
@@ -1629,6 +1631,7 @@ const ar: Dict = {
   ...orgRowRemoval.ar,
   ...designMigration.ar,
   ...setupRollout.ar,
+  ...peopleDeadEnds.ar,
   ...attendanceRules.ar,
   ...payrollRules.ar,
   ...gradePackage.ar,

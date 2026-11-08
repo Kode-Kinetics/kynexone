@@ -76,6 +76,9 @@ export function CompletionReviewPage() {
     } finally { setRescanning(null); }
   };
 
+  // The older mobile request has no section: it is a few personal details, shown with the fields it changes.
+  const sectionTitle = (item: InboxItem) => (item.section ? t(`ess.completion.section.${item.section}.title`) : t('Personal details from the mobile app'));
+
   const companies = user?.companies ?? [];
   return (
     <div className="space-y-4" data-testid="completion-review">
@@ -112,7 +115,7 @@ export function CompletionReviewPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-slate-800 dark:text-slate-100"><bdi>{item.employee.name}</bdi> <span className="font-normal text-slate-500" dir="ltr">{item.employee.code}</span></p>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">{t(`ess.completion.section.${item.section}.title`)} · {t('ess.completion.ui.submitted')} {date(item.submittedAtUtc)}</p>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{sectionTitle(item)} · {t('ess.completion.ui.submitted')} {date(item.submittedAtUtc)}</p>
                 </div>
                 {item.goesToFinance && <span className="rounded-full bg-violet-50 px-2 py-1 text-xs font-semibold text-violet-800 dark:bg-violet-500/10 dark:text-violet-300">{t('Goes to Finance')}</span>}
               </div>
@@ -121,9 +124,9 @@ export function CompletionReviewPage() {
               </button>
               {open === item.requestId && (
                 <div className="mt-3 space-y-3">
-                  <div className="overflow-x-auto" role="region" tabIndex={0} aria-label={t(`ess.completion.section.${item.section}.title`)}>
+                  <div className="overflow-x-auto" role="region" tabIndex={0} aria-label={sectionTitle(item)}>
                     <table className="block w-full text-sm sm:table sm:min-w-[20rem]" role="table">
-                      <caption className="sr-only">{t(`ess.completion.section.${item.section}.title`)}</caption>
+                      <caption className="sr-only">{sectionTitle(item)}</caption>
                       <thead className="sr-only sm:table-header-group sm:not-sr-only" role="rowgroup"><tr className="text-xs text-slate-500" role="row"><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Field')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Current')}</th><th scope="col" role="columnheader" className="py-1 pe-3 text-start">{t('Proposed')}</th><th scope="col" role="columnheader" className="py-1 text-start">{t('ess.completion.ui.changed')}</th></tr></thead>
                       <tbody className="block space-y-2 sm:table-row-group sm:space-y-0" role="rowgroup">
                         {item.diff.map(d => (

@@ -79,7 +79,10 @@ export interface InboxDiff { field: string; labelKey: string; before: string; af
 export interface InboxItem {
   requestId: string;
   employee: { id: number; code: string; name: string };
-  section: SectionKey;
+  /** Null for the older (mobile) request, which carries a few personal fields instead of a section. */
+  section: SectionKey | null;
+  /** True for that older request; `diff` rows are then the fields it asks to change. */
+  legacy?: boolean;
   status: string;
   submittedAtUtc: string;
   goesToFinance: boolean;
