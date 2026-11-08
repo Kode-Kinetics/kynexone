@@ -127,6 +127,27 @@ public class FinalSettlementRunDutyTests
         approved.NetPayable.Should().Be(12_000m, "the amounts are untouched");
     }
 
+    [Theory]
+    [InlineData("FINAL_SETTLEMENT_RUN_ASSIGNED")]
+    [InlineData("FINAL_SETTLEMENT_RUN_DUE_SOON")]
+    [InlineData("FINAL_SETTLEMENT_RUN_DUE_TODAY")]
+    public void The_run_reminder_text_carries_no_amount_and_no_currency(string eventCode)
+    {
+        var settlement = new EmployeeFinalSettlement
+        {
+            EmployeeName = "Leaving Person", NetPayable = 12_345.67m, Currency = "SAR", SettlementDueDate = new DateOnly(2026, 11, 20),
+        };
+
+        var (title, message) = FinalSettlementRunDuty.Compose(eventCode, settlement);
+
+        foreach (var text in new[] { title, message })
+        {
+            text.Should().NotContain("12,345.67").And.NotContain("12345").And.NotContain("SAR");
+            text.Should().Contain("Leaving Person");
+        }
+        message.Should().Contain("2026-11-20", "who and when stay; how much does not");
+    }
+
     // ── the reminder sweep ───────────────────────────────────────────────────────────────────────
 
     [Fact]

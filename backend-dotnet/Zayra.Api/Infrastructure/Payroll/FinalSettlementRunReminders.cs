@@ -52,25 +52,24 @@ public static class FinalSettlementRunDuty
     public static Task<IReadOnlyList<Guid>> RecipientsAsync(ZayraDbContext db, EmployeeFinalSettlement s, CancellationToken ct) =>
         NotificationAudience.QueueHoldersAsync(db, s.TenantId, PayrollManagerRole, s.CompanyId, ct);
 
-    /// <summary>The notice text (English / Arabic in one line, as the other bell notices a role queue reads). Pure.</summary>
+    /// <summary>The notice text (English / Arabic in one line, as the other bell notices a role queue reads). Pure. It names the leaver and the date, never the amount: a notice can be emailed, and the amount is one click away in Payroll.</summary>
     public static (string Title, string Message) Compose(string eventCode, EmployeeFinalSettlement s)
     {
         var due = s.SettlementDueDate.ToString("yyyy-MM-dd");
-        var net = $"{s.NetPayable:N2} {s.Currency}";
         return eventCode switch
         {
             DueTodayEvent => (
                 $"Final settlement run for {s.EmployeeName} is due today — الدورة خارج الدورة لـ {s.EmployeeName} مستحقة اليوم",
-                $"The final settlement of {s.EmployeeName} ({net}) must be paid today ({due}) and no off-cycle run holds it yet. Create it now. / "
-                + $"يجب صرف التسوية النهائية لـ {s.EmployeeName} ({net}) اليوم ({due}) ولا توجد دورة خارج الدورة تشملها بعد. أنشئها الآن."),
+                $"The final settlement of {s.EmployeeName} must be paid today ({due}) and no off-cycle run holds it yet. Create it now. / "
+                + $"يجب صرف التسوية النهائية لـ {s.EmployeeName} اليوم ({due}) ولا توجد دورة خارج الدورة تشملها بعد. أنشئها الآن."),
             DueSoonEvent => (
                 $"Final settlement run for {s.EmployeeName}: due by {due} — الدورة خارج الدورة لـ {s.EmployeeName} تستحق بحلول {due}",
-                $"The final settlement of {s.EmployeeName} ({net}) must be paid by {due} and no off-cycle run holds it yet. Create the off-cycle run. / "
-                + $"يجب صرف التسوية النهائية لـ {s.EmployeeName} ({net}) بحلول {due} ولا توجد دورة خارج الدورة تشملها بعد. أنشئ الدورة."),
+                $"The final settlement of {s.EmployeeName} must be paid by {due} and no off-cycle run holds it yet. Create the off-cycle run. / "
+                + $"يجب صرف التسوية النهائية لـ {s.EmployeeName} بحلول {due} ولا توجد دورة خارج الدورة تشملها بعد. أنشئ الدورة."),
             _ => (
                 $"Create the off-cycle run for {s.EmployeeName} — due by {due} — أنشئ الدورة خارج الدورة لـ {s.EmployeeName} بحلول {due}",
-                $"The final settlement of {s.EmployeeName} ({net}) is approved. Create the off-cycle run that pays it, due by {due} (the legal payment date). "
-                + $"Open Payroll, Final Settlement. / اعتُمدت التسوية النهائية لـ {s.EmployeeName} ({net}). أنشئ دورة الرواتب خارج الدورة التي تصرفها، وتستحق بحلول {due} (الموعد النظامي للصرف). افتح الرواتب ثم التسوية النهائية."),
+                $"The final settlement of {s.EmployeeName} is approved. Create the off-cycle run that pays it, due by {due} (the legal payment date). "
+                + $"Open Payroll, Final Settlement. / اعتُمدت التسوية النهائية لـ {s.EmployeeName}. أنشئ دورة الرواتب خارج الدورة التي تصرفها، وتستحق بحلول {due} (الموعد النظامي للصرف). افتح الرواتب ثم التسوية النهائية."),
         };
     }
 
