@@ -50,6 +50,9 @@ const ar: Record<string, string> = {
   'A Payroll Manager creates this run.': 'يُنشئ مدير الرواتب هذه الدورة.',
   'Off-cycle run created': 'أُنشئت الدورة خارج الدورة',
   'Open the off-cycle run': 'فتح الدورة خارج الدورة',
+  '{count, plural, one {# settlement needs an off-cycle run. Next due {date}.} other {# settlements need an off-cycle run. Next due {date}.}}':
+    '{count, plural, one {تسوية واحدة تحتاج دورة خارج الدورة. أقرب استحقاق {date}.} two {تسويتان تحتاجان دورة خارج الدورة. أقرب استحقاق {date}.} few {# تسويات تحتاج دورة خارج الدورة. أقرب استحقاق {date}.} many {# تسوية تحتاج دورة خارج الدورة. أقرب استحقاق {date}.} other {# تسوية تحتاج دورة خارج الدورة. أقرب استحقاق {date}.}}',
+  'Open Final Settlement': 'فتح التسوية النهائية',
   'Payroll has to create the off-cycle run, due by {date}.': 'على قسم الرواتب إنشاء الدورة خارج الدورة، ويستحق الصرف بحلول {date}.',
 };
 

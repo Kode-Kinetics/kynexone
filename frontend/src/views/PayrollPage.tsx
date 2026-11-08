@@ -73,6 +73,7 @@ import { CostCentreLockPreview, CostingOffNote } from '../components/payroll/Cos
 import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/UncostedApprovalAck';
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
+import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -619,6 +620,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
   return (
     <div className="space-y-5">
+      <SettlementRunDutyCard onOpen={() => onNavigate('final-settlement')} />
       {/* ── Scope Selector ── */}
       <div className="surface flex flex-wrap items-center gap-3 p-3.5">
         <Building2 className="h-4 w-4 shrink-0 text-slate-400" />

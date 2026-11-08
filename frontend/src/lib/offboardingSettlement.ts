@@ -36,3 +36,9 @@ export const settlementRunHref = (runId: string) => `/payroll?tab=runs&run=${enc
 /** G-006: an approved settlement with no off-cycle run yet is a job waiting for a Payroll Manager. */
 export const isRunDutyOpen = (row: { status: string; runDutyOpen?: boolean; linkedRunId?: string | null; payrollRunId?: string | null }): boolean =>
   row.runDutyOpen ?? (row.status === 'Approved' && !row.linkedRunId && !row.payrollRunId);
+
+/** G-006: how many approved settlements still need an off-cycle run, and the earliest legal due date among them (for the dashboard card). */
+export function runDutySummary(rows: Array<{ status: string; settlementDueDate: string; runDutyOpen?: boolean; linkedRunId?: string | null; payrollRunId?: string | null }>): { count: number; nextDue: string | null } {
+  const open = rows.filter(isRunDutyOpen).map(r => r.settlementDueDate).sort();
+  return { count: open.length, nextDue: open[0] ?? null };
+}

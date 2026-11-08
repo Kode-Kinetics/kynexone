@@ -36,6 +36,9 @@ async function boot(page: Page, url: string, opts: Boot) {
     });
     if (path === '/api/features/disabled-keys') return json(['release_a']);
     if (path === '/api/features/modules') return json([]);
+    if (path === '/api/payroll/companies') return json([]);
+    // The dashboard's own figures are not under test: a failed read is a state it already handles.
+    if (path === '/api/payroll/overview' || path === '/api/payroll/readiness' || path === '/api/payroll/reports/summary') return json({ message: 'not under test' }, 503);
     if (path === '/api/payroll/final-settlements') return json({ outstandingTotal: 18250.5, note: '', rows: opts.rows });
     if (path === `/api/payroll/final-settlements/s-1/offcycle-run` && request.method() === 'POST') {
       posts.push(path);
@@ -113,5 +116,28 @@ test.describe('Off-cycle run for an approved final settlement', () => {
 
     await boot(page, '/offboarding', { permissions: ['employees.read', 'employees.write', 'payroll.read', 'dashboard.read'], rows: [row({ runDutyOpen: false, linkedRunId: RUN_ID })] });
     await expect(page.getByTestId('offboarding-settlement-run')).toHaveAttribute('href', `/payroll?tab=runs&run=${RUN_ID}`, { timeout: 60_000 });
+  });
+
+  test('the Payroll dashboard shows how many settlements need a run and the first due date, linking to the tab', async ({ page }) => {
+    await boot(page, '/payroll', { permissions: PAYROLL, rows: [row({}), row({ id: 's-2', employeeName: 'Omar Haddad', settlementDueDate: '2026-11-09' }), row({ id: 's-3', runDutyOpen: false, linkedRunId: RUN_ID })] });
+    const card = page.getByTestId('settlement-run-duty-card');
+    await expect(card).toContainText('2 settlements need an off-cycle run', { timeout: 60_000 });
+    await expect(card).toContainText('Next due');
+    await card.getByRole('button', { name: 'Open Final Settlement' }).click();
+    await expect(page.getByTestId('settlement-run-duty')).toBeVisible();
+  });
+
+  test('the dashboard card is silent when nothing waits, and for a reader without payroll.write', async ({ page }) => {
+    await boot(page, '/payroll', { permissions: PAYROLL, rows: [row({ runDutyOpen: false, linkedRunId: RUN_ID })] });
+    await expect(page.getByRole('tab', { name: /dashboard/i }).or(page.getByText('Company scope', { exact: false })).first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId('settlement-run-duty-card')).toHaveCount(0);
+    await boot(page, '/payroll', { permissions: ['payroll.read', 'dashboard.read'], rows: [row({})] });
+    await page.waitForTimeout(1500);
+    await expect(page.getByTestId('settlement-run-duty-card')).toHaveCount(0);
+  });
+
+  test('the dashboard card in Arabic', async ({ page }) => {
+    await boot(page, '/payroll', { permissions: PAYROLL, rows: [row({})], locale: 'ar' });
+    await expect(page.getByTestId('settlement-run-duty-card')).toContainText('تسوية واحدة تحتاج دورة خارج الدورة', { timeout: 60_000 });
   });
 });
