@@ -20,7 +20,8 @@ concurrency:
 jobs:
   browser-suites:
     name: Nightly browser suites (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which the pinned Playwright cannot install chromium on.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
