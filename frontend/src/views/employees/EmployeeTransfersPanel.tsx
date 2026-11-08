@@ -21,7 +21,7 @@ export function EmployeeTransfersPanel({ employeeId, onEmployeeChanged }: { empl
   }, [employeeId, t]);
   useEffect(() => { void load(); }, [load]);
   const reload = useCallback(async () => { await load(); onEmployeeChanged?.(); }, [load, onEmployeeChanged]);
-  const { decide, busyId, notice, dialog } = useTransferDecisions(reload);
+  const { decide, reject, withdraw, busyId, notice, dialog } = useTransferDecisions(reload);
 
   return (
     <section className="surface space-y-4 p-5" data-testid="employee-transfers">
@@ -30,7 +30,7 @@ export function EmployeeTransfersPanel({ employeeId, onEmployeeChanged }: { empl
       {error && <p role="alert" className="text-sm font-medium text-rose-700 dark:text-rose-300">{error}</p>}
       {rows === null ? <p aria-busy="true" className="text-sm text-slate-500">{t('Loading…')}</p>
         : rows.length === 0 ? <p className="text-sm text-slate-500">{t('No transfer requests are recorded.')}</p>
-        : <TransferDecisionList rows={rows} busyId={busyId} onDecide={view => void decide(view)} />}
+        : <TransferDecisionList rows={rows} busyId={busyId} onDecide={view => void decide(view)} onReject={reject} onWithdraw={withdraw} />}
       {dialog}
     </section>
   );

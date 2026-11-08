@@ -19,7 +19,7 @@ const transferView = (over: Record<string, unknown> = {}, step: TransferStepName
   },
   employeeName: 'Sam Subject', employeeCode: 'E-0901', currentManagerName: 'Cora Current', newManagerName: 'Nadia New',
   awaitingStep: step, awaitingName: step === 'CurrentManager' ? 'Cora Current' : step === 'NewManager' ? 'Nadia New' : null,
-  canDecide: true, ...over,
+  canDecide: true, canReject: true, canWithdraw: false, decisionReason: null, decidedByName: null, ...over,
 });
 
 interface Boot {
@@ -34,7 +34,7 @@ interface Boot {
 }
 
 async function boot(page: Page, url: string, o: Boot) {
-  const calls = { pending: 0, posts: [] as string[], decisions: [] as Array<{ path: string; body: unknown }> };
+  const calls = { pending: 0, posts: [] as string[], closes: [] as Array<{ path: string; body: unknown }>, decisions: [] as Array<{ path: string; body: unknown }> };
   let pending = [...(o.pending ?? [])];
   const errors: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -58,6 +58,11 @@ async function boot(page: Page, url: string, o: Boot) {
     if (path.includes('/features/')) return reply([]);
     if (path === '/api/notifications' || path.startsWith('/api/ai/policy/')) return reply([]);
     if (path === '/api/employees/transfers/pending') { calls.pending += 1; return reply(pending); }
+    if (/^\/api\/employees\/transfers\/[^/]+\/(reject|withdraw)$/.test(path) && request.method() === 'POST') {
+      calls.closes.push({ path, body: request.postDataJSON() });
+      pending = [];
+      return reply({});
+    }
     if (/^\/api\/employees\/transfers\/[^/]+\/approve-/.test(path) && request.method() === 'POST') {
       calls.posts.push(path);
       if ((o.approveStatus ?? 200) !== 200) return reply({ message: 'The staffing budget is full for Finance.' }, o.approveStatus);
@@ -84,11 +89,16 @@ async function boot(page: Page, url: string, o: Boot) {
 /** The employee workspace on its shared fixture, plus this lane's transfer endpoints. */
 async function bootWorkspace(page: Page, permissions: string[], forEmployee: unknown[]) {
   const posts: string[] = [];
+  const closes: Array<{ path: string; body: unknown }> = [];
   await bootEmployeeWorkspaceFixture(page, { permissions });
+  await page.route('**/api/employees/transfers/*/{reject,withdraw}', route => {
+    closes.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    return route.fulfill({ json: {} });
+  });
   await page.route('**/api/employees/901/transfers', route => route.fulfill({ json: forEmployee }));
   await page.route('**/api/employees/transfers/*/approve-*', route => { posts.push(new URL(route.request().url()).pathname); return route.fulfill({ json: {} }); });
   await page.goto('/people/901?section=employment&panel=transfers');
-  return { posts };
+  return { posts, closes };
 }
 
 const MANAGER = ['manager.approve', 'employees.read', 'dashboard.read', 'approvals.read'];
@@ -178,6 +188,66 @@ test.describe('G-002 transfer approvals have a surface', () => {
     await expect(panel).toContainText('بانتظار المدير الحالي: Cora Current');
     await expect(panel.getByRole('button', { name: 'موافقة' })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+  });
+});
+
+test.describe('Transfer reject and withdraw', () => {
+  test('a decider rejects with a reason after a confirmation, and the reason is what is sent', async ({ page }) => {
+    const { calls } = await boot(page, '/approvals', { permissions: MANAGER, pending: [transferView()] });
+    const panel = page.getByRole('region', { name: 'Transfers waiting for you' });
+    await panel.getByRole('button', { name: 'Reject' }).click({ timeout: 45_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Reject this transfer?');
+    await dialog.getByLabel('Reason').fill('Budget frozen until January');
+    expect(calls.closes, 'nothing is sent before the confirmation').toEqual([]);
+    await dialog.getByRole('button', { name: 'Reject transfer' }).click();
+    await expect(panel.getByRole('status')).toContainText('Rejected. The transfer will not go ahead.');
+    expect(calls.closes).toEqual([{ path: '/api/employees/transfers/tr-1/reject', body: { reason: 'Budget frozen until January' } }]);
+  });
+
+  test('rejecting without a reason is refused on screen and sends nothing', async ({ page }) => {
+    const { calls } = await boot(page, '/approvals', { permissions: MANAGER, pending: [transferView()] });
+    const panel = page.getByRole('region', { name: 'Transfers waiting for you' });
+    await panel.getByRole('button', { name: 'Reject' }).click({ timeout: 45_000 });
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: 'Reject transfer' }).click();
+    await expect(dialog).toContainText('Give a reason for rejecting this transfer.');
+    expect(calls.closes).toEqual([]);
+  });
+
+  test('no Reject button where the server says the caller may not reject', async ({ page }) => {
+    await boot(page, '/approvals', { permissions: MANAGER, pending: [transferView({ canReject: false })] });
+    const panel = page.getByRole('region', { name: 'Transfers waiting for you' });
+    await expect(panel.getByRole('button', { name: 'Approve' })).toBeVisible({ timeout: 45_000 });
+    await expect(panel.getByRole('button', { name: 'Reject' })).toHaveCount(0);
+  });
+
+  test('the requester withdraws from the employee Transfers panel, with the reason optional', async ({ page }) => {
+    const { closes } = await bootWorkspace(page, ['employees.read', 'manager.approve', 'dashboard.read'], [transferView({ canDecide: false, canReject: false, canWithdraw: true }, 'NewManager')]);
+    const panel = page.getByTestId('employee-transfers');
+    await panel.getByRole('button', { name: 'Withdraw' }).click({ timeout: 45_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Withdraw this transfer?');
+    await dialog.getByRole('button', { name: 'Withdraw transfer' }).click();
+    await expect(panel.getByRole('status')).toContainText('Withdrawn. The transfer will not go ahead.');
+    expect(closes).toEqual([{ path: '/api/employees/transfers/tr-1/withdraw', body: { reason: '' } }]);
+  });
+
+  test('a rejected transfer shows its outcome with who and why, and no buttons', async ({ page }) => {
+    const closed = transferView({ awaitingStep: null, awaitingName: null, canDecide: false, canReject: false, decisionReason: 'Budget frozen', decidedByName: 'Hana HR' });
+    closed.transfer.status = 'Rejected';
+    await bootWorkspace(page, ['employees.read', 'manager.approve', 'dashboard.read'], [closed]);
+    const panel = page.getByTestId('employee-transfers');
+    await expect(panel).toContainText('Rejected', { timeout: 45_000 });
+    await expect(panel).toContainText('Budget frozen (Hana HR)');
+    await expect(panel.getByRole('button')).toHaveCount(0);
+  });
+
+  test('Arabic: the reject dialog reads in Arabic', async ({ page }) => {
+    await boot(page, '/approvals', { permissions: MANAGER, pending: [transferView()], arabic: true });
+    const panel = page.getByRole('region', { name: 'عمليات النقل بانتظار قرارك' });
+    await panel.getByRole('button', { name: 'رفض' }).click({ timeout: 45_000 });
+    await expect(page.getByRole('dialog')).toContainText('هل تريد رفض طلب النقل هذا؟');
   });
 });
 

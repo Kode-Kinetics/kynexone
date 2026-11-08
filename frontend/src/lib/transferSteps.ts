@@ -31,6 +31,13 @@ export interface EmployeeTransferView {
   /** The manager who holds the step; null when HR holds it or nobody can be named. */
   awaitingName?: string | null;
   canDecide: boolean;
+  /** The caller may reject the step it waits at: exactly who may approve it, and never the employee themselves. */
+  canReject: boolean;
+  /** The caller may take it back (the requester, or an approver of employee changes) while it is still open. */
+  canWithdraw: boolean;
+  /** Why it was rejected or withdrawn, and by whom, as written then. */
+  decisionReason?: string | null;
+  decidedByName?: string | null;
 }
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
@@ -40,6 +47,8 @@ const APPROVE_SEGMENT: Record<TransferStep, string> = {
   NewManager: 'approve-new-manager',
   Hr: 'approve-hr',
 };
+
+export const transferClosePath = (id: string, action: 'reject' | 'withdraw') => `/api/employees/transfers/${id}/${action}`;
 
 export const transferApprovePath = (id: string, step: TransferStep) => `/api/employees/transfers/${id}/${APPROVE_SEGMENT[step]}`;
 
@@ -53,7 +62,10 @@ export function transferHolderLine(view: EmployeeTransferView, t: Translate): st
     case 'Hr':
       return t('Waiting for HR approval');
     default:
-      return view.transfer.status === 'ApprovedApplied' ? t('Applied') : view.transfer.status;
+      if (view.transfer.status === 'ApprovedApplied') return t('Applied');
+      if (view.transfer.status === 'Rejected') return t('Rejected');
+      if (view.transfer.status === 'Withdrawn') return t('Withdrawn');
+      return view.transfer.status;
   }
 }
 
@@ -74,4 +86,11 @@ export function transferConfirmMessage(view: EmployeeTransferView, t: Translate)
     case 'NewManager': return t('{employee} moves to {target}. You are approving as the new manager.', vars);
     default: return t('{employee} moves to {target}. You are approving as HR.', vars);
   }
+}
+
+/** "Budget frozen (Hana HR)": the reason a closed transfer was rejected or withdrawn and who wrote it; null when none was given. */
+export function transferOutcomeLine(view: EmployeeTransferView): string | null {
+  const reason = view.decisionReason?.trim();
+  if (!reason) return null;
+  return view.decidedByName ? `${reason} (${view.decidedByName})` : reason;
 }

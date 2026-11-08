@@ -22,7 +22,7 @@ export function PendingTransfersPanel() {
     try { setRows(await employeesApi.pendingTransfers()); } catch { setRows([]); }
   }, []);
   useEffect(() => { if (allowed) void load(); }, [allowed, load]);
-  const { decide, busyId, notice, dialog } = useTransferDecisions(load);
+  const { decide, reject, withdraw, busyId, notice, dialog } = useTransferDecisions(load);
 
   if (!allowed || (rows.length === 0 && !notice)) return null;
   return (
@@ -32,7 +32,7 @@ export function PendingTransfersPanel() {
         <p className="text-sm text-slate-500 dark:text-slate-400">{t('Approve the step you hold. The transfer then moves to the next person, and is applied after HR approves it.')}</p>
       </div>
       <TransferNoticeLine notice={notice} />
-      {rows.length > 0 && <TransferDecisionList rows={rows} busyId={busyId} onDecide={view => void decide(view)} />}
+      {rows.length > 0 && <TransferDecisionList rows={rows} busyId={busyId} onDecide={view => void decide(view)} onReject={reject} onWithdraw={withdraw} />}
       {dialog}
     </section>
   );

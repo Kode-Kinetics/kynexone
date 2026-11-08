@@ -4,7 +4,7 @@ import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
 import type { EmployeeAccessState } from './employeeAccess';
 import type { SalaryAllowanceView } from '../lib/salaryAllowances';
-import { transferApprovePath, type EmployeeTransferView } from '../lib/transferSteps';
+import { transferApprovePath, transferClosePath, type EmployeeTransferView } from '../lib/transferSteps';
 
 export interface OrgChartNodeDto {
   id: number;
@@ -986,6 +986,9 @@ export const employeesApi = {
   pendingTransfers: () => client.get<EmployeeTransferView[]>('/api/employees/transfers/pending').then((r) => r.data),
   /** One employee's transfers with their step, who holds it, and whether the signed-in user may decide it. */
   transfersFor: (id: number) => client.get<EmployeeTransferView[]>(`/api/employees/${id}/transfers`).then((r) => r.data),
+  /** Rejects (with the reason the decider wrote) or withdraws (reason optional) an open transfer. */
+  closeTransfer: (view: EmployeeTransferView, action: 'reject' | 'withdraw', reason: string) =>
+    client.post(transferClosePath(view.transfer.id, action), { reason }).then((r) => r.data),
   /** Approves the step the transfer waits at, through the same endpoint the server has always had for that step. */
   approveTransfer: (view: EmployeeTransferView) => {
     if (!view.awaitingStep) return Promise.reject(new Error('This transfer is not waiting for a decision.'));
