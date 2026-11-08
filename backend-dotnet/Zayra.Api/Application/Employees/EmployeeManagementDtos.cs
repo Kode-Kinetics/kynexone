@@ -730,6 +730,8 @@ public record EmployeeDocumentDto
     public string Notes { get; init; } = string.Empty;
     /// <summary>G-004: why HR rejected the document. Null unless it is Rejected (an older rejection keeps its reason in Notes only).</summary>
     public string? RejectionReason { get; init; }
+    /// <summary>G-004: identity, payroll or contract document. Verifying or rejecting it needs employees.sensitive, so a caller without it is not offered the buttons.</summary>
+    public bool IsProtected { get; init; }
     /// <summary>clean | not_scanned_trusted_source | quarantined | quarantined_pending. "not scanned" is shown as such, never as clean.</summary>
     public string ScanStatus { get; init; } = "clean";
 
@@ -768,6 +770,7 @@ public record EmployeeDocumentDto
             VerifiedBy           = d.VerifiedBy,
             Notes                = showProtectedMetadata ? d.Notes : string.Empty,
             RejectionReason      = showProtectedMetadata ? d.RejectionReason : null,
+            IsProtected          = IsSensitiveDocument(d.DocumentType, d.DocumentCategory),
             ScanStatus           = d.ScanStatus,
         };
     }

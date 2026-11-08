@@ -30,6 +30,7 @@ import { useReleaseA } from '../lib/releaseA';
 import { fill } from '../lib/renewalRadar';
 import { useAuth } from '../contexts/AuthContext';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
+import { DocumentsToVerifyQueue } from '../components/employees/DocumentsToVerifyQueue';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -630,7 +631,12 @@ function ExpiryAlertsTab() {
 // numbers were real and the click went nowhere. This is where they live.
 
 function EmployeeDocumentsTab() {
-  const [view, setView] = useState<'expiring' | 'missing'>('expiring');
+  const { t } = useLocale();
+  const { hasPermission } = useAuth();
+  const searchParams = useSearchParams();
+  // G-004: the queue of documents waiting for HR to verify them. Only a holder of employees.documents can act on one.
+  const canVerify = hasPermission('employees.documents');
+  const [view, setView] = useState<'expiring' | 'missing' | 'verify'>(canVerify && searchParams?.get('docs') === 'verify' ? 'verify' : 'expiring');
   const [days, setDays] = useState(60);
   const [expiring, setExpiring] = useState<EmployeeExpiringDocument[] | null>(null);
   const [missing, setMissing] = useState<EmployeeMissingDocumentsReport[] | null>(null);
@@ -639,6 +645,7 @@ function EmployeeDocumentsTab() {
 
   useEffect(() => {
     let cancelled = false;
+    if (view === 'verify') { setLoading(false); setError(''); return () => { cancelled = true; }; }
     setLoading(true); setError('');
     const req = view === 'expiring'
       ? employeesApi.reports.expiringDocuments(days).then(r => { if (!cancelled) setExpiring(r); })
@@ -655,13 +662,15 @@ function EmployeeDocumentsTab() {
     return () => { cancelled = true; };
   }, [view, days]);
 
-  const rows = view === 'expiring' ? expiring : missing;
+  const rows = view === 'expiring' ? expiring : view === 'missing' ? missing : null;
+  const viewOptions: Array<['expiring' | 'missing' | 'verify', string]> = [['expiring', 'Expiring'], ['missing', 'Missing']];
+  if (canVerify) viewOptions.push(['verify', t('To verify')]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]">
-          {([['expiring', 'Expiring'], ['missing', 'Missing']] as const).map(([k, label]) => (
+          {viewOptions.map(([k, label]) => (
             <button
               key={k}
               type="button"
@@ -699,7 +708,9 @@ function EmployeeDocumentsTab() {
         </p>
       )}
 
-      {loading ? (
+      {view === 'verify' ? (
+        <DocumentsToVerifyQueue />
+      ) : loading ? (
         <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
       ) : error ? null : view === 'expiring' ? (
         (expiring ?? []).length === 0 ? (

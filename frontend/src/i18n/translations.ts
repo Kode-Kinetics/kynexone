@@ -28,6 +28,7 @@ import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
+import { deadEnds } from './deadEnds';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -1597,6 +1598,7 @@ const en: Dict = {
   ...glEosb.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
+  ...deadEnds.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -3120,6 +3122,7 @@ const ar: Dict = {
   ...glEosb.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
+  ...deadEnds.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

@@ -293,6 +293,20 @@ public class EmployeeDocumentVerificationQueueTests
         rows.Single(r => r.DocumentType == "Degree").Should().Match<ESSDocumentDto>(r => r.ApprovalStatus == "Verified" && r.RejectionReason == null);
     }
 
+    [Fact]
+    public async Task The_document_projection_says_whether_a_document_is_protected_even_when_its_type_is_masked()
+    {
+        var w = await SeedAsync();
+        var passport = Doc(w, w.Maya, "Passport", string.Empty);
+        var neutral = Doc(w, w.Maya, "Medical certificate", "General");
+
+        var masked = EmployeeDocumentDto.Project(passport, includeSensitive: false);
+
+        masked.DocumentType.Should().Be("Sensitive document");
+        masked.IsProtected.Should().BeTrue("the screen must not offer Verify to someone the server will refuse");
+        EmployeeDocumentDto.Project(neutral, includeSensitive: false).IsProtected.Should().BeFalse();
+    }
+
     private sealed class StubHttpClientFactory : IHttpClientFactory { public HttpClient CreateClient(string name) => new(); }
 
     private sealed class StubLetters : ILetterService

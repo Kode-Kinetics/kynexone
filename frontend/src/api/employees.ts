@@ -421,6 +421,34 @@ export interface EmployeeDocument {
   uploadedAtUtc: string;
   /** CD66: `clean`, `not_scanned_trusted_source`, `quarantined` or `quarantined_pending`; absent on older APIs. */
   scanStatus?: string;
+  /** G-004: why HR rejected it. Present only on a Rejected document, and absent on older APIs. */
+  rejectionReason?: string | null;
+  verifiedAtUtc?: string | null;
+  /** G-004: an identity, payroll or contract document: verifying it needs employees.sensitive. Absent on older APIs. */
+  isProtected?: boolean;
+}
+
+/** G-004: one document waiting for HR to verify it, as the "Documents to verify" queue lists it. */
+export interface PendingDocumentRow {
+  documentId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  companyId: string | null;
+  documentType: string;
+  documentCategory: string;
+  fileName: string;
+  uploadedAtUtc: string;
+  expiryDate: string | null;
+  scanStatus: string;
+  isProtected: boolean;
+}
+
+export interface PendingDocumentsPage {
+  items: PendingDocumentRow[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface EmployeeHistory {
@@ -975,6 +1003,17 @@ export const employeesApi = {
   },
 
   documents: (id: number) => client.get<EmployeeDocument[]>(`/api/employees/${id}/documents`).then((r) => r.data),
+
+  /** G-004: the cross-employee queue of documents waiting for verification (oldest first). */
+  pendingDocuments: (page = 1, pageSize = 25) =>
+    client.get<PendingDocumentsPage>('/api/employees/documents/pending-verification', { params: { page, pageSize } }).then((r) => r.data),
+  /** The stored file through the authenticated route, so HR reads it before deciding. */
+  downloadDocument: (documentId: string) =>
+    client.get<Blob>(`/api/employees/documents/${documentId}/download`, { responseType: 'blob' }).then((r) => r.data),
+  verifyDocument: (employeeId: number, documentId: string, notes?: string) =>
+    client.post<EmployeeDocument>(`/api/employees/${employeeId}/documents/${documentId}/verify`, { notes: notes || null }).then((r) => r.data),
+  rejectDocument: (employeeId: number, documentId: string, reason: string) =>
+    client.post<EmployeeDocument>(`/api/employees/${employeeId}/documents/${documentId}/reject`, { reason }).then((r) => r.data),
 
   history: (id: number) => client.get<EmployeeHistory[]>(`/api/employees/${id}/history`).then((r) => r.data),
 
