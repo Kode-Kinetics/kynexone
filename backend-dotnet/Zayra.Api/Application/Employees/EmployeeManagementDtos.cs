@@ -138,7 +138,13 @@ public record UpdateDocumentMetadataRequest(
     [MaxLength(1000)] string? Notes);
 
 public record DocumentVerifyRequest([MaxLength(1000)] string? Notes);
-public record DocumentRejectRequest([Required, MaxLength(1000)] string Reason);
+public record DocumentRejectRequest([Required, MaxLength(500)] string Reason);
+
+/// <summary>One document waiting for HR to verify it (G-004): what, whose, since when. No storage path, no file bytes.</summary>
+public record PendingDocumentRow(Guid DocumentId, int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string DocumentType,
+    string DocumentCategory, string FileName, DateTime UploadedAtUtc, DateOnly? ExpiryDate, string ScanStatus, bool IsProtected);
+
+public record PendingDocumentsPage(IReadOnlyList<PendingDocumentRow> Items, int Total, int Page, int PageSize);
 public record DocumentExpiryCheckResult(int MarkedExpired, int RemindersSent);
 
 public record EmployeeTransferCreateRequest(
@@ -722,6 +728,8 @@ public record EmployeeDocumentDto
     public DateTime? VerifiedAtUtc { get; init; }
     public Guid? VerifiedBy { get; init; }
     public string Notes { get; init; } = string.Empty;
+    /// <summary>G-004: why HR rejected the document. Null unless it is Rejected (an older rejection keeps its reason in Notes only).</summary>
+    public string? RejectionReason { get; init; }
     /// <summary>clean | not_scanned_trusted_source | quarantined | quarantined_pending. "not scanned" is shown as such, never as clean.</summary>
     public string ScanStatus { get; init; } = "clean";
 
@@ -759,6 +767,7 @@ public record EmployeeDocumentDto
             VerifiedAtUtc        = d.VerifiedAtUtc,
             VerifiedBy           = d.VerifiedBy,
             Notes                = showProtectedMetadata ? d.Notes : string.Empty,
+            RejectionReason      = showProtectedMetadata ? d.RejectionReason : null,
             ScanStatus           = d.ScanStatus,
         };
     }

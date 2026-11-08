@@ -66,9 +66,13 @@ public class EmployeeSelfServiceController : ControllerBase
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
+
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
-        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
+        _notifications = notifications;
         _policySettings = policySettings;
         // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
         _clock = clock ?? TimeProvider.System;
@@ -128,7 +132,7 @@ public class EmployeeSelfServiceController : ControllerBase
                         && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.ExpiryDate)
             .Take(5)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken);
         var announcements = await ActiveAnnouncements(tenantId).Take(5).ToListAsync(cancellationToken);
         var notifications = await _db.EmployeeNotifications.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsRead).OrderByDescending(x => x.CreatedAtUtc).Take(5).ToListAsync(cancellationToken);
@@ -863,7 +867,7 @@ public class EmployeeSelfServiceController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted
                         && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.DocumentType)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.documents.viewed", "EmployeeDocument", employeeId.ToString(), cancellationToken);
         return Ok(documents);
@@ -898,6 +902,7 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeDocuments.Add(document);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.document.uploaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        await TellHrAboutUploadAsync(document, cancellationToken);
         return Created($"/api/ess/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -959,7 +964,16 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeDocuments.Add(document);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.document.uploaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        await TellHrAboutUploadAsync(document, cancellationToken);
         return Created($"/api/ess/documents/{document.Id}", EssDocumentDetailDto.Project(document, bytes.Length));
+    }
+
+    /// <summary>G-004: an employee upload is waiting for HR to verify it, so the people who can verify it are told (never the employee).</summary>
+    private async Task TellHrAboutUploadAsync(EmployeeDocument document, CancellationToken cancellationToken)
+    {
+        if (_notifications is null || document.EmployeeId is not int employeeId) return;
+        var name = await _db.Employees.AsNoTracking().Where(e => e.TenantId == document.TenantId && e.Id == employeeId).Select(e => e.FullName).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+        await Zayra.Api.Infrastructure.Employees.DocumentVerificationNotices.NotifyUploadedAsync(_db, _notifications, document, name, cancellationToken);
     }
 
     /// <summary>
@@ -1578,7 +1592,7 @@ public class EmployeeSelfServiceController : ControllerBase
         // free text on upload, so any employee could publish a "Policy" to the whole company. A real
         // company-policy entity is a separate feature; until it exists nothing here crosses employees.
         return Ok(await OwnPolicyDocuments(tenantId, employeeId)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken));
     }
 
@@ -1704,7 +1718,7 @@ public record ESSProfileSummaryDto(int EmployeeId, string EmployeeCode, string F
 /// request is pending.</param>
 public record ESSLeaveBalanceDto(Guid LeaveTypeId, string LeaveTypeName, decimal Entitled, decimal Used, decimal Pending, decimal Available,
     decimal? StatutoryEntitlementDays = null);
-public record ESSDocumentDto(Guid Id, string DocumentType, string FileName, DateOnly? ExpiryDate, string ApprovalStatus);
+public record ESSDocumentDto(Guid Id, string DocumentType, string FileName, DateOnly? ExpiryDate, string ApprovalStatus, string? RejectionReason);
 public record ESSAnnouncementDto(Guid Id, string Title, string Body, string Audience, DateTime PublishedAtUtc);
 public record ESSNotificationDto(Guid Id, string Title, string Body, string NotificationType, bool IsRead, DateTime CreatedAtUtc);
 public record ESSActionItemDto(Guid Id, string Title, string Category, DateTime? DueAtUtc);

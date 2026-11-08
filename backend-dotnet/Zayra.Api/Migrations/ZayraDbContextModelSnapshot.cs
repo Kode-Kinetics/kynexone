@@ -11194,6 +11194,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("notes");
 
+                    b.Property<string>("RejectionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("rejection_reason");
+
                     b.Property<DateOnly?>("RenewalReminderDate")
                         .HasColumnType("date")
                         .HasColumnName("renewal_reminder_date");

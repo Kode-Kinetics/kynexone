@@ -30,6 +30,9 @@ public interface IEmployeeManagementService
     Task<IReadOnlyCollection<EmployeeDocument>> GetDocumentsAsync(Guid tenantId, int employeeId, CancellationToken cancellationToken);
     Task<EmployeeDocument?> UpdateDocumentAsync(Guid tenantId, int employeeId, Guid documentId, UpdateDocumentMetadataRequest request, RequestContext context, CancellationToken cancellationToken);
     Task<EmployeeDocument?> VerifyDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string? notes, RequestContext context, CancellationToken cancellationToken);
+    /// <summary>G-004 — the "Documents to verify" queue: Pending, live, servable documents of the given employees (null = everyone), oldest first.
+    /// A protected (identity, payroll, contract) document is listed only when <paramref name="includeProtected"/>, the same rule verify enforces.</summary>
+    Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken);
     Task<EmployeeDocument?> RejectDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string reason, RequestContext context, CancellationToken cancellationToken);
     Task<bool> ArchiveDocumentAsync(Guid tenantId, int employeeId, Guid documentId, RequestContext context, CancellationToken cancellationToken);
     Task<DocumentExpiryCheckResult> CheckDocumentExpiryAsync(Guid tenantId, CancellationToken cancellationToken);
