@@ -643,6 +643,8 @@ export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_dr
 export interface CashAllowanceIssue {
   employeeId: number; employeeCode: string; employeeName: string; companyId: string | null; code: string;
   problem: CashAllowanceProblem; message: string;
+  /** The allowance's own name (the code alone told nobody which one it was), and where to fix it. Absent from an older API. */
+  allowanceNameEn?: string | null; allowanceNameAr?: string | null; href?: string | null;
 }
 
 export interface EmployeeSalaryRow {

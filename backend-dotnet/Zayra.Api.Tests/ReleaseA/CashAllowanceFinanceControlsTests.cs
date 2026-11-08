@@ -875,6 +875,25 @@ public class CashAllowanceFinanceControlsTests
         readiness.GetProperty("cashAllowanceIssues").EnumerateArray().Select(i => i.GetRawText()).Should().OnlyContain(t => !t.Contains("100"), "no amounts");
     }
 
+    /// <summary>G-011. The blocking item must name the allowance (not just its ALW_ code) and link to where Finance confirms it, in both languages.</summary>
+    [Fact]
+    public async Task TheReadiness_NamesTheUnconfirmedAllowance_InBothLanguages_AndLinksToBenefitsByGrade()
+    {
+        await using var w = await NewWorld(definition: false);
+        await AddDefinitionAsync(w.Db, w.Tid, "ALW_PENDING", "EARN:PEND", "Pending allowance", "5212", confirmed: false);
+        await GiveAsync(w, w.A, "ALW_PENDING", 100m);
+
+        var readiness = await ReadinessAsync(w);
+
+        var issue = readiness.GetProperty("cashAllowanceIssues").EnumerateArray().Single();
+        issue.GetProperty("problem").GetString().Should().Be("not_confirmed");
+        issue.GetProperty("allowanceNameEn").GetString().Should().Be("Pending allowance");
+        issue.GetProperty("allowanceNameAr").GetString().Should().Be("Pending allowance ar");
+        issue.GetProperty("message").GetString().Should().Contain("Pending allowance").And.Contain("waiting for Finance");
+        issue.GetProperty("href").GetString().Should().Be("/benefits/by-grade#waiting-for-finance");
+        readiness.GetProperty("isReadyForProcessing").GetBoolean().Should().BeFalse("an unconfirmed allowance on a salary blocks the run");
+    }
+
     [Fact]
     public async Task TheReadiness_ForAnEmployeeWithoutAllowanceLines_IsExactlyAsBefore()
     {

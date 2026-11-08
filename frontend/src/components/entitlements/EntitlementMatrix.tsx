@@ -15,10 +15,11 @@ import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
-  addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, isCashAllowance, isPendingFinance, staleRunMonths,
+  addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, isCashAllowance, isPendingFinance, staleRunMonths, waitingForFinance,
   type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type ServerProblem,
 } from '../../lib/cashAllowance';
 import { EosbFields, FinanceAllowancePanel, GlAccountField, useCashGlChoices } from './CashAllowanceFinance';
+import { WaitingForFinance } from './WaitingForFinance';
 import { useFormat } from '../../hooks/useFormat';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
@@ -295,6 +296,9 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
               {fillTemplate(t('Show the values from {date}'), { date: firstScheduled })}
             </button></p>
         </div>}
+        <WaitingForFinance items={waitingForFinance(components, canFinance, makerBlocked)}
+          nameOf={code => { const c = componentOf(code); return c ? componentName(c) : code; }}
+          onConfirm={code => { setFinance({ code, mode: 'confirm' }); setNotice(''); setCautions([]); setStaleNote(''); setEditing(null); }} />
         <GuideStrip progress={progress} changes={changed.length} canManage={canManage} canAddBenefit={canAddBenefit}
           pendingNames={components.filter(isPendingFinance).map(componentName)}
           nextLabel={progress.nextKey ? nextLabel(progress.nextKey) : ''}

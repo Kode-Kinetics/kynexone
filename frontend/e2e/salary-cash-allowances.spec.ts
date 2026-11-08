@@ -377,25 +377,28 @@ test.describe('Finance approval of a pay reduction', () => {
 });
 
 test.describe('Payroll readiness: monthly allowance lines the run cannot use', () => {
-  const issue = (over: object) => ({ employeeId: 901, employeeCode: 'EMP-901', employeeName: 'Layla Test', companyId: null, code: 'ALW_MEAL', problem: 'not_confirmed', message: 'x', ...over });
+  const issue = (over: object) => ({
+    employeeId: 901, employeeCode: 'EMP-901', employeeName: 'Layla Test', companyId: null, code: 'ALW_MEAL', problem: 'not_confirmed', message: 'x',
+    allowanceNameEn: 'Meal allowance', allowanceNameAr: 'بدل الوجبات', href: '/benefits/by-grade#waiting-for-finance', ...over,
+  });
   for (const locale of ['en', 'ar'] as const) {
     test(`each problem is said in plain words with where to fix it (${locale})`, async ({ page }) => {
       await bootPayroll(page, locale, { openSalaryTab: false, readiness: {
         year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: false, totalActiveEmployees: 3, employeesWithSalary: 3, salaryCoveragePercent: 100,
         validationErrors: 0, payrollRunStatus: null, steps: [],
         cashAllowanceIssues: [issue({}), issue({ employeeId: 902, employeeCode: 'EMP-902', employeeName: 'Omar Test', problem: 'no_gl_driver' }),
-          issue({ employeeId: 903, employeeCode: 'EMP-903', employeeName: 'Nadia Test', code: 'ALW_OLD', problem: 'no_definition' })],
+          issue({ employeeId: 903, employeeCode: 'EMP-903', employeeName: 'Nadia Test', code: 'ALW_OLD', problem: 'no_definition', allowanceNameEn: null, allowanceNameAr: null, href: null })],
       } });
       const panel = page.getByTestId('cash-allowance-issues');
       await expect(panel).toBeVisible({ timeout: 30_000 });
       const rows = panel.getByTestId('cash-allowance-issue');
       await expect(rows).toHaveCount(3);
-      await expect(rows.nth(0)).toContainText(say(locale, 'The allowance {code} is waiting for Finance to confirm it in Benefits by grade.', { code: 'ALW_MEAL' }));
-      await expect(rows.nth(1)).toContainText(say(locale, 'The allowance {code} has no GL account yet. Finance sets it in Benefits by grade.', { code: 'ALW_MEAL' }));
-      await expect(rows.nth(2)).toContainText(say(locale, 'The allowance {code} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', { code: 'ALW_OLD' }));
+      await expect(rows.nth(0)).toContainText(say(locale, 'The allowance {name} is waiting for Finance to confirm it in Benefits by grade.', { name: locale === 'ar' ? 'بدل الوجبات' : 'Meal allowance' }));
+      await expect(rows.nth(1)).toContainText(say(locale, 'The allowance {name} has no GL account yet. Finance sets it in Benefits by grade.', { name: locale === 'ar' ? 'بدل الوجبات' : 'Meal allowance' }));
+      await expect(rows.nth(2)).toContainText(say(locale, 'The allowance {name} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', { name: 'ALW_OLD' }));
       // The employee's salary, and Benefits by grade where Finance has to act (not for a line that must come off the salary).
       await expect(rows.nth(0).getByRole('link').first()).toHaveAttribute('href', /\/people\/901\?section=pay-benefits&panel=salary/);
-      await expect(rows.nth(0).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveAttribute('href', '/benefits/by-grade');
+      await expect(rows.nth(0).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveAttribute('href', '/benefits/by-grade#waiting-for-finance');
       await expect(rows.nth(2).getByRole('link', { name: say(locale, 'Open Benefits by grade') })).toHaveCount(0);
     });
   }

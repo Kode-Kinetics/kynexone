@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { AlertTriangle } from 'lucide-react';
 import type { CashAllowanceIssue } from '../../api/payroll';
 import { useLocale } from '../../contexts/LocaleContext';
+import { readinessIssueHref, readinessIssueName } from '../../lib/cashAllowance';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 
 /** How many employees are listed before "and more": the list is a to-do, not a report. */
@@ -11,9 +12,9 @@ const SHOWN = 25;
 
 /** The sentence for each problem (i18n keys, whole sentences so Arabic orders its own words). An unknown one falls back to the server's words. */
 const SENTENCES: Record<string, string> = {
-  no_definition: 'The allowance {code} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.',
-  not_confirmed: 'The allowance {code} is waiting for Finance to confirm it in Benefits by grade.',
-  no_gl_driver: 'The allowance {code} has no GL account yet. Finance sets it in Benefits by grade.',
+  no_definition: 'The allowance {name} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.',
+  not_confirmed: 'The allowance {name} is waiting for Finance to confirm it in Benefits by grade.',
+  no_gl_driver: 'The allowance {name} has no GL account yet. Finance sets it in Benefits by grade.',
 };
 
 function employeeHref(id: number): string | null {
@@ -25,7 +26,7 @@ function employeeHref(id: number): string | null {
  * named here, with the way to fix each: the employee's salary, or Benefits by grade when the allowance itself needs Finance.
  */
 export function CashAllowanceIssuesPanel({ issues }: { issues: readonly CashAllowanceIssue[] }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   if (issues.length === 0) return null;
   const listed = issues.slice(0, SHOWN);
   return (
@@ -50,10 +51,10 @@ export function CashAllowanceIssuesPanel({ issues }: { issues: readonly CashAllo
                 <span className="font-medium">{href ? <Link href={href} className="text-sapphire underline"><bdi>{issue.employeeName}</bdi></Link> : <bdi>{issue.employeeName}</bdi>}</span>
                 {' '}<span className="text-xs text-slate-500" dir="ltr"><bdi>{issue.employeeCode}</bdi></span>
                 <span className="block text-xs text-slate-600 dark:text-slate-300">
-                  {sentence ? t(sentence, { code: issue.code }) : issue.message}
+                  {sentence ? t(sentence, { name: readinessIssueName(issue, locale) }) : issue.message}
                 </span>
               </span>
-              {needsBenefits && <Link href="/benefits/by-grade" className="text-xs font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>}
+              {needsBenefits && <Link href={readinessIssueHref(issue)} className="text-xs font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>}
             </li>
           );
         })}

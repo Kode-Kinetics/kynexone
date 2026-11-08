@@ -139,6 +139,38 @@ export function cashGlChoices(rows: readonly CashGlDriver[], locale: string): Gl
 /** A cash allowance a person without the Finance permission added: it takes no grade value and sits on no salary until Finance confirms it. */
 export const isPendingFinance = (c: Pick<MatrixComponent, 'cashAllowance'>) => c.cashAllowance?.financePending === true;
 
+/** One row of the "Waiting for Finance" list: an allowance Finance has not confirmed yet. `canConfirm` is false when the reader added it themselves. */
+export interface WaitingAllowance { code: string; canConfirm: boolean }
+
+/**
+ * The allowances waiting for Finance, for someone who can confirm them (payroll.approve). A reader without that permission gets none: the grid
+ * already says "Finance must confirm it" on the row. `makerBlocked` is the codes the server refused as "you added this" (maker is not checker).
+ */
+export function waitingForFinance(
+  components: readonly Pick<MatrixComponent, 'code' | 'cashAllowance'>[], canFinance: boolean, makerBlocked: ReadonlySet<string>,
+): WaitingAllowance[] {
+  if (!canFinance) return [];
+  return components.filter(isPendingFinance).map(c => ({ code: c.code, canConfirm: !makerBlocked.has(c.code) }));
+}
+
+/** Where payroll readiness sends someone to fix an allowance line when the server named no target (an older API). */
+const BENEFITS_BY_GRADE = '/benefits/by-grade';
+
+type ReadinessNamed = { code: string; allowanceNameEn?: string | null; allowanceNameAr?: string | null; href?: string | null };
+
+/** The allowance's own name in the reader's language; its code only when the server named none (a removed definition, an older API). */
+export function readinessIssueName(issue: ReadinessNamed, locale: string): string {
+  const en = issue.allowanceNameEn?.trim() ?? '';
+  const ar = issue.allowanceNameAr?.trim() ?? '';
+  return (locale === 'ar' ? ar || en : en || ar) || issue.code;
+}
+
+/** The server's link for fixing the line, only ever an in-app path; otherwise Benefits by grade. */
+export function readinessIssueHref(issue: Partial<ReadinessNamed>): string {
+  const href = issue.href?.trim() ?? '';
+  return href.startsWith('/') && !href.startsWith('//') ? href : BENEFITS_BY_GRADE;
+}
+
 /** What the confirm and correct panels edit: the GL account and the end of service choice, starting from what is in effect. */
 export interface AllowanceSettingsForm extends EosbChoice { glDriverKey: string }
 

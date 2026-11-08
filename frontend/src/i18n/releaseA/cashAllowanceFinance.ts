@@ -83,13 +83,20 @@ const pairs: Array<[string, string]> = [
   ['Reject this change, or ask for it to be proposed again with the reference.', 'ارفض هذا التغيير، أو اطلب اقتراحه من جديد مع المرجع.'],
   ['Monthly pay: {current} now, {proposed} proposed.', 'الراتب الشهري: {current} حالياً، و{proposed} مقترحاً.'],
 
+  // Benefits by grade: the list of allowances waiting for Finance (G-011)
+  ['{count, plural, one {# cash allowance is waiting for you to confirm it} other {# cash allowances are waiting for you to confirm them}}',
+    '{count, plural, zero {لا توجد بدلات نقدية بانتظار تأكيدك} one {بدل نقدي واحد بانتظار تأكيدك} two {بدلان نقديان بانتظار تأكيدكما} few {# بدلات نقدية بانتظار تأكيدك} many {# بدلًا نقديًا بانتظار تأكيدك} other {# بدل نقدي بانتظار تأكيدك}}'],
+  ['Review and confirm', 'مراجعة وتأكيد'],
+  ['Review {benefit}, then confirm it', 'راجع {benefit} ثم أكّده'],
+  ['Payroll cannot be processed for anyone who has one of these on their salary until it is confirmed.', 'لا يمكن معالجة الرواتب لأي موظف لديه أحد هذه البدلات في راتبه قبل تأكيده.'],
+
   // Payroll readiness: allowance lines the run cannot use
   ['{count, plural, one {# monthly allowance line can’t be used yet} other {# monthly allowance lines can’t be used yet}}',
     '{count, plural, zero {لا توجد بنود بدلات شهرية لا يمكن استخدامها بعد} one {بند بدل شهري واحد لا يمكن استخدامه بعد} two {بندا بدل شهري لا يمكن استخدامهما بعد} few {# بنود بدلات شهرية لا يمكن استخدامها بعد} many {# بند بدل شهري لا يمكن استخدامها بعد} other {# بند بدل شهري لا يمكن استخدامها بعد}}'],
   ['Payroll is not ready to process until each one is fixed.', 'الرواتب ليست جاهزة للمعالجة حتى يُصلَح كل بند منها.'],
-  ['The allowance {code} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', 'البدل {code} على هذا الراتب لم يعد معرّفاً في «المزايا حسب الدرجة». أزله من الراتب، أو عرّفه من جديد.'],
-  ['The allowance {code} is waiting for Finance to confirm it in Benefits by grade.', 'البدل {code} بانتظار أن تؤكده المالية في «المزايا حسب الدرجة».'],
-  ['The allowance {code} has no GL account yet. Finance sets it in Benefits by grade.', 'البدل {code} ليس له حساب أستاذ عام بعد. تحدده المالية في «المزايا حسب الدرجة».'],
+  ['The allowance {name} on this salary is no longer set up in Benefits by grade. Remove it from the salary, or set it up again.', 'البدل {name} على هذا الراتب لم يعد معرّفاً في «المزايا حسب الدرجة». أزله من الراتب، أو عرّفه من جديد.'],
+  ['The allowance {name} is waiting for Finance to confirm it in Benefits by grade.', 'البدل {name} بانتظار أن تؤكده المالية في «المزايا حسب الدرجة».'],
+  ['The allowance {name} has no GL account yet. Finance sets it in Benefits by grade.', 'البدل {name} ليس له حساب أستاذ عام بعد. تحدده المالية في «المزايا حسب الدرجة».'],
   ['{count} more are not listed. Fix these and refresh to see them.', 'هناك {count} أخرى غير مدرجة. أصلح هذه ثم حدّث الصفحة لرؤيتها.'],
 ];
 
