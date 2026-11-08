@@ -29,3 +29,10 @@ export function settlementStage(row: FinalSettlementListRow | null): SettlementS
 
 /** Only a paid settlement clears the item; an approved one is still owed. */
 export const isSettlementCleared = (row: FinalSettlementListRow | null) => settlementStage(row) === 'paid';
+
+/** G-006: the Payroll page opened on the off-cycle run that pays this settlement. */
+export const settlementRunHref = (runId: string) => `/payroll?tab=runs&run=${encodeURIComponent(runId)}`;
+
+/** G-006: an approved settlement with no off-cycle run yet is a job waiting for a Payroll Manager. */
+export const isRunDutyOpen = (row: { status: string; runDutyOpen?: boolean; linkedRunId?: string | null; payrollRunId?: string | null }): boolean =>
+  row.runDutyOpen ?? (row.status === 'Approved' && !row.linkedRunId && !row.payrollRunId);

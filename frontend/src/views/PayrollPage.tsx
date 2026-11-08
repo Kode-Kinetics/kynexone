@@ -72,6 +72,7 @@ import { financeGlApi } from '../api/financeGl';
 import { CostCentreLockPreview, CostingOffNote } from '../components/payroll/CostCentreLockPreview';
 import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/UncostedApprovalAck';
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
+import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -3774,6 +3775,7 @@ function FinalSettlementTab() {
 
   return (
     <div className="space-y-5">
+      <SettlementRunDutyPanel settlements={settlements} onChanged={() => void loadSettlements()} />
       <div className="surface p-4">
         <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
