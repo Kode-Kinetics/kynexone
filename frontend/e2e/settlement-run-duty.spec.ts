@@ -21,6 +21,9 @@ interface Boot { permissions: string[]; rows: Array<Record<string, unknown>>; lo
 async function boot(page: Page, url: string, opts: Boot) {
   const errors: string[] = [];
   const posts: string[] = [];
+  // The run exists only after the POST; reads of the runs list after that are counted, so a test can wait for the re-read.
+  let created = false;
+  const runsReadsAfterCreate = { count: 0 };
   page.on('pageerror', (e) => errors.push(e.message));
   await page.addInitScript((locale) => {
     localStorage.setItem('zayra_access_token', 'fixture');
@@ -41,7 +44,7 @@ async function boot(page: Page, url: string, opts: Boot) {
     if (path === '/api/payroll/overview' || path === '/api/payroll/readiness' || path === '/api/payroll/reports/summary') return json({ message: 'not under test' }, 503);
     if (path === '/api/payroll/final-settlements') return json({ outstandingTotal: 18250.5, note: '', rows: opts.rows });
     if (path === `/api/payroll/final-settlements/s-1/offcycle-run` && request.method() === 'POST') {
-      posts.push(path);
+      posts.push(path); created = !opts.createFails;
       return opts.createFails ? json({ error: 'regular_run_exists', message: 'A payroll run already exists for this period.' }, 409) : json({ runId: RUN_ID, created: true });
     }
     if (path === '/api/offboarding') return json([{
@@ -51,19 +54,24 @@ async function boot(page: Page, url: string, opts: Boot) {
       knowledgeHandover: false, finalSettlementDone: false, backfillRequisitionId: null, completedAtUtc: null, cancelledAtUtc: null, cancelReason: null,
     }]);
     if (path === '/api/offboarding/summary') return json({ inNotice: 1, completed: 0, exitInterviewsPending: 1, avgExitRating: 0, reasons: [] });
+    if (path === '/api/payroll/runs') {
+      if (created) runsReadsAfterCreate.count++;
+      const runs = created ? [{ id: RUN_ID, companyId: 'c1', year: 2026, month: 11, status: 'Draft', runType: 'OffCycle', totalGrossSalary: 0, totalDeductions: 0, totalNetSalary: 0, totalEmployerStatutoryCost: 0, employeeCount: 1, createdAtUtc: '2026-11-08T08:00:00Z', processedAtUtc: null, lockedAtUtc: null }] : [];
+      return json({ items: runs, total: runs.length, page: 1, pageSize: 200 });
+    }
     if (path === '/api/tenant-admin/localization') return json({ currencyCode: 'SAR' });
     if (path === '/api/notifications') return json([]);
     return json({ items: [], total: 0, page: 1, pageSize: 25 });
   });
   await page.goto(url);
-  return { errors, posts };
+  return { errors, posts, runsReadsAfterCreate };
 }
 
 const PAYROLL = ['payroll.read', 'payroll.write', 'dashboard.read'];
 
 test.describe('Off-cycle run for an approved final settlement', () => {
   test('the Final Settlement tab lists the settlement with its due date and creates the run in one confirmed step', async ({ page }) => {
-    const { errors, posts } = await boot(page, '/payroll?tab=final-settlement', { permissions: PAYROLL, rows: [row({})] });
+    const { errors, posts, runsReadsAfterCreate } = await boot(page, '/payroll?tab=final-settlement', { permissions: PAYROLL, rows: [row({})] });
     const panel = page.getByTestId('settlement-run-duty');
     await expect(panel).toContainText('Off-cycle runs to create', { timeout: 60_000 });
     await expect(panel.getByTestId('run-duty-s-1')).toContainText('Layla Nasser');
@@ -76,6 +84,11 @@ test.describe('Off-cycle run for an approved final settlement', () => {
     await dialog.getByRole('button', { name: 'Create off-cycle run' }).click();
     await expect(page).toHaveURL(new RegExp(`/payroll\\?.*tab=runs.*run=${RUN_ID}|/payroll\\?.*run=${RUN_ID}.*tab=runs`));
     expect(posts).toEqual(['/api/payroll/final-settlements/s-1/offcycle-run']);
+    // The runs list read before the run existed must not make the new run "not found": once the list is read again the
+    // run stays selected and no missing-run warning is shown.
+    await expect.poll(() => runsReadsAfterCreate.count, { timeout: 30_000 }).toBeGreaterThan(0);
+    await expect(page).toHaveURL(new RegExp(`run=${RUN_ID}`));
+    await expect(page.getByTestId('pipeline-run-missing')).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 
