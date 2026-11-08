@@ -34,6 +34,7 @@ public static class NotificationAudience
         nameof(EmployeeDraft),
         nameof(EmployeeTransferRequest),
         nameof(EmployeeChangeRequest),
+        nameof(EmployeeProfileChangeRequest),
         nameof(EmployeeDocument),
         nameof(EmployeeLoan),
         // An approval is always about its subject (a sensitive change lists the fields being changed).

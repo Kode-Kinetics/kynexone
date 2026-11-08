@@ -26,7 +26,7 @@ public sealed class TransferApprovalReachabilityTests
     private static readonly string[] ManagerPermissions = ["manager.approve", "employees.read"];
     private static readonly string[] HrPermissions = ["manager.approve", "employees.approve", "employees.read"];
 
-    private sealed class World
+    internal sealed class World
     {
         public Guid Tenant { get; } = Guid.NewGuid();
         public ZayraDbContext Db { get; } = PeopleAuditFixtures.CreateDb();
@@ -89,7 +89,7 @@ public sealed class TransferApprovalReachabilityTests
             Db.Notifications.AsNoTracking().Where(n => n.EntityName == nameof(EmployeeTransferRequest) && n.EntityId == transferId.ToString()).ToList();
     }
 
-    private sealed class Scope(int[]? allowed) : IDataScopeService
+    internal sealed class Scope(int[]? allowed) : IDataScopeService
     {
         public Task<DataScope> ResolveAsync(ClaimsPrincipal caller, Guid tenantId, CancellationToken ct) =>
             Task.FromResult(new DataScope { Level = allowed is null ? DataScopeLevel.Organization : DataScopeLevel.Team, AllowedEmployeeIds = allowed });

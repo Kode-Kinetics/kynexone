@@ -1053,7 +1053,14 @@ public record EmployeeTransferViewDto(
     string? AwaitingStep,
     /// <summary>The person who holds the step (a manager's name), or null when HR holds it.</summary>
     string? AwaitingName,
-    bool CanDecide);
+    bool CanDecide,
+    /// <summary>The caller may reject the step it waits at: exactly who may approve it, and never the employee themselves.</summary>
+    bool CanReject = false,
+    /// <summary>The caller may withdraw it: the requester, or an approver of employee changes, while it is still open.</summary>
+    bool CanWithdraw = false,
+    /// <summary>Why it was rejected or withdrawn, as the person who did so wrote it.</summary>
+    string? DecisionReason = null,
+    string? DecidedByName = null);
 
 public record EmployeeGroupCountDto(string Name, int Count);
 public record EmployeeHeadcountReportDto(int Total, IReadOnlyCollection<EmployeeGroupCountDto> ByCompany, IReadOnlyCollection<EmployeeGroupCountDto> ByDepartment, IReadOnlyCollection<EmployeeGroupCountDto> ByStatus);

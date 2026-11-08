@@ -61,14 +61,17 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly IDocumentStorage? _documentStorage;
     private readonly TimeProvider _clock;
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
     // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
-        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
+        _notifications = notifications;
         _policySettings = policySettings;
         // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
         _clock = clock ?? TimeProvider.System;
@@ -359,6 +362,9 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeProfileChangeRequests.Add(change);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.profile_change.requested", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
+        var submitter = await OwnEmployee(tenantId, employeeId, cancellationToken);
+        if (submitter is not null)
+            await Zayra.Api.Application.Employees.Ess.ProfileChangeNotices.NotifyHrAsync(_notifications ?? HttpContext?.RequestServices?.GetService<Zayra.Api.Infrastructure.Notifications.INotificationService>(), _db, tenantId, submitter, change, cancellationToken);
         return Created($"/api/ess/profile-change-request/{change.Id}", change);
     }
 
