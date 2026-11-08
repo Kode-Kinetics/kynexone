@@ -926,7 +926,11 @@ for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) 
   if (destination !== 'palette') await page.setViewportSize({ width: 1440, height: 1000 });
   await boot(page, { area: 'onboarding', setting: 'onboardingChecklists' });
   await page.getByPlaceholder('Task title', { exact: true }).fill('Retain shell draft');
+  // The page rewrites the legacy `area=onboarding` to its current id (`talentServices`) and reorders the query after load.
+  // Take the location only once that has settled, and compare it as path + parameter set, not as a raw string.
+  await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const originalUrl = page.url();
+  const locationOf = (url: string) => { const u = new URL(url); return { path: u.pathname, params: [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b)) }; };
   const guard = trackLeaveGuard(page);
   const target = destination === 'palette'
     ? page.getByRole('button', { name: /Dashboard.*\/dashboard/ })
@@ -942,7 +946,7 @@ for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) 
   };
   await choose();
   await guard.stay();
-  await expect(page).toHaveURL(originalUrl);
+  await expect.poll(() => locationOf(page.url())).toEqual(locationOf(originalUrl));
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Retain shell draft');
   await choose();
   await guard.leave();

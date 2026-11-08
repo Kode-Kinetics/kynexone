@@ -44,6 +44,8 @@ test('a long reason is sent whole: the server sets no length limit on these reas
   await page.getByRole('button', { name: 'Void', exact: true }).click();
   const long = 'x'.repeat(800);
   await page.getByTestId('confirm-reason').pressSequentially(long);
-  await page.getByRole('dialog').getByRole('button', { name: 'Void encashment' }).click();
+  const voidButton = page.getByRole('dialog').getByRole('button', { name: 'Void encashment' });
+  await expect(voidButton).toBeEnabled();
+  await voidButton.click();
   await expect.poll(() => posted[0]?.reason?.length).toBe(800);
 });
