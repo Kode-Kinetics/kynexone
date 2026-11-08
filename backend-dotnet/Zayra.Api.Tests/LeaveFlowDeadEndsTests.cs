@@ -227,7 +227,8 @@ public class LeaveFlowDeadEndsTests
         told.Should().NotContain(w.EmployeeLogin.UserId, "the employee never decides their own cancellation");
         told.Should().NotContain(w.BystanderLogin.UserId);
         w.Notes.Sent.Where(n => n.Title == "Leave Cancellation Requested").Should().OnlyContain(n =>
-            n.EntityName == "LeaveRequest" && n.EntityId == leave.Id.ToString() && n.Message.Contains("Plans changed"));
+            n.EntityName == "LeaveRequest" && n.EntityId == leave.Id.ToString()
+            && !n.Message.Contains("Plans changed") && n.Message.Contains("A reason was added"));
     }
 
     [Fact]
@@ -280,7 +281,7 @@ public class LeaveFlowDeadEndsTests
         (await (await LeaveAsync(w, w.ManagerLogin)).RejectCancellation(leave.Id, new CancellationDecisionRequest("Needed on site"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>();
         w.Notes.Sent.Should().Contain(n => n.UserId == w.EmployeeLogin.UserId && n.Title == "Leave Cancellation Declined"
-            && n.Message.Contains("stays approved") && n.Message.Contains("Needed on site"));
+            && n.Message.Contains("stays approved") && !n.Message.Contains("Needed on site") && n.Message.Contains("A note was added"));
 
         await RequestCancellationAsync(w, leave.Id);
         (await (await LeaveAsync(w, w.HrLogin)).ApproveCancellation(leave.Id, new CancellationDecisionRequest("ok"), CancellationToken.None))

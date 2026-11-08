@@ -98,7 +98,8 @@ public static class LeaveNotifications
     public static async Task NotifyCancellationRequestedAsync(ZayraDbContext db, INotificationService notifications, Guid tenantId,
         LeaveRequest leave, string? reason, CancellationToken ct)
     {
-        var why = string.IsNullOrWhiteSpace(reason) ? string.Empty : $" Reason: {reason.Trim()}";
+        // The free text stays on the request; a notice (which can be emailed) only says there is one.
+        var why = string.IsNullOrWhiteSpace(reason) ? string.Empty : " A reason was added; open the request to read it.";
         await notifications.NotifyEachAsync(tenantId,
             [.. await CancellationDecidersAsync(db, tenantId, leave.EmployeeId, ct)],
             "Leave Cancellation Requested",
@@ -110,7 +111,7 @@ public static class LeaveNotifications
     public static async Task NotifyCancellationDecidedAsync(ZayraDbContext db, INotificationService notifications, Guid tenantId,
         LeaveRequest leave, bool approved, string? notes, CancellationToken ct)
     {
-        var note = string.IsNullOrWhiteSpace(notes) ? string.Empty : $" Note: {notes.Trim()}";
+        var note = string.IsNullOrWhiteSpace(notes) ? string.Empty : " A note was added; open the request to read it.";
         await notifications.NotifyEachAsync(tenantId,
             [.. await NotificationAudience.EmployeeLoginIdsAsync(db, tenantId, leave.EmployeeId, ct)],
             approved ? "Leave Cancellation Approved" : "Leave Cancellation Declined",
