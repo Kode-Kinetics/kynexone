@@ -113,6 +113,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.hotfix-dead-ends.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked specs for the G-004 documents queue, the G-006 settlement run duty and the G-013 platform draft activation; all three are also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.jawazat.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."

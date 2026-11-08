@@ -1769,6 +1769,11 @@ public class PlatformController : ControllerBase
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> ApproveCompany(Guid tenantId, Guid companyId, CancellationToken ct)
     {
+        // A company is never activated inside a suspended or deleted tenant: nobody there could use it, and a deleted one is on its way to purge.
+        var tenant = await _db.Tenants.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tenantId, ct);
+        if (tenant is null) return NotFound(new { message = "Tenant not found." });
+        if (!tenant.IsActive || tenant.Slug.Contains("__deleted_", StringComparison.Ordinal))
+            return Conflict(new { error = "tenant_not_active", message = "The tenant is suspended or deleted, so its companies cannot be activated." });
         // SYSTEM CONTEXT: tenant scope intentionally bypassed (platform console); the tenant is an explicit predicate.
         var company = await _db.Companies.IgnoreQueryFilters()
             .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
