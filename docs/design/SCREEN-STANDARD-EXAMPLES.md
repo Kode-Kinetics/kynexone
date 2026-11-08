@@ -1,0 +1,72 @@
+# Screen Standard: three worked examples
+
+Status: proposed. Read against `origin/main` 1d0f932e (2026-11-06). Rules cited as "S1" to "S8" are sections of [SCREEN-STANDARD.md](SCREEN-STANDARD.md). Frontend only: layout, copy, hooks for tests. No backend, API or business-logic change. Each example ends with the contract that must be red first (S8).
+
+Source state: the mass-entry-in-punch-card work is on local branch `attendance-dashboard-entry`, not main; B is written so it lands inside the drawer. Benefits by grade is being extended on `feat/benefits-add-benefit-one-page` (PR #326, session `kynexone-b2`: step strip, "Set next value"); C lists only the deltas the standard adds, so coordinate with that session rather than editing the branch.
+
+---
+
+## A. Employee edit (Form / Wizard)
+
+Files: `frontend/src/views/employees/EmployeeEditFlow.tsx` (351 lines), `useEmployeeEditDraft.ts`, `src/api/employeeFieldCatalog.ts`, `src/i18n/employeeWorkspace.ts`, `src/components/EmployeeCreateWizard.tsx` (`EmployeeCreateProgress`), `EmployeeWorkspacePage.tsx` (post-save).
+
+| # | Today | Change | Rule |
+|---|---|---|---|
+| 1 | Container `max-w-[1400px]` (line 220) holds a `sm:grid-cols-2` fieldset (line 241), so at 1440 each field is about 540 px wide, and the right side of the page is empty. | Replace the container with `ui/Page type="form"`: form column 704 (800 from `wide`), 2-column grid only from `md`, plus a rail from `rail` (1360). Keep `EmployeeCreateProgress` as the full-width strip under the header (promote to `ui/StepStrip`). | S1 |
+| 2 | Rail does not exist; the list of changes appears only on the last step (`EmployeeCreateReview`, step 5). A user who changed one field walks five steps to find Save. | New `EmployeeEditRail` fed by `draft.changedKeys`, `draft.unavailableKeys` and `salaryBlockedByStructure`: employee mini-card (name, code, status, manager); "Changes so far" (n, each as label, before to after); "Needs approval" (sensitive fields, with the existing "Salary changes take effect on {date}, after approval" sentence, now visible on step 1); "Needs your attention" (blocking items, each a link to its field). | S1, S3(c) |
+| 3 | `btn-primary` is "Next" on steps 0-4 and Save exists only on step 5; "Revert changes" is a header button (line 228). | Footer inline-end shows one primary at a time: when `changeCount > 0`, "Review & save ({n})" is primary and "Next: {step}" drops to secondary; when nothing changed, "Next: {step}" is primary. Revert moves to the footer inline-start next to Back as a ghost button, with the Tier 1 undo pattern instead of a dialog. | S1 rule 2, S5 |
+| 4 | Sub-line is `{employeeCode} · Every change is reviewed before it is saved.` (line 226): a code fused to a sentence, and the sentence is not true for non-sensitive fields. | Code becomes a chip beside the name (`<bdi>`). The `data-purpose` line becomes "Update this employee's record. Pay and status changes go to approval before they apply." (AR written natively.) | S3(a) |
+| 5 | The generic field `<label>` (lines 318-326) renders `t(field.label)` with no `i`; only `WorkEmailField` and cost centre explain themselves. | Add `infoKey` to the field catalogue entry and `info: msg('...')` to the dictionary. Eligible by rule: grade, designation, salary structure, basic / housing / transport, employment type, probation end, contract end, IBAN and bank, ID and permit expiry, line manager, status and termination, work location. Exempt, `noInfo="plain text"`: names, phone, address lines, notes. Samples below. The `Approval` chip moves into `ui/Field`'s `badge` slot. | S3(b) |
+| 6 | After save, `window.location.assign(... &saved=updated)` reloads the whole page and the banner says "Employee details saved." | Same destination, but the banner becomes a `ResultBanner`: "3 changes saved: Grade, Housing, Probation end", the pending state ("Salary goes to Finance; applies 1 Dec after approval"), and one next action ("Review pay and benefits"). Prefer `router.replace` so the page does not flash; either way the banner must take focus. | S3(d) |
+| 7 | Six phases (`EMPLOYEE_EDIT_STEPS`: Profile, Employment, Payroll, Salary, Identity, Review), over the 3-5 limit. Each already has a `description` that no screen shows as its purpose line. | Merge Payroll and Salary into "Pay" (5 phases) and render each step's existing `description` as its `data-purpose` line. At 320 the strip collapses to "Step 2 of 5: Employment" plus a select. | S3(a), S3(d), S6 |
+
+Sample `i` texts (English, then Arabic; native review pending, as for `GLOSSARY.md`):
+- Grade: "Sets the benefits and loan limits this employee is entitled to. Changing it applies from the next payroll run." / "تحدد المزايا وحدود القروض المستحقة للموظف. يسري التغيير من مسير الرواتب القادم."
+- Salary structure: "Decides how basic, housing and transport are split. Pay changes go to Finance for approval first." / "تحدد كيفية توزيع الأساسي والسكن والمواصلات. تُرسل تغييرات الراتب إلى المالية للاعتماد أولًا."
+
+Red first: `screen-contract/employee-edit.spec.ts` (S8g, en and ar, 3 viewports) fails on missing `[data-purpose]`, two `btn-primary` at once, no `[data-step-strip]`, no `[data-result]` after save, and a blank right band at 1920; the `info-coverage` baseline for `EmployeeEditFlow.tsx` pins its current `withoutInfo` count (every eligible field above) and must fall to 0.
+
+---
+
+## B. Attendance Live Dashboard (Dashboard)
+
+Files: `frontend/src/views/AttendancePage.tsx` (dashboard tab, lines 299-405; `DailyTable` line 546), `src/components/attendance/attendanceUi.tsx` (`Panel`, `Empty`, `Kpi`), `AttendanceMassEntryPanel.tsx`, `src/i18n/dailyA.ts`.
+
+| # | Today | Change | Rule |
+|---|---|---|---|
+| 1 | The punch card (`lg:grid-cols-[360px_1fr]`, line 356) sits beside `DailyTable` inside the left column of the page grid (`xl:grid-cols-[1fr_360px]`, line 345). At 1366 the table gets 1062 - 360 - 20 - 360 - 20 = about 300 px, yet it has `min-w-[760px]` (line 553), so it scrolls sideways. Same at 1280 (about 216 px). | Remove the inline punch card from the page. The punch form moves into a drawer (`Modal placement="end"`, 480) opened by the header primary "Record punch". Inside, two modes: "One person" (today's form) and "Many people" (`AttendanceMassEntryPanel`, as built on `attendance-dashboard-entry`). The table takes the full left column (about 1062 at 1366). The rail (Device health, Exceptions) appears only from `wide` (1680), where the table still keeps 960 px; below that it becomes a strip of two summary chips above the table. | S1 rules 2-4 |
+| 2 | Header controls: settings link, date, status filter, Refresh, all in one row with the title; no primary action; the generic purpose line explains the tab list, not this tab. | Header: `h1`, purpose "See who is in, late or missing today, and fix gaps before payroll.", header end = "Record punch" (primary), "Attendance settings" (link). Date and status filter move to a toolbar row directly above the table (they filter that table). Refresh becomes a ghost icon with "Updated 10:42" in the live region. | S1, S3(a) |
+| 3 | Four `Kpi` tiles are inert numbers. | Each tile is a filter shortcut (click sets the status filter and announces "12 results" in the live region); a changed value crossfades once (`wg-settle`); no count-up (data being read). | S4, S6 |
+| 4 | `DailyTable` loading is the text "Loading live attendance..." (line 556); empty is the dashed `Empty` box (line 557) with no action. | Loading: `SkeletonRows` (8 rows) after 150 ms. Empty: `EmptyState` with `kind="filtered"` ("No records match. Active filters: Late, 5 Nov." / "Clear filters") or `kind="first-use"` ("No attendance yet today" / "Record a punch"). Failed load keeps the existing `DomainUnavailable` with Retry. | S3(c), S4 |
+| 5 | Device Health empty: `Empty text="No attendance devices configured yet."`, no way forward. | `EmptyState first-use`: title "No devices yet", body "Devices send punches automatically. Without one, punches are entered by hand.", action "Add a device" (the existing `ModuleSettingsLink sections={['attendanceDevices']}`). | S3(c) |
+| 6 | The two punch selects carry only `aria-label` (lines 363, 368); no visible label, no explanation. | Visible labels via `ui/Field`; `i` on "Punch source": "Web, mobile or kiosk. The source is kept on the record for audit and decides whether a selfie is requested." and on "Direction". | S3(b), S6 |
+| 7 | After Save Punch: banner "Punch saved to live attendance events." | `ResultBanner`: "Punch in saved for {name} at 08:02. Today: 143 present." and next action "Record another" (drawer stays open for Many people mode) or "Close". | S3(d) |
+| 8 | 7 tabs (`tabs`, line 68). | Group to 6: merge "Reports" and "Insights" into "Reports & insights". `RovingTabs` stays. | S5 |
+
+Red first: `screen-contract/attendance-dashboard.spec.ts` asserts, at 1366x768, that the table's bounding width is at least 900 px and `scrollWidth <= clientWidth` for the table container; exactly one `[data-primary-action]` in the header zone; an empty and a filtered response each render one `[data-empty-state]` action; at 320 there is no horizontal overflow.
+
+---
+
+## C. Benefits by grade (Setup / config, matrix)
+
+Files: `frontend/src/components/entitlements/EntitlementMatrix.tsx` (498 lines), host `src/views/BenefitsByGradePage.tsx`, `src/lib/entitlementMatrix.ts`, `src/i18n/gradeBenefitDefaults.ts`. Deltas on top of the guided flow in PR #326.
+
+| # | Today | Change | Rule |
+|---|---|---|---|
+| 1 | Title is `text-lg` and the purpose line `text-xs` (lines 168-169): smaller than every other screen's `h1` and hard to read. | `ui/Page` header: `text-h2` inside Setup (S2), purpose at `text-body`: "Set what each grade receives. Changes apply from the date you choose." | S2, S3(a) |
+| 2 | The only primary, "Publish {n} change(s)", is in a bar after the whole table (line 258): below the fold on a normal matrix, so the user must scroll to find it. | Sticky `ActionBar`, inline-end: "Publish {n} changes", with "Discard changes" beside it and "Effective from" in the bar. Header shows a chip "{n} unpublished changes". The step strip from #326 (Grades, Choose benefits, Set values n/N, Review & publish) becomes `ui/StepStrip`, and the footer primary reads "Save & next: {Step}" until the last step, then "Publish". | S1 rule 2, S3(d) |
+| 3 | The cell editor renders below the table (line 236). Clicking a cell in row 12 changes content off-screen. | Cell editor opens in a drawer (`placement="end"`, 480) below `rail`, and pins into the rail from `rail` (1360). With no cell selected the rail shows "{n} values still need setting" with a "Set next value" primary, plus the impact line moved out of the footer ("Reaches 12 employees on that date and 4 at their next contract year"). | S1, S3(c) |
+| 4 | No-grades state is a dashed paragraph with no link (line 192). | `EmptyState first-use`: "No grades yet" / "Grades set each employee's benefits and loan limits." / "Add the first grade" (link to the Setup grades destination). | S3(c) |
+| 5 | Gaps are "outlined in amber" (line 203): a colour-only cue. | Each gap cell gets a "Needs value" label and an icon; the outline stays as reinforcement. | S6 |
+| 6 | Explanation is stacked as `text-xs` paragraphs (lines 244-247) and `i` is absent from "Applies to", "Effective from", "How it is given", "Resets", "Who is covered" and "Conditions". | Move the long sentences into `i` and the rail. Sample, **Effective from**: "The first day the new values apply. Contracts already running keep their package until the contract year ends." / "أول يوم تسري فيه القيم الجديدة. تحتفظ العقود الجارية بباقتها حتى نهاية سنة العقد." | S3(b) |
+| 7 | Refusal: "Some benefits need correcting before they can be published." (line 141) says that, not which or how. | "3 benefits need a value before you can publish: Housing (G4), Transport (G4), Tickets (G6). Open the first." with each entry focusing its cell; also set as the error summary. | S3(e) |
+| 8 | Result notice (line 148) is plain green text at the top of the page, while the Publish button is at the bottom, so the outcome appears out of sight. | `ResultBanner` at the top of the sticky region, scrolled into view and focused: "Published 5 changes, starting 1 Dec" / "Running contracts keep their package until their year ends" / next action "Set loan limits by grade" (the next Setup step via `SetupNextActionsRail`). | S3(d) |
+
+Red first: `screen-contract/benefits-by-grade.spec.ts`: exactly one `[data-primary-action]` and it is in the sticky footer (visible without scrolling at 1366x768 with 14 benefit rows mocked); selecting a cell at 1920 renders the editor inside `[data-rail]`; an empty grade list renders `[data-empty-state]` with a link; after a mocked publish `[data-result]` is focused and contains a next-action button; no horizontal overflow at 320.
+
+---
+
+## Deliberate deviations recorded in Wave 0
+
+- **Payroll money actions are Tier 2, not Tier 3.** Standard section 5 puts "irreversible, money or legal" at Tier 3 (impact preview, typed confirmation, required reason, step-up MFA). Wave 0 migrated the five native dialogs in `PayrollPage.tsx` (delete a draft run, outside-the-bank-file confirmation, contra journal on reversal, payment-reversal reason, settlement cancel) to Tier 2 on purpose: each is reversible by a contra entry or is a draft, the reason is already a required field of the form (or asked for in the dialog), and the server enforces the real controls (permission `payroll.export` / `payroll.approve`, batch locks, step-up where `StepUpHost` applies). Finalising a run and purging tenant data stay Tier 3 when they are migrated. Revisit if Finance wants a typed confirmation on contra journals.
+- **No client-side reason length cap.** The server sets no limit on leave reject/cancel/void notes, requisition rejection, or the payroll reversal, contra-journal and settlement-cancel reasons (no `MaxLength` or `StringLength`, free-text or unbounded columns), so the confirm dialog's reason box has no default cap; a caller passes `reason.maxLength` only when the server has one.

@@ -15,7 +15,7 @@ async function boot(page: Page, options: { readonly?: boolean; noReceipt?: boole
   await page.route('**/api/**', async route => {
     const req = route.request(), url = new URL(req.url()), path = url.pathname;
     const reply = (json: unknown, status = 200) => route.fulfill({ json, status });
-    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', ...(options.noPayrollWrite ? [] : ['payroll.write']), 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
+    if (path === '/api/auth/me') return reply({ id: 'hr-user', tenantId: 'benefit-tenant', fullName: 'Alex Morgan', roles: ['HR Manager'], permissions: ['employees.read', 'employees.write', 'employees.approve', 'payroll.read', 'entitlements.read', ...(options.noPayrollWrite ? [] : ['payroll.write']), 'approvals.manage', 'ess.read', ...(options.readonly ? [] : ['ess.write'])], companies: [{ id: plan.companyId, name: 'Benefits Company', countryCode: 'SA', isActive: true }], isGroupScope: false, accountType: 'SingleCompany' });
     if (path === '/api/features/disabled-keys') return reply(options.releaseA ? [] : ['release_a']);
     if (path === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });
     if (path === `${base}/plans` && req.method() === 'POST') { saves.push(req.postDataJSON()); return reply({ id: 'new-plan', ...req.postDataJSON(), policyVersion: 1 }); }

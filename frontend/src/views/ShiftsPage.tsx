@@ -11,7 +11,10 @@ import type { ShiftDefinition, RosterEmployee, RosterAssignment } from '../api/s
 import { essApi } from '../api/ess';
 import type { EssRosterEntry } from '../api/ess';
 import { useAuth } from '../contexts/AuthContext';
-import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { useLocale } from '../contexts/LocaleContext';
+import { useBusyKeys } from '../hooks/useBusyKeys';
+import { notifyRefusal } from '../lib/refusal';
 import { msg } from '../i18n/translations';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 
@@ -589,6 +592,10 @@ interface RosterTabProps {
 
 function RosterTab({ definitions }: RosterTabProps) {
   const t = useT();
+  const { locale } = useLocale();
+  const { run, isBusy } = useBusyKeys();
+  // A failed roster read is said out loud with Retry: it used to render as "No active employees found."
+  const [loadError, setLoadError] = useState<unknown>(null);
   const fx = useFormat();
   const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
   const [employees, setEmployees] = useState<RosterEmployee[]>([]);
@@ -603,8 +610,8 @@ function RosterTab({ definitions }: RosterTabProps) {
   const load = () => {
     setLoading(true);
     shiftsApi.getRoster(from, to)
-      .then((r) => { setEmployees(r.employees); setAssignments(r.assignments); })
-      .catch(() => {})
+      .then((r) => { setEmployees(r.employees); setAssignments(r.assignments); setLoadError(null); })
+      .catch((e) => { setEmployees([]); setAssignments([]); setLoadError(e); })
       .finally(() => setLoading(false));
   };
 
@@ -615,10 +622,12 @@ function RosterTab({ definitions }: RosterTabProps) {
     assignmentMap.set(`${a.employeeId}|${a.date}`, a);
   }
 
-  const removeAssignment = async (id: string) => {
-    await shiftsApi.removeAssignment(id).catch(() => {});
+  // A failed removal used to be swallowed and the roster reloaded, so the chip came back with no explanation.
+  const removeAssignment = (id: string) => run(`remove:${id}`, async () => {
+    try { await shiftsApi.removeAssignment(id); }
+    catch (e) { notifyRefusal(e, { what: t('The shift assignment was not removed'), fix: t('It is still on the roster. Try again.') }, t, locale); }
     load();
-  };
+  });
 
   const today = toDateString(new Date());
   const weekLabel = `${fx.date(weekStart, 'dayMonth')} – ${fx.date(addDays(weekStart, 6), 'medium')}`;
@@ -697,7 +706,8 @@ function RosterTab({ definitions }: RosterTabProps) {
                 </td>
               </tr>
             )}
-            {!loading && employees.length === 0 && (
+            {!loading && loadError != null && <LoadFailedRow colSpan={8} error={loadError} onRetry={load} />}
+            {!loading && loadError == null && employees.length === 0 && (
               <tr>
                 <td colSpan={8} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">{t('No active employees found.')}</td>
               </tr>
@@ -729,8 +739,10 @@ function RosterTab({ definitions }: RosterTabProps) {
                           <button
                             type="button"
                             aria-label={t('Remove shift assignment')}
-                            onClick={() => removeAssignment(a.id)}
-                            className="ms-0.5 inline-flex rounded-full bg-slate-900/10 p-0.5 text-slate-600 hover:bg-slate-900/20 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20"
+                            onClick={() => void removeAssignment(a.id)}
+                            disabled={isBusy(`remove:${a.id}`)}
+                            aria-busy={isBusy(`remove:${a.id}`) || undefined}
+                            className="ms-0.5 disabled:opacity-50 inline-flex rounded-full bg-slate-900/10 p-0.5 text-slate-600 hover:bg-slate-900/20 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20"
                           >
                             <X className="h-2.5 w-2.5" aria-hidden="true" />
                           </button>
@@ -1301,11 +1313,10 @@ export function ShiftsPage() {
       {/* Shift definitions and the rostering policy are Setup sections; the roster is this page. */}
       {isEmployee && (
         <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
-          <button type="button"
-            className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
-
+          {/* A label, not a button: there is no sibling view to switch to. */}
+          <h2 className="rounded-lg px-4 py-1.5 text-sm font-medium bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent">
             {t('My Schedule')}
-          </button>
+          </h2>
         </div>
       )}
 

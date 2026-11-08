@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { notifyApiError } from '../api/client';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { ResultBanner } from '../components/ui/ResultBanner';
+import { useBusyKeys } from '../hooks/useBusyKeys';
+import { notifyRefusal } from '../lib/refusal';
 import { useAuth } from '../contexts/AuthContext';
 import { useLocale } from '../contexts/LocaleContext';
 import {
@@ -29,7 +32,8 @@ const PRIORITY_COLORS: Record<string, string> = {
 export default function HRRequestCenterPage() {
   // The dashboard is the HR desk's queue: the API requires employees.write.
   const { hasPermission } = useAuth();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
+  const { run, isBusy } = useBusyKeys();
   const isHrDesk = hasPermission('employees.write');
   const [tab, setTab] = useState<Tab>(isHrDesk ? 'dashboard' : 'requests');
   const [requests, setRequests] = useState<HRRequest[]>([]);
@@ -42,6 +46,12 @@ export default function HRRequestCenterPage() {
   const [newComment, setNewComment] = useState('');
   const [form, setForm] = useState({ employeeId: '', categoryId: '', subject: '', description: '', priority: 'Normal' });
   const [submitting, setSubmitting] = useState(false);
+  // A failed load is said out loud with a Retry. It used to be swallowed and rendered as "No requests found".
+  const [dashboardError, setDashboardError] = useState<unknown>(null);
+  const [requestsError, setRequestsError] = useState<unknown>(null);
+  const [categoriesError, setCategoriesError] = useState<unknown>(null);
+  const [detailError, setDetailError] = useState<unknown>(null);
+  const [created, setCreated] = useState<string | null>(null);
 
   useEffect(() => {
     loadCategories();
@@ -56,7 +66,8 @@ export default function HRRequestCenterPage() {
     try {
       const d = await hrRequestApi.dashboard();
       setDashboard(d);
-    } catch {}
+      setDashboardError(null);
+    } catch (e) { setDashboardError(e); }
   }
 
   async function loadRequests() {
@@ -64,7 +75,8 @@ export default function HRRequestCenterPage() {
     try {
       const r = await hrRequestApi.list({ status: statusFilter || undefined, page: 1, pageSize: 30 });
       setRequests(r.items ?? []);
-    } catch {} finally {
+      setRequestsError(null);
+    } catch (e) { setRequests([]); setRequestsError(e); } finally {
       setLoading(false);
     }
   }
@@ -73,32 +85,38 @@ export default function HRRequestCenterPage() {
     try {
       const cats = await hrRequestApi.listCategories();
       setCategories(cats);
-    } catch {}
+      setCategoriesError(null);
+    } catch (e) { setCategoriesError(e); }
   }
 
   async function loadRequestDetail(id: string) {
     setSelectedRequest(id);
+    setDetailError(null);
     try {
       const detail = await hrRequestApi.get(id);
       setRequestDetail(detail);
-    } catch {}
+    } catch (e) { setRequestDetail(null); setDetailError(e); }
   }
 
   async function addComment() {
     if (!selectedRequest || !newComment.trim() || !requestDetail) return;
-    try {
-      await hrRequestApi.addComment(selectedRequest, requestDetail.request.employeeId, newComment.trim());
-      setNewComment('');
-      await loadRequestDetail(selectedRequest);
-    } catch (e) { notifyApiError(e); }
+    await run(`comment:${selectedRequest}`, async () => {
+      try {
+        await hrRequestApi.addComment(selectedRequest, requestDetail.request.employeeId, newComment.trim());
+        setNewComment('');
+        await loadRequestDetail(selectedRequest);
+      } catch (e) { notifyRefusal(e, { what: t('The comment was not sent'), fix: t('Your text is still in the box. Try again.') }, t, locale); }
+    });
   }
 
   async function updateStatus(id: string, status: string) {
-    try {
-      await hrRequestApi.updateStatus(id, status);
-      if (requestDetail) setRequestDetail(prev => prev ? { ...prev, request: { ...prev.request, status } } : null);
-      await loadRequests();
-    } catch (e) { notifyApiError(e); }
+    await run(`status:${id}`, async () => {
+      try {
+        await hrRequestApi.updateStatus(id, status);
+        if (requestDetail) setRequestDetail(prev => prev ? { ...prev, request: { ...prev.request, status } } : null);
+        await loadRequests();
+      } catch (e) { notifyRefusal(e, { what: t('The status was not changed'), fix: t('Reload the request to see its current status.') }, t, locale); }
+    });
   }
 
   async function createRequest() {
@@ -113,9 +131,10 @@ export default function HRRequestCenterPage() {
         description: form.description,
         priority: form.priority,
       });
+      setCreated(form.subject);
       setForm({ employeeId: '', categoryId: '', subject: '', description: '', priority: 'Normal' });
       setTab('requests');
-    } catch (e) { notifyApiError(e); } finally {
+    } catch (e) { notifyRefusal(e, { what: t('The request was not submitted'), fix: t('Your details are still in the form. Try again.') }, t, locale); } finally {
       setSubmitting(false);
     }
   }
@@ -129,8 +148,8 @@ export default function HRRequestCenterPage() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">HR Request Center</h1>
-        <p className="text-sm text-slate-500">Employee service desk — submit, track, and resolve HR requests</p>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('HR Request Center')}</h1>
+        <p className="text-sm text-slate-500">{t('Employee service desk: submit, track and resolve HR requests')}</p>
       </div>
 
       <div className="flex gap-1 border-b border-slate-200">
@@ -148,6 +167,7 @@ export default function HRRequestCenterPage() {
       </div>
 
       {/* Dashboard */}
+      {tab === 'dashboard' && dashboardError != null && <LoadFailedNotice error={dashboardError} onRetry={() => void loadDashboard()} />}
       {tab === 'dashboard' && dashboard && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -189,6 +209,16 @@ export default function HRRequestCenterPage() {
         </div>
       )}
 
+      {/* After a create: say what happened, where the user is, and the one thing to do next. */}
+      {tab === 'requests' && created != null && (
+        <ResultBanner
+          changed={t('Request submitted: {subject}', { subject: created })}
+          where={t('You are on the list of requests.')}
+          next={{ label: t('Submit another request'), onClick: () => { setCreated(null); setTab('create'); } }}
+          onDismiss={() => setCreated(null)}
+        />
+      )}
+
       {/* All Requests */}
       {tab === 'requests' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -209,6 +239,8 @@ export default function HRRequestCenterPage() {
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
               {loading ? (
                 <div className="p-8 text-center text-sm text-slate-400">Loading...</div>
+              ) : requestsError != null ? (
+                <LoadFailedNotice error={requestsError} onRetry={() => void loadRequests()} />
               ) : requests.length === 0 ? (
                 <div className="p-8 text-center text-sm text-slate-400">No requests found</div>
               ) : (
@@ -233,7 +265,11 @@ export default function HRRequestCenterPage() {
           </div>
 
           <div className="lg:col-span-2">
-            {!requestDetail ? (
+            {detailError != null ? (
+              <div className="bg-white rounded-xl border border-slate-200">
+                <LoadFailedNotice error={detailError} onRetry={() => selectedRequest && void loadRequestDetail(selectedRequest)} />
+              </div>
+            ) : !requestDetail ? (
               <div className="bg-white rounded-xl border border-slate-200 flex items-center justify-center h-64 text-slate-400 text-sm">
                 Select a request to view details
               </div>
@@ -258,8 +294,10 @@ export default function HRRequestCenterPage() {
                     {['Open', 'InProgress', 'Resolved'].map(s => s !== requestDetail.request.status && (
                       <button
                         key={s}
-                        onClick={() => updateStatus(requestDetail.request.id, s)}
-                        className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-slate-50"
+                        onClick={() => void updateStatus(requestDetail.request.id, s)}
+                        disabled={isBusy(`status:${requestDetail.request.id}`)}
+                        aria-busy={isBusy(`status:${requestDetail.request.id}`) || undefined}
+                        className="text-xs px-3 py-1 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
                       >
                         Mark {s}
                       </button>
@@ -285,9 +323,9 @@ export default function HRRequestCenterPage() {
                     onChange={e => setNewComment(e.target.value)}
                     placeholder="Add a comment..."
                     className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                    onKeyDown={e => { if (e.key === 'Enter') addComment(); }}
+                    onKeyDown={e => { if (e.key === 'Enter') void addComment(); }}
                   />
-                  <button onClick={addComment} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">
+                  <button onClick={() => void addComment()} disabled={isBusy(`comment:${selectedRequest}`)} aria-busy={isBusy(`comment:${selectedRequest}`) || undefined} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50">
                     Send
                   </button>
                 </div>
@@ -301,6 +339,7 @@ export default function HRRequestCenterPage() {
       {tab === 'create' && (
         <div className="max-w-xl bg-white rounded-xl border border-slate-200 p-6 space-y-4">
           <h2 className="text-lg font-semibold text-slate-900">Submit HR Request</h2>
+          {categoriesError != null && <LoadFailedNotice error={categoriesError} onRetry={() => void loadCategories()} />}
 
           <div className="grid grid-cols-2 gap-4">
             <div>

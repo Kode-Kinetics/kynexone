@@ -127,6 +127,16 @@ export default {
       transitionProperty: {
         width: 'width',
       },
+      // Motion tokens (styles/index.css). Raw duration-150 is a ratchet failure; use these.
+      transitionDuration: {
+        fast: 'var(--wg-dur-fast)',
+        base: 'var(--wg-dur-base)',
+        slow: 'var(--wg-dur-slow)',
+      },
+      transitionTimingFunction: {
+        standard: 'var(--wg-ease)',
+        drawer: 'var(--wg-ease-drawer)',
+      },
       keyframes: {
         'fade-in': {
           '0%':   { opacity: '0', transform: 'translateY(6px)' },

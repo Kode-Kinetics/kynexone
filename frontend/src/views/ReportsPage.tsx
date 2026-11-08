@@ -903,6 +903,7 @@ function ExecutionHistoryTab() {
 // ── ReportsPage ───────────────────────────────────────────────────────────────
 
 export function ReportsPage() {
+  const { t } = useLocale();
   // ?report={key} (a KPI tile's drill-down, the command palette) opens that report in the library.
   const searchParams = useSearchParams();
   const requestedReport = searchParams?.get('report') ?? null;
@@ -912,7 +913,7 @@ export function ReportsPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Reports & Analytics</h1>
+        <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Reports & Analytics')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
           Enterprise reporting, live analytics, and scheduled delivery
         </p>

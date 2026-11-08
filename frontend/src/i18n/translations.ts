@@ -64,6 +64,7 @@ import { dailyD } from './dailyD';
 import { dailyE } from './dailyE';
 import { onboardingP2 } from './onboardingP2';
 import { onboardingP4 } from './onboardingP4';
+import { uxFoundation } from './uxFoundation';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -1571,6 +1572,7 @@ const en: Dict = {
   ...onboardingP2.en,
   ...onboardingP3.en,
   ...onboardingP4.en,
+  ...uxFoundation.en,
   ...setupExperience.en,
   ...glSetup.en,
   ...costCentres.en,
@@ -3100,6 +3102,7 @@ const ar: Dict = {
   ...onboardingP2.ar,
   ...onboardingP3.ar,
   ...onboardingP4.ar,
+  ...uxFoundation.ar,
   ...setupExperience.ar,
   ...glSetup.ar,
   ...costCentres.ar,

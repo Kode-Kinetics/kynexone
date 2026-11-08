@@ -6,5 +6,12 @@
   "radiusOutsideScale": 28,
   "shadow2xl": 3,
   "tintedShadow": 0,
-  "fontWeightSprawl": 30
+  "fontWeightSprawl": 30,
+  "rawDurationClass": 45,
+  "animatePulse": 65,
+  "animatePing": 4,
+  "tile3d": 0,
+  "borderDashed": 36,
+  "adHocEmptyText": 190,
+  "nativeDialog": 0
 }

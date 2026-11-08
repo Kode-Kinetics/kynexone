@@ -1,7 +1,7 @@
 'use client';
 
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, CheckCircle2, HeartPulse, Loader2, Plus, RefreshCw, Search, ShieldCheck, UserPlus, XCircle,
@@ -84,13 +84,13 @@ export function BenefitsPage() {
   // enrolments made before) this screen has no job, so it hands over instead of showing an empty page with nowhere to go.
   const handedOver = releaseA && !loading && !error && plans.length === 0 && enrollments.length === 0;
   useEffect(() => { if (handedOver) router.replace('/benefits/by-grade'); }, [handedOver, router]);
-  if (handedOver) return <div className="h-40 animate-pulse rounded-2xl bg-slate-100 dark:bg-white/[0.04]" aria-busy="true" aria-label={t('Loading benefits by grade')} />;
+  if (handedOver) return <div className="h-40 kx-skeleton rounded-2xl" aria-busy="true" aria-label={t('Loading benefits by grade')} />;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Benefits Administration</h1>
+          <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('Benefits Administration')}</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400">{releaseA ? 'Employee enrolments and contributions' : 'Employee enrolments, exceptions and contributions'}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -108,12 +108,8 @@ export function BenefitsPage() {
         </div>
       </div>
 
-      {releaseA && !loading && !error && (
-        <p role="status" data-testid="benefits-moved-note" className="rounded-xl border border-sapphire/30 bg-sapphire/5 p-3 text-sm text-slate-700 dark:text-slate-200">
-          {t('Which grades get a benefit is now set in Benefits by grade. This page keeps the enrolments made before.')}{' '}
-          <Link href="/benefits/by-grade" className="font-semibold text-sapphire underline">{t('Open Benefits by grade')}</Link>
-        </p>
-      )}
+      {/* One home for what each grade receives. This page is the enrolment desk; the grade rules are not edited here. */}
+      <BenefitsByGradeDoor variant="panel" testId="benefits-moved-note" intro={t('What each grade receives (housing, transport, tickets, medical, education) is set in Benefits by grade, not here. This page is for enrolments and contributions.')} />
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading benefits">

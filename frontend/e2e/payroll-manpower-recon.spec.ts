@@ -126,7 +126,7 @@ async function boot(page: Page, opts: { recon?: string; permissions?: string[]; 
     return json([]);
   });
   await page.goto(opts.url ?? `/payroll?tab=runs&run=${RUN}`);
-  await expect(page.getByRole('heading', { name: 'Payroll Management' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('heading', { name: /^(Payroll Management|إدارة الرواتب)$/ })).toBeVisible({ timeout: 30_000 });
   return s;
 }
 

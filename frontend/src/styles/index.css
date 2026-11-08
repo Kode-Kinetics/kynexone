@@ -282,15 +282,43 @@ textarea:focus-visible {
   --wg-glass-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 10px 30px -12px rgba(15, 23, 42, 0.14);
   --wg-card-shadow: var(--kx-e1);
 
-  /* Motion tokens. Motion acknowledges state or preserves continuity — nothing ambient. */
-  --wg-dur-press: 110ms;
-  --wg-dur-hover: 140ms;
-  --wg-dur-update: 200ms;
-  --wg-dur-disclosure: 220ms;
-  --wg-dur-drawer: 280ms;
-  --wg-dur-pulse: 380ms;
+  /* Motion tokens (Screen Standard section 4). Motion acknowledges a state change or preserves
+     continuity; nothing is ambient. Three durations, two easings, and no UI motion past 300 ms.
+       fast  hover, press, focus ring, checkbox, tooltip, row tint
+       base  value or status crossfade, disclosure, row insert/remove, step panel, toast, drawer exit
+       slow  drawer and dialog enter
+     Tailwind: duration-fast|base|slow, ease-standard|drawer (tailwind.config.ts). Reduced motion
+     zeroes the three durations once, at the root (see the media block below). */
+  --wg-dur-fast: 120ms;
+  --wg-dur-base: 200ms;
+  --wg-dur-slow: 280ms;
   --wg-ease: cubic-bezier(0.2, 0, 0, 1);
   --wg-ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Legacy names, folded onto the three tokens so existing call sites converge (the 380 ms pulse is retired). */
+  --wg-dur-press: var(--wg-dur-fast);
+  --wg-dur-hover: var(--wg-dur-fast);
+  --wg-dur-update: var(--wg-dur-base);
+  --wg-dur-disclosure: var(--wg-dur-base);
+  --wg-dur-drawer: var(--wg-dur-slow);
+}
+
+/* Reduced motion, handled once at the root: the tokens collapse to an instant, loops run once,
+   scroll is not smoothed. Opacity crossfades read as instant state changes. Essential state motion
+   (a spinner, determinate progress) is marked data-essential-motion (or is .animate-spin) and kept. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --wg-dur-fast: 0.01ms;
+    --wg-dur-base: 0.01ms;
+    --wg-dur-slow: 0.01ms;
+  }
+  html { scroll-behavior: auto; }
+  *:not([data-essential-motion], .animate-spin),
+  *:not([data-essential-motion], .animate-spin)::before,
+  *:not([data-essential-motion], .animate-spin)::after {
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 :root.dark {
@@ -451,8 +479,6 @@ textarea:focus-visible {
 @keyframes wg-rise { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
 .wg-rise { animation: wg-rise 520ms cubic-bezier(0.2, 0, 0, 1) both; }
 /* Extruded columns: a lit top face and a shaded side, drawn with shadows (no extra DOM). */
-.wg-tile3d { box-shadow: 0 1px 0 var(--wg-line), 0 3px 0 -1px var(--wg-line-strong), 0 8px 16px -12px rgba(30, 58, 138, 0.35); transition: transform 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms; }
-.wg-tile3d:hover { transform: translateY(-2px); box-shadow: 0 1px 0 var(--wg-line), 0 5px 0 -1px var(--wg-line-strong), 0 14px 22px -14px rgba(30, 58, 138, 0.45); }
 .wg-col3d { box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.35), 4px -3px 0 -1px var(--viz-bar-side); }
 
 /* Hero chart motion: played once, never looped. */
@@ -617,7 +643,6 @@ textarea:focus-visible {
 [dir='rtl'] .rtl-no-mirror {
   scale: 1 1;
 }
-@media (prefers-reduced-motion: reduce) { .wg-tile3d, .wg-tile3d:hover { transition: none; transform: none; } }
 
 /* Sidebar info tag: fades in beside the menu entry. */
 @keyframes wg-tip-in { from { opacity: 0; margin-inline-start: -4px; } to { opacity: 1; margin-inline-start: 0; } }

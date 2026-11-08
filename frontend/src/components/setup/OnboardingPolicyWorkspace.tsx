@@ -8,6 +8,7 @@ import type { CompanyProfile, SetupConfiguration } from '../../api/setupAssistan
 import { useAuth } from '../../contexts/AuthContext';
 import { useCompany } from '../../contexts/CompanyContext';
 import { useT } from '../../hooks/useT';
+import { useConfirm } from '../ui/useConfirm';
 import { SetupPolicySource } from '../SetupPolicySource';
 import { SetupPendingFilesState } from './SetupEditorState';
 import { usePolicyIntake } from '../../lib/policyIntake';
@@ -31,6 +32,7 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
   scope: string; company?: CompanyDto; onDirtyChange: (dirty: boolean) => void;
 }) {
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const { hasPermission, hasRole } = useAuth();
   // Policy intake is off by the owner's decision (only manual setup is enabled); while it is off this is the
   // manual task editor alone, with no entry-method switch and no upload.
@@ -74,19 +76,24 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     sections: { org: false, leave: false, shifts: false, payroll: false, entity: false, governance: false,
       leavePolicies: false, holidays: false, attendance: false, localization: false, benefits: false },
   }), [company?.id, company?.legalNameEn, company?.countryCode, company?.defaultCurrency]);
-  const confirmEditorReset = () => !editorDirty || window.confirm(t('Replace the unsaved values in the current task form with this policy draft?'));
-  const review = () => {
-    if (!confirmEditorReset()) return;
+  const confirmEditorReset = async () => !editorDirty || await confirm({
+    title: t('Replace the unsaved values in the current task form with this policy draft?'),
+    message: t('Your unsaved edits in the task form are lost.'),
+    confirmLabel: t('Replace values'),
+  });
+  const review = async () => {
+    if (!(await confirmEditorReset())) return;
     setPolicyDraft(true); setRevision(value => value + 1); setMode('review');
   };
   if (!policyIntake) return <div className="min-w-0 space-y-4">
     <OnboardingTab configurationOnly policyDraft={false} policyDraftRevision={0} onDirtyChange={setEditorDirty} />
   </div>;
   return <div className="min-w-0 space-y-4">
+    {confirmDialog}
     <div className="flex flex-wrap gap-2" aria-label={t('Onboarding entry method')}>
-      <button type="button" className={mode === 'manual' ? 'btn-primary' : 'btn-secondary'} aria-pressed={mode === 'manual'} onClick={() => {
+      <button type="button" className={mode === 'manual' ? 'btn-primary' : 'btn-secondary'} aria-pressed={mode === 'manual'} onClick={async () => {
         if (mode === 'manual') return;
-        if (policyDraft && !confirmEditorReset()) return;
+        if (policyDraft && !(await confirmEditorReset())) return;
         setPolicyDraft(false); setMode('manual');
       }}>{t('Enter manually')}</button>
       <button type="button" className={mode === 'policy' ? 'btn-primary' : 'btn-secondary'} aria-pressed={mode === 'policy'} disabled={!canIntake} onClick={() => setMode('policy')}>{t('Fill from policy')}</button>
@@ -96,7 +103,7 @@ function OnboardingPolicyEditor({ scope, company, onDirtyChange }: {
     {storageError && <p role="alert" className="text-sm text-rose-700 dark:text-rose-300">{t('The local policy draft could not be saved. Keep this page open and retry.')}</p>}
     {configuration && canIntake && <div hidden={mode !== 'policy'}>
       <SetupPendingFilesState.Provider value={setPendingFiles}>
-        <SetupPolicySource value={configuration} onChange={updateConfiguration} profile={profile} onProfileChange={() => {}} onReviewOnboardingDraft={review} />
+        <SetupPolicySource value={configuration} onChange={updateConfiguration} profile={profile} onProfileChange={() => {}} onReviewOnboardingDraft={() => void review()} />
       </SetupPendingFilesState.Provider>
     </div>}
     <div hidden={mode === 'policy'}>

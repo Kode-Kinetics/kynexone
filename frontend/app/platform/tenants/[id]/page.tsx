@@ -9,6 +9,7 @@ import { Building2,
   PlayCircle, StopCircle, Palette, Globe, Trash2,
 } from 'lucide-react';
 import { GovernanceTab } from './GovernanceTab';
+import { useConfirm } from '@/src/components/ui/useConfirm';
 import {
   platformApi,
   type PlatformTenantDetail,
@@ -423,6 +424,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
 
   const [draft, setDraft] = useState<Record<string, boolean>>(saved);
   useEffect(() => { setDraft(saved); }, [saved]);
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
   const changed = featureFlags.filter(f => draft[f.key] !== saved[f.key]);
   const categories = Array.from(new Set(featureFlags.map(f => f.category)));
@@ -442,11 +444,18 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
       lines.push(`\n${statutoryOff.join(', ')} ${statutoryOff.length === 1 ? 'is a' : 'are'} statutory obligation${statutoryOff.length === 1 ? '' : 's'} for Saudi employers. Switching off hides the screens; the filings then have to be made elsewhere.`);
     if (changed.some(f => f.defaultEnabled === false))
       lines.push('\nRollout features change what this live tenant\'s people see. Existing records are kept.');
-    return `Save these changes for ${tenant.name}?\n\n${lines.join('\n')}`;
+    return lines.join('\n');
   }
 
   async function save() {
-    if (changed.length === 0 || !window.confirm(confirmText())) return;
+    if (changed.length === 0) return;
+    // The platform console stays English (CTO decision), but the dialog is the same accessible one the app uses.
+    if (!(await confirm({
+      title: `Save these changes for ${tenant.name}?`,
+      message: <div className="whitespace-pre-line">{confirmText()}</div>,
+      confirmLabel: 'Save changes',
+      tone: 'primary',
+    }))) return;
     setSaving(true); setMsg(null);
     const failed: string[] = [];
     for (const f of changed) {
@@ -471,6 +480,7 @@ function FeaturesTab({ tenant, onRefresh, featureFlags }: {
 
   return (
     <div className="space-y-5 pb-20">
+      {confirmDialog}
       {msg && (
         <div className={`flex items-center justify-between px-4 py-2.5 rounded-lg border text-sm ${msg.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400'}`}>
           {msg.text}

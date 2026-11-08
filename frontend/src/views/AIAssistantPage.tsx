@@ -14,6 +14,10 @@ import { usePolicyIntake } from '../lib/policyIntake';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { usePagedList } from '../hooks/usePagedList';
 import { requestFailureReason } from '../lib/requestFailure';
+import { useLocale } from '../contexts/LocaleContext';
+import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { useBusyKeys } from '../hooks/useBusyKeys';
+import { notifyRefusal } from '../lib/refusal';
 
 type Tab = 'assistant' | 'insights' | 'risk' | 'history' | 'policy-docs';
 
@@ -73,6 +77,10 @@ export default function AIAssistantPage() {
   // Acknowledged in this session: kept beside the loaded pages so acknowledging one does not reload them.
   const [acknowledgedIds, setAcknowledgedIds] = useState<ReadonlySet<string>>(new Set());
   const [riskScores, setRiskScores] = useState<EmployeeRiskScore[]>([]);
+  // A failed read says so, with Retry: it used to leave "No risk scores yet." on screen.
+  const [riskError, setRiskError] = useState<unknown>(null);
+  const { t, locale } = useLocale();
+  const { run, isBusy } = useBusyKeys();
   const [computing, setComputing] = useState(false);
   const [providerStatus, setProviderStatus] = useState<AIProviderStatus | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -100,7 +108,8 @@ export default function AIAssistantPage() {
     try {
       const r = await aiAssistantApi.listRiskScores();
       setRiskScores(r);
-    } catch {}
+      setRiskError(null);
+    } catch (e) { setRiskScores([]); setRiskError(e); }
   }
 
   function loadHistory() {
@@ -136,10 +145,12 @@ export default function AIAssistantPage() {
   }
 
   async function acknowledgeInsight(id: string) {
-    try {
-      await aiAssistantApi.acknowledgeInsight(id);
-      setAcknowledgedIds(prev => new Set(prev).add(id));
-    } catch {}
+    await run(`ack:${id}`, async () => {
+      try {
+        await aiAssistantApi.acknowledgeInsight(id);
+        setAcknowledgedIds(prev => new Set(prev).add(id));
+      } catch (e) { notifyRefusal(e, { what: t('The insight was not acknowledged'), fix: t('Try again; it is still listed as new.') }, t, locale); }
+    });
   }
 
   async function computeRisk() {
@@ -147,7 +158,7 @@ export default function AIAssistantPage() {
     try {
       await aiAssistantApi.computeRiskScores();
       await loadRiskScores();
-    } catch {} finally {
+    } catch (e) { notifyRefusal(e, { what: t('The risk scores were not recomputed'), fix: t('The scores shown are the previous ones. Try again.') }, t, locale); } finally {
       setComputing(false);
     }
   }
@@ -166,7 +177,7 @@ export default function AIAssistantPage() {
       <div className="flex items-center gap-3">
         <div aria-hidden="true" className="w-10 h-10 shrink-0 rounded-xl bg-sapphire flex items-center justify-center text-white text-xl font-semibold">K</div>
         <div>
-          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">Kody the HR Assistant</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Kody the HR Assistant')}</h1>
           <p className="text-sm text-slate-500">Advisory only — assists HR decisions but never replaces them</p>
         </div>
         <div className="ms-auto flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-700 font-medium">
@@ -328,8 +339,10 @@ export default function AIAssistantPage() {
                     </div>
                     {!insight.isAcknowledged && (
                       <button
-                        onClick={() => acknowledgeInsight(insight.id)}
-                        className="text-xs px-3 py-1 border border-current rounded-lg whitespace-nowrap"
+                        onClick={() => void acknowledgeInsight(insight.id)}
+                        disabled={isBusy(`ack:${insight.id}`)}
+                        aria-busy={isBusy(`ack:${insight.id}`) || undefined}
+                        className="text-xs px-3 py-1 border border-current rounded-lg whitespace-nowrap disabled:opacity-50"
                       >
                         Acknowledge
                       </button>
@@ -365,7 +378,11 @@ export default function AIAssistantPage() {
             </button>
           </div>
 
-          {riskScores.length === 0 ? (
+          {riskError != null ? (
+            <div className="bg-white rounded-xl border border-slate-200">
+              <LoadFailedNotice error={riskError} onRetry={() => void loadRiskScores()} />
+            </div>
+          ) : riskScores.length === 0 ? (
             <div className="text-center py-16 bg-white rounded-xl border border-slate-200">
               <p className="text-slate-500 text-sm mb-3">No risk scores yet.</p>
               <button onClick={computeRisk} className="px-4 py-2 bg-sapphire text-white text-sm rounded-lg">

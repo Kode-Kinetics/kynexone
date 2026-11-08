@@ -17,6 +17,7 @@ import {
 import type { CostCenterDto } from '../../api/organization';
 import { BdiMessage } from '../BdiMessage';
 import { msg } from '../../i18n/translations';
+import { WriteBlockedNote } from '../ui/WriteBlockedNote';
 import { useT } from '../../hooks/useT';
 import {
   addClassRule,
@@ -655,7 +656,7 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
             </button>
             {canManage && (
               <>
-                <button type="button" onClick={openPreset} disabled={!writable || !!locked} data-testid="cc-acct-preset-open" className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
+                <button type="button" onClick={openPreset} disabled={!writable || !!locked} aria-describedby={res.ready ? undefined : 'gl-accounts-blocked'} data-testid="cc-acct-preset-open" className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
                   {t('Apply recommended rules')}
                 </button>
                 <input
@@ -667,13 +668,14 @@ export function AccountsMappingsPanel({ scope, scopeName, canManage, costCenters
                   aria-label={t('Choose a CSV file to import')}
                   onChange={(e) => void onFileChosen(e.target.files?.[0])}
                 />
-                <button type="button" onClick={() => fileInput.current?.click()} disabled={!writable || importBusy} className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
+                <button type="button" onClick={() => fileInput.current?.click()} disabled={!writable || importBusy} aria-describedby={res.ready ? undefined : 'gl-accounts-blocked'} className="btn-secondary h-8 px-3 text-xs disabled:opacity-60">
                   <Upload className="h-3.5 w-3.5" aria-hidden /> {t('Import CSV')}
                 </button>
               </>
             )}
           </div>
         </div>
+        {canManage && <WriteBlockedNote id="gl-accounts-blocked" ready={res.ready} className="mb-3" />}
 
         <div role="note" data-testid="cc-acct-explainer" className="mb-3 flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700 dark:bg-white/[0.04] dark:text-slate-300">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sapphire dark:text-cyanAccent" aria-hidden />

@@ -29,9 +29,11 @@ import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { SecondApproverNotice } from '../components/SecondApproverNotice';
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import { GosiBasisNote } from '../components/GosiCohortPanel';
 import { useT } from '../hooks/useT';
+import { useConfirm } from '../components/ui/useConfirm';
+import { BenefitsByGradeDoor } from '../components/benefits/BenefitsByGradeDoor';
 import { formatAmount } from '../lib/hire/money';
 import { isolateLtr } from '../lib/bidi';
 import { SalaryAllowancesEditor } from '../components/payroll/SalaryAllowancesEditor';
@@ -136,15 +138,6 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
         </div>
         <div className="p-6">{children}</div>
       </div>
-    </div>
-  );
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  return (
-    <div>
-      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">{label}{info && <InfoTip text={info} fieldKey={infoKey} />}</label>
-      {children}
     </div>
   );
 }
@@ -791,6 +784,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
 function GradePackagesTab() {
   const t = useT();
+  const { hasPermission } = useAuth();
   const fmt = useFormat();
   const { locale } = useLocale();
   const [view, setView] = useState<GradePackagesView | null>(null);
@@ -822,9 +816,13 @@ function GradePackagesTab() {
             ? t('Grade benefits are set in Benefits by grade. This shows the cash lines payroll uses for each grade.')
             : t('Pay packages are set on each grade in Setup. Payroll uses them as they are shown here.')}
         </p>
-        <Link href={benefitsByGrade ? '/benefits/by-grade' : '/setup?tab=grades'} className={btn.ghost}>
-          {benefitsByGrade ? t('Open Benefits by grade') : t('Open Setup → Grades')}
-        </Link>
+        {benefitsByGrade && !hasPermission('entitlements.read')
+          ? <BenefitsByGradeDoor intro="" />
+          : (
+            <Link href={benefitsByGrade ? '/benefits/by-grade' : '/setup?tab=grades'} className={btn.ghost}>
+              {benefitsByGrade ? t('Open Benefits by grade') : t('Open Setup → Grades')}
+            </Link>
+          )}
       </div>
 
       {loading ? <p className="text-sm text-slate-500">{t('Loading…')}</p>
@@ -864,7 +862,9 @@ function GradePackagesTab() {
                   <p className="text-slate-500">{p.structureCode ? t('Salary structure {code} · version {version}', { code: p.structureCode, version: p.structureVersion ?? 1 }) : t('No salary structure yet')}</p>
                 </div>
                 <div className="mt-3 flex justify-end">
-                  <Link href={editHref(p.gradeId)} className={btn.sm}><Pencil className="h-3.5 w-3.5" aria-hidden="true" /> {t('Edit in Setup')}</Link>
+                  {benefitsByGrade && !hasPermission('entitlements.read')
+                    ? null
+                    : <Link href={editHref(p.gradeId)} className={btn.sm}><Pencil className="h-3.5 w-3.5" aria-hidden="true" /> {t('Edit in Setup')}</Link>}
                 </div>
               </article>
             ))}
@@ -1236,6 +1236,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
   // next action is the recompute on the Validation tab.
   const [staleAttendanceRun, setStaleAttendanceRun] = useState<PayrollRun | null>(null);
   const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   // Cost accounting v1: for an Approved run of a company with costing on, Lock becomes "Review & lock" (the preview owns the lock).
   // A company whose switch cannot be read keeps today's Lock: the server still decides.
   const [costingCompanies, setCostingCompanies] = useState<Set<string>>(new Set());
@@ -1346,7 +1347,11 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
   };
 
   const deleteRun = async (id: string) => {
-    if (!confirm('Delete this draft payroll run? This permanently removes it. (Processed/locked runs must be voided instead.)')) return;
+    if (!(await confirm({
+      title: t('Delete this draft payroll run?'),
+      message: t('It is permanently removed. Processed or locked runs cannot be deleted; void them instead.'),
+      confirmLabel: t('Delete run'),
+    }))) return;
     setError('');
     try {
       await payrollApi.deleteRun(id);
@@ -1363,6 +1368,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
   return (
     <div className="space-y-4">
       {lockDialog}
+      {confirmDialog}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">{total} payroll run{total !== 1 ? 's' : ''}</p>
         <button type="button" className={btn.primary} onClick={() => { setShowCreate(true); setError(''); }}><Plus className="h-4 w-4" /> New Payroll Run</button>
@@ -2627,6 +2633,8 @@ function PayslipsTab() {
 // ── Bank / WPS Files Tab ────────────────────────────────────────────────────────
 
 function BankWpsTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
@@ -2675,8 +2683,20 @@ function BankWpsTab() {
         // A run locked before payment methods were frozen: the cash/cheque list must be acknowledged by count.
         const data = (e as { response?: { data?: { error?: string; message?: string; outsideBankCount?: number; employees?: { employeeCode: string; method: string }[] } } })?.response?.data;
         if (data?.error !== 'outside_bank_payments_not_acknowledged' || !data.outsideBankCount) throw e;
-        const list = (data.employees ?? []).map(x => `• ${x.employeeCode} (${x.method})`).join('\n');
-        if (!window.confirm(`${data.message}\n\n${list}\n\nConfirm that exactly ${data.outsideBankCount} employee(s) are paid outside the bank file?`)) return;
+        const list = (data.employees ?? []).map(x => <li key={x.employeeCode}><bdi>{x.employeeCode}</bdi> ({x.method})</li>);
+        const confirmed = await confirm({
+          title: t('Confirm payments outside the bank file'),
+          message: (
+            <div className="space-y-2">
+              {data.message && <p>{data.message}</p>}
+              {list.length > 0 && <ul className="list-disc ps-5">{list}</ul>}
+              <p>{t('Confirm that exactly {count, plural, one {# employee is} other {# employees are}} paid outside the bank file?', { count: data.outsideBankCount })}</p>
+            </div>
+          ),
+          confirmLabel: t('Confirm paid outside the bank file'),
+          tone: 'primary',
+        });
+        if (!confirmed) return;
         batch = await payrollApi.createPaymentBatch(runId, paymentMethod, undefined, data.outsideBankCount);
       }
       if (currentRunRef.current !== runId) return;
@@ -2703,6 +2723,7 @@ function BankWpsTab() {
 
   return (
     <div className="space-y-4">
+      {confirmDialog}
       <div className="flex flex-wrap items-center gap-3">
         <select aria-label="Select payroll run" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">Select payroll run…</option>
@@ -2814,6 +2835,8 @@ function BankWpsTab() {
 // ── Payment Tracking Tab ────────────────────────────────────────────────────────
 
 function PaymentTrackingTab() {
+  const t = useT();
+  const { confirm, ask, dialog: confirmDialog } = useConfirm();
   type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2916,7 +2939,11 @@ function PaymentTrackingTab() {
       notifyApiError({ response: { data: { message: 'A reason is required for reversal.' } } });
       return;
     }
-    if (action.startsWith('reverse') && !window.confirm('This posts a contra journal. Continue?')) return;
+    if (action.startsWith('reverse') && !(await confirm({
+      title: t('Post a contra journal?'),
+      message: t('Reversing posts a contra journal that offsets the original entry. The reason you entered is sent with the reversal.'),
+      confirmLabel: t('Post contra journal'),
+    }))) return;
     setFinanceSaving(`${batch.id}:${action}`);
     try {
       if (action === 'settle') await payrollApi.settlePaymentBatch(batch.id, { reference: form.reference || undefined, paidDate: form.date || undefined });
@@ -2933,6 +2960,7 @@ function PaymentTrackingTab() {
 
   return (
     <div className="space-y-4">
+      {confirmDialog}
       {batches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
@@ -3079,10 +3107,15 @@ function PaymentTrackingTab() {
                               {b.wpsStatus !== 'Reconciled' && (
                                 <button type="button" className={`${btn.sm} disabled:opacity-50`} disabled={outsideSaving === key}
                                   onClick={async () => {
-                                    const reason = window.prompt(`Why is ${x.employeeCode}'s recorded payment being reversed (e.g. cheque bounced)?`);
-                                    if (!reason?.trim()) return;
+                                    const answer = await ask({
+                                      title: t('Reverse the payment recorded for {code}?', { code: x.employeeCode }),
+                                      message: t("Why is this employee's recorded payment being reversed (for example, a cheque bounced)?"),
+                                      confirmLabel: t('Reverse payment'),
+                                      reason: { required: true },
+                                    });
+                                    if (!answer.confirmed) return;
                                     setOutsideSaving(key);
-                                    try { await payrollApi.reverseOutsidePayment(b.id, x.employeeId, reason.trim()); loadBatches(); }
+                                    try { await payrollApi.reverseOutsidePayment(b.id, x.employeeId, answer.reason); loadBatches(); }
                                     catch (err) { notifyApiError(err); }
                                     finally { setOutsideSaving(null); }
                                   }}>
@@ -3711,6 +3744,8 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
 // ── Final Settlement Tab ────────────────────────────────────────────────────────
 
 function FinalSettlementTab() {
+  const t = useT();
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
   const [settlements, setSettlements] = useState<FinalSettlementListRow[]>([]);
@@ -3740,7 +3775,11 @@ function FinalSettlementTab() {
   const transition = async (settlement: FinalSettlementListRow, action: 'submit' | 'approve' | 'cancel') => {
     const af = actionForm(settlement.id);
     if (action === 'cancel' && !af.reason.trim()) { setError('A cancellation reason is required.'); return; }
-    if (action === 'cancel' && !window.confirm('Cancel this settlement and post any required contra journal?')) return;
+    if (action === 'cancel' && !(await confirm({
+      title: t('Cancel this settlement?'),
+      message: t('Any required contra journal is posted. The reason you entered is sent with the cancellation.'),
+      confirmLabel: t('Cancel settlement'),
+    }))) return;
     setActionSaving(`${settlement.id}:${action}`); setError('');
     try {
       if (action === 'submit') await payrollApi.submitFinalSettlement(settlement.id, af.reason || undefined);
@@ -3774,6 +3813,7 @@ function FinalSettlementTab() {
 
   return (
     <div className="space-y-5">
+      {confirmDialog}
       <div className="surface p-4">
         <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -3905,6 +3945,7 @@ function FinalSettlementTab() {
 // ── Main Page ───────────────────────────────────────────────────────────────────
 
 export function PayrollPage() {
+  const t = useT();
   const { user } = useAuth();
   const { currencyCode } = useTenantSettings();
   const isAdmin    = user?.roles.some(r => r === 'Admin') ?? false;
@@ -3989,7 +4030,7 @@ export function PayrollPage() {
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">Payroll Management</h1>
+          <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.</p>
         </div>
         {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}

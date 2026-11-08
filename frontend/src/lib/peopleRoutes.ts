@@ -38,6 +38,9 @@ const DIRECTORY_STRING_KEYS: readonly DirectoryStringKey[] = [
   'gapType',
 ];
 
+/** Every query key the People list parses (route-wiring spec: a link to /people may only use these). */
+export const PEOPLE_DIRECTORY_QUERY_KEYS: readonly string[] = [...DIRECTORY_STRING_KEYS, 'view', 'page', 'anchor'];
+
 const LEGACY_TAB_TARGETS: Readonly<Record<string, { section: EmployeeSection; panel?: string }>> = {
   personal: { section: 'personal' },
   employment: { section: 'employment', panel: 'details' },

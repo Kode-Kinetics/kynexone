@@ -76,12 +76,6 @@ const ALLOWED: Record<string, string> = {
   // is why the pin below drops from 9 to 6.
   'app/platform/login/page.tsx::-left-1/4': 'decorative radial glow; viewport composition, not reading order',
   'app/platform/login/page.tsx::right-[-15%]': 'decorative radial glow; viewport composition, not reading order',
-
-  // ── Centering idiom ────────────────────────────────────────────────────────
-  // `left-1/2` + `-translate-x-1/2` is horizontal CENTERING, not a leading edge. The
-  // transform is physical, so swapping only the inset to `start-1/2` would shift the
-  // tooltip a further half-width to the right in Arabic instead of centring it.
-  'src/components/InfoTip.tsx::left-1/2': 'centering idiom paired with -translate-x-1/2; logical inset would double-shift in RTL',
 };
 
 type Finding = { key: string; file: string; token: string; line: number };
@@ -154,7 +148,10 @@ test.describe('RTL logical-property ratchet', () => {
     // blobs in src/views/LoginPage.tsx that held the only physical insets on
     // that page; the shader canvas and the CSS static field that replaced them
     // use none. Ratcheted down, never up.
-    const PINNED_PHYSICAL_EXCEPTIONS = 4;
+    //
+    // 2026-11-06: 4 → 2. The InfoTip popover was rebuilt (anchored to the inline-start edge with `start-0` / `end-0`,
+    // flipping at the viewport edge), which removed its two centring-idiom exceptions.
+    const PINNED_PHYSICAL_EXCEPTIONS = 2;
 
     const { findings } = scan();
     const allowed = findings.filter((f) => f.key in ALLOWED);

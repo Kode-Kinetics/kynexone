@@ -1,5 +1,6 @@
 'use client';
 
+import { useLocale } from '../contexts/LocaleContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search, Users, List, GitBranch, LayoutGrid, Maximize2 } from 'lucide-react';
 import { employeesApi } from '../api/employees';
@@ -57,6 +58,7 @@ function flattenTree(nodes: OrgChartNodeDto[]): OrgChartNodeDto[] {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function OrgChartPage() {
+  const { t } = useLocale();
   const [tree, setTree]       = useState<OrgChartNodeDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
@@ -92,7 +94,7 @@ export function OrgChartPage() {
         <div className="flex items-center gap-3">
           <Users className="w-6 h-6 text-sapphire shrink-0" />
           <div>
-            <h1 className="text-xl font-semibold text-slate-900 dark:text-white">Org Chart</h1>
+            <h1 className="text-xl font-semibold text-slate-900 dark:text-white">{t('Org Chart')}</h1>
             <p className="text-sm text-slate-500">Reporting hierarchy</p>
           </div>
         </div>

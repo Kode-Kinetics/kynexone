@@ -31,6 +31,21 @@ export const METRICS = {
   tintedShadow: /\bshadow-(?:sapphire|blue|indigo|violet|purple|emerald|rose|red|amber|cyan|midnight)(?:-\d{2,3})?\/\d+/g,
   // Weights beyond regular / medium / semibold.
   fontWeightSprawl: /\bfont-(?:thin|extralight|light|bold|extrabold|black)\b/g,
+  // Motion (Screen Standard section 4). Durations are duration-fast / base / slow (styles/index.css
+  // tokens); a raw duration-150 is a second vocabulary.
+  rawDurationClass: /(?<![\w-])duration-\d+(?![\w-])/g,
+  // Ambient loops are banned on working screens; a spinner is animate-spin, not these.
+  animatePulse: /(?<![\w-])animate-pulse(?![\w-])/g,
+  animatePing: /(?<![\w-])animate-ping(?![\w-])/g,
+  // 3D tilt / extruded tiles are banned; elevation is the flat e1 / e2 / e3 shadow.
+  tile3d: /(?<![\w-])wg-tile3d(?![\w-])/g,
+  // Native browser dialogs: English-only, unstyled, not RTL-aware, and they block the thread. Use
+  // useConfirm (components/ui/useConfirm) with its three tiers; a prompt() becomes `ask` with a reason.
+  // Empty states are ui/EmptyState (first-use / filtered / restricted, each with its next action). A hand-rolled
+  // dashed box, or an ad-hoc "No ... yet / found" sentence with no action, is a defect that may only go down.
+  borderDashed: /(?<![\w-])border-dashed(?![\w-])/g,
+  adHocEmptyText: /\bNo (?:[A-Za-z&\/-]+ ){1,6}(?:yet|found)\b/g,
+  nativeDialog: /\bwindow\.(?:confirm|prompt|alert)\(|(?<![.\w$])(?:confirm|prompt|alert)\(\s*(?:[`'"]|t\()/g,
 };
 
 function* walk(dir) {

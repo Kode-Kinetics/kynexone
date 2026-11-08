@@ -1,6 +1,6 @@
 'use client';
 
-import { InfoTip } from '../components/InfoTip';
+import { Field } from '../components/ui/Field';
 import { msg } from '../i18n/translations';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
@@ -121,15 +121,6 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   const { t } = useLocale();
   return <BaseModal isOpen title={title} onClose={onClose} closeLabel={t('Close')} size={wide ? 'lg' : 'md'}>{children}</BaseModal>;
-}
-
-function Field({ label, children, info, infoKey }: { label: string; children: React.ReactNode; info?: string; infoKey?: string }) {
-  return (
-    <div>
-      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-300">{label}{info && <InfoTip text={info} fieldKey={infoKey} />}</label>
-      {children}
-    </div>
-  );
 }
 
 const inp = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white';
