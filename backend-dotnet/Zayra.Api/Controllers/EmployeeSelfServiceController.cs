@@ -67,7 +67,6 @@ public class EmployeeSelfServiceController : ControllerBase
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
-    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
         TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,

@@ -133,6 +133,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.leave-cancellation.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked leave-cancellation approvals spec (e2e/leave-cancellation-approvals.spec.ts); also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.leave-per-company.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
