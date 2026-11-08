@@ -124,7 +124,6 @@ export function refusalNextStep(code: string | null | undefined, t: (key: string
     case 'company_limit_reached': return t('To add another company, ask your account manager to raise the company limit on your plan.');
     case 'account_type_single_company': return t('This is a single-company account. Ask your account manager to switch it to a group account to add companies.');
     case 'company_creation_platform_controlled': return t('Companies for this account are created by the KynexOne team. Ask your account manager to add it.');
-    case 'company_creation_platform_approval': return t('New companies need platform activation, which is currently switched off. Ask your account manager to enable it; no draft is kept in the meantime.');
     case 'not_group_scope': return t('Only a group administrator can create a company. Ask your group super admin.');
     default: return t('Ask your account manager or group super admin what is needed.');
   }

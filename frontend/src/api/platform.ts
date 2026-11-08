@@ -61,7 +61,7 @@ export interface CreateTenantBody {
   expiresAtUtc?: string | null;
   /** SingleCompany (default) | Group — product behavior, distinct from maxCompanies. */
   accountType?: 'SingleCompany' | 'Group';
-  /** PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval */
+  /** PlatformControlled | GroupSelfServiceWithinLimit (default). The draft-approval mode is retired. */
   companyCreationMode?: string;
   /**
    * REQUIRED. The tenant's home jurisdiction as an ISO 3166-1 alpha-2 code ("SA", "AE", "QA").
@@ -639,6 +639,7 @@ export const platformApi = {
   setCompanyCreationMode: (tenantId: string, mode: string) =>
     platform.put(`/api/platform/tenants/${tenantId}/company-creation-mode`, { mode }).then(r => r.data),
 
+  /** Activates a company stuck in Draft (the retired draft-approval mode left some). Audited server-side. */
   approveCompany: (tenantId: string, companyId: string) =>
     platform.post(`/api/platform/tenants/${tenantId}/companies/${companyId}/approve`).then(r => r.data),
 

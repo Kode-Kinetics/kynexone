@@ -1746,7 +1746,7 @@ public class PlatformController : ControllerBase
     public async Task<IActionResult> SetCompanyCreationMode(Guid tenantId, [FromBody] SetCompanyCreationModeRequest req, CancellationToken ct)
     {
         if (!CompanyCreationModes.IsValid(req.Mode))
-            return BadRequest(new { message = "Mode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+            return BadRequest(new { message = "Mode must be PlatformControlled or GroupSelfServiceWithinLimit. The draft-approval mode has been retired." });
         var tenant = await _db.Tenants.FirstOrDefaultAsync(t => t.Id == tenantId, ct);
         if (tenant is null) return NotFound(new { message = "Tenant not found." });
 
@@ -1758,20 +1758,33 @@ public class PlatformController : ControllerBase
         return Ok(new { tenantId, companyCreationMode = tenant.CompanyCreationMode });
     }
 
-    /// <summary>Approves a Draft company created under GroupDraftPlatformApproval — activates it.</summary>
+    /// <summary>
+    /// Activates a company that is stuck in Draft. The draft-approval creation mode is retired (G-013), so no new Draft is
+    /// ever produced; this is the one-time way out for the ones created before. It performs exactly what creating a company
+    /// in the default mode does (IsActive = true, ApprovalStatus = Active), is audited with the acting platform admin, and
+    /// refuses anything that is not a Draft: a suspended company is never revived here, and a company of another tenant is
+    /// not found. The route keeps its original name so the console button and stored links keep working.
+    /// </summary>
     [HttpPost("tenants/{tenantId:guid}/companies/{companyId:guid}/approve")]
     [RequirePlatformRole(PlatformRoles.Owner, PlatformRoles.Admin)]
     public async Task<IActionResult> ApproveCompany(Guid tenantId, Guid companyId, CancellationToken ct)
     {
-        _ = tenantId;
-        _ = companyId;
-        _ = ct;
-        await Task.CompletedTask;
-        return Conflict(new
-        {
-            error = "company_activation_disabled",
-            message = "Company activation is temporarily disabled pending atomic authorization invalidation."
-        });
+        // SYSTEM CONTEXT: tenant scope intentionally bypassed (platform console); the tenant is an explicit predicate.
+        var company = await _db.Companies.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
+        if (company is null) return NotFound(new { message = "Company not found." });
+        if (company.ApprovalStatus != CompanyApprovalStatuses.Draft)
+            return Conflict(new { error = "company_not_draft", message = "Only a company still in Draft can be activated here." });
+
+        company.ApprovalStatus = CompanyApprovalStatuses.Active;
+        company.IsActive = true;
+        company.UpdatedAtUtc = DateTime.UtcNow;
+        AuditTenant(tenantId, "CompanyActivatedByPlatform",
+            new { approvalStatus = CompanyApprovalStatuses.Draft, isActive = false },
+            new { approvalStatus = CompanyApprovalStatuses.Active, isActive = true, companyId = company.Id, name = company.LegalNameEn },
+            entityType: nameof(Company), entityId: company.Id.ToString());
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { companyId = company.Id, company.ApprovalStatus, company.IsActive });
     }
 
     /// <summary>
@@ -1894,7 +1907,7 @@ public class PlatformController : ControllerBase
         if (req.AccountType is not null && !TenantAccountTypes.IsValid(req.AccountType))
             return BadRequest(new { message = "AccountType must be 'SingleCompany' or 'Group'." });
         if (req.CompanyCreationMode is not null && !CompanyCreationModes.IsValid(req.CompanyCreationMode))
-            return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled, GroupSelfServiceWithinLimit or GroupDraftPlatformApproval." });
+            return BadRequest(new { message = "CompanyCreationMode must be PlatformControlled or GroupSelfServiceWithinLimit. The draft-approval mode has been retired." });
 
         // HOME JURISDICTION — required, and never inferred. Provisioning below seeds country payroll
         // rules, leave entitlements and readiness profiles, and the first company inherits this value;
@@ -6114,7 +6127,7 @@ public record CreateTenantRequest(
     int? MaxAdminUsers = null,
     // SingleCompany (default) | Group — product behavior, distinct from MaxCompanies.
     string? AccountType = null,
-    // PlatformControlled | GroupSelfServiceWithinLimit (default) | GroupDraftPlatformApproval
+    // PlatformControlled | GroupSelfServiceWithinLimit (default). GroupDraftPlatformApproval is retired and refused.
     string? CompanyCreationMode = null,
     // The tenant's HOME JURISDICTION as an ISO 3166-1 code (ISO-2 canonical, ISO-3 accepted and
     // mapped). REQUIRED: it drives statutory seeding and is inherited by the tenant's first company.

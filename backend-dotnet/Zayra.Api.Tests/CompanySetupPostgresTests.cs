@@ -432,18 +432,18 @@ public sealed class CompanySetupPostgresTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task A_draft_approval_tenant_is_refused_at_context_and_cannot_start_a_draft()
+    public async Task A_tenant_still_on_the_retired_draft_approval_mode_is_treated_as_self_service()
     {
+        // G-013: the draft-approval mode is retired. Until the data migration moves a tenant off it, the wizard behaves as in the
+        // default mode: it may start, and nothing is refused with the old "needs platform activation" code.
         var w = await SeedAsync(mode: CompanyCreationModes.GroupDraftPlatformApproval);
         await using var db = fixture.CreateDb();
         var service = Service(db);
         var context = await service.GetContextAsync(Caller(w), default);
-        context.CanCreate.Should().BeFalse();
-        context.RefusalCode.Should().Be("company_creation_platform_approval");
-        context.CreationMode.Should().Be(CompanyCreationModes.GroupDraftPlatformApproval);
+        context.CanCreate.Should().BeTrue();
+        context.RefusalCode.Should().BeNull();
         var draft = await service.CreateDraftAsync(Caller(w), Body(), default);
-        draft.Status.Should().Be(409, "no stranded drafts");
-        (await db.CompanySetupDrafts.AnyAsync(d => d.TenantId == w.TenantId)).Should().BeFalse();
+        draft.Status.Should().NotBe(409);
     }
 
     [Fact]

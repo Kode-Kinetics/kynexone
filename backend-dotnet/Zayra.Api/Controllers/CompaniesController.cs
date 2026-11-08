@@ -317,7 +317,7 @@ public class CompaniesController : ControllerBase
                     {
                         var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
                         if (!gate.Allowed) errors.Add(gate.Message);
-                        else { await _organization.CreateCompanyAsync(tenantId, row.Request!, context, ct, gate.AsDraft); created++; }
+                        else { await _organization.CreateCompanyAsync(tenantId, row.Request!, context, ct); created++; }
                     }
                 }
                 catch (InvalidOperationException ex) { errors.Add(ex.Message); }

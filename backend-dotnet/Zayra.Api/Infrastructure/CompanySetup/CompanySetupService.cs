@@ -102,7 +102,7 @@ public sealed class CompanySetupService
             : [];
         return new CompanySetupContext(
             canCreate, code, message,
-            tenant?.CompanyCreationMode ?? string.Empty,
+            CompanyCreationModes.Effective(tenant?.CompanyCreationMode),
             tenant?.AccountType ?? string.Empty,
             used,
             sub is { MaxCompanies: > 0 } ? sub.MaxCompanies : null,
@@ -159,8 +159,6 @@ public sealed class CompanySetupService
     {
         if (!caller.IsGroupScope) return (false, CompanySetupGates.GroupScopeRequiredCode, CompanySetupGates.GroupScopeRequiredMessage, CompanySetupGates.GroupScopeRequiredMessageAr);
         if (!gate.Allowed) return (false, gate.ErrorCode, gate.Message, null);
-        if (gate.AsDraft) return (false, CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage,
-            CompanySetupGates.PlatformActivationDisabledMessageAr);
         return (true, null, null, null);
     }
 
@@ -1195,7 +1193,7 @@ public sealed class CompanySetupService
         {
             "company_limit_reached" => 402,
             "company_creation_platform_controlled" or CompanySetupGates.GroupScopeRequiredCode => 403,
-            "account_type_single_company" or CompanySetupGates.PlatformActivationDisabledCode or "company_switcher_selected" => 409,
+            "account_type_single_company" or "company_switcher_selected" => 409,
             _ => plan.Items.Any(i => i.Action == V.ActionConflict) ? 409 : 422,
         };
         var conflict = plan.Items.FirstOrDefault(i => i.Action == V.ActionConflict);
@@ -1234,7 +1232,7 @@ public sealed class CompanySetupService
         else
         {
             // Decision 2: the ONE authoritative create path, with all its validations, inside this transaction.
-            companyId = (await _organization.CreateCompanyAsync(tenantId, m.CompanyRequest, ctx, ct, asDraft: false)).Id;
+            companyId = (await _organization.CreateCompanyAsync(tenantId, m.CompanyRequest, ctx, ct)).Id;
         }
 
         var branchIds = new Dictionary<string, Guid>(m.ExistingBranchIds, StringComparer.Ordinal);
