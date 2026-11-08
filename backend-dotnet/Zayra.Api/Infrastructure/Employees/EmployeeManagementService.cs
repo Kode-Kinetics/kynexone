@@ -1483,10 +1483,17 @@ public class EmployeeManagementService : IEmployeeManagementService
     /// <summary>The subject never decides: neither a login of the employee the document belongs to, nor the user who uploaded it.</summary>
     private async Task RequireNotSubjectOrUploaderAsync(EmployeeDocument doc, Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
     {
-        if (context.UserId is not Guid actor) return;
+        // No known actor means no one to hold to the rule, so the decision is refused rather than let through.
+        if (context.UserId is not Guid actor) throw new DocumentSelfVerificationException();
         if (doc.UploadedBy == actor) throw new DocumentSelfVerificationException();
         var subjectLogins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, ct);
         if (subjectLogins.Contains(actor)) throw new DocumentSelfVerificationException();
+    }
+
+    /// <summary>A file the security scan has not cleared is not opened by anyone, so no decision is recorded about it (the queue already hides it).</summary>
+    private static void RequireFileAvailable(EmployeeDocument doc)
+    {
+        if (!Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(doc.ScanStatus)) throw new DocumentNotAvailableException();
     }
 
     public async Task<EmployeeDocument?> VerifyDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string? notes, RequestContext context, CancellationToken cancellationToken)
@@ -1495,6 +1502,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
         await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
+        RequireFileAvailable(doc);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Verified";
@@ -1559,6 +1567,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
         await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
+        RequireFileAvailable(doc);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Rejected";

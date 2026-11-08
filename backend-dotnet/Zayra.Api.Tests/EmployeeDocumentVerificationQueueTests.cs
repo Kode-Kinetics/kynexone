@@ -335,6 +335,58 @@ public class EmployeeDocumentVerificationQueueTests
     }
 
     [Fact]
+    public async Task A_decision_with_no_known_actor_is_refused_rather_than_let_through()
+    {
+        var w = await SeedAsync();
+        var doc = Doc(w, w.Maya, "Medical certificate", "General");
+        w.Db.EmployeeDocuments.Add(doc);
+        await w.Db.SaveChangesAsync();
+        var nobody = new RequestContext("127.0.0.1", "test", null, w.TenantId, Permissions: ["employees.documents"]);
+
+        await FluentActions.Awaiting(() => Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, nobody, default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+        await FluentActions.Awaiting(() => Svc(w).RejectDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, "Blurry", nobody, default))
+            .Should().ThrowAsync<DocumentSelfVerificationException>();
+
+        w.Db.ChangeTracker.Clear();
+        (await w.Db.EmployeeDocuments.AsNoTracking().SingleAsync(d => d.Id == doc.Id)).ApprovalStatus.Should().Be("Pending");
+    }
+
+    [Theory]
+    [InlineData("quarantined")]
+    [InlineData("quarantined_pending")]
+    [InlineData("something_unknown")]
+    public async Task A_file_the_security_scan_has_not_cleared_can_be_neither_verified_nor_rejected_by_id(string scan)
+    {
+        var w = await SeedAsync();
+        var doc = Doc(w, w.Maya, "Medical certificate", "General", scan: scan);
+        w.Db.EmployeeDocuments.Add(doc);
+        await w.Db.SaveChangesAsync();
+        var hr = CtxAs(w, w.HrWithSensitive);
+
+        await FluentActions.Awaiting(() => Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, hr, default))
+            .Should().ThrowAsync<DocumentNotAvailableException>();
+        await FluentActions.Awaiting(() => Svc(w).RejectDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, "Blurry", hr, default))
+            .Should().ThrowAsync<DocumentNotAvailableException>();
+
+        w.Db.ChangeTracker.Clear();
+        (await w.Db.EmployeeDocuments.AsNoTracking().SingleAsync(d => d.Id == doc.Id)).ApprovalStatus.Should().Be("Pending");
+    }
+
+    [Theory]
+    [InlineData("clean")]
+    [InlineData("not_scanned_trusted_source")]
+    public async Task A_file_the_scan_cleared_or_a_trusted_source_supplied_can_still_be_verified(string scan)
+    {
+        var w = await SeedAsync();
+        var doc = Doc(w, w.Maya, "Medical certificate", "General", scan: scan);
+        w.Db.EmployeeDocuments.Add(doc);
+        await w.Db.SaveChangesAsync();
+
+        (await Svc(w).VerifyDocumentAsync(w.TenantId, w.Maya.Id, doc.Id, null, CtxAs(w, w.HrWithSensitive), default))!.ApprovalStatus.Should().Be("Verified");
+    }
+
+    [Fact]
     public void The_refusal_carries_a_stable_code_the_screen_can_show()
     {
         DocumentSelfVerificationException.Code.Should().Be("document_self_verification");

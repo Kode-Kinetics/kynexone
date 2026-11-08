@@ -797,6 +797,16 @@ public sealed class DocumentSelfVerificationException : Exception
     public DocumentSelfVerificationException() : base("You cannot verify or reject this document: it is your own, or you uploaded it. Someone else in HR must decide.") { }
 }
 
+/// <summary>
+/// Thrown when a verify or reject names a file the security scan has not cleared. The queue already hides such a file; this stops a
+/// direct call by id, so nobody records a decision about a file that nobody may open.
+/// </summary>
+public sealed class DocumentNotAvailableException : Exception
+{
+    public const string Code = "document_quarantined";
+    public DocumentNotAvailableException() : base("This file is not available: it did not pass the security scan.") { }
+}
+
 public static class EmployeeDocumentSensitivity
 {
     public const string Identity = "Identity";
