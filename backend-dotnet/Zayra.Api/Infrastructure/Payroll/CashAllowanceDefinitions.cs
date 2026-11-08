@@ -159,6 +159,15 @@ public static class CashAllowanceDefinitions
     public static bool HasUnsafeCharacters(string text) =>
         text.Any(c => char.IsControl(c) || c is >= '\u202A' and <= '\u202E' or >= '\u2066' and <= '\u2069');
 
+    /// <summary>
+    /// The stricter rule for a benefit's NAME and CATEGORY, which are shown as labels: everything <see cref="HasUnsafeCharacters"/> refuses, plus the
+    /// invisible and plain direction characters — zero-width space, non-joiner and joiner (U+200B–U+200D), left/right marks (U+200E, U+200F), the Arabic
+    /// letter mark (U+061C), word joiner (U+2060) and byte order mark (U+FEFF) — which can make two different names look identical. Ordinary Arabic and
+    /// English letters, digits, spaces and punctuation pass. (Notes and reasons keep the looser rule: Arabic prose may carry the plain marks.)
+    /// </summary>
+    public static bool HasInvisibleOrDirectionCharacters(string text) =>
+        HasUnsafeCharacters(text) || text.Any(c => c is >= '\u200B' and <= '\u200F' or '\u061C' or '\u2060' or '\uFEFF');
+
     /// <summary>A refused end-of-service answer: the stable code and the words.</summary>
     public sealed record EosbProblem(string Code, string Message);
 

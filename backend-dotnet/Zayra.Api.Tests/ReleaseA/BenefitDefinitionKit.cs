@@ -25,7 +25,11 @@ internal sealed class Bd : IAsyncDisposable
     public static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
     public const string CarDriver = "EARN:CAR";
 
-    public ZayraDbContext Db { get; } = new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
+    private readonly DbContextOptions<ZayraDbContext> _options = new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+    public ZayraDbContext Db { get; }
+
+    /// <summary>Another context on the same database: a second request, as a payroll approval racing the one under test.</summary>
+    public ZayraDbContext NewContext() => new(_options);
     public Guid Tid { get; } = Guid.NewGuid();
     public Company Alpha { get; } = null!;
     public Company Beta { get; } = null!;
@@ -39,6 +43,7 @@ internal sealed class Bd : IAsyncDisposable
 
     private Bd()
     {
+        Db = new ZayraDbContext(_options);
         Alpha = new Company { TenantId = Tid, LegalNameEn = "Masar Facility Services Co.", DefaultCurrency = "SAR" };
         Beta = new Company { TenantId = Tid, LegalNameEn = "Masar Logistics Co.", DefaultCurrency = "SAR" };
         Gamma = new Company { TenantId = Tid, LegalNameEn = "Masar Catering Co.", DefaultCurrency = "SAR" };

@@ -249,10 +249,10 @@ public class BenefitDefinitionReviewFixTests
 
         var create = await h.Add(Contract("Park\u202Eing"));
         var edit = await h.Put("BEN_PARKING", new UpdateBenefitRequest(created.Definition!.Version, "Park\u202Eing", null) { Category = null, PolicyClass = null, EffectiveFrom = null, EffectiveTo = null });
-        var arabic = await h.Add(Contract("Garage", b => b.NameAr = "موقف\u200F"));
+        var arabic = await h.Add(Contract("Garage", b => b.NameAr = "موقف السيارات"));
 
         (Error(create), Error(edit)).Should().Be(("name_invalid", "name_invalid"));
-        Status(arabic).Should().Be(200, "the plain right-to-left mark is allowed in Arabic text");
+        Status(arabic).Should().Be(200, "ordinary Arabic letters and spaces are fine");
         await h.SetFlag(false);
         Status(await h.Add(Contract("Park\u202Eing"))).Should().Be(200, "the old body behaves as before");
     }

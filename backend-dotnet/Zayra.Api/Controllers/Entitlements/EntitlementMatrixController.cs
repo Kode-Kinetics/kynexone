@@ -102,7 +102,7 @@ public sealed class EntitlementMatrixController : ControllerBase
     /// with <c>expectedVersion</c> from the matrix read (409 <c>stale_definition</c> when someone else changed it first). Same permission and group
     /// scope as adding it; serialised with every other matrix write; audited with the old and new values. Behind the <c>benefit_definition_v1</c> feature.
     /// A cash allowance's money terms are not editable here once Finance has confirmed it (they go through Finance's correction), and changing the
-    /// dates or policy class of one without the Finance permission puts it back to "pending Finance". The response carries an <c>ETag</c>.
+    /// dates or active switch of one without the Finance permission puts it back to "pending Finance". The response carries an <c>ETag</c>.
     /// </summary>
     [HttpPut("components/{code}")]
     [HasPermission("entitlements.manage")]

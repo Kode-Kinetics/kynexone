@@ -42,6 +42,9 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     /// <summary>Test seam: runs right after the tenant matrix lock is taken by an Add or Edit of a benefit definition, before the feature flag is read.</summary>
     internal Func<Task>? AfterLockHook { get; set; }
 
+    /// <summary>Test seam: runs inside an Add or Edit of a benefit definition after every check, right before the last look at the committed payroll periods and the save.</summary>
+    internal Func<Task>? BeforeDefinitionSaveHook { get; set; }
+
     /// <summary>How far ahead of the current month a Finance correction may start.</summary>
     public const int MaxCorrectionMonthsAhead = 12;
     public const string AuditPublished = "entitlements.matrix.published";
@@ -898,8 +901,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             if (nameEn.Length == 0 && nameAr.Length == 0) return Bad("name_required", "Give the benefit a name.");
             if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
             if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
-            if (def && (CashAllowanceDefinitions.HasUnsafeCharacters(nameEn) || CashAllowanceDefinitions.HasUnsafeCharacters(nameAr)))
-                return Bad("name_invalid", "A name can't contain control or text-direction override characters.");
+            if (def && (CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameEn) || CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameAr)))
+                return Bad("name_invalid", "A name can't contain control, invisible or text-direction characters.");
             if (nameEn.Length == 0) nameEn = nameAr;
             if (nameAr.Length == 0) nameAr = nameEn;
             var shown = nameEn;
@@ -1038,6 +1041,13 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                     glDriverKey = driver, eosbIncluded = row.EosbIncluded, eosbExclusionCategory = eosbCategory, eosbExclusionReason = eosbReason,
                     financeConfirmed = cash && row.FinanceConfirmedAtUtc is not null, warnings = warnings.Select(w => w.Code).ToArray(),
                 }));
+                // The last look at the committed payroll periods, right before the save: an approval that landed since the first check is caught.
+                if (BeforeDefinitionSaveHook is { } beforeSave) await beforeSave();
+                if (await WindowChangeLockProblemAsync(tid, new Window(false, null, null), new Window(d.IsActive, d.From, d.To), openPastCounts: cash, ct) is { } lateLock)
+                {
+                    db.ChangeTracker.Clear();
+                    return lateLock;
+                }
                 await db.SaveChangesAsync(ct);
                 return Ok(await ComponentDtoAsync(tid, code, warnings, ct) ?? ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr)));
             }

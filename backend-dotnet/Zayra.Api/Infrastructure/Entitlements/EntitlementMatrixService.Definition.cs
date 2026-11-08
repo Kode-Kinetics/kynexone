@@ -21,7 +21,7 @@ namespace Zayra.Api.Infrastructure.Entitlements;
 /// allowance), a per-benefit enrolment, a mandatory class, and any JSON field this contract does not know are refused with a plain code.</para>
 ///
 /// <para><b>Money.</b> A cash allowance stays all-companies, monthly, Finance-confirmed (maker is not checker). Its GL driver and end-of-service setting
-/// of a <i>confirmed</i> allowance change only through Finance's effective-dated correction; its dates, active switch and policy class change here, and
+/// of a <i>confirmed</i> allowance change only through Finance's effective-dated correction; its dates and active switch change here (the policy class is only a label), and
 /// when someone without the Finance permission changes them the allowance is pending Finance again, with that person as its maker.</para>
 /// </summary>
 public sealed partial class EntitlementMatrixService
@@ -106,7 +106,7 @@ public sealed partial class EntitlementMatrixService
         var category = Blank(raw);
         if (category is null) return (null, null);
         if (category.Length > CategoryMaxLength) return (Bad("category_too_long", $"Keep the category under {CategoryMaxLength} characters."), null);
-        if (CashAllowanceDefinitions.HasUnsafeCharacters(category)) return (Bad("category_invalid", "The category can't contain control or text-direction override characters."), null);
+        if (CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(category)) return (Bad("category_invalid", "The category can't contain control, invisible or text-direction characters."), null);
         return (null, category);
     }
 
@@ -439,8 +439,8 @@ public sealed partial class EntitlementMatrixService
         var nameAr = Blank(req.NameAr) ?? head.NameAr;
         if (Blank(req.NameEn) is null && Blank(req.NameAr) is null) return Bad("name_required", "Give the benefit a name.");
         if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
-        if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl) || CashAllowanceDefinitions.HasUnsafeCharacters(nameEn) || CashAllowanceDefinitions.HasUnsafeCharacters(nameAr))
-            return Bad("name_invalid", "A name can't contain control or text-direction override characters.");
+        if (CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameEn) || CashAllowanceDefinitions.HasInvisibleOrDirectionCharacters(nameAr))
+            return Bad("name_invalid", "A name can't contain control, invisible or text-direction characters.");
         var others = await ScopedBypass.TenantWide(db.PayComponents, tid, "The other benefits the customer added, removed ones excluded, to keep names unique.")
             .AsNoTracking().Where(IsCustomRow()).Where(x => !x.IsDeleted && x.Code != code).ToListAsync(ct);
         bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
@@ -497,7 +497,7 @@ public sealed partial class EntitlementMatrixService
         }
 
         // Dates and the active switch: the window as payroll sees it may not change the membership of a month already paid. For a cash allowance the
-        // window, the switch and the policy class are money terms.
+        // window and the switch are money terms (payroll reads them); the policy class is a label.
         var newActive = req.IsActive ?? head.IsActive;
         var datesChanged = newFrom != head.EffectiveFrom || newTo != head.EffectiveTo;
         var activeChanged = newActive != head.IsActive;
@@ -523,7 +523,9 @@ public sealed partial class EntitlementMatrixService
             if (termsProblem is not null) return termsProblem;
             if (terms != TermsOf(head))
             {
-                if (head.FinanceConfirmedAtUtc is not null)
+                // "Confirmed" is not just the state it is in now: an edit can send a confirmed allowance back to pending, and rewriting its terms in place
+                // would then read the new terms over months it already paid. Once confirmed, always a Finance correction (effective-dated, with a reason).
+                if (head.FinanceConfirmedAtUtc is not null || await EverConfirmedAsync(tid, versions, ct))
                     return Conflict("finance_correction_required", "Finance has confirmed this allowance, so its GL driver and end-of-service setting are changed by a Finance correction, from a month on, with a reason.");
                 newTerms = terms;
             }
@@ -535,15 +537,28 @@ public sealed partial class EntitlementMatrixService
         if (!nameChanged && !categoryChanged && !classChanged && !datesChanged && !activeChanged && !renaming && newTerms is null)
             return await CurrentAsync(tid, code, ct);
 
-        // A cash allowance's money terms (dates, active, policy class, GL/EOSB) — and a name that changes its end-of-service cautions — changed by someone
+        // A cash allowance's money terms (dates, active, GL/EOSB) — and a name that changes its end-of-service cautions — changed by someone
         // without the Finance permission put it back to pending Finance, and the editor is then its maker, who can never confirm it. A pending one stays
         // pending with the editor as its maker. A Finance editor keeps it confirmed and the original maker.
         var cautionsChanged = cash && nameChanged
             && !CashAllowanceDefinitions.Warnings(head.NameEn, head.NameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order()
                 .SequenceEqual(CashAllowanceDefinitions.Warnings(nameEn, nameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order());
-        var moneyChanged = cash && (datesChanged || activeChanged || classChanged || newTerms is not null || cautionsChanged);
+        // (The policy class is a descriptive label payroll never reads, so it is not a money term.)
+        var moneyChanged = cash && (datesChanged || activeChanged || newTerms is not null || cautionsChanged);
         var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null && !actor.IsFinance;
         var before = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code };
+        var renamedRows = renaming
+            ? await ScopedBypass.TenantWide(db.PayComponents, tid, "A renamed code moves with its company switches, removed ones too (the unique key counts them).")
+                .Where(x => x.Code == code && x.ComponentType == PayComponentTypes.Benefit).ToListAsync(ct)
+            : [];
+        // The last look before anything is changed (nothing below awaits until the save): a payroll approval that landed since the first check is caught.
+        if (BeforeDefinitionSaveHook is { } beforeSave) await beforeSave();
+        if ((datesChanged || activeChanged)
+            && await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct) is { } lateLock)
+        {
+            db.ChangeTracker.Clear();
+            return lateLock;
+        }
         var now = DateTime.UtcNow;
         foreach (var version in versions)
         {
@@ -561,12 +576,7 @@ public sealed partial class EntitlementMatrixService
         }
         if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
         if (moneyChanged && head.FinanceConfirmedAtUtc is null) head.CreatedBy = actor.UserId;
-        if (renaming)
-        {
-            var allRows = await ScopedBypass.TenantWide(db.PayComponents, tid, "A renamed code moves with its company switches, removed ones too (the unique key counts them).")
-                .Where(x => x.Code == code && x.ComponentType == PayComponentTypes.Benefit).ToListAsync(ct);
-            foreach (var row in allRows) { row.Code = newCode; row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId; }
-        }
+        foreach (var row in renamedRows) { row.Code = newCode; row.UpdatedAtUtc = now; row.UpdatedBy = actor.UserId; }
         var after = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code = newCode };
         db.AuditLogs.Add(Audit(actor, null, AuditBenefitUpdated, head.Id, new
         {
@@ -574,6 +584,30 @@ public sealed partial class EntitlementMatrixService
         }));
         await db.SaveChangesAsync(ct);
         return await CurrentAsync(tid, newCode, ct);
+    }
+
+    /// <summary>Whether Finance has ever confirmed this allowance: some version is confirmed now, or its audit history shows a confirmation, a Finance
+    /// correction, an add that was confirmed at once, or an edit that sent a confirmed allowance back to pending.</summary>
+    private async Task<bool> EverConfirmedAsync(Guid tid, IReadOnlyCollection<PayComponent> versions, CancellationToken ct)
+    {
+        if (versions.Any(v => v.FinanceConfirmedAtUtc is not null)) return true;
+        var ids = versions.Select(v => v.Id.ToString()).ToList();
+        var history = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tid && a.EntityId != null && ids.Contains(a.EntityId)
+                && (a.Action == AuditBenefitConfirmed || a.Action == AuditBenefitCorrected || a.Action == AuditBenefitAdded || a.Action == AuditBenefitUpdated))
+            .Select(a => new { a.Action, a.Metadata }).ToListAsync(ct);
+        foreach (var row in history)
+        {
+            if (row.Action is AuditBenefitConfirmed or AuditBenefitCorrected) return true;
+            try
+            {
+                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(row.Metadata) ? "{}" : row.Metadata);
+                var key = row.Action == AuditBenefitAdded ? "financeConfirmed" : "repended";
+                if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty(key, out var flag) && flag.ValueKind == JsonValueKind.True) return true;
+            }
+            catch (JsonException) { /* unreadable history: read as "not confirmed by this row" and let the other rows speak */ }
+        }
+        return false;
     }
 
     /// <summary>200 with the benefit as it stands now, or 404 when it is not there.</summary>
