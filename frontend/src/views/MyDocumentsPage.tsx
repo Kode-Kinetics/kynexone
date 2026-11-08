@@ -7,6 +7,7 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { useFormat } from '@/src/hooks/useFormat';
 import { enumLabel } from '@/src/i18n/enumLabel';
 import { StatusChip } from '@/src/components/StatusChip';
+import { EssMyDocumentsCard } from '@/src/components/ess/EssMyDocumentsCard';
 import {
   EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, EssReadOnly, essInput, essPrimaryButton, useCanWriteEss,
 } from '@/src/components/ess/EssParts';
@@ -177,6 +178,8 @@ export function MyDocumentsPage() {
           )}
         </EssCard>
       </div>
+
+      <EssMyDocumentsCard />
     </div>
   );
 }

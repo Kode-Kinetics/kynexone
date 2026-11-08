@@ -66,7 +66,7 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
     // ── Company lifecycle: creation modes + approval + suspend guard ───────────
 
     [Fact]
-    public async Task CreationModes_PlatformControlledBlocks_DraftModeCreatesDraft_ApprovalFailsClosed()
+    public async Task CreationModes_PlatformControlledBlocks_AndTheRetiredDraftModeNowCreatesAnActiveCompany()
     {
         await using var db = _fx.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -78,25 +78,102 @@ public class GroupProductFoundationTests : Platform.PlatformTestBase
         var blocked = await controller.Create(NewCompanyRequest("PC Blocked"), CancellationToken.None);
         ((ObjectResult)blocked.Result!).StatusCode.Should().Be(403, "PlatformControlled tenants cannot self-create companies");
 
+        // G-013 (owner decision): the draft-approval mode is retired. A tenant still holding it (before the data migration
+        // runs) is treated as the default mode, so a new company is created ACTIVE instead of stranded as a Draft.
         await db.Tenants.Where(t => t.Id == tenantId).ExecuteUpdateAsync(s => s
             .SetProperty(t => t.CompanyCreationMode, CompanyCreationModes.GroupDraftPlatformApproval));
         db.ChangeTracker.Clear();
 
-        var created = await controller.Create(NewCompanyRequest("Draft Co"), CancellationToken.None);
+        var created = await controller.Create(NewCompanyRequest("Was Draft Co"), CancellationToken.None);
         var dto = (Application.Organization.CompanyDto)((CreatedAtActionResult)created.Result!).Value!;
-        dto.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
-        dto.IsActive.Should().BeFalse("drafts await platform approval");
+        dto.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Active);
+        dto.IsActive.Should().BeTrue("no company is created as a Draft any more");
+    }
 
-        // Platform approval (draft -> active) is deliberately fail-closed pending atomic
-        // authorization invalidation: 409 with a stable code and the draft left untouched.
+    [Fact]
+    public async Task TheRetiredDraftMode_CannotBeChosen_ByThePlatformConsole()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var platform = CreateController(db);
-        var approval = await platform.ApproveCompany(tenantId, dto.Id, CancellationToken.None);
-        System.Text.Json.JsonSerializer.Serialize(approval.Should().BeOfType<ConflictObjectResult>().Subject.Value)
-            .Should().Contain("company_activation_disabled");
+
+        var result = await platform.SetCompanyCreationMode(tenantId, new SetCompanyCreationModeRequest(CompanyCreationModes.GroupDraftPlatformApproval), CancellationToken.None);
+
+        result.Should().BeOfType<BadRequestObjectResult>();
+        CompanyCreationModes.IsValid(CompanyCreationModes.GroupDraftPlatformApproval).Should().BeFalse();
+        CompanyCreationModes.IsValid(CompanyCreationModes.GroupSelfServiceWithinLimit).Should().BeTrue();
+        CompanyCreationModes.IsValid(CompanyCreationModes.PlatformControlled).Should().BeTrue();
         db.ChangeTracker.Clear();
-        var stillDraft = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == dto.Id);
-        stillDraft.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Draft);
-        stillDraft.IsActive.Should().BeFalse();
+        (await db.Tenants.AsNoTracking().SingleAsync(t => t.Id == tenantId)).CompanyCreationMode
+            .Should().NotBe(CompanyCreationModes.GroupDraftPlatformApproval);
+    }
+
+    [Fact]
+    public async Task APlatformAdmin_CanActivateACompanyStuckInDraft_Audited_AndOnlyOnce()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var stuck = new Company { TenantId = tenantId, LegalNameEn = "Stuck Draft", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = false, ApprovalStatus = CompanyApprovalStatuses.Draft };
+        db.Companies.Add(stuck);
+        await db.SaveChangesAsync();
+        var platform = CreateController(db);
+
+        var activated = await platform.ApproveCompany(tenantId, stuck.Id, CancellationToken.None);
+
+        activated.Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var company = await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == stuck.Id);
+        company.IsActive.Should().BeTrue();
+        company.ApprovalStatus.Should().Be(CompanyApprovalStatuses.Active);
+        var audit = await db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.EntityType == nameof(Company) && a.EntityId == stuck.Id.ToString()).ToListAsync();
+        audit.Should().ContainSingle(a => a.Action == "CompanyActivatedByPlatform" && a.PerformedByName == AdminEmail);
+
+        var again = await platform.ApproveCompany(tenantId, stuck.Id, CancellationToken.None);
+        again.Should().BeOfType<ConflictObjectResult>("a company that is not a Draft is never re-activated through this door");
+        System.Text.Json.JsonSerializer.Serialize(((ConflictObjectResult)again).Value).Should().Contain("company_not_draft");
+    }
+
+    [Fact]
+    public async Task ActivatingADraft_CannotReachAnotherTenantsCompany_AndNeverRevivesASuspendedOne()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantA = await PostgresFixture.SeedMinimalTenant(db);
+        var tenantB = await PostgresFixture.SeedMinimalTenant(db);
+        var draftOfB = new Company { TenantId = tenantB, LegalNameEn = "B Draft", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = false, ApprovalStatus = CompanyApprovalStatuses.Draft };
+        var suspendedOfA = new Company { TenantId = tenantA, LegalNameEn = "A Suspended", RegistrationNumber = $"R-{Guid.NewGuid():N}", CountryCode = "SA", DefaultCurrency = "SAR", IsActive = false, ApprovalStatus = CompanyApprovalStatuses.Active };
+        db.Companies.AddRange(draftOfB, suspendedOfA);
+        await db.SaveChangesAsync();
+        var platform = CreateController(db);
+
+        (await platform.ApproveCompany(tenantA, draftOfB.Id, CancellationToken.None)).Should().BeOfType<NotFoundObjectResult>("the company is looked up inside the named tenant only");
+        (await platform.ApproveCompany(tenantA, suspendedOfA.Id, CancellationToken.None)).Should().BeOfType<ConflictObjectResult>("suspension is not a Draft");
+        db.ChangeTracker.Clear();
+        (await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == draftOfB.Id)).IsActive.Should().BeFalse();
+        (await db.Companies.IgnoreQueryFilters().AsNoTracking().SingleAsync(c => c.Id == suspendedOfA.Id)).IsActive.Should().BeFalse();
+    }
+
+    /// <summary>The data migration is idempotent and leaves a trace: every tenant on the retired mode moves to the default mode with
+    /// one audit row each, a second run changes nothing, and tenants on the other modes are untouched.</summary>
+    [Fact]
+    public async Task TheRetirementMigration_MovesTenantsToTheDefaultMode_WithAnAuditRow_AndIsIdempotent()
+    {
+        await using var db = _fx.CreateDb();
+        var legacy = await PostgresFixture.SeedMinimalTenant(db);
+        var controlled = await PostgresFixture.SeedMinimalTenant(db);
+        await db.Tenants.Where(t => t.Id == legacy).ExecuteUpdateAsync(s => s.SetProperty(t => t.CompanyCreationMode, CompanyCreationModes.GroupDraftPlatformApproval));
+        await db.Tenants.Where(t => t.Id == controlled).ExecuteUpdateAsync(s => s.SetProperty(t => t.CompanyCreationMode, CompanyCreationModes.PlatformControlled));
+
+        await db.Database.ExecuteSqlRawAsync(Zayra.Api.Migrations.RetireDraftApprovalMode.RetireSql);
+        await db.Database.ExecuteSqlRawAsync(Zayra.Api.Migrations.RetireDraftApprovalMode.RetireSql);
+
+        db.ChangeTracker.Clear();
+        (await db.Tenants.AsNoTracking().SingleAsync(t => t.Id == legacy)).CompanyCreationMode.Should().Be(CompanyCreationModes.GroupSelfServiceWithinLimit);
+        (await db.Tenants.AsNoTracking().SingleAsync(t => t.Id == controlled)).CompanyCreationMode.Should().Be(CompanyCreationModes.PlatformControlled);
+        var rows = await db.AdminAuditLogs.IgnoreQueryFilters().AsNoTracking().Where(a => a.Action == "CompanyCreationModeRetired" && (a.TenantId == legacy || a.TenantId == controlled)).ToListAsync();
+        rows.Should().ContainSingle("one audit row for the one tenant that moved, none on the second run").Which.TenantId.Should().Be(legacy);
+        rows[0].OldValuesJson.Should().Contain(CompanyCreationModes.GroupDraftPlatformApproval);
+        rows[0].NewValuesJson.Should().Contain(CompanyCreationModes.GroupSelfServiceWithinLimit);
     }
 
     [Fact]

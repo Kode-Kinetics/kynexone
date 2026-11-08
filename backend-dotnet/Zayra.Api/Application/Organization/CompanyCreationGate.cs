@@ -23,7 +23,6 @@ public sealed record CompanyCreationGateDecision(
     CompanyCreationVerdict Verdict,
     string ErrorCode,
     string Message,
-    bool AsDraft = false,
     int CurrentCount = 0,
     int MaxAllowed = 0)
 {
@@ -93,11 +92,10 @@ public static class CompanyCreationGate
                 "This account is configured as a single-company account. Ask your platform administrator to enable the Group account type to manage multiple legal entities.",
                 CurrentCount: existingCount);
 
-        // Draft-approval mode: group admins submit drafts; a platform admin activates.
+        // Every other mode (including the retired draft-approval mode, read as the default) creates an ACTIVE company.
         return new CompanyCreationGateDecision(
             CompanyCreationVerdict.Allowed,
             string.Empty,
-            string.Empty,
-            AsDraft: tenant.CompanyCreationMode == CompanyCreationModes.GroupDraftPlatformApproval);
+            string.Empty);
     }
 }

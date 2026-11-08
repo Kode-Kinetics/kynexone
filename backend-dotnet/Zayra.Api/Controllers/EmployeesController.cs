@@ -4430,6 +4430,20 @@ public class EmployeesController : ControllerBase
         catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
     }
 
+    /// <summary>
+    /// G-004 — the "Documents to verify" queue: documents employees uploaded that nobody has verified yet, oldest first, for the
+    /// employees this caller may reach. Same gate as verify itself (employees.documents), and a protected document (identity,
+    /// payroll, contract) is listed only to a caller who also holds employees.sensitive, which verify requires for it.
+    /// </summary>
+    [HttpGet("documents/pending-verification")]
+    [HasPermission("employees.documents")]
+    public async Task<ActionResult<PendingDocumentsPage>> PendingDocumentVerification([FromServices] IEmployeeManagementService employeeManagement,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken cancellationToken = default)
+    {
+        var visible = await ResolveVisibleEmployeeIdsAsync(cancellationToken);
+        return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken));
+    }
+
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
     [HasPermission("employees.documents")]
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
@@ -4441,6 +4455,7 @@ public class EmployeesController : ControllerBase
             return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
         }
         catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
+        catch (DocumentSelfVerificationException ex) { return StatusCode(403, new { code = DocumentSelfVerificationException.Code, message = ex.Message }); }
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/reject")]
@@ -4454,6 +4469,8 @@ public class EmployeesController : ControllerBase
             return doc is null ? NotFound() : Ok(EmployeeDocumentDto.Project(doc, CanViewSensitive()));
         }
         catch (SensitiveDocumentAccessException ex) { return SensitiveDocumentRefusal(ex); }
+        catch (DocumentSelfVerificationException ex) { return StatusCode(403, new { code = DocumentSelfVerificationException.Code, message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpDelete("{id:int}/documents/{docId:guid}")]

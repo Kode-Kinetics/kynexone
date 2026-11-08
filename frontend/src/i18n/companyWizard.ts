@@ -338,7 +338,6 @@ const ar: Record<string, string> = {
   "To add another company, ask your account manager to raise the company limit on your plan.": "لإضافة شركة أخرى، اطلب من مدير حسابك رفع حد الشركات في باقتك.",
   "This is a single-company account. Ask your account manager to switch it to a group account to add companies.": "هذا حساب لشركة واحدة. اطلب من مدير حسابك تحويله إلى حساب مجموعة لإضافة شركات.",
   "Companies for this account are created by the KynexOne team. Ask your account manager to add it.": "يُنشئ فريق KynexOne الشركات لهذا الحساب. اطلب من مدير حسابك إضافتها.",
-  "New companies need platform activation, which is currently switched off. Ask your account manager to enable it; no draft is kept in the meantime.": "تحتاج الشركات الجديدة إلى تفعيل من المنصة، وهو متوقف حاليًا. اطلب من مدير حسابك تفعيله؛ ولا تُحفظ أي مسودة في الأثناء.",
   "Only a group administrator can create a company. Ask your group super admin.": "يمكن لمسؤول المجموعة فقط إنشاء شركة. تواصل مع المسؤول الأعلى للمجموعة.",
   "Ask your account manager or group super admin what is needed.": "اسأل مدير حسابك أو المسؤول الأعلى للمجموعة عمّا يلزم.",
 

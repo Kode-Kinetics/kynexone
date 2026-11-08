@@ -10,6 +10,7 @@ import {
   mergeInbox,
   myDecisionsFrom,
   overtimeOutcome,
+  partialInboxKeys,
   queueTarget,
   roleKey,
   summarizeInbox,
@@ -292,4 +293,16 @@ test('overtime enters the inbox only when the server names the caller as the app
   const clean = decidableOvertime([row('a', 3), row('b', 7)], verdicts, false);
   assert.equal(clean.unresolved, false, 'a known non-approver is not "incomplete", it is simply not yours');
   assert.equal(decidableOvertime(items, new Map(), true).items.length, 3, 'an Admin bypasses the manager step');
+});
+
+test('partialInboxKeys names the source that failed, never overtime for a workflow failure', () => {
+  assert.deepEqual(partialInboxKeys(['workflow']), ['manager.approvals.partialWorkflow']);
+  assert.deepEqual(partialInboxKeys(['overtime']), ['manager.approvals.partialOvertime']);
+  assert.deepEqual(partialInboxKeys(['workflow', 'overtime']), ['manager.approvals.partialWorkflow', 'manager.approvals.partialOvertime']);
+  assert.deepEqual(partialInboxKeys([]), []);
+});
+
+test('partialInboxKeys names the leave cancellation and transfer sources, never "workflow" for them', () => {
+  assert.deepEqual(partialInboxKeys(['leaveCancellation']), ['manager.approvals.partialCancellation']);
+  assert.deepEqual(partialInboxKeys(['transfer']), ['manager.approvals.partialTransfer']);
 });

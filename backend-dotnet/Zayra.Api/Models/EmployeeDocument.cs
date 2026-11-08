@@ -24,6 +24,8 @@ public class EmployeeDocument : ITenantOwned, ICompanyScopedOperational
     public DateTime UploadedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? VerifiedAtUtc { get; set; }
     public Guid? VerifiedBy { get; set; }
+    /// <summary>G-004: why HR rejected this document, shown to the employee. NULL unless ApprovalStatus is Rejected (rows rejected before this column existed carry the reason in Notes only).</summary>
+    public string? RejectionReason { get; set; }
     public DateTime? LastDownloadedAtUtc { get; set; }
     public Guid? LastDownloadedBy { get; set; }
     public string Notes { get; set; } = string.Empty;

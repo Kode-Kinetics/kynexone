@@ -1480,16 +1480,27 @@ public class EmployeeManagementService : IEmployeeManagementService
         return doc;
     }
 
+    /// <summary>The subject never decides: neither a login of the employee the document belongs to, nor the user who uploaded it.</summary>
+    private async Task RequireNotSubjectOrUploaderAsync(EmployeeDocument doc, Guid tenantId, int employeeId, RequestContext context, CancellationToken ct)
+    {
+        if (context.UserId is not Guid actor) return;
+        if (doc.UploadedBy == actor) throw new DocumentSelfVerificationException();
+        var subjectLogins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, ct);
+        if (subjectLogins.Contains(actor)) throw new DocumentSelfVerificationException();
+    }
+
     public async Task<EmployeeDocument?> VerifyDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string? notes, RequestContext context, CancellationToken cancellationToken)
     {
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
+        await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Verified";
         doc.VerifiedAtUtc = DateTime.UtcNow;
         doc.VerifiedBy = context.UserId;
+        doc.RejectionReason = null;
         if (notes is not null) doc.Notes = notes.Trim();
 
         await _db.SaveChangesAsync(cancellationToken);
@@ -1498,32 +1509,74 @@ public class EmployeeManagementService : IEmployeeManagementService
         await _audit.WriteAsync("employee.document_verified", "EmployeeDocument", doc.Id.ToString(), context,
             JsonSerializer.Serialize(new { before, after = "Verified", documentType = doc.DocumentType }), cancellationToken);
 
-        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
-        if (employee?.UserAccountId is not null)
-            await _notifications.NotifyAsync(tenantId, employee.UserAccountId, "Document Verified",
-                $"Your {doc.DocumentType} document has been verified.", "EmployeeDocument", doc.Id.ToString(), cancellationToken);
+        // Every login the employee has (ESS link and the legacy account link), not only Employee.UserAccountId.
+        var logins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, cancellationToken);
+        await _notifications.NotifyEachAsync(tenantId, logins.Select(id => (Guid?)id), "Document Verified",
+            $"Your {doc.DocumentType} document has been verified.", "EmployeeDocument", doc.Id.ToString(), cancellationToken);
 
         return doc;
     }
 
+    public async Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query =
+            from d in _db.EmployeeDocuments.AsNoTracking()
+            join e in _db.Employees.AsNoTracking() on d.EmployeeId equals (int?)e.Id
+            where d.TenantId == tenantId && e.TenantId == tenantId && !d.IsDeleted && !e.IsDeleted
+                  && d.ApprovalStatus == "Pending"
+                  // A document sent with a profile-completion section is judged with that section (its own review queue), not here.
+                  && d.SourceSection == null
+            select new { d, e };
+        if (visibleEmployeeIds is not null) query = query.Where(x => visibleEmployeeIds.Contains(x.e.Id));
+
+        // The newest rows beyond this bound are reached once the older ones are decided; a queue this long is its own finding.
+        var candidates = await query.OrderBy(x => x.d.UploadedAtUtc).ThenBy(x => x.d.Id).Take(2000)
+            .Select(x => new { x.d.Id, EmployeeId = x.e.Id, x.e.EmployeeCode, x.e.FullName, x.d.CompanyId, EmployeeCompanyId = x.e.CompanyId, x.d.DocumentType,
+                x.d.DocumentCategory, x.d.FileName, x.d.UploadedAtUtc, x.d.ExpiryDate, x.d.ScanStatus })
+            .ToListAsync(cancellationToken);
+
+        var rows = candidates
+            // A file the security scan has not cleared is not opened by anyone, so it is not asked to be verified.
+            .Where(x => Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(x.ScanStatus))
+            .Select(x => new { Row = x, Protected = EmployeeDocumentSensitivity.IsSensitive(x.DocumentType, x.DocumentCategory) })
+            .Where(x => includeProtected || !x.Protected)
+            .ToList();
+        var items = rows.Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(x => new PendingDocumentRow(x.Row.Id, x.Row.EmployeeId, x.Row.EmployeeCode, x.Row.FullName, x.Row.CompanyId ?? x.Row.EmployeeCompanyId,
+                x.Row.DocumentType, x.Row.DocumentCategory, x.Row.FileName, x.Row.UploadedAtUtc, x.Row.ExpiryDate, x.Row.ScanStatus, x.Protected))
+            .ToList();
+        return new PendingDocumentsPage(items, rows.Count, page, pageSize);
+    }
+
     public async Task<EmployeeDocument?> RejectDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string reason, RequestContext context, CancellationToken cancellationToken)
     {
+        var cleanReason = (reason ?? string.Empty).Trim();
+        if (cleanReason.Length == 0) throw new InvalidOperationException("A reason is required to reject a document. The employee reads it.");
+        if (cleanReason.Length > 500) throw new InvalidOperationException("The reason must be 500 characters or fewer.");
         var doc = await _db.EmployeeDocuments.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted, cancellationToken);
         if (doc is null) return null;
         RequireSensitiveForProtectedDocument(doc, context);
+        await RequireNotSubjectOrUploaderAsync(doc, tenantId, employeeId, context, cancellationToken);
 
         var before = doc.ApprovalStatus;
         doc.ApprovalStatus = "Rejected";
-        doc.Notes = string.IsNullOrWhiteSpace(doc.Notes) ? reason.Trim() : doc.Notes + " | Rejection: " + reason.Trim();
+        doc.RejectionReason = cleanReason;
+        // A document that was verified and is now rejected is no longer verified.
+        doc.VerifiedAtUtc = null;
+        doc.VerifiedBy = null;
+        doc.Notes = string.IsNullOrWhiteSpace(doc.Notes) ? cleanReason : doc.Notes + " | Rejection: " + cleanReason;
 
         _audit.Stage("employee.document_rejected", "EmployeeDocument", doc.Id.ToString(), context,
-            JsonSerializer.Serialize(new { before, after = "Rejected", reason, documentType = doc.DocumentType }));
+            JsonSerializer.Serialize(new { before, after = "Rejected", reason = cleanReason, documentType = doc.DocumentType }));
         await _db.SaveChangesAsync(cancellationToken);
+        // Rejecting a document that satisfied a requireVerified rule takes the employee back below the bar.
+        await RefreshEmployeeReadinessByIdAsync(tenantId, employeeId, cancellationToken);
 
-        var employee = await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == employeeId && !x.IsDeleted, cancellationToken);
-        if (employee?.UserAccountId is not null)
-            await _notifications.NotifyAsync(tenantId, employee.UserAccountId, "Document Rejected",
-                $"Your {doc.DocumentType} document was rejected. Reason: {reason}", "EmployeeDocument", doc.Id.ToString(), cancellationToken);
+        var logins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, cancellationToken);
+        await _notifications.NotifyEachAsync(tenantId, logins.Select(id => (Guid?)id), "Document Rejected",
+            $"Your {doc.DocumentType} document was rejected. Reason: {cleanReason}", "EmployeeDocument", doc.Id.ToString(), cancellationToken);
 
         return doc;
     }

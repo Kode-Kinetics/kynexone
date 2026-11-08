@@ -493,12 +493,6 @@ public class OrganizationStructureImportController : ControllerBase
                     IsActive = active,
                     CreatedBy = GetUserId()
                 };
-                if (gate.AsDraft)
-                {
-                    // Draft-approval tenants: created inactive, awaiting platform approval — exactly as the form does.
-                    company.ApprovalStatus = CompanyApprovalStatuses.Draft;
-                    company.IsActive = false;
-                }
                 _db.Companies.Add(company);
                 Audit("organization.company_created", nameof(Company), company.Id, name);
                 companies[name.ToUpperInvariant()] = company;

@@ -326,9 +326,6 @@ public sealed class CompanySetupPlanner
             var gate = await CompanyCreationGate.EvaluateAsync(_db, tenantId, ct);
             if (!gate.Allowed)
                 c.Problem(1, "creation", gate.ErrorCode, gate.Message);
-            else if (gate.AsDraft)
-                c.Problem(1, "creation", CompanySetupGates.PlatformActivationDisabledCode, CompanySetupGates.PlatformActivationDisabledMessage,
-                    CompanySetupGates.PlatformActivationDisabledMessageAr);
         }
         var stored = ex?.Company;
 
@@ -1999,11 +1996,6 @@ public static class CompanySetupGates
     // Refusal codes the UI maps (Integration Owner clarification 1). The gate's own three codes pass through as-is:
     // company_limit_reached, account_type_single_company, company_creation_platform_controlled.
     public const string GroupScopeRequiredCode = "not_group_scope";
-    public const string PlatformActivationDisabledCode = "company_creation_platform_approval";
     public const string GroupScopeRequiredMessage = "Only a group administrator can create another company.";
     public const string GroupScopeRequiredMessageAr = "يمكن لمسؤول المجموعة فقط إنشاء شركة جديدة.";
-    public const string PlatformActivationDisabledMessage =
-        "New companies in this workspace wait for platform activation, and platform activation is currently disabled. Contact your account manager to create a company.";
-    public const string PlatformActivationDisabledMessageAr =
-        "الشركات الجديدة تنتظر تفعيل المنصة، والتفعيل معطل حالياً. تواصل مع مدير حسابك.";
 }

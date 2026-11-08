@@ -22,6 +22,7 @@ import {
   Surface,
 } from '@/components/ui';
 import {
+  partialInboxKeys,
   summarizeInbox,
   type ApprovalKind,
   type BalanceFacts,
@@ -214,19 +215,13 @@ export default function ApprovalsScreen({ route }: Props) {
 
       {tab === 'waiting' && unavailable.length ? (
         <View style={styles.section}>
-          {unavailable.map((source) => (
+          {partialInboxKeys(unavailable).map((key) => (
             <Text
-              key={source}
+              key={key}
               accessibilityLiveRegion="polite"
               style={[theme.typography.footnote, styles.partial, { color: theme.colors.status.warning.fg }]}
             >
-              {source === 'overtime'
-                ? t('manager.approvals.partialOvertime')
-                : source === 'leaveCancellation'
-                  ? t('manager.approvals.partialCancellation')
-                  : source === 'transfer'
-                    ? t('manager.approvals.partialTransfer')
-                    : t('manager.approvals.partialWorkflow')}
+              {t(key)}
             </Text>
           ))}
         </View>

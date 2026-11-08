@@ -215,7 +215,6 @@ function NewTenantModal({ onClose, onCreated }: { onClose: () => void; onCreated
                   disabled={form.accountType !== 'Group'}
                   className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400/50 disabled:opacity-40">
                   <option value="GroupSelfServiceWithinLimit">Group self-service (within limit)</option>
-                  <option value="GroupDraftPlatformApproval">Group drafts + platform approval</option>
                   <option value="PlatformControlled">Platform controlled</option>
                 </select>
                 <p className="mt-1 text-caption text-slate-500">Who creates legal entities and how they activate.</p>

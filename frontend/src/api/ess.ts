@@ -74,6 +74,8 @@ export interface EssDocument {
   fileName: string;
   expiryDate?: string;
   approvalStatus: string;
+  /** G-004: why HR rejected the document; null otherwise. */
+  rejectionReason?: string | null;
 }
 
 export interface EssNotification {
