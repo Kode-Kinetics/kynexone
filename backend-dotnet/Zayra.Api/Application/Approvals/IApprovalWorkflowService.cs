@@ -37,9 +37,9 @@ public interface IApprovalWorkflowService
 }
 
 /// <summary>What <see cref="IApprovalWorkflowService.GetDecidablePendingAsync"/> found: how many the caller can decide now, and the newest ones.</summary>
-public sealed record DecidableApprovals(int Count, IReadOnlyList<Guid> NewestIds)
+public sealed record DecidableApprovals(int Count, IReadOnlyList<Guid> NewestIds, bool Capped = false)
 {
-    /// <summary>The most pending requests examined per call (newest first); beyond it the count is a floor, never an overstatement.</summary>
+    /// <summary>The most pending requests examined per call (newest first); beyond it the count is a floor, never an overstatement, and <c>Capped</c> is true.</summary>
     public const int ScanLimit = 500;
 
     public static readonly DecidableApprovals None = new(0, Array.Empty<Guid>());

@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Controllers;
 using Zayra.Api.Data;
@@ -145,6 +146,34 @@ public class DashboardApprovalsAwaitingYouTests
 
         overview.PendingApprovals.Should().Be(10);
         overview.ApprovalQueue.Select(q => q.Title).Should().Equal(Enumerable.Range(2, 8).Reverse().Select(i => $"Mine {i}"));
+    }
+
+    [Fact]
+    public async Task UnderTheScanLimit_TheCountIsExact_AndNotMarkedCapped()
+    {
+        var db = CreateDb();
+        db.ApprovalRequests.Add(Pending("Mine", DateTime.UtcNow, approverUser: Me));
+        await db.SaveChangesAsync();
+
+        var overview = await OverviewAsync(Ctrl(db, Decide, "HR Manager"));
+
+        overview.PendingApprovals.Should().Be(1);
+        overview.ApprovalsCapped.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PastTheScanLimit_TheCountIsAFloorAndSaysSo_SoTheScreenCanShowFiveHundredPlus()
+    {
+        var db = CreateDb();
+        var t = DateTime.UtcNow;
+        for (var i = 0; i <= DecidableApprovals.ScanLimit; i++) db.ApprovalRequests.Add(Pending($"Mine {i}", t.AddSeconds(i), approverUser: Me));
+        await db.SaveChangesAsync();
+
+        var overview = await OverviewAsync(Ctrl(db, Decide, "HR Manager"));
+
+        overview.PendingApprovals.Should().Be(DecidableApprovals.ScanLimit, "the newest 500 were examined");
+        overview.ApprovalsCapped.Should().BeTrue("more pending requests exist than were examined, so the figure understates");
+        overview.ApprovalQueue.Should().HaveCount(8);
     }
 
     private sealed class OrgScope : IDataScopeService

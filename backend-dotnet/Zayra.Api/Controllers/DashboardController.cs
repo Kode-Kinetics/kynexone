@@ -789,7 +789,7 @@ public class DashboardController : ControllerBase
         var awaiting = await _approvals.GetDecidablePendingAsync(tenantId, context, view.Population, ApprovalQueueSize, ct);
         var ids = awaiting.NewestIds.ToList();
         var queue = await BuildApprovalQueueAsync(tenantId, _db.ApprovalRequests.Where(a => a.TenantId == tenantId && ids.Contains(a.Id)), ct);
-        return overview with { PendingApprovals = awaiting.Count, ApprovalQueue = queue };
+        return overview with { PendingApprovals = awaiting.Count, ApprovalQueue = queue, ApprovalsCapped = awaiting.Capped };
     }
 
     /// <summary>The dashboard queue rows for the given pending approvals, newest first, each with its subject employee and a short detail line.</summary>
@@ -1494,7 +1494,9 @@ public record DashboardOverviewDto(
     int NewJoinersThisMonth,
     // True counts over the same filtered set Alerts is drawn from — Alerts is capped, these are not.
     int ComplianceAlertsTotal = 0,
-    int ComplianceCriticalTotal = 0);
+    int ComplianceCriticalTotal = 0,
+    // True when more pending approvals exist than were examined for PendingApprovals, so that figure is a floor (the screen shows "500+").
+    bool ApprovalsCapped = false);
 
 public record ApprovalQueueItemDto(
     Guid Id,

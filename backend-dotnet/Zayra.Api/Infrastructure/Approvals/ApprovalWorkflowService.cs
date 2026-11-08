@@ -305,12 +305,15 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
             var population = subjectPopulation.ToList();
             query = query.Where(x => x.RequestedForEmployeeId != null && population.Contains(x.RequestedForEmployeeId.Value));
         }
-        var candidates = await query.OrderByDescending(x => x.CreatedAtUtc).Take(DecidableApprovals.ScanLimit).ToListAsync(cancellationToken);
+        // One more than the limit is read, so "exactly 500 pending" is not mistaken for "more than 500".
+        var candidates = await query.OrderByDescending(x => x.CreatedAtUtc).Take(DecidableApprovals.ScanLimit + 1).ToListAsync(cancellationToken);
+        var capped = candidates.Count > DecidableApprovals.ScanLimit;
+        if (capped) candidates = candidates.Take(DecidableApprovals.ScanLimit).ToList();
 
         var decidable = new List<Guid>();
         foreach (var candidate in candidates)
             if (await CanDecideRequestAsync(candidate, context, cancellationToken)) decidable.Add(candidate.Id);
-        return new DecidableApprovals(decidable.Count, decidable.Take(Math.Max(0, take)).ToList());
+        return new DecidableApprovals(decidable.Count, decidable.Take(Math.Max(0, take)).ToList(), Capped: capped);
     }
 
     /// <summary>

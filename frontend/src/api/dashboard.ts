@@ -84,6 +84,8 @@ export interface DashboardAlert {
 
 export interface DashboardOverview {
   pendingApprovals: number;
+  /** True when the count stopped at the scan limit: show "500+", not the number as if exact. */
+  approvalsCapped?: boolean;
   approvalQueue: ApprovalQueueItem[];
   payrollSummary: DashboardPayrollSummary | null;
   payrollByEntity: NamedValue[];
