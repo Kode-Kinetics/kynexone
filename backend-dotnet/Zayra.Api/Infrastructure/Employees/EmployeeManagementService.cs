@@ -404,6 +404,7 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
+        var priorGradeId = employee.GradeId;
         var priorProbation = (employee.ProbationStartDate, employee.ProbationEndDate);
         var editAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // A change to an EXISTING employee's attribution counts toward lock SoD; the form already staged the override row with its reason.
@@ -443,6 +444,10 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!hasActiveSalary)   // a pending first package is kept when the figures are unchanged and replaced when they differ (the writer decides)
             await StageFirstSalaryPackageAsync(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
+        // Designation-driven access: a changed designation or grade gives the access it is meant to carry (and takes away what the previous
+        // one granted), in the same save as the change. Nothing happens while that feature is off, or when the person has no login yet.
+        if (employee.DesignationId != priorDesignationId || employee.GradeId != priorGradeId)
+            await new Zayra.Api.Infrastructure.Auth.DesignationAccessService(_db).ReconcileAsync(tenantId, employee, context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
         // over-budget department is never invalidated by editing its existing employees
@@ -1077,6 +1082,11 @@ public class EmployeeManagementService : IEmployeeManagementService
             TenantSessionSecurity.RotateStamp(linkedUser, effectiveAtUtc);
             invalidatedUsers++;
         }
+
+        // The employment is over: whatever a designation granted these logins goes with it (roles given by hand stay).
+        foreach (var tenantUsers in linkedUsers.GroupBy(u => u.TenantId))
+            await new Zayra.Api.Infrastructure.Auth.DesignationAccessService(db).RevokeGrantedForLeaversAsync(
+                tenantUsers.Key, tenantUsers.Select(u => u.Id).ToList(), new RequestContext(actorIpAddress, null, actorUserId, tenantUsers.Key), ct);
 
         int invalidatedPasswordResets, invalidatedMfaChallenges, invalidatedRefreshTokens;
         if (bulkTokenUpdates && db.Database.IsRelational())

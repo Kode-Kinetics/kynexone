@@ -326,12 +326,19 @@ public class AccessManagementService : IAccessManagementService
         var newLinkId = Guid.NewGuid();
         var newEntityGrantId = Guid.NewGuid();
         var auditId = Guid.NewGuid();
+        // The roles an invitation carries when the inviter names none: the baseline for the access mode, plus whatever the employee's
+        // designation (and grade) is meant to carry (designation-driven access; empty while that feature is off). Roles the inviter
+        // names are exactly what they asked for.
+        var baseRoleNames = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode)).ToList();
+        IReadOnlyList<string> mappedRoleNames = request.Roles is { Count: > 0 }
+            ? []
+            : await new DesignationAccessService(_db).MappedRoleNamesForEmployeeAsync(tenantId, request.EmployeeId, cancellationToken);
         var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
         {
             employeeId = request.EmployeeId,
             workEmailConfirmed = request.ConfirmedWorkEmail,
             accessMode,
-            roles = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode))
+            roles = baseRoleNames.Concat(mappedRoleNames)
                 .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
         });
         Guid? issuedUserId = null;
@@ -572,21 +579,20 @@ public class AccessManagementService : IAccessManagementService
                 user.FullName = employee.FullName;
             }
 
-            var roles = await LoadRoles(
-                tenantId,
-                request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode),
-                ct);
-            if (roles.Any(x => x.NormalizedName == "ADMIN"
-                    || x.RolePermissions.Any(rp => string.Equals(
-                        rp.Permission?.Key,
-                        "security.manage",
-                        StringComparison.OrdinalIgnoreCase))))
+            var explicitRoles = await LoadRoles(tenantId, baseRoleNames, ct);
+            // Mapped roles were checked against the ceiling of whoever configured the designation, and are re-checked for
+            // privileged access here and when applied; they are not held to the inviter's own access (that is the point of a mapping).
+            var mappedRoles = mappedRoleNames.Count == 0
+                ? (IReadOnlyCollection<Role>)Array.Empty<Role>()
+                : (await LoadRoles(tenantId, mappedRoleNames, ct)).Where(m => explicitRoles.All(e => e.Id != m.Id)).ToList();
+            var roles = explicitRoles.Concat(mappedRoles).ToList();
+            if (roles.Any(PrivilegedAccessGuard.IsPrivileged))
                 throw new InvalidOperationException(
                     "Employee invitation cannot grant privileged security administration; use the dedicated privileged-user workflow.");
             // PRIVILEGE CEILING: with no mail transport the invitation link comes back to the inviter, so an
             // invitation may carry only roles inside the inviter's own access.
             var inviter = await LoadCallerCeilingAsync(tenantId, context, ct);
-            foreach (var role in roles.OrderBy(x => x.Name, StringComparer.Ordinal))
+            foreach (var role in explicitRoles.OrderBy(x => x.Name, StringComparer.Ordinal))
                 ThrowIfRefused(PrivilegeCeiling.AssignRefusal(inviter, Facts(role)));
             // The access mode carries permissions of its own (ManagerPortal → approvals.decide): a grant like any other.
             ThrowIfRefused(PrivilegeCeiling.AccessModeRefusal(inviter, AuthService.AccessModePermissions(accessMode)));
@@ -597,9 +603,10 @@ public class AccessManagementService : IAccessManagementService
             _db.UserPermissionOverrides.RemoveRange(user.PermissionOverrides);
             user.PermissionOverrides.Clear();
             user.IsGroupScope = false;
+            // The invitation re-states the user's roles in full: the ones the designation maps are marked as its grant, the rest are manual.
             foreach (var role in roles)
             {
-                var userRole = new UserRole { User = user, Role = role };
+                var userRole = new UserRole { User = user, Role = role, GrantedByDesignationId = mappedRoles.Any(m => m.Id == role.Id) ? employee.DesignationId : null };
                 _db.UserRoles.Add(userRole);
             }
 

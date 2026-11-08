@@ -1386,6 +1386,8 @@ public class OffboardingController : ControllerBase
             _db, tenantId, actorUserId, graph.TargetUsers.Select(x => x.Id).ToList(), changedAtUtc, ct);
         StageAccessRevocation(graph, actorUserId, unlinkAccount, changedAtUtc,
             HttpContext.Connection.RemoteIpAddress?.ToString(), decision.Deactivate, decision.Held.Count > 0);
+        // What a designation granted the switched-off logins goes with them (roles given by hand stay).
+        await new DesignationAccessService(_db).RevokeGrantedForLeaversAsync(tenantId, decision.Deactivate.ToList(), ActorContext(tenantId), ct);
         await LinkedLoginDeactivationGate.StageHeldAsync(_db, tenantId, ActorContext(tenantId), source,
             "EmployeeOffboarding", graph.Offboarding.Id.ToString(), decision.Held, changedAtUtc, ct);
         return decision;
@@ -1612,6 +1614,7 @@ public class OffboardingController : ControllerBase
             link.UpdatedAtUtc = DateTime.UtcNow;
             link.UpdatedBy = actorUserId;
         }
+        await new DesignationAccessService(_db).RevokeGrantedForLeaversAsync(employee.TenantId!.Value, [uid], ActorContext(employee.TenantId!.Value), ct);
 
         var activeTokens = await _db.RefreshTokens
             .Where(t => t.UserId == uid && t.RevokedAtUtc == null)
@@ -1663,6 +1666,8 @@ public class OffboardingController : ControllerBase
             link.UpdatedBy = actorUserId;
         }
         employee.UserAccountId = uid;
+        // The returning person's designation and grade give their access again (nothing while that feature is off).
+        await new DesignationAccessService(_db).ReconcileAsync(employee.TenantId!.Value, employee, ActorContext(employee.TenantId!.Value), ct);
         return true;
     }
 }

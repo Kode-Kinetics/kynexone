@@ -7,6 +7,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Common.Import;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Auth;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Models;
 
@@ -20,14 +21,16 @@ public class DesignationsController : ControllerBase
     private readonly IOrganizationSetupService _organization;
     private readonly ZayraDbContext _db;
 
+    // AccessRoles (existing role names separated by ';') is the designation-driven access setting. Optional in an import file: a file without the
+    // column leaves a designation's roles untouched. Setting it needs security.manage and the designation_access feature.
     private static readonly string[] CsvHeaders =
-        { "Code", "TitleEn", "TitleAr", "DepartmentCode", "JobGrade", "IsActive" };
+        { "Code", "TitleEn", "TitleAr", "DepartmentCode", "JobGrade", "IsActive", "AccessRoles" };
 
     /// <summary>Neutral example row, kept adjacent to the header it is positionally paired with.
     /// DepartmentCode is blank because it is a cross-reference to a department the tenant may not have
     /// imported yet; JobGrade is free text on the designation, so a placeholder grade is safe there.</summary>
     private static readonly string[] CsvExampleRow =
-        { "OPS-OFF", "Operations Officer", "", "", "G1", "true" };
+        { "OPS-OFF", "Operations Officer", "", "", "G1", "true", "" };
 
     public DesignationsController(IOrganizationSetupService organization, ZayraDbContext db)
     {
@@ -109,14 +112,30 @@ public class DesignationsController : ControllerBase
             .Where(d => d.TenantId == tenantId.Value && !d.IsDeleted)
             .ToDictionaryAsync(d => d.Id, d => d.Code, ct);
 
+        // Empty while designation-driven access is off, so an export round-trips through an import without changing anything.
+        var access = await new DesignationAccessService(_db).GetRolesAsync(tenantId.Value, desigs.Select(d => d.Id).ToList(), ct);
+
         var rows = desigs.Select(d => (IReadOnlyList<object?>)new object?[]
         {
             d.Code, d.TitleEn, d.TitleAr,
             d.DepartmentId.HasValue && deptById.TryGetValue(d.DepartmentId.Value, out var dc) ? dc : string.Empty,
-            d.JobGrade, d.IsActive ? "true" : "false"
+            d.JobGrade, d.IsActive ? "true" : "false",
+            access.TryGetValue(d.Id, out var roles) ? string.Join(';', roles) : string.Empty,
         });
 
         return CsvDownload.Result(Csv.Build(CsvHeaders, rows), $"designations_{DateTime.UtcNow:yyyyMMdd}.csv");
+    }
+
+    /// <summary>
+    /// What the designation form may offer the signed-in user for designation-driven access: whether the feature is on, whether they
+    /// may configure it (security.manage), and the roles they may give (never a privileged one, nor one above their own access).
+    /// </summary>
+    [HttpGet("access-options")]
+    public async Task<ActionResult<DesignationAccessOptions>> AccessOptions(CancellationToken cancellationToken)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        return Ok(await new DesignationAccessService(_db).GetOptionsAsync(tenantId.Value, Context(), cancellationToken));
     }
 
     [HttpGet("import-template")]
@@ -225,7 +244,11 @@ public class DesignationsController : ControllerBase
                     JobDescription: existing?.JobDescription ?? string.Empty,
                     IsManagerRole: existing?.IsManagerRole ?? false,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
-                    CompanyId: companyId);
+                    CompanyId: companyId,
+                    // Absent column = leave the roles untouched (null); a present cell, even an empty one, is the intended value.
+                    AccessRoles: row.TryGetValue("AccessRoles", out var accessRoles)
+                        ? accessRoles.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+                        : null);
 
                 try
                 {

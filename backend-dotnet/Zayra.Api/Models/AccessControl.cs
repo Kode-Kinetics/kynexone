@@ -95,9 +95,6 @@ public class EmployeeUserAccount : ITenantOwned
     public Guid? UserId { get; set; }
     public User? User { get; set; }
     public string AccessMode { get; set; } = AccessModes.EssOnly;
-    /// <summary>The access mode the designation engine last set on this login (null = never). The engine changes the mode only
-    /// while it still equals this value (or the baseline ESS-only), so a mode an administrator chose by hand is never overwritten.</summary>
-    public string? DesignationAccessMode { get; set; }
     public bool IsPrimary { get; set; } = true;
     public string Status { get; set; } = "Invited";
     public bool RequiresPasswordSetup { get; set; } = true;

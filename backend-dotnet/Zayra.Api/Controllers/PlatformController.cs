@@ -4747,6 +4747,7 @@ public class PlatformController : ControllerBase
     {
         [FeatureKeys.SelfieAttendance] = "Enabling needs the recorded DPIA sign-off and KSA data-residency confirmation in ConfigJson.",
         [FeatureKeys.PunchGeofence] = "Enabling needs a geofence configuration (PunchGeofenceConfig) in ConfigJson.",
+        [FeatureKeys.DesignationAccess] = "A one-line tenant setting with no console toggle: PUT /api/platform/tenants/{id}/features/designation_access with isEnabled true.",
     };
 
     // ── Platform Settings ─────────────────────────────────────────────────────

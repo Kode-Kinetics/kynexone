@@ -4196,6 +4196,8 @@ public class EmployeesController : ControllerBase
                     // Employee — written here, in the same unit of work as the columns above.
                     await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, immediateChanges, GetUserId(), cancellationToken);
                     await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, immediateChanges.Keys, attribution, cancellationToken);
+                    if (immediateChanges.Keys.Any(k => string.Equals(k, "designation", StringComparison.OrdinalIgnoreCase)))
+                        await new DesignationAccessService(_db).ReconcileAsync(tenantId, employee, Context(), cancellationToken);
                     // (department and costCenter are not sensitive, so the prepared attribution is entirely in the immediate part.)
                     // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
                     await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
@@ -4289,6 +4291,8 @@ public class EmployeesController : ControllerBase
             ApplyChanges(employee, request.Changes);
             await EmployeeChangeApplier.ApplyPayrollProfileAsync(_db, employee, request.Changes, GetUserId(), cancellationToken);
             await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(_db, tenantId, employee, request.Changes.Keys, attribution, cancellationToken);
+            if (request.Changes.Keys.Any(k => string.Equals(k, "designation", StringComparison.OrdinalIgnoreCase)))
+                await new DesignationAccessService(_db).ReconcileAsync(tenantId, employee, Context(), cancellationToken);
             // AM-9 / S-029: refused when the person is in a run awaiting finance review or lock; otherwise the attribution audit row commits with the save.
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
             await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
@@ -5580,6 +5584,9 @@ public class EmployeesController : ControllerBase
                 if (newBranchId is not null) { employee.BranchId = newBranchId; employee.Branch = newBranchName; }
                 if (newDesigId is not null) { employee.DesignationId = newDesigId; employee.Designation = newDesigTitle; }
                 employee.UpdatedAtUtc = DateTime.UtcNow;
+                // Designation-driven access: the new designation's access is given, the old one's taken away (nothing while that feature is off).
+                if (newDesigId is not null)
+                    await new DesignationAccessService(_db).ReconcileAsync(tenantId, employee, Context(), cancellationToken);
                 // AM-9 door guard: a transfer cannot move someone in a run awaiting finance review or lock to another cost centre (the transfer stays
                 // pending until the run is reopened or locked). The permission is the approver's own (employees.approve): the requester held the cost-centre one.
                 await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, transferAttributionBefore, cancellationToken);
