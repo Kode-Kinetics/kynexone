@@ -109,6 +109,7 @@ import { describeApiError } from '../lib/apiError';
 import { CountryPayrollKeys } from '../components/setup/accessWorkspaceSetupPanels';
 import { OrgRowActions, ReadOnlyStatus, ShowTurnedOffToggle, useOrgRowRemoval, useOrgStructureAccess, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { useReleaseA } from '../lib/releaseA';
+import { useRetiredBenefitPlans } from '../hooks/useRetiredBenefitPlans';
 import { glCompanies } from '../lib/setupAccess';
 import Link from 'next/link';
 
@@ -2615,7 +2616,9 @@ export function SetupPage() {
   // One model decides who sees which section: the navigation, "Find a setting" and the ⌘K palette all read it —
   // including the readers' rules (Companies only when the server lists them for the role, GL & rates for any GL or
   // rates permission), so Payroll Manager and Finance get their section everywhere, not only in the nav.
-  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status });
+  // Benefit plans is retired for a Release A tenant, but plans made before stay readable: asked only when that address is opened.
+  const retiredPlans = useRetiredBenefitPlans(searchParams?.get('tab') === 'benefitPlans');
+  const navigationModel = setupNavigationModel({ hasPermission, hasRole, isCompanyScopedGroup, policyIntake, isFeatureEnabled: flags.isFeatureEnabled, verdictForPath: flags.verdictForPath, flagStatus: flags.status, retiredInUse: retiredPlans.retiredInUse });
   const { canManagePolicies, canWrite, canReadCompanies, canReadStatutoryRules, canReadGlAndRates } = navigationModel;
   const visibleTabs = inNavigationOrder(tabs, navigationModel.settings);
   const tabParam = searchParams?.get('tab');
@@ -2675,7 +2678,7 @@ export function SetupPage() {
     params.set('tab', 'gccSettings'); params.set('view', 'payrollKeys');
     router.replace(`/setup?${params.toString()}`, { scroll: false });
   }, [tabParam, router, searchParams]);
-  const bounceTo = flags.status === 'ready' && tabParam !== 'countryPayrollKeys' ? unavailableSectionRedirect(tabParam, navigationModel.settings, isSettingsTab) : null;
+  const bounceTo = flags.status === 'ready' && retiredPlans.status !== 'checking' && tabParam !== 'countryPayrollKeys' ? unavailableSectionRedirect(tabParam, navigationModel.settings, isSettingsTab) : null;
   useEffect(() => {
     if (!bounceTo || !tabParam) return;
     const params = new URLSearchParams(searchParams?.toString());
@@ -3081,7 +3084,7 @@ export function SetupPage() {
           <div className="min-w-0" key={companyVersion}>
             {isSettingsTab(selectedTab) && (visibleTabs.some(tab => tab.id === selectedTab)
               ? renderExistingSettings(selectedTab)
-              : flags.status === 'loading' && isSetupModuleSectionId(selectedTab)
+              : (flags.status === 'loading' || retiredPlans.status === 'checking') && isSetupModuleSectionId(selectedTab)
                 ? <p role="status" aria-busy="true" data-testid="setup-section-loading" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Loading…')}</p>
                 : <p role="status" data-testid="setup-section-no-access" className="surface p-6 text-sm text-slate-600 dark:text-slate-300">{t('Your role does not have access')}</p>)}
           </div>
