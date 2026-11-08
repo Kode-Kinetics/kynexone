@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { translate } from '../src/i18n/translations';
-import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, placeInfoTip, popoverEdgesAtInlineStart, resolveInfoText } from '../src/lib/infoTip';
+import { FIELD_KEY_PERMISSION, INFO_TIP_MAX_WIDTH, canSeeFieldKey, flipsAtViewportEdge, placeInfoTip, popoverEdgesAtInlineStart, resolveInfoText, stripRequiredMarker } from '../src/lib/infoTip';
 import { renderComponent } from './support/ssr';
 
 /**
@@ -21,6 +21,17 @@ test('it is a button whose accessible name says what it is about, described by i
   expect(html).toContain(`id="${describedBy}"`);
   expect(html).toContain('role="tooltip"');
   expect(html).toContain('Sets the benefits and loan limits this employee is entitled to.');
+});
+
+test('the required-field asterisk is never part of the i-help name, so it cannot collide with the control name', () => {
+  expect(stripRequiredMarker('Leave Type *')).toBe('Leave Type');
+  expect(stripRequiredMarker('Leave Type*')).toBe('Leave Type');
+  expect(stripRequiredMarker('نوع الإجازة *')).toBe('نوع الإجازة');
+  expect(stripRequiredMarker('Grade')).toBe('Grade');
+  expect(stripRequiredMarker('Rate * (SAR)')).toBe('Rate * (SAR)');
+  const html = render({ text: 'Pick one.', label: 'Leave Type *', fieldKey: 'leave.type' });
+  expect(html).toContain('aria-label="About Leave Type"');
+  expect(html).not.toContain('About Leave Type *');
 });
 
 test('without a label it still has a name', () => {

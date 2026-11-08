@@ -65,3 +65,12 @@ export function placeInfoTip(
   const offset = dir === 'rtl' ? anchor.right - (left + width) : left - anchor.left;
   return { width, offset };
 }
+
+/**
+ * The i-help name is "About {field}". A trailing required marker (" *" or "*") is dropped from the field so a screen
+ * reader does not say "star" and the name never contains the control's own "Leave Type *" (which made
+ * getByLabel('Leave Type *') match both the control and the help button).
+ */
+export function stripRequiredMarker(label: string): string {
+  return label.replace(/\s*\*+\s*$/, '');
+}

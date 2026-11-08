@@ -5,7 +5,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useOptionalAuth } from '../contexts/AuthContext';
 import { useHelpTexts } from '../contexts/HelpTextContext';
 import { useLocale } from '../contexts/LocaleContext';
-import { INFO_TIP_MAX_WIDTH, INFO_TIP_VIEWPORT_MARGIN, canSeeFieldKey, placeInfoTip, resolveInfoText } from '../lib/infoTip';
+import { INFO_TIP_MAX_WIDTH, INFO_TIP_VIEWPORT_MARGIN, canSeeFieldKey, placeInfoTip, resolveInfoText, stripRequiredMarker } from '../lib/infoTip';
 
 /** The width cap: 280 px, or the viewport minus the margin on both sides when that is narrower. */
 const POPOVER_MAX_WIDTH = `min(${INFO_TIP_MAX_WIDTH}px, calc(100vw - ${2 * INFO_TIP_VIEWPORT_MARGIN}px))`;
@@ -64,7 +64,7 @@ export function InfoTip({ text, fieldKey, label, className = '' }: { text: strin
     setPlacement(placeInfoTip(anchor, popover.current.offsetWidth, viewport, dir));
   }, [open, dir]);
 
-  const name = label ? t('About {field}', { field: label }) : t('More information');
+  const name = label ? t('About {field}', { field: stripRequiredMarker(label) }) : t('More information');
   const reopen = () => setDismissed(false);
 
   return (
