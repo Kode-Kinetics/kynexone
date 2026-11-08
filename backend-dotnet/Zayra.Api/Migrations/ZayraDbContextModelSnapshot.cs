@@ -26009,6 +26009,11 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<string>("BenefitCategory")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("benefit_category");
+
                     b.Property<string>("CalcMethod")
                         .IsRequired()
                         .HasMaxLength(40)
@@ -26140,10 +26145,23 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name_en");
 
+                    b.Property<string>("PolicyClass")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("policy_class");
+
                     b.Property<string>("ProviderKey")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("provider_key");
+
+                    b.Property<bool?>("RequiresEnrolment")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requires_enrolment");
+
+                    b.Property<Guid?>("SourceBenefitPlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_benefit_plan_id");
 
                     b.Property<string>("StatutoryFloor")
                         .IsRequired()
@@ -26181,7 +26199,13 @@ namespace Zayra.Api.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("SourceBenefitPlanId");
+
                     b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "SourceBenefitPlanId")
+                        .IsUnique()
+                        .HasFilter("source_benefit_plan_id IS NOT NULL");
 
                     b.HasIndex("TenantId", "CompanyId", "Code", "ComponentType");
 
@@ -26189,6 +26213,10 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("pay_components", null, t =>
                         {
+                            t.HasCheckConstraint("ck_pay_components__benefit_category_not_blank", "benefit_category IS NULL OR length(trim(benefit_category)) > 0");
+
+                            t.HasCheckConstraint("ck_pay_components__benefit_fields_custom_only", "(benefit_category IS NULL AND policy_class IS NULL AND requires_enrolment IS NULL AND source_benefit_plan_id IS NULL) OR code LIKE 'BEN!_%' ESCAPE '!' OR code LIKE 'ALW!_%' ESCAPE '!'");
+
                             t.HasCheckConstraint("ck_pay_components__entitlement_class", "entitlement_class IN ('None','QiwaWage','Contractual','Facility')");
 
                             t.HasCheckConstraint("ck_pay_components__eosb_exclusion_category", "eosb_exclusion_category IS NULL OR (eosb_exclusion_category IN ('Reimbursement','Discretionary','NonRecurring','Other') AND NOT eosb_included)");
@@ -26198,6 +26226,10 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_pay_components__finance_confirmation", "finance_confirmed_by_user_id IS NULL OR finance_confirmed_at_utc IS NOT NULL");
 
                             t.HasCheckConstraint("ck_pay_components__floor_always_offered", "statutory_floor = 'None' OR is_offered");
+
+                            t.HasCheckConstraint("ck_pay_components__policy_class", "policy_class IS NULL OR policy_class IN ('Contractual','Discretionary')");
+
+                            t.HasCheckConstraint("ck_pay_components__requires_enrolment_unsupported", "requires_enrolment IS NULL OR requires_enrolment = false");
 
                             t.HasCheckConstraint("ck_pay_components__statutory_floor", "statutory_floor IN ('None','Housing','Transport','Medical','Art40')");
                         });
@@ -35013,6 +35045,14 @@ namespace Zayra.Api.Migrations
                     b.HasOne("Zayra.Api.Models.Company", null)
                         .WithMany()
                         .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.PayComponent", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.BenefitPlan", null)
+                        .WithMany()
+                        .HasForeignKey("SourceBenefitPlanId")
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
