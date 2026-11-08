@@ -94,6 +94,12 @@ async function boot(page: Page, options: { disabled?: boolean; restricted?: bool
   return { writes, reads };
 }
 
+// The page rewrites some URLs after load (legacy `area=onboarding` becomes `talentServices`, and the query is reordered),
+// so a captured location is compared as path + parameter set, never as a raw string. Same strictness, order-independent.
+const locationOf = (url: string) => { const u = new URL(url); return { path: u.pathname, params: [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b) || 0) }; };
+const expectLocation = (page: Page, url: string) => expect.poll(() => locationOf(page.url())).toEqual(locationOf(url));
+const expectNotLocation = (page: Page, url: string) => expect.poll(() => locationOf(page.url())).not.toEqual(locationOf(url));
+
 // Unsaved Setup work is protected by the application's in-app leave guard
 // (NavigationGuardContext), not by native window.confirm. Native dialogs remain
 // only for destructive record actions, so any native prompt during a guarded
@@ -724,23 +730,24 @@ test('cancel_return_keeps_dirty_edits_on_back_forward_and_sidebar', async ({ pag
   await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Talent & employee services', exact: true })).toBeVisible();
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep history draft');
+  await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const guard = trackLeaveGuard(page);
   const originalUrl = page.url();
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep history draft');
   await clickDashboard(page);
   await guard.stay();
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
   // Chromium ignores a second traversal issued in the same task as the restoring traversal.
   await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
   await guard.leave();
-  await expect(page).not.toHaveURL(originalUrl);
+  await expectNotLocation(page, originalUrl);
   await guard.expectShown(3);
   await page.evaluate(() => history.forward());
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
 });
 
 test('manual_areas_do_not_claim_document_prefill', async ({ page }) => {
@@ -759,11 +766,12 @@ for (const fallback of [false, true]) test(`${fallback ? 'fallback_' : ''}declin
   await expect(page).toHaveURL(/area=payrollCompliance/);
   await page.evaluate(() => history.back());
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep forward draft');
+  await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const originalUrl = page.url();
   const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.forward());
   await guard.stay();
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep forward draft');
   await guard.expectShown(1);
 });
@@ -775,11 +783,12 @@ test('history_fallback_decline_retains_actual_editor', async ({ page }) => {
   await expect(page.getByTestId('setup-area-content').getByRole('heading', { name: 'Talent & employee services', exact: true })).toBeVisible();
   await page.getByTestId('setup-area-content').getByRole('button', { name: 'Onboarding checklists', exact: true }).click();
   await page.getByPlaceholder('Task title', { exact: true }).fill('Keep fallback draft');
+  await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const originalUrl = page.url();
   const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Keep fallback draft');
   await clickDashboard(page);
   await guard.leave();
@@ -831,7 +840,7 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   const before = page.url();
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(before);
+  await expectLocation(page, before);
   await expect(page.getByRole('dialog').getByRole('textbox').last()).toHaveValue(action === 'override' ? 'Preserve approved source' : 'Preserve rejection reason');
   const endpoint = action === 'override' ? '**/api/statutory-rules' : '**/api/finance/rates/statutory/override/pending-1/reject';
   await page.route(endpoint, route => route.request().method() === 'GET' ? route.fallback() : route.fulfill({ status: 500, json: { message: 'Fixture write failed' } }));
@@ -842,7 +851,7 @@ for (const action of ['override', 'rejection'] as const) test(`statutory_${actio
   await page.waitForTimeout(100);
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(before);
+  await expectLocation(page, before);
   await page.route(endpoint, route => route.request().method() === 'GET' ? route.fallback() : route.fulfill({ status: 204 }));
   await save.click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -863,7 +872,7 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
   const guard = trackLeaveGuard(page);
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(before);
+  await expectLocation(page, before);
   await expect(page.getByPlaceholder('smtp.example.com', { exact: true })).toHaveValue('smtp.retained.example');
   const failed = page.waitForResponse(response => response.request().method() !== 'GET' && response.url().includes('/api/admin/system-settings'));
   await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
@@ -871,12 +880,12 @@ test('smtp_failed_initial_load_and_save_keep_authored_values_guarded', async ({ 
   await expect(page.getByRole('button', { name: 'Save Settings', exact: true })).toBeEnabled();
   await page.evaluate(() => history.back());
   await guard.stay();
-  await expect(page).toHaveURL(before);
+  await expectLocation(page, before);
   await page.route('**/api/admin/system-settings**', route => route.fulfill({ json: route.request().method() === 'GET' ? [] : {} }));
   await page.getByRole('button', { name: 'Save Settings', exact: true }).click();
   await expect(page.getByText('Settings saved successfully.', { exact: true })).toBeVisible();
   await page.evaluate(() => history.back());
-  await expect(page).not.toHaveURL(before);
+  await expectNotLocation(page, before);
   await guard.expectShown(2);
 });
 
@@ -930,7 +939,6 @@ for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) 
   // Take the location only once that has settled, and compare it as path + parameter set, not as a raw string.
   await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const originalUrl = page.url();
-  const locationOf = (url: string) => { const u = new URL(url); return { path: u.pathname, params: [...u.searchParams.entries()].sort(([a], [b]) => a.localeCompare(b)) }; };
   const guard = trackLeaveGuard(page);
   const target = destination === 'palette'
     ? page.getByRole('button', { name: /Dashboard.*\/dashboard/ })
@@ -946,7 +954,7 @@ for (const destination of ['palette', 'profile', 'signout', 'sidebar_signout']) 
   };
   await choose();
   await guard.stay();
-  await expect.poll(() => locationOf(page.url())).toEqual(locationOf(originalUrl));
+  await expectLocation(page, originalUrl);
   await expect(page.getByPlaceholder('Task title', { exact: true })).toHaveValue('Retain shell draft');
   await choose();
   await guard.leave();
@@ -975,7 +983,7 @@ for (const direct of [true] as const) test(`${direct ? 'direct' : 'embedded'}_sa
   const originalUrl = page.url();
   const guard = trackLeaveGuard(page);
   await openSetupSection(page, 'Payroll accounting');
-  await expect(page).toHaveURL(originalUrl);
+  await expectLocation(page, originalUrl);
   await expect(field).toHaveValue('Retain same destination draft');
   await guard.expectShown(0);
   const depart = () => direct ? openSetupSection(page, 'Policy library') : selectArea(page, 'Payroll & compliance');
@@ -2070,12 +2078,13 @@ test('dirty_cancel_preserves_url_values_scroll_and_focus', async ({ page }) => {
   await taskTitle.fill('Preserve this authored onboarding task');
   const back = page.getByTestId('focused-navigation-bottom').getByRole('button', { name: 'Back to Talent & employee services', exact: true });
   await back.scrollIntoViewIfNeeded();
+  await expect(page).toHaveURL(/[?&]area=talentServices(&|$)/);
   const before = { url: page.url(), scrollY: await page.evaluate(() => window.scrollY) };
   await back.click();
   const dialog = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
 
-  await expect(page).toHaveURL(before.url);
+  await expectLocation(page, before.url);
   await expect(taskTitle).toHaveValue('Preserve this authored onboarding task');
   await expect(back).toBeFocused();
   await expect.poll(() => page.evaluate(() => Math.round(window.scrollY))).toBe(Math.round(before.scrollY));
