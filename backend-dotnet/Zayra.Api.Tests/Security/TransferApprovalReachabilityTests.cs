@@ -209,6 +209,26 @@ public sealed class TransferApprovalReachabilityTests
     }
 
     [Fact]
+    public async Task PendingTransfers_ALongRunOfOlderTransfersWaitingOnSomeoneElse_NeverHidesTheOneWaitingOnTheCaller()
+    {
+        var w = new World();
+        var other = PeopleAuditFixtures.SeedEmployee(w.Db, w.Tenant, "M7", "Other Manager");
+        var oldest = DateTime.UtcNow.AddDays(-30);
+        for (var i = 0; i < 205; i++)
+        {
+            var older = w.SeedTransfer("PendingCurrentManager", currentManager: other.Id);
+            older.CreatedAtUtc = oldest.AddMinutes(i);
+        }
+        var mine = w.SeedTransfer("PendingCurrentManager");   // waits on w.CurrentManager
+        mine.CreatedAtUtc = DateTime.UtcNow.AddDays(-1);
+        w.Db.SaveChanges();
+
+        var rows = (await w.Controller(w.CurrentManagerLogin, ManagerPermissions, w.CurrentManager.Id).PendingTransfers(default)).Value!;
+
+        rows.Should().ContainSingle().Which.Transfer.Id.Should().Be(mine.Id);
+    }
+
+    [Fact]
     public async Task PendingTransfers_RespectsDataScope()
     {
         var w = new World();
