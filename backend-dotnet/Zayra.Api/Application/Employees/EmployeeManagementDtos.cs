@@ -1038,6 +1038,23 @@ public record EmployeeTransferDto
     };
 }
 
+/// <summary>
+/// A transfer with the context a decider or the requester needs: who it is for, which step it waits at and who
+/// holds that step, and whether the CALLER may decide it now (the same rule the approve endpoints enforce).
+/// Org restructuring data and names only; no pay, bank or identity data.
+/// </summary>
+public record EmployeeTransferViewDto(
+    EmployeeTransferDto Transfer,
+    string EmployeeName,
+    string EmployeeCode,
+    string? CurrentManagerName,
+    string? NewManagerName,
+    /// <summary>CurrentManager | NewManager | Hr; null once applied.</summary>
+    string? AwaitingStep,
+    /// <summary>The person who holds the step (a manager's name), or null when HR holds it.</summary>
+    string? AwaitingName,
+    bool CanDecide);
+
 public record EmployeeGroupCountDto(string Name, int Count);
 public record EmployeeHeadcountReportDto(int Total, IReadOnlyCollection<EmployeeGroupCountDto> ByCompany, IReadOnlyCollection<EmployeeGroupCountDto> ByDepartment, IReadOnlyCollection<EmployeeGroupCountDto> ByStatus);
 public record EmployeeStatusSummaryDto(IReadOnlyCollection<EmployeeGroupCountDto> Statuses);

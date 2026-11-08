@@ -433,6 +433,40 @@ public class EmployeeSelfServiceController : ControllerBase
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
     }
 
+    /// <summary>
+    /// The employee's own older (mobile) profile change requests and where each stands (G-003). Scoped to the caller's
+    /// own employee record like every ESS read. Section requests are not listed here: they have their own state on
+    /// /api/ess/completion. Only the six self-service personal fields are shown back.
+    /// </summary>
+    [HttpGet("profile-change-requests/mine")]
+    public async Task<IActionResult> MyProfileChangeRequests(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
+        var rows = await _db.EmployeeProfileChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Section == null)
+            .OrderByDescending(x => x.CreatedAtUtc).Take(50).ToListAsync(cancellationToken);
+        return Ok(rows.Select(r =>
+        {
+            var changes = new Dictionary<string, string>(StringComparer.Ordinal);
+            try
+            {
+                foreach (var (key, value) in JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(r.RequestedChangesJson) ?? [])
+                {
+                    var field = AllowedSelfServiceProfileFields.FirstOrDefault(f => string.Equals(f, key, StringComparison.OrdinalIgnoreCase));
+                    if (field is null) continue;
+                    changes[field] = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : value.ToString();
+                }
+            }
+            catch (JsonException) { /* unreadable payload: the row still shows its status */ }
+            return new
+            {
+                r.Id, r.Status, r.CreatedAtUtc, r.DecidedAtUtc,
+                Fields = changes.Keys.ToList(), Changes = changes, r.ReviewNote,
+            };
+        }).ToList());
+    }
+
     [HttpPost("profile-change-requests/{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [HasPermission("employees.write")]
@@ -499,6 +533,10 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change.Reason == EmployeeCompletionController.RequestReason &&
             (string.IsNullOrWhiteSpace(request.Notes) || request.Notes.Trim().Length > 500))
             return BadRequest(new { message = "Give a correction note of up to 500 characters." });
+        // The employee reads HR's reason next to the request (G-003); for the HR-requested form it also goes by notification below.
+        var legacyNote = request.Notes?.Trim();
+        if (legacyNote is { Length: > 500 }) return BadRequest(new { message = "Give a correction note of up to 500 characters." });
+        change.ReviewNote = string.IsNullOrEmpty(legacyNote) ? null : legacyNote;
         change.Status = "Rejected";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();

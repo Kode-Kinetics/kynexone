@@ -36,7 +36,7 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
 
         // The employee query carries the company scope (global filter), so an HR user limited to one company never sees another's rows.
         var employees = db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && !e.IsDeleted && (companyId == null || e.CompanyId == companyId));
-        var rows = await (from r in db.EmployeeProfileChangeRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.Section != null && x.Status == status && (section == null || section == "" || x.Section == section))
+        var rows = await (from r in db.EmployeeProfileChangeRequests.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == status && (section == null || section == "" || x.Section == section))
                           join e in employees on r.EmployeeId equals e.Id
                           orderby r.CreatedAtUtc descending
                           select new { Request = r, Employee = e })
@@ -47,6 +47,7 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
 
         var items = rows.Select(x =>
         {
+            if (x.Request.Section is null) return (object)LegacyItem(x.Request, x.Employee);   // G-003: the older mobile request, shown with the fields it changes
             var cls = EssSectionDecisionService.ClassOf(x.Employee);
             var proposed = EssSectionDecisionService.ReadValues(x.Request.RequestedChangesJson);
             var diff = ProfileSectionRegistry.FieldsFor(x.Request.Section!, cls).Select(f =>
@@ -62,11 +63,12 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
                 .Select(d => mayRevealSensitive
                     ? (object)new { id = d!.Id, kind = d.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }
                     : new { kind = d!.DocumentCategory, scanStatus = d.ScanStatus, fileName = d.FileName }).ToList();
-            return new
+            return (object)new
             {
                 requestId = x.Request.Id,
                 employee = new { id = x.Employee.Id, code = x.Employee.EmployeeCode, name = string.IsNullOrWhiteSpace(x.Employee.EnglishName) ? x.Employee.FullName : x.Employee.EnglishName },
                 section = x.Request.Section,
+                legacy = false,
                 status = x.Request.Status,
                 submittedAtUtc = x.Request.CreatedAtUtc,
                 goesToFinance = x.Request.Section == EssSectionKeys.Bank,
@@ -84,6 +86,49 @@ public sealed class HrProfileCompletionController(ZayraDbContext db, IDocumentSt
         }
         return Ok(items);
     }
+
+    /// <summary>
+    /// The older (mobile) profile change request, which carries a few personal fields instead of a section. Its rows
+    /// are the fields it asks to change, current value beside the asked-for one. Only the six self-service personal
+    /// fields are shown (none is a sensitive field); anything else a stray row holds is left out, and approval refuses it.
+    /// </summary>
+    private static object LegacyItem(EmployeeProfileChangeRequest request, Employee employee)
+    {
+        var diff = new List<object>();
+        try
+        {
+            foreach (var (key, raw) in JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(request.RequestedChangesJson) ?? [])
+            {
+                if (LegacyField(key, employee) is not var (field, before)) continue;
+                var after = raw.ValueKind switch { JsonValueKind.Null => string.Empty, JsonValueKind.String => raw.GetString() ?? string.Empty, _ => raw.ToString() };
+                diff.Add(new { field, labelKey = "ess.profileChange.field." + field, before, after, changed = !string.Equals(before.Trim(), after.Trim(), StringComparison.Ordinal) });
+            }
+        }
+        catch (JsonException) { /* an unreadable payload lists no fields; HR can still send it back with a note */ }
+        return new
+        {
+            requestId = request.Id,
+            employee = new { id = employee.Id, code = employee.EmployeeCode, name = string.IsNullOrWhiteSpace(employee.EnglishName) ? employee.FullName : employee.EnglishName },
+            section = (string?)null,
+            legacy = true,
+            status = request.Status,
+            submittedAtUtc = request.CreatedAtUtc,
+            goesToFinance = false,
+            diff,
+            documents = Array.Empty<object>(),
+        };
+    }
+
+    private static (string Field, string Current)? LegacyField(string key, Employee e) => key.ToLowerInvariant() switch
+    {
+        "preferredname" => ("preferredName", e.PreferredName ?? string.Empty),
+        "personalemail" => ("personalEmail", e.PersonalEmail ?? string.Empty),
+        "phone" => ("phone", e.Phone ?? string.Empty),
+        "maritalstatus" => ("maritalStatus", e.MaritalStatus ?? string.Empty),
+        "emergencycontactname" => ("emergencyContactName", e.EmergencyContactName ?? string.Empty),
+        "emergencycontactphone" => ("emergencyContactPhone", e.EmergencyContactPhone ?? string.Empty),
+        _ => null,
+    };
 
     /// <summary>Runs the scanner again over a file it could not judge (<c>quarantined_pending</c>). A file that was FOUND to be infected is never cleared this way.</summary>
     [HttpPost("documents/{id:guid}/rescan")]
