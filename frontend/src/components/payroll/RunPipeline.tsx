@@ -68,10 +68,17 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   const currencyCode = currency?.status === 'resolved' ? currency.currency : null;
 
   // The run named in a link that does not exist (or is not visible to this user): say so, and select nothing.
+  // A run created a moment ago (e.g. "Create off-cycle run" on a final settlement) can be missing from a list read just
+  // before it existed, so the list is read once more for that run before it is called missing.
+  const recheckedFor = useRef<string | null>(null);
+  const { runs: loadedRuns, reload: reloadRuns } = data;
   useEffect(() => {
-    if (data.runsState === 'ready' && runId && !run) { setMissingRun(true); onSelectRun(null); }
+    if (data.runsState === 'ready' && runId && !run) {
+      if (recheckedFor.current !== runId) { recheckedFor.current = runId; reloadRuns(); return; }
+      setMissingRun(true); onSelectRun(null);
+    }
     else if (runId) setMissingRun(false);
-  }, [data.runsState, runId, run, onSelectRun]);
+  }, [data.runsState, runId, run, loadedRuns, reloadRuns, onSelectRun]);
 
   useEffect(() => { setActionError(''); setStaleAttendance(false); setReviewOpen(false); setPriorRunId(null); }, [runId]);
 

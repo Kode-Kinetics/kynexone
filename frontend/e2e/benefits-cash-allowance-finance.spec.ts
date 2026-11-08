@@ -94,6 +94,27 @@ for (const locale of ['en', 'ar'] as const) {
       expect(errors).toEqual([]);
     });
 
+    // G-011: nothing told Finance an allowance was waiting; it showed only as a badge in the grid. Now a list, with the Confirm action, for those who can confirm.
+    test('Finance sees a Waiting for Finance list with a Review and confirm action that opens the confirm panel; nobody else sees the list', async ({ page }) => {
+      const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'], () => withAllowances([waiting]));
+      const list = page.getByTestId('waiting-for-finance-list');
+      await expect(list).toBeVisible();
+      await expect(list.getByRole('heading')).toBeVisible();
+      await expect(list.getByTestId('waiting-for-finance-item')).toHaveCount(1);
+      await expect(list.getByTestId('waiting-for-finance-item')).toContainText(name(locale, waiting));
+      await expect(list).toHaveAttribute('id', 'waiting-for-finance');
+      await list.getByRole('button', { name: say(locale, 'Review {benefit}, then confirm it', { benefit: name(locale, waiting) }) }).click();
+      await expect(page.getByTestId('finance-confirm-panel')).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+
+    test('without the Finance permission there is no Waiting for Finance list', async ({ page }) => {
+      const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage'], () => withAllowances([waiting]));
+      await expect(page.getByTestId('waiting-for-finance')).toHaveCount(1);   // the row badge stays
+      await expect(page.getByTestId('waiting-for-finance-list')).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
     test('Finance confirms it in a panel in the grid area, with the GL account preselected and the end of service category', async ({ page }) => {
       let done = false;
       const { errors, calls } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'],

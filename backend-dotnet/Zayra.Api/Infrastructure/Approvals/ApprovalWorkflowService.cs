@@ -285,6 +285,38 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
     }
 
     /// <summary>
+    /// <see cref="IApprovalWorkflowService.GetDecidablePendingAsync"/>. Each candidate goes through <see cref="CanDecideRequestAsync"/> with the
+    /// separation-of-duties bars on — the very check <see cref="DecideAsync"/> makes — after the permission the decision endpoint is gated on.
+    /// </summary>
+    public async Task<DecidableApprovals> GetDecidablePendingAsync(Guid tenantId, RequestContext context, IReadOnlyCollection<int>? subjectPopulation, int take, CancellationToken cancellationToken)
+    {
+        if (context.UserId is not Guid userId) return DecidableApprovals.None;
+        if (context.TenantId is Guid callerTenant && callerTenant != tenantId) return DecidableApprovals.None;
+        var permissions = context.Permissions ?? Array.Empty<string>();
+        if (!permissions.Any(x => x.Equals("approvals.decide", StringComparison.OrdinalIgnoreCase))) return DecidableApprovals.None;
+        var overrides = permissions.Any(x => x.Equals("approvals.override", StringComparison.OrdinalIgnoreCase));
+
+        var query = _db.ApprovalRequests.AsNoTracking().Include(x => x.Decisions)
+            .Where(x => x.TenantId == tenantId && x.Status == "Pending" && x.RequestedByUserId != userId);
+        // Narrowing only (the exact check below decides): a step routed to another named user is nobody else's unless they can override.
+        if (!overrides) query = query.Where(x => x.CurrentApproverUserId == null || x.CurrentApproverUserId == userId);
+        if (subjectPopulation is not null)
+        {
+            var population = subjectPopulation.ToList();
+            query = query.Where(x => x.RequestedForEmployeeId != null && population.Contains(x.RequestedForEmployeeId.Value));
+        }
+        // One more than the limit is read, so "exactly 500 pending" is not mistaken for "more than 500".
+        var candidates = await query.OrderByDescending(x => x.CreatedAtUtc).Take(DecidableApprovals.ScanLimit + 1).ToListAsync(cancellationToken);
+        var capped = candidates.Count > DecidableApprovals.ScanLimit;
+        if (capped) candidates = candidates.Take(DecidableApprovals.ScanLimit).ToList();
+
+        var decidable = new List<Guid>();
+        foreach (var candidate in candidates)
+            if (await CanDecideRequestAsync(candidate, context, cancellationToken)) decidable.Add(candidate.Id);
+        return new DecidableApprovals(decidable.Count, decidable.Take(Math.Max(0, take)).ToList(), Capped: capped);
+    }
+
+    /// <summary>
     /// The requester takes back their own pending employee change. Only the requester may, only while it
     /// is pending, and only for <see cref="EmployeeChangeRequest"/>: other entities (leave, timesheets,
     /// offers…) own a state machine of their own and are cancelled from their own screen, so closing the

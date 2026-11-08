@@ -138,7 +138,13 @@ public record UpdateDocumentMetadataRequest(
     [MaxLength(1000)] string? Notes);
 
 public record DocumentVerifyRequest([MaxLength(1000)] string? Notes);
-public record DocumentRejectRequest([Required, MaxLength(1000)] string Reason);
+public record DocumentRejectRequest([Required, MaxLength(500)] string Reason);
+
+/// <summary>One document waiting for HR to verify it (G-004): what, whose, since when. No storage path, no file bytes.</summary>
+public record PendingDocumentRow(Guid DocumentId, int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string DocumentType,
+    string DocumentCategory, string FileName, DateTime UploadedAtUtc, DateOnly? ExpiryDate, string ScanStatus, bool IsProtected);
+
+public record PendingDocumentsPage(IReadOnlyList<PendingDocumentRow> Items, int Total, int Page, int PageSize);
 public record DocumentExpiryCheckResult(int MarkedExpired, int RemindersSent);
 
 public record EmployeeTransferCreateRequest(
@@ -722,6 +728,10 @@ public record EmployeeDocumentDto
     public DateTime? VerifiedAtUtc { get; init; }
     public Guid? VerifiedBy { get; init; }
     public string Notes { get; init; } = string.Empty;
+    /// <summary>G-004: why HR rejected the document. Null unless it is Rejected (an older rejection keeps its reason in Notes only).</summary>
+    public string? RejectionReason { get; init; }
+    /// <summary>G-004: identity, payroll or contract document. Verifying or rejecting it needs employees.sensitive, so a caller without it is not offered the buttons.</summary>
+    public bool IsProtected { get; init; }
     /// <summary>clean | not_scanned_trusted_source | quarantined | quarantined_pending. "not scanned" is shown as such, never as clean.</summary>
     public string ScanStatus { get; init; } = "clean";
 
@@ -759,6 +769,8 @@ public record EmployeeDocumentDto
             VerifiedAtUtc        = d.VerifiedAtUtc,
             VerifiedBy           = d.VerifiedBy,
             Notes                = showProtectedMetadata ? d.Notes : string.Empty,
+            RejectionReason      = showProtectedMetadata ? d.RejectionReason : null,
+            IsProtected          = IsSensitiveDocument(d.DocumentType, d.DocumentCategory),
             ScanStatus           = d.ScanStatus,
         };
     }
@@ -773,6 +785,26 @@ public record EmployeeDocumentDto
 public sealed class SensitiveDocumentAccessException : Exception
 {
     public SensitiveDocumentAccessException() : base("This document is protected (identity, payroll or contract). Changing it needs the employees.sensitive permission.") { }
+}
+
+/// <summary>
+/// Separation of duties on a document decision (the owner's strict rule: the subject never decides). The employee whose document it is,
+/// and the user who uploaded it, may not verify or reject it, even holding employees.documents.
+/// </summary>
+public sealed class DocumentSelfVerificationException : Exception
+{
+    public const string Code = "document_self_verification";
+    public DocumentSelfVerificationException() : base("You cannot verify or reject this document: it is your own, or you uploaded it. Someone else in HR must decide.") { }
+}
+
+/// <summary>
+/// Thrown when a verify or reject names a file the security scan has not cleared. The queue already hides such a file; this stops a
+/// direct call by id, so nobody records a decision about a file that nobody may open.
+/// </summary>
+public sealed class DocumentNotAvailableException : Exception
+{
+    public const string Code = "document_quarantined";
+    public DocumentNotAvailableException() : base("This file is not available: it did not pass the security scan.") { }
 }
 
 public static class EmployeeDocumentSensitivity
@@ -1037,6 +1069,30 @@ public record EmployeeTransferDto
         HrApprovedAtUtc              = t.HrApprovedAtUtc,
     };
 }
+
+/// <summary>
+/// A transfer with the context a decider or the requester needs: who it is for, which step it waits at and who
+/// holds that step, and whether the CALLER may decide it now (the same rule the approve endpoints enforce).
+/// Org restructuring data and names only; no pay, bank or identity data.
+/// </summary>
+public record EmployeeTransferViewDto(
+    EmployeeTransferDto Transfer,
+    string EmployeeName,
+    string EmployeeCode,
+    string? CurrentManagerName,
+    string? NewManagerName,
+    /// <summary>CurrentManager | NewManager | Hr; null once applied.</summary>
+    string? AwaitingStep,
+    /// <summary>The person who holds the step (a manager's name), or null when HR holds it.</summary>
+    string? AwaitingName,
+    bool CanDecide,
+    /// <summary>The caller may reject the step it waits at: exactly who may approve it, and never the employee themselves.</summary>
+    bool CanReject = false,
+    /// <summary>The caller may withdraw it: the requester, or an approver of employee changes, while it is still open.</summary>
+    bool CanWithdraw = false,
+    /// <summary>Why it was rejected or withdrawn, as the person who did so wrote it.</summary>
+    string? DecisionReason = null,
+    string? DecidedByName = null);
 
 public record EmployeeGroupCountDto(string Name, int Count);
 public record EmployeeHeadcountReportDto(int Total, IReadOnlyCollection<EmployeeGroupCountDto> ByCompany, IReadOnlyCollection<EmployeeGroupCountDto> ByDepartment, IReadOnlyCollection<EmployeeGroupCountDto> ByStatus);

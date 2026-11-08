@@ -17,7 +17,7 @@ import { requestFailureReason } from '../lib/requestFailure';
 import { Modal } from '../components/Modal';
 import { ConfirmDialog, type ConfirmState } from '../components/ui/ConfirmDialog';
 import { EnumLabel } from '../components/EnumLabel';
-import { FINAL_SETTLEMENT_HREF, isSettlementCleared, settlementFor } from '../lib/offboardingSettlement';
+import { FINAL_SETTLEMENT_HREF, isRunDutyOpen, isSettlementCleared, settlementFor, settlementRunHref } from '../lib/offboardingSettlement';
 
 const EXIT_REASONS = ['Compensation', 'Career Growth', 'Management', 'Work-Life Balance', 'Relocation', 'Job Content', 'Company Culture', 'Better Offer', 'Personal', 'Other'] as const;
 const EXIT_INTERVIEW_STATUSES = ['Pending', 'Scheduled', 'Completed', 'Waived'] as const;
@@ -336,6 +336,16 @@ function OffboardingCard({ o, settlements, onChange }: { o: Offboarding; settlem
                 <Link href={FINAL_SETTLEMENT_HREF} className="inline-flex items-center gap-1 text-sapphire hover:underline dark:text-cyanAccent">
                   {t('Open in Payroll')} <ExternalLink className="h-3 w-3 rtl:-scale-x-100" aria-hidden="true" />
                 </Link>
+                {/* G-006: the off-cycle run that pays this settlement, linked back from Payroll; or who is still to create it. */}
+                {settlement.linkedRunId ? (
+                  <Link href={settlementRunHref(settlement.linkedRunId)} className="inline-flex items-center gap-1 text-sapphire hover:underline dark:text-cyanAccent" data-testid="offboarding-settlement-run">
+                    {t('Open the off-cycle run')} <ExternalLink className="h-3 w-3 rtl:-scale-x-100" aria-hidden="true" />
+                  </Link>
+                ) : isRunDutyOpen(settlement) ? (
+                  <span className="text-amber-700 dark:text-amber-400" data-testid="offboarding-settlement-run-waiting">
+                    {t('Payroll has to create the off-cycle run, due by {date}.', { date: fx.date(settlement.settlementDueDate) })}
+                  </span>
+                ) : null}
               </div>
             ) : (
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

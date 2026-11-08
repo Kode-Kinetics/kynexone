@@ -40,7 +40,9 @@ export function buildTasks({ data, payrollValidationErrors, now = Date.now() }: 
     });
     if (pending > 0) tasks.push({
       id: 'approvals', tone: 'review', count: pending,
-      title: msg('{count, plural, one {# approval waiting for you} other {# approvals waiting for you}}'),
+      title: data.overview.approvalsCapped
+        ? msg('{count}+ approvals waiting for you')
+        : msg('{count, plural, one {# approval waiting for you} other {# approvals waiting for you}}'),
       detail: msg('Leave, overtime, changes and other requests that need a decision'),
       to: '/approvals', cta: msg('Open approvals'),
     });

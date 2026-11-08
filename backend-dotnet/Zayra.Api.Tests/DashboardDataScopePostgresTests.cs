@@ -119,8 +119,8 @@ public sealed class DashboardDataScopePostgresTests
             return Assert.IsType<DashboardFullDto>(Assert.IsType<OkObjectResult>(await ctrl.Full(6)).Value);
         }
 
-        var hr = await FullAs(null, "employees.write", "payroll.read", "dashboard.read");
-        var mgr = await FullAs(managerId, "employees.read", "manager.read", "dashboard.read");
+        var hr = await FullAs(null, "employees.write", "payroll.read", "dashboard.read", "approvals.decide", "manager.approve");
+        var mgr = await FullAs(managerId, "employees.read", "manager.read", "dashboard.read", "approvals.decide", "manager.approve");
         var managerWithPayroll = await FullAs(managerId, "employees.read", "manager.read", "payroll.read");
         var employee = await FullAs(employeeId, "dashboard.read", "ess.read");
 
@@ -142,8 +142,8 @@ public sealed class DashboardDataScopePostgresTests
         managerWithPayroll.PayrollTrends.Should().Contain(p => p.TotalNet == 3_000m && p.EmployeeCount == 3);
 
         employee.Summary.TotalEmployees.Should().Be(1);
-        employee.Overview.PendingApprovals.Should().Be(1);
-        employee.Overview.ApprovalQueue.Should().ContainSingle().Which.EmployeeId.Should().Be(employeeId);
+        employee.Overview.PendingApprovals.Should().Be(0, "an employee decides nothing, least of all an approval about themselves");
+        employee.Overview.ApprovalQueue.Should().BeEmpty();
         employee.ActivityFeed.Should().ContainSingle();
         employee.Overview.PayrollSummary.Should().BeNull();
     }

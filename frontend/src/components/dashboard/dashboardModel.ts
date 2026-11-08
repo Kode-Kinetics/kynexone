@@ -431,7 +431,7 @@ export function buildPulse({ data, insights, tenantHour, now = new Date(), payro
   const approvals: PulseSegment = {
     key: 'approvals', label: 'Approvals', to: '/approvals', cta: 'Review approvals', asOf: asOfNow,
     state: o.pendingApprovals === 0 ? 'ready' : oldestH >= 72 ? 'blocked' : 'attention',
-    value: o.pendingApprovals === 0 ? 'Clear' : `${o.pendingApprovals} waiting`,
+    value: o.pendingApprovals === 0 ? 'Clear' : `${o.pendingApprovals}${o.approvalsCapped ? '+' : ''} waiting`,
     detail: o.pendingApprovals === 0 ? 'Nothing waiting for a decision' : oldest ? `Oldest waiting ${ageLabel(oldestH)}` : 'Awaiting decision',
     reason: o.pendingApprovals === 0 ? undefined : `${plural(o.pendingApprovals, 'approval')} waiting${oldestH >= 72 ? ', oldest over 3 days' : ''}`,
   };

@@ -61,14 +61,18 @@ public class EmployeeSelfServiceController : ControllerBase
     private readonly IDocumentStorage? _documentStorage;
     private readonly TimeProvider _clock;
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Zayra.Api.Infrastructure.Notifications.INotificationService? _notifications;
 
     // W2-D: IDocumentStorage is a trailing OPTIONAL parameter, after the required
     // IHrLetterIssuer that the HR-documents stream added. Both streams' shapes are kept:
     // the issuer is required because an ESS document request that cannot reach the issuer is
     // a broken endpoint, and storage stays optional/trailing as W2-D designed it.
+
     public EmployeeSelfServiceController(ZayraDbContext db, ILetterService letters, PdfRenderGate pdfGate, Application.Leave.ILeaveService leaveService, IAttendanceService attendanceService, IHrLetterIssuer letterIssuer, IDocumentStorage? documentStorage = null,
-        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        TimeProvider? clock = null, Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Zayra.Api.Infrastructure.Notifications.INotificationService? notifications = null)
     {
+        _notifications = notifications;
         _policySettings = policySettings;
         // DI's TimeProvider.System; tests pass a fixed one to ask for "today" at a chosen instant.
         _clock = clock ?? TimeProvider.System;
@@ -128,7 +132,7 @@ public class EmployeeSelfServiceController : ControllerBase
                         && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.ExpiryDate)
             .Take(5)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken);
         var announcements = await ActiveAnnouncements(tenantId).Take(5).ToListAsync(cancellationToken);
         var notifications = await _db.EmployeeNotifications.AsNoTracking().Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsRead).OrderByDescending(x => x.CreatedAtUtc).Take(5).ToListAsync(cancellationToken);
@@ -359,6 +363,9 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeProfileChangeRequests.Add(change);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.profile_change.requested", "EmployeeProfileChangeRequest", change.Id.ToString(), cancellationToken);
+        var submitter = await OwnEmployee(tenantId, employeeId, cancellationToken);
+        if (submitter is not null)
+            await Zayra.Api.Application.Employees.Ess.ProfileChangeNotices.NotifyHrAsync(_notifications ?? HttpContext?.RequestServices?.GetService<Zayra.Api.Infrastructure.Notifications.INotificationService>(), _db, tenantId, submitter, change, cancellationToken);
         return Created($"/api/ess/profile-change-request/{change.Id}", change);
     }
 
@@ -433,6 +440,40 @@ public class EmployeeSelfServiceController : ControllerBase
             .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken));
     }
 
+    /// <summary>
+    /// The employee's own older (mobile) profile change requests and where each stands (G-003). Scoped to the caller's
+    /// own employee record like every ESS read. Section requests are not listed here: they have their own state on
+    /// /api/ess/completion. Only the six self-service personal fields are shown back.
+    /// </summary>
+    [HttpGet("profile-change-requests/mine")]
+    public async Task<IActionResult> MyProfileChangeRequests(CancellationToken cancellationToken)
+    {
+        var (essOk, tenantId, employeeId, ctxError) = await GetEssContextAsync(cancellationToken);
+        if (!essOk) return BadRequest(new { message = ctxError, messageAr = EssLinkGuidance.ArabicFor(ctxError) });
+        var rows = await _db.EmployeeProfileChangeRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Section == null)
+            .OrderByDescending(x => x.CreatedAtUtc).Take(50).ToListAsync(cancellationToken);
+        return Ok(rows.Select(r =>
+        {
+            var changes = new Dictionary<string, string>(StringComparer.Ordinal);
+            try
+            {
+                foreach (var (key, value) in JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(r.RequestedChangesJson) ?? [])
+                {
+                    var field = AllowedSelfServiceProfileFields.FirstOrDefault(f => string.Equals(f, key, StringComparison.OrdinalIgnoreCase));
+                    if (field is null) continue;
+                    changes[field] = value.ValueKind == JsonValueKind.Null ? string.Empty : value.ValueKind == JsonValueKind.String ? value.GetString() ?? string.Empty : value.ToString();
+                }
+            }
+            catch (JsonException) { /* unreadable payload: the row still shows its status */ }
+            return new
+            {
+                r.Id, r.Status, r.CreatedAtUtc, r.DecidedAtUtc,
+                Fields = changes.Keys.ToList(), Changes = changes, r.ReviewNote,
+            };
+        }).ToList());
+    }
+
     [HttpPost("profile-change-requests/{id:guid}/approve")]
     [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     [HasPermission("employees.write")]
@@ -499,6 +540,10 @@ public class EmployeeSelfServiceController : ControllerBase
         if (change.Reason == EmployeeCompletionController.RequestReason &&
             (string.IsNullOrWhiteSpace(request.Notes) || request.Notes.Trim().Length > 500))
             return BadRequest(new { message = "Give a correction note of up to 500 characters." });
+        // The employee reads HR's reason next to the request (G-003); for the HR-requested form it also goes by notification below.
+        var legacyNote = request.Notes?.Trim();
+        if (legacyNote is { Length: > 500 }) return BadRequest(new { message = "Give a correction note of up to 500 characters." });
+        change.ReviewNote = string.IsNullOrEmpty(legacyNote) ? null : legacyNote;
         change.Status = "Rejected";
         change.DecidedAtUtc = DateTime.UtcNow;
         change.DecidedBy = GetUserId();
@@ -849,6 +894,9 @@ public class EmployeeSelfServiceController : ControllerBase
         {
             return BadRequest(new { message = ex.Message });
         }
+        // Self-Service used to notify nobody: the approver found out only by opening a queue. Same path as the Leave screen.
+        if (_notifications is not null)
+            await Zayra.Api.Infrastructure.Leave.LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId, leave, cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
         return Created($"/api/ess/leave/request/{leave.Id}", leave);
     }
@@ -863,7 +911,7 @@ public class EmployeeSelfServiceController : ControllerBase
             .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && !x.IsDeleted
                         && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
             .OrderBy(x => x.DocumentType)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.documents.viewed", "EmployeeDocument", employeeId.ToString(), cancellationToken);
         return Ok(documents);
@@ -898,6 +946,7 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeDocuments.Add(document);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.document.uploaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        await TellHrAboutUploadAsync(document, cancellationToken);
         return Created($"/api/ess/documents/{document.Id}", EmployeeDocumentDto.Project(document));
     }
 
@@ -959,7 +1008,16 @@ public class EmployeeSelfServiceController : ControllerBase
         _db.EmployeeDocuments.Add(document);
         await _db.SaveChangesAsync(cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.document.uploaded", "EmployeeDocument", document.Id.ToString(), cancellationToken);
+        await TellHrAboutUploadAsync(document, cancellationToken);
         return Created($"/api/ess/documents/{document.Id}", EssDocumentDetailDto.Project(document, bytes.Length));
+    }
+
+    /// <summary>G-004: an employee upload is waiting for HR to verify it, so the people who can verify it are told (never the employee).</summary>
+    private async Task TellHrAboutUploadAsync(EmployeeDocument document, CancellationToken cancellationToken)
+    {
+        if (_notifications is null || document.EmployeeId is not int employeeId) return;
+        var name = await _db.Employees.AsNoTracking().Where(e => e.TenantId == document.TenantId && e.Id == employeeId).Select(e => e.FullName).FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+        await Zayra.Api.Infrastructure.Employees.DocumentVerificationNotices.NotifyUploadedAsync(_db, _notifications, document, name, cancellationToken);
     }
 
     /// <summary>
@@ -1578,7 +1636,7 @@ public class EmployeeSelfServiceController : ControllerBase
         // free text on upload, so any employee could publish a "Policy" to the whole company. A real
         // company-policy entity is a separate feature; until it exists nothing here crosses employees.
         return Ok(await OwnPolicyDocuments(tenantId, employeeId)
-            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus))
+            .Select(x => new ESSDocumentDto(x.Id, x.DocumentType, x.FileName, x.ExpiryDate, x.ApprovalStatus, x.RejectionReason))
             .ToListAsync(cancellationToken));
     }
 
@@ -1704,7 +1762,7 @@ public record ESSProfileSummaryDto(int EmployeeId, string EmployeeCode, string F
 /// request is pending.</param>
 public record ESSLeaveBalanceDto(Guid LeaveTypeId, string LeaveTypeName, decimal Entitled, decimal Used, decimal Pending, decimal Available,
     decimal? StatutoryEntitlementDays = null);
-public record ESSDocumentDto(Guid Id, string DocumentType, string FileName, DateOnly? ExpiryDate, string ApprovalStatus);
+public record ESSDocumentDto(Guid Id, string DocumentType, string FileName, DateOnly? ExpiryDate, string ApprovalStatus, string? RejectionReason);
 public record ESSAnnouncementDto(Guid Id, string Title, string Body, string Audience, DateTime PublishedAtUtc);
 public record ESSNotificationDto(Guid Id, string Title, string Body, string NotificationType, bool IsRead, DateTime CreatedAtUtc);
 public record ESSActionItemDto(Guid Id, string Title, string Category, DateTime? DueAtUtc);

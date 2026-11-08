@@ -35,7 +35,9 @@ test('Leave approvals: a refused approval shows what did not happen and why; a d
     persona: persona(['leave.approve']),
     url: '/leave',
     mocks: {
-      '/api/leave/requests': { items: [request], total: 1, page: 1, pageSize: 100 },
+      // The approvals tab reads what this viewer may decide now (a request at any step they hold, or a cancellation).
+      '/api/leave/requests/awaiting-decision': { items: [{ ...request, kind: 'Decision', cancellationReason: null, cancellationRequestedAtUtc: null }], total: 1, truncated: false },
+      '/api/leave/requests/waiting-on-others': { items: [], total: 0, truncated: false },
       '/api/leave/requests/statutory-history': {},
       '/api/leave/requests/lr1/approve': (_u: URL, method: string) => { if (method === 'POST') posts.push('approve'); return { status: 409, body: { code: 'conflict', message: 'The request was already decided by another approver.' } }; },
     },

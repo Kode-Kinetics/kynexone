@@ -22,11 +22,13 @@ import {
   Surface,
 } from '@/components/ui';
 import {
+  partialInboxKeys,
   summarizeInbox,
   type ApprovalKind,
   type BalanceFacts,
   type DecisionOutcome,
   type InboxItem,
+  type InboxSource,
   type LeaveFacts,
   type MyDecision,
 } from './approvalModel';
@@ -65,7 +67,7 @@ export default function ApprovalsScreen({ route }: Props) {
 
   const [tab, setTab] = useState<Tab>('waiting');
   const [items, setItems] = useState<InboxItem[]>([]);
-  const [unavailable, setUnavailable] = useState<('workflow' | 'overtime')[]>([]);
+  const [unavailable, setUnavailable] = useState<InboxSource[]>([]);
   const [leaveFacts, setLeaveFacts] = useState<Record<string, LeaveFacts | null>>({});
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -213,13 +215,13 @@ export default function ApprovalsScreen({ route }: Props) {
 
       {tab === 'waiting' && unavailable.length ? (
         <View style={styles.section}>
-          {unavailable.map((source) => (
+          {partialInboxKeys(unavailable).map((key) => (
             <Text
-              key={source}
+              key={key}
               accessibilityLiveRegion="polite"
               style={[theme.typography.footnote, styles.partial, { color: theme.colors.status.warning.fg }]}
             >
-              {source === 'overtime' ? t('manager.approvals.partialOvertime') : t('manager.approvals.partialWorkflow')}
+              {t(key)}
             </Text>
           ))}
         </View>
@@ -406,6 +408,10 @@ function useWhatLine(item: InboxItem, leave: LeaveFacts | null): string | null {
     ].filter(Boolean);
     return parts.length ? parts.join(' · ') : null;
   }
+  if (item.transfer) {
+    const parts = [item.transfer.target, item.transfer.effectiveDate ? f.date(item.transfer.effectiveDate, 'medium') : null].filter(Boolean);
+    return parts.length ? parts.join(' · ') : null;
+  }
   if (leave?.startDate) {
     return [text.dateRange(leave.startDate, leave.endDate), leave.totalDays !== null ? text.days(leave.totalDays) : null]
       .filter(Boolean)
@@ -430,12 +436,14 @@ function ApprovalCard({
   const f = useFormat();
   const text = useManagerText();
   const what = useWhatLine(item, leave);
-  const kindLabel = item.subject ?? text.kind(item.kind);
+  const kindLabel = item.cancellation
+    ? t('manager.approvals.card.cancellation', { subject: item.subject ?? text.kind(item.kind) })
+    : item.subject ?? text.kind(item.kind);
   const meta = [
     item.submittedAt ? t('manager.approvals.card.submitted', { when: f.relative(item.submittedAt) }) : null,
     item.stepOrder !== null ? t('manager.approvals.card.step', { step: f.number(item.stepOrder) }) : null,
   ].filter(Boolean).join(' · ');
-  const reason = item.overtime?.reason ?? leave?.reason ?? null;
+  const reason = item.overtime?.reason ?? leave?.reason ?? item.transfer?.reason ?? null;
   const cta = canDecide ? t('manager.approvals.card.review') : t('manager.approvals.card.view');
 
   return (
@@ -578,7 +586,8 @@ function DecisionSheet({
 
   const decide = async (decision: 'approve' | 'reject') => {
     if (!item || busy) return;
-    if (decision === 'reject' && !comment.trim()) {
+    // Keep leave refuses nothing the employee must act on, so it needs no reason; rejecting a request does.
+    if (decision === 'reject' && !item.cancellation && !comment.trim()) {
       setReasonMissing(true);
       haptics.error();
       inputRef.current?.focus();
@@ -633,7 +642,7 @@ function DecisionSheet({
               ) : null}
               <View style={styles.actionRow}>
                 <LiquidButton
-                  label={t('manager.approvals.sheet.reject')}
+                  label={item.cancellation ? t('manager.approvals.sheet.keepLeave') : t('manager.approvals.sheet.reject')}
                   icon="close"
                   variant="secondary"
                   onPress={() => void decide('reject')}
@@ -642,7 +651,7 @@ function DecisionSheet({
                   style={styles.flex}
                 />
                 <LiquidButton
-                  label={t('manager.approvals.sheet.approve')}
+                  label={item.cancellation ? t('manager.approvals.sheet.approveCancellation') : t('manager.approvals.sheet.approve')}
                   icon="checkmark"
                   variant="success"
                   onPress={() => void decide('approve')}
@@ -693,6 +702,17 @@ function DecisionSheet({
               {item.overtime.reason ? <FactRow label={t('manager.approvals.sheet.reason')} value={item.overtime.reason} /> : null}
               <FactRow label={t('manager.approvals.sheet.pay')} value={t('manager.approvals.sheet.payNote')} />
               <FactRow label={t('manager.approvals.sheet.flow')} value={t('manager.approvals.sheet.flowOvertime')} />
+            </View>
+          ) : null}
+
+          {item.transfer ? (
+            <View>
+              {item.transfer.target ? <FactRow label={t('manager.approvals.sheet.transferTo')} value={item.transfer.target} /> : null}
+              {item.transfer.effectiveDate ? (
+                <FactRow label={t('manager.approvals.sheet.date')} value={f.date(item.transfer.effectiveDate, 'full')} sub={f.hijri(item.transfer.effectiveDate) || null} />
+              ) : null}
+              {item.transfer.reason ? <FactRow label={t('manager.approvals.sheet.reason')} value={item.transfer.reason} /> : null}
+              <FactRow label={t('manager.approvals.sheet.flow')} value={tx(`manager.approvals.sheet.flowTransfer.${item.transfer.awaitingStep}`)} />
             </View>
           ) : null}
 
@@ -789,6 +809,12 @@ function DecisionSheet({
           ) : null}
 
           <View>
+            {item.cancellation ? (
+              <FactRow
+                label={t('manager.approvals.sheet.cancellationAsked')}
+                value={item.cancellation.reason ?? t('manager.approvals.sheet.cancellationNoReason')}
+              />
+            ) : null}
             {item.submittedAt ? <FactRow label={t('manager.approvals.sheet.submitted')} value={f.dateTime(item.submittedAt)} /> : null}
             {item.dueAt && !item.isOverdue ? <FactRow label={t('manager.approvals.sheet.due')} value={f.dateTime(item.dueAt)} /> : null}
             {item.source === 'workflow' ? (
@@ -814,14 +840,20 @@ function DecisionSheet({
             ) : null}
             <FactRow
               label={t('manager.approvals.sheet.source')}
-              value={item.source === 'overtime' ? t('manager.approvals.source.overtime') : t('manager.approvals.source.workflow')}
+              value={item.source === 'overtime'
+                ? t('manager.approvals.source.overtime')
+                : item.source === 'leaveCancellation'
+                  ? t('manager.approvals.source.leaveCancellation')
+                  : item.source === 'transfer'
+                    ? t('manager.approvals.source.transfer')
+                    : t('manager.approvals.source.workflow')}
             />
           </View>
 
           {canDecide ? (
             <View style={styles.commentBlock}>
               <Text style={[theme.typography.headline, { color: theme.colors.text }]}>{t('manager.approvals.sheet.commentLabel')}</Text>
-              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{t('manager.approvals.sheet.commentHint')}</Text>
+              <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>{item.cancellation ? t('manager.approvals.sheet.commentHintCancellation') : t('manager.approvals.sheet.commentHint')}</Text>
               <TextInput
                 ref={inputRef}
                 value={comment}

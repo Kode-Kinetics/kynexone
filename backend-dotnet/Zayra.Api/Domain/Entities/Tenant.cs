@@ -23,11 +23,21 @@ public static class CompanyCreationModes
     public const string PlatformControlled = "PlatformControlled";
     /// <summary>Group admins create active companies themselves, within MaxCompanies.</summary>
     public const string GroupSelfServiceWithinLimit = "GroupSelfServiceWithinLimit";
-    /// <summary>Group admins create Draft companies; a platform admin approves activation.</summary>
+    /// <summary>
+    /// RETIRED (G-013, owner decision 2026-11-08). This mode created Draft companies that could never be activated, because
+    /// the platform approve endpoint was disabled. It can no longer be chosen anywhere (<see cref="IsValid"/> refuses it) and
+    /// every tenant that held it was moved to <see cref="GroupSelfServiceWithinLimit"/> by the RetireDraftApprovalMode
+    /// migration. The constant stays only so that a row not yet migrated is read as the default (<see cref="Effective"/>).
+    /// </summary>
     public const string GroupDraftPlatformApproval = "GroupDraftPlatformApproval";
 
+    /// <summary>Whether a platform admin or a tenant may CHOOSE this mode. The retired draft-approval mode is not choosable.</summary>
     public static bool IsValid(string value) =>
-        value is PlatformControlled or GroupSelfServiceWithinLimit or GroupDraftPlatformApproval;
+        value is PlatformControlled or GroupSelfServiceWithinLimit;
+
+    /// <summary>The mode that governs behaviour: a tenant still holding the retired mode behaves as the default one.</summary>
+    public static string Effective(string? value) =>
+        string.Equals(value, GroupDraftPlatformApproval, StringComparison.Ordinal) ? GroupSelfServiceWithinLimit : value ?? GroupSelfServiceWithinLimit;
 }
 
 public class Tenant
@@ -40,7 +50,7 @@ public class Tenant
     // SingleCompany; CompanyScopeBackfill promotes tenants that already operate
     // multiple active companies to Group.
     public string AccountType { get; set; } = TenantAccountTypes.SingleCompany;
-    // PlatformControlled | GroupSelfServiceWithinLimit | GroupDraftPlatformApproval.
+    // PlatformControlled | GroupSelfServiceWithinLimit (GroupDraftPlatformApproval is retired, see CompanyCreationModes).
     // Self-service is the default (matches pre-existing behavior for Group tenants).
     public string CompanyCreationMode { get; set; } = CompanyCreationModes.GroupSelfServiceWithinLimit;
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;

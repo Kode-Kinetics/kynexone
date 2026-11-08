@@ -113,7 +113,7 @@ public sealed class OrganizationStructureImportGateTests
     }
 
     [Fact]
-    public async Task DraftApprovalMode_ImportsANewCompanyAsAnInactiveDraft_LikeTheForm()
+    public async Task ATenantOnTheRetiredDraftMode_ImportsANewCompanyAsAnActiveCompany_LikeTheForm()
     {
         var (tenant, _) = await SeedAsync(mode: CompanyCreationModes.GroupDraftPlatformApproval);
         await using var db = _fx.CreateDb();
@@ -121,8 +121,8 @@ public sealed class OrganizationStructureImportGateTests
 
         await using var verify = _fx.CreateDb();
         var created = await verify.Companies.IgnoreQueryFilters().SingleAsync(c => c.TenantId == tenant && c.LegalNameEn == "Second Co");
-        Assert.False(created.IsActive);
-        Assert.Equal(CompanyApprovalStatuses.Draft, created.ApprovalStatus);
+        Assert.True(created.IsActive);
+        Assert.Equal(CompanyApprovalStatuses.Active, created.ApprovalStatus);
     }
 
     [Fact]

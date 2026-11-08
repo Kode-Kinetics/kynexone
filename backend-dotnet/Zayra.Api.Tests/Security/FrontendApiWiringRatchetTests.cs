@@ -34,6 +34,8 @@ public sealed partial class FrontendApiWiringRatchetTests
         ["src/api/orgRows.ts"] = "The generic remove/restore helper takes its path as an argument; the per-kind routes are the values of its PATH table, which are extracted.",
         ["src/api/compensation.ts"] = "Three calls go through one helper whose url argument is built by its callers; the callers' paths are literals and are extracted.",
         ["src/api/hrLetters.ts"] = "Two calls go through one helper whose url argument is built by its callers; the callers' paths are literals and are extracted.",
+        ["src/api/employees.ts"] = "Transfer approve/reject/withdraw build their path in lib/transferSteps.ts (transferApprovePath / transferClosePath) from a step table: "
+            + "POST /api/employees/transfers/{id}/approve-current-manager | approve-new-manager | approve-hr | reject | withdraw, all actions on EmployeesController.",
     };
 
     /// <summary>

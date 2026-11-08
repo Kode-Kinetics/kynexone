@@ -1864,6 +1864,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
         {
             entity.ToTable("employee_documents");
             entity.HasKey(x => x.Id);
+            entity.Property(x => x.RejectionReason).HasMaxLength(500);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId });
             entity.HasIndex(x => new { x.TenantId, x.DraftId });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.DocumentType, x.IsDeleted });

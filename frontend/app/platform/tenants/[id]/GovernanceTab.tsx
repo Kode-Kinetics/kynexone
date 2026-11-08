@@ -3,17 +3,22 @@
 import { useState } from 'react';
 import { Building2, CheckCircle2 } from 'lucide-react';
 import { platformApi, type PlatformTenantDetail } from '@/src/api/platform';
+import { useConfirm } from '@/src/components/ui/useConfirm';
 
 /**
  * Customer/group governance — deliberately separate from the Billing tab (SaaS
  * commercial controls) and the Companies list below (legal-entity operations):
- * account type, company creation mode, and draft-company approval.
+ * account type, company creation mode, and activation of companies stuck in Draft.
  */
 export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDetail; onRefresh: () => void }) {
   const [accountType, setAccountType] = useState(tenant.accountType ?? 'SingleCompany');
-  const [creationMode, setCreationMode] = useState(tenant.companyCreationMode ?? 'GroupSelfServiceWithinLimit');
+  const [creationMode, setCreationMode] = useState(
+    // The draft-approval mode is retired; a row the data migration has not reached yet reads as the default.
+    !tenant.companyCreationMode || tenant.companyCreationMode === 'GroupDraftPlatformApproval' ? 'GroupSelfServiceWithinLimit' : tenant.companyCreationMode,
+  );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const companies = tenant.companies ?? [];
   const strictModePending = process.env.NEXT_PUBLIC_STRICTMODE_PENDING === 'true';
 
@@ -53,15 +58,22 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
     }
   };
 
-  const approve = async (companyId: string) => {
+  const approve = async (companyId: string, name: string) => {
+    const ok = await confirm({
+      title: 'Activate this company?',
+      message: `${name} was left in Draft by the retired draft-approval mode. Activating it makes it a normal active company for this customer; the action is recorded in the audit trail.`,
+      confirmLabel: 'Activate',
+      tone: 'primary',
+    });
+    if (!ok) return;
     setSaving(true);
     setMessage(null);
     try {
       await platformApi.approveCompany(tenant.id, companyId);
-      setMessage({ kind: 'ok', text: 'Company approved and activated.' });
+      setMessage({ kind: 'ok', text: 'Company activated.' });
       onRefresh();
     } catch {
-      setMessage({ kind: 'err', text: 'Could not approve the company.' });
+      setMessage({ kind: 'err', text: 'Could not activate the company.' });
     } finally {
       setSaving(false);
     }
@@ -69,6 +81,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
 
   return (
     <div className="space-y-5">
+      {confirmDialog}
       {strictModePending && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] px-4 py-2.5 text-xs font-medium text-amber-300">
           Company-scope StrictMode cutover is pending — see docs/GROUP_COMPANY_STRICTMODE_CUTOVER.md before enabling group features for production customers.
@@ -108,7 +121,6 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
               className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400/50 disabled:opacity-40"
             >
               <option value="GroupSelfServiceWithinLimit">Group self-service (within limit)</option>
-              <option value="GroupDraftPlatformApproval">Group drafts + platform approval</option>
               <option value="PlatformControlled">Platform controlled</option>
             </select>
             <p className="mt-1 text-caption text-slate-500">Who creates legal entities for this customer and how they activate.</p>
@@ -144,7 +156,7 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
                   <td className="px-2 py-2.5 text-slate-400">{c.countryCode}</td>
                   <td className="px-2 py-2.5">
                     {c.approvalStatus === 'Draft' ? (
-                      <span className="rounded-full bg-amber-500/[0.12] px-2 py-0.5 text-caption font-semibold text-amber-300">Draft — awaiting approval</span>
+                      <span className="rounded-full bg-amber-500/[0.12] px-2 py-0.5 text-caption font-semibold text-amber-300">Draft — not active yet</span>
                     ) : c.isActive ? (
                       <span className="rounded-full bg-emerald-500/[0.12] px-2 py-0.5 text-caption font-semibold text-emerald-300">Active</span>
                     ) : (
@@ -156,10 +168,10 @@ export function GovernanceTab({ tenant, onRefresh }: { tenant: PlatformTenantDet
                       <button
                         type="button"
                         disabled={saving}
-                        onClick={() => void approve(c.id)}
+                        onClick={() => void approve(c.id, c.name)}
                         className="inline-flex items-center gap-1 rounded-lg border border-emerald-500/30 px-2.5 py-1 text-caption font-semibold text-emerald-300 transition hover:bg-emerald-500/[0.08] disabled:opacity-40"
                       >
-                        <CheckCircle2 className="h-3 w-3" /> Approve
+                        <CheckCircle2 className="h-3 w-3" /> Activate
                       </button>
                     )}
                   </td>

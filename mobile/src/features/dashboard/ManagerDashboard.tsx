@@ -30,7 +30,7 @@ import {
   StatusPill,
   Surface,
 } from '@/components/ui';
-import { givenName, summarizeInbox, type ApprovalKind, type InboxItem } from '@/features/approvals/approvalModel';
+import { givenName, partialInboxKeys, summarizeInbox, type ApprovalKind, type InboxItem, type InboxSource } from '@/features/approvals/approvalModel';
 import {
   addDays,
   BUCKET_TONE,
@@ -67,7 +67,7 @@ export default function ManagerDashboardScreen({ navigation }: Props) {
   const { t } = useTranslation();
   const f = useFormat();
   const [refreshing, setRefreshing] = useState(false);
-  const [inbox, setInbox] = useState<Load<{ items: InboxItem[]; unavailable: string[] }>>(loading);
+  const [inbox, setInbox] = useState<Load<{ items: InboxItem[]; unavailable: InboxSource[] }>>(loading);
   const [team, setTeam] = useState<Load<TeamTodayData>>(loading);
   const [out, setOut] = useState<Load<OutEntry[]>>(loading);
   const [attendance, setAttendance] = useState<Load<TodayAttendance>>(loading);
@@ -222,7 +222,7 @@ function DecisionsHero({
   onRetry,
   go,
 }: {
-  inbox: Load<{ items: InboxItem[]; unavailable: string[] }>;
+  inbox: Load<{ items: InboxItem[]; unavailable: InboxSource[] }>;
   onRetry: () => void;
   go: (route: AppRoute, params?: Record<string, unknown>) => void;
 }) {
@@ -245,9 +245,9 @@ function DecisionsHero({
           <Text style={[theme.typography.title3, styles.flex, { color: theme.colors.text }]}>{t('manager.home.decisions.clearTitle')}</Text>
         </View>
         <Text style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>{t('manager.home.decisions.clearBody')}</Text>
-        {inbox.data?.unavailable.length ? (
-          <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t('manager.approvals.partialOvertime')}</Text>
-        ) : null}
+        {partialInboxKeys(inbox.data?.unavailable ?? []).map((key) => (
+          <Text key={key} style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t(key)}</Text>
+        ))}
         <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>{t('manager.home.decisions.definition')}</Text>
       </Surface>
     );
@@ -296,9 +296,9 @@ function DecisionsHero({
           </MotionPressable>
         ))}
       </View>
-      {inbox.data?.unavailable.length ? (
-        <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t('manager.approvals.partialOvertime')}</Text>
-      ) : null}
+      {partialInboxKeys(inbox.data?.unavailable ?? []).map((key) => (
+        <Text key={key} style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t(key)}</Text>
+      ))}
       <LiquidButton label={t('manager.home.decisions.review')} trailingIcon="forward" onPress={() => go('Approvals')} />
       <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>{t('manager.home.decisions.definition')}</Text>
     </Surface>

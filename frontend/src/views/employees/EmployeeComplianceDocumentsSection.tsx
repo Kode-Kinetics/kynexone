@@ -17,6 +17,8 @@ import { describeApiError } from '../../lib/apiError';
 import { canDownloadScanned, scanLabelKey, scanRefusalKey, scanState } from '../../lib/scanState';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EmployeeSignaturesPanel } from './EmployeeSignaturesPanel';
+import { useDocumentDecision } from '../../components/employees/useDocumentDecision';
+import { canDecideDocument, documentStatusWords } from '../../lib/documentVerification';
 
 export function EmployeeComplianceDocumentsSection({ employee, readiness, panel, returnTo }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; panel?: string; returnTo: string }) {
   const { hasPermission } = useAuth();
@@ -34,6 +36,8 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
   const [error, setError] = useState('');
   const [identityFields, setIdentityFields] = useState<EmployeeComplianceField[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
+  // G-004: verify or reject a document that is waiting, here on the record as well as in the Compliance queue.
+  const decision = useDocumentDecision(updated => setDocuments(current => current.map(d => d.id === updated.id ? { ...d, ...updated } : d)));
   const needsContract = readiness?.recommended.some(item => item.fix?.kind === 'document' && item.label === 'Contract document') ?? false;
   useEffect(() => {
     let cancelled = false;
@@ -76,6 +80,7 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
     }
   };
   return <section className="surface overflow-hidden">
+    {decision.dialogs}
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Compliance & Documents')}</h2><p className="mt-1 text-sm text-slate-500">{t('Jurisdiction-specific identity records, expiries, and required documents.')}</p></div><div className="flex flex-wrap gap-2">{canEditIdentity && <Link href={employeeWorkspaceHref(employee.id, { section: 'compliance-documents', edit: true, returnTo })} className="btn-secondary">{t('Edit identity')}</Link>}{canManageDocuments && panel !== 'documents' && <Link href={employeeWorkspaceHref(employee.id, { section: 'compliance-documents', panel: 'documents', returnTo })} className="btn-secondary">{t('Upload document')}</Link>}</div></header>
     {!canSeeSensitive ? <div className="m-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-500/30 dark:bg-amber-500/10"><ShieldAlert className="h-5 w-5 text-amber-600" /><div><p className="font-semibold text-amber-900 dark:text-amber-100">{t('Sensitive identity details are restricted.')}</p><p className="mt-1 text-sm text-amber-800 dark:text-amber-200">{t('Document status can remain visible without exposing protected identity values.')}</p></div></div> : <dl className="grid gap-4 p-5 sm:grid-cols-2 xl:grid-cols-3">{identityFields.map((field) => {
       const expiry = field.expiryEntityKey ? String((employee as unknown as Record<string, unknown>)[field.expiryEntityKey] ?? '') : '';
@@ -90,7 +95,8 @@ export function EmployeeComplianceDocumentsSection({ employee, readiness, panel,
         {error && <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-200 sm:col-span-2">{error}</p>}
         <button type="button" onClick={() => void upload()} disabled={!file || uploading} className="btn-primary justify-center disabled:opacity-50 sm:col-span-2">{uploading ? t('Uploading…') : t('Upload {type}', { type: documentType })}</button>
       </div>}
-      {documents.length ? <ul className="mt-4 grid gap-3 sm:grid-cols-2">{documents.map(document => <li key={document.id} className="flex gap-3 rounded-xl border border-slate-200 p-4 dark:border-white/10"><FileText className="h-5 w-5 text-blue-600" /><div><p className="font-semibold">{document.documentType}</p><p className="text-sm text-slate-500">{document.fileName} · {document.approvalStatus}</p>{scanLabelKey(scanState(document.scanStatus)) && <p className={`text-xs ${canDownloadScanned(scanState(document.scanStatus)) ? 'text-slate-500' : 'font-medium text-rose-700 dark:text-rose-300'}`} data-testid="doc-scan">{t(scanLabelKey(scanState(document.scanStatus)) as string)}{scanRefusalKey(scanState(document.scanStatus)) && ` ${t(scanRefusalKey(scanState(document.scanStatus)) as string)}`}</p>}</div></li>)}</ul> : <p className="mt-3 text-sm text-slate-500">{t('No documents are recorded for this employee.')}</p>}
+      {decision.error && <p role="alert" className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{decision.error}</p>}
+      {documents.length ? <ul className="mt-4 grid gap-3 sm:grid-cols-2">{documents.map(document => <li key={document.id} className="flex gap-3 rounded-xl border border-slate-200 p-4 dark:border-white/10"><FileText className="h-5 w-5 text-blue-600" /><div><p className="font-semibold">{document.documentType}</p><p className="text-sm text-slate-500">{document.fileName} · <span data-testid={`doc-status-${document.id}`}>{t(documentStatusWords(document.approvalStatus))}</span></p>{document.rejectionReason && <p className="text-sm text-rose-700 dark:text-rose-300" data-testid={`doc-reason-${document.id}`}>{t('Reason: {reason}', { reason: document.rejectionReason })}</p>}{canDecideDocument(document, canManageDocuments && (canSeeSensitive || !document.isProtected)) && <div className="mt-2 flex flex-wrap gap-2"><button type="button" className="btn-primary" disabled={decision.busy} onClick={() => void decision.verify({ employeeId: employee.id, documentId: document.id, documentType: document.documentType, fileName: document.fileName })}>{t('Verify document')}</button><button type="button" className="btn-danger" disabled={decision.busy} onClick={() => decision.askReject({ employeeId: employee.id, documentId: document.id, documentType: document.documentType, fileName: document.fileName })}>{t('Reject document')}</button></div>}{scanLabelKey(scanState(document.scanStatus)) && <p className={`text-xs ${canDownloadScanned(scanState(document.scanStatus)) ? 'text-slate-500' : 'font-medium text-rose-700 dark:text-rose-300'}`} data-testid="doc-scan">{t(scanLabelKey(scanState(document.scanStatus)) as string)}{scanRefusalKey(scanState(document.scanStatus)) && ` ${t(scanRefusalKey(scanState(document.scanStatus)) as string)}`}</p>}</div></li>)}</ul> : <p className="mt-3 text-sm text-slate-500">{t('No documents are recorded for this employee.')}</p>}
     </div>
     {canManageDocuments && <EmployeeSignaturesPanel employee={employee} />}
   </section>;

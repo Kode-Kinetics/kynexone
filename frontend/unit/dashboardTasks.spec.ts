@@ -4,8 +4,8 @@ import { buildTasks } from '../src/components/dashboard/taskList';
 import { LOCALE_DICTS } from '../src/i18n/translations';
 
 const NOW = Date.parse('2026-10-26T09:00:00Z');
-const data = (over: { pending?: number; queue?: { id: string; dueAtUtc?: string | null }[]; expired?: number; expiring?: number }) => ({
-  overview: { pendingApprovals: over.pending ?? 0, approvalQueue: (over.queue ?? []).map(q => ({ title: 't', module: 'Leave', createdAtUtc: '2026-10-01T00:00:00Z', ...q })) },
+const data = (over: { capped?: boolean; pending?: number; queue?: { id: string; dueAtUtc?: string | null }[]; expired?: number; expiring?: number }) => ({
+  overview: { pendingApprovals: over.pending ?? 0, approvalsCapped: over.capped ?? false, approvalQueue: (over.queue ?? []).map(q => ({ title: 't', module: 'Leave', createdAtUtc: '2026-10-01T00:00:00Z', ...q })) },
   kpis: { expiredDocuments: over.expired ?? 0, expiringDocuments: over.expiring ?? 0 },
 }) as unknown as DashboardFull;
 
@@ -32,5 +32,13 @@ test.describe('dashboard task list', () => {
       expect(LOCALE_DICTS.ar[k], k).toMatch(/[؀-ۿ]/);
       expect(LOCALE_DICTS.ar[k], k).not.toBe(LOCALE_DICTS.en[k]);
     }
+  });
+  test('a capped approvals count says "500+" and still has Arabic; an exact one does not', () => {
+    const capped = buildTasks({ data: data({ pending: 500, capped: true }), payrollValidationErrors: null, now: NOW }).find(t => t.id === 'approvals')!;
+    expect(capped.title).toBe('{count}+ approvals waiting for you');
+    expect(capped.count).toBe(500);
+    expect(LOCALE_DICTS.ar[capped.title]).toMatch(/[؀-ۿ]/);
+    const exact = buildTasks({ data: data({ pending: 500 }), payrollValidationErrors: null, now: NOW }).find(t => t.id === 'approvals')!;
+    expect(exact.title).toContain('plural');
   });
 });

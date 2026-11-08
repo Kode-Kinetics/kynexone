@@ -167,3 +167,13 @@ export function nextApproverFrom(
   if (role.startsWith('hr') || role.includes('humanresources')) return { kind: 'hr' };
   return { kind: 'unknown' };
 }
+
+/**
+ * Who holds the employee's pending request to cancel approved leave, from GET /leave/requests/{id}
+ * (`cancellation.awaiting`: the people who may decide it). Empty when none is pending or none is named.
+ */
+export function cancellationHoldersFrom(detail: { cancellation?: { status?: string | null; awaiting?: unknown } | null } | null | undefined): string[] {
+  const awaiting = detail?.cancellation?.awaiting;
+  if (!Array.isArray(awaiting)) return [];
+  return awaiting.map((n) => String(n ?? '').trim()).filter(Boolean);
+}

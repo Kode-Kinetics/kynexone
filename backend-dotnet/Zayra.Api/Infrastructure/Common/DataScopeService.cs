@@ -88,6 +88,21 @@ public class DataScopeService : IDataScopeService
             .Where(c => c.Type == "permission")
             .Select(c => c.Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return await ResolvePermissionScopeCoreAsync(permissions, () => ResolveCallerEmployeeIdAsync(caller, tenantId, ct), tenantId, ct);
+    }
+
+    /// <summary>
+    /// The employee-visibility scope of ANOTHER login (not the current caller), from its effective permissions and
+    /// linked employee: the same rules <see cref="ResolveAsync"/> applies to a request's caller, so "who may see
+    /// this employee" is answered one way. Used to find who may decide something (a notification audience).
+    /// It does NOT apply the company boundary of a request's token; the caller narrows by company access itself.
+    /// </summary>
+    public Task<DataScope> ResolveForPermissionsAsync(IEnumerable<string> permissions, int? callerEmployeeId, Guid tenantId, CancellationToken ct)
+        => ResolvePermissionScopeCoreAsync(permissions.ToHashSet(StringComparer.OrdinalIgnoreCase), () => Task.FromResult(callerEmployeeId), tenantId, ct);
+
+    private async Task<DataScope> ResolvePermissionScopeCoreAsync(
+        HashSet<string> permissions, Func<Task<int?>> resolveCallerEmployeeId, Guid tenantId, CancellationToken ct)
+    {
 
         // 1. Organisation-wide access:
         //    - HR/Admin roles: have employees.write (can create/edit any employee)
@@ -103,7 +118,7 @@ public class DataScopeService : IDataScopeService
             return new DataScope { Level = DataScopeLevel.Organization };
 
         // 2. Resolve caller's employee ID
-        var callerEmpId = await ResolveCallerEmployeeIdAsync(caller, tenantId, ct);
+        var callerEmpId = await resolveCallerEmployeeId();
         if (callerEmpId is null)
             return new DataScope { Level = DataScopeLevel.Own, AllowedEmployeeIds = Array.Empty<int>() };
 

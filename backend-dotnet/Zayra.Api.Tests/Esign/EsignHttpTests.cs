@@ -399,7 +399,7 @@ public class EsignHttpTests(EsignFixture fx)
         using var res = await fx.SendAsync(HttpMethod.Get, "/api/ess/policies", e.Token);
         res.StatusCode.Should().Be(HttpStatusCode.OK);
         var row = (await Json(res)).EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == doc.Id);
-        row.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["id", "documentType", "fileName", "expiryDate", "approvalStatus"]);
+        row.EnumerateObject().Select(p => p.Name).Should().BeEquivalentTo(["id", "documentType", "fileName", "expiryDate", "approvalStatus", "rejectionReason"]);  // rejectionReason: additive, G-004 (the employee sees why HR rejected their own file)
     }
 
     [Fact]

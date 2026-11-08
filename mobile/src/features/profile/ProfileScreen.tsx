@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next';
 import { profileApi } from '@/api/adapters';
 import { normalizePickedFile } from '@/api/services';
 import type { EmployeeProfileRecord } from '@/api/profileMapper';
+import type { ChangeRequest } from './changeRequestModel';
 import { useAuthStore } from '@/auth/authStore';
 import { FEATURES } from '@/config/features';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -70,6 +71,7 @@ export default function ProfileScreen() {
   const { theme } = useTheme();
   const f = useFormat();
   const arabic = i18n.language?.startsWith('ar');
+  const tx = t as unknown as (key: string, options?: Record<string, unknown>) => string;
   const [profile, setProfile] = useState<EmployeeProfileRecord | null>(null);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [refreshing, setRefreshing] = useState(false);
@@ -80,6 +82,7 @@ export default function ProfileScreen() {
   const [photoSource, setPhotoSource] = useState<{ uri: string; headers: Record<string, string> } | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const [changes, setChanges] = useState<ChangeRequest[]>([]);
 
   const fetchProfile = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -98,6 +101,12 @@ export default function ProfileScreen() {
   useEffect(() => {
     void fetchProfile();
   }, [fetchProfile]);
+
+  // Where the employee's own change requests stand. Best effort: an older server (or an offline phone) shows none.
+  const fetchChanges = useCallback(async () => {
+    try { setChanges(await profileApi.myChangeRequests()); } catch { setChanges([]); }
+  }, []);
+  useEffect(() => { void fetchChanges(); }, [fetchChanges]);
 
   const country = normalizeCountry(profile?.companyCountry);
   const identity = useMemo(() => (profile ? identityRows(country, profile) : []), [country, profile]);
@@ -169,6 +178,7 @@ export default function ProfileScreen() {
       haptics.success();
       setUpdateOpen(false);
       setNotice({ tone: 'success', text: t('account.profile.updateSent') });
+      void fetchChanges();
     } catch {
       haptics.error();
       setUpdateError(true);
@@ -303,6 +313,29 @@ export default function ProfileScreen() {
               <Text accessibilityLiveRegion="polite" style={[theme.typography.subheadline, styles.flex, { color: theme.colors.text }]}>
                 {notice.text}
               </Text>
+            </Surface>
+          </View>
+        ) : null}
+
+        {changes.length > 0 ? (
+          <View style={styles.section}>
+            <SectionHeader title={t('account.profile.changes.title')} />
+            <Surface contentStyle={styles.card}>
+              {changes.map((c) => (
+                <View key={c.id} accessible style={styles.changeRow}>
+                  <Text style={[theme.typography.callout, { color: theme.colors.text }]}>
+                    {c.fields.length
+                      ? c.fields.map((field) => tx(`account.profile.changes.field.${field}`)).join(', ')
+                      : t('account.profile.changes.fieldsFallback')}
+                  </Text>
+                  <Text style={[theme.typography.footnote, { color: theme.colors.textSecondary }]}>
+                    {[tx(`account.profile.changes.status.${c.state}`), c.createdAt ? f.date(c.createdAt, 'medium') : null].filter(Boolean).join(' · ')}
+                  </Text>
+                  {c.note ? (
+                    <Text style={[theme.typography.footnote, { color: theme.colors.text }]}>{t('account.profile.changes.hrNote', { note: c.note })}</Text>
+                  ) : null}
+                </View>
+              ))}
             </Surface>
           </View>
         ) : null}
@@ -501,6 +534,7 @@ function InfoRow({
 }
 
 const styles = StyleSheet.create({
+  changeRow: { gap: 2, paddingVertical: 8 },
   root: { flex: 1 },
   content: { paddingBottom: 32 },
   section: { paddingHorizontal: 16, marginTop: 16 },

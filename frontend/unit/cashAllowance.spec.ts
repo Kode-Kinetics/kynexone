@@ -5,6 +5,7 @@ import { releaseASlices } from '../src/i18n/releaseA';
 import {
   addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, cashGlChoices, confirmProblems, confirmRequest,
   correctProblems, correctRequest, correctionMonths, financeServerProblem, isCashAllowance, isPendingFinance, settingsFromInfo, staleRunMonths,
+  readinessIssueHref, readinessIssueName, waitingForFinance,
   type AddBenefitForm, type CorrectForm,
 } from '../src/lib/cashAllowance';
 import { blankDraft, draftProblem, inputFromDraft, summarise } from '../src/lib/entitlementMatrix';
@@ -274,4 +275,34 @@ test('every sentence of the Finance confirm and correct panels, the end of servi
     expect(key, code).toBeTruthy();
     expect(/[؀-ۿ]/.test(LOCALE_DICTS.ar[key!] ?? ''), `${code} → ${key}`).toBe(true);
   }
+});
+
+// G-011: the "Waiting for Finance" list on Benefits by grade, and the payroll readiness line that names the allowance.
+
+const pendingInfo = { financePending: true } as CashAllowanceInfo;
+const doneInfo = { financePending: false } as CashAllowanceInfo;
+const comp = (code: string, info: CashAllowanceInfo | null): Pick<MatrixComponent, 'code' | 'cashAllowance'> => ({ code, cashAllowance: info });
+
+test('the Waiting for Finance list names only the pending allowances, only for someone who can confirm', () => {
+  const all = [comp('BEN_GYM', null), comp('ALW_CAR', pendingInfo), comp('ALW_PHONE', doneInfo), comp('ALW_MEAL', pendingInfo)];
+  expect(waitingForFinance(all, true, new Set())).toEqual([{ code: 'ALW_CAR', canConfirm: true }, { code: 'ALW_MEAL', canConfirm: true }]);
+  // The person who added it is told someone else must confirm it; the action is not offered.
+  expect(waitingForFinance(all, true, new Set(['ALW_MEAL']))).toEqual([{ code: 'ALW_CAR', canConfirm: true }, { code: 'ALW_MEAL', canConfirm: false }]);
+  // Without the Finance permission the list is not shown (the grid already says "Finance must confirm it").
+  expect(waitingForFinance(all, false, new Set())).toEqual([]);
+  expect(waitingForFinance([], true, new Set())).toEqual([]);
+});
+
+test('a payroll readiness line is named by the allowance, in the reader’s language, and links where Finance confirms it', () => {
+  const issue = { code: 'ALW_CAR', allowanceNameEn: 'Car allowance', allowanceNameAr: 'بدل السيارة', href: '/benefits/by-grade#waiting-for-finance' };
+  expect(readinessIssueName(issue, 'en')).toBe('Car allowance');
+  expect(readinessIssueName(issue, 'ar')).toBe('بدل السيارة');
+  // An older API (or a removed definition) names nothing: the code is the honest fallback.
+  expect(readinessIssueName({ code: 'ALW_OLD' }, 'en')).toBe('ALW_OLD');
+  expect(readinessIssueName({ code: 'ALW_OLD', allowanceNameEn: ' ', allowanceNameAr: null }, 'ar')).toBe('ALW_OLD');
+  expect(readinessIssueHref(issue)).toBe('/benefits/by-grade#waiting-for-finance');
+  expect(readinessIssueHref({ code: 'ALW_OLD' })).toBe('/benefits/by-grade');
+  // Only an in-app path is ever followed.
+  expect(readinessIssueHref({ code: 'x', href: 'https://evil.example/' })).toBe('/benefits/by-grade');
+  expect(readinessIssueHref({ code: 'x', href: '//evil.example/' })).toBe('/benefits/by-grade');
 });

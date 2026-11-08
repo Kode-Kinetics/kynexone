@@ -34,6 +34,7 @@ public static class NotificationAudience
         nameof(EmployeeDraft),
         nameof(EmployeeTransferRequest),
         nameof(EmployeeChangeRequest),
+        nameof(EmployeeProfileChangeRequest),
         nameof(EmployeeDocument),
         nameof(EmployeeLoan),
         // An approval is always about its subject (a sensitive change lists the fields being changed).
@@ -87,8 +88,18 @@ public static class NotificationAudience
             _ => [role],
         };
         if (roles.Length == 0) return [];
-        var normalized = roles.Select(r => r.ToUpperInvariant()).ToArray();
+        return await RoleHoldersAsync(db, tenantId, roles, companyId, MaxQueueRecipients, ct);
+    }
 
+    /// <summary>
+    /// The active logins holding any of <paramref name="roles"/>, limited to those whose company access covers
+    /// <paramref name="companyId"/> (group-scope logins always qualify). The role query behind
+    /// <see cref="QueueHoldersAsync"/>, for callers that apply their own further filter before capping.
+    /// </summary>
+    public static async Task<IReadOnlyList<Guid>> RoleHoldersAsync(ZayraDbContext db, Guid tenantId, IEnumerable<string> roles,
+        Guid? companyId, int take, CancellationToken ct)
+    {
+        var normalized = roles.Select(r => r.Trim().ToUpperInvariant()).ToArray();
         return await (
                 from user in db.Users.AsNoTracking()
                 join assignment in db.UserRoles.AsNoTracking() on user.Id equals assignment.UserId
@@ -102,8 +113,39 @@ public static class NotificationAudience
                 select user.Id)
             .Distinct()
             .OrderBy(id => id)
-            .Take(MaxQueueRecipients)
+            .Take(take)
             .ToListAsync(ct);
+    }
+
+    /// <summary>
+    /// The active logins whose roles grant EVERY permission in <paramref name="permissionKeys"/> (a user may hold them through
+    /// different roles) and whose company access covers <paramref name="companyId"/> (a group-scope login covers all). This is the
+    /// audience of an action that a permission, not a named role, authorises: the people who could do the thing being asked of
+    /// them. <paramref name="exclude"/> drops logins that must not be told (the subject of the notice).
+    /// </summary>
+    public static async Task<IReadOnlyList<Guid>> PermissionHoldersAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> permissionKeys,
+        Guid? companyId, IReadOnlyCollection<Guid> exclude, CancellationToken ct)
+    {
+        if (permissionKeys.Count == 0) return [];
+        var keys = permissionKeys.ToArray();
+        var excluded = exclude.ToArray();
+        var rows = await (
+                from user in db.Users.AsNoTracking()
+                join assignment in db.UserRoles.AsNoTracking() on user.Id equals assignment.UserId
+                join r in db.Roles.AsNoTracking() on assignment.RoleId equals r.Id
+                join rp in db.RolePermissions.AsNoTracking() on r.Id equals rp.RoleId
+                join p in db.Permissions.AsNoTracking() on rp.PermissionId equals p.Id
+                where user.TenantId == tenantId && user.IsActive && !user.IsDeleted && !excluded.Contains(user.Id)
+                      && (r.TenantId == tenantId || r.TenantId == null) && r.IsActive && !r.IsDeleted
+                      && keys.Contains(p.Key)
+                      && (user.IsGroupScope || (companyId != null && db.UserEntityAccesses.Any(x =>
+                          x.TenantId == tenantId && x.UserId == user.Id && x.IsActive
+                          && (x.CompanyId == companyId || x.GrantMode == "AllCurrentCompanies" || x.GrantMode == "AllCurrentAndFutureCompanies"))))
+                select new { user.Id, p.Key })
+            .Distinct()
+            .ToListAsync(ct);
+        return rows.GroupBy(x => x.Id).Where(g => g.Select(x => x.Key).Distinct(StringComparer.Ordinal).Count() == keys.Length)
+            .Select(g => g.Key).OrderBy(id => id).Take(MaxQueueRecipients).ToList();
     }
 
     /// <summary>Who must act on an approval now: its named approver, else the holders of its role queue.</summary>

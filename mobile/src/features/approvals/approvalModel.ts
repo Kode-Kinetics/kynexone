@@ -26,9 +26,10 @@ export type ApprovalKind =
   | 'RECRUITMENT'
   | 'APPRAISAL'
   | 'EMPLOYEE_CHANGE'
+  | 'TRANSFER'
   | 'OTHER';
 
-export type InboxSource = 'workflow' | 'overtime';
+export type InboxSource = 'workflow' | 'overtime' | 'leaveCancellation' | 'transfer';
 
 export interface PriorDecision {
   stepOrder: number | null;
@@ -44,6 +45,18 @@ export interface OvertimeFacts {
   endUtc: string | null;
   minutes: number | null;
   reason: string | null;
+}
+
+export type TransferStep = 'CurrentManager' | 'NewManager' | 'Hr';
+
+/** What a transfer moves to and which step the caller is deciding. */
+export interface TransferFacts {
+  awaitingStep: TransferStep;
+  target: string | null;
+  effectiveDate: string | null;
+  reason: string | null;
+  /** The server's word: the caller may reject this step (never the employee themselves). */
+  canReject: boolean;
 }
 
 export interface InboxItem {
@@ -73,6 +86,10 @@ export interface InboxItem {
   changeSummary: string | null;
   priorDecisions: PriorDecision[];
   overtime: OvertimeFacts | null;
+  /** Set only for an employee's request to cancel approved leave: what they said, and when they asked. */
+  cancellation?: { reason: string | null; requestedAt: string | null } | null;
+  /** Set on a transfer; absent on every other source. */
+  transfer?: TransferFacts | null;
 }
 
 export type DecisionVerb = 'approved' | 'rejected' | 'returned' | 'other';
@@ -101,6 +118,7 @@ export function approvalKind(entityName?: string | null): ApprovalKind {
   if (v.includes('PAYROLL')) return 'PAYROLL';
   if (v.includes('REQUISITION') || v.includes('RECRUIT')) return 'RECRUITMENT';
   if (v.includes('APPRAISAL')) return 'APPRAISAL';
+  if (v.includes('TRANSFER')) return 'TRANSFER';
   if (v.includes('EMPLOYEE')) return 'EMPLOYEE_CHANGE';
   return 'OTHER';
 }
@@ -158,6 +176,124 @@ export function mapWorkflowApproval(raw: Raw): InboxItem {
     priorDecisions: mapPriorDecisions(raw?.decisions),
     overtime: null,
   };
+}
+
+/**
+ * One row of GET /api/leave/requests/awaiting-decision with kind "Cancellation": an employee asked to cancel leave
+ * that was already approved. It has no row in /approval-requests (cancellations are decided on the leave itself:
+ * POST /leave/requests/{id}/cancel-approve | cancel-reject), so it is its own inbox source. The server only returns
+ * the ones the caller may decide, so it is always decidable here.
+ */
+export function mapLeaveCancellation(raw: Raw): InboxItem {
+  const id = str(raw?.id) ?? '';
+  const requestedAt = str(raw?.cancellationRequestedAtUtc);
+  return {
+    key: `leaveCancellation:${id}`,
+    source: 'leaveCancellation',
+    id,
+    entityId: id,
+    kind: 'LEAVE',
+    title: null,
+    subject: str(raw?.leaveTypeName),
+    requesterName: str(raw?.employeeName),
+    requesterEmployeeId: num(raw?.employeeId),
+    // Waiting since the employee asked, not since the leave was filed.
+    submittedAt: requestedAt,
+    dueAt: null,
+    isOverdue: false,
+    stepOrder: null,
+    canDecide: true,
+    blockedReason: null,
+    changeSummary: null,
+    priorDecisions: [],
+    overtime: null,
+    cancellation: { reason: str(raw?.cancellationReason), requestedAt },
+  };
+}
+
+/**
+ * The cancellations in a GET /leave/requests/awaiting-decision answer ({ items, total, truncated }). `incomplete` is true
+ * when the server stopped reading at its cap, so the screen says the list may be missing some.
+ */
+export function leaveCancellationInbox(response: Raw): { items: InboxItem[]; incomplete: boolean } {
+  const rows = Array.isArray(response?.items) ? (response.items as Raw[]) : [];
+  return {
+    items: rows.filter((r) => str(r?.kind) === 'Cancellation').map(mapLeaveCancellation),
+    incomplete: response?.truncated === true,
+  };
+}
+
+/** Approve cancellation releases the days (final); Keep leave refuses the request and the leave stays approved. */
+export function leaveCancellationOutcome(decision: 'approve' | 'reject'): DecisionOutcome {
+  return decision === 'approve' ? { kind: 'approved' } : { kind: 'rejected' };
+}
+
+const TRANSFER_STEPS: readonly string[] = ['CurrentManager', 'NewManager', 'Hr'];
+
+/**
+ * One row of GET /api/employees/transfers/pending (the transfers whose CURRENT step the caller may decide). Transfers are
+ * not approval requests, so this is their own source. Null when the row is not the caller's to decide.
+ */
+export function mapTransferApproval(raw: Raw): InboxItem | null {
+  const transfer = raw?.transfer as Raw;
+  const step = str(raw?.awaitingStep);
+  if (!transfer || raw?.canDecide !== true || !step || !TRANSFER_STEPS.includes(step)) return null;
+  const id = str(transfer.id) ?? '';
+  if (!id) return null;
+  return {
+    key: `transfer:${id}`,
+    source: 'transfer',
+    id,
+    entityId: id,
+    kind: 'TRANSFER',
+    title: null,
+    subject: null,
+    requesterName: str(raw?.employeeName),
+    requesterEmployeeId: num(transfer.employeeId),
+    submittedAt: str(transfer.createdAtUtc),
+    dueAt: null,
+    isOverdue: false,
+    stepOrder: null,
+    canDecide: true,
+    blockedReason: null,
+    changeSummary: null,
+    priorDecisions: [],
+    overtime: null,
+    transfer: {
+      awaitingStep: step as TransferStep,
+      target: str(transfer.newDepartment) ?? str(transfer.newBranch) ?? str(transfer.newDesignation),
+      effectiveDate: str(transfer.effectiveDate),
+      reason: str(transfer.reason),
+      canReject: raw?.canReject === true,
+    },
+  };
+}
+
+const APPROVE_SEGMENT: Record<TransferStep, string> = {
+  CurrentManager: 'approve-current-manager',
+  NewManager: 'approve-new-manager',
+  Hr: 'approve-hr',
+};
+
+/** The endpoint and body for one decision on a transfer. Reject needs the reason (the server refuses without one). */
+export function transferDecision(
+  item: Pick<InboxItem, 'id' | 'transfer'>,
+  decision: 'approve' | 'reject',
+  comment: string | undefined,
+): { path: string; body: { reason: string } | undefined } {
+  const step = item.transfer?.awaitingStep;
+  if (!step) throw new Error('This transfer is not waiting for a decision.');
+  if (decision === 'approve') return { path: `/employees/transfers/${item.id}/${APPROVE_SEGMENT[step]}`, body: undefined };
+  const reason = comment?.trim() ?? '';
+  if (!reason) throw new Error('A reason is required to reject a transfer.');
+  return { path: `/employees/transfers/${item.id}/reject`, body: { reason } };
+}
+
+/** The true state after a decision: only HR's approval applies the move; a manager's sends it on. */
+export function transferOutcome(step: TransferStep, decision: 'approve' | 'reject'): DecisionOutcome {
+  if (decision === 'reject') return { kind: 'rejected' };
+  if (step === 'Hr') return { kind: 'approved' };
+  return { kind: 'movedOn', next: step === 'NewManager' ? { type: 'role', name: 'HR Manager' } : null };
 }
 
 /** Overtime statuses a line manager decides. PendingHR belongs to HR and is not in the manager's inbox. */
@@ -503,4 +639,24 @@ export function givenName(fullName: string | null | undefined): string | null {
   if (!parts.length) return null;
   if (parts.length > 1 && COMPOUND_FIRST.has(parts[0].toLowerCase())) return `${parts[0]} ${parts[1]}`;
   return parts[0];
+}
+
+/**
+ * The partial-list notices for the sources that failed to load, one translation key per failed source.
+ * A workflow failure must never be reported as an overtime failure (and the reverse): the manager is
+ * told exactly which requests may be missing. Order follows `unavailable`.
+ */
+export type PartialInboxKey =
+  | 'manager.approvals.partialOvertime'
+  | 'manager.approvals.partialWorkflow'
+  | 'manager.approvals.partialCancellation'
+  | 'manager.approvals.partialTransfer';
+const PARTIAL_KEY: Record<InboxSource, PartialInboxKey> = {
+  workflow: 'manager.approvals.partialWorkflow',
+  overtime: 'manager.approvals.partialOvertime',
+  leaveCancellation: 'manager.approvals.partialCancellation',
+  transfer: 'manager.approvals.partialTransfer',
+};
+export function partialInboxKeys(unavailable: readonly InboxSource[]): PartialInboxKey[] {
+  return unavailable.map((source) => PARTIAL_KEY[source]);
 }

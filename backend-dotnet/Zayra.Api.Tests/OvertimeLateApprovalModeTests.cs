@@ -75,6 +75,39 @@ public class OvertimeLateApprovalModeTests
         (await w.Db.PayrollAdjustments.CountAsync()).Should().Be(0);
     }
 
+    /// <summary>
+    /// G-007. The refusal used to promise "it can be settled in the next open period", which Refuse mode never does, so
+    /// the approver waited for a payment that was never coming. The text must say the month is locked, that under the
+    /// current setting the overtime is NOT paid automatically, name the setting and its value, and give HR the ways out.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("Refuse")]
+    public async Task Refuse_Message_IsTruthful_NamesTheSettingAndItsValue_AndGivesHrTheWaysOut(string? mode)
+    {
+        var (w, r) = await ArrangeAsync(mode);
+
+        var result = await Approve(w, r, "late but real");
+
+        var json = Body(result).Json;
+        using var doc = JsonDocument.Parse(json);
+        var message = doc.RootElement.GetProperty("message").GetString()!;
+        message.Should().Contain("2026-06", "it names the locked month");
+        message.Should().Contain("locked");
+        message.Should().Contain("overtime.late_approval_mode").And.Contain("Refuse", "it states the setting and its current value");
+        message.Should().Contain("not be paid automatically");
+        message.Should().Contain("BackPay", "switching the setting is one way out");
+        message.Should().Contain("outside payroll").And.Contain("written", "settling outside payroll with a written basis is the other");
+        message.Should().NotContain("can be settled in the next open period", "the old text promised a settlement Refuse never performs");
+        doc.RootElement.GetProperty("nextOpenPeriod").GetProperty("label").GetString().Should().Be("2026-07");
+        doc.RootElement.GetProperty("setting").GetProperty("key").GetString().Should().Be("overtime.late_approval_mode");
+        doc.RootElement.GetProperty("setting").GetProperty("value").GetString().Should().Be("Refuse");
+
+        var ar = doc.RootElement.GetProperty("messageAr").GetString()!;
+        ar.Should().MatchRegex("\\p{IsArabic}", "an Arabic sentence ships with the English one");
+        ar.Should().Contain("overtime.late_approval_mode").And.Contain("Refuse").And.Contain("BackPay").And.Contain("2026-06");
+    }
+
     [Fact]
     public async Task OpenPeriod_ApprovesAsBefore_InEitherMode()
     {

@@ -28,6 +28,7 @@ import { succession } from './succession';
 import { glEosb } from './glEosb';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
+import { deadEnds } from './deadEnds';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -48,6 +49,7 @@ import { setupGuidedEntry } from './setupGuidedEntry';
 import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
 import { orgRowRemoval } from './orgRowRemoval';
+import { peopleDeadEnds } from './peopleDeadEnds';
 import { designMigration } from './designMigration';
 import { setupRollout } from './setupRollout';
 import { attendanceRules } from './attendanceRules';
@@ -101,6 +103,7 @@ const en: Dict = {
   ...orgRowRemoval.en,
   ...designMigration.en,
   ...setupRollout.en,
+  ...peopleDeadEnds.en,
   ...attendanceRules.en,
   ...payrollRules.en,
   ...gradePackage.en,
@@ -1088,6 +1091,27 @@ const en: Dict = {
   'enum.LeaveRequestStatus.PendingHRApproval': 'Pending HR approval',
   'enum.LeaveRequestStatus.HRApproved': 'HR approved',
   'enum.LeaveRequestStatus.PayrollProcessed': 'Processed in payroll',
+  'enum.LeaveRequestStatus.CancellationRequested': 'Cancellation requested',
+  'Approve this cancellation?': 'Approve this cancellation?',
+  "{name}'s {type} ({start} to {end}, {days} days) will be cancelled and the days returned to their balance. They will be told.": "{name}'s {type} ({start} to {end}, {days} days) will be cancelled and the days returned to their balance. They will be told.",
+  'Approve cancellation': 'Approve cancellation',
+  'Keep this leave?': 'Keep this leave?',
+  "The request to cancel {name}'s {type} ({start} to {end}) will be declined and the leave stays approved. They will be told.": "The request to cancel {name}'s {type} ({start} to {end}) will be declined and the leave stays approved. They will be told.",
+  'Keep leave': 'Keep leave',
+  'Cancellation approved. The leave was cancelled and {name} was told.': 'Cancellation approved. The leave was cancelled and {name} was told.',
+  'Leave kept. {name} was told the cancellation was declined.': 'Leave kept. {name} was told the cancellation was declined.',
+  'The cancellation could not be approved.': 'The cancellation could not be approved.',
+  'The cancellation could not be declined.': 'The cancellation could not be declined.',
+  'Asked to cancel approved leave.': 'Asked to cancel approved leave.',
+  'Asked to cancel approved leave. Reason: {reason}': 'Asked to cancel approved leave. Reason: {reason}',
+  'Leave cancellations awaiting your decision': 'Leave cancellations awaiting your decision',
+  'Waiting on others': 'Waiting on others',
+  'You can see these, but someone else decides them.': 'You can see these, but someone else decides them.',
+  'At step {step}': 'At step {step}',
+  'Waiting for {holder}': 'Waiting for {holder}',
+  'Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.': 'Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.',
+  'Your cancellation request is with {names}.': 'Your cancellation request is with {names}.',
+  'Your cancellation request is waiting for a decision.': 'Your cancellation request is waiting for a decision.',
   'enum.LoanStatus.PendingApproval': 'Pending approval',
   'enum.LoanStatus.PaidInPayroll': 'Paid in payroll',
   'enum.LoanStatus.Disbursed': 'Disbursed',
@@ -1599,6 +1623,7 @@ const en: Dict = {
   ...glEosb.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
+  ...deadEnds.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -1631,6 +1656,7 @@ const ar: Dict = {
   ...orgRowRemoval.ar,
   ...designMigration.ar,
   ...setupRollout.ar,
+  ...peopleDeadEnds.ar,
   ...attendanceRules.ar,
   ...payrollRules.ar,
   ...gradePackage.ar,
@@ -2618,6 +2644,27 @@ const ar: Dict = {
   'enum.LeaveRequestStatus.PendingHRApproval': 'بانتظار موافقة الموارد البشرية',
   'enum.LeaveRequestStatus.HRApproved': 'معتمد من الموارد البشرية',
   'enum.LeaveRequestStatus.PayrollProcessed': 'تمت معالجته في الرواتب',
+  'enum.LeaveRequestStatus.CancellationRequested': 'طُلب الإلغاء',
+  'Approve this cancellation?': 'الموافقة على هذا الإلغاء؟',
+  "{name}'s {type} ({start} to {end}, {days} days) will be cancelled and the days returned to their balance. They will be told.": 'سيتم إلغاء {type} الخاصة بـ {name} ({start} إلى {end}، {days} أيام) وإعادة الأيام إلى رصيده. سيتم إبلاغه.',
+  'Approve cancellation': 'الموافقة على الإلغاء',
+  'Keep this leave?': 'الإبقاء على هذه الإجازة؟',
+  "The request to cancel {name}'s {type} ({start} to {end}) will be declined and the leave stays approved. They will be told.": 'سيتم رفض طلب إلغاء {type} الخاصة بـ {name} ({start} إلى {end}) وتبقى الإجازة معتمدة. سيتم إبلاغه.',
+  'Keep leave': 'إبقاء الإجازة',
+  'Cancellation approved. The leave was cancelled and {name} was told.': 'تمت الموافقة على الإلغاء. أُلغيت الإجازة وتم إبلاغ {name}.',
+  'Leave kept. {name} was told the cancellation was declined.': 'بقيت الإجازة معتمدة. تم إبلاغ {name} برفض طلب الإلغاء.',
+  'The cancellation could not be approved.': 'تعذّرت الموافقة على الإلغاء.',
+  'The cancellation could not be declined.': 'تعذّر رفض طلب الإلغاء.',
+  'Asked to cancel approved leave.': 'طُلب إلغاء إجازة معتمدة.',
+  'Asked to cancel approved leave. Reason: {reason}': 'طُلب إلغاء إجازة معتمدة. السبب: {reason}',
+  'Leave cancellations awaiting your decision': 'طلبات إلغاء إجازات بانتظار قرارك',
+  'Waiting on others': 'بانتظار آخرين',
+  'You can see these, but someone else decides them.': 'يمكنك الاطلاع عليها، لكن القرار فيها لشخص آخر.',
+  'At step {step}': 'في المرحلة {step}',
+  'Waiting for {holder}': 'بانتظار {holder}',
+  'Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.': 'يظهر أول {shown} من أصل {total} طلباً معلقاً. ضيّق النطاق بالشركة أو الفرع لرؤية الباقي.',
+  'Your cancellation request is with {names}.': 'طلب الإلغاء لدى {names}.',
+  'Your cancellation request is waiting for a decision.': 'طلب الإلغاء بانتظار القرار.',
   'enum.LoanStatus.PendingApproval': 'بانتظار الاعتماد',
   'enum.LoanStatus.PaidInPayroll': 'مدفوع عبر الرواتب',
   'enum.LoanStatus.Disbursed': 'تم الصرف',
@@ -3123,6 +3170,7 @@ const ar: Dict = {
   ...glEosb.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
+  ...deadEnds.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

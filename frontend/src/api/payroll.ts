@@ -536,6 +536,11 @@ export interface FinalSettlementListRow {
   paidAtUtc: string | null;
   isOverdue: boolean;
   overdueDays: number;
+  /** G-006: the live off-cycle run that holds this employee (a voided one does not count), else null. */
+  linkedRunId?: string | null;
+  linkedRunStatus?: string | null;
+  /** G-006: approved, no run yet: a Payroll Manager still has to create the off-cycle run. */
+  runDutyOpen?: boolean;
 }
 
 export interface FinalSettlementListResponse {
@@ -643,6 +648,8 @@ export type CashAllowanceProblem = 'no_definition' | 'not_confirmed' | 'no_gl_dr
 export interface CashAllowanceIssue {
   employeeId: number; employeeCode: string; employeeName: string; companyId: string | null; code: string;
   problem: CashAllowanceProblem; message: string;
+  /** The allowance's own name (the code alone told nobody which one it was), and where to fix it. Absent from an older API. */
+  allowanceNameEn?: string | null; allowanceNameAr?: string | null; href?: string | null;
 }
 
 export interface EmployeeSalaryRow {
@@ -848,6 +855,10 @@ export const payrollApi = {
     accrualDate?: string;
     reason?: string;
   }) => client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/approve`, body).then((r) => r.data),
+
+  /** G-006: creates (or returns) the pre-filled OffCycle run that pays an approved settlement. */
+  createFinalSettlementRun: (id: string) =>
+    client.post<{ runId: string; created: boolean }>(`/api/payroll/final-settlements/${id}/offcycle-run`).then((r) => r.data),
 
   cancelFinalSettlement: (id: string, reason: string) =>
     client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/cancel`, { reason }).then((r) => r.data),

@@ -8,6 +8,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
 
@@ -75,6 +76,131 @@ public class LeaveRequestsController : ControllerBase
         return Ok(new PagedResult<LeaveRequest>(items, total, page, pageSize));
     }
 
+    /// <summary>The most pending requests one queue read examines; <c>truncated</c> says when there were more.</summary>
+    public const int QueueScanCap = 1000;
+
+    private static readonly string[] QueueStatuses = ["Submitted", "PendingManagerApproval", "PendingHRApproval", "CancellationRequested"];
+
+    private sealed record QueueScan(List<LeaveRequest> Rows, int Total, bool Cut, DataScope Scope,
+        Dictionary<Guid, LeaveCancellationRequest> Cancellations);
+
+    /// <summary>
+    /// Every pending request (and pending cancellation) in the caller's data scope, oldest first, up to
+    /// <see cref="QueueScanCap"/>. <c>Total</c> is how many are pending in that scope, so a capped read says so.
+    /// </summary>
+    private async Task<QueueScan> ScanPendingAsync(Guid tenantId, Guid? companyId, Guid? branchId, CancellationToken ct)
+    {
+        var scope = await _scopeService.ResolveAsync(User, tenantId, ct);
+        var query = _db.LeaveRequests.AsNoTracking().Where(r => r.TenantId == tenantId && QueueStatuses.Contains(r.Status));
+        if (!scope.IsUnrestricted)
+        {
+            var allowed = scope.AllowedEmployeeIds!.ToList();
+            query = query.Where(r => allowed.Contains(r.EmployeeId));
+        }
+        // The Leave screen's company / branch picker narrows the queue exactly as it narrows the request list.
+        var group = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId, companyId, branchId, ct);
+        if (group is not null) query = query.Where(r => group.Contains(r.EmployeeId));
+        var total = await query.CountAsync(ct);
+        var rows = await query.OrderBy(r => r.SubmittedAtUtc ?? r.CreatedAtUtc).Take(QueueScanCap).ToListAsync(ct);
+
+        var cancelIds = rows.Where(r => r.Status == "CancellationRequested").Select(r => r.Id).ToList();
+        var cancellations = cancelIds.Count > 0
+            ? (await _db.LeaveCancellationRequests.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Status == "Pending" && cancelIds.Contains(x.LeaveRequestId))
+                .ToListAsync(ct)).GroupBy(x => x.LeaveRequestId).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CreatedAtUtc).First())
+            : new Dictionary<Guid, LeaveCancellationRequest>();
+        return new QueueScan(rows, total, total > rows.Count, scope, cancellations);
+    }
+
+    /// <summary>The scanned rows the caller may decide now, by the decision endpoints' own tests.</summary>
+    private async Task<List<LeaveAwaitingDecisionDto>> DecidableAsync(Guid tenantId, Guid userId, QueueScan scan, CancellationToken ct)
+    {
+        var items = new List<LeaveAwaitingDecisionDto>();
+        // The decision endpoints are [Authorize(Roles = "Manager,HR Manager,Admin")]; a caller they would turn away
+        // has nothing to decide.
+        if (!LeaveNotifications.CancellationDeciderRoles.Any(User.IsInRole)) return items;
+        foreach (var r in scan.Rows)
+        {
+            if (r.Status == "CancellationRequested")
+            {
+                // cancel-approve / cancel-reject: a pending cancellation row, scope (applied by the scan), never the employee.
+                if (!scan.Cancellations.TryGetValue(r.Id, out var cancellation) || scan.Scope.CallerEmployeeId == r.EmployeeId) continue;
+                items.Add(LeaveAwaitingDecisionDto.From(r, "Cancellation", cancellation.Reason, cancellation.CreatedAtUtc));
+                continue;
+            }
+            if (!await CanDecideResolvedLeaveStepAsync(tenantId, r.Id, userId, ct)) continue;
+            if (await LeaveService.MakerCheckerRefusalAsync(_db, r, userId, ct) is not null) continue;
+            items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null));
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// The approvals queue: every pending leave request the caller may decide RIGHT NOW (whichever step it is at:
+    /// manager, HR, or a named person), and every pending cancellation of approved leave the caller may decide.
+    /// "May decide" is the same test the decision endpoints apply: the roles they admit, the caller's data scope,
+    /// the routed step (<see cref="CanDecideResolvedLeaveStepAsync"/>) and separation of duties; nothing here
+    /// widens or narrows who is allowed to decide. The old queue listed one status, so HR-step requests never
+    /// appeared on the Leave screen. Reads at most <see cref="QueueScanCap"/> pending requests and says so
+    /// (<c>truncated</c>, with the pending <c>total</c>) rather than silently dropping the rest.
+    /// </summary>
+    [HttpGet("awaiting-decision")]
+    public async Task<IActionResult> AwaitingDecision(
+        [FromQuery] Guid? companyId = null, [FromQuery] Guid? branchId = null, CancellationToken ct = default)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var userId = this.GetUserId();
+        if (userId is null) return Unauthorized();
+        var scan = await ScanPendingAsync(tenantId.Value, companyId, branchId, ct);
+        var items = await DecidableAsync(tenantId.Value, userId.Value, scan, ct);
+        return Ok(new LeaveQueueResponse<LeaveAwaitingDecisionDto>(items, scan.Total, scan.Cut));
+    }
+
+    /// <summary>
+    /// Read-only: pending requests and cancellations in the caller's data scope that the caller may NOT decide, with
+    /// the step each is at and who holds it. For people who see leave but do not decide it (HR Officer, Supervisor),
+    /// and for deciders who want to see what is waiting on someone else. Needs <c>leave.read</c>; scope as everywhere.
+    /// Names are the ones the leave detail already shows to anyone who can see that employee's leave.
+    /// </summary>
+    [HttpGet("waiting-on-others")]
+    public async Task<IActionResult> WaitingOnOthers(
+        [FromQuery] Guid? companyId = null, [FromQuery] Guid? branchId = null, CancellationToken ct = default)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        var userId = this.GetUserId();
+        if (userId is null) return Unauthorized();
+        if (!User.HasPermission("leave.read")) return Ok(new LeaveQueueResponse<LeaveWaitingDto>([], 0, false));
+
+        var scan = await ScanPendingAsync(tenantId.Value, companyId, branchId, ct);
+        var mine = (await DecidableAsync(tenantId.Value, userId.Value, scan, ct)).Select(x => x.Id).ToHashSet();
+        var others = scan.Rows.Where(r => !mine.Contains(r.Id) && scan.Scope.CallerEmployeeId != r.EmployeeId).ToList();
+
+        var ids = others.Select(r => r.Id).ToList();
+        var steps = (await _db.LeaveApprovals.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Decision == "Pending" && ids.Contains(a.LeaveRequestId))
+            .ToListAsync(ct)).GroupBy(a => a.LeaveRequestId).ToDictionary(g => g.Key, g => g.OrderBy(a => a.StepNumber).First());
+
+        var items = new List<LeaveWaitingDto>();
+        foreach (var r in others)
+        {
+            if (r.Status == "CancellationRequested")
+            {
+                if (!scan.Cancellations.ContainsKey(r.Id)) continue;
+                var names = await LeaveNotifications.NamesAsync(_db, tenantId.Value,
+                    await LeaveNotifications.CancellationDecidersAsync(_db, tenantId.Value, r.EmployeeId, ct), ct);
+                items.Add(LeaveWaitingDto.From(r, "Cancellation", null, "Manager / HR Manager / Admin", names));
+                continue;
+            }
+            steps.TryGetValue(r.Id, out var step);
+            var holderRole = string.IsNullOrWhiteSpace(step?.ApproverRole) ? "HR Manager" : step!.ApproverRole;
+            var holderNames = !string.IsNullOrWhiteSpace(step?.ApproverName) ? new[] { step!.ApproverName } : Array.Empty<string>();
+            items.Add(LeaveWaitingDto.From(r, "Decision", step?.StepNumber, holderRole, holderNames));
+        }
+        return Ok(new LeaveQueueResponse<LeaveWaitingDto>(items, scan.Total, scan.Cut));
+    }
+
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct)
     {
@@ -99,7 +225,27 @@ public class LeaveRequestsController : ControllerBase
         var statutory = (await _leaveService.GetKsaStatutoryLeaveHistoryAsync(tenantId.Value, new[] { id }, ct)).GetValueOrDefault(id);
         var statutoryHistory = statutory?.History ?? Array.Empty<StatutoryLeaveHistoryItem>();
 
-        return Ok(new { request, approvals, statutoryHistory, statutory });
+        // A cancellation of approved leave: where it stands and, while it is pending, WHO now holds it, so the
+        // employee is never left looking at "Cancellation requested" with no idea whom it is waiting on.
+        var cancellationRow = await _db.LeaveCancellationRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.LeaveRequestId == id && x.Status != "Closed")
+            .OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
+        object? cancellation = null;
+        if (cancellationRow is not null)
+        {
+            var awaiting = cancellationRow.Status == "Pending"
+                ? await LeaveNotifications.NamesAsync(_db, tenantId.Value,
+                    await LeaveNotifications.CancellationDecidersAsync(_db, tenantId.Value, request.EmployeeId, ct), ct)
+                : [];
+            cancellation = new
+            {
+                id = cancellationRow.Id, status = cancellationRow.Status, reason = cancellationRow.Reason,
+                requestedAtUtc = cancellationRow.CreatedAtUtc, reviewedByName = cancellationRow.ReviewedByName,
+                reviewNotes = cancellationRow.ReviewNotes, reviewedAtUtc = cancellationRow.ReviewedAtUtc, awaiting,
+            };
+        }
+
+        return Ok(new { request, approvals, statutoryHistory, statutory, cancellation });
     }
 
     /// <summary>
@@ -223,13 +369,8 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
-            // The employee and whoever decides the first step; never the whole workspace.
-            await _notifications.NotifyEachAsync(tenantId.Value,
-                [.. await EmployeeLoginsAsync(tenantId.Value, submitted.EmployeeId, ct),
-                 .. await PendingDecidersAsync(tenantId.Value, submitted.Id, submitted.EmployeeId, ct)],
-                "New Leave Request",
-                $"{submitted.EmployeeName} submitted a {submitted.LeaveTypeName} request for {submitted.TotalDays} day(s).",
-                "LeaveRequest", submitted.Id.ToString(), ct);
+            // The employee and whoever decides the first step; never the whole workspace. The same path Self-Service uses.
+            await LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId.Value, submitted, ct);
             return Created($"/api/leave/requests/{submitted.Id}", submitted);
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
@@ -267,11 +408,15 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var result = await _leaveService.ApproveRequestAsync(tenantId.Value, id, approverId, approverName, req.Notes, ct);
-            await _notifications.NotifyEachAsync(tenantId.Value,
-                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct)],
-                "Leave Approved",
-                $"{result.EmployeeName}'s {result.LeaveTypeName} request has been approved.",
-                "LeaveRequest", result.Id.ToString(), ct);
+            // "Leave Approved" is true only when the LAST step has decided. After an intermediate step of a
+            // multi-step route the request is still pending the next approver, and the employee is told nothing
+            // (these notices carry one string, no bilingual template, so there is no honest "now with Y" to send).
+            if (result.Status == "Approved")
+                await _notifications.NotifyEachAsync(tenantId.Value,
+                    [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct)],
+                    "Leave Approved",
+                    $"{result.EmployeeName}'s {result.LeaveTypeName} request has been approved.",
+                    "LeaveRequest", result.Id.ToString(), ct);
             // A multi-step chain moved on: tell whoever decides the next step.
             await _notifications.NotifyEachAsync(tenantId.Value,
                 [.. await PendingDecidersAsync(tenantId.Value, result.Id, result.EmployeeId, ct)],
@@ -383,6 +528,8 @@ public class LeaveRequestsController : ControllerBase
             leaveRequest.Status = "CancellationRequested";
             _db.LeaveCancellationRequests.Add(cancellation);
             await _db.SaveChangesAsync(ct);
+            // Nobody decides what nobody knows about: tell everyone who may decide it.
+            await LeaveNotifications.NotifyCancellationRequestedAsync(_db, _notifications, tenantId.Value, leaveRequest, req.Reason, ct);
             return Accepted(new { request = leaveRequest, cancellation });
         }
 
@@ -428,6 +575,7 @@ public class LeaveRequestsController : ControllerBase
             // employee's leave lock (see LeaveService.ApproveCancellationAsync). The decision used to be a
             // second save after the cancellation committed: a failure in between stranded it Pending forever.
             var leave = await _leaveService.ApproveCancellationAsync(tenantId.Value, id, reviewer, req.Notes ?? string.Empty, ct);
+            await LeaveNotifications.NotifyCancellationDecidedAsync(_db, _notifications, tenantId.Value, leave, approved: true, req.Notes, ct);
             return Ok(leave);
         }
         catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
@@ -479,6 +627,7 @@ public class LeaveRequestsController : ControllerBase
                 req.Notes ?? string.Empty, ct);
         }
         catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
+        await LeaveNotifications.NotifyCancellationDecidedAsync(_db, _notifications, tenantId.Value, leave, approved: false, req.Notes, ct);
         return Ok(LeaveRequestStateDto.Project(leave));
     }
 
@@ -796,25 +945,9 @@ public class LeaveRequestsController : ControllerBase
     private Task<IReadOnlyList<Guid>> EmployeeLoginsAsync(Guid tenantId, int employeeId, CancellationToken ct)
         => NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, employeeId, ct);
 
-    /// <summary>
-    /// Who decides the request's pending step: the named approver, else the holders of its role queue in the
-    /// employee's company (the roles <see cref="CanDecideResolvedLeaveStepAsync"/> accepts). Empty when nothing
-    /// is pending, or for a reporting-line queue with nobody named (see NotificationAudience.QueueHoldersAsync).
-    /// </summary>
-    private async Task<IReadOnlyList<Guid>> PendingDecidersAsync(Guid tenantId, Guid leaveRequestId, int employeeId, CancellationToken ct)
-    {
-        var pending = await _db.LeaveApprovals.AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == leaveRequestId && a.Decision == "Pending")
-            .OrderBy(a => a.StepNumber)
-            .FirstOrDefaultAsync(ct);
-        if (pending is null) return [];
-        if (pending.ApproverId is Guid named && named != Guid.Empty) return [named];
-        var companyId = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-            .Select(e => e.CompanyId)
-            .FirstOrDefaultAsync(ct);
-        return await NotificationAudience.QueueHoldersAsync(_db, tenantId, pending.ApproverRole, companyId, ct);
-    }
+    /// <summary>Who decides the request's pending step (see <see cref="LeaveNotifications.PendingDecidersAsync"/>).</summary>
+    private Task<IReadOnlyList<Guid>> PendingDecidersAsync(Guid tenantId, Guid leaveRequestId, int employeeId, CancellationToken ct)
+        => LeaveNotifications.PendingDecidersAsync(_db, tenantId, leaveRequestId, employeeId, ct);
 
     private async Task<bool> CanDecideResolvedLeaveStepAsync(Guid tenantId, Guid leaveRequestId, Guid approverId, CancellationToken ct)
     {
@@ -859,6 +992,57 @@ public record SubmitLeaveRequestRequest(
     // separate event from earlier leave of the same kind — the reason. Ignored for other leave.
     DateOnly? StatutoryEventDate = null,
     string? SeparateEventReason = null);
+
+/// <summary>A queue read: its rows, how many requests are pending in the caller's scope, and whether the read stopped short.</summary>
+public record LeaveQueueResponse<T>(IReadOnlyList<T> Items, int Total, bool Truncated);
+
+/// <summary>A pending request the viewer may see but not decide: where it is and who holds it.</summary>
+public record LeaveWaitingDto(
+    Guid Id,
+    int EmployeeId,
+    string EmployeeName,
+    string LeaveTypeName,
+    DateOnly StartDate,
+    DateOnly EndDate,
+    decimal TotalDays,
+    string Status,
+    /// <summary>"Decision" (a request at some step) or "Cancellation" (approved leave someone asked to cancel).</summary>
+    string Kind,
+    int? StepNumber,
+    string HolderRole,
+    IReadOnlyList<string> HolderNames)
+{
+    public static LeaveWaitingDto From(LeaveRequest r, string kind, int? stepNumber, string holderRole, IReadOnlyList<string> holderNames) => new(
+        r.Id, r.EmployeeId, r.EmployeeName, r.LeaveTypeName, r.StartDate, r.EndDate, r.TotalDays, r.Status, kind,
+        stepNumber, holderRole, holderNames);
+}
+
+/// <summary>One row of the leave approvals queue: a request to decide, or a cancellation of approved leave to decide.</summary>
+public record LeaveAwaitingDecisionDto(
+    Guid Id,
+    int EmployeeId,
+    string EmployeeName,
+    string DepartmentName,
+    string DesignationTitle,
+    Guid LeaveTypeId,
+    string LeaveTypeName,
+    DateOnly StartDate,
+    DateOnly EndDate,
+    decimal TotalDays,
+    string Status,
+    string Reason,
+    bool IsEmergency,
+    DateTime? SubmittedAtUtc,
+    /// <summary>"Decision" (approve or reject the request) or "Cancellation" (approve the cancellation or keep the leave).</summary>
+    string Kind,
+    string? CancellationReason,
+    DateTime? CancellationRequestedAtUtc)
+{
+    public static LeaveAwaitingDecisionDto From(LeaveRequest r, string kind, string? cancellationReason, DateTime? cancellationRequestedAtUtc) => new(
+        r.Id, r.EmployeeId, r.EmployeeName, r.DepartmentName, r.DesignationTitle, r.LeaveTypeId, r.LeaveTypeName,
+        r.StartDate, r.EndDate, r.TotalDays, r.Status, r.Reason, r.IsEmergency, r.SubmittedAtUtc, kind,
+        cancellationReason, cancellationRequestedAtUtc);
+}
 
 public record ApproveLeaveRequest(string? Notes);
 public record RejectLeaveRequestBody(string Reason);

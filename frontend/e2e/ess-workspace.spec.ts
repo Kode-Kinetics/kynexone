@@ -89,6 +89,9 @@ async function boot(page: Page, route: string, opts: BootOptions = {}) {
       return json(opts.letters ?? []);
     }
     if (path === '/api/ess/payslips') return json([]);
+    // Both read a plain array. The catch-all below is a paged object, which these cards cannot map over.
+    if (path === '/api/ess/documents') return json([]);
+    if (path === '/api/ess/profile-change-requests/mine') return json([]);
     if (path === '/api/tenant-admin/localization') return json({ currencyCode: 'SAR' });
     if (path === '/api/notifications') return json([]);
     return json({ items: [], total: 0 });

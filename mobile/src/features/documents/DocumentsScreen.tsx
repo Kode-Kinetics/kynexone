@@ -28,6 +28,7 @@ import {
 import { daysBetween } from '@/features/approvals/teamModel';
 import { useManagerText } from '@/features/approvals/useManagerText';
 import type { EmployeeDocument } from '@/types';
+import { documentReviewState } from './documentReview';
 
 /** Document types: `value` is what the API stores (English, read by HR on the web); `key` is the label. */
 const DOCUMENT_TYPES = [
@@ -59,11 +60,8 @@ function useDocText() {
       return key ? tx(`manager.docs.types.${key}`) : value;
     },
     review: (doc: EmployeeDocument): { tone: Tone; label: string } => {
-      const v = (doc.verificationStatus ?? '').toLowerCase();
-      if (v === 'approved' || v === 'verified') return { tone: 'success', label: tx('manager.docs.status.verified') };
-      if (v === 'pending') return { tone: 'info', label: tx('manager.docs.status.pending') };
-      if (v === 'rejected') return { tone: 'danger', label: tx('manager.docs.status.rejected') };
-      return { tone: 'neutral', label: tx('manager.docs.status.uploaded') };
+      const { tone, key } = documentReviewState(doc.verificationStatus);
+      return { tone, label: tx(`manager.docs.status.${key}`) };
     },
   };
 }

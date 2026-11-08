@@ -44,7 +44,7 @@ public static class AckCertificateRenderer
         {
             page.Size(PageSizes.A4);
             page.Margin(40);
-            page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily));
+            page.DefaultTextStyle(s => s.FontSize(10).FontColor(Colors.Grey.Darken3).FontFamily(DocumentFonts.LatinFamily, DocumentFonts.ArabicFamily).TextLayerSafe());
             page.Header().Column(col =>
             {
                 col.Item().Text(d.CompanyName).FontSize(13).Bold();

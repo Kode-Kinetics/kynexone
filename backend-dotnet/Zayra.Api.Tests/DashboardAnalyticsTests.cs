@@ -44,6 +44,9 @@ public class DashboardAnalyticsTests
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
             new Claim("permission", "payroll.read"),
+            // The approvals count is the caller's own queue: an approver, for whom an unassigned step is theirs to decide.
+            new Claim("permission", "approvals.decide"),
+            new Claim("permission", "manager.approve"),
         }, "test"));
         return new DashboardController(db,
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),

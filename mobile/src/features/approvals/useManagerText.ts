@@ -60,6 +60,12 @@ export function useManagerText() {
 
     const outcome = (o: DecisionOutcome, item: InboxItem): string => {
       const vars = { subject: subject(item), name: requester(item) };
+      // A cancellation of approved leave has its own words: "approved" means the leave is cancelled, "rejected" that it stays.
+      if (item.cancellation) {
+        return o.kind === 'rejected'
+          ? t('manager.approvals.outcome.cancellationKept', vars)
+          : t('manager.approvals.outcome.cancellationApproved', vars);
+      }
       switch (o.kind) {
         case 'approved': return t('manager.approvals.outcome.approved', vars);
         case 'rejected': return t('manager.approvals.outcome.rejected', vars);
@@ -83,7 +89,7 @@ export function useManagerText() {
 export type ManagerText = ReturnType<typeof useManagerText>;
 
 /** Icon per approval kind (non-directional, never mirrored). */
-export const KIND_ICON: Record<ApprovalKind, 'airplane-outline' | 'time-outline' | 'create-outline' | 'card-outline' | 'cash-outline' | 'document-text-outline' | 'briefcase-outline' | 'star-outline' | 'person-outline' | 'document-outline'> = {
+export const KIND_ICON: Record<ApprovalKind, 'airplane-outline' | 'time-outline' | 'create-outline' | 'card-outline' | 'cash-outline' | 'document-text-outline' | 'briefcase-outline' | 'star-outline' | 'person-outline' | 'swap-horizontal-outline' | 'document-outline'> = {
   LEAVE: 'airplane-outline',
   OVERTIME: 'time-outline',
   ATTENDANCE_CORRECTION: 'create-outline',
@@ -93,5 +99,6 @@ export const KIND_ICON: Record<ApprovalKind, 'airplane-outline' | 'time-outline'
   RECRUITMENT: 'briefcase-outline',
   APPRAISAL: 'star-outline',
   EMPLOYEE_CHANGE: 'person-outline',
+  TRANSFER: 'swap-horizontal-outline',
   OTHER: 'document-outline',
 };

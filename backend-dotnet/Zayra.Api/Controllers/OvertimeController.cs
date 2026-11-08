@@ -1215,7 +1215,15 @@ public class OvertimeController : ControllerBase
             return (Conflict(new
             {
                 code = "overtime_period_closed",
-                message = $"The {closed} payroll period is closed. This overtime stays pending; it can be settled in the next open period, {nextOpen.label}.",
+                message = $"The {closed} payroll month is locked, so this overtime cannot be approved into it. "
+                    + $"The setting {PolicyRegistry.OvertimeLateApprovalMode} is currently {mode}: under it this overtime will not be paid automatically in {nextOpen.label} or any later run, and the request stays pending. "
+                    + $"HR can switch {PolicyRegistry.OvertimeLateApprovalMode} to BackPay and approve again with a reason, "
+                    + "or settle the amount outside payroll and then reject this request with a written note recording the basis of that settlement.",
+                messageAr = $"شهر الرواتب {closed} مقفل، لذلك لا يمكن اعتماد هذا العمل الإضافي ضمنه. "
+                    + $"الإعداد {PolicyRegistry.OvertimeLateApprovalMode} قيمته الحالية {mode}: وفقه لن يُصرف هذا العمل الإضافي تلقائيا في {nextOpen.label} ولا في أي مسير لاحق، ويبقى الطلب معلقا. "
+                    + $"يمكن للموارد البشرية تغيير الإعداد {PolicyRegistry.OvertimeLateApprovalMode} إلى BackPay ثم الاعتماد مجددا مع ذكر السبب، "
+                    + "أو تسوية المبلغ خارج مسير الرواتب ثم رفض هذا الطلب مع ملاحظة مكتوبة توثق أساس التسوية.",
+                setting = new { key = PolicyRegistry.OvertimeLateApprovalMode, value = mode },
                 nextOpenPeriod = nextOpen,
             }), null);
 

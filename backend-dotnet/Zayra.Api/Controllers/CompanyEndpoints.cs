@@ -96,7 +96,7 @@ internal static class CompanyEndpoints
                 var gate = await CompanyCreationGate.EvaluateAsync(db, tenantId.Value, ct);
                 if (!gate.Allowed) return GateRefusal(c, gate);
                 if (EmailDomainNeedsSecurityAdmin(c, null, request.EmailDomain)) return EmailDomainForbidden(c);
-                var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct, gate.AsDraft);
+                var company = await organization.CreateCompanyAsync(tenantId.Value, request, context, ct);
                 committing = company.Id;
                 return created(company);
             }

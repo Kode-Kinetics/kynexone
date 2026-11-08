@@ -4,6 +4,7 @@ import { requirePage } from '../lib/listResponse';
 import type { PagedResult } from './organization';
 import type { EmployeeAccessState } from './employeeAccess';
 import type { SalaryAllowanceView } from '../lib/salaryAllowances';
+import { transferApprovePath, transferClosePath, type EmployeeTransferView } from '../lib/transferSteps';
 
 export interface OrgChartNodeDto {
   id: number;
@@ -421,6 +422,34 @@ export interface EmployeeDocument {
   uploadedAtUtc: string;
   /** CD66: `clean`, `not_scanned_trusted_source`, `quarantined` or `quarantined_pending`; absent on older APIs. */
   scanStatus?: string;
+  /** G-004: why HR rejected it. Present only on a Rejected document, and absent on older APIs. */
+  rejectionReason?: string | null;
+  verifiedAtUtc?: string | null;
+  /** G-004: an identity, payroll or contract document: verifying it needs employees.sensitive. Absent on older APIs. */
+  isProtected?: boolean;
+}
+
+/** G-004: one document waiting for HR to verify it, as the "Documents to verify" queue lists it. */
+export interface PendingDocumentRow {
+  documentId: string;
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  companyId: string | null;
+  documentType: string;
+  documentCategory: string;
+  fileName: string;
+  uploadedAtUtc: string;
+  expiryDate: string | null;
+  scanStatus: string;
+  isProtected: boolean;
+}
+
+export interface PendingDocumentsPage {
+  items: PendingDocumentRow[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface EmployeeHistory {
@@ -976,10 +1005,34 @@ export const employeesApi = {
 
   documents: (id: number) => client.get<EmployeeDocument[]>(`/api/employees/${id}/documents`).then((r) => r.data),
 
+  /** G-004: the cross-employee queue of documents waiting for verification (oldest first). */
+  pendingDocuments: (page = 1, pageSize = 25) =>
+    client.get<PendingDocumentsPage>('/api/employees/documents/pending-verification', { params: { page, pageSize } }).then((r) => r.data),
+  /** The stored file through the authenticated route, so HR reads it before deciding. */
+  downloadDocument: (documentId: string) =>
+    client.get<Blob>(`/api/employees/documents/${documentId}/download`, { responseType: 'blob' }).then((r) => r.data),
+  verifyDocument: (employeeId: number, documentId: string, notes?: string) =>
+    client.post<EmployeeDocument>(`/api/employees/${employeeId}/documents/${documentId}/verify`, { notes: notes || null }).then((r) => r.data),
+  rejectDocument: (employeeId: number, documentId: string, reason: string) =>
+    client.post<EmployeeDocument>(`/api/employees/${employeeId}/documents/${documentId}/reject`, { reason }).then((r) => r.data),
+
   history: (id: number) => client.get<EmployeeHistory[]>(`/api/employees/${id}/history`).then((r) => r.data),
 
   transfer: (id: number, data: EmployeeTransferCreateRequest) =>
     client.post<EmployeeTransferRequest>(`/api/employees/${id}/transfer`, data).then((r) => r.data),
+
+  /** Transfers waiting on the signed-in user, the step they may decide. */
+  pendingTransfers: () => client.get<EmployeeTransferView[]>('/api/employees/transfers/pending').then((r) => r.data),
+  /** One employee's transfers with their step, who holds it, and whether the signed-in user may decide it. */
+  transfersFor: (id: number) => client.get<EmployeeTransferView[]>(`/api/employees/${id}/transfers`).then((r) => r.data),
+  /** Rejects (with the reason the decider wrote) or withdraws (reason optional) an open transfer. */
+  closeTransfer: (view: EmployeeTransferView, action: 'reject' | 'withdraw', reason: string) =>
+    client.post(transferClosePath(view.transfer.id, action), { reason }).then((r) => r.data),
+  /** Approves the step the transfer waits at, through the same endpoint the server has always had for that step. */
+  approveTransfer: (view: EmployeeTransferView) => {
+    if (!view.awaitingStep) return Promise.reject(new Error('This transfer is not waiting for a decision.'));
+    return client.post(transferApprovePath(view.transfer.id, view.awaitingStep)).then((r) => r.data);
+  },
 
   reports: {
     headcount: () => client.get<EmployeeHeadcountReport>('/api/employees/reports/headcount').then((r) => r.data),

@@ -10,9 +10,11 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { PendingTransfersPanel } from '../components/people/PendingTransfersPanel';
 import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { SlateApprovalLink } from '../components/succession/SlateApprovalLink';
 import { leaveRequestsApi } from '../api/leave';
+import { LeaveCancellationQueue } from '../components/leave/LeaveCancellationQueue';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { EnumLabel, enumLabel } from '../components/EnumLabel';
@@ -261,6 +263,8 @@ export function ApprovalsPage() {
         </button>
       </div>
 
+      <PendingTransfersPanel />
+
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((m) => {
           const Icon = m.icon;
@@ -325,6 +329,9 @@ export function ApprovalsPage() {
           {error}
         </div>
       )}
+
+      {/* Cancellations of approved leave have no row in the shared approvals table; they are decided here. */}
+      <LeaveCancellationQueue />
 
       <div className="surface overflow-hidden">
         <div className="overflow-x-auto">

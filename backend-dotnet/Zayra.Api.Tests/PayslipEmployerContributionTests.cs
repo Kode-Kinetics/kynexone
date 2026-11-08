@@ -247,7 +247,7 @@ public class PayslipEmployerContributionTests
             CompanyName: "Demo Co"));
 
         using var document = PdfDocument.Open(pdf);
-        // Extracted text loses the "ti" ligature ("Deduc ons"), so assert on section ORDER and content.
+        // Section ORDER and content, read back from the extracted text.
         var text = string.Concat(document.GetPages().Select(p => p.Text)).Replace(" ", string.Empty);
         var deductionsAt = text.IndexOf("DEDUCTIONS", StringComparison.Ordinal);
         var netAt = text.IndexOf("NETPAY", StringComparison.Ordinal);

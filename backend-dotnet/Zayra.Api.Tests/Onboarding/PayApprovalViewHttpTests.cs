@@ -150,6 +150,9 @@ public class PayApprovalViewHttpTests : IClassFixture<HireIntegrityHttpFixture>
     {
         var hr = await _fx.NewUserAsync("od4b", "employees.write", "employees.read");
         var other = await _fx.NewUserAsync("od4bo", "employees.read", "employees.sensitive");
+        // Strict SoD refuses a salaried hire (422 no_eligible_approver) unless a second payroll.approve holder exists, and the
+        // fixture is shared, so the test must seed its own approver instead of relying on an earlier test having created one.
+        await _fx.NewUserAsync("od4bf", "payroll.approve");
         var (id, _) = await CreateHireAsync(hr);
         (await ListAsync(other)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await DetailAsync(other, id)).StatusCode.Should().Be(HttpStatusCode.Forbidden);

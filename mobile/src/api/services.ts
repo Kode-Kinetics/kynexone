@@ -56,18 +56,25 @@ import {
   balanceFacts,
   mapLeaveFacts,
   decidableOvertime,
+  leaveCancellationInbox,
+  leaveCancellationOutcome,
   mapOvertimeApproval,
   mapWorkflowApproval,
   mergeInbox,
+  mapTransferApproval,
+  transferDecision,
+  transferOutcome,
   myDecisionsFrom,
   overtimeOutcome,
   workflowOutcome,
   type BalanceFacts,
   type DecisionOutcome,
   type InboxItem,
+  type InboxSource,
   type LeaveFacts,
   type MyDecision,
 } from '@/features/approvals/approvalModel';
+import { mapChangeRequests, type ChangeRequest } from '@/features/profile/changeRequestModel';
 import { overlapping, teamTodayCounts, type OutEntry, type TeamDay, type TeamMemberToday } from '@/features/approvals/teamModel';
 import { teamCalendarApi } from './teamCalendar';
 import type {
@@ -1383,6 +1390,11 @@ export const profileApi = {
     };
   },
 
+  /** The employee's own older profile change requests and where each stands (GET /api/ess/profile-change-requests/mine). */
+  async getMyChangeRequests(): Promise<ChangeRequest[]> {
+    return mapChangeRequests(await apiGet<unknown>('/ess/profile-change-requests/mine'));
+  },
+
   async requestProfileUpdate(changes: Record<string, string | undefined>): Promise<void> {
     const cleaned = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined && v !== ''));
     await apiPut('/ess/profile-change-request', {
@@ -1608,19 +1620,23 @@ export const approvalsApi = {
    * If one source fails the other is still shown and `unavailable` names the missing one, so a
    * partial list is never presented as complete.
    */
-  async getInbox(): Promise<{ items: InboxItem[]; unavailable: ('workflow' | 'overtime')[] }> {
+  async getInbox(): Promise<{ items: InboxItem[]; unavailable: InboxSource[] }> {
     const self = Number(await getCurrentEmployeeId());
     const selfId = Number.isFinite(self) && self > 0 ? self : null;
-    const [workflow, overtime] = await Promise.allSettled([
+    const [workflow, overtime, cancellations, transfers] = await Promise.allSettled([
       fetchAllPages<any>((page, pageSize) =>
         apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
       ),
       fetchAllPages<any>((page, pageSize) =>
         apiGet<BackendPaged<any>>(`/overtime/requests?status=PendingManager&page=${page}&pageSize=${pageSize}`)
       ),
+      // Employees' requests to cancel APPROVED leave: no row in /approval-requests, decided on the leave itself.
+      apiGet<any>('/leave/requests/awaiting-decision'),
+      // Transfers are not approval requests: the server lists the ones whose current step this caller may decide.
+      apiGet<any[]>('/employees/transfers/pending'),
     ]);
     if (workflow.status === 'rejected' && overtime.status === 'rejected') throw workflow.reason;
-    const unavailable: ('workflow' | 'overtime')[] = [];
+    const unavailable: InboxSource[] = [];
     const workflowItems = workflow.status === 'fulfilled' ? workflow.value.map(mapWorkflowApproval) : [];
     if (workflow.status === 'rejected') unavailable.push('workflow');
     let overtimeItems: InboxItem[] = [];
@@ -1651,7 +1667,25 @@ export const approvalsApi = {
       // 403 = this login has no overtime approval rights: nothing is missing, there is nothing to show.
       unavailable.push('overtime');
     }
-    return { items: mergeInbox(workflowItems, overtimeItems), unavailable };
+    let cancellationItems: InboxItem[] = [];
+    if (cancellations.status === 'fulfilled') {
+      const read = leaveCancellationInbox(cancellations.value);
+      cancellationItems = read.items;
+      // The server read stopped at its cap: say the list may be missing some rather than present it as complete.
+      if (read.incomplete) unavailable.push('leaveCancellation');
+    } else if (cancellations.reason?.response?.status !== 403) {
+      unavailable.push('leaveCancellation');
+    }
+    let transferItems: InboxItem[] = [];
+    if (transfers.status === 'fulfilled') {
+      transferItems = (Array.isArray(transfers.value) ? transfers.value : [])
+        .map(mapTransferApproval)
+        .filter((x): x is InboxItem => x !== null);
+    } else if (transfers.reason?.response?.status !== 403) {
+      // 403 = this login holds neither transfer approval: nothing is missing, there is nothing to show.
+      unavailable.push('transfer');
+    }
+    return { items: mergeInbox(workflowItems, overtimeItems, cancellationItems, transferItems), unavailable };
   },
 
   /**
@@ -1730,6 +1764,17 @@ export const approvalsApi = {
   /** Approve or reject one inbox item through its own source's endpoint; returns the TRUE resulting state. */
   async decide(item: InboxItem, decision: 'approve' | 'reject', comment?: string): Promise<DecisionOutcome> {
     const notes = comment?.trim() || undefined;
+    if (item.source === 'leaveCancellation') {
+      // cancel-approve releases the days and cancels the leave; cancel-reject (Keep leave) leaves it approved.
+      await apiPost<any>(`/leave/requests/${item.id}/${decision === 'approve' ? 'cancel-approve' : 'cancel-reject'}`, { notes });
+      return leaveCancellationOutcome(decision);
+    }
+    if (item.source === 'transfer') {
+      const step = item.transfer?.awaitingStep;
+      const call = transferDecision(item, decision, notes);
+      await apiPost<any>(call.path, call.body);
+      return step ? transferOutcome(step, decision) : { kind: 'recorded' };
+    }
     if (item.source === 'overtime') {
       // OvertimeDecisionRequest(int ApprovedMinutes, string? Notes): a manager approves the hours as requested.
       const r = await apiPost<any>(`/overtime/requests/${item.id}/${decision}`, {
