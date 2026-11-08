@@ -159,7 +159,7 @@ public class DashboardDataScopeTests
         await using var db = CreateDb();
         var w = await SeedAsync(db);
 
-        var d = await FullAs(db, CreateCache(), w.TenantId, ManagerScope(w), "dashboard.read", "manager.read", "employees.read");
+        var d = await FullAs(db, CreateCache(), w.TenantId, ManagerScope(w), "dashboard.read", "manager.read", "employees.read", "approvals.decide", "manager.approve");
 
         d.Summary.TotalEmployees.Should().Be(3, "a manager's dashboard is their three reports, not the tenant's ten people");
         d.Summary.ActiveEmployees.Should().Be(3);
@@ -198,8 +198,8 @@ public class DashboardDataScopeTests
         var d = await FullAs(db, CreateCache(), w.TenantId, EmployeeScope(me), "dashboard.read", "ess.read");
 
         d.Summary.TotalEmployees.Should().Be(1, "an employee's dashboard is their own record");
-        d.Overview.PendingApprovals.Should().Be(1);
-        d.Overview.ApprovalQueue.Should().ContainSingle().Which.EmployeeId.Should().Be(me.Id);
+        d.Overview.PendingApprovals.Should().Be(0, "an employee decides nothing, least of all an approval about themselves: nothing is waiting for them");
+        d.Overview.ApprovalQueue.Should().BeEmpty();
         d.Overview.OpenLeaveRequests.Should().Be(1);
         d.Overview.ComplianceAlertsTotal.Should().Be(1);
         d.Overview.Alerts.Should().OnlyContain(a => a.EmployeeId == me.Id);
@@ -220,9 +220,9 @@ public class DashboardDataScopeTests
         var w = await SeedAsync(db);
         var shared = CreateCache();
 
-        var hr = await FullAs(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read");
-        var manager = await FullAs(db, shared, w.TenantId, ManagerScope(w), "manager.read", "employees.read");
-        var hrAgain = await FullAs(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read");
+        var hr = await FullAs(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read", "approvals.decide", "manager.approve");
+        var manager = await FullAs(db, shared, w.TenantId, ManagerScope(w), "manager.read", "employees.read", "approvals.decide", "manager.approve");
+        var hrAgain = await FullAs(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read", "approvals.decide", "manager.approve");
 
         hr.Summary.TotalEmployees.Should().Be(w.Everyone);
         manager.Summary.TotalEmployees.Should().Be(3, "the manager must not be served HR's cached organization payload");
@@ -280,11 +280,11 @@ public class DashboardDataScopeTests
         var w = await SeedAsync(db);
         var shared = CreateCache();
         // HR loads first, so an organization entry is sitting in the cache.
-        await Ctrl(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read").Overview(default);
+        await Ctrl(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read", "approvals.decide", "manager.approve").Overview(default);
         await Ctrl(db, shared, w.TenantId, OrganizationScope, "employees.write", "payroll.read").Trends(6);
 
         var overview = Assert.IsType<DashboardOverviewDto>(Assert.IsType<OkObjectResult>(
-            await Ctrl(db, shared, w.TenantId, ManagerScope(w), "manager.read").Overview(default)).Value);
+            await Ctrl(db, shared, w.TenantId, ManagerScope(w), "manager.read", "approvals.decide", "manager.approve").Overview(default)).Value);
         var trends = Assert.IsAssignableFrom<IReadOnlyList<DashboardTrendDto>>(Assert.IsType<OkObjectResult>(
             await Ctrl(db, shared, w.TenantId, ManagerScope(w), "manager.read").Trends(6)).Value);
 

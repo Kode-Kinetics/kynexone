@@ -8,9 +8,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Caching.Memory;
+using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Attendance;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Approvals;
+using Zayra.Api.Infrastructure.Audit;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Modules;
 using Zayra.Api.Models;
@@ -44,16 +48,20 @@ public class DashboardController : ControllerBase
         QiwaRequiredDocs.Select(d => d.ToLowerInvariant()).ToArray();
 
     private readonly ITenantModuleService _modules;
+    private readonly IApprovalWorkflowService _approvals;
 
     public DashboardController(
         ZayraDbContext db,
         IDistributedCache cache,
         IDataScopeService scopeService,
-        ITenantModuleService? modules = null)
+        ITenantModuleService? modules = null,
+        IApprovalWorkflowService? approvals = null)
     {
         _db = db;
         _cache = cache;
         _scopeService = scopeService;
+        // The decision check lives in the approval service; the dashboard asks it rather than keeping a second copy of "who may decide".
+        _approvals = approvals ?? new ApprovalWorkflowService(db, new AuditService(db));
         // Optional with concrete fallback (house pattern) so direct constructions keep working.
         _modules = modules ?? new TenantModuleService(db, new MemoryCache(new MemoryCacheOptions()));
     }
@@ -94,6 +102,8 @@ public class DashboardController : ControllerBase
 
         // ── Role-scoped KPIs (always fresh — caller-specific) ─────────────────
         var kpis = await BuildKpis(tid, cancellationToken, view);
+        // "Approvals waiting for you" is the CALLER's queue, so it can never come from the scope-keyed cache above.
+        var overview = await WithApprovalsAwaitingCallerAsync(tid, view, cached.Overview, cancellationToken);
 
         // ── Module gate ───────────────────────────────────────────────────────
         // A switched-off module contributes no widget. Applied AFTER the 60 s cache rather than
@@ -113,7 +123,7 @@ public class DashboardController : ControllerBase
         return Ok(WithoutPayrollUnlessPermitted(view, new DashboardFullDto(
             cached.Summary,
             cached.Trends,
-            cached.Overview,
+            overview,
             payrollTrends,
             cached.ActivityFeed,
             kpis,
@@ -161,6 +171,7 @@ public class DashboardController : ControllerBase
         var overview = await GetOrBuildAsync(CacheKey("overview", tenantId.Value, view),
             () => BuildOverview(tenantId.Value, cancellationToken, view.Population, view.IncludePayrollInPayload),
             cancellationToken);
+        overview = await WithApprovalsAwaitingCallerAsync(tenantId.Value, view, overview, cancellationToken);
         return Ok(view.CanReadPayroll ? overview : WithoutPayroll(overview));
     }
 
@@ -556,8 +567,8 @@ public class DashboardController : ControllerBase
     }
 
     /// <param name="population">Null for the organization (see <see cref="DashboardView"/>); otherwise the
-    /// employees every figure is counted over. A scoped approval queue holds only approvals ABOUT those
-    /// employees, so a request with no subject employee (a payroll run, a requisition) is not theirs.</param>
+    /// employees every figure is counted over. The approval figures are NOT built here: they are the caller's own
+    /// queue and are added after the cache (<see cref="WithApprovalsAwaitingCallerAsync"/>).</param>
     /// <param name="includePayroll">False leaves the payroll summary and payroll-by-department empty.</param>
     private async Task<DashboardOverviewDto> BuildOverview(Guid tenantId, CancellationToken ct,
         IReadOnlyCollection<int>? population = null, bool includePayroll = true)
@@ -568,7 +579,6 @@ public class DashboardController : ControllerBase
         var monthStartUtc = monthStart.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
         var ids = population?.ToList();
 
-        var pendingApprovals = _db.ApprovalRequests.Where(a => a.TenantId == tenantId && a.Status == "Pending");
         var openLeave = _db.LeaveRequests.Where(l => l.TenantId == tenantId
             && l.Status != "Approved" && l.Status != "Rejected"
             && l.Status != "Cancelled" && l.Status != "Withdrawn" && l.Status != "Draft");
@@ -576,7 +586,6 @@ public class DashboardController : ControllerBase
         var active = _db.Employees.Where(e => e.TenantId == tenantId && e.Status == "Active");
         if (ids is not null)
         {
-            pendingApprovals = pendingApprovals.Where(a => a.RequestedForEmployeeId != null && ids.Contains(a.RequestedForEmployeeId.Value));
             openLeave = openLeave.Where(l => ids.Contains(l.EmployeeId));
             joiners = joiners.Where(e => ids.Contains(e.Id));
             active = active.Where(e => ids.Contains(e.Id));
@@ -588,7 +597,6 @@ public class DashboardController : ControllerBase
                 .Where(t => t.Id == tenantId)
                 .Select(_ => new
                 {
-                    PendingApprovals = pendingApprovals.Count(a => true),
                     OpenLeave = openLeave.Count(l => true),
                     NewJoiners = joiners.Count(e => true),
                 })
@@ -596,78 +604,9 @@ public class DashboardController : ControllerBase
             // A scoped caller is never dependent on a Tenants row (see BuildScopedSummary).
             : new
             {
-                PendingApprovals = await pendingApprovals.CountAsync(ct),
                 OpenLeave = await openLeave.CountAsync(ct),
                 NewJoiners = await joiners.CountAsync(ct),
             };
-
-        // The subject employee is a LEFT join: an approval whose RequestedForEmployeeId is null, or
-        // whose employee the caller cannot see (Employee global filter: company scope, soft delete),
-        // keeps its row with null employee fields. The rows are chosen BEFORE the join so the
-        // join can never change which approvals appear.
-        var approvalRows = await (
-                from a in pendingApprovals
-                    .OrderByDescending(a => a.CreatedAtUtc)
-                    .Take(ApprovalQueueSize)
-                join e in _db.Employees.Where(e => e.TenantId == tenantId)
-                    on a.RequestedForEmployeeId equals (int?)e.Id into subject
-                from e in subject.DefaultIfEmpty()
-                orderby a.CreatedAtUtc descending
-                select new
-                {
-                    a.Id,
-                    Title = string.IsNullOrWhiteSpace(a.Title) ? a.EntityName : a.Title,
-                    a.EntityName,
-                    a.EntityId,
-                    a.CreatedAtUtc,
-                    a.DueAtUtc,
-                    EmployeeId = e != null ? (int?)e.Id : null,
-                    EmployeeCode = e != null ? e.EmployeeCode : null,
-                    EmployeeName = e != null ? (string.IsNullOrWhiteSpace(e.FullName) ? e.EnglishName : e.FullName) : null,
-                    Department = e != null ? e.Department : null,
-                })
-            .ToListAsync(ct);
-
-        // detail: a short human line, fetched for the (at most eight) rows in two bounded lookups.
-        // LeaveRequest approvals share the leave request's id (LeaveService's routing projection) and
-        // carry it in EntityId; EmployeeChangeRequest approvals carry the change id in EntityId.
-        static bool Is(string entityName, string expected) =>
-            string.Equals(entityName, expected, StringComparison.OrdinalIgnoreCase);
-        Guid? EntityGuid(string entityId) => Guid.TryParse(entityId, out var g) ? g : null;
-
-        var leaveIds = approvalRows.Where(r => Is(r.EntityName, nameof(LeaveRequest)))
-            .Select(r => EntityGuid(r.EntityId) ?? r.Id).Distinct().ToList();
-        var changeIds = approvalRows.Where(r => Is(r.EntityName, nameof(EmployeeChangeRequest)))
-            .Select(r => EntityGuid(r.EntityId)).Where(g => g.HasValue).Select(g => g!.Value).Distinct().ToList();
-        var leaveRanges = leaveIds.Count == 0
-            ? new Dictionary<Guid, string>()
-            : (await _db.LeaveRequests
-                    .Where(l => l.TenantId == tenantId && leaveIds.Contains(l.Id))
-                    .Select(l => new { l.Id, l.StartDate, l.EndDate })
-                    .ToListAsync(ct))
-                .ToDictionary(l => l.Id, l => FormatDateRange(l.StartDate, l.EndDate));
-        var changeFields = changeIds.Count == 0
-            ? new Dictionary<Guid, string?>()
-            : (await _db.EmployeeChangeRequests
-                    .Where(c => c.TenantId == tenantId && changeIds.Contains(c.Id))
-                    .Select(c => new { c.Id, c.SensitiveFields })
-                    .ToListAsync(ct))
-                .ToDictionary(c => c.Id, c => FormatChangedFields(c.SensitiveFields));
-
-        var approvalQueue = approvalRows.Select(r =>
-        {
-            string? detail = null;
-            if (Is(r.EntityName, nameof(LeaveRequest)))
-                detail = leaveRanges.GetValueOrDefault(EntityGuid(r.EntityId) ?? r.Id);
-            else if (Is(r.EntityName, nameof(EmployeeChangeRequest)) && EntityGuid(r.EntityId) is { } cid)
-                detail = changeFields.GetValueOrDefault(cid);
-            return new ApprovalQueueItemDto(
-                r.Id, r.Title, r.EntityName, r.CreatedAtUtc,
-                r.EmployeeId, r.EmployeeCode, r.EmployeeName,
-                r.DueAtUtc,
-                string.IsNullOrWhiteSpace(r.Department) ? null : r.Department.Trim(),
-                detail);
-        }).ToList();
 
         // Headline payroll period = latest run up to and including the current month.
         // Guards against a stray future-dated run (e.g. a "2099" typo in the year field)
@@ -826,10 +765,103 @@ public class DashboardController : ControllerBase
         }).ToList();
 
         return new DashboardOverviewDto(
-            counts?.PendingApprovals ?? 0, approvalQueue, payrollSummary,
+            // The approval figures are the CALLER's, not the scope's: WithApprovalsAwaitingCallerAsync fills them after the cache.
+            0, Array.Empty<ApprovalQueueItemDto>(), payrollSummary,
             payrollByEntity, workforceMix, headcount, alerts,
             counts?.OpenLeave ?? 0, counts?.NewJoiners ?? 0,
             alertTotals?.Total ?? 0, alertTotals?.Critical ?? 0);
+    }
+
+    /// <summary>
+    /// The approvals waiting for THIS caller: only the pending items they can decide right now, by the approval service's own decision check, and
+    /// (for a data-scoped caller) only those about people in their scope. The label on the home screen is "waiting for you"; it used to count every
+    /// pending approval about anyone in scope, including items routed to somebody else.
+    /// </summary>
+    private async Task<DashboardOverviewDto> WithApprovalsAwaitingCallerAsync(Guid tenantId, DashboardView view, DashboardOverviewDto overview, CancellationToken ct)
+    {
+        var context = new RequestContext(
+            HttpContext.Connection.RemoteIpAddress?.ToString(),
+            Request.Headers.UserAgent.ToString(),
+            this.GetUserId(),
+            tenantId,
+            User.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value).ToList(),
+            User.Claims.Where(c => c.Type == "permission").Select(c => c.Value).ToList());
+        var awaiting = await _approvals.GetDecidablePendingAsync(tenantId, context, view.Population, ApprovalQueueSize, ct);
+        var ids = awaiting.NewestIds.ToList();
+        var queue = await BuildApprovalQueueAsync(tenantId, _db.ApprovalRequests.Where(a => a.TenantId == tenantId && ids.Contains(a.Id)), ct);
+        return overview with { PendingApprovals = awaiting.Count, ApprovalQueue = queue, ApprovalsCapped = awaiting.Capped };
+    }
+
+    /// <summary>The dashboard queue rows for the given pending approvals, newest first, each with its subject employee and a short detail line.</summary>
+    private async Task<IReadOnlyList<ApprovalQueueItemDto>> BuildApprovalQueueAsync(Guid tenantId, IQueryable<ApprovalRequest> pendingApprovals, CancellationToken ct)
+    {
+        // The subject employee is a LEFT join: an approval whose RequestedForEmployeeId is null, or
+        // whose employee the caller cannot see (Employee global filter: company scope, soft delete),
+        // keeps its row with null employee fields. The rows are chosen BEFORE the join so the
+        // join can never change which approvals appear.
+        var approvalRows = await (
+                from a in pendingApprovals
+                    .OrderByDescending(a => a.CreatedAtUtc)
+                    .Take(ApprovalQueueSize)
+                join e in _db.Employees.Where(e => e.TenantId == tenantId)
+                    on a.RequestedForEmployeeId equals (int?)e.Id into subject
+                from e in subject.DefaultIfEmpty()
+                orderby a.CreatedAtUtc descending
+                select new
+                {
+                    a.Id,
+                    Title = string.IsNullOrWhiteSpace(a.Title) ? a.EntityName : a.Title,
+                    a.EntityName,
+                    a.EntityId,
+                    a.CreatedAtUtc,
+                    a.DueAtUtc,
+                    EmployeeId = e != null ? (int?)e.Id : null,
+                    EmployeeCode = e != null ? e.EmployeeCode : null,
+                    EmployeeName = e != null ? (string.IsNullOrWhiteSpace(e.FullName) ? e.EnglishName : e.FullName) : null,
+                    Department = e != null ? e.Department : null,
+                })
+            .ToListAsync(ct);
+
+        // detail: a short human line, fetched for the (at most eight) rows in two bounded lookups.
+        // LeaveRequest approvals share the leave request's id (LeaveService's routing projection) and
+        // carry it in EntityId; EmployeeChangeRequest approvals carry the change id in EntityId.
+        static bool Is(string entityName, string expected) =>
+            string.Equals(entityName, expected, StringComparison.OrdinalIgnoreCase);
+        Guid? EntityGuid(string entityId) => Guid.TryParse(entityId, out var g) ? g : null;
+
+        var leaveIds = approvalRows.Where(r => Is(r.EntityName, nameof(LeaveRequest)))
+            .Select(r => EntityGuid(r.EntityId) ?? r.Id).Distinct().ToList();
+        var changeIds = approvalRows.Where(r => Is(r.EntityName, nameof(EmployeeChangeRequest)))
+            .Select(r => EntityGuid(r.EntityId)).Where(g => g.HasValue).Select(g => g!.Value).Distinct().ToList();
+        var leaveRanges = leaveIds.Count == 0
+            ? new Dictionary<Guid, string>()
+            : (await _db.LeaveRequests
+                    .Where(l => l.TenantId == tenantId && leaveIds.Contains(l.Id))
+                    .Select(l => new { l.Id, l.StartDate, l.EndDate })
+                    .ToListAsync(ct))
+                .ToDictionary(l => l.Id, l => FormatDateRange(l.StartDate, l.EndDate));
+        var changeFields = changeIds.Count == 0
+            ? new Dictionary<Guid, string?>()
+            : (await _db.EmployeeChangeRequests
+                    .Where(c => c.TenantId == tenantId && changeIds.Contains(c.Id))
+                    .Select(c => new { c.Id, c.SensitiveFields })
+                    .ToListAsync(ct))
+                .ToDictionary(c => c.Id, c => FormatChangedFields(c.SensitiveFields));
+
+        return approvalRows.Select(r =>
+        {
+            string? detail = null;
+            if (Is(r.EntityName, nameof(LeaveRequest)))
+                detail = leaveRanges.GetValueOrDefault(EntityGuid(r.EntityId) ?? r.Id);
+            else if (Is(r.EntityName, nameof(EmployeeChangeRequest)) && EntityGuid(r.EntityId) is { } cid)
+                detail = changeFields.GetValueOrDefault(cid);
+            return new ApprovalQueueItemDto(
+                r.Id, r.Title, r.EntityName, r.CreatedAtUtc,
+                r.EmployeeId, r.EmployeeCode, r.EmployeeName,
+                r.DueAtUtc,
+                string.IsNullOrWhiteSpace(r.Department) ? null : r.Department.Trim(),
+                detail);
+        }).ToList();
     }
 
     /// <summary>Approval rows on the dashboard queue.</summary>
@@ -1462,7 +1494,9 @@ public record DashboardOverviewDto(
     int NewJoinersThisMonth,
     // True counts over the same filtered set Alerts is drawn from — Alerts is capped, these are not.
     int ComplianceAlertsTotal = 0,
-    int ComplianceCriticalTotal = 0);
+    int ComplianceCriticalTotal = 0,
+    // True when more pending approvals exist than were examined for PendingApprovals, so that figure is a floor (the screen shows "500+").
+    bool ApprovalsCapped = false);
 
 public record ApprovalQueueItemDto(
     Guid Id,

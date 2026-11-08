@@ -95,7 +95,12 @@ public static class CashAllowanceDefinitions
 
     /// <summary>One employee whose salary carries a cash allowance line the payroll run could not pay: a stable <c>Problem</c> code
     /// (<c>no_definition</c>, <c>not_confirmed</c>, <c>no_gl_driver</c>) and the words for it. No amounts.</summary>
-    public sealed record ReadinessIssue(int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string Code, string Problem, string Message);
+    public sealed record ReadinessIssue(int EmployeeId, string EmployeeCode, string EmployeeName, Guid? CompanyId, string Code, string Problem, string Message,
+        string? AllowanceNameEn = null, string? AllowanceNameAr = null, string? Href = null);
+
+    /// <summary>Where Finance confirms an allowance that is waiting for it (the list on Benefits by grade).</summary>
+    public const string WaitingForFinanceLink = "/benefits/by-grade#waiting-for-finance";
+    private const string BenefitsByGradeLink = "/benefits/by-grade";
 
     /// <summary>
     /// Employees (of <paramref name="employees"/>) whose salary record in force for the period carries an allowance line whose definition, for the period
@@ -128,13 +133,16 @@ public static class CashAllowanceDefinitions
             foreach (var line in lines[recordId].OrderBy(l => l.Code, StringComparer.Ordinal))
             {
                 if (PeriodFault(versions[line.Code], periodStart) is not { } fault) continue;
-                var (problem, message) = fault switch
+                // The allowance's own name (the version in effect, else the latest one on file), so the line says WHICH allowance, not just its code.
+                var named = InEffect(versions[line.Code], periodStart) ?? Current(versions[line.Code], periodStart);
+                var shown = named is null ? line.Code : $"{named.NameEn} ({line.Code})";
+                var (problem, message, href) = fault switch
                 {
-                    AllowanceDefinitionFault.NotConfirmed => ("not_confirmed", $"{line.Code} is waiting for Finance to confirm it."),
-                    AllowanceDefinitionFault.NoGlDriver => ("no_gl_driver", $"{line.Code} has no GL driver, so its expense has nowhere to post."),
-                    _ => ("no_definition", $"{line.Code} was removed, switched off or is not in effect for this month."),
+                    AllowanceDefinitionFault.NotConfirmed => ("not_confirmed", $"{shown} is waiting for Finance to confirm it.", WaitingForFinanceLink),
+                    AllowanceDefinitionFault.NoGlDriver => ("no_gl_driver", $"{shown} has no GL driver, so its expense has nowhere to post.", BenefitsByGradeLink),
+                    _ => ("no_definition", $"{shown} was removed, switched off or is not in effect for this month.", (string?)null),
                 };
-                issues.Add(new ReadinessIssue(employee.Id, employee.Code, employee.Name, employee.CompanyId, line.Code, problem, message));
+                issues.Add(new ReadinessIssue(employee.Id, employee.Code, employee.Name, employee.CompanyId, line.Code, problem, message, named?.NameEn, named?.NameAr, href));
             }
         }
         return issues;

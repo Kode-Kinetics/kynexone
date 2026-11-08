@@ -46,6 +46,9 @@ public class DashboardOverviewHonestyTests
         {
             new Claim("tenant_id", tenantId.ToString()),
             new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            // The approvals count is the caller's own queue: an approver, for whom an unassigned step is theirs to decide.
+            new Claim("permission", "approvals.decide"),
+            new Claim("permission", "manager.approve"),
         }, "test"));
         return new DashboardController(db,
             new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions())),
@@ -444,6 +447,8 @@ public class DashboardOverviewCompanyScopeTests
                 new Claim("tenant_id", tenantId.ToString()),
                 new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
                 new Claim("entity_access", accessJson),
+                new Claim("permission", "approvals.decide"),
+                new Claim("permission", "manager.approve"),
             }, "Test")),
         };
     }

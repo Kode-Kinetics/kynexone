@@ -71,6 +71,39 @@ public class PayrollSlipsReadPermissionTests
         (await RolePermissionsAsync(db, tenant, "Employee")).Should().NotContain("payroll.slips.read");
     }
 
+    // Owner decision 3: the two seeded finance roles that run the money get payroll.export, so the bulk payslip bundle and the bank/WPS
+    // export work for them. Nobody else gains it: HR, the payroll officer and the loan operator still cannot export a run.
+    [Fact]
+    public async Task Payroll_export_is_held_by_admin_payroll_manager_and_finance_approver_on_a_fresh_tenant_and_nobody_else()
+    {
+        var (db, tenant) = await SeedTenantAsync();
+
+        var holders = await db.Roles.Where(r => r.TenantId == tenant && r.RolePermissions.Any(rp => rp.Permission!.Key == "payroll.export"))
+            .Select(r => r.Name).ToListAsync();
+
+        holders.Should().BeEquivalentTo(new[] { "Admin", "Payroll Manager", "Finance Approver" });
+    }
+
+    [Theory]
+    [InlineData("Admin", true)]
+    [InlineData("Payroll Manager", true)]
+    [InlineData("Finance Approver", true)]
+    [InlineData("HR Director", false)]
+    [InlineData("HR Manager", false)]
+    [InlineData("Payroll Officer", false)]
+    [InlineData("Finance", false)]
+    [InlineData("Employee", false)]
+    public async Task The_bulk_payslip_bundle_and_the_wps_export_work_for_the_finance_roles_and_still_refuse_others(string role, bool allowed)
+    {
+        var (db, tenant) = await SeedTenantAsync();
+        var permissions = await RolePermissionsAsync(db, tenant, role);
+
+        LegacyRolePermissionResolver.ResolveAllFor("Payroll", "DownloadRunPdfBundle", new[] { "GET" }).Any(permissions.Contains)
+            .Should().Be(allowed, "the bundle's attribute gate");
+        (await Ctrl(db, tenant, permissions).WpsValidation(Guid.NewGuid(), CancellationToken.None) is ForbidResult)
+            .Should().Be(!allowed, "the WPS / bank export's in-body gate");
+    }
+
     private static async Task<string[]> RolePermissionsAsync(ZayraDbContext db, Guid tenantId, string role) =>
         (await db.Roles.Where(r => r.TenantId == tenantId && r.Name == role)
             .SelectMany(r => r.RolePermissions.Select(rp => rp.Permission!.Key)).ToListAsync()).ToArray();

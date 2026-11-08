@@ -918,11 +918,38 @@ public sealed class EntitlementMatrixService(ZayraDbContext db, ITenantClock clo
                     financeConfirmed = row.FinanceConfirmedAtUtc is not null, warnings = warnings.Select(w => w.Code).ToArray(),
                 }
                 : (object)new { componentCode = code, nameEn, nameAr = row.NameAr }));
+            // G-011: an allowance that waits for Finance used to wait in silence (no queue, no notice) and payroll then refused on pay day.
+            // Everyone who could confirm it is told, in the same save as the allowance, so there is never an allowance waiting that nobody was told about.
+            if (cash && row.FinanceConfirmedAtUtc is null) await NotifyFinanceWaitingAsync(tid, actor.UserId, row, ct);
             await db.SaveChangesAsync(ct);
             return Ok(ToDto(EntitlementComponentRules.CustomRuleFor(code, row.NameEn, row.NameAr), cash ? InfoOf(row) : null, cash ? warnings : null));
         }, ct);
 
     // ── Finance confirms and corrects a cash allowance ───────────────────────────────────────────
+
+    /// <summary>The <see cref="Notification.EntityName"/> of the "waiting for Finance" notice; the entity id is the allowance code.</summary>
+    public const string FinanceWaitingNotificationEntity = "CashAllowance";
+
+    /// <summary>
+    /// Tells every login that could confirm <paramref name="row"/> (<see cref="CashAllowanceFinanceRecipients"/>: the confirm endpoint's own rule, never the
+    /// person who added it) that an allowance is waiting. English and Arabic in one message. Does not save.
+    /// </summary>
+    private async Task NotifyFinanceWaitingAsync(Guid tid, Guid? makerUserId, PayComponent row, CancellationToken ct)
+    {
+        var recipients = await CashAllowanceFinanceRecipients.ResolveAsync(db, tid, makerUserId, ct);
+        if (recipients.Count == 0) return;
+        var message = $"{row.NameEn} was added as a monthly cash allowance and cannot be used until Finance confirms it. "
+            + "Open Benefits by grade, check the GL account and the end-of-service setting, and confirm it. "
+            + "Payroll cannot be processed for anyone who has it on their salary until then."
+            + $"\nأُضيف البدل النقدي الشهري «{row.NameAr}» ولا يمكن استخدامه قبل أن تؤكده المالية. "
+            + "افتح «المزايا حسب الدرجة» وراجع حساب الأستاذ العام وإعداد نهاية الخدمة ثم أكّده. "
+            + "لا يمكن معالجة الرواتب لأي موظف لديه هذا البدل في راتبه قبل ذلك.";
+        db.Notifications.AddRange(recipients.Select(userId => new Notification
+        {
+            TenantId = tid, UserId = userId, Title = "Waiting for Finance: a cash allowance needs your confirmation | بانتظار المالية: بدل نقدي يحتاج تأكيدك",
+            Message = message, EntityName = FinanceWaitingNotificationEntity, EntityId = row.Code,
+        }));
+    }
 
     private static MatrixResult Forbidden(string error, string message) => new(StatusCodes.Status403Forbidden, new { error, message });
 
