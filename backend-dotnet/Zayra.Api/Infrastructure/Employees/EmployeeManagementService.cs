@@ -1539,23 +1539,35 @@ public class EmployeeManagementService : IEmployeeManagementService
             select new { d, e };
         if (visibleEmployeeIds is not null) query = query.Where(x => visibleEmployeeIds.Contains(x.e.Id));
 
-        // The newest rows beyond this bound are reached once the older ones are decided; a queue this long is its own finding.
-        var candidates = await query.OrderBy(x => x.d.UploadedAtUtc).ThenBy(x => x.d.Id).Take(2000)
+        // Who can act on a document is decided IN the query, before any paging, so a long run of older documents nobody can open never
+        // hides a newer one somebody can. A file the security scan has not cleared is not opened by anyone, so it is not asked to be
+        // verified (the rule verify and reject enforce: ScanStatuses.IsServable).
+        query = query.Where(x => x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.Clean
+                                 || x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.NotScannedTrustedSource);
+        if (!includeProtected)
+        {
+            // A protected document is verifiable only with employees.sensitive. Whether one is protected depends on its type or its category
+            // alone (EmployeeDocumentSensitivity), so classify the distinct values waiting and exclude them in the query.
+            var types = await query.Select(x => x.d.DocumentType).Distinct().ToListAsync(cancellationToken);
+            var categories = await query.Select(x => x.d.DocumentCategory).Distinct().ToListAsync(cancellationToken);
+            var protectedTypes = types.Where(t => EmployeeDocumentSensitivity.IsSensitive(t, null)).ToList();
+            var protectedCategories = categories.Where(c => EmployeeDocumentSensitivity.IsSensitive(null, c)).ToList();
+            if (protectedTypes.Count > 0) query = query.Where(x => !protectedTypes.Contains(x.d.DocumentType));
+            if (protectedCategories.Count > 0) query = query.Where(x => !protectedCategories.Contains(x.d.DocumentCategory));
+        }
+
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderBy(x => x.d.UploadedAtUtc).ThenBy(x => x.d.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
             .Select(x => new { x.d.Id, EmployeeId = x.e.Id, x.e.EmployeeCode, x.e.FullName, x.d.CompanyId, EmployeeCompanyId = x.e.CompanyId, x.d.DocumentType,
                 x.d.DocumentCategory, x.d.FileName, x.d.UploadedAtUtc, x.d.ExpiryDate, x.d.ScanStatus })
             .ToListAsync(cancellationToken);
-
-        var rows = candidates
-            // A file the security scan has not cleared is not opened by anyone, so it is not asked to be verified.
-            .Where(x => Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(x.ScanStatus))
-            .Select(x => new { Row = x, Protected = EmployeeDocumentSensitivity.IsSensitive(x.DocumentType, x.DocumentCategory) })
-            .Where(x => includeProtected || !x.Protected)
+        var items = rows
+            .Select(x => new PendingDocumentRow(x.Id, x.EmployeeId, x.EmployeeCode, x.FullName, x.CompanyId ?? x.EmployeeCompanyId,
+                x.DocumentType, x.DocumentCategory, x.FileName, x.UploadedAtUtc, x.ExpiryDate, x.ScanStatus,
+                EmployeeDocumentSensitivity.IsSensitive(x.DocumentType, x.DocumentCategory)))
             .ToList();
-        var items = rows.Skip((page - 1) * pageSize).Take(pageSize)
-            .Select(x => new PendingDocumentRow(x.Row.Id, x.Row.EmployeeId, x.Row.EmployeeCode, x.Row.FullName, x.Row.CompanyId ?? x.Row.EmployeeCompanyId,
-                x.Row.DocumentType, x.Row.DocumentCategory, x.Row.FileName, x.Row.UploadedAtUtc, x.Row.ExpiryDate, x.Row.ScanStatus, x.Protected))
-            .ToList();
-        return new PendingDocumentsPage(items, rows.Count, page, pageSize);
+        return new PendingDocumentsPage(items, total, page, pageSize);
     }
 
     public async Task<EmployeeDocument?> RejectDocumentAsync(Guid tenantId, int employeeId, Guid documentId, string reason, RequestContext context, CancellationToken cancellationToken)

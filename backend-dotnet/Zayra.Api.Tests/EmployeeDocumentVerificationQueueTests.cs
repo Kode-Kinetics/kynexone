@@ -143,6 +143,41 @@ public class EmployeeDocumentVerificationQueueTests
         (paged.Total, paged.Items.Count).Should().Be((3, 1));
     }
 
+    [Fact]
+    public async Task A_long_run_of_older_documents_whose_scan_has_not_cleared_never_hides_a_newer_one_that_can_be_verified()
+    {
+        var w = await SeedAsync();
+        var oldest = DateTime.UtcNow.AddDays(-30);
+        w.Db.EmployeeDocuments.AddRange(Enumerable.Range(0, 2005)
+            .Select(i => Doc(w, w.Maya, $"Pending scan {i}", "General", uploaded: oldest.AddSeconds(i), scan: i % 2 == 0 ? "quarantined" : "quarantined_pending")));
+        w.Db.EmployeeDocuments.Add(Doc(w, w.Maya, "Newer cleared", "General", uploaded: DateTime.UtcNow.AddDays(-1)));
+        await w.Db.SaveChangesAsync();
+
+        var page = await Svc(w).PendingDocumentsAsync(w.TenantId, [w.Maya.Id], includeProtected: false, page: 1, pageSize: 25, default);
+
+        page.Items.Select(i => i.DocumentType).Should().Equal("Newer cleared");
+        page.Total.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_long_run_of_older_protected_documents_never_hides_a_newer_plain_one_from_a_caller_without_employees_sensitive()
+    {
+        var w = await SeedAsync();
+        var oldest = DateTime.UtcNow.AddDays(-30);
+        w.Db.EmployeeDocuments.AddRange(Enumerable.Range(0, 2005)
+            .Select(i => Doc(w, w.Maya, i % 2 == 0 ? "Passport" : "Anything", i % 2 == 0 ? "General" : EmployeeDocumentSensitivity.Payroll, uploaded: oldest.AddSeconds(i))));
+        w.Db.EmployeeDocuments.Add(Doc(w, w.Maya, "Newer plain", "General", uploaded: DateTime.UtcNow.AddDays(-1)));
+        await w.Db.SaveChangesAsync();
+
+        var plain = await Svc(w).PendingDocumentsAsync(w.TenantId, [w.Maya.Id], includeProtected: false, page: 1, pageSize: 25, default);
+        plain.Items.Select(i => i.DocumentType).Should().Equal("Newer plain");
+        plain.Total.Should().Be(1);
+
+        var withSensitive = await Svc(w).PendingDocumentsAsync(w.TenantId, [w.Maya.Id], includeProtected: true, page: 21, pageSize: 100, default);
+        withSensitive.Total.Should().Be(2006);
+        withSensitive.Items.Select(i => i.DocumentType).Should().Contain("Newer plain", "the last page reaches the newest document");
+    }
+
     // ── verify / reject ──────────────────────────────────────────────────────────────────────────
 
     [Fact]
