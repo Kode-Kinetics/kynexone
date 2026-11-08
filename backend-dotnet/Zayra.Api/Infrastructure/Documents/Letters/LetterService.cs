@@ -120,7 +120,7 @@ public class LetterService : ILetterService
 
         var generatedOn = data.GeneratedOn ?? DateTime.UtcNow;
         string StampEn() => generatedOn.ToString("dd MMM yyyy HH:mm", inv) + " UTC";
-        string StampAr() => $"{generatedOn.ToString("dd", inv)} {PayslipArabic.Month(generatedOn.Month)} {generatedOn.ToString("yyyy HH:mm", inv)} UTC";
+        string StampAr() => PayslipArabic.Stamp(generatedOn);
 
         var doc = Document.Create(container =>
         {

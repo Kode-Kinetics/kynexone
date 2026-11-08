@@ -54,4 +54,14 @@ public class PayslipArabicTests
         PayslipArabic.Disclaimer.Should().Be("هذا كشف راتب صادر من النظام وصالح دون توقيع.");
         PayslipArabic.Footer.Should().Be("تم إنشاؤه بواسطة KynexOne HRMS");
     }
+
+    [Fact]
+    public void Stamp_IsOneRightToLeftRun_DayMonthYear_ArabicComma_ThenTheLatinTimeIsolated()
+    {
+        // 07 نوفمبر 2026، 09:30 UTC: day, Arabic month, year, Arabic comma; "09:30 UTC" is a left-to-right
+        // isolate (LRI U+2066 .. PDI U+2069) so it keeps its own order inside the right-to-left paragraph
+        // instead of reading "UTC 09:30".
+        PayslipArabic.Stamp(new DateTime(2026, 11, 7, 9, 30, 0, DateTimeKind.Utc))
+            .Should().Be("07 نوفمبر 2026، \u206609:30 UTC\u2069");
+    }
 }

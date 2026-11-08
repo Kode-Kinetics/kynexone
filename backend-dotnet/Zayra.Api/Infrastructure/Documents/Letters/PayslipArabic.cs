@@ -23,6 +23,10 @@ public static class PayslipArabic
     /// <summary>"أكتوبر 2026": Arabic month, Latin digits.</summary>
     public static string MonthYear(int year, int month) => $"{Month(month)} {year}";
 
+    /// <summary>"07 نوفمبر 2026، 09:30 UTC" as one right-to-left run (see the tests for the exact characters).</summary>
+    public static string Stamp(DateTime utc) =>
+        $"{utc:dd} {Month(utc.Month)} {utc:yyyy HH:mm} UTC";
+
     public static string Disclaimer => "هذا كشف راتب صادر من النظام وصالح دون توقيع.";
 
     public static string Footer => "تم إنشاؤه بواسطة KynexOne HRMS";

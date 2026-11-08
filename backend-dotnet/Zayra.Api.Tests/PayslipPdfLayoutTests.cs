@@ -336,6 +336,26 @@ public class PayslipPdfLayoutTests
     }
 
     [Fact]
+    public async Task BilingualPayslip_ArabicDisclaimerAndFooterLines_AreRightAligned()
+    {
+        var pdf = await Render(OwnerPayslip(new PayslipBrandingConfig(Locale: "bilingual")), "owner-bilingual-align");
+        using var doc = PdfDocument.Open(pdf);
+        var page = doc.GetPage(1);
+        var rightEdge = page.Width - PageMargin;
+
+        // The Arabic line sits directly below its English line; its glyphs must reach the right margin.
+        foreach (var anchor in new[] { "system-generated", "Generated" })
+        {
+            var en = page.GetWords().First(w => w.Text == anchor).BoundingBox;
+            var below = page.Letters.Where(l => !string.IsNullOrWhiteSpace(l.Value)
+                && l.GlyphRectangle.Top < en.Bottom + 1 && l.GlyphRectangle.Bottom > en.Bottom - 16).ToList();
+            below.Should().NotBeEmpty($"the Arabic line below '{anchor}'");
+            below.Max(l => l.GlyphRectangle.Right).Should().BeGreaterThan(rightEdge - 4,
+                $"the Arabic line under '{anchor}' is right-aligned");
+        }
+    }
+
+    [Fact]
     public async Task ArabicPayslip_Stress_StaysCompleteAndInside()
     {
         var pdf = await Render(StressPayslip(new PayslipBrandingConfig(Locale: "ar")), "stress-ar");
