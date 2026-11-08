@@ -49,6 +49,9 @@ public class LeaveFlowDeadEndsTests
         public required Login BystanderLogin { get; init; }
         public required Login HrLogin { get; init; }
         public required Login AdminLogin { get; init; }
+        public required Login HrOfficerLogin { get; init; }
+        public required Login SupervisorLogin { get; init; }
+        public required Employee Emp2 { get; init; }
         public RecordingNotifications Notes { get; } = new();
     }
 
@@ -78,7 +81,11 @@ public class LeaveFlowDeadEndsTests
         db.Employees.AddRange(mgr, otherMgr, bystander);
         await db.SaveChangesAsync();
         var emp = NewEmployee("E-EMP", mgr.Id);
-        db.Employees.Add(emp);
+        var sup = NewEmployee("E-SUP");
+        db.Employees.AddRange(emp, sup);
+        await db.SaveChangesAsync();
+        var emp2 = NewEmployee("E-EMP2", sup.Id);
+        db.Employees.Add(emp2);
         await db.SaveChangesAsync();
 
         async Task<Login> LoginAsync(string name, string role, Employee? employee)
@@ -114,6 +121,12 @@ public class LeaveFlowDeadEndsTests
                 TenantId = tenantId, EmployeeId = emp.Id, EmployeeName = emp.FullName, LeaveTypeId = annual.Id,
                 LeaveTypeName = annual.NameEn, Year = year, Entitled = 21m,
             });
+        foreach (var year in new[] { DateTime.UtcNow.Year, DateTime.UtcNow.Year + 1 })
+            db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+            {
+                TenantId = tenantId, EmployeeId = emp2.Id, EmployeeName = emp2.FullName, LeaveTypeId = annual.Id,
+                LeaveTypeName = annual.NameEn, Year = year, Entitled = 21m,
+            });
 
         var world = new World
         {
@@ -124,6 +137,9 @@ public class LeaveFlowDeadEndsTests
             BystanderLogin = await LoginAsync("bystander", "Employee", bystander),
             HrLogin = await LoginAsync("hr", "HR Manager", null),
             AdminLogin = await LoginAsync("admin", "Admin", null),
+            HrOfficerLogin = await LoginAsync("hrofficer", "HR Officer", null),
+            SupervisorLogin = await LoginAsync("supervisor", "Supervisor", sup),
+            Emp2 = emp2,
         };
 
         // The route: either the provisioning default (one HR step) or Manager (not final) then HR (final).
@@ -340,7 +356,7 @@ public class LeaveFlowDeadEndsTests
             var result = await (await LeaveAsync(who: who, w: w)).AwaitingDecision(ct: CancellationToken.None);
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value,
                 new JsonSerializerOptions(JsonSerializerDefaults.Web)));
-            return json.RootElement.EnumerateArray()
+            return json.RootElement.GetProperty("items").EnumerateArray()
                 .Select(x => (x.GetProperty("id").GetString()!, x.GetProperty("status").GetString()!, x.GetProperty("kind").GetString()!)).ToList();
         }
 
@@ -367,6 +383,95 @@ public class LeaveFlowDeadEndsTests
         (await QueueAsync(w.HrLogin)).Should().Contain((third.Id.ToString(), "CancellationRequested", "Cancellation"));
         (await QueueAsync(w.OtherManagerLogin)).Should().BeEmpty();
         (await QueueAsync(w.EmployeeLogin)).Should().BeEmpty("the employee never decides their own cancellation");
+    }
+
+    // ── 2b. Viewers who see leave but do not decide it ───────────────────────
+
+    private static async Task<(List<JsonElement> Items, int Total, bool Truncated)> WaitingAsync(World w, Login who)
+    {
+        var result = await (await LeaveAsync(w, who)).WaitingOnOthers(ct: CancellationToken.None);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(result.Should().BeOfType<OkObjectResult>().Subject.Value,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var root = json.RootElement;
+        return (root.GetProperty("items").EnumerateArray().Select(x => x.Clone()).ToList(), root.GetProperty("total").GetInt32(), root.GetProperty("truncated").GetBoolean());
+    }
+
+    [Fact]
+    public async Task D5_HR_Officer_and_Supervisor_keep_a_read_only_view_of_what_is_waiting_and_on_whom()
+    {
+        var w = await SeedAsync(twoStepRoute: true);
+        var atManager = await SubmitAsync(w, 14);                               // Emp, waiting on their manager
+        var second = await Svc(w).SubmitRequestAsync(w.TenantId, new LeaveRequest
+        {
+            TenantId = w.TenantId, EmployeeId = w.Emp.Id, EmployeeName = w.Emp.FullName, LeaveTypeId = w.Annual.Id,
+            LeaveTypeName = w.Annual.NameEn, StartDate = NextWorkday(30), EndDate = NextWorkday(30), DayType = "Full", Reason = "Trip",
+        }, w.EmployeeLogin.UserId);
+        await Svc(w).ApproveRequestAsync(w.TenantId, second.Id, w.ManagerLogin.UserId, "mgr", null);   // now waiting on HR
+        var other = await Svc(w).SubmitRequestAsync(w.TenantId, new LeaveRequest   // Emp2, in the supervisor's line
+        {
+            TenantId = w.TenantId, EmployeeId = w.Emp2.Id, EmployeeName = w.Emp2.FullName, LeaveTypeId = w.Annual.Id,
+            LeaveTypeName = w.Annual.NameEn, StartDate = NextWorkday(45), EndDate = NextWorkday(45), DayType = "Full", Reason = "Course",
+        }, w.EmployeeLogin.UserId);
+
+        // The HR Officer decides nothing (the decision endpoints turn the role away) but sees everything pending.
+        var officerDecides = await (await LeaveAsync(w, w.HrOfficerLogin)).AwaitingDecision(ct: CancellationToken.None);
+        using (var json = JsonDocument.Parse(JsonSerializer.Serialize(officerDecides.Should().BeOfType<OkObjectResult>().Subject.Value, new JsonSerializerOptions(JsonSerializerDefaults.Web))))
+            json.RootElement.GetProperty("items").GetArrayLength().Should().Be(0);
+        var officer = await WaitingAsync(w, w.HrOfficerLogin);
+        officer.Items.Select(x => x.GetProperty("id").GetString()).Should()
+            .BeEquivalentTo(new[] { atManager.Id.ToString(), second.Id.ToString(), other.Id.ToString() });
+        var managerStep = officer.Items.Single(x => x.GetProperty("id").GetString() == atManager.Id.ToString());
+        managerStep.GetProperty("holderRole").GetString().Should().Be("Manager");
+        managerStep.GetProperty("holderNames").EnumerateArray().Select(x => x.GetString()).Should().Contain(w.Mgr.FullName);
+        managerStep.GetProperty("stepNumber").GetInt32().Should().Be(1);
+        var hrStep = officer.Items.Single(x => x.GetProperty("id").GetString() == second.Id.ToString());
+        hrStep.GetProperty("holderRole").GetString().Should().Be("HR", "the route's own label for the step");
+        hrStep.GetProperty("stepNumber").GetInt32().Should().Be(2);
+
+        // The Supervisor sees only their own line, and decides none of it.
+        var supervisor = await WaitingAsync(w, w.SupervisorLogin);
+        supervisor.Items.Select(x => x.GetProperty("id").GetString()).Should().BeEquivalentTo(new[] { other.Id.ToString() });
+
+        // A decider sees what is waiting on someone ELSE, not what is theirs.
+        var manager = await WaitingAsync(w, w.ManagerLogin);
+        manager.Items.Select(x => x.GetProperty("id").GetString()).Should().BeEquivalentTo(new[] { second.Id.ToString() });
+
+        // No leave.read, no view: an employee, whatever their scope.
+        (await WaitingAsync(w, w.BystanderLogin)).Items.Should().BeEmpty();
+        (await WaitingAsync(w, w.EmployeeLogin)).Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task D6_a_cancellation_is_waiting_on_others_for_the_officer_and_never_silently_dropped_past_the_cap()
+    {
+        var w = await SeedAsync();
+        var leave = await ApprovedLeaveAsync(w);
+        await RequestCancellationAsync(w, leave.Id);
+        var officer = await WaitingAsync(w, w.HrOfficerLogin);
+        var cancellation = officer.Items.Single(x => x.GetProperty("id").GetString() == leave.Id.ToString());
+        cancellation.GetProperty("kind").GetString().Should().Be("Cancellation");
+        cancellation.GetProperty("holderNames").EnumerateArray().Select(x => x.GetString()).Should().BeEquivalentTo("mgr", "hr", "admin");
+
+        // More pending requests than one read examines: the answer says so, with the true total.
+        var surplus = LeaveRequestsController.QueueScanCap + 1;
+        for (var i = 0; i < surplus; i++)
+            w.Db.LeaveRequests.Add(new LeaveRequest
+            {
+                TenantId = w.TenantId, EmployeeId = w.Emp.Id, EmployeeName = w.Emp.FullName, LeaveTypeId = w.Annual.Id,
+                LeaveTypeName = w.Annual.NameEn, StartDate = NextWorkday(90), EndDate = NextWorkday(90), Status = "Submitted",
+                SubmittedAtUtc = DateTime.UtcNow.AddMinutes(-i),
+            });
+        await w.Db.SaveChangesAsync();
+        var waiting = await WaitingAsync(w, w.HrOfficerLogin);
+        waiting.Items.Count.Should().Be(LeaveRequestsController.QueueScanCap);
+        waiting.Total.Should().Be(surplus + 1, "the approved-then-cancelled leave is pending too");
+        waiting.Truncated.Should().BeTrue();
+
+        var decide = await (await LeaveAsync(w, w.HrLogin)).AwaitingDecision(ct: CancellationToken.None);
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(decide.Should().BeOfType<OkObjectResult>().Subject.Value, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        json.RootElement.GetProperty("truncated").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("total").GetInt32().Should().Be(surplus + 1);
+        json.RootElement.GetProperty("items").GetArrayLength().Should().BeLessThanOrEqualTo(LeaveRequestsController.QueueScanCap);
     }
 
     // ── Doubles ──────────────────────────────────────────────────────────────

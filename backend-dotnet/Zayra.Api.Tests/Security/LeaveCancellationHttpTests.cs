@@ -76,7 +76,7 @@ public sealed class LeaveCancellationHttpTests(LeaveCancellationHttpFixture f) :
             using var response = await f.Send(HttpMethod.Get, "/api/leave/requests/awaiting-decision", f.Token(who));
             var text = await response.Content.ReadAsStringAsync();
             response.StatusCode.Should().Be(HttpStatusCode.OK, text);
-            return JsonDocument.Parse(text).RootElement.EnumerateArray().Select(x => x.Clone()).ToList();
+            return JsonDocument.Parse(text).RootElement.GetProperty("items").EnumerateArray().Select(x => x.Clone()).ToList();
         }
         (await QueueAsync("manager")).Should().Contain(x => x.GetProperty("id").GetString() == id && x.GetProperty("kind").GetString() == "Cancellation"
             && x.GetProperty("cancellationReason").GetString() == "Plans changed");
