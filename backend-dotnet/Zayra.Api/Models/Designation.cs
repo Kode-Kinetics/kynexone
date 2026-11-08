@@ -22,6 +22,10 @@ public class Designation : ITenantOwned, ICompanyScoped
     public string JobLevel { get; set; } = string.Empty;
     public string JobDescription { get; set; } = string.Empty;
     public bool IsManagerRole { get; set; }
+    /// <summary>The access mode (one of <see cref="AccessModes"/>, never NoLogin) an employee in this designation signs in with
+    /// once their login is switched on. Null = the designation sets none. The ROLES it carries are rows of
+    /// <see cref="AccessRoleMapping"/>. Changed only through Setup (designation form / import), which refuses privileged access.</summary>
+    public string? DefaultAccessMode { get; set; }
     public bool IsSystemDefault { get; set; }
     public int LevelRank { get; set; }
     public bool IsActive { get; set; } = true;

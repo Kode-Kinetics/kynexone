@@ -1555,6 +1555,8 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
+    public DbSet<AccessRoleMapping> AccessRoleMappings => Set<AccessRoleMapping>();
+    public DbSet<DesignationRoleGrant> DesignationRoleGrants => Set<DesignationRoleGrant>();
     // ── Establishment matrix (per-department, per-level staffing budgets) ──────
     public DbSet<StaffingLevel> StaffingLevels => Set<StaffingLevel>();
     public DbSet<DepartmentStaffingBudget> DepartmentStaffingBudgets => Set<DepartmentStaffingBudget>();
@@ -1941,6 +1943,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.Status).HasMaxLength(40).IsRequired();
             entity.Property(x => x.InvitationTokenHash).HasMaxLength(128);
             entity.Property(x => x.WelcomeCodeHash).HasMaxLength(128);
+            entity.Property(x => x.DesignationAccessMode).HasMaxLength(40);
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.IsPrimary });
             entity.HasIndex(x => new { x.TenantId, x.UserId }).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.InvitationTokenHash });
@@ -2259,7 +2262,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
 
         modelBuilder.Entity<Designation>(entity =>
         {
-            entity.ToTable("designations");
+            // A designation can never default an employee to NoLogin (that is "no sign-in"); the other modes are the access-mode vocabulary.
+            entity.ToTable("designations", t => t.HasCheckConstraint("ck_designations__default_access_mode",
+                "default_access_mode IS NULL OR default_access_mode IN ('FullPortal','ESSOnly','ManagerPortal','HRPortal','PayrollPortal','FinancePortal','SupervisorPortal','ReadOnlyAuditor','Mobile','KioskOnly')"));
             entity.HasKey(x => x.Id);
             // Addendum B: per company, code unique per (tenant, company) — see departments.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Code }).IsUnique().AreNullsDistinct(false).HasFilter("NOT is_deleted");
@@ -2268,6 +2273,34 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.StaffingLevelId });
+            entity.Property(x => x.DefaultAccessMode).HasMaxLength(40);
+        });
+
+        // Designation/grade -> role mapping (designation-driven access). A mapping dies with its designation, grade or role.
+        modelBuilder.Entity<AccessRoleMapping>(entity =>
+        {
+            entity.ToTable("access_role_mappings", t => t.HasCheckConstraint("ck_access_role_mappings__one_source",
+                "(designation_id IS NOT NULL) <> (grade_id IS NOT NULL)"));
+            entity.HasKey(x => x.Id);
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => x.GradeId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Role>().WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(x => new { x.TenantId, x.DesignationId, x.RoleId }).IsUnique().HasFilter("designation_id IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.GradeId, x.RoleId }).IsUnique().HasFilter("grade_id IS NOT NULL");
+            entity.HasIndex(x => x.RoleId);
+        });
+
+        // Which roles on a user were put there by a mapping (and so may be taken away by the next designation change).
+        modelBuilder.Entity<DesignationRoleGrant>(entity =>
+        {
+            entity.ToTable("designation_role_grants");
+            entity.HasKey(x => x.Id);
+            entity.HasOne<User>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Role>().WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne<Grade>().WithMany().HasForeignKey(x => x.GradeId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(x => new { x.TenantId, x.UserId, x.RoleId }).IsUnique();
+            entity.HasIndex(x => x.RoleId);
         });
 
         modelBuilder.Entity<StaffingLevel>(entity =>
