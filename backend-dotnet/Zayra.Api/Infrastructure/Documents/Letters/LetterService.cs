@@ -286,7 +286,10 @@ public class LetterService : ILetterService
                         if (!ar)
                             c.Item().Text("This is a system-generated payslip and is valid without a signature.").FontSize(7).FontColor(Colors.Grey.Medium).Italic();
                         if (ar || bi)
-                            c.Item().Text(PayslipArabic.Disclaimer).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                        {
+                            var arabicDisclaimer = c.Item().Text(PayslipArabic.Disclaimer).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                            if (bi) arabicDisclaimer.AlignRight(); // bilingual is left-to-right: the Arabic line hugs the right margin
+                        }
                     });
                 });
 
@@ -300,7 +303,11 @@ public class LetterService : ILetterService
                             t.Span(StampEn()).FontSize(7).FontColor(Colors.Grey.Medium);
                         });
                     if (ar || bi)
-                        col.Item().AlignCenter().Text(Pick(b.FooterTextAr, PayslipArabic.Footer)).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                    {
+                        var footerItem = col.Item();
+                        var arabicFooter = (bi ? footerItem : footerItem.AlignCenter()).Text(Pick(b.FooterTextAr, PayslipArabic.Footer)).FontSize(7).FontColor(Colors.Grey.Medium).DirectionFromRightToLeft();
+                        if (bi) arabicFooter.AlignRight();
+                    }
                     if (ar)
                         // The date is its own line: in the same paragraph as the sentence its Latin "UTC" and digits
                         // were reordered around the Arabic month and the footer read "... — 07 UTC 09:30 2026 نوفمبر".

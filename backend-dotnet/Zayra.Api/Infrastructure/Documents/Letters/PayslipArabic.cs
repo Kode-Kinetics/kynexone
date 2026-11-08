@@ -23,9 +23,16 @@ public static class PayslipArabic
     /// <summary>"أكتوبر 2026": Arabic month, Latin digits.</summary>
     public static string MonthYear(int year, int month) => $"{Month(month)} {year}";
 
-    /// <summary>"07 نوفمبر 2026، 09:30 UTC" as one right-to-left run (see the tests for the exact characters).</summary>
-    public static string Stamp(DateTime utc) =>
-        $"{utc:dd} {Month(utc.Month)} {utc:yyyy HH:mm} UTC";
+    /// <summary>
+    /// "07 نوفمبر 2026، 09:30 UTC": day, Arabic month, year, Arabic comma, then the Latin time as a left-to-right isolate
+    /// (LRI U+2066 .. PDI U+2069). Without the isolate the Latin "UTC" and the digits are reordered around the Arabic month
+    /// inside a right-to-left paragraph and the line reads "UTC 09:30 2026 07 نوفمبر".
+    /// </summary>
+    public static string Stamp(DateTime utc)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return $"{utc.ToString("dd", inv)} {Month(utc.Month)} {utc.ToString("yyyy", inv)}، \u2066{utc.ToString("HH:mm", inv)} UTC\u2069";
+    }
 
     public static string Disclaimer => "هذا كشف راتب صادر من النظام وصالح دون توقيع.";
 
