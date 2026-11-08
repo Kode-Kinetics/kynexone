@@ -20,6 +20,7 @@ const en = {
     RECRUITMENT: 'Hiring request',
     APPRAISAL: 'Appraisal',
     EMPLOYEE_CHANGE: 'Employee record change',
+    TRANSFER: 'Employee transfer',
     OTHER: 'Request',
   },
   role: {
@@ -130,6 +131,7 @@ const en = {
     readOnlyAudit: 'Your access is for review and audit, so you can see approvals but not decide them.',
     readOnlyRole: 'Your role can see approvals but not decide them. Ask HR if you should be an approver.',
     partialOvertime: "Overtime requests couldn't be loaded, so this list may be incomplete. Pull down to try again.",
+    partialTransfer: "Transfer requests couldn't be loaded, so this list may be incomplete. Pull down to try again.",
     partialWorkflow: "Leave and other approval requests couldn't be loaded, so this list may be incomplete. Pull down to try again.",
     partialCancellation: "Leave cancellation requests couldn't be fully loaded, so this list may be incomplete. Pull down to try again.",
     loadErrorTitle: "Approvals didn't load",
@@ -152,6 +154,7 @@ const en = {
       workflow: 'Approval workflow',
       overtime: 'Overtime approvals',
       leaveCancellation: 'Leave cancellation',
+      transfer: 'Transfer approvals',
     },
     sheet: {
       loading: 'Loading request details',
@@ -182,6 +185,12 @@ const en = {
       payNote: 'Calculated by payroll after HR gives the final approval.',
       flow: 'Approval steps',
       flowOvertime: 'You approve first, then HR gives the final approval.',
+      transferTo: 'Moves to',
+      flowTransfer: {
+        CurrentManager: 'You decide as the current manager, then the new manager, then HR. Rejecting needs a reason.',
+        NewManager: 'You decide as the new manager, then HR gives the final approval. Rejecting needs a reason.',
+        Hr: 'You give the final approval and the move is applied. Rejecting needs a reason.',
+      },
       flowStep: 'This request is at step {{step}} and waiting for you.',
       flowNoStep: 'This request is waiting for you.',
       prior: 'Earlier decisions',
@@ -428,6 +437,7 @@ const ar: typeof en = {
     RECRUITMENT: 'طلب توظيف',
     APPRAISAL: 'تقييم أداء',
     EMPLOYEE_CHANGE: 'تعديل بيانات موظف',
+    TRANSFER: 'نقل موظف',
     OTHER: 'طلب',
   },
   role: {
@@ -538,6 +548,7 @@ const ar: typeof en = {
     readOnlyAudit: 'صلاحيتك للمراجعة والتدقيق، لذا يمكنك الاطلاع على الطلبات دون اتخاذ قرار فيها.',
     readOnlyRole: 'يتيح لك دورك الاطلاع على الطلبات دون البت فيها. تواصل مع الموارد البشرية إن كان يُفترض أن تكون معتمداً.',
     partialOvertime: 'تعذّر تحميل طلبات العمل الإضافي، لذا قد لا تكون القائمة كاملة. اسحب للأسفل لإعادة المحاولة.',
+    partialTransfer: 'تعذّر تحميل طلبات النقل، لذا قد لا تكون القائمة كاملة. اسحب للأسفل لإعادة المحاولة.',
     partialWorkflow: 'تعذّر تحميل طلبات الإجازات والموافقات الأخرى، لذا قد لا تكون القائمة كاملة. اسحب للأسفل لإعادة المحاولة.',
     partialCancellation: 'تعذّر تحميل طلبات إلغاء الإجازات بالكامل، لذا قد لا تكون القائمة كاملة. اسحب للأسفل لإعادة المحاولة.',
     loadErrorTitle: 'تعذّر تحميل الموافقات',
@@ -560,6 +571,7 @@ const ar: typeof en = {
       workflow: 'مسار الموافقات',
       overtime: 'موافقات العمل الإضافي',
       leaveCancellation: 'إلغاء إجازة',
+      transfer: 'موافقات النقل',
     },
     sheet: {
       loading: 'جارٍ تحميل تفاصيل الطلب',
@@ -590,6 +602,12 @@ const ar: typeof en = {
       payNote: 'يُحتسب من قِبل الرواتب بعد الاعتماد النهائي من الموارد البشرية.',
       flow: 'مراحل الاعتماد',
       flowOvertime: 'توافق أنت أولاً، ثم تعتمد الموارد البشرية الطلب نهائياً.',
+      transferTo: 'يُنقل إلى',
+      flowTransfer: {
+        CurrentManager: 'تقرر بصفتك المدير الحالي، ثم المدير الجديد، ثم الموارد البشرية. يتطلب الرفض ذكر السبب.',
+        NewManager: 'تقرر بصفتك المدير الجديد، ثم تعتمد الموارد البشرية نهائياً. يتطلب الرفض ذكر السبب.',
+        Hr: 'تمنح الموافقة النهائية ويُطبَّق النقل. يتطلب الرفض ذكر السبب.',
+      },
       flowStep: 'الطلب في المرحلة {{step}} وبانتظار قرارك.',
       flowNoStep: 'الطلب بانتظار قرارك.',
       prior: 'القرارات السابقة',

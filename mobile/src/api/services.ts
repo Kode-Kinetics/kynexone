@@ -61,6 +61,9 @@ import {
   mapOvertimeApproval,
   mapWorkflowApproval,
   mergeInbox,
+  mapTransferApproval,
+  transferDecision,
+  transferOutcome,
   myDecisionsFrom,
   overtimeOutcome,
   workflowOutcome,
@@ -71,6 +74,7 @@ import {
   type LeaveFacts,
   type MyDecision,
 } from '@/features/approvals/approvalModel';
+import { mapChangeRequests, type ChangeRequest } from '@/features/profile/changeRequestModel';
 import { overlapping, teamTodayCounts, type OutEntry, type TeamDay, type TeamMemberToday } from '@/features/approvals/teamModel';
 import { teamCalendarApi } from './teamCalendar';
 import type {
@@ -1386,6 +1390,11 @@ export const profileApi = {
     };
   },
 
+  /** The employee's own older profile change requests and where each stands (GET /api/ess/profile-change-requests/mine). */
+  async getMyChangeRequests(): Promise<ChangeRequest[]> {
+    return mapChangeRequests(await apiGet<unknown>('/ess/profile-change-requests/mine'));
+  },
+
   async requestProfileUpdate(changes: Record<string, string | undefined>): Promise<void> {
     const cleaned = Object.fromEntries(Object.entries(changes).filter(([, v]) => v !== undefined && v !== ''));
     await apiPut('/ess/profile-change-request', {
@@ -1614,7 +1623,7 @@ export const approvalsApi = {
   async getInbox(): Promise<{ items: InboxItem[]; unavailable: InboxSource[] }> {
     const self = Number(await getCurrentEmployeeId());
     const selfId = Number.isFinite(self) && self > 0 ? self : null;
-    const [workflow, overtime, cancellations] = await Promise.allSettled([
+    const [workflow, overtime, cancellations, transfers] = await Promise.allSettled([
       fetchAllPages<any>((page, pageSize) =>
         apiGet<BackendPaged<any>>(`/approval-requests?status=Pending&page=${page}&pageSize=${pageSize}`)
       ),
@@ -1623,6 +1632,8 @@ export const approvalsApi = {
       ),
       // Employees' requests to cancel APPROVED leave: no row in /approval-requests, decided on the leave itself.
       apiGet<any>('/leave/requests/awaiting-decision'),
+      // Transfers are not approval requests: the server lists the ones whose current step this caller may decide.
+      apiGet<any[]>('/employees/transfers/pending'),
     ]);
     if (workflow.status === 'rejected' && overtime.status === 'rejected') throw workflow.reason;
     const unavailable: InboxSource[] = [];
@@ -1665,7 +1676,16 @@ export const approvalsApi = {
     } else if (cancellations.reason?.response?.status !== 403) {
       unavailable.push('leaveCancellation');
     }
-    return { items: mergeInbox(workflowItems, overtimeItems, cancellationItems), unavailable };
+    let transferItems: InboxItem[] = [];
+    if (transfers.status === 'fulfilled') {
+      transferItems = (Array.isArray(transfers.value) ? transfers.value : [])
+        .map(mapTransferApproval)
+        .filter((x): x is InboxItem => x !== null);
+    } else if (transfers.reason?.response?.status !== 403) {
+      // 403 = this login holds neither transfer approval: nothing is missing, there is nothing to show.
+      unavailable.push('transfer');
+    }
+    return { items: mergeInbox(workflowItems, overtimeItems, cancellationItems, transferItems), unavailable };
   },
 
   /**
@@ -1748,6 +1768,12 @@ export const approvalsApi = {
       // cancel-approve releases the days and cancels the leave; cancel-reject (Keep leave) leaves it approved.
       await apiPost<any>(`/leave/requests/${item.id}/${decision === 'approve' ? 'cancel-approve' : 'cancel-reject'}`, { notes });
       return leaveCancellationOutcome(decision);
+    }
+    if (item.source === 'transfer') {
+      const step = item.transfer?.awaitingStep;
+      const call = transferDecision(item, decision, notes);
+      await apiPost<any>(call.path, call.body);
+      return step ? transferOutcome(step, decision) : { kind: 'recorded' };
     }
     if (item.source === 'overtime') {
       // OvertimeDecisionRequest(int ApprovedMinutes, string? Notes): a manager approves the hours as requested.

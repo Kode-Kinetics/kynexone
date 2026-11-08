@@ -224,7 +224,9 @@ export default function ApprovalsScreen({ route }: Props) {
                 ? t('manager.approvals.partialOvertime')
                 : source === 'leaveCancellation'
                   ? t('manager.approvals.partialCancellation')
-                  : t('manager.approvals.partialWorkflow')}
+                  : source === 'transfer'
+                    ? t('manager.approvals.partialTransfer')
+                    : t('manager.approvals.partialWorkflow')}
             </Text>
           ))}
         </View>
@@ -411,6 +413,10 @@ function useWhatLine(item: InboxItem, leave: LeaveFacts | null): string | null {
     ].filter(Boolean);
     return parts.length ? parts.join(' · ') : null;
   }
+  if (item.transfer) {
+    const parts = [item.transfer.target, item.transfer.effectiveDate ? f.date(item.transfer.effectiveDate, 'medium') : null].filter(Boolean);
+    return parts.length ? parts.join(' · ') : null;
+  }
   if (leave?.startDate) {
     return [text.dateRange(leave.startDate, leave.endDate), leave.totalDays !== null ? text.days(leave.totalDays) : null]
       .filter(Boolean)
@@ -442,7 +448,7 @@ function ApprovalCard({
     item.submittedAt ? t('manager.approvals.card.submitted', { when: f.relative(item.submittedAt) }) : null,
     item.stepOrder !== null ? t('manager.approvals.card.step', { step: f.number(item.stepOrder) }) : null,
   ].filter(Boolean).join(' · ');
-  const reason = item.overtime?.reason ?? leave?.reason ?? null;
+  const reason = item.overtime?.reason ?? leave?.reason ?? item.transfer?.reason ?? null;
   const cta = canDecide ? t('manager.approvals.card.review') : t('manager.approvals.card.view');
 
   return (
@@ -704,6 +710,17 @@ function DecisionSheet({
             </View>
           ) : null}
 
+          {item.transfer ? (
+            <View>
+              {item.transfer.target ? <FactRow label={t('manager.approvals.sheet.transferTo')} value={item.transfer.target} /> : null}
+              {item.transfer.effectiveDate ? (
+                <FactRow label={t('manager.approvals.sheet.date')} value={f.date(item.transfer.effectiveDate, 'full')} sub={f.hijri(item.transfer.effectiveDate) || null} />
+              ) : null}
+              {item.transfer.reason ? <FactRow label={t('manager.approvals.sheet.reason')} value={item.transfer.reason} /> : null}
+              <FactRow label={t('manager.approvals.sheet.flow')} value={tx(`manager.approvals.sheet.flowTransfer.${item.transfer.awaitingStep}`)} />
+            </View>
+          ) : null}
+
           {item.kind === 'LEAVE' ? (
             contextState === 'loading' && !leave ? (
               <SkeletonCard lines={4} />
@@ -832,7 +849,9 @@ function DecisionSheet({
                 ? t('manager.approvals.source.overtime')
                 : item.source === 'leaveCancellation'
                   ? t('manager.approvals.source.leaveCancellation')
-                  : t('manager.approvals.source.workflow')}
+                  : item.source === 'transfer'
+                    ? t('manager.approvals.source.transfer')
+                    : t('manager.approvals.source.workflow')}
             />
           </View>
 

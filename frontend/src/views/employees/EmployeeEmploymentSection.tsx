@@ -9,6 +9,7 @@ import { useEmployeeReferenceLists } from '../../hooks/useReferenceLists';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { referenceLabel } from '../../lib/referenceLists';
 import { EmployeeCostCentreField } from '../../components/employees/EmployeeCostCentreField';
+import { EmployeeTransfersPanel } from './EmployeeTransfersPanel';
 
 function ReadField({ label, value, help }: { label: string; value?: string; help: string }) {
   return <div><dt className="mb-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">{label}</dt><dd><span className="block min-h-11 rounded-lg border border-slate-200 bg-white px-3 py-2.5 font-medium text-slate-900 dark:border-white/10 dark:bg-white/[0.03] dark:text-white">{value || 'Not provided'}</span><span className="mt-1 block text-xs font-normal text-slate-500">{help}</span></dd></div>;
@@ -20,7 +21,7 @@ export function EmployeeEmploymentSection({ employee, panel, canWrite, returnTo,
   // Stored as the reference-list code (or, on older rows, the English label): shown in the reader's language.
   const { lists } = useEmployeeReferenceLists();
   const companyName = companies.find(company => company.id === employee.companyId)?.name ?? employee.companyId;
-  if (panel === 'transfers') return <section className="surface p-5"><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">Employment transfers</h2>{employee.transfers.length ? <ul className="mt-4 space-y-3">{employee.transfers.map(item => <li key={item.id} className="rounded-xl border border-slate-200 p-4 dark:border-white/10"><p className="font-semibold">{item.newDepartment || item.newBranch || 'Transfer request'}</p><p className="text-sm text-slate-500">{item.status} · {item.effectiveDate}</p></li>)}</ul> : <p className="mt-4 text-sm text-slate-500">No transfer requests are recorded.</p>}</section>;
+  if (panel === 'transfers') return <EmployeeTransfersPanel employeeId={employee.id} onEmployeeChanged={onEmployeeChanged} />;
   return <section className="surface overflow-hidden">
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-5 dark:border-white/10"><div><h2 className="text-2xl font-semibold text-slate-950 dark:text-white">Employment details</h2><p className="mt-1 text-sm text-slate-500">The employee’s company, role, reporting line, and contract information.</p></div>{canWrite && <Link href={employeeWorkspaceHref(employee.id, { edit: true, section: 'employment', returnTo })} className="btn-secondary">Edit section</Link>}</header>
     <div className="grid gap-6 p-5 xl:grid-cols-[minmax(0,1fr)_320px]">

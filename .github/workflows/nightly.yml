@@ -60,6 +60,7 @@ jobs:
               playwright.pay-approvals.config.ts
               playwright.onboarding-p3.config.ts
               playwright.access-states.config.ts
+              playwright.people-dead-ends.config.ts
               playwright.ess-complete-profile.config.ts
               playwright.esign.config.ts
               playwright.ess-workspace.config.ts
@@ -98,6 +99,7 @@ jobs:
       PAY_APPROVALS_BASE_URL: http://127.0.0.1:5197
       PAYROLL_CC_BASE_URL: http://127.0.0.1:5197
       GRADE_PACKAGE_BASE_URL: http://127.0.0.1:5197
+      PEOPLE_DEAD_ENDS_BASE_URL: http://127.0.0.1:5197
       SALARY_ALLOWANCES_PORT: '5197'
       LEAVE_BASE_URL: http://127.0.0.1:5197
       LEARNING_BASE_URL: http://127.0.0.1:5197

@@ -246,7 +246,7 @@ function DecisionsHero({
         </View>
         <Text style={[theme.typography.subheadline, { color: theme.colors.textSecondary }]}>{t('manager.home.decisions.clearBody')}</Text>
         {inbox.data?.unavailable.length ? (
-          <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t('manager.approvals.partialOvertime')}</Text>
+          <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t(inbox.data?.unavailable.includes('overtime') ? 'manager.approvals.partialOvertime' : inbox.data?.unavailable.includes('transfer') ? 'manager.approvals.partialTransfer' : 'manager.approvals.partialWorkflow')}</Text>
         ) : null}
         <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>{t('manager.home.decisions.definition')}</Text>
       </Surface>
@@ -297,7 +297,7 @@ function DecisionsHero({
         ))}
       </View>
       {inbox.data?.unavailable.length ? (
-        <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t('manager.approvals.partialOvertime')}</Text>
+        <Text style={[theme.typography.footnote, { color: theme.colors.status.warning.fg }]}>{t(inbox.data?.unavailable.includes('overtime') ? 'manager.approvals.partialOvertime' : inbox.data?.unavailable.includes('transfer') ? 'manager.approvals.partialTransfer' : 'manager.approvals.partialWorkflow')}</Text>
       ) : null}
       <LiquidButton label={t('manager.home.decisions.review')} trailingIcon="forward" onPress={() => go('Approvals')} />
       <Text style={[theme.typography.caption, { color: theme.colors.textMuted }]}>{t('manager.home.decisions.definition')}</Text>

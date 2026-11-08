@@ -10,6 +10,7 @@ import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedMod
 import { Modal } from '../components/Modal';
 import { StatusChip } from '../components/StatusChip';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { PendingTransfersPanel } from '../components/people/PendingTransfersPanel';
 import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { SlateApprovalLink } from '../components/succession/SlateApprovalLink';
 import { leaveRequestsApi } from '../api/leave';
@@ -261,6 +262,8 @@ export function ApprovalsPage() {
           {t('Refresh')}
         </button>
       </div>
+
+      <PendingTransfersPanel />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {metrics.map((m) => {

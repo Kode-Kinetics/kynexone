@@ -29,6 +29,7 @@ using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Organization;
+using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Jobs;
@@ -5324,9 +5325,48 @@ public class EmployeesController : ControllerBase
                 if (check.Block is { } block)
                     dto = dto with { EstablishmentWarning = $"{block.DepartmentName} already has {block.Current} of {block.Budgeted} budgeted {block.LevelNameEn}(s); HR approval of this transfer will be blocked unless the budget is raised or a seat frees." };
             }
+            await NotifyTransferStepBestEffortAsync(transfer, tellRequester: false, cancellationToken);
             return Created($"/api/employees/transfers/{transfer.Id}", dto);
         }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
+    }
+
+    /// <summary>
+    /// Transfers waiting on the caller now: the open transfers whose CURRENT step the caller may decide, by the very rule
+    /// the approve endpoints enforce (see <see cref="MayDecideTransferStep"/>), inside the caller's data scope. The
+    /// Approval Center lists these; nothing here decides anything.
+    /// </summary>
+    [HttpGet("transfers/pending")]
+    [HasPermission("manager.approve", "employees.approve")]
+    public async Task<ActionResult<IReadOnlyList<EmployeeTransferViewDto>>> PendingTransfers(CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var open = await _db.EmployeeTransferRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && OpenTransferStatuses.Contains(x.Status))
+            .OrderBy(x => x.CreatedAtUtc).Take(200).ToListAsync(cancellationToken);
+        var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
+        var mine = new List<EmployeeTransferRequest>();
+        foreach (var transfer in open)
+            if (MayDecideTransferStep(TransferAwaitingStep(transfer.Status), transfer, callerEmployeeId)
+                && await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken))
+                mine.Add(transfer);
+        IReadOnlyList<EmployeeTransferViewDto> views = await BuildTransferViewsAsync(mine, callerEmployeeId, cancellationToken);
+        return new ActionResult<IReadOnlyList<EmployeeTransferViewDto>>(views);
+    }
+
+    /// <summary>One employee's transfers with their step, who holds it and whether the caller may decide it now.</summary>
+    [HttpGet("{id:int}/transfers")]
+    [HasPermission("employees.read")]
+    public async Task<ActionResult<IReadOnlyList<EmployeeTransferViewDto>>> EmployeeTransfers(int id, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        var transfers = await _db.EmployeeTransferRequests.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id)
+            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(cancellationToken);
+        var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
+        IReadOnlyList<EmployeeTransferViewDto> views = await BuildTransferViewsAsync(transfers, callerEmployeeId, cancellationToken);
+        return new ActionResult<IReadOnlyList<EmployeeTransferViewDto>>(views);
     }
 
     [HttpPost("transfers/{transferId:guid}/approve-current-manager")]
@@ -5338,6 +5378,75 @@ public class EmployeesController : ControllerBase
     [HasPermission("manager.approve")]
     public Task<IActionResult> ApproveNewManager(Guid transferId, CancellationToken cancellationToken) =>
         AdvanceTransfer(transferId, "PendingNewManager", "PendingHrApproval", x => x.NewManagerEmployeeId, x => x.NewManagerApprovedAtUtc = DateTime.UtcNow, cancellationToken);
+
+    /// <summary>
+    /// Rejects the transfer at the step it waits at, with a required reason. Who may: exactly who may approve that step
+    /// (the same rule and data scope as the approve endpoints, <see cref="MayDecideTransferStep"/>), and never the
+    /// employee themselves. Nothing is applied; the requester and the employee are told, and the employee's history says
+    /// who rejected it and why. A closed transfer is a conflict.
+    /// </summary>
+    [HttpPost("transfers/{transferId:guid}/reject")]
+    [HasPermission("manager.approve", "employees.approve")]
+    public async Task<IActionResult> RejectTransfer(Guid transferId, TransferDecisionRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == tenantId, cancellationToken);
+        if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
+        var step = TransferAwaitingStep(transfer.Status);
+        if (step is null)
+            return Conflict(new { message = $"Transfer is in '{transfer.Status}' status and can no longer be rejected." });
+        var callerEmployeeId = await GetCallerEmployeeId(cancellationToken);
+        if (!MayDecideTransferStep(step, transfer, callerEmployeeId)) return Forbid();
+        if (callerEmployeeId == transfer.EmployeeId
+            || await SubjectDecisionBar.CallerIsSubjectAsync(_db, tenantId, GetUserId(), transfer.EmployeeId, cancellationToken))
+            return Forbid();
+        var reason = request.Reason?.Trim() ?? string.Empty;
+        if (reason.Length == 0) return BadRequest(new { message = "Give a reason for rejecting this transfer." });
+        if (reason.Length > 1000) return BadRequest(new { message = "The reason can be at most 1000 characters." });
+
+        var previous = transfer.Status;
+        transfer.Status = TransferRejected;
+        AddTransferHistory(transfer, "TransferRejected", previous, reason);
+        await _db.SaveChangesAsync(cancellationToken);
+        await Audit("employee.transfer_rejected", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+        await NotifyTransferClosedBestEffortAsync(transfer, rejected: true, reason, cancellationToken);
+        return Ok(EmployeeTransferDto.Project(transfer));
+    }
+
+    /// <summary>
+    /// Takes the transfer back before its final approval: the requester, or a holder of employees.approve. The holder of
+    /// the step it was waiting at is told. The reason is optional; the employee's history records who and when.
+    /// </summary>
+    [HttpPost("transfers/{transferId:guid}/withdraw")]
+    [HasPermission("manager.approve", "employees.approve")]
+    public async Task<IActionResult> WithdrawTransfer(Guid transferId, TransferDecisionRequest request, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var transfer = await _db.EmployeeTransferRequests.FirstOrDefaultAsync(x => x.Id == transferId && x.TenantId == tenantId, cancellationToken);
+        if (transfer is null) return NotFound();
+        if (!await CanAccessEmployeeAsync(transfer.EmployeeId, cancellationToken)) return Forbid();
+        if (TransferAwaitingStep(transfer.Status) is null)
+            return Conflict(new { message = $"Transfer is in '{transfer.Status}' status and can no longer be withdrawn." });
+        if (!MayWithdrawTransfer(transfer)) return Forbid();
+        var reason = request.Reason?.Trim() ?? string.Empty;
+        if (reason.Length > 1000) return BadRequest(new { message = "The reason can be at most 1000 characters." });
+
+        var holders = await TransferStepHoldersAsync(transfer, cancellationToken);   // who held it, before the status changes
+        var previous = transfer.Status;
+        transfer.Status = TransferWithdrawn;
+        AddTransferHistory(transfer, "TransferWithdrawn", previous, reason);
+        await _db.SaveChangesAsync(cancellationToken);
+        await Audit("employee.transfer_withdrawn", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+        try
+        {
+            await Notify([.. holders.Where(h => h != GetUserId()).Select(h => (Guid?)h)], "Employee transfer withdrawn",
+                $"A transfer waiting for you was withdrawn by the person who asked for it. Nothing more is needed.",
+                nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
+        }
+        catch (Exception ex) { _logger?.LogWarning(ex, "Transfer {TransferId} was withdrawn, but the notification failed.", transfer.Id); }
+        return Ok(EmployeeTransferDto.Project(transfer));
+    }
 
     [HttpPost("transfers/{transferId:guid}/approve-hr")]
     [HasPermission("employees.approve")]
@@ -5683,6 +5792,168 @@ public class EmployeesController : ControllerBase
         });
     }
 
+    private static readonly string[] OpenTransferStatuses = ["PendingCurrentManager", "PendingNewManager", "PendingHrApproval"];
+    private const string TransferRejected = "Rejected";
+    private const string TransferWithdrawn = "Withdrawn";
+
+    private static string? TransferAwaitingStep(string status) => status switch
+    {
+        "PendingCurrentManager" => "CurrentManager",
+        "PendingNewManager" => "NewManager",
+        "PendingHrApproval" => "Hr",
+        _ => null,
+    };
+
+    /// <summary>
+    /// May the caller decide this step NOW? The approve endpoints' own rule, stated once for the lists: a manager step
+    /// needs <c>manager.approve</c> plus either <c>employees.approve</c> (the HR bypass) or being the named manager;
+    /// the HR step needs <c>employees.approve</c>. The endpoints still enforce this themselves; this only stops the
+    /// screens offering a button the server would refuse.
+    /// </summary>
+    private bool MayDecideTransferStep(string? step, EmployeeTransferRequest transfer, int? callerEmployeeId) => step switch
+    {
+        "CurrentManager" => User.HasPermission("manager.approve")
+            && (User.HasPermission("employees.approve") || (callerEmployeeId is not null && transfer.CurrentManagerEmployeeId == callerEmployeeId)),
+        "NewManager" => User.HasPermission("manager.approve")
+            && (User.HasPermission("employees.approve") || (callerEmployeeId is not null && transfer.NewManagerEmployeeId == callerEmployeeId)),
+        "Hr" => User.HasPermission("employees.approve"),
+        _ => false,
+    };
+
+    private async Task<List<EmployeeTransferViewDto>> BuildTransferViewsAsync(
+        IReadOnlyList<EmployeeTransferRequest> transfers, int? callerEmployeeId, CancellationToken cancellationToken)
+    {
+        if (transfers.Count == 0) return [];
+        var tenantId = RequireTenant();
+        var ids = transfers.Select(x => x.EmployeeId)
+            .Concat(transfers.Where(x => x.CurrentManagerEmployeeId != null).Select(x => x.CurrentManagerEmployeeId!.Value))
+            .Concat(transfers.Where(x => x.NewManagerEmployeeId != null).Select(x => x.NewManagerEmployeeId!.Value))
+            .Distinct().ToList();
+        var people = (await _db.Employees.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && ids.Contains(x.Id))
+                .Select(x => new { x.Id, x.EmployeeCode, x.EnglishName, x.FullName })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => (x.EmployeeCode, Name: string.IsNullOrWhiteSpace(x.EnglishName) ? x.FullName : x.EnglishName));
+        string? NameOf(int? id) => id is int key && people.TryGetValue(key, out var p) ? p.Name : null;
+
+        // Why a closed transfer was rejected or withdrawn, and by whom: the employee's history rows that name it.
+        var closedIds = transfers.Where(t => t.Status is TransferRejected or TransferWithdrawn).Select(t => t.EmployeeId).Distinct().ToList();
+        var outcomes = closedIds.Count == 0 ? [] : await _db.EmployeeHistories.AsNoTracking()
+            .Where(h => h.TenantId == tenantId && closedIds.Contains(h.EmployeeId) && (h.EventType == "TransferRejected" || h.EventType == "TransferWithdrawn"))
+            .OrderByDescending(h => h.CreatedAtUtc).ToListAsync(cancellationToken);
+        var deciderIds = outcomes.Where(h => h.CreatedByUserId != null).Select(h => h.CreatedByUserId!.Value).Distinct().ToList();
+        var deciderNames = deciderIds.Count == 0 ? new Dictionary<Guid, string>() : await _db.Users.AsNoTracking()
+            .Where(u => u.TenantId == tenantId && deciderIds.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.FullName, cancellationToken);
+        var callerUserId = GetUserId();
+
+        return transfers.Select(t =>
+        {
+            var step = TransferAwaitingStep(t.Status);
+            var holder = step switch { "CurrentManager" => NameOf(t.CurrentManagerEmployeeId), "NewManager" => NameOf(t.NewManagerEmployeeId), _ => null };
+            var canDecide = MayDecideTransferStep(step, t, callerEmployeeId);
+            var outcome = outcomes.FirstOrDefault(h => h.EmployeeId == t.EmployeeId && h.FieldName == $"Transfer {t.Id}");
+            return new EmployeeTransferViewDto(
+                EmployeeTransferDto.Project(t),
+                NameOf(t.EmployeeId) ?? string.Empty,
+                people.TryGetValue(t.EmployeeId, out var self) ? self.EmployeeCode : string.Empty,
+                NameOf(t.CurrentManagerEmployeeId), NameOf(t.NewManagerEmployeeId),
+                step, holder, canDecide,
+                CanReject: canDecide && callerEmployeeId != t.EmployeeId,
+                CanWithdraw: step is not null && MayWithdrawTransfer(t),
+                DecisionReason: outcome is null || string.IsNullOrWhiteSpace(outcome.Reason) ? null : outcome.Reason,
+                DecidedByName: outcome?.CreatedByUserId is Guid by && deciderNames.TryGetValue(by, out var name) ? name : null);
+        }).ToList();
+    }
+
+    /// <summary>
+    /// Who is told that a step needs a decision: the manager holding it (their login), else the HR Manager queue,
+    /// which is who can pass a manager step nobody can be named for and who holds the HR step. Never a broadcast.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> TransferStepHoldersAsync(EmployeeTransferRequest transfer, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var managerId = transfer.Status switch
+        {
+            "PendingCurrentManager" => transfer.CurrentManagerEmployeeId,
+            "PendingNewManager" => transfer.NewManagerEmployeeId,
+            _ => null,
+        };
+        if (managerId is int named)
+        {
+            var logins = await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, named, cancellationToken);
+            if (logins.Count > 0) return logins;
+        }
+        var companyId = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "A transfer notice resolves the subject's company to find the HR queue that covers it, before the ambient company filter can hide the subject.")
+            .AsNoTracking().Where(x => x.Id == transfer.EmployeeId).Select(x => x.CompanyId).SingleOrDefaultAsync(cancellationToken);
+        return await NotificationAudience.QueueHoldersAsync(_db, tenantId, null, companyId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Tells the holders of the transfer's CURRENT step that it needs them, and (after a manager step) tells the
+    /// requester it moved on and who holds it. Post-commit and best-effort: a notification outage must not turn a
+    /// durable state change into an error that invites a retry.
+    /// </summary>
+    private async Task NotifyTransferStepBestEffortAsync(EmployeeTransferRequest transfer, bool tellRequester, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = RequireTenant();
+            var subject = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == transfer.EmployeeId)
+                .Select(x => new { x.EmployeeCode, x.EnglishName, x.FullName }).FirstOrDefaultAsync(cancellationToken);
+            var who = subject is null ? $"employee {transfer.EmployeeId}" : $"{subject.EmployeeCode} ({(string.IsNullOrWhiteSpace(subject.EnglishName) ? subject.FullName : subject.EnglishName)})";
+            var target = FirstNonEmpty(transfer.NewDepartment, transfer.NewBranch, transfer.NewDesignation, "a new position");
+            var step = TransferAwaitingStep(transfer.Status);
+            var stepNoun = step switch { "CurrentManager" => "the current manager", "NewManager" => "the new manager", _ => "HR" };
+            var holders = await TransferStepHoldersAsync(transfer, cancellationToken);
+            await Notify([.. holders.Select(h => (Guid?)h)], "Employee transfer awaiting your approval",
+                $"The transfer of {who} to {target} is waiting for {stepNoun}. Open the Approval Center to decide it.",
+                nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
+            if (tellRequester && transfer.RequestedByUserId is Guid requester && !holders.Contains(requester))
+                await Notify([requester], "Employee transfer moved to the next step",
+                    $"The transfer of {who} to {target} was approved and now waits for {stepNoun}.",
+                    nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Transfer {TransferId} changed state, but the notification failed.", transfer.Id);
+        }
+    }
+
+    /// <summary>The requester, or a holder of employees.approve (who may act on any transfer in their data scope).</summary>
+    private bool MayWithdrawTransfer(EmployeeTransferRequest transfer) =>
+        (transfer.RequestedByUserId is Guid requester && requester == GetUserId()) || User.HasPermission("employees.approve");
+
+    /// <summary>The employee's history records who rejected or withdrew a transfer and why. FieldName names the transfer.</summary>
+    private void AddTransferHistory(EmployeeTransferRequest transfer, string eventType, string previousStatus, string reason) =>
+        _db.EmployeeHistories.Add(new EmployeeHistory
+        {
+            TenantId = transfer.TenantId, EmployeeId = transfer.EmployeeId, EventType = eventType,
+            FieldName = $"Transfer {transfer.Id}", OldValue = previousStatus, NewValue = transfer.Status,
+            EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow), Reason = reason, CreatedByUserId = GetUserId(),
+        });
+
+    /// <summary>Tells the requester (with the reason) and the employee's own login (without it) that the transfer will not happen.</summary>
+    private async Task NotifyTransferClosedBestEffortAsync(EmployeeTransferRequest transfer, bool rejected, string reason, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var tenantId = RequireTenant();
+            var code = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == transfer.EmployeeId)
+                .Select(x => x.EmployeeCode).FirstOrDefaultAsync(cancellationToken) ?? $"employee {transfer.EmployeeId}";
+            var target = FirstNonEmpty(transfer.NewDepartment, transfer.NewBranch, transfer.NewDesignation, "a new position");
+            await Notify([transfer.RequestedByUserId], rejected ? "Employee transfer rejected" : "Employee transfer withdrawn",
+                rejected ? $"The transfer of {code} to {target} was rejected. Reason: {reason}" : $"The transfer of {code} to {target} was withdrawn.",
+                nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
+            var employeeLogins = (await NotificationAudience.EmployeeLoginIdsAsync(_db, tenantId, transfer.EmployeeId, cancellationToken))
+                .Where(id => id != transfer.RequestedByUserId).Select(id => (Guid?)id).ToList();
+            await Notify(employeeLogins, rejected ? "Employee transfer rejected" : "Employee transfer withdrawn",
+                $"The proposed transfer to {target} will not go ahead. Nothing changes in your record.",
+                nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
+        }
+        catch (Exception ex) { _logger?.LogWarning(ex, "Transfer {TransferId} was closed, but the notification failed.", transfer.Id); }
+    }
+
     private async Task<IActionResult> AdvanceTransfer(
         Guid transferId,
         string expectedStatus,
@@ -5707,6 +5978,7 @@ public class EmployeesController : ControllerBase
         transfer.Status = nextStatus;
         await _db.SaveChangesAsync(cancellationToken);
         await Audit("employee.transfer_advanced", "EmployeeTransferRequest", transfer.Id.ToString(), cancellationToken);
+        await NotifyTransferStepBestEffortAsync(transfer, tellRequester: true, cancellationToken);
         return Ok(transfer);
     }
 
@@ -6807,6 +7079,7 @@ internal sealed class DraftApprovalNotReadyException : InvalidOperationException
 }
 internal sealed class DraftApprovalNotFoundException : InvalidOperationException { }
 public record EmployeeDocumentRequest(string DocumentType, string FileName, string ContentType, string StorageUrl, bool IsRequired, DateOnly? ExpiryDate);
+public record TransferDecisionRequest(string? Reason);
 public record EmployeeTransferRequestDto(string NewDepartment, string NewBranch, int? NewManagerEmployeeId, DateOnly EffectiveDate);
 /// <param name="CostCenterReason">Why the "costCenter" key is setting or removing the employee's cost-centre override (M-10): required when it does, audited.</param>
 /// <param name="CostCenterDecision">Wave A D2: "keep" or "drop" — what happens to the person's cost-centre override when the patch moves them to another

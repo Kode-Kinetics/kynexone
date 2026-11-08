@@ -1038,6 +1038,30 @@ public record EmployeeTransferDto
     };
 }
 
+/// <summary>
+/// A transfer with the context a decider or the requester needs: who it is for, which step it waits at and who
+/// holds that step, and whether the CALLER may decide it now (the same rule the approve endpoints enforce).
+/// Org restructuring data and names only; no pay, bank or identity data.
+/// </summary>
+public record EmployeeTransferViewDto(
+    EmployeeTransferDto Transfer,
+    string EmployeeName,
+    string EmployeeCode,
+    string? CurrentManagerName,
+    string? NewManagerName,
+    /// <summary>CurrentManager | NewManager | Hr; null once applied.</summary>
+    string? AwaitingStep,
+    /// <summary>The person who holds the step (a manager's name), or null when HR holds it.</summary>
+    string? AwaitingName,
+    bool CanDecide,
+    /// <summary>The caller may reject the step it waits at: exactly who may approve it, and never the employee themselves.</summary>
+    bool CanReject = false,
+    /// <summary>The caller may withdraw it: the requester, or an approver of employee changes, while it is still open.</summary>
+    bool CanWithdraw = false,
+    /// <summary>Why it was rejected or withdrawn, as the person who did so wrote it.</summary>
+    string? DecisionReason = null,
+    string? DecidedByName = null);
+
 public record EmployeeGroupCountDto(string Name, int Count);
 public record EmployeeHeadcountReportDto(int Total, IReadOnlyCollection<EmployeeGroupCountDto> ByCompany, IReadOnlyCollection<EmployeeGroupCountDto> ByDepartment, IReadOnlyCollection<EmployeeGroupCountDto> ByStatus);
 public record EmployeeStatusSummaryDto(IReadOnlyCollection<EmployeeGroupCountDto> Statuses);

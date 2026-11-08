@@ -9,6 +9,7 @@ import { hrRequestStatus, markReplySeen } from '@/src/lib/essSelfService';
 import { useAuth } from '@/src/contexts/AuthContext';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
 import { requestFailureReason } from '@/src/lib/requestFailure';
+import { MyProfileChanges } from '@/src/components/ess/MyProfileChanges';
 
 const GENERAL = 'General HR';
 const blankForm = { categoryId: '', subject: '', description: '' };
@@ -158,6 +159,7 @@ export function MyRequestsPage() {
             </EssCard>
 
             <div className="space-y-4">
+              <MyProfileChanges />
               <EssCard title={t('My requests')} testId="my-requests-list">
                 {requests.length === 0 ? (
                   <EssEmpty text={t('You have not raised any requests yet.')} />
