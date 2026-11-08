@@ -5970,7 +5970,7 @@ public class EmployeesController : ControllerBase
                 $"The proposed transfer to {target} will not go ahead. Nothing changes in your record.",
                 nameof(EmployeeTransferRequest), transfer.Id.ToString(), cancellationToken);
         }
-        catch (Exception ex) { _logger?.LogWarning(ex, "Transfer {TransferId} was closed, but the notification failed.", transfer.Id); }
+        catch (Exception ex) { _logger?.LogWarning("Transfer {TransferId} was closed, but the notification failed ({ErrorType}).", transfer.Id, ex.GetType().Name); }
     }
 
     private async Task<IActionResult> AdvanceTransfer(
