@@ -76,4 +76,13 @@ public static class DocumentFonts
     /// any codepoint Lato cannot draw. Mixed "SAR 15,000 — ريال" strings resolve per-run.
     /// </summary>
     public static string[] Chain => [LatinFamily, ArabicFamily];
+
+    /// <summary>
+    /// Every generated document's base text style goes through this. Lato draws "ti" (and "ff", "fi", "fl")
+    /// as one ligature glyph that the PDF's embedded subset gives no Unicode mapping, so copy, search, screen
+    /// readers and downstream parsers read "Designation" as "Designaon". New documents call this inside
+    /// <c>page.DefaultTextStyle(...)</c>; <c>PdfTextLayerRatchetTests</c> fails the build for one that does not.
+    /// </summary>
+    public static QuestPDF.Infrastructure.TextStyle TextLayerSafe(this QuestPDF.Infrastructure.TextStyle style)
+        => QuestPDF.Fluent.TextStyleExtensions.DisableFontFeature(style, FontFeatures.StandardLigatures);
 }
