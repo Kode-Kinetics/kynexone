@@ -352,8 +352,20 @@ public class BenefitDefinitionCreateTests
         var refused = await h.Add(Parking());
         (Status(refused), Error(refused)).Should().Be((403, "feature_not_enabled"));
         (await h.Rows("BEN_PARK")).Should().BeEmpty();
+        // The old body behaves exactly as before: a property nobody reads is ignored, not refused.
+        var extra = await h.Add(JsonSerializer.Deserialize<CreateBenefitRequest>("""{"nameEn":"Spa","bogus":1}""", Web)!);
+        Component(extra).Code.Should().Be("BEN_SPA");
+    }
+
+    [Fact]
+    public async Task WithTheFlagOn_AnUnknownFieldIsRefused_AndNothingIsWritten()
+    {
+        await using var h = await Bd.Create();
+
         var unknown = await h.Add(JsonSerializer.Deserialize<CreateBenefitRequest>("""{"nameEn":"Spa","bogus":1}""", Web)!);
-        Error(unknown).Should().Be("unrecognised_field");
+
+        (Status(unknown), Error(unknown)).Should().Be((400, "unrecognised_field"));
+        (await h.Rows("BEN_SPA")).Should().BeEmpty();
     }
 
     [Fact]

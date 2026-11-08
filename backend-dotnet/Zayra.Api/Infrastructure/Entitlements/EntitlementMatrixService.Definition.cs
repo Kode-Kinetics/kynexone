@@ -152,36 +152,68 @@ public sealed partial class EntitlementMatrixService
         return (null, true);
     }
 
-    /// <summary>A date change may not reach into a payroll period any company has approved, locked or closed: the start must be after it, and an end
-    /// can't cut a month already paid. Only the dates being changed are checked.</summary>
-    private async Task<MatrixResult?> WindowLockProblemAsync(Guid tid, DateOnly? from, DateOnly? to, bool checkFrom, bool checkTo, CancellationToken ct)
+    /// <summary>A benefit's window as payroll sees it: offered only while active, from <c>From</c> (null = since the start) to <c>To</c> (null = no end).</summary>
+    internal readonly record struct Window(bool Active, DateOnly? From, DateOnly? To);
+
+    private static DateOnly MonthStart(DateOnly d) => new(d.Year, d.Month, 1);
+
+    private static bool InWindow(Window w, DateOnly monthStart) =>
+        w.Active && (w.From is null || w.From <= monthStart)
+        && (w.To is null || w.To >= new DateOnly(monthStart.Year, monthStart.Month, DateTime.DaysInMonth(monthStart.Year, monthStart.Month)));
+
+    /// <summary>
+    /// Whether going from <paramref name="old"/> to <paramref name="next"/> changes the membership of any month at or before
+    /// <paramref name="committed"/> (the first day of the latest payroll month any company has approved, locked or closed). Comparing the two windows —
+    /// not just the new values — catches every way into a paid month: clearing the start (the benefit then applies to all the past), moving the start later
+    /// or earlier across a paid month, extending the end across a paid gap or cutting it inside a paid month, and switching it off or on.
+    /// <paramref name="openPastCounts"/> false (a new contract benefit, which changes no paid month) ignores "since the start".
+    /// </summary>
+    internal static bool ChangeReachesCommitted(DateOnly committed, Window old, Window next, bool openPastCounts = true)
     {
-        if (!(checkFrom && from.HasValue) && !(checkTo && to.HasValue)) return null;
+        // "Since the start" reaches every past month at once.
+        if (openPastCounts && (old.Active && old.From is null) != (next.Active && next.From is null)) return true;
+        var finite = new[] { old.From, old.To, next.From, next.To }.Where(d => d.HasValue).Select(d => d!.Value).ToList();
+        if (finite.Count == 0) return false;
+        // Past the last bound (plus one month, where an end appears or disappears) both windows agree again.
+        var start = MonthStart(finite.Min());
+        var stop = MonthStart(finite.Max()).AddMonths(1);
+        if (stop > committed) stop = committed;
+        for (var month = start; month <= stop; month = month.AddMonths(1))
+            if (InWindow(old, month) != InWindow(next, month)) return true;
+        return false;
+    }
+
+    private async Task<MatrixResult?> WindowChangeLockProblemAsync(Guid tid, Window old, Window next, bool openPastCounts, CancellationToken ct)
+    {
+        if (old == next) return null;
         if (await PayComponentPolicy.LatestCommittedPeriodAsync(db, tid, null, ct) is not DateOnly committed) return null;
-        var committedEnd = committed.AddMonths(1).AddDays(-1);
-        if ((checkFrom && from is DateOnly f && f <= committed) || (checkTo && to is DateOnly t && t <= committedEnd))
-            return new MatrixResult(StatusCodes.Status409Conflict, new
-            {
-                error = "effective_in_locked_period",
-                message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid for at least one company. A benefit can only start after it and can't end before it ends.",
-                earliestEffectiveFrom = committed.AddMonths(1),
-            });
-        return null;
+        if (!ChangeReachesCommitted(committed, old, next, openPastCounts)) return null;
+        return new MatrixResult(StatusCodes.Status409Conflict, new
+        {
+            error = "effective_in_locked_period",
+            message = $"Payroll for {committed:yyyy-MM} is already approved, locked or paid for at least one company. A change to when this benefit is in effect, or whether it is switched on, can only reach months after it.",
+            earliestEffectiveFrom = committed.AddMonths(1),
+        });
     }
 
     // ── Scope ────────────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>The companies that do NOT offer the benefit, from a scope. Null = every company offers it. A refusal when a company is not the
-    /// tenant's, when the scope is empty, or when a cash allowance (never skippable per company) is scoped to a subset.</summary>
+    /// <summary>The companies that do NOT offer the benefit, from a scope. Null = every company offers it. A refusal when the scope has a key it does not
+    /// know, is empty, lists more companies than the tenant has, names a company that is not the tenant's (all checked against ONE read of the tenant's
+    /// companies), or when a cash allowance (never skippable per company) is scoped to a subset.</summary>
     private async Task<(MatrixResult? Problem, List<Guid>? Excluded)> ExcludedCompaniesAsync(Guid tid, BenefitScopeInput? scope, bool cash, DateOnly? from, CancellationToken ct)
     {
-        if (scope?.CompanyIds is not { } ids) return (null, null);
+        if (scope is null) return (null, null);
+        if (scope.Unrecognised is { Count: > 0 }) return (UnrecognisedField(scope.Unrecognised.Keys), null);
+        if (scope.CompanyIds is not { } ids) return (null, null);
         if (ids.Count == 0) return (Bad("scope_empty", "Choose at least one company, or leave the scope as all companies."), null);
+        var companies = await ScopedBypass.TenantWide(db.Companies, tid, "A scope may name only the tenant's own companies; checked against one read of them.")
+            .AsNoTracking().Where(c => !c.IsDeleted).Select(c => new { c.Id, c.IsActive }).ToListAsync(ct);
+        if (ids.Count > companies.Count) return (Bad("scope_too_large", "The scope lists more companies than you have."), null);
+        var known = companies.Select(c => c.Id).ToHashSet();
         var chosen = ids.Distinct().ToList();
-        foreach (var id in chosen)
-            if (id == Guid.Empty || !await db.Companies.AnyAsync(c => c.TenantId == tid && c.Id == id && !c.IsDeleted, ct))
-                return (Bad("company_not_found", "One of the companies doesn't exist."), null);
-        var excluded = (await ActiveCompanyIdsAsync(tid, ct)).Where(id => !chosen.Contains(id)).ToList();
+        if (chosen.Any(id => !known.Contains(id))) return (Bad("company_not_found", "One of the companies doesn't exist."), null);
+        var excluded = companies.Where(c => c.IsActive && !chosen.Contains(c.Id)).Select(c => c.Id).ToList();
         if (excluded.Count == 0) return (null, null);
         if (cash) return (Bad("scope_not_supported_for_cash", "A cash allowance is paid in salary, so it is offered to every company. Choose all companies."), null);
         if (from is null) return (Bad("effective_from_required_for_scope", "Say the month the benefit starts, so the companies that don't offer it can skip it from then."), null);
@@ -302,30 +334,66 @@ public sealed partial class EntitlementMatrixService
         if (shapeProblem is not null) return (shapeProblem, null);
         var (scopeProblem, excluded) = await ExcludedCompaniesAsync(actor.TenantId, req.Scope, cash, req.EffectiveFrom, ct);
         if (scopeProblem is not null) return (scopeProblem, null);
-        if (await WindowLockProblemAsync(actor.TenantId, req.EffectiveFrom, req.EffectiveTo, checkFrom: true, checkTo: true, ct) is { } locked) return (locked, null);
+        // A new definition has no earlier window: every month it covers changes. A new cash allowance open to the past would be in effect for paid months.
+        if (await WindowChangeLockProblemAsync(actor.TenantId, new Window(false, null, null), new Window(req.IsActive ?? true, req.EffectiveFrom, req.EffectiveTo), openPastCounts: cash, ct) is { } locked)
+            return (locked, null);
         return (null, new CreateDefinition(category, policyClass, req.EffectiveFrom, req.EffectiveTo, req.IsActive ?? true, part, excluded));
     }
+
+    // ── Replay ───────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>A short, stable hash of what a request asked for (its request id left out): a replay must be the same request, not just the same id.</summary>
+    private static string Fingerprint(object body) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body))))[..32];
+
+    private static MatrixResult RequestIdReused() => new(StatusCodes.Status422UnprocessableEntity, new
+    {
+        error = "request_id_reused",
+        message = "This request id was already used for a different request. Send a new request id for a new change.",
+    });
+
+    /// <summary>The audit rows of an earlier request by the same person with this id: the stored metadata, and whether the body hash agrees.</summary>
+    private static bool SameRequest(JsonElement stored, string fingerprint) =>
+        !stored.TryGetProperty("requestHash", out var h) || h.ValueKind != JsonValueKind.String || h.GetString() == fingerprint;
 
     // ── Edit ─────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Edits the definition of a benefit or cash allowance the customer added (PUT /api/entitlements/components/{code}). Needs the feature, access to
-    /// every company and the version the screen read (<see cref="UpdateBenefitRequest.ExpectedVersion"/>); serialised with every other matrix write, one
-    /// save with its audit row. The kind and delivery never change; the code only while nothing uses it (contract benefits); the company scope is
+    /// Edits the definition of a benefit or cash allowance the customer added (PUT /api/entitlements/components/{code}). Needs the feature (read inside the
+    /// lock), access to every company and the version the screen read (<see cref="UpdateBenefitRequest.ExpectedVersion"/>); serialised with every other matrix
+    /// write, one save with its audit row. The kind and delivery never change; the code only while nothing uses it (contract benefits); the company scope is
     /// switched in the offerings. A cash allowance: see the class remarks.
     /// </summary>
     public async Task<MatrixResult> UpdateBenefitAsync(MatrixActor actor, string code, UpdateBenefitRequest req, CancellationToken ct)
     {
         if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
-        if (req.Unrecognised is { Count: > 0 }) return UnrecognisedField(req.Unrecognised.Keys);
-        if (!await BenefitDefinitionEnabledAsync(db, actor.TenantId, ct)) return FeatureNotEnabled();
         return await FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, () => UpdateBenefitCoreAsync(actor, code, req, ct), ct);
     }
 
     private async Task<MatrixResult> UpdateBenefitCoreAsync(MatrixActor actor, string code, UpdateBenefitRequest req, CancellationToken ct)
     {
         var tid = actor.TenantId;
+        if (AfterLockHook is { } afterLock) await afterLock();
+        if (!await BenefitDefinitionEnabledAsync(db, tid, ct)) return FeatureNotEnabled();
+        if (req.Unrecognised is { Count: > 0 }) return UnrecognisedField(req.Unrecognised.Keys);
         code = (code ?? string.Empty).Trim().ToUpperInvariant();
+        var fingerprint = Fingerprint(new
+        {
+            urlCode = code, req.ExpectedVersion, req.NameEn, req.NameAr, req.Code, req.Kind, req.Delivery, req.Frequency, req.Category, req.PolicyClass, req.EffectiveFrom,
+            req.EffectiveTo, req.IsActive, req.RequiresEnrolment, scope = req.Scope?.CompanyIds?.Order().ToList(), scopeSent = req.Scope is not null, req.GlDriverKey,
+            req.EosbIncluded, req.EosbExclusionCategory, req.EosbExclusionReason, sent = req.SentFields(),
+        });
+
+        // A replay of an edit this person already made, found BEFORE the code lookup (a rename moved the code): the stored result, whatever the version
+        // has since become. The same id for a different request is refused.
+        if (req.RequestId is Guid requestId && await FindReplayAsync(actor, AuditBenefitUpdated, requestId, ct) is { } replay)
+        {
+            var was = replay.TryGetProperty("componentCode", out var c0) ? c0.GetString() : null;
+            var movedTo = replay.TryGetProperty("newCode", out var c1) ? c1.GetString() : was;
+            if (!SameRequest(replay, fingerprint) || (code != was && code != movedTo)) return RequestIdReused();
+            return await CurrentAsync(tid, movedTo ?? code, ct);
+        }
+
         if (!EntitlementComponentRules.IsCustom(code))
             return Conflict("built_in_benefit", "Only a benefit you added yourself can be edited.");
         var cash = EntitlementComponentRules.IsAllowance(code);
@@ -338,11 +406,6 @@ public sealed partial class EntitlementMatrixService
             : rowsQuery.Where(x => x.ComponentType == PayComponentTypes.Benefit);
         var versions = (await rowsQuery.ToListAsync(ct)).OrderBy(x => x.EffectiveFrom ?? DateOnly.MinValue).ToList();
         if (versions.Count == 0) return NotFound();
-
-        // A replay of an edit this person already made: the current state, whatever the version has since become.
-        if (req.RequestId is Guid requestId && await FindReplayAsync(actor, AuditBenefitUpdated, requestId, ct) is { } replay
-            && replay.TryGetProperty("componentCode", out var replayed) && replayed.GetString() == code)
-            return await CurrentAsync(tid, code, ct);
 
         if (string.IsNullOrWhiteSpace(req.ExpectedVersion))
             return Bad("expected_version_required", "Send the version of the benefit you were looking at, so a change someone else made isn't overwritten.");
@@ -368,35 +431,47 @@ public sealed partial class EntitlementMatrixService
                 return Bad("delivery_not_supported", "Only a monthly cash allowance can be set up here.");
         }
 
-        // Names: either language will do, as when adding; never the same as another benefit's.
-        var nameEn = (req.NameEn ?? string.Empty).Trim();
-        var nameAr = (req.NameAr ?? string.Empty).Trim();
-        if (nameEn.Length == 0 && nameAr.Length == 0) return Bad("name_required", "Give the benefit a name.");
+        var head = versions[^1];
+        var today = await clock.TodayAsync(tid, ct);
+
+        // Names are replaced when sent (each language on its own); one of them is required. Never the same as another benefit's.
+        var nameEn = Blank(req.NameEn) ?? head.NameEn;
+        var nameAr = Blank(req.NameAr) ?? head.NameAr;
+        if (Blank(req.NameEn) is null && Blank(req.NameAr) is null) return Bad("name_required", "Give the benefit a name.");
         if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
-        if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
-        if (nameEn.Length == 0) nameEn = nameAr;
-        if (nameAr.Length == 0) nameAr = nameEn;
+        if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl) || CashAllowanceDefinitions.HasUnsafeCharacters(nameEn) || CashAllowanceDefinitions.HasUnsafeCharacters(nameAr))
+            return Bad("name_invalid", "A name can't contain control or text-direction override characters.");
         var others = await ScopedBypass.TenantWide(db.PayComponents, tid, "The other benefits the customer added, removed ones excluded, to keep names unique.")
             .AsNoTracking().Where(IsCustomRow()).Where(x => !x.IsDeleted && x.Code != code).ToListAsync(ct);
         bool Same(string a, string b) => string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
         if (others.Any(x => Same(x.NameEn, nameEn) || Same(x.NameAr, nameAr) || Same(x.NameEn, nameAr) || Same(x.NameAr, nameEn)))
             return Conflict("benefit_exists", $"A benefit called \"{nameEn}\" already exists. Choose a different name.");
 
-        var (categoryProblem, category) = CheckCategory(req.Category);
-        if (categoryProblem is not null) return categoryProblem;
-        var (classProblem, policyClass) = CheckPolicyClass(req.PolicyClass);
-        if (classProblem is not null) return classProblem;
-        var (shapeProblem, _) = CheckWindowShape(req.EffectiveFrom, req.EffectiveTo);
+        // Omitted = unchanged; an explicit null = cleared.
+        var category = head.BenefitCategory;
+        if (req.Sent(nameof(req.Category)))
+        {
+            var (categoryProblem, parsed) = CheckCategory(req.Category);
+            if (categoryProblem is not null) return categoryProblem;
+            category = parsed;
+        }
+        var policyClass = head.PolicyClass;
+        if (req.Sent(nameof(req.PolicyClass)))
+        {
+            var (classProblem, parsed) = CheckPolicyClass(req.PolicyClass);
+            if (classProblem is not null) return classProblem;
+            policyClass = parsed;
+        }
+        var newFrom = req.Sent(nameof(req.EffectiveFrom)) ? req.EffectiveFrom : head.EffectiveFrom;
+        var newTo = req.Sent(nameof(req.EffectiveTo)) ? req.EffectiveTo : head.EffectiveTo;
+        var (shapeProblem, _) = CheckWindowShape(newFrom, newTo);
         if (shapeProblem is not null) return shapeProblem;
 
-        var head = versions[^1];
-        var today = await clock.TodayAsync(tid, ct);
         var ctx = await DefinitionContextAsync(tid, [code], ct);
 
         // The scope is the offerings' business; restating the current one is fine.
         if (req.Scope is not null)
         {
-            // A date is passed only so the "which month does a skip start" question never arises: nothing is written from it.
             var (scopeProblem, excluded) = await ExcludedCompaniesAsync(tid, req.Scope, cash, today, ct);
             if (scopeProblem is not null) return scopeProblem;
             var current = DefinitionOf(head, versions, ctx, today).OfferedCompanyIds;
@@ -421,19 +496,21 @@ public sealed partial class EntitlementMatrixService
                 return Conflict("code_taken", $"The code {newCode} is already used. Choose another code.");
         }
 
-        // Dates, active switch, policy class. For a cash allowance these are money terms.
-        var datesChanged = req.EffectiveFrom != head.EffectiveFrom || req.EffectiveTo != head.EffectiveTo;
-        var activeChanged = req.IsActive.HasValue && req.IsActive.Value != head.IsActive;
+        // Dates and the active switch: the window as payroll sees it may not change the membership of a month already paid. For a cash allowance the
+        // window, the switch and the policy class are money terms.
+        var newActive = req.IsActive ?? head.IsActive;
+        var datesChanged = newFrom != head.EffectiveFrom || newTo != head.EffectiveTo;
+        var activeChanged = newActive != head.IsActive;
         var classChanged = policyClass != head.PolicyClass;
         if (datesChanged || activeChanged)
         {
             if (versions.Count > 1)
                 return Conflict("dates_locked_by_versions", "Finance has corrected this allowance's terms over time, so its dates and active switch can't be changed here.");
-            if (await WindowLockProblemAsync(tid, req.EffectiveFrom, req.EffectiveTo, req.EffectiveFrom != head.EffectiveFrom, req.EffectiveTo != head.EffectiveTo, ct) is { } locked)
+            if (await WindowChangeLockProblemAsync(tid, new Window(head.IsActive, head.EffectiveFrom, head.EffectiveTo), new Window(newActive, newFrom, newTo), openPastCounts: true, ct) is { } locked)
                 return locked;
-            if (req.EffectiveFrom != head.EffectiveFrom
+            if (newFrom != head.EffectiveFrom
                 && await ScopedBypass.TenantWide(db.PayComponents, tid, "The unique key counts removed rows: a start date another version of the code already holds is taken.")
-                    .AsNoTracking().AnyAsync(x => x.CompanyId == null && x.Code == code && x.ComponentType == head.ComponentType && x.Id != head.Id && x.EffectiveFrom == req.EffectiveFrom, ct))
+                    .AsNoTracking().AnyAsync(x => x.CompanyId == null && x.Code == code && x.ComponentType == head.ComponentType && x.Id != head.Id && x.EffectiveFrom == newFrom, ct))
                 return Conflict("effective_from_taken", "A version of this benefit already starts on that date.");
         }
 
@@ -458,9 +535,13 @@ public sealed partial class EntitlementMatrixService
         if (!nameChanged && !categoryChanged && !classChanged && !datesChanged && !activeChanged && !renaming && newTerms is null)
             return await CurrentAsync(tid, code, ct);
 
-        // A cash allowance's money terms (dates, active, policy class, GL/EOSB) changed by someone without the Finance permission put it back to
-        // pending Finance, and the editor is then its maker, who can never confirm it. A pending one stays pending with the editor as its maker.
-        var moneyChanged = cash && (datesChanged || activeChanged || classChanged || newTerms is not null);
+        // A cash allowance's money terms (dates, active, policy class, GL/EOSB) — and a name that changes its end-of-service cautions — changed by someone
+        // without the Finance permission put it back to pending Finance, and the editor is then its maker, who can never confirm it. A pending one stays
+        // pending with the editor as its maker. A Finance editor keeps it confirmed and the original maker.
+        var cautionsChanged = cash && nameChanged
+            && !CashAllowanceDefinitions.Warnings(head.NameEn, head.NameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order()
+                .SequenceEqual(CashAllowanceDefinitions.Warnings(nameEn, nameAr, head.EosbIncluded, head.EosbExclusionCategory, atCreation: false).Select(w => w.Code).Order());
+        var moneyChanged = cash && (datesChanged || activeChanged || classChanged || newTerms is not null || cautionsChanged);
         var repended = moneyChanged && head.FinanceConfirmedAtUtc is not null && !actor.IsFinance;
         var before = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code };
         var now = DateTime.UtcNow;
@@ -471,19 +552,15 @@ public sealed partial class EntitlementMatrixService
         }
         if (datesChanged || activeChanged)
         {
-            head.EffectiveFrom = req.EffectiveFrom; head.EffectiveTo = req.EffectiveTo;
-            if (req.IsActive.HasValue) head.IsActive = req.IsActive.Value;
+            head.EffectiveFrom = newFrom; head.EffectiveTo = newTo; head.IsActive = newActive;
         }
         if (newTerms is not null)
         {
             head.GlDriverKey = newTerms.Driver; head.EosbIncluded = newTerms.EosbIncluded;
             head.EosbExclusionCategory = newTerms.Category; head.EosbExclusionReason = newTerms.Note;
         }
-        if (moneyChanged)
-        {
-            head.CreatedBy = actor.UserId;
-            if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
-        }
+        if (repended) { head.FinanceConfirmedAtUtc = null; head.FinanceConfirmedByUserId = null; }
+        if (moneyChanged && head.FinanceConfirmedAtUtc is null) head.CreatedBy = actor.UserId;
         if (renaming)
         {
             var allRows = await ScopedBypass.TenantWide(db.PayComponents, tid, "A renamed code moves with its company switches, removed ones too (the unique key counts them).")
@@ -493,7 +570,7 @@ public sealed partial class EntitlementMatrixService
         var after = new { name = head.NameEn, nameAr = head.NameAr, category = head.BenefitCategory, policyClass = head.PolicyClass, effectiveFrom = head.EffectiveFrom, effectiveTo = head.EffectiveTo, isActive = head.IsActive, code = newCode };
         db.AuditLogs.Add(Audit(actor, null, AuditBenefitUpdated, head.Id, new
         {
-            componentCode = code, newCode, before, after, repended, financeTermsChanged = newTerms is not null, requestId = req.RequestId,
+            componentCode = code, newCode, before, after, repended, financeTermsChanged = newTerms is not null, requestId = req.RequestId, requestHash = fingerprint,
         }));
         await db.SaveChangesAsync(ct);
         return await CurrentAsync(tid, newCode, ct);

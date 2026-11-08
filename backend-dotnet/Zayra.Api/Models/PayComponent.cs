@@ -174,7 +174,9 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     /// and ignored (CHECK ck_pay_components__requires_enrolment_unsupported).</summary>
     public bool? RequiresEnrolment { get; set; }
 
-    /// <summary>The legacy benefit plan this definition was brought in from (read-only history); NULL when it was created here. Unique per tenant.</summary>
+    /// <summary>The legacy benefit plan this definition was brought in from (read-only history); NULL when it was created here. Unique per tenant.
+    /// <para><b>No tenant-match constraint.</b> The foreign key is on the plan's id alone, so the database does not stop a row from naming ANOTHER tenant's plan.
+    /// Nothing writes this column yet; any future import MUST load the plan with the caller's tenant id and refuse a plan of another tenant before setting it.</para></summary>
     public Guid? SourceBenefitPlanId { get; set; }
 }
 

@@ -226,21 +226,22 @@ public class BenefitDefinitionEditTests
     }
 
     [Fact]
-    public async Task AnInactiveBenefit_LeavesTheGrid_AndTakesNoNewValues_UntilReactivated()
+    public async Task AnInactiveBenefit_StaysListedWithItsVersion_ButIsNotOffered_AndTakesNoNewValues_UntilReactivated()
     {
         var (h, version) = await WithParking();
         await using var _ = h;
 
         var off = Component(await h.Put("BEN_PARK", Edit(version, b => b.IsActive = false)));
-        (await h.Read(Bd.Nov1.AddDays(3))).Components.Should().NotContain(c => c.Code == "BEN_PARK");
-        var refused = await h.PublishGroup(Bd.Nov1, Amount(h.G[1], "BEN_PARK", 100m));
-        Status(refused).Should().Be(400);
+        // Still listed (with its version) so it can be switched on again, but not offered: no gaps, no new values.
+        var matrix = await h.Read(Bd.Nov1.AddDays(3));
+        var listed = matrix.Components.Single(c => c.Code == "BEN_PARK");
+        (listed.Definition!.IsActive, listed.Definition.Version).Should().Be((false, off.Definition!.Version));
+        matrix.Offerings.Single(o => o.ComponentCode == "BEN_PARK").Mode.Should().Be(EntitlementMatrixService.Modes.NotInEffect);
+        matrix.Gaps.Should().NotContain(g => g.ComponentCode == "BEN_PARK");
+        Status(await h.PublishGroup(Bd.Nov1, Amount(h.G[1], "BEN_PARK", 100m))).Should().Be(400);
 
-        // The edit's response is the screen's last look; reactivating needs the matrix' version, but an inactive benefit is not in the matrix.
-        // Reactivation therefore reads its version from the edit response.
-        off.Definition!.IsActive.Should().BeFalse();
-        Component(await h.Put("BEN_PARK", Edit(off.Definition.Version, b => b.IsActive = true)));
-        (await h.Read(Bd.Nov1.AddDays(3))).Components.Should().Contain(c => c.Code == "BEN_PARK");
+        Component(await h.Put("BEN_PARK", Edit(listed.Definition.Version, b => b.IsActive = true)));
+        (await h.Read(Bd.Nov1.AddDays(3))).Offerings.Single(o => o.ComponentCode == "BEN_PARK").Offered.Should().BeTrue();
     }
 
     [Fact]
@@ -405,7 +406,9 @@ public class BenefitDefinitionEditTests
         }), user: h.FinanceB, finance: true));
 
         edited.CashAllowance!.FinancePending.Should().BeFalse();
-        (await h.Rows("ALW_CAR")).Single().EffectiveFrom.Should().Be(Bd.Nov1);
+        var row = (await h.Rows("ALW_CAR")).Single();
+        row.EffectiveFrom.Should().Be(Bd.Nov1);
+        row.CreatedBy.Should().Be(h.FinanceA, "a Finance edit of a confirmed allowance keeps its original maker");
     }
 
     [Fact]

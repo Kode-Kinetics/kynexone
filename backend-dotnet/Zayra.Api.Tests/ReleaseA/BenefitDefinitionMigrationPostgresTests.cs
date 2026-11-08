@@ -61,6 +61,8 @@ public sealed class BenefitDefinitionMigrationPostgresTests
         await Refused(db, OldRow("BENXPARK", "Benefit", "Fixed", "policy_class", "'Contractual'"), "ck_pay_components__benefit_fields_custom_only");
 
         // ── the foreign key and the unique source plan ──
+        // The foreign key is on the plan's id alone: the database does NOT check that the plan belongs to the row's tenant. Nothing writes the column yet;
+        // any future import must load the plan under the caller's tenant and refuse another tenant's plan before setting it.
         var plan = new BenefitPlan { TenantId = Tenant, Code = "MED", Name = "Medical", PlanType = "Medical" };
         db.BenefitPlans.Add(plan);
         await db.SaveChangesAsync();

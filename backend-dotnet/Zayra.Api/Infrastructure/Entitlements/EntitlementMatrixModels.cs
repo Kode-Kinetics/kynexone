@@ -160,21 +160,34 @@ public sealed record CreateBenefitRequest(
 }
 
 /// <summary>The companies that offer a contract benefit. <c>CompanyIds</c> null = every company; a list = those companies only (the others skip it from the effective date).</summary>
-public sealed record BenefitScopeInput(List<Guid>? CompanyIds);
+public sealed record BenefitScopeInput(List<Guid>? CompanyIds)
+{
+    /// <summary>A key the scope does not know (a misspelt <c>companyIds</c> would otherwise read as "every company"). Refused, never ignored.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unrecognised { get; init; }
+}
 
-/// <summary>Edits a benefit's definition. A full replacement of the editable fields: a field left null is cleared (category, policy class, dates);
-/// <c>IsActive</c> null and <c>Scope</c> null mean unchanged. <c>ExpectedVersion</c> is the definition's <c>version</c> as the screen read it (409 <c>stale_definition</c> otherwise).
-/// The kind and delivery cannot change; the code only while nothing uses it (contract benefits only); the company scope is switched in the offerings.</summary>
+/// <summary>Edits a benefit's definition. <c>ExpectedVersion</c> is the definition's <c>version</c> as the screen read it (409 <c>stale_definition</c> otherwise).
+/// <para><b>Omitted means unchanged; an explicit null clears.</b> For <c>category</c>, <c>policyClass</c>, <c>effectiveFrom</c> and <c>effectiveTo</c> a field that
+/// is absent from the JSON is left as it is, and one sent as <c>null</c> is cleared. The names are replaced when sent (<c>nameEn</c> and <c>nameAr</c> are
+/// independent; at least one is required); <c>isActive</c>, <c>scope</c> and the cash terms are unchanged when left out. So a rename-only request changes
+/// the name and nothing else.</para>
+/// The kind and delivery never change; the code only while nothing uses it (contract benefits only); the company scope is switched in the offerings.</summary>
 public sealed record UpdateBenefitRequest(string? ExpectedVersion, string? NameEn, string? NameAr)
 {
+    // Which of the clearable fields were sent at all: System.Text.Json (and an object initializer) call the init accessor only for a field that is present.
+    private readonly HashSet<string> _sent = new(StringComparer.Ordinal);
+    private string? _category, _policyClass;
+    private DateOnly? _effectiveFrom, _effectiveTo;
+
     public string? Code { get; init; }
     public string? Kind { get; init; }
     public string? Delivery { get; init; }
     public string? Frequency { get; init; }
-    public string? Category { get; init; }
-    public string? PolicyClass { get; init; }
-    public DateOnly? EffectiveFrom { get; init; }
-    public DateOnly? EffectiveTo { get; init; }
+    public string? Category { get => _category; init { _category = value; _sent.Add(nameof(Category)); } }
+    public string? PolicyClass { get => _policyClass; init { _policyClass = value; _sent.Add(nameof(PolicyClass)); } }
+    public DateOnly? EffectiveFrom { get => _effectiveFrom; init { _effectiveFrom = value; _sent.Add(nameof(EffectiveFrom)); } }
+    public DateOnly? EffectiveTo { get => _effectiveTo; init { _effectiveTo = value; _sent.Add(nameof(EffectiveTo)); } }
     public bool? IsActive { get; init; }
     public bool? RequiresEnrolment { get; init; }
     public BenefitScopeInput? Scope { get; init; }
@@ -184,6 +197,12 @@ public sealed record UpdateBenefitRequest(string? ExpectedVersion, string? NameE
     public bool? EosbIncluded { get; init; }
     public string? EosbExclusionCategory { get; init; }
     public string? EosbExclusionReason { get; init; }
+
+    /// <summary>Whether the clearable field <paramref name="name"/> (<c>nameof(Category)</c> and the like) was present in the request.</summary>
+    internal bool Sent(string name) => _sent.Contains(name);
+
+    /// <summary>The names of the clearable fields that were sent, in a stable order: part of what makes a request "the same request".</summary>
+    internal string[] SentFields() => _sent.Order(StringComparer.Ordinal).ToArray();
 
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Unrecognised { get; init; }

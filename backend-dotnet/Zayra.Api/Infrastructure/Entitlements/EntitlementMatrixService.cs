@@ -39,6 +39,9 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     /// <summary>Test seam: runs inside a correction after its first committed-period check and before the final one that guards the write.</summary>
     internal Func<Task>? BeforeCorrectionSaveHook { get; set; }
 
+    /// <summary>Test seam: runs right after the tenant matrix lock is taken by an Add or Edit of a benefit definition, before the feature flag is read.</summary>
+    internal Func<Task>? AfterLockHook { get; set; }
+
     /// <summary>How far ahead of the current month a Finance correction may start.</summary>
     public const int MaxCorrectionMonthsAhead = 12;
     public const string AuditPublished = "entitlements.matrix.published";
@@ -226,10 +229,11 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     {
         var today = await clock.TodayAsync(tid, ct);
         var grades = await ActiveGradesAsync(tid, ct);
-        var rules = await ComponentRulesAsync(tid, ct);
         var def = await BenefitDefinitionEnabledAsync(db, tid, ct);
+        // With the feature on a benefit that was switched off stays listed (not offered), so its version can be used to switch it on again.
+        var rules = await ComponentRulesAsync(tid, ct, includeInactive: def);
         // Each cash allowance's Finance state and current GL driver / end-of-service answer, so the grid can say "pending Finance".
-        var customList = await CustomBenefitsAsync(tid, ct);
+        var customList = await CustomBenefitsAsync(tid, ct, includeInactive: def);
         var cashInfo = customList.Where(b => b.Cash).ToDictionary(b => b.Code, b => b.Info, StringComparer.Ordinal);
         var customByCode = customList.ToDictionary(b => b.Code, StringComparer.Ordinal);
         // The definition (feature benefit_definition_v1): what each customer-added benefit is, read once for all of them.
@@ -798,12 +802,12 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
 
     /// <summary>The active benefits and cash allowances this tenant added (tenant-wide <c>BEN_*</c> and <c>ALW_*</c> rows), oldest first. Never a company row.
     /// A cash allowance is one entry however many effective-dated versions it has: the version in effect today (else the latest) speaks for it.</summary>
-    private async Task<List<CustomBenefit>> CustomBenefitsAsync(Guid tid, CancellationToken ct)
+    private async Task<List<CustomBenefit>> CustomBenefitsAsync(Guid tid, CancellationToken ct, bool includeInactive = false)
     {
         var today = await clock.TodayAsync(tid, ct);
         var rows = await ScopedBypass.TenantWide(db.PayComponents, tid, "The benefits the customer added are one catalogue across the tenant.")
             .AsNoTracking()
-            .Where(x => !x.IsDeleted && x.IsActive)
+            .Where(x => !x.IsDeleted && (includeInactive || x.IsActive))
             .Where(IsCustomRow())
             .OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Code)
             .ToListAsync(ct);
@@ -853,27 +857,27 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
     /// </list>
     /// Names are unique across both. Its grade values are then set and published like any other cell. Needs access to every company.
     /// </summary>
-    public async Task<MatrixResult> CreateBenefitAsync(MatrixActor actor, CreateBenefitRequest req, CancellationToken ct)
-    {
-        if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
-        // A JSON field this contract does not know is refused, never silently dropped (mass assignment, and a newer screen against an older API).
-        if (req.Unrecognised is { Count: > 0 }) return UnrecognisedField(req.Unrecognised.Keys);
-        // Feature benefit_definition_v1: off = exactly the old behaviour, and a request that carries a definition field is refused rather than half-honoured.
-        var def = await BenefitDefinitionEnabledAsync(db, actor.TenantId, ct);
-        if (!def && req.CarriesDefinitionFields) return FeatureNotEnabled();
-        return await CreateBenefitCoreAsync(actor, req, def, ct);
-    }
-
-    private Task<MatrixResult> CreateBenefitCoreAsync(MatrixActor actor, CreateBenefitRequest req, bool def, CancellationToken ct) =>
+    public Task<MatrixResult> CreateBenefitAsync(MatrixActor actor, CreateBenefitRequest req, CancellationToken ct) =>
         FinanceDecisionSerializer.SerializeAsync(db, LockScope, actor.TenantId, actor.TenantId, async () =>
         {
             var tid = actor.TenantId;
             if (!actor.Scope.IsGroupLevel) return GroupScopeRequired();
-            // A replay of a create this person already made returns what it made, not 409 benefit_exists.
-            if (def && req.RequestId is Guid requestId && await FindReplayAsync(actor, AuditBenefitAdded, requestId, ct) is { } replay
-                && replay.TryGetProperty("componentCode", out var replayed) && replayed.GetString() is { } replayedCode
-                && await ComponentDtoAsync(tid, replayedCode, null, ct) is { } original)
-                return Ok(original);
+            if (AfterLockHook is { } afterLock) await afterLock();
+            // Feature benefit_definition_v1, read inside the lock so a switch-off is honoured by the request that follows it. Off = exactly the old behaviour
+            // (a property the old body never read is ignored, as it always was), and a request that carries a definition field is refused rather than half-honoured.
+            var def = await BenefitDefinitionEnabledAsync(db, tid, ct);
+            if (!def && req.CarriesDefinitionFields) return FeatureNotEnabled();
+            // With it on, a JSON field this contract does not know is refused, never silently dropped (mass assignment, and a newer screen against an older API).
+            if (def && req.Unrecognised is { Count: > 0 }) return UnrecognisedField(req.Unrecognised.Keys);
+            var fingerprint = def ? Fingerprint(req with { RequestId = null }) : string.Empty;
+            // A replay of a create this person already made returns what it made, not 409 benefit_exists; the same id for a different request is refused.
+            if (def && req.RequestId is Guid requestId && await FindReplayAsync(actor, AuditBenefitAdded, requestId, ct) is { } replay)
+            {
+                if (!SameRequest(replay, fingerprint)) return RequestIdReused();
+                if (replay.TryGetProperty("componentCode", out var replayed) && replayed.GetString() is { } replayedCode
+                    && await ComponentDtoAsync(tid, replayedCode, null, ct) is { } original)
+                    return Ok(original);
+            }
             bool cash;
             if (def)
             {
@@ -894,6 +898,8 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
             if (nameEn.Length == 0 && nameAr.Length == 0) return Bad("name_required", "Give the benefit a name.");
             if (nameEn.Length > 100 || nameAr.Length > 100) return Bad("name_too_long", "Keep each name under 100 characters.");
             if (nameEn.Any(char.IsControl) || nameAr.Any(char.IsControl)) return Bad("name_invalid", "A name can't contain control characters.");
+            if (def && (CashAllowanceDefinitions.HasUnsafeCharacters(nameEn) || CashAllowanceDefinitions.HasUnsafeCharacters(nameAr)))
+                return Bad("name_invalid", "A name can't contain control or text-direction override characters.");
             if (nameEn.Length == 0) nameEn = nameAr;
             if (nameAr.Length == 0) nameAr = nameEn;
             var shown = nameEn;
@@ -1028,7 +1034,7 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
                 {
                     componentCode = code, nameEn, nameAr = row.NameAr, kind = cash ? BenefitKinds.Cash : BenefitKinds.Contract, definition = true,
                     category = d.Category, policyClass = d.PolicyClass, effectiveFrom = d.From, effectiveTo = d.To, isActive = d.IsActive,
-                    scope = d.ExcludedCompanies is null ? "all" : "subset", skippedCompanyIds = d.ExcludedCompanies ?? [], requestId = req.RequestId,
+                    scope = d.ExcludedCompanies is null ? "all" : "subset", skippedCompanyIds = d.ExcludedCompanies ?? [], requestId = req.RequestId, requestHash = fingerprint,
                     glDriverKey = driver, eosbIncluded = row.EosbIncluded, eosbExclusionCategory = eosbCategory, eosbExclusionReason = eosbReason,
                     financeConfirmed = cash && row.FinanceConfirmedAtUtc is not null, warnings = warnings.Select(w => w.Code).ToArray(),
                 }));
@@ -1518,10 +1524,10 @@ public sealed partial class EntitlementMatrixService(ZayraDbContext db, ITenantC
 
     /// <summary>The catalogue's benefits, the benefits the customer added, plus the loan facilities of grade-limited loan types (shown read-only, named as
     /// the loan type is). A catalogue loan facility no loan type uses yet is left out: it has nowhere to be set.</summary>
-    private async Task<List<EntitlementComponentRule>> ComponentRulesAsync(Guid tid, CancellationToken ct)
+    private async Task<List<EntitlementComponentRule>> ComponentRulesAsync(Guid tid, CancellationToken ct, bool includeInactive = false)
     {
         var rules = EntitlementComponentRules.Catalogue.Where(r => !r.IsLoanFacility).ToList();
-        foreach (var custom in await CustomBenefitsAsync(tid, ct))
+        foreach (var custom in await CustomBenefitsAsync(tid, ct, includeInactive))
             rules.Add(EntitlementComponentRules.CustomRuleFor(custom.Code, custom.NameEn, string.IsNullOrWhiteSpace(custom.NameAr) ? custom.NameEn : custom.NameAr));
         var loans = await db.LoanTypes.AsNoTracking()
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.EntitlementComponentCode != null)
