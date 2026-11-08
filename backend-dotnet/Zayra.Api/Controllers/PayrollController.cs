@@ -20,6 +20,7 @@ using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Employees;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Governance;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Infrastructure.Organization;
 using Zayra.Api.Infrastructure.Attendance;
@@ -7719,6 +7720,22 @@ public partial class PayrollController : ControllerBase
         if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
         var rows = await q.OrderByDescending(s => s.CreatedAtUtc).ToListAsync(cancellationToken);
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // G-006: which live off-cycle run (if any) holds each leaver, so Payroll and the offboarding page can link to it and
+        // flag an approved settlement that still has none.
+        var employeeIds = rows.Select(r => r.EmployeeId).Distinct().ToList();
+        var heldBy = await (from sel in _db.PayrollRunEmployeeSelections.AsNoTracking()
+                            join run in _db.PayrollRuns.AsNoTracking() on sel.PayrollRunId equals run.Id
+                            where sel.TenantId == tenantId && run.TenantId == tenantId && employeeIds.Contains(sel.EmployeeId)
+                                  && sel.Mode == PayrollRunSelectionModes.Include && run.SettlesFinalSettlements
+                                  && run.RunType == PayrollRunTypes.OffCycle && run.Status != "Voided"
+                            select new { sel.EmployeeId, run.CompanyId, RunId = run.Id, run.Status, run.CreatedAtUtc }).ToListAsync(cancellationToken);
+        var runStatusById = heldBy.GroupBy(h => h.RunId).ToDictionary(g => g.Key, g => g.First().Status);
+        (Guid? RunId, string? Status) LinkedRun(EmployeeFinalSettlement s)
+        {
+            if (s.PayrollRunId is Guid disbursed) return (disbursed, runStatusById.GetValueOrDefault(disbursed));
+            var held = heldBy.Where(h => h.EmployeeId == s.EmployeeId && h.CompanyId == s.CompanyId).OrderByDescending(h => h.CreatedAtUtc).FirstOrDefault();
+            return held is null ? (null, null) : (held.RunId, held.Status);
+        }
         return Ok(new
         {
             outstandingTotal = Math.Round(rows
@@ -7743,6 +7760,9 @@ public partial class PayrollController : ControllerBase
                 overdueDays = s.Status is FinalSettlementStatuses.Paid or FinalSettlementStatuses.Cancelled
                     ? 0
                     : Math.Max(0, today.DayNumber - s.SettlementDueDate.DayNumber),
+                linkedRunId = LinkedRun(s).RunId,
+                linkedRunStatus = LinkedRun(s).Status,
+                runDutyOpen = s.Status == FinalSettlementStatuses.Approved && LinkedRun(s).RunId is null,
             }).ToList(),
         });
     }
@@ -8093,6 +8113,11 @@ public partial class PayrollController : ControllerBase
         }, cancellationToken, auditId);
         await _db.SaveChangesAsync(cancellationToken);
 
+        // G-006: the Payroll Managers of this company own the off-cycle run that pays it. The approval is already committed, so a
+        // failure to tell them is logged by the notification pipeline and never undoes or fails the approval.
+        try { await FinalSettlementRunDuty.NotifyAsync(_db, _notifications, s, FinalSettlementRunDuty.AssignedEvent, cancellationToken); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { _ = ex; }
+
         return Ok(new
         {
             settlementId = s.Id,
@@ -8110,6 +8135,53 @@ public partial class PayrollController : ControllerBase
                        "add this employee to its selection, then Process → Approve → Lock → payment batch → " +
                        "WPS/bank acceptance → settle. POD-B1's net-pay settlement clears 2320 like any other payable.",
         });
+    }
+
+    /// <summary>
+    /// G-006 — creates the OffCycle run that pays an approved settlement, pre-filled: this settlement's company, the current pay
+    /// month, settling final settlements, never paying recurring salary, holding only this employee. It is the same run an operator
+    /// would build by hand (CreateRun, then UpsertRunSelection, with their checks and audit), in one step. Asking again returns the
+    /// run that already holds the employee instead of a second one. Same permission as creating a run (payroll.write); no amount
+    /// and no approval is touched.
+    /// </summary>
+    [HttpPost("final-settlements/{id:guid}/offcycle-run")]
+    [HasPermission("payroll.write")]
+    public async Task<IActionResult> CreateFinalSettlementRun(Guid id, CancellationToken cancellationToken)
+    {
+        var tenantId = GetTenantId();
+        var s = await _db.EmployeeFinalSettlements.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        if (s is null) return NotFound();
+        if (s.PayrollRunId is Guid disbursedBy) return Ok(new { runId = disbursedBy, created = false });
+        if (s.Status != FinalSettlementStatuses.Approved)
+            return Conflict(new
+            {
+                error = "settlement_not_approved",
+                message = $"Only an approved settlement can have its off-cycle run created (this one is '{s.Status}').",
+                status = s.Status,
+            });
+        if (await FinalSettlementRunDuty.FindRunAsync(_db, s, cancellationToken) is { } existing)
+            return Ok(new { runId = existing.Id, created = false });
+
+        var today = await TenantClock.TodayForAsync(_db, tenantId, cancellationToken);
+        var created = await CreateRun(new CreatePayrollRunRequest(
+            today.Year, today.Month, s.CompanyId, PayrollRunTypes.OffCycle, null, false, null, null, null, true), cancellationToken);
+        if (created is not CreatedResult { Value: PayrollRun run }) return created;
+
+        var selection = await UpsertRunSelection(run.Id, new PayrollRunSelectionRequest(
+            PayrollRunSelectionModes.Include, $"Final settlement of {s.EmployeeName} ({s.EmployeeCode})", new List<int> { s.EmployeeId }), cancellationToken);
+        if (selection is not OkObjectResult)
+        {
+            // Never leave an empty settlement run behind for the next attempt to trip over.
+            _db.ChangeTracker.Clear();
+            var orphan = await _db.PayrollRuns.FirstOrDefaultAsync(r => r.Id == run.Id && r.TenantId == tenantId, cancellationToken);
+            if (orphan is not null && orphan.Status == "Draft") { _db.PayrollRuns.Remove(orphan); await _db.SaveChangesAsync(cancellationToken); }
+            return selection;
+        }
+
+        await PayrollAudit("payroll.final_settlement.run_created", "EmployeeFinalSettlement", s.Id.ToString(),
+            new { settlementId = s.Id, runId = run.Id, s.EmployeeId, s.EmployeeCode, dueDate = s.SettlementDueDate }, cancellationToken);
+        await _db.SaveChangesAsync(cancellationToken);
+        return Ok(new { runId = run.Id, created = true });
     }
 
     /// <summary>
