@@ -504,3 +504,13 @@ export function givenName(fullName: string | null | undefined): string | null {
   if (parts.length > 1 && COMPOUND_FIRST.has(parts[0].toLowerCase())) return `${parts[0]} ${parts[1]}`;
   return parts[0];
 }
+
+/**
+ * The partial-list notices for the sources that failed to load, one translation key per failed source.
+ * A workflow failure must never be reported as an overtime failure (and the reverse): the manager is
+ * told exactly which requests may be missing. Order follows `unavailable`.
+ */
+export type PartialInboxKey = 'manager.approvals.partialOvertime' | 'manager.approvals.partialWorkflow';
+export function partialInboxKeys(unavailable: readonly InboxSource[]): PartialInboxKey[] {
+  return unavailable.map((source) => (source === 'overtime' ? 'manager.approvals.partialOvertime' : 'manager.approvals.partialWorkflow'));
+}
