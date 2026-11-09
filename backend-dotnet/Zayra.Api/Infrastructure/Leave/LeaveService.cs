@@ -1019,7 +1019,7 @@ public class LeaveService : ILeaveService
         // unpaid-leave deduction behind a cancelled leave.
         var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
-        if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
+        if (!Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.IsNewRequest(request.Status))
             throw new InvalidOperationException($"Cannot approve a request with status '{request.Status}'.");
 
         await EnsureMakerCheckerAsync(request, approverId, ct);
@@ -1551,7 +1551,7 @@ public class LeaveService : ILeaveService
         // Serialised with cancellation under the employee's leave lock: both release the pending balance.
         var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
-        if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
+        if (!Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.IsNewRequest(request.Status))
             throw new InvalidOperationException($"Cannot reject a request with status '{request.Status}'.");
 
         await EnsureMakerCheckerAsync(request, approverId, ct);

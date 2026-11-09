@@ -35,7 +35,7 @@ public class LeaveReportsController : ControllerBase
         var companyFilterIds = await LeaveGroupFilter.EmployeeIdsAsync(_db, tenantId.Value, companyId, branchId, ct);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var pendingStatuses = new[] { "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+        var pendingStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests;
 
         var leaveQuery = _db.LeaveRequests.Where(r => r.TenantId == tenantId);
         if (allowedIds is not null) leaveQuery = leaveQuery.Where(r => allowedIds.Contains(r.EmployeeId));
@@ -178,7 +178,7 @@ public class LeaveReportsController : ControllerBase
         if (tenantId is null) return Unauthorized();
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        var pendingStatuses = new[] { "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+        var pendingStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests;
 
         var query = _db.LeaveRequests.Where(r => r.TenantId == tenantId && pendingStatuses.Contains(r.Status));
         if (!scope.IsUnrestricted)

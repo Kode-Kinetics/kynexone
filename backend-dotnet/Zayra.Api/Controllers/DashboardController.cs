@@ -1332,7 +1332,7 @@ public class DashboardController : ControllerBase
             .Select(_ => new
             {
                 PendingLeave = _db.LeaveRequests.Count(x => x.TenantId == tenantId
-                    && (x.Status == "Submitted" || x.Status == "Pending")
+                    && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests.Contains(x.Status)
                     && (isUnrestricted || scopeIds.Contains(x.EmployeeId))),
                 PendingCorrections = _db.AttendanceRegularizationRequests.Count(x => x.TenantId == tenantId
                     && x.Status == "Submitted"

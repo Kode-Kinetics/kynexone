@@ -42,7 +42,7 @@ public class GroupDashboardController : ControllerBase
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var monthAgo = today.AddDays(-30);
         var docHorizon = today.AddDays(60);
-        var pendingLeaveStatuses = new[] { "Submitted", "Pending", "PendingManagerApproval", "PendingHRApproval" };
+        var pendingLeaveStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests;
 
         // One grouped query per metric — company filter is also enforced by the ambient
         // EF filter; the explicit predicates keep the aggregates index-friendly.

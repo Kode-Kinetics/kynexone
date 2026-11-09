@@ -79,7 +79,7 @@ public class LeaveRequestsController : ControllerBase
     /// <summary>The most pending requests one queue read examines; <c>truncated</c> says when there were more.</summary>
     public const int QueueScanCap = 1000;
 
-    private static readonly string[] QueueStatuses = ["Submitted", "PendingManagerApproval", "PendingHRApproval", "CancellationRequested"];
+    private static readonly string[] QueueStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.All;
 
     private sealed record QueueScan(List<LeaveRequest> Rows, int Total, bool Cut, DataScope Scope,
         Dictionary<Guid, LeaveCancellationRequest> Cancellations);
