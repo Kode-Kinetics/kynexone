@@ -91,7 +91,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         query = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
 
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderBy(x => x.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderBy(x => x.EmployeeCode).Skip(Paging.Skip(page, pageSize)).Take(pageSize)
             .Select(x => new EmployeeListItemDto(x.Id, x.EmployeeCode, x.FullName, x.ArabicName, x.Department, x.Designation, string.IsNullOrEmpty(x.Branch) ? (_db.Branches.Where(b => b.Id == x.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : x.Branch, x.ManagerEmployeeId, x.Status, x.ProfileCompletenessScore, x.VisaExpiryDate, x.PassportExpiryDate, x.ReadinessState, x.ActivationBlockersCount, x.PublicId))
             .ToListAsync(cancellationToken);
         items = await Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.DecorateAsync(_db, tenantId, items, cancellationToken);

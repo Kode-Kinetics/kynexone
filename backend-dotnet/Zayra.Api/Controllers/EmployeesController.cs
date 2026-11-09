@@ -138,7 +138,7 @@ public class EmployeesController : ControllerBase
         // Self-service access state filter (same evaluator as the column), over the whole matching set.
         query = await EmployeeAccessStates.ApplyFilterAsync(query, _db, tenantId, accessFilter, cancellationToken);
         var total = await query.CountAsync(cancellationToken);
-        var items = await query.OrderBy(e => e.EmployeeCode).Skip((page - 1) * pageSize).Take(pageSize)
+        var items = await query.OrderBy(e => e.EmployeeCode).Skip(Paging.Skip(page, pageSize)).Take(pageSize)
             .Select(e => new EmployeeListItemDto(e.Id, e.EmployeeCode, e.FullName, e.ArabicName ?? string.Empty, e.Department ?? string.Empty, e.Designation ?? string.Empty, string.IsNullOrEmpty(e.Branch) ? (_db.Branches.Where(b => b.Id == e.BranchId).Select(b => b.NameEn).FirstOrDefault() ?? string.Empty) : e.Branch, e.ManagerEmployeeId, e.Status, e.ProfileCompletenessScore, e.VisaExpiryDate, e.PassportExpiryDate, e.ReadinessState, e.ActivationBlockersCount, e.PublicId))
             .ToListAsync(cancellationToken);
         items = await EmployeeAccessStates.DecorateAsync(_db, tenantId, items, cancellationToken);
@@ -169,7 +169,14 @@ public class EmployeesController : ControllerBase
         // company scope are therefore re-applied here by hand. These are the tenant-isolation boundary.
         var query = _db.Employees.AsNoTracking().IgnoreQueryFilters().Where(e => e.TenantId == tenantId);
         query = query.Where(e => e.IsDeleted || ExitEmployeeStatuses.Exit.Contains(e.Status));
-        if (!scope.IsUnrestricted)
+        if (scope.OrganizationCompanyIds is { } scopeCompanies)
+        {
+            // An organisation-wide caller bounded to some companies: AllowedEmployeeIds was materialised from LIVE employees only, so
+            // matching on it would hide every soft-deleted person (the very rows this archive exists for). The same boundary is
+            // applied by company instead; a null CompanyId or a company outside the set never matches.
+            query = query.Where(e => e.CompanyId.HasValue && scopeCompanies.Contains(e.CompanyId.Value));
+        }
+        else if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
         {
@@ -190,7 +197,7 @@ public class EmployeesController : ControllerBase
         var pageRows = await query
             .OrderByDescending(e => e.DeletedAtUtc ?? e.UpdatedAtUtc)   // most-recent exits first
             .ThenBy(e => e.EmployeeCode)
-            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Skip(Paging.Skip(page, pageSize)).Take(pageSize)
             .Select(e => new
             {
                 e.Id, e.EmployeeCode, e.FullName, e.ArabicName, e.Department, e.Designation, e.Branch,
@@ -3212,7 +3219,7 @@ public class EmployeesController : ControllerBase
         var total = await query.CountAsync(cancellationToken);
         var drafts = await query.AsNoTracking()
             .OrderByDescending(d => d.SubmittedAtUtc ?? d.CreatedAtUtc).ThenBy(d => d.Id)
-            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Skip(Paging.Skip(page, pageSize)).Take(pageSize)
             .ToListAsync(cancellationToken);
         var items = await ToDraftListItemsAsync(tenantId, drafts, cancellationToken);
         return Ok(new EmployeeDraftListResponse(items, total, page, pageSize, counts));
@@ -4437,6 +4444,16 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDetailDto>> ChangeStatus(int id, EmployeeStatusChangeRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        // A status the product does not define ("Banana", a typo) used to be stored verbatim and dropped the person out of every
+        // status filter and report. Known statuses are matched case-insensitively and stored in their canonical spelling, because
+        // the lifecycle rules (credential revocation, payroll deactivation) compare ordinally. The route's permission is untouched.
+        if (EmployeeStatuses.Canonical(request.Status) is not { } canonicalStatus)
+            return BadRequest(new
+            {
+                error = "unknown_status",
+                message = $"'{request.Status}' is not an employee status. Use one of: {string.Join(", ", EmployeeStatuses.Assignable)}.",
+                allowed = EmployeeStatuses.Assignable,
+            });
         try
         {
             // D1 privilege boundary: SeparationType decides the end-of-service award (Article80 forfeits
@@ -4445,7 +4462,7 @@ public class EmployeesController : ControllerBase
             // mint a gratuity-determining fact. It is dropped rather than rejected so ordinary status
             // changes keep working unchanged; a caller who needs to state it uses /terminate.
             var employee = await employeeManagement.ChangeStatusAsync(
-                RequireTenant(), id, request with { SeparationType = null }, Context(), cancellationToken, CanViewSensitive());
+                RequireTenant(), id, request with { Status = canonicalStatus, SeparationType = null }, Context(), cancellationToken, CanViewSensitive());
             return employee is null ? NotFound() : Ok(employee);
         }
         // Readiness block MUST be caught before InvalidOperationException (which would swallow the
@@ -5190,6 +5207,17 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "merge")
         {
+            // A merge soft-deletes the duplicate record (IsDeleted, retention clock, approvals cancelled, payroll deactivated): the same effect as
+            // DELETE /api/employees/{id}, which needs employees.delete. Write alone must not be a way round that permission.
+            if (!User.HasPermission("employees.delete"))
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    error = "merge_requires_delete_permission",
+                    code = "merge_requires_delete_permission",
+                    message = "Merging removes the duplicate record, so it needs the Delete employees permission.",
+                    messageAr = "الدمج يزيل السجل المكرر، لذلك يتطلب صلاحية حذف الموظفين.",
+                    requiredPermission = "employees.delete",
+                });
             if (req.IntoEmployeeId is not int intoId) return BadRequest(new { message = "intoEmployeeId is required for a merge." });
             if (intoId == id) return BadRequest(new { message = "An employee cannot be merged into itself." });
             if (string.IsNullOrWhiteSpace(req.Reason))
@@ -7330,10 +7358,16 @@ public static class ExitEmployeeStatuses
 {
     /// <summary>Terminal statuses that make an employee a FORMER employee: archive membership +
     /// exclusion from the active People list. Offboarded (serving notice) is included for the archive
-    /// view, but is deliberately NOT a payroll-deactivation trigger.</summary>
+    /// view, but is deliberately NOT a payroll-deactivation trigger.
+    /// Retired and Deceased are former too: the People screen's status selector offers Retired, PATCH /status stores both, and nobody
+    /// who is retired or deceased is employed. "Resigned" is deliberately NOT here: a resigned employee is still employed through the
+    /// notice period (paid, on leave, punching in), so they stay in the current list. "Notice period" and "Absconded" are not here
+    /// either: the person is still on the books until HR terminates them. The frontend filter list that drops statuses the current
+    /// list can no longer return (EmployeesPage.tsx <c>activeStatusFilterOptions</c>) mirrors this set.</summary>
     public static readonly string[] Exit =
     {
-        EmployeeStatuses.Archived, EmployeeStatuses.Offboarded, EmployeeStatuses.Terminated, EmployeeStatuses.Exited
+        EmployeeStatuses.Archived, EmployeeStatuses.Offboarded, EmployeeStatuses.Terminated, EmployeeStatuses.Exited,
+        "Retired", "Deceased"
     };
 
     /// <summary>Statuses that, when reached via a direct status change, deactivate the WPS footprint.
