@@ -551,6 +551,10 @@ public static class ModuleCatalog
                 "Whether employees see their own talent-pool memberships and nominations in self-service. An opt-in "
                 + "setting (default off) the platform team switches per tenant; it is read inside the self-service "
                 + "development-plan view, not a module of its own.",
+            [FeatureKeys.BenefitDefinitionV1] =
+                "Benefit definition (category, policy class, company scope and dates on a benefit, and editing it) is an opt-in "
+                + "feature switched on per tenant by the platform team while it is rolled out. It is off unless enabled, and Tenant Admin "
+                + "cannot switch it. It owns no route: the benefit endpoints are Release A's. See OptInFeatures.",
             [FeatureKeys.PolicyIntake] =
                 "Policy intake (policy upload, parsing, extraction into setup, review, the policy library and policy "
                 + "Q&A) is an opt-in feature, off for every tenant by the owner's decision: only manual company setup is "

@@ -39,7 +39,19 @@ public sealed record MatrixComponentDto(
     IReadOnlyList<string> AllowedValueTypes, IReadOnlyList<string> AllowedCoverageTiers, IReadOnlyList<string> AllowedDependantScopes,
     IReadOnlyList<string> AllowedLimitPeriods, string? DefaultLimitPeriod,
     bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason, bool IsCustom = false,
-    CashAllowanceInfoDto? CashAllowance = null, IReadOnlyList<AllowanceWarningDto>? Warnings = null);
+    CashAllowanceInfoDto? CashAllowance = null, IReadOnlyList<AllowanceWarningDto>? Warnings = null, BenefitDefinitionDto? Definition = null);
+
+/// <summary>What a customer-added benefit is, beyond its name (feature <c>benefit_definition_v1</c>; null on every component while the feature is off).</summary>
+/// <param name="Delivery">Coverage (a contract benefit, <c>BEN_*</c>) or SalaryAllowance (a monthly cash allowance, <c>ALW_*</c>). Derived from the code, never a second column.</param>
+/// <param name="OfferedCompanyIds">The active companies that offer it today. Cash allowances are always offered to every company.</param>
+/// <param name="Version">An opaque token for the optimistic-concurrency check of an edit (<c>expectedVersion</c>): changes whenever the definition does.</param>
+/// <param name="CodeLocked">True once any grade value, package line or salary line uses the code: it can no longer be renamed.</param>
+public sealed record BenefitDefinitionDto(
+    string Delivery, string? Category, string? PolicyClass, DateOnly? EffectiveFrom, DateOnly? EffectiveTo, bool IsActive, bool RequiresEnrolment,
+    IReadOnlyList<Guid> OfferedCompanyIds, string Version, Guid? SourcePlanId, bool CodeLocked);
+
+/// <summary>What this API can do, so a newer screen against an older API (or a tenant without the feature) hides what it cannot rely on.</summary>
+public sealed record MatrixCapabilitiesDto(bool BenefitDefinition);
 
 /// <summary>What Finance and the grid need to know about a customer-defined cash allowance (<c>ALW_*</c>): whether it is still waiting for Finance to
 /// confirm it, and the GL driver and end-of-service setting in effect (for the version dated <paramref name="EffectiveFrom"/>; null = since the start).</summary>
@@ -70,7 +82,7 @@ public sealed record MatrixGapDto(Guid GradeId, string ComponentCode, DateOnly? 
 public sealed record EntitlementMatrixDto(
     DateOnly AsOf, DateOnly Today, Guid? CompanyId, string? Currency,
     IReadOnlyList<MatrixGradeDto> Grades, IReadOnlyList<MatrixComponentDto> Components, IReadOnlyList<MatrixCellDto> Cells,
-    IReadOnlyList<MatrixOfferingDto> Offerings, IReadOnlyList<MatrixGapDto> Gaps);
+    IReadOnlyList<MatrixOfferingDto> Offerings, IReadOnlyList<MatrixGapDto> Gaps, MatrixCapabilitiesDto? Capabilities = null);
 
 /// <summary>One cell to publish. A class (not a record) so unknown JSON properties are caught: a banned criterion
 /// such as "gender" is refused out loud (ENTITLEMENT_BANNED_CRITERION), never silently dropped.</summary>
@@ -113,8 +125,88 @@ public static class BenefitKinds
 /// <paramref name="Kind"/> is <see cref="BenefitKinds.Contract"/> (the default) or <see cref="BenefitKinds.Cash"/>. A cash allowance also needs the
 /// GL driver its expense posts to, and — when it is left out of the end-of-service wage — the reason.</summary>
 public sealed record CreateBenefitRequest(
-    string? NameEn, string? NameAr, string? Kind = BenefitKinds.Contract, string? GlDriverKey = null,
-    bool EosbIncluded = true, string? EosbExclusionReason = null, string? EosbExclusionCategory = null);
+    string? NameEn, string? NameAr, string? Kind = null, string? GlDriverKey = null,
+    bool EosbIncluded = true, string? EosbExclusionReason = null, string? EosbExclusionCategory = null)
+{
+    // ── Benefit definition (feature benefit_definition_v1). Every one is optional; a request without them is the old three-field body. ──
+
+    /// <summary>Optional code of the customer's own, without the prefix (<c>BEN_</c> / <c>ALW_</c> is added by the server). Letters, digits and underscores, starting with a letter.</summary>
+    public string? Code { get; init; }
+    /// <summary>Coverage (a contract benefit) or SalaryAllowance (a monthly cash allowance). Reimbursement and PayrollDeduction are refused (<c>delivery_not_supported</c>).</summary>
+    public string? Delivery { get; init; }
+    /// <summary>Monthly is the only frequency a cash allowance has; Annual and OneTime are refused (<c>delivery_not_supported</c>). None for coverage.</summary>
+    public string? Frequency { get; init; }
+    public string? Category { get; init; }
+    /// <summary>Contractual or Discretionary. Mandatory is refused (<c>policy_class_invalid</c>).</summary>
+    public string? PolicyClass { get; init; }
+    public DateOnly? EffectiveFrom { get; init; }
+    public DateOnly? EffectiveTo { get; init; }
+    public bool? IsActive { get; init; }
+    /// <summary>Always false: Release A derives the package from the grade. True is refused (<c>delivery_not_supported</c>).</summary>
+    public bool? RequiresEnrolment { get; init; }
+    /// <summary>Which companies offer it. Absent or <c>companyIds</c> null = every company.</summary>
+    public BenefitScopeInput? Scope { get; init; }
+    /// <summary>A client-generated id: a replay of the same request by the same person returns the original result instead of 409 benefit_exists.</summary>
+    public Guid? RequestId { get; init; }
+
+    /// <summary>Any JSON property the contract does not know. A request carrying one is refused (<c>unrecognised_field</c>), never silently dropped.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unrecognised { get; init; }
+
+    /// <summary>Whether the body carries anything beyond the old fields. Used to refuse a definition field while the feature is off.</summary>
+    internal bool CarriesDefinitionFields =>
+        Code is not null || Delivery is not null || Frequency is not null || Category is not null || PolicyClass is not null || EffectiveFrom is not null
+        || EffectiveTo is not null || IsActive is not null || RequiresEnrolment is not null || Scope is not null || RequestId is not null;
+}
+
+/// <summary>The companies that offer a contract benefit. <c>CompanyIds</c> null = every company; a list = those companies only (the others skip it from the effective date).</summary>
+public sealed record BenefitScopeInput(List<Guid>? CompanyIds)
+{
+    /// <summary>A key the scope does not know (a misspelt <c>companyIds</c> would otherwise read as "every company"). Refused, never ignored.</summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unrecognised { get; init; }
+}
+
+/// <summary>Edits a benefit's definition. <c>ExpectedVersion</c> is the definition's <c>version</c> as the screen read it (409 <c>stale_definition</c> otherwise).
+/// <para><b>Omitted means unchanged; an explicit null clears.</b> For <c>category</c>, <c>policyClass</c>, <c>effectiveFrom</c> and <c>effectiveTo</c> a field that
+/// is absent from the JSON is left as it is, and one sent as <c>null</c> is cleared. The names are replaced when sent (<c>nameEn</c> and <c>nameAr</c> are
+/// independent; at least one is required); <c>isActive</c>, <c>scope</c> and the cash terms are unchanged when left out. So a rename-only request changes
+/// the name and nothing else.</para>
+/// The kind and delivery never change; the code only while nothing uses it (contract benefits only); the company scope is switched in the offerings.</summary>
+public sealed record UpdateBenefitRequest(string? ExpectedVersion, string? NameEn, string? NameAr)
+{
+    // Which of the clearable fields were sent at all: System.Text.Json (and an object initializer) call the init accessor only for a field that is present.
+    private readonly HashSet<string> _sent = new(StringComparer.Ordinal);
+    private string? _category, _policyClass;
+    private DateOnly? _effectiveFrom, _effectiveTo;
+
+    public string? Code { get; init; }
+    public string? Kind { get; init; }
+    public string? Delivery { get; init; }
+    public string? Frequency { get; init; }
+    public string? Category { get => _category; init { _category = value; _sent.Add(nameof(Category)); } }
+    public string? PolicyClass { get => _policyClass; init { _policyClass = value; _sent.Add(nameof(PolicyClass)); } }
+    public DateOnly? EffectiveFrom { get => _effectiveFrom; init { _effectiveFrom = value; _sent.Add(nameof(EffectiveFrom)); } }
+    public DateOnly? EffectiveTo { get => _effectiveTo; init { _effectiveTo = value; _sent.Add(nameof(EffectiveTo)); } }
+    public bool? IsActive { get; init; }
+    public bool? RequiresEnrolment { get; init; }
+    public BenefitScopeInput? Scope { get; init; }
+    public Guid? RequestId { get; init; }
+    /// <summary>Cash allowance only, and only while it is still pending Finance. A confirmed allowance's driver and end-of-service setting change through Finance's correction.</summary>
+    public string? GlDriverKey { get; init; }
+    public bool? EosbIncluded { get; init; }
+    public string? EosbExclusionCategory { get; init; }
+    public string? EosbExclusionReason { get; init; }
+
+    /// <summary>Whether the clearable field <paramref name="name"/> (<c>nameof(Category)</c> and the like) was present in the request.</summary>
+    internal bool Sent(string name) => _sent.Contains(name);
+
+    /// <summary>The names of the clearable fields that were sent, in a stable order: part of what makes a request "the same request".</summary>
+    internal string[] SentFields() => _sent.Order(StringComparer.Ordinal).ToArray();
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Unrecognised { get; init; }
+}
 
 /// <summary>Finance confirms a cash allowance somebody without Finance rights added. Every field is optional: left out, it is confirmed as it was entered.
 /// Finance may change the GL driver and the end-of-service setting while confirming (the same rules as adding it).</summary>

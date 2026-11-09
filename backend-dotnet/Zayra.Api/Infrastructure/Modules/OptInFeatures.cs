@@ -76,6 +76,9 @@ public static class OptInFeatures
             // parse, local preparation, AI extraction and review (/api/setup-assistant/policy/...), and the policy
             // library with its Q&A for HR and employees (/api/ai/policy/...). Even with the flag on, policy text never
             // reaches a model (PolicyContentModelGate).
+            // Benefit definition: the richer Add/Edit benefit contract on /api/entitlements/components. It owns no route of its own
+            // (the entitlements routes belong to release_a); the matrix service reads it, and advertises it as capabilities.benefitDefinition.
+            [FeatureKeys.BenefitDefinitionV1] = [],
             [FeatureKeys.PolicyIntake] =
             [
                 "/api/setup-assistant/policy",

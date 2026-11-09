@@ -2438,6 +2438,13 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
                 // A confirmer always has a confirmation time (a row confirmed by the migration's backfill has the time and no person).
                 t.HasCheckConstraint("ck_pay_components__finance_confirmation",
                     "finance_confirmed_by_user_id IS NULL OR finance_confirmed_at_utc IS NOT NULL");
+                // Benefit definition (benefit_definition_v1): additive nullable columns on a customer-added BEN_*/ALW_* row only. No regexes (SQLite/InMemory).
+                t.HasCheckConstraint("ck_pay_components__policy_class", "policy_class IS NULL OR policy_class IN ('Contractual','Discretionary')");
+                t.HasCheckConstraint("ck_pay_components__benefit_category_not_blank", "benefit_category IS NULL OR length(trim(benefit_category)) > 0");
+                t.HasCheckConstraint("ck_pay_components__requires_enrolment_unsupported", "requires_enrolment IS NULL OR requires_enrolment = false");
+                t.HasCheckConstraint("ck_pay_components__benefit_fields_custom_only",
+                    "(benefit_category IS NULL AND policy_class IS NULL AND requires_enrolment IS NULL AND source_benefit_plan_id IS NULL) "
+                    + "OR code LIKE 'BEN!_%' ESCAPE '!' OR code LIKE 'ALW!_%' ESCAPE '!'");
             });
             entity.HasKey(x => x.Id);
             entity.Property(x => x.EntitlementClass).HasMaxLength(20).HasDefaultValue(PayEntitlementClasses.None);
@@ -2463,6 +2470,12 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.EosbExclusionReason).HasMaxLength(500);
             entity.Property(x => x.EosbExclusionCategory).HasMaxLength(20);
             entity.Property(x => x.Value).HasPrecision(18, 4);
+            entity.Property(x => x.BenefitCategory).HasMaxLength(120);
+            entity.Property(x => x.PolicyClass).HasMaxLength(16);
+            // A definition brought in from a legacy plan names it; the plan row is witnessed by payroll history and is never dropped.
+            // One definition per plan per tenant, so a repeat import is a no-op.
+            entity.HasOne<BenefitPlan>().WithMany().HasForeignKey(x => x.SourceBenefitPlanId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(x => new { x.TenantId, x.SourceBenefitPlanId }).IsUnique().HasFilter("source_benefit_plan_id IS NOT NULL");
         });
 
         modelBuilder.Entity<CompanyRatePolicy>(entity =>
