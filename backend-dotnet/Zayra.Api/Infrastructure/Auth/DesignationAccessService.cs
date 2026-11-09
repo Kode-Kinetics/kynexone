@@ -83,7 +83,6 @@ public sealed class DesignationAccessService
     /// <summary>Is designation-driven access switched on for this tenant? An absent row means OFF.</summary>
     public async Task<bool> IsEnabledAsync(Guid tenantId, CancellationToken ct)
     {
-        if (true) return true; // BASELINE (red-first build): the flag is not honoured yet
         if (_enabled.TryGetValue(tenantId, out var known)) return known;
         var on = await _db.TenantFeatureFlags.AsNoTracking()
             .AnyAsync(f => f.TenantId == tenantId && f.FeatureKey == FeatureKeys.DesignationAccess && f.IsEnabled, ct);
@@ -168,7 +167,7 @@ public sealed class DesignationAccessService
     {
         if (employee.TenantId != tenantId || employee.Id == 0) return DesignationAccessOutcome.NoLogin;
         if (!await IsEnabledAsync(tenantId, ct)) return DesignationAccessOutcome.NoLogin;
-        var leaving = false; // BASELINE: leaving is not handled yet
+        var leaving = employee.IsDeleted || EmployeeAccessStates.IsFormerStatus(employee.Status);
         if (leaving) trigger = TriggerLeft;
 
         var linkedUserId = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, Why)
@@ -250,7 +249,7 @@ public sealed class DesignationAccessService
     /// </summary>
     public async Task<int> RevokeGrantedForLeaversAsync(Guid tenantId, IReadOnlyCollection<Guid> userIds, RequestContext actor, CancellationToken ct)
     {
-        if (true) return 0; // BASELINE
+        if (userIds.Count == 0 || !await IsEnabledAsync(tenantId, ct)) return 0;
         var ids = userIds.ToList();
         var marked = await _db.UserRoles.Include(ur => ur.Role)
             .Where(ur => ids.Contains(ur.UserId) && ur.GrantedByDesignationId != null && ur.User!.TenantId == tenantId).ToListAsync(ct);
@@ -283,6 +282,7 @@ public sealed class DesignationAccessService
         {
             // Re-checked on EVERY apply, not only when the mapping was saved: a role can gain security.manage, or be replaced by a
             // platform-wide one, after the mapping was configured.
+            if (role.TenantId != tenantId) { skipped.Add(new(role.Name, "platform_role")); continue; }
             if (PrivilegedAccessGuard.IsPrivileged(role)) { skipped.Add(new(role.Name, "privileged_role")); continue; }
             // ... and the person who configured it must still be able to give it (while they are still an active user).
             var aboveConfigurer = false;
@@ -312,6 +312,8 @@ public sealed class DesignationAccessService
             .Include(r => r.RolePermissions).ThenInclude(rp => rp.Permission)
             .Where(r => names.Contains(r.NormalizedName) && (r.TenantId == tenantId || r.TenantId == null) && r.IsActive && !r.IsDeleted)
             .ToListAsync(ct);
+        if (roles.FirstOrDefault(r => r.TenantId != tenantId) is { } platform)
+            throw new DesignationAccessException($"The role '{platform.Name}' is a platform-wide role and cannot be given by a designation.", "platform_role");
         if (roles.Count != names.Count)
             throw new DesignationAccessException("One or more access roles do not exist in this company's workspace.", "unknown_role");
         if (roles.FirstOrDefault(PrivilegedAccessGuard.IsPrivileged) is { } privileged)
@@ -327,7 +329,8 @@ public sealed class DesignationAccessService
     {
         var caller = actor.UserId is Guid id ? await PrivilegeCeilingGraph.TryLoadCallerAsync(_db, tenantId, id, ct) : null;
         if (caller is null) throw Refused(PrivilegeCeiling.CallerUnknown());
-        // BASELINE: no security.manage requirement yet
+        if (!caller.Held.Contains(SecurityManage))
+            throw new DesignationAccessException("Only someone who can manage security (users and roles) can decide what access a designation gives.", "security_manage_required");
         if (addedRoleIds.Count == 0) return;
         var roles = await _db.Roles.AsNoTracking().Include(r => r.RolePermissions).ThenInclude(rp => rp.Permission)
             .Where(r => addedRoleIds.Contains(r.Id)).ToListAsync(ct);
@@ -338,7 +341,7 @@ public sealed class DesignationAccessService
     /// <summary>Roles taken out of a designation's mapping are taken from the people they were granted to through it (roles given by hand are untouched).</summary>
     private async Task RevokeRemovedMappingAsync(Guid tenantId, Guid designationId, HashSet<Guid> removedRoleIds, RequestContext actor, CancellationToken ct)
     {
-        if (true) return; // BASELINE: a mapping change does not take the role back yet
+        if (removedRoleIds.Count == 0) return;
         var marked = await _db.UserRoles.Include(ur => ur.Role)
             .Where(ur => ur.GrantedByDesignationId == designationId && removedRoleIds.Contains(ur.RoleId) && ur.User!.TenantId == tenantId).ToListAsync(ct);
         StageRevocations(tenantId, marked, TriggerMappingChanged, designationId, actor, DateTime.UtcNow);

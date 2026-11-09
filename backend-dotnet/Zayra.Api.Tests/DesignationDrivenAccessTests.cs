@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
 using Zayra.Api.Infrastructure.Auth;
@@ -628,5 +629,84 @@ public sealed class DesignationDrivenAccessTests
         // The strict SoD rule is "the subject never decides": it is keyed on the employee-login link, not on any role.
         var excluded = await Zayra.Api.Infrastructure.Approvals.ApprovalUnblock.SubjectUserIdsAsync(w.Db, w.TenantId, w.Emp.Id, default);
         excluded.Should().Contain(w.EmpUser.Id);
+    }
+
+    // ── the Setup save path (OrganizationSetupService): the same gates, end to end ─────────────────────
+
+    private static Zayra.Api.Infrastructure.Organization.OrganizationSetupService Org(World w) =>
+        new(w.Db, new Zayra.Api.Infrastructure.Audit.AuditService(w.Db));
+
+    private static async Task AddCompanyAsync(World w)
+    {
+        w.Db.Companies.Add(new Company { Id = w.CompanyId, TenantId = w.TenantId, LegalNameEn = "Alpha Trading" });
+        await w.Db.SaveChangesAsync();
+    }
+
+    private static DesignationRequest Rename(World w, string title, IReadOnlyList<string>? accessRoles) =>
+        new(null, "PAY", title, null, null, null, null, null, CompanyId: w.CompanyId, AccessRoles: accessRoles);
+
+    [Fact]
+    public async Task The_designation_save_refuses_access_roles_from_an_editor_without_security_manage_and_changes_nothing()
+    {
+        var w = await SeedAsync();
+        await AddCompanyAsync(w);
+        var hr = await UserWithAsync(w, "HR Custom", "organization.write", "payroll.read", "payroll.run");
+
+        var act = () => Org(w).UpdateDesignationAsync(w.TenantId, w.PayrollOfficer.Id, Rename(w, "Renamed", ["Payroll Officer"]), hr, default);
+
+        (await act.Should().ThrowAsync<Zayra.Api.Application.Organization.OrganizationRuleException>()).Which.Code.Should().Be("security_manage_required");
+        (await w.Db.Designations.AsNoTracking().SingleAsync(d => d.Id == w.PayrollOfficer.Id)).TitleEn.Should().Be("Payroll Officer");
+        (await w.Db.DesignationAccessRoles.CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task The_designation_save_without_access_roles_works_for_the_same_editor_and_leaves_the_roles_alone()
+    {
+        var w = await SeedAsync();
+        await AddCompanyAsync(w);
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        var hr = await UserWithAsync(w, "HR Custom", "organization.write", "payroll.read", "payroll.run");
+
+        var saved = await Org(w).UpdateDesignationAsync(w.TenantId, w.PayrollOfficer.Id, Rename(w, "Renamed", null), hr, default);
+
+        saved!.TitleEn.Should().Be("Renamed");
+        saved.AccessRoles.Should().BeEquivalentTo(["Payroll Officer"]);
+        (await w.Db.DesignationAccessRoles.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task The_designation_save_by_a_security_manager_stores_the_roles_and_returns_them_in_the_list()
+    {
+        var w = await SeedAsync();
+        await AddCompanyAsync(w);
+
+        var saved = await Org(w).UpdateDesignationAsync(w.TenantId, w.PayrollOfficer.Id, Rename(w, "Payroll Officer", ["Payroll Officer", "Reviewer"]), w.Actor, default);
+
+        saved!.AccessRoles.Should().BeEquivalentTo(["Payroll Officer", "Reviewer"]);
+        var list = await Org(w).GetDesignationsAsync(w.TenantId, null, 1, 50, default);
+        list.Items.Single(d => d.Id == w.PayrollOfficer.Id).AccessRoles.Should().BeEquivalentTo(["Payroll Officer", "Reviewer"]);
+        list.Items.Single(d => d.Id == w.Clerk.Id).AccessRoles.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task The_designation_save_refuses_a_privileged_role_with_its_code()
+    {
+        var w = await SeedAsync();
+        await AddCompanyAsync(w);
+
+        var act = () => Org(w).UpdateDesignationAsync(w.TenantId, w.PayrollOfficer.Id, Rename(w, "Payroll Officer", ["Admin"]), w.Actor, default);
+
+        (await act.Should().ThrowAsync<Zayra.Api.Application.Organization.OrganizationRuleException>()).Which.Code.Should().Be("privileged_role");
+    }
+
+    [Fact]
+    public async Task The_designation_list_hides_the_roles_while_the_feature_is_off()
+    {
+        var w = await SeedAsync(flagOn: false);
+        await AddCompanyAsync(w);
+
+        var list = await Org(w).GetDesignationsAsync(w.TenantId, null, 1, 50, default);
+
+        list.Items.Should().OnlyContain(d => d.AccessRoles == null);
     }
 }
