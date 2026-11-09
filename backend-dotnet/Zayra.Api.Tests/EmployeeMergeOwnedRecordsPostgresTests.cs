@@ -914,6 +914,72 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         row.NewStatus.Should().Be("Draft");
         row.Reason.Should().Contain("not recorded");
     }
+
+    // ── 8. Unmerge puts WPS back only where the merge took it away ─────────────────────────────────
+
+    private async Task<(int Id, bool Wps)> MergeThenUnmergeAsync(string status, bool profileWps)
+    {
+        var t = await SeedTwinsAsync();
+        await using (var seed = _fx.CreateDb())
+        {
+            (await seed.Employees.SingleAsync(e => e.Id == t.Duplicate.Id)).Status = status;
+            // An empty profile (no bank or insurance value) is not a blocker; only its WPS flag differs.
+            seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, WpsEligible = profileWps });
+            await seed.SaveChangesAsync();
+        }
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+        await using var read = _fx.CreateDb();
+        return (t.Duplicate.Id, (await read.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.EmployeeId == t.Duplicate.Id)).WpsEligible);
+    }
+
+    [Fact]
+    public async Task Unmerge_LeavesAProfileThatWasNeverWpsEligible_NotWpsEligible()
+    {
+        var (_, wps) = await MergeThenUnmergeAsync("Active", profileWps: false);   // e.g. cash-paid: the merge cleared nothing
+
+        wps.Should().BeFalse("the merge did not switch it off, so unmerge must not switch it on");
+    }
+
+    [Fact]
+    public async Task Unmerge_RestoresWps_ForAnActiveTwinWhoseProfileTheMergeSwitchedOff()
+    {
+        var (_, wps) = await MergeThenUnmergeAsync("Active", profileWps: true);
+
+        wps.Should().BeTrue("the merge cleared it, and the twin is Active again");
+    }
+
+    [Theory]
+    [InlineData("Terminated")]
+    [InlineData("Inactive")]
+    [InlineData("Resigned")]
+    public async Task Unmerge_NeverPutsAnExitedTwinBackInTheBankFile(string status)
+    {
+        var (id, wps) = await MergeThenUnmergeAsync(status, profileWps: true);   // the merge cleared a (wrongly) eligible profile
+
+        wps.Should().BeFalse($"a {status} employee must stay out of the WPS file even though the merge cleared the flag");
+        await using var read = _fx.CreateDb();
+        (await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == id)).Status.Should().Be(status);
+    }
+
+    [Fact]
+    public async Task Unmerge_OfAnOldMergeWithNoFootprintRow_LeavesTheProfilesAlone()
+    {
+        var t = await SeedTwinsAsync();
+        await MarkMergedAsync(t);   // an older merge: no footprint audit row
+        await using (var seed = _fx.CreateDb())
+        {
+            seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, WpsEligible = false });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.EmployeeId == t.Duplicate.Id)).WpsEligible.Should().BeFalse();
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService

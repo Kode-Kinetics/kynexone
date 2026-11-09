@@ -5425,8 +5425,8 @@ public class EmployeesController : ControllerBase
                     requiredPermission = "employees.delete",
                 });
             // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the
-            // record; payroll reactivation is best-effort (re-marks WPS-eligible + reactivates the latest
-            // salary structure) — a deep field-level reconciliation is out of scope for this slice.
+            // record; payroll reactivation is best-effort (only what the merge's footprint row says it switched off) —
+            // a deep field-level reconciliation is out of scope for this slice.
             // IgnoreQueryFilters is intentional: the merged record is soft-deleted so the global !IsDeleted
             // filter hides it — bypass to read it back (scope already enforced by CanAccessEmployeeAsync above).
             var merged = await _db.Employees.IgnoreQueryFilters()
@@ -5467,9 +5467,6 @@ public class EmployeesController : ControllerBase
             });
             merged.DuplicateOfEmployeeId = null;
 
-            var profiles = await _db.EmployeePayrollProfiles
-                .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted).ToListAsync(ct);
-            foreach (var p in profiles) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
             // Put back only what the merge took away. The merge records how many salary structures it deactivated; a structure that was
             // already inactive before the merge (a closed, historical package) must stay closed, so with no such record nothing is
             // reactivated, and otherwise at most that many, latest effective date first.
@@ -5482,14 +5479,26 @@ public class EmployeesController : ControllerBase
                 .ToListAsync(ct);
             var mergeFootprint = mergeFootprints.FirstOrDefault(m => m is not null && m.Contains("merged_duplicate"));
             var toReactivate = 0;
+            var wpsToRestore = 0;
             if (mergeFootprint is not null)
             {
                 try
                 {
                     using var footprint = JsonDocument.Parse(mergeFootprint);
                     if (footprint.RootElement.TryGetProperty("salaryDeactivated", out var n) && n.TryGetInt32(out var count)) toReactivate = Math.Max(0, count);
+                    if (footprint.RootElement.TryGetProperty("profileDeactivated", out var pd) && pd.TryGetInt32(out var profileCount)) wpsToRestore = Math.Max(0, profileCount);
                 }
-                catch (JsonException) { /* an unreadable row proves nothing was deactivated: reactivate nothing */ }
+                catch (JsonException) { /* an unreadable row proves nothing was deactivated: restore nothing */ }
+            }
+            // WPS eligibility goes back only where the merge switched it off: at most as many profiles as the merge recorded clearing, and never
+            // for a twin that comes back with an exit status (the exit cascade's "never pay this profile again" gate stays shut). With no footprint
+            // row (an older merge) the profiles are left exactly as they are. A profile that was never WPS-eligible is never turned on.
+            if (wpsToRestore > 0 && !WpsRestoreBlockedStatuses.Contains(merged.Status, StringComparer.OrdinalIgnoreCase))
+            {
+                var cleared = await _db.EmployeePayrollProfiles
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted && !x.WpsEligible)
+                    .OrderBy(x => x.CreatedAtUtc).Take(wpsToRestore).ToListAsync(ct);
+                foreach (var p in cleared) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
             }
             if (toReactivate > 0)
             {
@@ -6189,6 +6198,9 @@ public class EmployeesController : ControllerBase
             contractEndDate = employee.ContractEndDate is null ? null : _hijri.FromGregorian(employee.ContractEndDate.Value)
         });
     }
+
+    /// <summary>A twin that comes back with one of these statuses is not put back in the bank file by an unmerge.</summary>
+    private static readonly string[] WpsRestoreBlockedStatuses = ["Terminated", "Inactive", "Resigned", "Archived", "Exited", "Retired", "Deceased"];
 
     private static readonly string[] OpenTransferStatuses = ["PendingCurrentManager", "PendingNewManager", "PendingHrApproval"];
     private const string TransferRejected = "Rejected";
