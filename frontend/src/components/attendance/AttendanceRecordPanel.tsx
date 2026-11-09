@@ -34,6 +34,7 @@ import {
 import { selectedIds, type Selection } from '../../lib/attendanceSelection';
 import { useFormat } from '../../hooks/useFormat';
 import { StatusChip } from '../StatusChip';
+import { Field } from '../ui/Field';
 import { EmployeeMultiSelect } from './EmployeeMultiSelect';
 import { ProcessJobProgress } from './ProcessJobProgress';
 import { SectionTitle } from './attendanceUi';
@@ -185,33 +186,28 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
           max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-52" />
         <fieldset className="min-w-0 space-y-3" disabled={locked}>
           <legend className="sr-only">{t('Attendance to record')}</legend>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
-            <div>
-              <label htmlFor={`${ids}-from`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('From date')}</label>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+            <Field label={t('From date')} noInfo="a plain date with one obvious meaning">
               <input id={`${ids}-from`} type="date" className="input w-full" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor={`${ids}-to`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('To date')}</label>
+            </Field>
+            <Field label={t('To date')} noInfo="a plain date with one obvious meaning">
               <input id={`${ids}-to`} type="date" className="input w-full" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor={`${ids}-in`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('In time')}</label>
+            </Field>
+            <Field label={t('In time')} info={t('The time of the in punch, in the company time zone. Leave it empty to record only an out time.')}>
               <input id={`${ids}-in`} type="time" className="input w-full" value={inTime} onChange={(e) => setInTime(e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor={`${ids}-out`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Out time')}</label>
+            </Field>
+            <Field label={t('Out time')} info={t('The time of the out punch. If it is the same as or earlier than the in time, it is recorded on the next day.')}>
               <input id={`${ids}-out`} type="time" className="input w-full" value={outTime} onChange={(e) => setOutTime(e.target.value)} />
-            </div>
+            </Field>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {t('Enter an in time, an out time, or both.')} {t('Times are in {zone}.', { zone: defaultTimezone })}
             {state.overnight && <> {t('Overnight shift: the out time is recorded on the next day.')}</>}
           </p>
-          <div>
-            <label htmlFor={`${ids}-reason`} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{t('Reason (required)')}</label>
+          <Field label={t('Reason (required)')} noInfo="free text; the entry's reason is kept in the audit trail, stated in the panel subtitle">
             <input id={`${ids}-reason`} className="input w-full" maxLength={MASS_ENTRY_MAX_REASON} value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder={t('For example: the biometric device was offline')} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
-          </div>
+          </Field>
           {problem && selection.size > 0 && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{problem}</p>}
           {plan.problem === 'no-employees' && <p className="text-xs text-slate-500">{t('Select at least one employee.')}</p>}
           {run.phase === 'idle' && (
