@@ -55,11 +55,8 @@ export const SCREENS: readonly ScreenContract[] = [
       });
       await page.locator('main').first().waitFor({ state: 'visible', timeout: 60_000 });
     },
-    ready: false,
-    failing: {
-      purpose: 'no [data-purpose] line under the title (Page primitive not adopted)',
-      'primary-action': 'no [data-primary-action] in [data-page-header] (the verb lives in a 360 px punch card)',
-    },
+    ready: true,
+    failing: {},
   },
   {
     name: 'benefits-by-grade',
