@@ -203,6 +203,140 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             });
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeSalaryStructures.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("receivable the employee owes", "payroll_receivables", (db, t) =>
+        {
+            db.PayrollEmployeeReceivables.Add(new PayrollEmployeeReceivable { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, Amount = 3000m, RecoveredAmount = 0m, Status = "Outstanding" });
+            return Task.CompletedTask;
+        }, (db, id) => db.PayrollEmployeeReceivables.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("pending pay arrears", "payroll_arrears", (db, t) =>
+        {
+            db.PayrollArrearsLines.Add(new PayrollArrearsLine { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, Amount = 500m, EntitledAmount = 500m, Status = "PendingRecovery" });
+            return Task.CompletedTask;
+        }, (db, id) => db.PayrollArrearsLines.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("final settlement", "final_settlements", (db, t) =>
+        {
+            db.EmployeeFinalSettlements.Add(new EmployeeFinalSettlement { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.Id, EmployeeCode = t.Duplicate.EmployeeCode, NetPayable = 9000m, Status = "Approved" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeFinalSettlements.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("payroll opening balance", "opening_balances", (db, t) =>
+        {
+            db.PayrollOpeningBalances.Add(new PayrollOpeningBalance { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EmployeeCode = t.Duplicate.EmployeeCode, BalanceType = "Loan", Amount = 1200m });
+            return Task.CompletedTask;
+        }, (db, id) => db.PayrollOpeningBalances.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("end-of-service provision snapshot", "eosb_provisions", (db, t) =>
+        {
+            var run = new PayrollRun { TenantId = t.TenantId, CompanyId = t.CompanyId, Year = 2026, Month = 6, Status = "Draft" };
+            db.PayrollRuns.Add(run);
+            db.EosbProvisionSnapshots.Add(new EosbProvisionSnapshot { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, PayrollRunId = run.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.EosbProvisionSnapshots.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("bank payment record", "payment_records", (db, t) =>
+        {
+            db.PayrollPaymentRecords.Add(new PayrollPaymentRecord { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, PaymentBatchId = Guid.NewGuid(), Amount = 8000m, Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.PayrollPaymentRecords.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("payroll adjustment", "payroll_adjustments", (db, t) =>
+        {
+            db.PayrollAdjustments.Add(new PayrollAdjustment { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, PayrollRunId = Guid.NewGuid(), Amount = 250m, Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.PayrollAdjustments.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("overtime approved but unpaid", "unpaid_overtime", (db, t) =>
+        {
+            db.OvertimeRequests.Add(new OvertimeRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName, Status = "Approved" });
+            return Task.CompletedTask;
+        }, (db, id) => db.OvertimeRequests.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("leave encashment request", "leave_encashments", (db, t) =>
+        {
+            db.LeaveEncashmentRequests.Add(new LeaveEncashmentRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName, DaysToEncash = 3m, TotalAmount = 900m, Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.LeaveEncashmentRequests.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("compensatory-leave credit", "comp_off_credits", (db, t) =>
+        {
+            db.CompOffCredits.Add(new CompOffCredit { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName, HoursWorked = 8m, DaysEarned = 1m, Status = "Active" });
+            return Task.CompletedTask;
+        }, (db, id) => db.CompOffCredits.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("pending salary change", "salary_change_requests", (db, t) =>
+        {
+            db.SalaryChangeRequests.Add(new SalaryChangeRequest { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.Id, EmployeeCode = t.Duplicate.EmployeeCode, EmployeeName = t.Duplicate.FullName, SalaryStructureId = Guid.NewGuid(), Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.SalaryChangeRequests.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("live separation", "live_separations", (db, t) =>
+        {
+            db.EmployeeOffboardings.Add(new EmployeeOffboarding { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName, EmployeeCode = t.Duplicate.EmployeeCode, LastWorkingDay = Today, Status = "InProgress" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeOffboardings.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("attendance effect on pay not yet applied", "pending_payroll_impacts", (db, t) =>
+        {
+            db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, Status = "PendingPayroll" });
+            return Task.CompletedTask;
+        }, (db, id) => db.AttendancePayrollImpacts.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("visa record (keyed by the public id)", "contracts_and_permits", (db, t) =>
+        {
+            db.VisaRecords.Add(new VisaRecord { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeName = t.Duplicate.FullName, IssueDate = Today, ExpiryDate = Today.AddYears(1) });
+            return Task.CompletedTask;
+        }, (db, id) => db.VisaRecords.IgnoreQueryFilters().CountAsync(x => db.Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.PublicId).Contains(x.EmployeeId)));
+
+        yield return new("dependent", "dependents", (db, t) =>
+        {
+            db.EmployeeDependents.Add(new EmployeeDependent { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, FullName = "Child One", Relationship = "Child" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeDependents.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("approval authority", "approval_authority", (db, t) =>
+        {
+            db.ApprovalAuthorities.Add(new ApprovalAuthority { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, ApproverRole = "Finance", IsActive = true });
+            return Task.CompletedTask;
+        }, (db, id) => db.ApprovalAuthorities.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("approval delegation to the duplicate", "approval_authority", (db, t) =>
+        {
+            db.ApprovalDelegations.Add(new ApprovalDelegation { TenantId = t.TenantId, FromEmployeeId = t.Survivor.Id, ToEmployeeId = t.Duplicate.Id, StartDate = Today.AddDays(-1), EndDate = Today.AddDays(30), Status = "Active" });
+            return Task.CompletedTask;
+        }, (db, id) => db.ApprovalDelegations.IgnoreQueryFilters().CountAsync(x => x.ToEmployeeId == id));
+
+        yield return new("legacy loan with no int employee id", "open_loans", (db, t) =>
+        {
+            db.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = null, LoanTypeId = Guid.NewGuid(), LoanNumber = "LN-" + Guid.NewGuid().ToString("N"), OutstandingBalance = 700m, Status = "Active" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeLoans.IgnoreQueryFilters().CountAsync(x => x.EmployeeIntId == null && db.Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.PublicId).Contains(x.EmployeeId)));
+
+        yield return new("person who reports to the duplicate", "direct_reports", (db, t) =>
+        {
+            db.Employees.Add(new Employee { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeCode = "RPT-" + Guid.NewGuid().ToString("N")[..6], FullName = "Report Person", EnglishName = "Report Person", Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.SpecifyKind(new DateTime(2025, 1, 1), DateTimeKind.Utc), ManagerEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.Employees.IgnoreQueryFilters().CountAsync(x => x.ManagerEmployeeId == id));
+
+        yield return new("reporting line managed by the duplicate", "reporting_lines", (db, t) =>
+        {
+            db.ReportingLines.Add(new ReportingLine { TenantId = t.TenantId, EmployeeId = t.Survivor.Id, ManagerEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.ReportingLines.IgnoreQueryFilters().CountAsync(x => x.ManagerEmployeeId == id));
+
+        yield return new("department managed by the duplicate", "department_manager", (db, t) =>
+        {
+            db.Departments.Add(new Department { TenantId = t.TenantId, CompanyId = t.CompanyId, Code = "D-" + Guid.NewGuid().ToString("N")[..6], NameEn = "Dept", ManagerEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.Departments.IgnoreQueryFilters().CountAsync(x => x.ManagerEmployeeId == id));
+
+        yield return new("position held by the duplicate", "position_incumbent", (db, t) =>
+        {
+            db.Positions.Add(new Position { TenantId = t.TenantId, CompanyId = t.CompanyId, Code = "P-" + Guid.NewGuid().ToString("N")[..6], Title = "Role", IncumbentEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.Positions.IgnoreQueryFilters().CountAsync(x => x.IncumbentEmployeeId == id));
     }
 
     // ── 1. LIVE ─────────────────────────────────────────────────────────────────────────────────────
@@ -284,7 +418,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         var t = await SeedTwinsAsync();
         await using (var seed = _fx.CreateDb())
         {
-            foreach (var r in Catalogue().Where(r => r.Type is "open_loans" or "documents"))
+            foreach (var r in Catalogue().Where(r => r.Name is "open loan" or "employee document"))
             {
                 await r.Seed(seed, t);
                 await r.Seed(seed, t); // two of each
