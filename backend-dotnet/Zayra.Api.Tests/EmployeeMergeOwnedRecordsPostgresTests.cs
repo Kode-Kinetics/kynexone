@@ -24,7 +24,7 @@ namespace Zayra.Api.Tests;
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Integration")]
-public sealed class EmployeeMergeOwnedRecordsPostgresTests
+public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
 {
     private readonly PostgresFixture _fx;
     public EmployeeMergeOwnedRecordsPostgresTests(PostgresFixture fx) => _fx = fx;
@@ -337,6 +337,57 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             db.Positions.Add(new Position { TenantId = t.TenantId, CompanyId = t.CompanyId, Code = "P-" + Guid.NewGuid().ToString("N")[..6], Title = "Role", IncumbentEmployeeId = t.Duplicate.Id });
             return Task.CompletedTask;
         }, (db, id) => db.Positions.IgnoreQueryFilters().CountAsync(x => x.IncumbentEmployeeId == id));
+
+        yield return new("approval policy step naming the duplicate", "approval_routing", (db, t) =>
+        {
+            var policy = new ApprovalPolicy { TenantId = t.TenantId, WorkflowType = "Loan", Name = "P" };
+            db.ApprovalPolicies.Add(policy);
+            db.ApprovalPolicySteps.Add(new ApprovalPolicyStep { TenantId = t.TenantId, PolicyId = policy.Id, ApproverType = "SpecificEmployee", SpecificEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.ApprovalPolicySteps.IgnoreQueryFilters().CountAsync(x => x.SpecificEmployeeId == id));
+
+        yield return new("approval workflow step naming the duplicate", "approval_routing", (db, t) =>
+        {
+            var flow = new ApprovalWorkflow { TenantId = t.TenantId, Code = "W-" + Guid.NewGuid().ToString("N")[..6], Name = "W", EntityName = "Loan" };
+            db.ApprovalWorkflows.Add(flow);
+            db.ApprovalWorkflowSteps.Add(new ApprovalWorkflowStep { TenantId = t.TenantId, WorkflowId = flow.Id, ApproverType = "SpecificEmployee", SpecificEmployeeId = t.Duplicate.Id });
+            return Task.CompletedTask;
+        }, (db, id) => db.ApprovalWorkflowSteps.IgnoreQueryFilters().CountAsync(x => x.SpecificEmployeeId == id));
+
+        yield return new("open merit worksheet managed by the duplicate", "merit_worksheets", (db, t) =>
+        {
+            var cycle = new CompCycle { TenantId = t.TenantId, CompanyId = t.CompanyId, Name = "Cycle", Currency = "SAR" };
+            db.CompCycles.Add(cycle);
+            db.CompWorksheets.Add(new CompWorksheet { TenantId = t.TenantId, CompanyId = t.CompanyId, CycleId = cycle.Id, ManagerEmployeeId = t.Duplicate.Id, Status = "Draft" });
+            return Task.CompletedTask;
+        }, (db, id) => db.CompWorksheets.IgnoreQueryFilters().CountAsync(x => x.ManagerEmployeeId == id));
+
+        yield return new("leave-approval delegation to the duplicate", "approval_authority", (db, t) =>
+        {
+            db.LeaveDelegations.Add(new LeaveDelegation { TenantId = t.TenantId, EmployeeId = t.Survivor.Id, DelegateEmployeeId = t.Duplicate.Id, StartDate = Today.AddDays(-1), EndDate = Today.AddDays(30), Status = "Active" });
+            return Task.CompletedTask;
+        }, (db, id) => db.LeaveDelegations.IgnoreQueryFilters().CountAsync(x => x.DelegateEmployeeId == id));
+
+        yield return new("pending overtime adjustment", "unpaid_overtime", (db, t) =>
+        {
+            db.OvertimeAdjustments.Add(new OvertimeAdjustment { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, AmountAdjustment = 120m, Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.OvertimeAdjustments.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("pending overtime to comp-off conversion", "comp_off_credits", (db, t) =>
+        {
+            db.OvertimeCompOffConversions.Add(new OvertimeCompOffConversion { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, OvertimeHours = 4m, CompOffDays = 0.5m, Status = "Pending" });
+            return Task.CompletedTask;
+        }, (db, id) => db.OvertimeCompOffConversions.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
+        yield return new("acquired-rights entitlement (keyed by the public id)", "acquired_rights", (db, t) =>
+        {
+            // The contract is Expired, so the contract counter does not block: the entitlement has to block on its own.
+            var contract = new EmployeeContract { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeName = t.Duplicate.FullName, Status = "Expired", StartDate = Today.AddYears(-2), EndDate = Today.AddYears(1) };
+            db.EmployeeContracts.Add(contract);
+            db.EmployeeEntitlements.Add(new EmployeeEntitlement { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, ContractId = contract.Id, PayComponentCode = "HOUSING", Source = "Migrated", VerificationState = "Unverified", EffectiveFrom = Today.AddYears(-1), EffectiveTo = Today.AddMonths(6) });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeEntitlements.IgnoreQueryFilters().CountAsync(x => db.Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.PublicId).Contains(x.EmployeeId)));
     }
 
     // ── 1. LIVE ─────────────────────────────────────────────────────────────────────────────────────
@@ -362,7 +413,12 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id });
             seed.EmployeeComplianceRecords.Add(new EmployeeComplianceRecord { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, CountryCode = "SA", FieldKey = "iqama_number" });
             seed.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, LeaveTypeId = Guid.NewGuid(), Year = DateTime.UtcNow.Year });
-            seed.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, LoanTypeId = Guid.NewGuid(), Status = "Settled" });
+            seed.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, LoanTypeId = Guid.NewGuid(), LoanNumber = "LN-" + Guid.NewGuid().ToString("N"), Status = "Settled" });
+            // Payroll closes a repaid loan or advance as "Closed"; a repaid one can also sit Active with nothing left to collect.
+            seed.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, LoanTypeId = Guid.NewGuid(), LoanNumber = "LN-" + Guid.NewGuid().ToString("N"), Status = "Closed", OutstandingBalance = 0m });
+            seed.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, LoanTypeId = Guid.NewGuid(), LoanNumber = "LN-" + Guid.NewGuid().ToString("N"), Status = "Active", OutstandingBalance = 0m, TotalRepaid = 3000m });
+            seed.SalaryAdvances.Add(new SalaryAdvance { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, AdvanceNumber = "ADV-" + Guid.NewGuid().ToString("N"), Status = "Closed", OutstandingBalance = 0m });
+            seed.SalaryAdvances.Add(new SalaryAdvance { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, AdvanceNumber = "ADV-" + Guid.NewGuid().ToString("N"), Status = "Active", OutstandingBalance = 0m, TotalRepaid = 500m });
             seed.EmployeeBonuses.Add(new EmployeeBonus { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, BonusBatchId = Guid.NewGuid(), BonusTypeId = Guid.NewGuid(), Status = "PaidInPayroll" });
             seed.LeaveRequests.Add(new LeaveRequest { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.Id, LeaveTypeId = Guid.NewGuid(), StartDate = Today, EndDate = Today, Status = "Rejected" });
             seed.BenefitEnrollments.Add(new BenefitEnrollment { TenantId = t.TenantId, CompanyId = t.CompanyId, BenefitPlanId = Guid.NewGuid(), EmployeeId = t.Duplicate.Id, Status = "Waived" });
@@ -762,6 +818,29 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         (await read.RefreshTokens.SingleAsync(x => x.Id == refreshId)).RevokedAtUtc.Should().BeNull();
         (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.Id == dupLinkId)).AccessMode.Should().Be(AccessModes.EssOnly, "the link row is the access record of that shared login, so it is held with it");
         (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
+    }
+
+    // ── 7. Pending transfer requests are cancelled with the other pending approval work ─────────────
+
+    [Fact]
+    public async Task Merge_CancelsAPendingTransferRequestOfTheDuplicate_SoItCannotBeApprovedOntoADeletedRecord()
+    {
+        var t = await SeedTwinsAsync();
+        Guid pending, done;
+        await using (var seed = _fx.CreateDb())
+        {
+            var open = new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EffectiveDate = Today, Status = "PendingHrApproval" };
+            var applied = new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EffectiveDate = Today.AddDays(-30), Status = "Completed" };
+            pending = open.Id; done = applied.Id;
+            seed.EmployeeTransferRequests.AddRange(open, applied);
+            await seed.SaveChangesAsync();
+        }
+
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+
+        await using var read = _fx.CreateDb();
+        (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == pending)).Status.Should().Be("Withdrawn");
+        (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == done)).Status.Should().Be("Completed", "a finished transfer is history and is left alone");
     }
 }
 

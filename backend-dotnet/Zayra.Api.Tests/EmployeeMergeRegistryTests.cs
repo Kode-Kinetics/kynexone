@@ -13,15 +13,27 @@ public sealed class EmployeeMergeRegistryTests
 {
     private static ZayraDbContext Db() => new(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
 
+    /// <summary>
+    /// Everything that points at an employee, as registry keys: an entity with an EmployeeId / EmployeeIntId column is keyed by its name;
+    /// every OTHER int property ending in "EmployeeId" (ManagerEmployeeId, SpecificEmployeeId, DelegateEmployeeId, DuplicateOfEmployeeId, ...)
+    /// is keyed "Entity.Property".
+    /// </summary>
     private static IReadOnlyList<string> EntitiesPointingAtAnEmployee()
     {
         using var db = Db();
-        return db.Model.GetEntityTypes()
-            .Where(t => !t.IsOwned() && (t.FindProperty("EmployeeId") != null || t.FindProperty("EmployeeIntId") != null) && t.ClrType.Name != "Employee")
-            .Select(t => t.ClrType.Name)
-            .Distinct()
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
+        var keys = new List<string>();
+        foreach (var type in db.Model.GetEntityTypes().Where(t => !t.IsOwned()))
+        {
+            var name = type.ClrType.Name;
+            if (name != "Employee" && (type.FindProperty("EmployeeId") != null || type.FindProperty("EmployeeIntId") != null)) keys.Add(name);
+            foreach (var property in type.GetProperties())
+            {
+                var clr = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
+                if (clr == typeof(int) && property.Name.EndsWith("EmployeeId", StringComparison.Ordinal) && property.Name != "EmployeeId")
+                    keys.Add($"{name}.{property.Name}");
+            }
+        }
+        return keys.Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList();
     }
 
     [Fact]

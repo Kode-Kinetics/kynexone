@@ -5126,6 +5126,17 @@ public class EmployeesController : ControllerBase
             change.ApprovedAtUtc = effectiveAt;
         }
 
+        // A pending transfer about this employee cannot be approved onto a removed record: it is closed as withdrawn, with its history row.
+        var openTransfers = await _db.EmployeeTransferRequests
+            .Where(x => x.TenantId == tenantId && x.EmployeeId == id && OpenTransferStatuses.Contains(x.Status))
+            .ToListAsync(ct);
+        foreach (var transfer in openTransfers)
+        {
+            var previousStatus = transfer.Status;
+            transfer.Status = TransferWithdrawn;
+            AddTransferHistory(transfer, "TransferWithdrawn", previousStatus, cancelReason);
+        }
+
         var pendingChangeIds = pendingChanges.Select(x => x.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var pendingApprovals = await _db.ApprovalRequests
             .Where(x => x.TenantId == tenantId

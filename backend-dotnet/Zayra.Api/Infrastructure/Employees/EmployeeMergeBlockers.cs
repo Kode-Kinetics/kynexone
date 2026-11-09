@@ -37,7 +37,17 @@ public static class EmployeeMergeBlockers
 
     private sealed record BlockerType(string Key, string Label, string LabelAr);
 
-    private delegate Task<int> Counter(ZayraDbContext db, Target t, CancellationToken ct);
+    /// <summary>One counted group: how many rows of one blocker type an entity contributes. Many of these become ONE UNION ALL statement.</summary>
+    public sealed class CountRow
+    {
+        public string Type { get; set; } = string.Empty;
+        public int Count { get; set; }
+    }
+
+    private delegate IQueryable<CountRow> Counter(ZayraDbContext db, Target t);
+
+    private static IQueryable<CountRow> R<T>(string type, IQueryable<T> rows) =>
+        rows.GroupBy(_ => 1).Select(g => new CountRow { Type = type, Count = g.Count() });
 
     // ── Blocker types (the labels the 409 carries) ─────────────────────────────────────────────────
     private static readonly BlockerType[] Types =
@@ -69,6 +79,9 @@ public static class EmployeeMergeBlockers
         new("pending_payroll_impacts", "Attendance and leave effects on pay not yet applied", "آثار الحضور والإجازات على الراتب غير المطبقة بعد"),
         new("contracts_and_permits", "Contracts, passports, visas and work permits", "العقود وجوازات السفر والتأشيرات وتصاريح العمل"),
         new("dependents", "Dependents", "المعالون"),
+        new("approval_routing", "Approval steps that route to this employee", "خطوات اعتماد توجه إلى هذا الموظف"),
+        new("merit_worksheets", "Open merit worksheets managed by this employee", "أوراق عمل الجدارة المفتوحة التي يديرها هذا الموظف"),
+        new("acquired_rights", "Acquired-rights entitlements", "الاستحقاقات المكتسبة"),
         new("approval_authority", "Approval authority and delegations", "صلاحيات الاعتماد والتفويضات"),
         new("direct_reports", "People who report to this employee", "أشخاص يتبعون هذا الموظف"),
         new("reporting_lines", "Reporting lines managed by this employee", "خطوط التقارير التي يديرها هذا الموظف"),
@@ -84,66 +97,77 @@ public static class EmployeeMergeBlockers
     // ── Counters: entity name -> how many rows of it carry something ───────────────────────────────
     private static readonly Dictionary<string, Counter> Counters = new()
     {
-        [nameof(EmployeeLoan)] = (db, t, ct) => Q<EmployeeLoan>(db, t).CountAsync(x => !x.IsDeleted && x.Status != "Settled" && x.Status != "Cancelled" && x.Status != "Rejected"
-            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)), ct),
-        [nameof(SalaryAdvance)] = (db, t, ct) => Q<SalaryAdvance>(db, t).CountAsync(x => !x.IsDeleted && x.Status != "Settled" && x.Status != "Rejected"
-            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)), ct),
-        [nameof(EmployeeBonus)] = (db, t, ct) => Q<EmployeeBonus>(db, t).CountAsync(x => !x.IsDeleted && (x.Status == "Draft" || x.Status == "Approved")
-            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)), ct),
-        [nameof(EmployeeSalaryStructure)] = (db, t, ct) => Q<EmployeeSalaryStructure>(db, t).CountAsync(x => x.EmployeeId == t.Id, ct),
-        [nameof(EmployeePayrollProfile)] = (db, t, ct) => Q<EmployeePayrollProfile>(db, t).CountAsync(x => x.EmployeeId == t.Id && !x.IsDeleted
-            && (x.Iban != "" || x.AccountNumber != "" || x.BankName != "" || x.SocialInsuranceReference != "" || x.MolId != ""), ct),
-        [nameof(PayrollSlip)] = (db, t, ct) => Q<PayrollSlip>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != "Voided", ct),
-        [nameof(Payslip)] = (db, t, ct) => Q<Payslip>(db, t).CountAsync(x => x.EmployeeId == t.Id, ct),
-        [nameof(PayrollRunEmployee)] = (db, t, ct) => Q<PayrollRunEmployee>(db, t).CountAsync(x => x.EmployeeId == t.Id && (x.GrossEarnings != 0 || x.NetPay != 0 || x.TotalDeductions != 0), ct),
-        [nameof(EmployeeLeaveBalance)] = (db, t, ct) => Q<EmployeeLeaveBalance>(db, t).CountAsync(x => x.EmployeeId == t.Id
-            && (x.Entitled != 0 || x.Accrued != 0 || x.Used != 0 || x.Pending != 0 || x.CarriedForward != 0 || x.Encashed != 0 || x.ManualAdjustment != 0), ct),
-        [nameof(LeaveRequest)] = (db, t, ct) => Q<LeaveRequest>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != "Draft" && x.Status != "Rejected" && x.Status != "Cancelled", ct),
-        [nameof(LeaveBalanceAdjustmentRequest)] = (db, t, ct) => Q<LeaveBalanceAdjustmentRequest>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0 && !DeadStates.Contains(x.Status) && !SettledStates.Contains(x.Status), ct),
-        [nameof(BenefitEnrollment)] = (db, t, ct) => Q<BenefitEnrollment>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status == "Active", ct),
-        [nameof(EOSBCalculation)] = (db, t, ct) => Q<EOSBCalculation>(db, t).CountAsync(x => x.EmployeeId == t.Id, ct),
-        [nameof(EmployeeDocument)] = (db, t, ct) => Q<EmployeeDocument>(db, t).CountAsync(x => x.EmployeeId == t.Id && !x.IsDeleted, ct),
-        [nameof(IssuedLetter)] = (db, t, ct) => Q<IssuedLetter>(db, t).CountAsync(x => x.EmployeeId == t.Id && !x.IsDeleted, ct),
-        [nameof(EmployeeComplianceRecord)] = (db, t, ct) => Q<EmployeeComplianceRecord>(db, t).CountAsync(x => x.EmployeeId == t.Id && !x.IsDeleted
-            && (x.FieldValue != "" || x.IssueDate != null || x.ExpiryDate != null), ct),
-        [nameof(PayrollEmployeeReceivable)] = (db, t, ct) => Q<PayrollEmployeeReceivable>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != PayrollReceivableStatuses.Recovered && x.Amount > x.RecoveredAmount, ct),
-        [nameof(PayrollArrearsLine)] = (db, t, ct) => Q<PayrollArrearsLine>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != PayrollArrearsStatuses.Settled && x.Status != PayrollArrearsStatuses.Voided && x.Amount != 0, ct),
-        [nameof(EmployeeFinalSettlement)] = (db, t, ct) => Q<EmployeeFinalSettlement>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != FinalSettlementStatuses.Cancelled, ct),
-        [nameof(PayrollOpeningBalance)] = (db, t, ct) => Q<PayrollOpeningBalance>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0, ct),
-        [nameof(EmployeeEosbOpeningBalance)] = (db, t, ct) => Q<EmployeeEosbOpeningBalance>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.AccruedAmount != 0, ct),
-        [nameof(EosbProvisionSnapshot)] = (db, t, ct) => Q<EosbProvisionSnapshot>(db, t).CountAsync(x => x.EmployeeId == t.Id, ct),
-        [nameof(PayrollPaymentRecord)] = (db, t, ct) => Q<PayrollPaymentRecord>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0, ct),
-        [nameof(BankPaymentConfirmation)] = (db, t, ct) => Q<BankPaymentConfirmation>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.ConfirmedAmount != 0, ct),
-        [nameof(SIFFileRecord)] = (db, t, ct) => Q<SIFFileRecord>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.NetPay != 0, ct),
-        [nameof(PayrollAdjustment)] = (db, t, ct) => Q<PayrollAdjustment>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0 && !DeadStates.Contains(x.Status), ct),
-        [nameof(PayrollAllowance)] = (db, t, ct) => Q<PayrollAllowance>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0, ct),
-        [nameof(BenefitContribution)] = (db, t, ct) => Q<BenefitContribution>(db, t).CountAsync(x => x.EmployeeId == t.Id && (x.EmployeeAmount != 0 || x.EmployerAmount != 0), ct),
-        [nameof(OvertimeRequest)] = (db, t, ct) => Q<OvertimeRequest>(db, t).CountAsync(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status), ct),
-        [nameof(OvertimePayrollImpact)] = (db, t, ct) => Q<OvertimePayrollImpact>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0 && !SettledStates.Contains(x.Status), ct),
-        [nameof(LeaveEncashmentRequest)] = (db, t, ct) => Q<LeaveEncashmentRequest>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != LeaveEncashmentStatuses.Rejected && x.Status != LeaveEncashmentStatuses.Voided && x.Status != LeaveEncashmentStatuses.Processed && x.Status != "Cancelled", ct),
-        [nameof(CompOffCredit)] = (db, t, ct) => Q<CompOffCredit>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.DaysEarned != 0 && !SettledStates.Contains(x.Status), ct),
-        [nameof(SalaryChangeRequest)] = (db, t, ct) => Q<SalaryChangeRequest>(db, t).CountAsync(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status) && !DeadStates.Contains(x.Status) && x.Status != "Approved", ct),
-        [nameof(EmployeeOffboarding)] = (db, t, ct) => Q<EmployeeOffboarding>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Status != "Cancelled" && x.Status != "Completed", ct),
-        [nameof(AttendancePayrollImpact)] = (db, t, ct) => Q<AttendancePayrollImpact>(db, t).CountAsync(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status), ct),
-        [nameof(LeavePayrollImpact)] = (db, t, ct) => Q<LeavePayrollImpact>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.Amount != 0 && !SettledStates.Contains(x.Status), ct),
-        [nameof(VisaRecord)] = (db, t, ct) => Q<VisaRecord>(db, t).CountAsync(x => x.EmployeeId == t.PublicId && !x.IsDeleted, ct),
-        [nameof(PassportRecord)] = (db, t, ct) => Q<PassportRecord>(db, t).CountAsync(x => x.EmployeeId == t.PublicId && !x.IsDeleted, ct),
-        [nameof(WorkPermitRecord)] = (db, t, ct) => Q<WorkPermitRecord>(db, t).CountAsync(x => x.EmployeeId == t.PublicId && !x.IsDeleted, ct),
-        [nameof(EmployeeContract)] = (db, t, ct) => Q<EmployeeContract>(db, t).CountAsync(x => x.EmployeeId == t.PublicId && !x.IsDeleted
-            && x.Status != "Expired" && x.Status != "Terminated" && x.Status != "Superseded", ct),
-        [nameof(EmployeeDependent)] = (db, t, ct) => Q<EmployeeDependent>(db, t).CountAsync(x => x.EmployeeId == t.Id && !x.IsDeleted, ct),
-        [nameof(ApprovalAuthority)] = (db, t, ct) => Q<ApprovalAuthority>(db, t).CountAsync(x => x.EmployeeId == t.Id && x.IsActive, ct),
-    };
-
-    /// <summary>Relationship blockers: other live records that point AT the duplicate as their manager, approver or incumbent.</summary>
-    private static readonly Dictionary<string, Counter> Relationships = new()
-    {
-        ["direct_reports"] = (db, t, ct) => ScopedBypass.NullableTenantWide(db.Employees, t.TenantId, Why).CountAsync(x => !x.IsDeleted && x.Id != t.Id
-            && (x.ManagerEmployeeId == t.Id || x.SecondLevelManagerEmployeeId == t.Id || x.SupervisorEmployeeId == t.Id || x.HRBusinessPartnerEmployeeId == t.Id), ct),
-        ["reporting_lines"] = (db, t, ct) => Q<ReportingLine>(db, t).CountAsync(x => x.ManagerEmployeeId == t.Id && x.IsActive && x.EmployeeId != t.Id, ct),
-        ["department_manager"] = (db, t, ct) => Q<Department>(db, t).CountAsync(x => x.ManagerEmployeeId == t.Id && !x.IsDeleted, ct),
-        ["position_incumbent"] = (db, t, ct) => Q<Position>(db, t).CountAsync(x => x.IncumbentEmployeeId == t.Id && !x.IsDeleted, ct),
-        ["approval_delegations"] = (db, t, ct) => Q<ApprovalDelegation>(db, t).CountAsync(x => (x.FromEmployeeId == t.Id || x.ToEmployeeId == t.Id) && x.Status == "Active" && x.EndDate >= t.Today, ct),
+        [nameof(EmployeeLoan)] = (db, t) => R(TypeOf(nameof(EmployeeLoan))!, Q<EmployeeLoan>(db, t).Where(x => !x.IsDeleted && x.Status != "Settled" && x.Status != "Cancelled" && x.Status != "Rejected" && x.Status != "Closed"
+            && !((x.Status == "Active" || x.Status == "Overdue") && x.OutstandingBalance <= 0)
+            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)))),
+        [nameof(SalaryAdvance)] = (db, t) => R(TypeOf(nameof(SalaryAdvance))!, Q<SalaryAdvance>(db, t).Where(x => !x.IsDeleted && x.Status != "Settled" && x.Status != "Rejected" && x.Status != "Closed"
+            && !((x.Status == "Active" || x.Status == "Overdue") && x.OutstandingBalance <= 0)
+            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)))),
+        [nameof(EmployeeBonus)] = (db, t) => R(TypeOf(nameof(EmployeeBonus))!, Q<EmployeeBonus>(db, t).Where(x => !x.IsDeleted && (x.Status == "Draft" || x.Status == "Approved")
+            && (x.EmployeeIntId == t.Id || (x.EmployeeIntId == null && x.EmployeeId == t.PublicId)))),
+        [nameof(EmployeeSalaryStructure)] = (db, t) => R(TypeOf(nameof(EmployeeSalaryStructure))!, Q<EmployeeSalaryStructure>(db, t).Where(x => x.EmployeeId == t.Id)),
+        [nameof(EmployeePayrollProfile)] = (db, t) => R(TypeOf(nameof(EmployeePayrollProfile))!, Q<EmployeePayrollProfile>(db, t).Where(x => x.EmployeeId == t.Id && !x.IsDeleted
+            && (x.Iban != "" || x.AccountNumber != "" || x.BankName != "" || x.SocialInsuranceReference != "" || x.MolId != ""))),
+        [nameof(PayrollSlip)] = (db, t) => R(TypeOf(nameof(PayrollSlip))!, Q<PayrollSlip>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != "Voided")),
+        [nameof(Payslip)] = (db, t) => R(TypeOf(nameof(Payslip))!, Q<Payslip>(db, t).Where(x => x.EmployeeId == t.Id)),
+        [nameof(PayrollRunEmployee)] = (db, t) => R(TypeOf(nameof(PayrollRunEmployee))!, Q<PayrollRunEmployee>(db, t).Where(x => x.EmployeeId == t.Id && (x.GrossEarnings != 0 || x.NetPay != 0 || x.TotalDeductions != 0))),
+        [nameof(EmployeeLeaveBalance)] = (db, t) => R(TypeOf(nameof(EmployeeLeaveBalance))!, Q<EmployeeLeaveBalance>(db, t).Where(x => x.EmployeeId == t.Id
+            && (x.Entitled != 0 || x.Accrued != 0 || x.Used != 0 || x.Pending != 0 || x.CarriedForward != 0 || x.Encashed != 0 || x.ManualAdjustment != 0))),
+        [nameof(LeaveRequest)] = (db, t) => R(TypeOf(nameof(LeaveRequest))!, Q<LeaveRequest>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != "Draft" && x.Status != "Rejected" && x.Status != "Cancelled")),
+        [nameof(LeaveBalanceAdjustmentRequest)] = (db, t) => R(TypeOf(nameof(LeaveBalanceAdjustmentRequest))!, Q<LeaveBalanceAdjustmentRequest>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0 && !DeadStates.Contains(x.Status) && !SettledStates.Contains(x.Status))),
+        [nameof(BenefitEnrollment)] = (db, t) => R(TypeOf(nameof(BenefitEnrollment))!, Q<BenefitEnrollment>(db, t).Where(x => x.EmployeeId == t.Id && x.Status == "Active")),
+        [nameof(EOSBCalculation)] = (db, t) => R(TypeOf(nameof(EOSBCalculation))!, Q<EOSBCalculation>(db, t).Where(x => x.EmployeeId == t.Id)),
+        [nameof(EmployeeDocument)] = (db, t) => R(TypeOf(nameof(EmployeeDocument))!, Q<EmployeeDocument>(db, t).Where(x => x.EmployeeId == t.Id && !x.IsDeleted)),
+        [nameof(IssuedLetter)] = (db, t) => R(TypeOf(nameof(IssuedLetter))!, Q<IssuedLetter>(db, t).Where(x => x.EmployeeId == t.Id && !x.IsDeleted)),
+        [nameof(EmployeeComplianceRecord)] = (db, t) => R(TypeOf(nameof(EmployeeComplianceRecord))!, Q<EmployeeComplianceRecord>(db, t).Where(x => x.EmployeeId == t.Id && !x.IsDeleted
+            && (x.FieldValue != "" || x.IssueDate != null || x.ExpiryDate != null))),
+        [nameof(PayrollEmployeeReceivable)] = (db, t) => R(TypeOf(nameof(PayrollEmployeeReceivable))!, Q<PayrollEmployeeReceivable>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != PayrollReceivableStatuses.Recovered && x.Amount > x.RecoveredAmount)),
+        [nameof(PayrollArrearsLine)] = (db, t) => R(TypeOf(nameof(PayrollArrearsLine))!, Q<PayrollArrearsLine>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != PayrollArrearsStatuses.Settled && x.Status != PayrollArrearsStatuses.Voided && x.Amount != 0)),
+        [nameof(EmployeeFinalSettlement)] = (db, t) => R(TypeOf(nameof(EmployeeFinalSettlement))!, Q<EmployeeFinalSettlement>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != FinalSettlementStatuses.Cancelled)),
+        [nameof(PayrollOpeningBalance)] = (db, t) => R(TypeOf(nameof(PayrollOpeningBalance))!, Q<PayrollOpeningBalance>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0)),
+        [nameof(EmployeeEosbOpeningBalance)] = (db, t) => R(TypeOf(nameof(EmployeeEosbOpeningBalance))!, Q<EmployeeEosbOpeningBalance>(db, t).Where(x => x.EmployeeId == t.Id && x.AccruedAmount != 0)),
+        [nameof(EosbProvisionSnapshot)] = (db, t) => R(TypeOf(nameof(EosbProvisionSnapshot))!, Q<EosbProvisionSnapshot>(db, t).Where(x => x.EmployeeId == t.Id)),
+        [nameof(PayrollPaymentRecord)] = (db, t) => R(TypeOf(nameof(PayrollPaymentRecord))!, Q<PayrollPaymentRecord>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0)),
+        [nameof(BankPaymentConfirmation)] = (db, t) => R(TypeOf(nameof(BankPaymentConfirmation))!, Q<BankPaymentConfirmation>(db, t).Where(x => x.EmployeeId == t.Id && x.ConfirmedAmount != 0)),
+        [nameof(SIFFileRecord)] = (db, t) => R(TypeOf(nameof(SIFFileRecord))!, Q<SIFFileRecord>(db, t).Where(x => x.EmployeeId == t.Id && x.NetPay != 0)),
+        [nameof(PayrollAdjustment)] = (db, t) => R(TypeOf(nameof(PayrollAdjustment))!, Q<PayrollAdjustment>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0 && !DeadStates.Contains(x.Status))),
+        [nameof(PayrollAllowance)] = (db, t) => R(TypeOf(nameof(PayrollAllowance))!, Q<PayrollAllowance>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0)),
+        [nameof(BenefitContribution)] = (db, t) => R(TypeOf(nameof(BenefitContribution))!, Q<BenefitContribution>(db, t).Where(x => x.EmployeeId == t.Id && (x.EmployeeAmount != 0 || x.EmployerAmount != 0))),
+        [nameof(OvertimeRequest)] = (db, t) => R(TypeOf(nameof(OvertimeRequest))!, Q<OvertimeRequest>(db, t).Where(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status))),
+        [nameof(OvertimePayrollImpact)] = (db, t) => R(TypeOf(nameof(OvertimePayrollImpact))!, Q<OvertimePayrollImpact>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0 && !SettledStates.Contains(x.Status))),
+        [nameof(LeaveEncashmentRequest)] = (db, t) => R(TypeOf(nameof(LeaveEncashmentRequest))!, Q<LeaveEncashmentRequest>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != LeaveEncashmentStatuses.Rejected && x.Status != LeaveEncashmentStatuses.Voided && x.Status != LeaveEncashmentStatuses.Processed && x.Status != "Cancelled")),
+        [nameof(CompOffCredit)] = (db, t) => R(TypeOf(nameof(CompOffCredit))!, Q<CompOffCredit>(db, t).Where(x => x.EmployeeId == t.Id && x.DaysEarned != 0 && !SettledStates.Contains(x.Status))),
+        [nameof(SalaryChangeRequest)] = (db, t) => R(TypeOf(nameof(SalaryChangeRequest))!, Q<SalaryChangeRequest>(db, t).Where(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status) && !DeadStates.Contains(x.Status) && x.Status != "Approved")),
+        [nameof(EmployeeOffboarding)] = (db, t) => R(TypeOf(nameof(EmployeeOffboarding))!, Q<EmployeeOffboarding>(db, t).Where(x => x.EmployeeId == t.Id && x.Status != "Cancelled" && x.Status != "Completed")),
+        [nameof(AttendancePayrollImpact)] = (db, t) => R(TypeOf(nameof(AttendancePayrollImpact))!, Q<AttendancePayrollImpact>(db, t).Where(x => x.EmployeeId == t.Id && !SettledStates.Contains(x.Status))),
+        [nameof(LeavePayrollImpact)] = (db, t) => R(TypeOf(nameof(LeavePayrollImpact))!, Q<LeavePayrollImpact>(db, t).Where(x => x.EmployeeId == t.Id && x.Amount != 0 && !SettledStates.Contains(x.Status))),
+        [nameof(VisaRecord)] = (db, t) => R(TypeOf(nameof(VisaRecord))!, Q<VisaRecord>(db, t).Where(x => x.EmployeeId == t.PublicId && !x.IsDeleted)),
+        [nameof(PassportRecord)] = (db, t) => R(TypeOf(nameof(PassportRecord))!, Q<PassportRecord>(db, t).Where(x => x.EmployeeId == t.PublicId && !x.IsDeleted)),
+        [nameof(WorkPermitRecord)] = (db, t) => R(TypeOf(nameof(WorkPermitRecord))!, Q<WorkPermitRecord>(db, t).Where(x => x.EmployeeId == t.PublicId && !x.IsDeleted)),
+        [nameof(EmployeeContract)] = (db, t) => R(TypeOf(nameof(EmployeeContract))!, Q<EmployeeContract>(db, t).Where(x => x.EmployeeId == t.PublicId && !x.IsDeleted
+            && x.Status != "Expired" && x.Status != "Terminated" && x.Status != "Superseded")),
+        [nameof(EmployeeDependent)] = (db, t) => R(TypeOf(nameof(EmployeeDependent))!, Q<EmployeeDependent>(db, t).Where(x => x.EmployeeId == t.Id && !x.IsDeleted)),
+        [nameof(OvertimeAdjustment)] = (db, t) => R(TypeOf(nameof(OvertimeAdjustment))!, Q<OvertimeAdjustment>(db, t).Where(x => x.EmployeeId == t.Id && x.AmountAdjustment != 0 && !SettledStates.Contains(x.Status))),
+        [nameof(OvertimeCompOffConversion)] = (db, t) => R(TypeOf(nameof(OvertimeCompOffConversion))!, Q<OvertimeCompOffConversion>(db, t).Where(x => x.EmployeeId == t.Id && (x.Status == "Pending" || x.Status == "Approved"))),
+        // The in-effect acquired-rights package (Art. 59). The contract counter alone is not enough: the database lets a row sit on a contract that later
+        // becomes Expired or Terminated, which the contract counter does not count.
+        [nameof(EmployeeEntitlement)] = (db, t) => R(TypeOf(nameof(EmployeeEntitlement))!, Q<EmployeeEntitlement>(db, t).Where(x => x.EmployeeId == t.PublicId && (x.EffectiveTo == null || x.EffectiveTo >= t.Today))),
+        // People, lines, departments, positions and delegations that point AT the duplicate as their manager, approver or incumbent.
+        // Keyed "Entity.Property" because the column is not named EmployeeId.
+        ["Employee.ManagerEmployeeId"] = (db, t) => R(TypeOf("Employee.ManagerEmployeeId")!, ScopedBypass.NullableTenantWide(db.Employees, t.TenantId, Why).Where(x => !x.IsDeleted && x.Id != t.Id && x.ManagerEmployeeId == t.Id)),
+        ["Employee.SecondLevelManagerEmployeeId"] = (db, t) => R(TypeOf("Employee.SecondLevelManagerEmployeeId")!, ScopedBypass.NullableTenantWide(db.Employees, t.TenantId, Why).Where(x => !x.IsDeleted && x.Id != t.Id && x.SecondLevelManagerEmployeeId == t.Id)),
+        ["Employee.SupervisorEmployeeId"] = (db, t) => R(TypeOf("Employee.SupervisorEmployeeId")!, ScopedBypass.NullableTenantWide(db.Employees, t.TenantId, Why).Where(x => !x.IsDeleted && x.Id != t.Id && x.SupervisorEmployeeId == t.Id)),
+        ["Employee.HRBusinessPartnerEmployeeId"] = (db, t) => R(TypeOf("Employee.HRBusinessPartnerEmployeeId")!, ScopedBypass.NullableTenantWide(db.Employees, t.TenantId, Why).Where(x => !x.IsDeleted && x.Id != t.Id && x.HRBusinessPartnerEmployeeId == t.Id)),
+        ["ReportingLine.ManagerEmployeeId"] = (db, t) => R(TypeOf("ReportingLine.ManagerEmployeeId")!, Q<ReportingLine>(db, t).Where(x => x.ManagerEmployeeId == t.Id && x.IsActive && x.EmployeeId != t.Id)),
+        ["Department.ManagerEmployeeId"] = (db, t) => R(TypeOf("Department.ManagerEmployeeId")!, Q<Department>(db, t).Where(x => x.ManagerEmployeeId == t.Id && !x.IsDeleted)),
+        ["Position.IncumbentEmployeeId"] = (db, t) => R(TypeOf("Position.IncumbentEmployeeId")!, Q<Position>(db, t).Where(x => x.IncumbentEmployeeId == t.Id && !x.IsDeleted)),
+        ["ApprovalDelegation.FromEmployeeId"] = (db, t) => R(TypeOf("ApprovalDelegation.FromEmployeeId")!, Q<ApprovalDelegation>(db, t).Where(x => x.FromEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
+        ["ApprovalDelegation.ToEmployeeId"] = (db, t) => R(TypeOf("ApprovalDelegation.ToEmployeeId")!, Q<ApprovalDelegation>(db, t).Where(x => x.ToEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
+        ["LeaveDelegation.DelegateEmployeeId"] = (db, t) => R(TypeOf("LeaveDelegation.DelegateEmployeeId")!, Q<LeaveDelegation>(db, t).Where(x => x.DelegateEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
+        ["ApprovalPolicyStep.SpecificEmployeeId"] = (db, t) => R(TypeOf("ApprovalPolicyStep.SpecificEmployeeId")!, Q<ApprovalPolicyStep>(db, t).Where(x => x.SpecificEmployeeId == t.Id)),
+        ["ApprovalWorkflowStep.SpecificEmployeeId"] = (db, t) => R(TypeOf("ApprovalWorkflowStep.SpecificEmployeeId")!, Q<ApprovalWorkflowStep>(db, t).Where(x => x.SpecificEmployeeId == t.Id)),
+        ["CompWorksheet.ManagerEmployeeId"] = (db, t) => R(TypeOf("CompWorksheet.ManagerEmployeeId")!, Q<CompWorksheet>(db, t).Where(x => x.ManagerEmployeeId == t.Id && (x.Status == "Draft" || x.Status == "Submitted" || x.Status == "Returned"))),
+        [nameof(ApprovalAuthority)] = (db, t) => R(TypeOf(nameof(ApprovalAuthority))!, Q<ApprovalAuthority>(db, t).Where(x => x.EmployeeId == t.Id && x.IsActive)),
     };
 
     // ── The registry: every EF entity with an EmployeeId / EmployeeIntId, classified ───────────────
@@ -168,15 +192,23 @@ public static class EmployeeMergeBlockers
         nameof(EosbProvisionSnapshot) => "eosb_provisions",
         nameof(PayrollPaymentRecord) or nameof(BankPaymentConfirmation) or nameof(SIFFileRecord) => "payment_records",
         nameof(PayrollAdjustment) or nameof(PayrollAllowance) or nameof(BenefitContribution) => "payroll_adjustments",
-        nameof(OvertimeRequest) or nameof(OvertimePayrollImpact) => "unpaid_overtime",
+        nameof(OvertimeRequest) or nameof(OvertimePayrollImpact) or nameof(OvertimeAdjustment) => "unpaid_overtime",
         nameof(LeaveEncashmentRequest) => "leave_encashments",
-        nameof(CompOffCredit) => "comp_off_credits",
+        nameof(CompOffCredit) or nameof(OvertimeCompOffConversion) => "comp_off_credits",
+        nameof(EmployeeEntitlement) => "acquired_rights",
         nameof(SalaryChangeRequest) => "salary_change_requests",
         nameof(EmployeeOffboarding) => "live_separations",
         nameof(AttendancePayrollImpact) or nameof(LeavePayrollImpact) => "pending_payroll_impacts",
         nameof(VisaRecord) or nameof(PassportRecord) or nameof(WorkPermitRecord) or nameof(EmployeeContract) => "contracts_and_permits",
         nameof(EmployeeDependent) => "dependents",
         nameof(ApprovalAuthority) => "approval_authority",
+        "Employee.ManagerEmployeeId" or "Employee.SecondLevelManagerEmployeeId" or "Employee.SupervisorEmployeeId" or "Employee.HRBusinessPartnerEmployeeId" => "direct_reports",
+        "ReportingLine.ManagerEmployeeId" => "reporting_lines",
+        "Department.ManagerEmployeeId" => "department_manager",
+        "Position.IncumbentEmployeeId" => "position_incumbent",
+        "ApprovalDelegation.FromEmployeeId" or "ApprovalDelegation.ToEmployeeId" or "LeaveDelegation.DelegateEmployeeId" => "approval_authority",
+        "ApprovalPolicyStep.SpecificEmployeeId" or "ApprovalWorkflowStep.SpecificEmployeeId" => "approval_routing",
+        "CompWorksheet.ManagerEmployeeId" => "merit_worksheets",
         _ => null,
     };
 
@@ -184,14 +216,20 @@ public static class EmployeeMergeBlockers
     [
         ("AI/analytics output about the person, derived and re-creatable, carries no money or compliance fact",
             ["AIHRQueryCache", "AIHRQueryLog", "AIInsight", "AIRecommendation", "AttendanceAIInsight", "BurnoutRiskSignal", "EmployeeChurnPrediction", "EmployeeRiskScore",
-             "PayrollAIValidationResult", "ComplianceAIInsight"]),
+             "PayrollAIValidationResult", "ComplianceAIInsight", "LeaveAIInsight.AffectedEmployeeId"]),
         ("attendance/time history; the pay effect is carried by AttendancePayrollImpact and OvertimePayrollImpact, which block",
             ["AttendanceDailyRecord", "AttendanceEvidence", "AttendanceException", "AttendanceRawEvent", "AttendanceRecord", "AttendanceRegularizationRequest", "AbsenceRecord",
-             "AbsenceRegularizationRequest", "Timesheet", "TimesheetDayReconciliation", "TimesheetEntry", "ShiftAssignment", "BiometricConsent"]),
+             "AbsenceRegularizationRequest", "Timesheet", "TimesheetDayReconciliation", "TimesheetEntry", "ShiftAssignment"]),
+        ("compliance evidence: consent or acknowledgement proof that stays on the retained (soft-deleted) record; the kept employee simply shows none, which fails safe (consent is asked again)",
+            ["BiometricConsent", "EmployeePolicyAcknowledgement"]),
         ("performance, learning and talent records: HR development history, no payment or legal record is held here",
             ["AppraisalAppeal", "AppraisalReview", "ContinuousFeedback", "DevelopmentPlan", "EmployeeGoal", "PerformanceCycleEmployee", "PerformanceImprovementPlan", "ProbationReview",
              "SuccessionNomination", "TalentAssessment", "LearningAssignment", "LearningAttempt",
              "LearningCredential", "LearningEnrollment", "LearningLaunchSession", "EngagementSurveyInvitation", "EmployeeSentimentPulse"]),
+        ("talent, engagement and development ownership or authorship (owner, mentor, reviewer, assessor, nominator): HR reassigns it; no money or compliance fact",
+            ["DevelopmentPlan.OwnerEmployeeId", "DevelopmentPlanAction.MentorEmployeeId", "DevelopmentPlanAction.OwnerEmployeeId", "EngagementAction.OwnerEmployeeId",
+             "EngagementSurveyResponse.CohortManagerEmployeeId", "Feedback360.ReviewerEmployeeId", "SuccessionCriticalPosition.AccountableEmployeeId",
+             "SuccessionNomination.NominatedByEmployeeId", "TalentAssessment.AssessorEmployeeId", "TalentAssessment.CalibratedByEmployeeId", "TalentPool.OwnerEmployeeId"]),
         ("a recommendation or proposal only: nothing is payable until it becomes a bonus, salary change or structure, which block",
             ["CompWorksheetLine", "PromotionRecommendation", "IncrementRecommendation", "BonusRecommendation"]),
         ("audit, history or access log about the person: the merge writes its own audit row and the history stays readable on the retained record",
@@ -199,16 +237,25 @@ public static class EmployeeMergeBlockers
              "EnterpriseIdentityProvisioningEvent", "NotificationDelivery", "OpeningBalanceOrigin", "LeaveBalanceTransaction", "PayrollRunConsumption"]),
         ("self-service preferences, notifications and device rows: no money or compliance fact; the login itself is closed by the merge",
             ["ESSDashboardPreference", "EmployeeActionItem", "EmployeeMobileDevice", "EmployeeNotification", "EmployeeNotificationCategoryPreference", "EmployeeNotificationPreference",
-             "EmployeeUserAccount", "HRRequest", "HRRequestComment", "EmployeeDocumentRequest", "EmployeeProfileChangeRequest", "EmployeePolicyAcknowledgement", "OnboardingTask"]),
-        ("a pending request the merge cancels or that HR can raise again: no payment has been made against it",
-            ["EmployeeChangeRequest", "EmployeeTransferRequest", "EmployeeImportGap", "LeaveCancellationRequest", "LeaveModificationRequest", "LeaveDelegation", "CompOffUsage",
-             "OvertimeAdjustment", "OvertimeCalculation", "OvertimeCompOffConversion"]),
+             "EmployeeUserAccount", "HRRequest", "HRRequestComment", "EmployeeDocumentRequest", "EmployeeProfileChangeRequest", "OnboardingTask"]),
+        ("a pending request the merge cancels, or one that HR can raise again: no payment has been made against it",
+            ["EmployeeChangeRequest", "EmployeeImportGap", "LeaveCancellationRequest", "LeaveModificationRequest", "CompOffUsage"]),
+        ("a pending transfer is cancelled with the other pending approval work when the merge runs (CancelPendingApprovalWorkAsync); a finished transfer is history. The manager columns are snapshots on that request",
+            ["EmployeeTransferRequest", "EmployeeTransferRequest.CurrentManagerEmployeeId", "EmployeeTransferRequest.NewManagerEmployeeId"]),
+        ("derived at approval: created in the same SaveChanges as the OvertimePayrollImpact (OvertimeController), which blocks while unpaid",
+            ["OvertimeCalculation"]),
         ("payroll run detail or diagnostics: the run line is covered by PayrollSlip/PayrollRunEmployee and the money by the adjustment, allowance and payment-record checks",
             ["PayrollDeduction", "PayrollEarning", "PayrollException", "PayrollRunEmployeeSelection", "PayrollValidationOverride", "PayrollValidationResult", "BenefitPayrollDeductionLink"]),
-        ("reporting/compliance monitoring derived from other records (renewals, reminders, Nitaqat weights, entitlement copies)",
-            ["ComplianceReminder", "ComplianceRenewal", "ContractRenewalCase", "NitaqatEmployeeWeightOverride", "EmployeeEntitlement"]),
-        ("org-chart edge where the duplicate is the SUBORDINATE; the manager side blocks through reporting_lines",
-            ["ReportingLine"]),
+        ("monitoring derived from other records (renewals, reminders, Nitaqat weights); the renewal case and reminders hang off a contract, which blocks",
+            ["ComplianceReminder", "ComplianceRenewal", "ContractRenewalCase", "NitaqatEmployeeWeightOverride"]),
+        ("the other side of a delegation or reporting edge: the duplicate as the delegator or subordinate. The delegate / manager side blocks (LeaveDelegation.DelegateEmployeeId, ReportingLine.ManagerEmployeeId)",
+            ["ReportingLine", "LeaveDelegation"]),
+        ("pending approvals are handled by the merge itself: those assigned to the duplicate are rerouted to the HR Manager queue and those about the duplicate are cancelled (CancelPendingApprovalWorkAsync)",
+            ["ApprovalRequest.CurrentApproverEmployeeId", "ApprovalRequest.RequestedForEmployeeId"]),
+        ("an earlier duplicate that was already merged into this record keeps its own link; the chain stays readable through the merge audit rows",
+            ["Employee.DuplicateOfEmployeeId"]),
+        ("names a person on a record owned by someone else (a stand-in on a leave request, a manager on a hire draft, the requester of a headcount request): informational, HR edits it",
+            ["LeaveRequest.DelegateEmployeeId", "EmployeeDraft.ManagerEmployeeId", "ManpowerRequisition.RequestedByEmployeeId"]),
     ];
 
     private static readonly Dictionary<string, MergeEntityRule> RuleMap = BuildRules();
@@ -232,26 +279,40 @@ public static class EmployeeMergeBlockers
 
     public static IReadOnlyList<string> BlockerTypeKeys => Types.Select(t => t.Key).ToList();
 
+    /// <summary>The cheap indexed checks that are re-run under the row locks: the money that loan/advance/bonus creation can add, and who reports to the duplicate.</summary>
+    public static readonly IReadOnlySet<string> RecheckUnderLock = new HashSet<string>
+    {
+        "open_loans", "open_advances", "unpaid_bonuses", "direct_reports", "reporting_lines", "department_manager", "position_incumbent", "approval_authority", "approval_routing",
+    };
+
     public static async Task<IReadOnlyList<MergeBlocker>> FindAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
     {
         var employee = await ScopedBypass.NullableTenantWide(db.Employees, tenantId, Why).AsNoTracking()
             .Where(e => e.Id == employeeId).Select(e => new { e.PublicId }).SingleAsync(ct);
-        var target = new Target(tenantId, employeeId, employee.PublicId, DateOnly.FromDateTime(DateTime.UtcNow));
+        return await FindAsync(db, tenantId, employeeId, employee.PublicId, null, ct);
+    }
+
+    /// <summary>
+    /// ALL the counts in ONE statement (a UNION ALL of per-table counts), so it is a single round trip. <paramref name="onlyTypes"/> narrows
+    /// it to a subset (the re-check under the row locks); null counts everything.
+    /// </summary>
+    public static async Task<IReadOnlyList<MergeBlocker>> FindAsync(
+        ZayraDbContext db, Guid tenantId, int employeeId, Guid publicId, IReadOnlySet<string>? onlyTypes, CancellationToken ct)
+    {
+        var target = new Target(tenantId, employeeId, publicId, DateOnly.FromDateTime(DateTime.UtcNow));
+        IQueryable<CountRow>? union = null;
+        foreach (var (key, counter) in Counters)
+        {
+            if (onlyTypes is not null && !onlyTypes.Contains(TypeOf(key)!)) continue;
+            var rows = counter(db, target);
+            union = union is null ? rows : union.Concat(rows);
+        }
+        if (union is null) return [];
 
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var (entity, counter) in Counters)
-        {
-            var n = await counter(db, target, ct);
-            if (n > 0) counts[TypeOf(entity)!] = counts.GetValueOrDefault(TypeOf(entity)!) + n;
-        }
-        foreach (var (type, counter) in Relationships)
-        {
-            var n = await counter(db, target, ct);
-            if (n > 0) counts[RelationshipType(type)] = counts.GetValueOrDefault(RelationshipType(type)) + n;
-        }
+        foreach (var row in await union.ToListAsync(ct))
+            counts[row.Type] = counts.GetValueOrDefault(row.Type) + row.Count;
 
         return Types.Where(t => counts.ContainsKey(t.Key)).Select(t => new MergeBlocker(t.Key, t.Label, t.LabelAr, counts[t.Key])).ToList();
     }
-
-    private static string RelationshipType(string key) => key == "approval_delegations" ? "approval_authority" : key;
 }
