@@ -25,10 +25,9 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         }
     }
 
-    [Fact]
-    public async Task Merge_WaitsForTheTenantsFinanceCreateLock_ThatLoanAndAdvanceCreationHold()
+    /// <summary>Holds one tenant finance lock in an open transaction until released; returns once the lock is held.</summary>
+    private async Task<(Task Holder, TaskCompletionSource Release)> HoldFinanceLockAsync(Twins t, string scope)
     {
-        var t = await SeedTwinsAsync();
         var acquired = new TaskCompletionSource();
         var release = new TaskCompletionSource();
         var holder = Task.Run(async () =>
@@ -37,20 +36,65 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
             await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
                 await using var tx = await db.Database.BeginTransactionAsync();
-                await FinanceDecisionSerializer.AcquireAsync(db, "finance.loan-create", t.TenantId, t.TenantId);
+                await FinanceDecisionSerializer.AcquireAsync(db, scope, t.TenantId, t.TenantId);
                 acquired.TrySetResult();
                 await release.Task;
                 await tx.CommitAsync();
             });
         });
         await acquired.Task;
+        return (holder, release);
+    }
+
+    [Theory]
+    [InlineData("finance.loan-create")]
+    [InlineData("finance.advance-create")]
+    public async Task Merge_WaitsForTheTenantFinanceCreateLock_ThatLoanOrAdvanceCreationHolds(string scope)
+    {
+        var t = await SeedTwinsAsync();
+        var (holder, release) = await HoldFinanceLockAsync(t, scope);
 
         var merge = MergeAsync(t);
         await Task.Delay(1500);
-        merge.IsCompleted.Should().BeFalse("a loan or advance being created holds finance.loan-create, and the merge must wait for it so nothing slips in behind the check");
+        merge.IsCompleted.Should().BeFalse($"creating a loan or an advance holds {scope}, and the merge must wait for it so nothing slips in behind the check");
 
         release.SetResult();
         Assert.IsType<OkObjectResult>(await merge);
+        await holder;
+    }
+
+    [Fact]
+    public async Task Merge_RecordsBothFinanceLocksInAFixedOrder_LoanThenAdvance()
+    {
+        var t = await SeedTwinsAsync();
+        var seen = new List<(string Scope, Guid TenantId, Guid AggregateId)>();
+        FinanceDecisionSerializer.Recorder.Value = seen;
+        try { Assert.IsType<OkObjectResult>(await MergeAsync(t)); }
+        finally { FinanceDecisionSerializer.Recorder.Value = null; }
+
+        seen.Select(x => x.Scope).Should().ContainInOrder("finance.loan-create", "finance.advance-create");
+    }
+
+    [Fact]
+    public async Task Merge_ReChecksEveryBlockerTypeUnderTheLock_ARecordCommittedWhileItWaitsGives409()
+    {
+        var t = await SeedTwinsAsync();
+        var (holder, release) = await HoldFinanceLockAsync(t, "finance.loan-create");
+
+        var merge = MergeAsync(t);          // passes the pre-count (nothing there yet), then waits for the lock
+        await Task.Delay(1500);
+        await using (var late = _fx.CreateDb())
+        {
+            // A document is NOT one of the cheap types: only a full re-check under the lock sees it.
+            await Catalogue().First(r => r.Name == "employee document").Seed(late, t);
+            await late.SaveChangesAsync();
+        }
+        release.SetResult();
+
+        var conflict = Assert.IsAssignableFrom<ObjectResult>(await merge);
+        conflict.StatusCode.Should().Be(Microsoft.AspNetCore.Http.StatusCodes.Status409Conflict);
+        System.Text.Json.JsonSerializer.Serialize(conflict.Value).Should().Contain("\"documents\"");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse();
         await holder;
     }
 
@@ -66,6 +110,9 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         blockers.Should().BeEmpty();
         counter.Readers.Count(sql => sql.Contains("UNION ALL", StringComparison.OrdinalIgnoreCase)).Should().Be(1, "all the counts are one statement, not one round trip each");
         counter.Readers.Count.Should().BeLessThanOrEqualTo(2, "one lookup of the employee plus the single counting statement");
+        var counting = counter.Readers.Single(sql => sql.Contains("UNION ALL", StringComparison.OrdinalIgnoreCase));
+        System.Text.RegularExpressions.Regex.Matches(counting, "UNION ALL", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Count
+            .Should().BeGreaterThan(40, "every per-table counter is a branch of that one statement");
     }
 
     [Fact]

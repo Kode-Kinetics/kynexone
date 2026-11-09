@@ -5267,9 +5267,11 @@ public class EmployeesController : ControllerBase
             // and a survivor can never be a record that has just been deleted.
             async Task<IActionResult> MergeLockedAsync()
             {
-            // The same tenant-wide lock that loan and advance creation hold ("finance.loan-create"), taken before the rows: while a loan or
-            // advance is being created the merge waits, and once the merge holds it nothing of that kind can be created behind its check.
+            // The two tenant-wide locks that creation holds, taken before the rows and always in this order: loan creation takes
+            // "finance.loan-create" and advance creation takes "finance.advance-create" (each takes only one, so there is no cycle). While a
+            // loan or an advance is being created the merge waits, and once it holds both nothing of either kind can be created behind its check.
             await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, "finance.loan-create", tenantId, tenantId, ct);
+            await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, "finance.advance-create", tenantId, tenantId, ct);
             var lockedRows = await _db.Employees.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && (x.Id == id || x.Id == intoId) && !x.IsDeleted)
                 .OrderBy(x => x.Id)
@@ -5297,9 +5299,10 @@ public class EmployeesController : ControllerBase
                     messageAr = "هذان السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة للشخص نفسه داخل شركة واحدة، ونقل شخص بين الشركات ليس دمجاً.",
                 });
 
-            // The merge moves NOTHING to the kept employee. The full count already ran before the locks; here, under them, only the cheap
-            // checks are repeated (loans, advances, bonuses, and who reports to or is routed through the duplicate).
-            var recheck = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, duplicate.PublicId, EmployeeMergeBlockers.RecheckUnderLock, ct);
+            // The merge moves NOTHING to the kept employee. The full count already ran before the locks (so a refusal never queues behind a
+            // row lock); it is repeated here, under them, for EVERY type: it is one statement, and the wait for the finance locks can be as long
+            // as a whole loan creation, so anything created in that window must still be seen.
+            var recheck = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, duplicate.PublicId, null, ct);
             if (recheck.Count > 0) return MergeBlocked(recheck);
 
             var mergedAt = DateTime.UtcNow;
