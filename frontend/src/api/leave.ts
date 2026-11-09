@@ -508,8 +508,10 @@ export const leaveRequestsApi = {
     client.post<LeaveRequest>(`/api/leave/requests/${id}/reject`, { reason }).then(r => r.data),
   cancel: (id: string, reason: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/cancel`, { reason }).then(r => r.data),
-  withdraw: (id: string) =>
-    client.post<LeaveRequest>(`/api/leave/requests/${id}/withdraw`).then(r => r.data),
+  // Always a JSON body (`{}` without a reason), as the mobile app sends it: a POST with no content is refused by the
+  // server's body binding and the request used to stay pending.
+  withdraw: (id: string, reason?: string) =>
+    client.post<LeaveRequest>(`/api/leave/requests/${id}/withdraw`, { reason }).then(r => r.data),
   delegate: (id: string, delegateEmployeeId: number, delegateEmployeeName: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/delegate`, { delegateEmployeeId, delegateEmployeeName }).then(r => r.data),
 };
