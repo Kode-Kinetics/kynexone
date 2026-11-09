@@ -134,6 +134,20 @@ public static class EmployeeSalaryBreakdownChanges
             .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
     }
 
+    /// <summary>An employee's grade moves while they already have pay: the pay in force today (the whole package, allowance lines included) is judged against the
+    /// range of the grade they are moving to, with the same hard refusal a salary package gets. Without this, moving to a looser grade, raising the pay and moving
+    /// back would leave pay outside the range of the grade held, and no step would ever have been judged.</summary>
+    public static async Task RequireCurrentPayInRangeAsync(ZayraDbContext db, Employee employee, Grade grade, CancellationToken ct)
+    {
+        if (grade.MinSalary <= 0 && grade.MaxSalary <= 0) return;
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var current = (await ReadScheduleAsync(db, employee, ct)).FirstOrDefault(s => s.EffectiveDate is { } date && date <= today);
+        if (current is null) return;
+        var wholePay = Gross(current) + StatedLinesTotal(current);
+        if ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary))
+            throw new InvalidOperationException($"Salary package is outside grade {grade.Code}'s salary range.");
+    }
+
     public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct,
         Guid? changeRequestId = null)
     {

@@ -181,9 +181,18 @@ public static class EmployeeChangeApplier
         // dropping the override silently; that decision is made on the employee PUT by someone holding organization.costcenter.manage.
         var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, decision: null, expectedOverrideId: null, ct);
         var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
+        var priorGrade = employee.Grade;
+        var priorGradeId = employee.GradeId;
         var unknown = Apply(employee, changes);
         // The grade text and GradeId move together when the change is applied (an effective-dated one included), BEFORE the salary package is checked against its grade.
-        await EmployeeGradeResolution.ApplyAsync(db, employee, changes, ct);
+        // The old and new grade are audited with the approver. Anyone's pay in force must still sit inside the range of the grade they land on (a package in the same
+        // change is judged by the salary step below).
+        await EmployeeGradeResolution.ApplyApprovedAsync(db, employee, changes, actorUserId, priorGrade, priorGradeId, ct);
+        if (changes.TryGetValue(EmployeeGradeResolution.Key, out var movedTo) && movedTo.ValueKind == System.Text.Json.JsonValueKind.String
+            && !EmployeeGradeResolution.IsDraft(employee) && !changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+            && employee.GradeId is Guid landedOn
+            && await db.Grades.AsNoTracking().FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == landedOn && !g.IsDeleted, ct) is { } landedGrade)
+            await EmployeeSalaryBreakdownChanges.RequireCurrentPayInRangeAsync(db, employee, landedGrade, ct);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct, changeRequestId);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, attribution, ct);

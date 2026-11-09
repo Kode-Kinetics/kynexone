@@ -4057,20 +4057,35 @@ public class EmployeesController : ControllerBase
         }
         // Who may write a sensitive field is unchanged; WHICH changes go through approval is the tenant's
         // employees.profile_change_approval_fields policy (PEO-03). Unlisted fields apply directly and are history-logged.
+        // A grade edit names exactly one active grade of this employee's company, whoever the employee is and whether the edit applies now or on approval:
+        // refused here with nothing written, so the grade text and GradeId can never disagree. A grade that is not an edit (null, or the held grade echoed back)
+        // is dropped first so it cannot fail the save. Someone who has started work keeps their pay inside the new grade's range: the pay in force is judged now
+        // (a package sent in the same edit is judged by its own check below), and again when the change is applied.
+        try
+        {
+            await EmployeeGradeResolution.DropNonEditAsync(_db, employee, request.Changes, cancellationToken);
+            await EmployeeGradeResolution.CheckAsync(_db, employee, request.Changes, cancellationToken);
+            if (EmployeeGradeResolution.TermOf(request.Changes)?.Trim() is { Length: > 0 } movingTo && !EmployeeGradeResolution.IsDraft(employee)
+                && !request.Changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+                && await EmployeeGradeResolution.FindAsync(_db, employee, movingTo, cancellationToken) is { } targetGrade)
+                await EmployeeSalaryBreakdownChanges.RequireCurrentPayInRangeAsync(_db, employee, targetGrade, cancellationToken);
+        }
+        catch (GradeNotResolvedException ex) { return UnprocessableEntity(ex.ToPayload()); }
+        catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         if (request.Changes.Keys.Any(SensitiveFields.Contains) && !CanEditSensitive()) return Forbid();
         var approvalFields = await ProfileChangeApprovalFieldsAsync(tenantId, cancellationToken);
         var gatedKeys = request.Changes.Keys.Where(k => Zayra.Api.Infrastructure.Employees.ProfileChangeApprovalRules.RequiresApprovalForHrEdit(k, approvalFields))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // Moving a started employee to another grade moves their pay scale, loan limit, overtime and approval route: it is approved like a pay change.
+        // A draft has not started, so its grade stays an at-once edit.
+        var gradeNeedsApproval = request.Changes.ContainsKey(EmployeeGradeResolution.Key) && !EmployeeGradeResolution.IsDraft(employee);
+        if (gradeNeedsApproval) gatedKeys.Add(EmployeeGradeResolution.Key);
         var sensitive = gatedKeys.ToList();
         string? Proposed(string key, string? current) =>
             request.Changes.TryGetValue(key, out var v) ? (v.ValueKind == JsonValueKind.String ? v.GetString() : null) : current;
         // Advisory only (PAY-08): what the saved record would look like, for a change that waits for approval.
         var proposedIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(
             Proposed("nationality", employee.Nationality), Proposed("idNumber", employee.IdNumber), Proposed("iqamaNumber", employee.IqamaNumber));
-        // A grade edit names exactly one active grade of this employee's company, whoever the employee is and whether the edit applies now or on approval:
-        // refused here with nothing written, so the grade text and GradeId can never disagree.
-        try { await EmployeeGradeResolution.CheckAsync(_db, employee, request.Changes, cancellationToken); }
-        catch (GradeNotResolvedException ex) { return UnprocessableEntity(ex.ToPayload()); }
         // Rich payroll edits use the same approval route, but malformed values must never become
         // unapplyable approvals. Validate the complete package before any immediate field is written.
         try
@@ -4107,9 +4122,10 @@ public class EmployeesController : ControllerBase
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
         // A package change is applied only on the word of a payroll.approve holder who is neither the maker nor this employee (the Approvals
         // decision enforces it): with nobody else able to give it, the request could never be decided, so it is refused now.
-        if (request.Changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+        var salaryProposed = request.Changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key);
+        if ((salaryProposed || gradeNeedsApproval)
             && await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.RefuseIfNoneAsync(_db, tenantId, "payroll.approve", GetUserId(), [employee.Id], employee.CompanyId,
-                "proposing a salary change", "اقتراح تغيير الراتب", cancellationToken) is { } noSalaryApprover)
+                salaryProposed ? "proposing a salary change" : "proposing a grade change", salaryProposed ? "اقتراح تغيير الراتب" : "اقتراح تغيير الدرجة", cancellationToken) is { } noSalaryApprover)
             return noSalaryApprover;
         // F02 — refused up front, not at approval: ReadDateOnly turns an unparseable value into NULL, so a
         // bad string would be approved as "a date" and then silently clear the person's GOSI cohort.
@@ -4122,6 +4138,8 @@ public class EmployeesController : ControllerBase
         // persistence branches below (department/designation are not SensitiveFields, so they ride
         // the immediate branch even when mixed with sensitive fields).
         var priorBenefitPlacement = GradeBenefitDraftPlacement.Capture(employee);
+        var priorGradeText = employee.Grade;
+        var priorGradeId = employee.GradeId;
         var priorDeptId = employee.DepartmentId;
         var priorDesigId = employee.DesignationId;
         // Before ApplyChanges overwrites it — needed for the work-email login-identity rename guard.
@@ -4205,7 +4223,7 @@ public class EmployeesController : ControllerBase
                     await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, attributionBefore, cancellationToken);
                     await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, attributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
                         decision: attribution.Decision);
-                    await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, cancellationToken);
+                    await ResolveDraftBenefitGradeAsync(employee, immediateChanges.Keys, priorGradeText, priorGradeId, cancellationToken);
                     await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
                     loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, immediateChanges.Keys, priorWorkEmail, cancellationToken);
                     employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -4297,7 +4315,7 @@ public class EmployeesController : ControllerBase
             await EmployeeOrgFieldResolver.EnsureNotLockedIntoRunAsync(_db, tenantId, employee, directAttributionBefore, cancellationToken);
             await EmployeeOrgFieldResolver.StageAttributionAuditAsync(_db, tenantId, employee, directAttributionBefore, GetUserId(), cancellationToken, request.CostCenterReason,
                 decision: attribution.Decision);
-            await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, cancellationToken);
+            await ResolveDraftBenefitGradeAsync(employee, request.Changes.Keys, priorGradeText, priorGradeId, cancellationToken);
             await GradeBenefitDefaults.ReconcileDraftAsync(_db, employee, priorBenefitPlacement, GetUserId(), cancellationToken);
             loginUsernameDiffers = await ApplyWorkEmailPatchAsync(employee, request.Changes.Keys, priorWorkEmail, cancellationToken);
             employee.UpdatedAtUtc = DateTime.UtcNow;
@@ -4331,17 +4349,22 @@ public class EmployeesController : ControllerBase
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
-    /// <summary>A grade edit that applies now sets the grade text and GradeId together, for a draft and an active employee alike (an approval-gated one is
-    /// written by <see cref="EmployeeChangeApplier.ApplyApprovedChangeAsync"/> when it is applied). The value was checked to name one grade before anything was written.</summary>
-    private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
+    /// <summary>A grade edit that applies now (a draft's — a started employee's is approved first and written by
+    /// <see cref="EmployeeChangeApplier.ApplyApprovedChangeAsync"/>) sets the grade text and GradeId together and audits the grade before and after. The value was
+    /// checked to name one grade before anything was written.</summary>
+    private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, string? priorGrade, Guid? priorGradeId, CancellationToken ct)
     {
         if (!changedFields.Contains("grade")) return;
         var term = employee.Grade.Trim();
-        if (term.Length == 0) { employee.GradeId = null; return; }
-        var grade = await EmployeeGradeResolution.FindAsync(_db, employee, term, ct)
-            ?? throw new GradeNotResolvedException("Select one active grade from company master data. No change was applied.", "اختر درجة واحدة نشطة من البيانات الرئيسية للشركة. لم يتم تطبيق أي تغيير.");
-        employee.GradeId = grade.Id;
-        employee.Grade = grade.Code;
+        if (term.Length == 0) { employee.GradeId = null; }
+        else
+        {
+            var grade = await EmployeeGradeResolution.FindAsync(_db, employee, term, ct)
+                ?? throw new GradeNotResolvedException("Select one active grade from company master data. No change was applied.", "اختر درجة واحدة نشطة من البيانات الرئيسية للشركة. لم يتم تطبيق أي تغيير.");
+            employee.GradeId = grade.Id;
+            employee.Grade = grade.Code;
+        }
+        EmployeeGradeResolution.StageHistory(_db, employee, priorGrade, priorGradeId, GetUserId(), null);
     }
 
     /// <summary>F02 — a GOSI first-registration date is null (clear it back to Unknown) or an ISO calendar
