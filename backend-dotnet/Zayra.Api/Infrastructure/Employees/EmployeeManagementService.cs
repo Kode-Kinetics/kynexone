@@ -1756,6 +1756,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.BranchId = request.BranchId;
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
+        var priorGradeId = employee.GradeId;
         employee.GradeId = request.GradeId;
         await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason, hire: employee.Id == 0 && _db.Entry(employee).State == EntityState.Detached);
         employee.PositionId = request.PositionId;
@@ -1779,7 +1780,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                 employee.GradeId ??= designation.GradeId;
             }
         }
-        employee.Grade = request.GradeId is null ? employee.Grade : await _db.Grades.Where(x => x.TenantId == tenantId && x.Id == request.GradeId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.Grade;
+        // The grade text follows the grade link in every case (a designation's default grade included); a cleared link clears the text.
+        await Zayra.Api.Application.Employees.EmployeeGradeResolution.SyncTextToGradeIdAsync(_db, tenantId, employee, priorGradeId, cancellationToken);
         // Wave A D3: the cached copy is the RESOLVED code (a Remove used to leave the old override's code behind).
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, cancellationToken);
         employee.JobTitle = Clean(request.JobTitle);

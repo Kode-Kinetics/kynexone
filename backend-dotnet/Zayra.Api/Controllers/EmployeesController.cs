@@ -4060,15 +4060,14 @@ public class EmployeesController : ControllerBase
         // A grade edit names exactly one active grade of this employee's company, whoever the employee is and whether the edit applies now or on approval:
         // refused here with nothing written, so the grade text and GradeId can never disagree. A grade that is not an edit (null, or the held grade echoed back)
         // is dropped first so it cannot fail the save. Someone who has started work keeps their pay inside the new grade's range: the pay in force is judged now
-        // (a package sent in the same edit is judged by its own check below), and again when the change is applied.
+        // (a package sent in the same edit that replaces it is judged by its own check below), and again when the change is applied.
         try
         {
             await EmployeeGradeResolution.DropNonEditAsync(_db, employee, request.Changes, cancellationToken);
             await EmployeeGradeResolution.CheckAsync(_db, employee, request.Changes, cancellationToken);
-            if (EmployeeGradeResolution.TermOf(request.Changes)?.Trim() is { Length: > 0 } movingTo && !EmployeeGradeResolution.IsDraft(employee)
-                && !request.Changes.ContainsKey(EmployeeSalaryBreakdownChanges.Key)
+            if (EmployeeGradeResolution.TermOf(request.Changes)?.Trim() is { Length: > 0 } movingTo && !await EmployeeGradeResolution.IsDraftAsync(_db, employee, cancellationToken)
                 && await EmployeeGradeResolution.FindAsync(_db, employee, movingTo, cancellationToken) is { } targetGrade)
-                await EmployeeSalaryBreakdownChanges.RequireCurrentPayInRangeAsync(_db, employee, targetGrade, cancellationToken);
+                await EmployeeSalaryBreakdownChanges.RequireCurrentPayInRangeAsync(_db, employee, targetGrade, request.Changes, cancellationToken);
         }
         catch (GradeNotResolvedException ex) { return UnprocessableEntity(ex.ToPayload()); }
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { error = "invalid_payroll_change", message = ex.Message + " No change was applied." }); }
@@ -4078,7 +4077,7 @@ public class EmployeesController : ControllerBase
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Moving a started employee to another grade moves their pay scale, loan limit, overtime and approval route: it is approved like a pay change.
         // A draft has not started, so its grade stays an at-once edit.
-        var gradeNeedsApproval = request.Changes.ContainsKey(EmployeeGradeResolution.Key) && !EmployeeGradeResolution.IsDraft(employee);
+        var gradeNeedsApproval = request.Changes.ContainsKey(EmployeeGradeResolution.Key) && !await EmployeeGradeResolution.IsDraftAsync(_db, employee, cancellationToken);
         if (gradeNeedsApproval) gatedKeys.Add(EmployeeGradeResolution.Key);
         var sensitive = gatedKeys.ToList();
         string? Proposed(string key, string? current) =>

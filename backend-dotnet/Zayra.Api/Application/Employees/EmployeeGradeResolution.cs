@@ -22,8 +22,35 @@ public static class EmployeeGradeResolution
 {
     public const string Key = "grade";
 
-    /// <summary>A draft has never been activated: its grade edits apply at once. Anyone else's go through approval.</summary>
-    public static bool IsDraft(Employee employee) => employee.Status == "Draft" && employee.ActivatedAtUtc is null;
+    /// <summary>
+    /// A draft has never started work: its grade edits apply at once. Anyone else's go through approval. "Never started" is not only "never stamped as activated":
+    /// imported and legacy Active staff carry no activation stamp, so an Active employee set back to Draft must not read as a new hire. Anyone with a status
+    /// change to or from a started status (anything but Draft or Invited) in their history has started.
+    /// </summary>
+    public static async Task<bool> IsDraftAsync(ZayraDbContext db, Employee employee, CancellationToken ct) =>
+        employee.Status == EmployeeStatuses.Draft && employee.ActivatedAtUtc is null && !await HasStartedAsync(db, employee, ct);
+
+    /// <summary>Whether the employee has ever held a status other than Draft or Invited, by their status history.</summary>
+    public static Task<bool> HasStartedAsync(ZayraDbContext db, Employee employee, CancellationToken ct) =>
+        db.EmployeeStatusHistories.AsNoTracking().AnyAsync(h => h.TenantId == employee.TenantId && h.EmployeeId == employee.Id
+            && ((h.OldStatus != "" && h.OldStatus != EmployeeStatuses.Draft && h.OldStatus != EmployeeStatuses.Invited)
+                || (h.NewStatus != "" && h.NewStatus != EmployeeStatuses.Draft && h.NewStatus != EmployeeStatuses.Invited)), ct);
+
+    /// <summary>
+    /// Brings the employee's grade text in line with their <c>GradeId</c> where a path set the link on its own: the text becomes the grade's code. A cleared link
+    /// clears the text too, when the employee had a grade link before (a legacy free-text grade that never had one is left alone). A link that names no grade of
+    /// the tenant leaves the text as it was. Stages only.
+    /// </summary>
+    public static async Task SyncTextToGradeIdAsync(ZayraDbContext db, Guid tenantId, Employee employee, Guid? priorGradeId, CancellationToken ct)
+    {
+        if (employee.GradeId is not Guid gradeId)
+        {
+            if (priorGradeId is not null) employee.Grade = "";
+            return;
+        }
+        var code = await db.Grades.AsNoTracking().Where(g => g.TenantId == tenantId && g.Id == gradeId).Select(g => g.Code).FirstOrDefaultAsync(ct);
+        if (code is not null) employee.Grade = code;
+    }
 
     public static async Task<IReadOnlyList<Grade>> MatchesAsync(ZayraDbContext db, Employee employee, string term, CancellationToken ct)
     {
@@ -78,7 +105,7 @@ public static class EmployeeGradeResolution
         var term = value.GetString()?.Trim() ?? "";
         if (term.Length == 0)
         {
-            if (!IsDraft(employee) && await HasSalaryRecordAsync(db, employee, ct))
+            if (!await IsDraftAsync(db, employee, ct) && await HasSalaryRecordAsync(db, employee, ct))
                 throw new GradeNotResolvedException(
                     "An employee with a salary record must keep a grade. Choose another grade instead of clearing it. No change was applied.",
                     "يجب أن تبقى للموظف الذي لديه سجل راتب درجة. اختر درجة أخرى بدلًا من إزالتها. لم يتم تطبيق أي تغيير.");

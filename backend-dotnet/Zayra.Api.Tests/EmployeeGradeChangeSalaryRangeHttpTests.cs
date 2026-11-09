@@ -263,7 +263,8 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
 
         var text = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
-        text.Should().Contain($"outside grade {low.Code}").And.Contain("No change was applied");
+        text.Should().Contain("current pay").And.Contain("No change was applied");
+        text.Should().NotContain("package", "there is no package in this edit, and the wording must not describe one");
         using var scope = _fx.Host.Services.CreateScope();
         (await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().EmployeeChangeRequests.CountAsync(c => c.EmployeeId == id)).Should().Be(0);
     }
@@ -282,7 +283,7 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         using var back = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { grade = high.Code } });
         var text = await back.Content.ReadAsStringAsync();
         back.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
-        text.Should().Contain($"outside grade {high.Code}");
+        text.Should().Contain("current pay");
     }
 
     [Fact]
@@ -328,5 +329,153 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         using var scope2 = _fx.Host.Services.CreateScope();
         (await scope2.ServiceProvider.GetRequiredService<ZayraDbContext>().EmployeeChangeRequests.CountAsync(c => c.EmployeeId == id)).Should().Be(0);
         low.Code.Should().NotBeNull();
+    }
+
+    // ── Final review: the "started" test cannot be flipped, a decoy package cannot hide in-force pay, grade text and link are written together ──
+
+    private async Task SetImporterStyleActiveAsync(int id)
+    {
+        // Imported and legacy Active staff were never stamped as activated.
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var employee = await LoadAsync(db, id);
+        employee.Status = "Active"; employee.ActivatedAtUtc = null;
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task AnActiveEmployee_FlippedBackToDraft_StillNeedsApprovalToChangeGrade_AndTheDraftSaveCannotChangeIt()
+    {
+        var (id, low, high, _) = await SeedAsync();
+        await SetImporterStyleActiveAsync(id);
+
+        using var flip = await _fx.SendAsync(HttpMethod.Patch, $"/api/employees/{id}/status", new { status = "Draft", effectiveDate = "2026-01-01", reason = "flip to draft" });
+        flip.StatusCode.Should().Be(HttpStatusCode.OK, await flip.Content.ReadAsStringAsync());
+        (await ReloadAsync(id)).Status.Should().Be("Draft");
+
+        // The grade edit is still approved like any started employee's: queued, nothing moved.
+        using var edit = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { grade = high.Code } });
+        await ChangeIdAsync(edit);
+        (await ReloadAsync(id)).GradeId.Should().Be(low.Id, "a started employee does not become a new hire by being set to Draft");
+
+        // The draft autosave is the other door that writes GradeId directly: it refuses to change the grade of someone who has started.
+        var basis = (await ReloadAsync(id)).UpdatedAtUtc ?? DateTime.UtcNow;
+        using var autosave = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft",
+            new { baseUpdatedAtUtc = basis, request = new Dictionary<string, object?> { ["englishName"] = "Flipped", ["companyId"] = _fx.CompanyId, ["gradeId"] = high.Id } });
+        autosave.StatusCode.Should().Be(HttpStatusCode.Conflict, await autosave.Content.ReadAsStringAsync());
+        (await ReloadAsync(id)).GradeId.Should().Be(low.Id);
+    }
+
+    [Fact]
+    public async Task AGenuineNeverStartedDraft_IsStillADraft_AfterAStatusRowWasWrittenForItsCreation()
+    {
+        var (id, _, high, _) = await SeedAsync();
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        db.EmployeeStatusHistories.Add(new EmployeeStatusHistory { TenantId = _fx.TenantId, EmployeeId = id, OldStatus = "", NewStatus = "Draft", EffectiveDate = new DateOnly(2026, 1, 1), Reason = "created" });
+        await db.SaveChangesAsync();
+
+        using var edit = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { grade = high.Code } });
+        edit.StatusCode.Should().Be(HttpStatusCode.OK, await edit.Content.ReadAsStringAsync());
+        (await ReloadAsync(id)).GradeId.Should().Be(high.Id);
+    }
+
+    [Fact]
+    public async Task ABackdatedDecoyPackage_CannotHideInForcePayThatIsOutsideTheNewGrade()
+    {
+        var (id, low, _, structure) = await SeedAsync(startOnHigh: true, active: true);
+        await GiveCurrentPayAsync(id, structure); // 15,400 in force since 2026-01-01, inside the high grade
+
+        // The package is dated BEFORE the pay in force and sits inside the low grade (1,900 + 1,400 = 2,900 of 1,000-3,000): it is not the pay in force.
+        using var decoy = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new
+        {
+            effectiveDate = "2025-06-01", changes = new { grade = low.Code, salaryBreakdown = Pay(structure, 1500m, "2025-06-01") },
+        });
+        var text = await decoy.Content.ReadAsStringAsync();
+        decoy.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
+        text.Should().Contain("current pay");
+        using var scope = _fx.Host.Services.CreateScope();
+        (await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().EmployeeChangeRequests.CountAsync(c => c.EmployeeId == id)).Should().Be(0);
+
+    }
+
+    [Fact]
+    public async Task APackageDatedAfterThePayInForce_ReplacesIt_SoOnlyThePackageIsJudgedAgainstTheNewGrade()
+    {
+        var (id, _, high, structure) = await SeedAsync(active: true);
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, _fx.TenantId, await LoadAsync(db, id), Changes(new { salaryBreakdown = Pay(structure, 1500m) }), null, CancellationToken.None);
+            await db.SaveChangesAsync(); // 2,900 in force, inside the low grade and outside the high one
+        }
+
+        using var bare = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-02", changes = new { grade = high.Code } });
+        bare.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await bare.Content.ReadAsStringAsync());
+
+        using var replaces = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new
+        {
+            effectiveDate = "2026-01-02", changes = new { grade = high.Code, salaryBreakdown = Pay(structure, 14000m, "2026-01-02") },
+        });
+        await ChangeIdAsync(replaces);
+    }
+
+    [Fact]
+    public async Task ABackdatedDecoyPackage_IsAlsoRefusedAtApproval_NotOnlyAtSubmit()
+    {
+        var (id, low, _, structure) = await SeedAsync(startOnHigh: true, active: true);
+        await GiveCurrentPayAsync(id, structure);
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var employee = await LoadAsync(db, id);
+
+        var apply = async () => await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, _fx.TenantId, employee,
+            Changes(new { grade = low.Code, salaryBreakdown = Pay(structure, 1500m, "2025-06-01") }), null, CancellationToken.None);
+
+        (await apply.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("current pay");
+    }
+
+    [Fact]
+    public async Task ARehire_WritesTheGradeTextWithTheGradeLink()
+    {
+        var (id, _, high, _) = await SeedAsync();
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            var employee = await LoadAsync(db, id);
+            employee.Status = "Terminated";
+            await db.SaveChangesAsync();
+        }
+
+        using var rehire = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{id}/rehire",
+            new { startDate = DateTime.UtcNow.Date, reason = "Rehired for the new season", gradeId = high.Id });
+        rehire.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.Created, HttpStatusCode.NoContent);
+        var after = await ReloadAsync(id);
+        after.GradeId.Should().Be(high.Id);
+        after.Grade.Should().Be(high.Code, "the grade text follows the grade link, so a leave policy that matches on text sees the same grade");
+    }
+
+    [Fact]
+    public async Task ADraftSave_KeepsGradeTextAndLinkTogether_IncludingWhenTheGradeIsCleared()
+    {
+        var (id, _, high, _) = await SeedAsync();
+
+        async Task<HttpResponseMessage> SaveAsync(Guid? gradeId)
+        {
+            var basis = (await ReloadAsync(id)).UpdatedAtUtc ?? DateTime.UtcNow;
+            return await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft",
+                new { baseUpdatedAtUtc = basis, request = new Dictionary<string, object?> { ["englishName"] = "Draft grade", ["companyId"] = _fx.CompanyId, ["gradeId"] = gradeId } });
+        }
+
+        using var set = await SaveAsync(high.Id);
+        set.StatusCode.Should().Be(HttpStatusCode.OK, await set.Content.ReadAsStringAsync());
+        var withGrade = await ReloadAsync(id);
+        (withGrade.GradeId, withGrade.Grade).Should().Be((high.Id, high.Code));
+
+        using var cleared = await SaveAsync(null);
+        cleared.StatusCode.Should().Be(HttpStatusCode.OK, await cleared.Content.ReadAsStringAsync());
+        var without = await ReloadAsync(id);
+        without.GradeId.Should().BeNull();
+        without.Grade.Should().BeNullOrEmpty("clearing the grade clears the text too, so no stale grade is left behind");
     }
 }

@@ -1281,7 +1281,7 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
         // A started employee's grade move is decided the same way: HR makes, Finance approves.
         if (proposedKeys.ContainsKey(EmployeeGradeResolution.Key) && !holdsPayrollApprove
             && await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken) is { } gradeSubject
-            && !EmployeeGradeResolution.IsDraft(gradeSubject))
+            && !await EmployeeGradeResolution.IsDraftAsync(_db, gradeSubject, cancellationToken))
             throw new GradeApprovalAuthorityException(approval.TenantId);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);

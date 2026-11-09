@@ -134,18 +134,28 @@ public static class EmployeeSalaryBreakdownChanges
             .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
     }
 
-    /// <summary>An employee's grade moves while they already have pay: the pay in force today (the whole package, allowance lines included) is judged against the
-    /// range of the grade they are moving to, with the same hard refusal a salary package gets. Without this, moving to a looser grade, raising the pay and moving
-    /// back would leave pay outside the range of the grade held, and no step would ever have been judged.</summary>
-    public static async Task RequireCurrentPayInRangeAsync(ZayraDbContext db, Employee employee, Grade grade, CancellationToken ct)
+    /// <summary>An employee's grade moves while they already have pay: the pay that will be in force after the write (the whole package, allowance lines included)
+    /// is judged against the range of the grade they are moving to, with the same hard refusal a salary package gets. Without this, moving to a looser grade,
+    /// raising the pay and moving back would leave pay outside the range of the grade held, and no step would ever have been judged.
+    /// A package sent in the same edit replaces the pay in force when it is dated the same day or later than the latest record dated today or before: the package
+    /// is then the pay, and its own check judges it against this grade. A package dated before that record is not the pay in force and hides nothing: the record
+    /// is judged. The wording is generic on purpose: there may be no package in the edit, and it states no band.</summary>
+    public static async Task RequireCurrentPayInRangeAsync(ZayraDbContext db, Employee employee, Grade grade, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
     {
         if (grade.MinSalary <= 0 && grade.MaxSalary <= 0) return;
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var current = (await ReadScheduleAsync(db, employee, ct)).FirstOrDefault(s => s.EffectiveDate is { } date && date <= today);
         if (current is null) return;
+        if (changes.TryGetValue(Key, out var raw) && TryRead(raw) is { EffectiveDate: { } proposedDate } && proposedDate >= current.EffectiveDate) return;
         var wholePay = Gross(current) + StatedLinesTotal(current);
         if ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary))
-            throw new InvalidOperationException($"Salary package is outside grade {grade.Code}'s salary range.");
+            throw new InvalidOperationException("The employee's current pay is outside the salary range of the grade they would move to, so the grade was not changed.");
+    }
+
+    private static EmployeeSalaryBreakdownRequest? TryRead(JsonElement value)
+    {
+        try { return Read(value); }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { return null; }
     }
 
     public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct,
