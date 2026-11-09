@@ -113,7 +113,7 @@ for (const locale of LOCALES) {
     test('empty: no devices shows one action, Add a device, that leads to the devices settings', async ({ page }) => {
       await page.setViewportSize(VIEWPORTS.desktop);
       await openAttendance(page, locale, { devices: [] });
-      const empty = page.locator('[data-empty-state]', { hasText: t(locale, 'No devices yet') });
+      const empty = page.locator('[data-empty-state]', { hasText: t(locale, 'No devices connected') });
       await expect(empty).toBeVisible();
       await expect(empty.locator('button, a')).toHaveCount(1);
       await expect(empty.locator('a')).toHaveAttribute('href', /\/setup\?tab=attendanceDevices/);

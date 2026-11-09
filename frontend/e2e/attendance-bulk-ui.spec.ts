@@ -160,7 +160,10 @@ test.describe('Attendance bulk operations — screen', () => {
     await openAttendance(page, en('Live Dashboard'));
     const m = main(page);
     const panel = m.getByRole('region', { name: en('Record attendance') });
-    await expect(panel, 'record attendance is on the first screen').toBeVisible();
+    // The header's one primary action opens it; the table of the day stays on the first screen.
+    await expect(panel).toBeHidden();
+    await m.getByRole('button', { name: en('Record attendance'), exact: true }).first().click();
+    await expect(panel, 'record attendance opens from the header action').toBeVisible();
     // No mode to choose: one list serves one employee or many.
     await expect(panel.getByRole('button', { name: /^(One employee|Several employees)$/ })).toHaveCount(0);
 
@@ -333,6 +336,7 @@ test.describe('Attendance bulk operations — screen', () => {
     // The Live Dashboard's record panel, switched to several employees: the form and its multi-select are translated too.
     const dashboardTab = m.getByRole('tab', { name: ar('Live Dashboard'), exact: true });
     await dashboardTab.click();
+    await m.getByRole('button', { name: ar('Record attendance'), exact: true }).first().click();
     await expect(m.getByRole('region', { name: ar('Record attendance') })).toBeVisible();
     for (const title of ['Record attendance', 'Filters', 'Out time']) {
       expect(ar(title), `the Arabic dictionary has "${title}"`).not.toBe(title);
