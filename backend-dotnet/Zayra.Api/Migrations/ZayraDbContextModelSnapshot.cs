@@ -847,7 +847,14 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("role_id");
 
+                    b.Property<Guid?>("GrantedByDesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("granted_by_designation_id");
+
                     b.HasKey("UserId", "RoleId");
+
+                    b.HasIndex("GrantedByDesignationId")
+                        .HasFilter("granted_by_designation_id IS NOT NULL");
 
                     b.HasIndex("RoleId");
 
@@ -9159,6 +9166,45 @@ namespace Zayra.Api.Migrations
                     NpgsqlIndexBuilderExtensions.AreNullsDistinct(b.HasIndex("TenantId", "CompanyId", "Code"), false);
 
                     b.ToTable("designations", (string)null);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.DesignationAccessRole", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by");
+
+                    b.Property<Guid>("DesignationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("designation_id");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DesignationId");
+
+                    b.HasIndex("RoleId");
+
+                    b.HasIndex("TenantId", "DesignationId", "RoleId")
+                        .IsUnique();
+
+                    b.ToTable("designation_access_roles", (string)null);
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlan", b =>
@@ -33968,6 +34014,11 @@ namespace Zayra.Api.Migrations
 
             modelBuilder.Entity("Zayra.Api.Domain.Entities.UserRole", b =>
                 {
+                    b.HasOne("Zayra.Api.Models.Designation", null)
+                        .WithMany()
+                        .HasForeignKey("GrantedByDesignationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("Zayra.Api.Domain.Entities.Role", "Role")
                         .WithMany("UserRoles")
                         .HasForeignKey("RoleId")
@@ -34230,6 +34281,21 @@ namespace Zayra.Api.Migrations
                         .HasForeignKey("TenantId", "CompanyId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.DesignationAccessRole", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.Designation", null)
+                        .WithMany()
+                        .HasForeignKey("DesignationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Zayra.Api.Domain.Entities.Role", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.DevelopmentPlan", b =>

@@ -179,6 +179,13 @@ public static class FeatureKeys
     /// (PolicyContentModelGate). See OptInFeatures.
     /// </summary>
     public const string PolicyIntake = "policy_intake";
+    /// <summary>
+    /// Designation-driven access: a designation carries a set of existing roles that an
+    /// employee is given when they are given the designation and loses when they leave it (DesignationAccessService). OPT-IN,
+    /// default OFF for every tenant: an absent row means OFF, and while it is off NOTHING is configured, applied or revoked.
+    /// Switched on per tenant only by the platform team. Owns no route; the service checks it. See OptInFeatures.
+    /// </summary>
+    public const string DesignationAccess = "designation_access";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

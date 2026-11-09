@@ -25,6 +25,7 @@ import { SetupEditorState, useSetupEditorState } from '../components/setup/Setup
 import { useSetupNavigationGuard } from '../hooks/useSetupNavigationGuard';
 import { useSetupCompanyQuery } from '../hooks/useSetupCompanyQuery';
 import { PolicyDocumentManager } from '../components/PolicyDocumentManager';
+import { DesignationAccessRolesField } from '../components/setup/DesignationAccessRolesField';
 import { usePolicyIntake } from '../lib/policyIntake';
 import { OrgStructureImportPanel } from '../components/OrgStructureImportPanel';
 import { EstablishmentPanel } from '../components/EstablishmentPanel';
@@ -54,6 +55,7 @@ import type {
   DepartmentDto,
   DepartmentRequest,
   DesignationDto,
+  DesignationAccessOptions,
   DesignationRequest,
   GradeDto,
   GradeRequest,
@@ -931,6 +933,14 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
   const [editing, setEditing] = useState<DesignationDto | null>(null);
   useSetupEditorState(modalOpen);
   const [form, setForm] = useState<DesignationRequest>(emptyDesig());
+  // Designation-driven access. Only offered (and only sent) when the feature is on for the tenant and this user may configure it.
+  const [accessOptions, setAccessOptions] = useState<DesignationAccessOptions | null>(null);
+  const [accessRoles, setAccessRoles] = useState<string[]>([]);
+  const canConfigureAccess = !!accessOptions?.enabled && accessOptions.canConfigure;
+  // The endpoint needs security.manage, so nobody else asks (a refusal would raise an access-denied toast for every ordinary HR user).
+  const { hasPermission: holds } = useAuth();
+  const mayAskAccess = holds('security.manage');
+  useEffect(() => { if (mayAskAccess) designationsApi.accessOptions().then(setAccessOptions).catch(() => setAccessOptions(null)); }, [mayAskAccess]);
   // Addendum B: a designation belongs to one company, and so does its grade.
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');
@@ -949,10 +959,11 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
 
   useEffect(() => { load(); }, [load]);
 
-  const openNew = () => { setEditing(null); setForm({ ...emptyDesig(), companyId: org.defaultCompanyId || undefined }); setError(''); setModalOpen(true); };
+  const openNew = () => { setEditing(null); setForm({ ...emptyDesig(), companyId: org.defaultCompanyId || undefined }); setAccessRoles([]); setError(''); setModalOpen(true); };
   const openEdit = (d: DesignationDto) => {
     setEditing(d);
     setForm({ departmentId: d.departmentId, code: d.code, titleEn: d.titleEn, titleAr: d.titleAr, jobGrade: d.jobGrade, gradeId: d.gradeId, jobLevel: d.jobLevel, jobDescription: d.jobDescription, isManagerRole: d.isManagerRole, isActive: d.isActive, companyId: d.companyId ?? undefined });
+    setAccessRoles(d.accessRoles ?? []);
     setError(''); setModalOpen(true);
   };
 
@@ -961,8 +972,10 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
-      if (editing) await designationsApi.update(editing.id, form);
-      else await designationsApi.create(form);
+      // The access fields travel only from a user who may configure them; omitted, the server leaves the designation's access alone.
+      const payload: DesignationRequest = canConfigureAccess ? { ...form, accessRoles } : form;
+      if (editing) await designationsApi.update(editing.id, payload);
+      else await designationsApi.create(payload);
       setModalOpen(false); load();
     } catch (err: unknown) { setError(describeApiError(err, t)); }
     finally { setSaving(false); }
@@ -989,6 +1002,7 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
+            importHelp={msg('Leave the Access roles cell blank to keep the roles a designation gives. Write [CLEAR] to remove them all (needs the security.manage permission).')}
             onImport={async (csv) => { const r = await designationsApi.import(csv, importCompanyId); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }
@@ -1062,6 +1076,7 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
             <input type="checkbox" id="isMgr" checked={form.isManagerRole} onChange={(e) => f('isManagerRole', e.target.checked)} className="h-4 w-4 accent-sapphire" />
             <label htmlFor="isMgr" className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Manager role')}</label>
           </div>
+          {accessOptions && <DesignationAccessRolesField options={accessOptions} roles={accessRoles} onChange={setAccessRoles} />}
           <FormField label={t('Status')}><ReadOnlyStatus active={form.isActive} /></FormField>
         </div>
       </Modal>

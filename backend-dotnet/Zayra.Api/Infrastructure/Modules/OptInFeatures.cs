@@ -81,6 +81,9 @@ public static class OptInFeatures
                 "/api/setup-assistant/policy",
                 "/api/ai/policy",
             ],
+            // Designation-driven access owns no route: the designation save and every employee path that gives a
+            // designation consult DesignationAccessService, which checks the flag (default OFF) before doing anything.
+            [FeatureKeys.DesignationAccess] = [],
         };
 
     public static IReadOnlyCollection<string> Keys => RoutePrefixes.Keys.ToArray();

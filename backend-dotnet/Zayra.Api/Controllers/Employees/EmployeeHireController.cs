@@ -186,6 +186,9 @@ public sealed class EmployeeHireController : ControllerBase
         employee.UpdatedBy = context.UserId;
         if (body.DesignationId is Guid newDesignation) employee.DesignationId = newDesignation;
         if (body.GradeId is Guid newGrade) employee.GradeId = newGrade;
+        // Designation-driven access: the (possibly new) designation gives its access to the returning person's login. A grade never changes roles.
+        if (body.DesignationId is not null)
+            await new DesignationAccessService(_db).ReconcileAsync(tenantId, employee, context, ct);
         _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
         {
             TenantId = tenantId, EmployeeId = id, OldStatus = oldStatus, NewStatus = EmployeeStatuses.Draft,

@@ -1555,6 +1555,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<Branch> Branches => Set<Branch>();
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Designation> Designations => Set<Designation>();
+    public DbSet<DesignationAccessRole> DesignationAccessRoles => Set<DesignationAccessRole>();
     // ── Establishment matrix (per-department, per-level staffing budgets) ──────
     public DbSet<StaffingLevel> StaffingLevels => Set<StaffingLevel>();
     public DbSet<DepartmentStaffingBudget> DepartmentStaffingBudgets => Set<DepartmentStaffingBudget>();
@@ -2268,6 +2269,17 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasIndex(x => new { x.TenantId, x.DepartmentId });
             entity.HasIndex(x => new { x.TenantId, x.IsDeleted });
             entity.HasIndex(x => new { x.TenantId, x.StaffingLevelId });
+        });
+
+        // Designation -> existing roles (designation-driven access). A mapping dies with its designation or role.
+        modelBuilder.Entity<DesignationAccessRole>(entity =>
+        {
+            entity.ToTable("designation_access_roles");
+            entity.HasKey(x => x.Id);
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.DesignationId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Role>().WithMany().HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(x => new { x.TenantId, x.DesignationId, x.RoleId }).IsUnique();
+            entity.HasIndex(x => x.RoleId);
         });
 
         modelBuilder.Entity<StaffingLevel>(entity =>
@@ -3795,6 +3807,9 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.HasKey(x => new { x.UserId, x.RoleId });
             entity.HasOne(x => x.User).WithMany(x => x.UserRoles).HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(x => x.Role).WithMany(x => x.UserRoles).HasForeignKey(x => x.RoleId).OnDelete(DeleteBehavior.Cascade);
+            // The designation whose access mapping granted this role (null = given by hand). A designation that is deleted leaves the role as a manual one.
+            entity.HasOne<Designation>().WithMany().HasForeignKey(x => x.GrantedByDesignationId).OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(x => x.GrantedByDesignationId).HasFilter("granted_by_designation_id IS NOT NULL");
         });
         modelBuilder.Entity<MigrationImportBatch>(entity =>
         {
