@@ -124,20 +124,12 @@ public static class EmployeeSalaryBreakdownChanges
             + "Request the change as a governed salary change with a different effective date (approved in Approvals), or through the contract renewal workflow.");
     }
 
-    /// <summary>The grade whose range judges this package: the grade the same edit moves the employee TO when it names one that resolves to exactly one active
-    /// grade of the employee's company (by code or name, as the draft grade step resolves it), otherwise the grade the employee holds. Judged against the held
-    /// grade alone, a promotion on a promotion-sized salary was refused as outside the grade being left, and the grade never changed.</summary>
+    /// <summary>The grade whose range judges this package: the grade the same edit moves the employee TO when it names exactly one grade (the rule every grade
+    /// edit uses, <see cref="EmployeeGradeResolution"/>), otherwise the grade the employee holds. Judged against the held grade alone, a promotion on a
+    /// promotion-sized salary was refused as outside the grade being left, and the grade never changed.</summary>
     private static async Task<Grade?> GradeForRangeCheckAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
     {
-        if (changes.TryGetValue("grade", out var proposed) && proposed.ValueKind == JsonValueKind.String && proposed.GetString()?.Trim().ToLower() is { Length: > 0 } term)
-        {
-            var candidates = await db.Grades.AsNoTracking()
-                .Where(g => g.TenantId == employee.TenantId && g.IsActive && !g.IsDeleted
-                    && (g.CompanyId == employee.CompanyId || g.CompanyId == null)
-                    && (g.Code.ToLower() == term || g.Name.ToLower() == term))
-                .Take(2).ToListAsync(ct);
-            if (candidates.Count == 1) return candidates[0];
-        }
+        if (await EmployeeGradeResolution.FindAsync(db, employee, EmployeeGradeResolution.TermOf(changes), ct) is { } proposed) return proposed;
         return employee.GradeId is null ? null : await db.Grades.AsNoTracking()
             .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
     }

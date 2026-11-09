@@ -4067,6 +4067,10 @@ public class EmployeesController : ControllerBase
         // Advisory only (PAY-08): what the saved record would look like, for a change that waits for approval.
         var proposedIdWarnings = Zayra.Api.Infrastructure.Employees.IdentityNationalityConsistency.Warnings(
             Proposed("nationality", employee.Nationality), Proposed("idNumber", employee.IdNumber), Proposed("iqamaNumber", employee.IqamaNumber));
+        // A grade edit names exactly one active grade of this employee's company, whoever the employee is and whether the edit applies now or on approval:
+        // refused here with nothing written, so the grade text and GradeId can never disagree.
+        try { await EmployeeGradeResolution.CheckAsync(_db, employee, request.Changes, cancellationToken); }
+        catch (GradeNotResolvedException ex) { return UnprocessableEntity(ex.ToPayload()); }
         // Rich payroll edits use the same approval route, but malformed values must never become
         // unapplyable approvals. Validate the complete package before any immediate field is written.
         try
@@ -4327,20 +4331,17 @@ public class EmployeesController : ControllerBase
         catch (InvalidOperationException ex) { return UnprocessableEntity(new { message = ex.Message }); }
     }
 
+    /// <summary>A grade edit that applies now sets the grade text and GradeId together, for a draft and an active employee alike (an approval-gated one is
+    /// written by <see cref="EmployeeChangeApplier.ApplyApprovedChangeAsync"/> when it is applied). The value was checked to name one grade before anything was written.</summary>
     private async Task ResolveDraftBenefitGradeAsync(Employee employee, IEnumerable<string> changedFields, CancellationToken ct)
     {
-        if (!changedFields.Contains("grade") || employee.Status != "Draft" || employee.ActivatedAtUtc is not null) return;
+        if (!changedFields.Contains("grade")) return;
         var term = employee.Grade.Trim();
         if (term.Length == 0) { employee.GradeId = null; return; }
-        var candidates = await _db.Grades.AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.IsActive && !x.IsDeleted
-                && (x.CompanyId == employee.CompanyId || x.CompanyId == null) // Addendum B: the employee's company's grades
-                && (x.Code.ToLower() == term.ToLower() || x.Name.ToLower() == term.ToLower()))
-            .Take(2).ToListAsync(ct);
-        if (candidates.Count != 1)
-            throw new InvalidOperationException("Select one active grade from company master data before changing this draft employee's benefits.");
-        employee.GradeId = candidates[0].Id;
-        employee.Grade = candidates[0].Code;
+        var grade = await EmployeeGradeResolution.FindAsync(_db, employee, term, ct)
+            ?? throw new GradeNotResolvedException("Select one active grade from company master data. No change was applied.", "اختر درجة واحدة نشطة من البيانات الرئيسية للشركة. لم يتم تطبيق أي تغيير.");
+        employee.GradeId = grade.Id;
+        employee.Grade = grade.Code;
     }
 
     /// <summary>F02 — a GOSI first-registration date is null (clear it back to Unknown) or an ISO calendar

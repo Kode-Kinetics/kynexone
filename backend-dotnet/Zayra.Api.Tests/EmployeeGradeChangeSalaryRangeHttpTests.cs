@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
 using Zayra.Api.Models;
 
@@ -27,7 +28,7 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         salaryStructureCode = structure, effectiveDate = "2026-01-01", currency = "SAR",
     };
 
-    private async Task<(int EmployeeId, Grade Low, Grade High, string Structure)> SeedAsync(bool startOnHigh = false)
+    private async Task<(int EmployeeId, Grade Low, Grade High, string Structure)> SeedAsync(bool startOnHigh = false, bool active = false)
     {
         var suffix = Guid.NewGuid().ToString("N")[..6].ToUpperInvariant();
         var structure = $"GRADE-RANGE-{suffix}";
@@ -45,6 +46,7 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         var employee = await db.Employees.SingleAsync(e => e.Id == id);
         var start = startOnHigh ? high : low;
         employee.Grade = start.Code; employee.GradeId = start.Id;
+        if (active) { employee.Status = "Active"; employee.ActivatedAtUtc = DateTime.UtcNow; }
         await db.SaveChangesAsync();
         return (id, low, high, structure);
     }
@@ -82,5 +84,81 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         var text = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
         text.Should().Contain($"outside grade {low.Code}");
+    }
+
+    private async Task<Employee> LoadAsync(ZayraDbContext db, int id) => await db.Employees.SingleAsync(e => e.Id == id);
+
+    private static Dictionary<string, JsonElement> Changes(object value) =>
+        JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(JsonSerializer.Serialize(value))!;
+
+    [Fact]
+    public async Task AGradeEditOnAnActiveEmployee_MovesGradeIdAsWellAsTheText_SoALaterSalarySizedForTheNewGradeIsAccepted()
+    {
+        var (id, _, high, structure) = await SeedAsync(active: true);
+
+        using (var grade = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { grade = high.Code } }))
+            grade.IsSuccessStatusCode.Should().BeTrue(await grade.Content.ReadAsStringAsync());
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var employee = await LoadAsync(scope.ServiceProvider.GetRequiredService<ZayraDbContext>(), id);
+            employee.Grade.Should().Be(high.Code);
+            employee.GradeId.Should().Be(high.Id, "an active employee's grade link moves with the grade text, never apart from it");
+        }
+
+        // The salary is a separate step, sized for the grade the employee now holds.
+        using var salary = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { salaryBreakdown = Salary(structure) } });
+        var text = await salary.Content.ReadAsStringAsync();
+        salary.StatusCode.Should().Be(HttpStatusCode.Accepted, text);
+    }
+
+    [Fact]
+    public async Task AnApprovedGradeChange_SetsGradeId_ThenAnApprovedSalarySizedForTheNewGrade_Applies()
+    {
+        var (id, low, high, structure) = await SeedAsync(active: true);
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var employee = await LoadAsync(db, id);
+
+        // Applied exactly as an approval (or the effective-date job) applies it: the grade first, in its own change.
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, _fx.TenantId, employee, Changes(new { grade = high.Code }), null, CancellationToken.None);
+        await db.SaveChangesAsync();
+        employee.GradeId.Should().Be(high.Id);
+        employee.Grade.Should().Be(high.Code);
+
+        // Then the salary, in a second change, judged against the grade now in force.
+        await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, _fx.TenantId, employee, Changes(new { salaryBreakdown = Salary(structure) }), null, CancellationToken.None);
+        await db.SaveChangesAsync();
+        (await db.EmployeeSalaryStructures.AnyAsync(s => s.TenantId == _fx.TenantId && s.EmployeeId == id && s.BasicSalary == 14000m && s.IsActive)).Should().BeTrue();
+        low.Code.Should().NotBe(high.Code);
+    }
+
+    [Fact]
+    public async Task AGradeThatMatchesNoGradeOrSeveral_IsRefusedInBothLanguages_AndNothingChanges()
+    {
+        var (id, low, _, _) = await SeedAsync(active: true);
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            db.Grades.AddRange(
+                new Grade { TenantId = _fx.TenantId, CompanyId = _fx.CompanyId, Code = $"DA{low.Code[2..]}", Name = $"Twin {low.Code}", Currency = "SAR", IsActive = true },
+                new Grade { TenantId = _fx.TenantId, CompanyId = _fx.CompanyId, Code = $"DB{low.Code[2..]}", Name = $"Twin {low.Code}", Currency = "SAR", IsActive = true });
+            await db.SaveChangesAsync();
+        }
+
+        foreach (var term in new[] { "NO-SUCH-GRADE", $"Twin {low.Code}" })
+        {
+            using var response = await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}", new { effectiveDate = "2026-01-01", changes = new { grade = term } });
+            var text = await response.Content.ReadAsStringAsync();
+            response.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
+            var body = JsonSerializer.Deserialize<JsonElement>(text);
+            body.GetProperty("code").GetString().Should().Be("grade_not_resolved");
+            body.GetProperty("message").GetString().Should().Contain("No change was applied");
+            body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+        }
+
+        using var verify = _fx.Host.Services.CreateScope();
+        var employee = await LoadAsync(verify.ServiceProvider.GetRequiredService<ZayraDbContext>(), id);
+        employee.Grade.Should().Be(low.Code);
+        employee.GradeId.Should().Be(low.Id);
     }
 }

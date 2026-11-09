@@ -182,6 +182,8 @@ public static class EmployeeChangeApplier
         var attribution = await EmployeeOrgFieldResolver.PrepareAttributionAsync(db, tenantId, employee, changes, decision: null, expectedOverrideId: null, ct);
         var attributionBefore = EmployeeOrgFieldResolver.AttributionState.Of(employee);
         var unknown = Apply(employee, changes);
+        // The grade text and GradeId move together when the change is applied (an effective-dated one included), BEFORE the salary package is checked against its grade.
+        await EmployeeGradeResolution.ApplyAsync(db, employee, changes, ct);
         await ApplyPayrollProfileAsync(db, employee, changes, actorUserId, ct);
         await EmployeeSalaryBreakdownChanges.ApplyAsync(db, employee, changes, actorUserId, ct, changeRequestId);
         await EmployeeOrgFieldResolver.ResolveAppliedChangesAsync(db, tenantId, employee, changes.Keys, attribution, ct);
