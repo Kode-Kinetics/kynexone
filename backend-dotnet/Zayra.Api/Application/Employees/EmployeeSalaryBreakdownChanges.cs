@@ -146,10 +146,16 @@ public static class EmployeeSalaryBreakdownChanges
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var current = (await ReadScheduleAsync(db, employee, ct)).FirstOrDefault(s => s.EffectiveDate is { } date && date <= today);
         if (current is null) return;
-        if (changes.TryGetValue(Key, out var raw) && TryRead(raw) is { EffectiveDate: { } proposedDate } && proposedDate >= current.EffectiveDate) return;
+        var proposed = changes.TryGetValue(Key, out var raw) ? TryRead(raw) : null;
+        // The package is the pay in force only when it is dated on or after the record now in force and no later than today: one dated in the future is not the
+        // pay today, so it hides nothing while the grade moves now.
+        if (proposed?.EffectiveDate is { } proposedDate && proposedDate >= current.EffectiveDate && proposedDate <= today) return;
         var wholePay = Gross(current) + StatedLinesTotal(current);
         if ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary))
-            throw new InvalidOperationException("The employee's current pay is outside the salary range of the grade they would move to, so the grade was not changed.");
+            throw new InvalidOperationException("The employee's current pay is outside the salary range of the grade they would move to, so the grade was not changed."
+                + (proposed?.EffectiveDate is { } early && early < current.EffectiveDate
+                    ? $" The salary package in this edit is dated before the pay now in force: date it on or after {current.EffectiveDate:yyyy-MM-dd}."
+                    : ""));
     }
 
     private static EmployeeSalaryBreakdownRequest? TryRead(JsonElement value)

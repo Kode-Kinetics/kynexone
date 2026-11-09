@@ -393,7 +393,7 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
         });
         var text = await decoy.Content.ReadAsStringAsync();
         decoy.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, text);
-        text.Should().Contain("current pay");
+        text.Should().Contain("current pay").And.Contain("on or after 2026-01-01", "the refusal says what date would make the package the pay in force");
         using var scope = _fx.Host.Services.CreateScope();
         (await scope.ServiceProvider.GetRequiredService<ZayraDbContext>().EmployeeChangeRequests.CountAsync(c => c.EmployeeId == id)).Should().Be(0);
 
@@ -433,6 +433,79 @@ public class EmployeeGradeChangeSalaryRangeHttpTests : IClassFixture<EmployeeDra
             Changes(new { grade = low.Code, salaryBreakdown = Pay(structure, 1500m, "2025-06-01") }), null, CancellationToken.None);
 
         (await apply.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("current pay");
+    }
+
+    [Fact]
+    public async Task AFutureDatedPackage_CannotHideTodaysOutOfRangePay_WhenTheGradeMovesNow()
+    {
+        var (id, low, _, structure) = await SeedAsync(startOnHigh: true, active: true);
+        await GiveCurrentPayAsync(id, structure); // 15,400 in force
+        using var scope = _fx.Host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+        var employee = await LoadAsync(db, id);
+        var tomorrow = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(1).ToString("yyyy-MM-dd");
+
+        // Applied now, the grade lands today; a package dated tomorrow is not the pay in force today, so today's pay is judged against the new grade.
+        var apply = async () => await EmployeeChangeApplier.ApplyApprovedChangeAsync(db, _fx.TenantId, employee,
+            Changes(new { grade = low.Code, salaryBreakdown = Pay(structure, 1500m, tomorrow) }), null, CancellationToken.None);
+
+        (await apply.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("current pay");
+    }
+
+    private async Task<int> StartedDraftAsync(Grade? grade)
+    {
+        var (id, _, _, _) = await SeedAsync(active: true);
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            var employee = await LoadAsync(db, id);
+            employee.ActivatedAtUtc = null; employee.Grade = grade?.Code ?? ""; employee.GradeId = grade?.Id;
+            await db.SaveChangesAsync();
+        }
+        using var flip = await _fx.SendAsync(HttpMethod.Patch, $"/api/employees/{id}/status", new { status = "Draft", effectiveDate = "2026-01-01", reason = "flip to draft" });
+        flip.StatusCode.Should().Be(HttpStatusCode.OK, await flip.Content.ReadAsStringAsync());
+        return id;
+    }
+
+    private async Task<HttpResponseMessage> AutosaveAsync(int id, Dictionary<string, object?> request)
+    {
+        var basis = (await ReloadAsync(id)).UpdatedAtUtc ?? DateTime.UtcNow;
+        return await _fx.SendAsync(HttpMethod.Put, $"/api/employees/{id}/hire-draft", new { baseUpdatedAtUtc = basis, request });
+    }
+
+    [Fact]
+    public async Task AStartedDraft_CanAutosaveOtherFields_WhenTheFormEchoesItsUnchangedGradeId()
+    {
+        var (_, low, _, _) = await SeedAsync();
+        var id = await StartedDraftAsync(low);
+
+        using var saved = await AutosaveAsync(id, new() { ["englishName"] = "Renamed while started", ["companyId"] = _fx.CompanyId, ["gradeId"] = low.Id, ["jobTitle"] = "Analyst" });
+
+        saved.StatusCode.Should().Be(HttpStatusCode.OK, await saved.Content.ReadAsStringAsync());
+        var after = await ReloadAsync(id);
+        (after.EnglishName, after.JobTitle, after.GradeId, after.Grade).Should().Be(("Renamed while started", "Analyst", (Guid?)low.Id, low.Code));
+    }
+
+    [Fact]
+    public async Task AStartedDraftWithNoGrade_CannotGainOneThroughADesignationsDefault()
+    {
+        var (_, _, high, _) = await SeedAsync();
+        var id = await StartedDraftAsync(null);
+        Guid designationId;
+        using (var scope = _fx.Host.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ZayraDbContext>();
+            var designation = new Designation { TenantId = _fx.TenantId, CompanyId = _fx.CompanyId, Code = $"D{Guid.NewGuid():N}"[..10].ToUpperInvariant(), TitleEn = "Senior", GradeId = high.Id, IsActive = true };
+            db.Designations.Add(designation);
+            await db.SaveChangesAsync();
+            designationId = designation.Id;
+        }
+
+        using var saved = await AutosaveAsync(id, new() { ["englishName"] = "Designated", ["companyId"] = _fx.CompanyId, ["designationId"] = designationId });
+
+        saved.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.UnprocessableEntity, HttpStatusCode.Conflict);
+        var after = await ReloadAsync(id);
+        after.GradeId.Should().BeNull("a grade for someone who has started comes only through an approved grade change, not a designation's default");
     }
 
     [Fact]
