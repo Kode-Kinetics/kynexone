@@ -50,16 +50,17 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         return new Twins(tenantId, company.Id, dup, survivor);
     }
 
-    private EmployeesController Controller(ZayraDbContext db, Twins t, Func<ZayraDbContext, IAuditService>? audit = null)
+    private EmployeesController Controller(ZayraDbContext db, Twins t, Func<ZayraDbContext, IAuditService>? audit = null, bool mayDelete = true)
     {
         var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), audit?.Invoke(db) ?? new AuditService(db), new NullDocumentStorage(), TestNotifications.For(db),
             new MergePgHijri(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new MergePgLetters());
         var claims = new List<Claim>
         {
             new("tenant_id", t.TenantId.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()), new(ClaimTypes.Role, "Admin"),
-            new("permission", "employees.read"), new("permission", "employees.write"), new("permission", "employees.delete"),
+            new("permission", "employees.read"), new("permission", "employees.write"),
             new("is_group_scope", "true"),
         };
+        if (mayDelete) claims.Add(new Claim("permission", "employees.delete"));
         controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")) } };
         return controller;
     }
@@ -415,6 +416,67 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.Id == linkId)).AccessMode.Should().Be(AccessModes.EssOnly);
         (await read.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == userId)).IsActive.Should().BeTrue();
         (await read.RefreshTokens.SingleAsync(x => x.Id == refreshId)).RevokedAtUtc.Should().BeNull();
+    }
+
+    // ── 4. A merge only combines duplicate entries within ONE company ───────────────────────────────
+
+    private async Task SetCompaniesAsync(Twins t, Guid? duplicateCompany, Guid? survivorCompany)
+    {
+        await using var db = _fx.CreateDb();
+        (await db.Employees.SingleAsync(e => e.Id == t.Duplicate.Id)).CompanyId = duplicateCompany;
+        (await db.Employees.SingleAsync(e => e.Id == t.Survivor.Id)).CompanyId = survivorCompany;
+        await db.SaveChangesAsync();
+    }
+
+    private async Task<Guid> SeedOtherCompanyAsync(Twins t)
+    {
+        await using var db = _fx.CreateDb();
+        var other = new Company { Id = Guid.NewGuid(), TenantId = t.TenantId, LegalNameEn = "Merge PG Two", CountryCode = "SAU", Jurisdiction = "KSA-mainland", RegistrationNumber = $"M-{Guid.NewGuid():N}", DefaultCurrency = "SAR", IsActive = true, CreatedAtUtc = DateTime.UtcNow };
+        db.Companies.Add(other);
+        await db.SaveChangesAsync();
+        return other.Id;
+    }
+
+    [Fact]
+    public async Task Merge_AcrossTwoCompanies_IsRefused409_WithAPlainMessage_AndDeletesNothing()
+    {
+        var t = await SeedTwinsAsync();
+        await SetCompaniesAsync(t, t.CompanyId, await SeedOtherCompanyAsync(t));
+
+        var conflict = Assert.IsAssignableFrom<ObjectResult>(await MergeAsync(t));
+
+        conflict.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        using var body = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(conflict.Value));
+        var root = body.RootElement;
+        root.GetProperty("error").GetString().Should().Be("merge_across_companies");
+        root.GetProperty("code").GetString().Should().Be("merge_across_companies");
+        root.GetProperty("message").GetString().Should().Be("These two records belong to different companies. A merge only combines duplicate entries of the same person within one company; moving someone between companies is not a merge.");
+        root.GetProperty("message").GetString().Should().NotContainEquivalentOf("transfer", "the same-group transfer feature does not exist yet");
+        root.GetProperty("messageAr").GetString().Should().MatchRegex("[\\u0600-\\u06FF]");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Merge_WhenOnlyOneRecordHasACompany_IsRefused_BecauseTheyCannotBeShownToBeTheSameCompany()
+    {
+        var t = await SeedTwinsAsync();
+        await SetCompaniesAsync(t, null, t.CompanyId);
+
+        var conflict = Assert.IsAssignableFrom<ObjectResult>(await MergeAsync(t));
+
+        conflict.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        System.Text.Json.JsonSerializer.Serialize(conflict.Value).Should().Contain("merge_across_companies");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Merge_WhenNeitherRecordHasACompany_StillMerges()
+    {
+        var t = await SeedTwinsAsync();
+        await SetCompaniesAsync(t, null, null);
+
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
     }
 }
 

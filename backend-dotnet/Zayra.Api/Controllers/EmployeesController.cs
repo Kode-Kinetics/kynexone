@@ -5229,6 +5229,18 @@ public class EmployeesController : ControllerBase
             var survivor = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == intoId && !x.IsDeleted, ct);
             if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
 
+            // A merge combines two entries of the SAME person within ONE company. Two records in different companies (or one with a company
+            // and one without) cannot be shown to be the same company, so the merge is refused before anything is read or written.
+            // Neither record having a company (legacy unscoped rows) crosses no company boundary and is allowed.
+            if (duplicate.CompanyId != survivor.CompanyId)
+                return Conflict(new
+                {
+                    error = "merge_across_companies",
+                    code = "merge_across_companies",
+                    message = "These two records belong to different companies. A merge only combines duplicate entries of the same person within one company; moving someone between companies is not a merge.",
+                    messageAr = "هذان السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة للشخص نفسه داخل شركة واحدة، ونقل شخص بين الشركات ليس دمجاً.",
+                });
+
             // The merge moves NOTHING to the kept employee, so any money or compliance record the duplicate owns would be orphaned on a
             // hidden row. Refuse, naming what is in the way, BEFORE any write so a refusal leaves no partial state.
             var blockers = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, ct);
