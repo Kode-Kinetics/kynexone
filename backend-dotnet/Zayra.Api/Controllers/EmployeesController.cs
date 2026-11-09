@@ -5229,6 +5229,23 @@ public class EmployeesController : ControllerBase
             var survivor = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == intoId && !x.IsDeleted, ct);
             if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
 
+            // The merge moves NOTHING to the kept employee, so any money or compliance record the duplicate owns would be orphaned on a
+            // hidden row. Refuse, naming what is in the way, BEFORE any write so a refusal leaves no partial state.
+            var blockers = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, ct);
+            if (blockers.Count > 0)
+                return Conflict(new
+                {
+                    error = "merge_blocked_by_records",
+                    code = "merge_blocked_by_records",
+                    message = "This record cannot be merged because it owns records that would be left behind: "
+                        + string.Join(", ", blockers.Select(b => $"{b.Label.ToLowerInvariant()} ({b.Count})"))
+                        + ". Move or close them first, or keep this record.",
+                    messageAr = "لا يمكن دمج هذا السجل لأنه يملك سجلات ستبقى خلفه: "
+                        + string.Join("، ", blockers.Select(b => $"{b.LabelAr} ({b.Count})"))
+                        + ". انقلها أو أغلقها أولاً، أو أبقِ هذا السجل.",
+                    blockers = blockers.Select(b => new { type = b.Type, label = b.Label, labelAr = b.LabelAr, count = b.Count }),
+                });
+
             var mergedAt = DateTime.UtcNow;
             var mergedCode = duplicate.EmployeeCode;
             duplicate.DuplicateOfEmployeeId = intoId;

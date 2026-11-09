@@ -19,17 +19,13 @@ namespace Zayra.Api.Tests;
 /// records the duplicate owns. Today the merge MOVES NOTHING (it links <c>DuplicateOfEmployeeId</c>, soft-deletes the duplicate, cancels
 /// its approvals and deactivates its payroll profile and salary structures), so every record below stays keyed to the soft-deleted row.
 ///
-/// Two groups:
-///  1. LIVE: a duplicate that owns nothing merges; and the characterisation of today's behaviour (each record type is left on the
-///     duplicate, the survivor gets none, the merge succeeds).
-///  2. SKIPPED, owner decision pending: the merge must refuse with HTTP 409 naming the blocking record types, and delete nothing.
-///     They are written red-first against the planned behaviour and stay skipped until the owner decides whether to refuse.
+/// The merge moves nothing, so it REFUSES (HTTP 409 <c>merge_blocked_by_records</c>) when the duplicate owns any money or compliance
+/// record, before any write. A duplicate that owns none, or only rows that carry no value, still merges.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection("Integration")]
 public sealed class EmployeeMergeOwnedRecordsPostgresTests
 {
-    private const string PendingDecision = "owner decision pending: merge refusal";
     private readonly PostgresFixture _fx;
     public EmployeeMergeOwnedRecordsPostgresTests(PostgresFixture fx) => _fx = fx;
 
@@ -81,7 +77,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
     }
 
     /// <summary>One record type the duplicate can own: how to seed it, and how many of that type each employee owns afterwards.</summary>
-    public sealed record OwnedRecord(string Name, Func<ZayraDbContext, Twins, Task> Seed, Func<ZayraDbContext, int, Task<int>> CountOwnedBy)
+    public sealed record OwnedRecord(string Name, string Type, Func<ZayraDbContext, Twins, Task> Seed, Func<ZayraDbContext, int, Task<int>> CountOwnedBy)
     {
         public override string ToString() => Name;
     }
@@ -92,28 +88,28 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
 
     private static IEnumerable<OwnedRecord> Catalogue()
     {
-        yield return new("open loan", (db, t) =>
+        yield return new("open loan", "open_loans", (db, t) =>
         {
             db.EmployeeLoans.Add(new EmployeeLoan
             {
                 TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName,
-                LoanTypeId = Guid.NewGuid(), LoanTypeName = "Personal", LoanNumber = "LN-MERGE-1", ApprovedAmount = 3000m, ApprovedInstallments = 6,
+                LoanTypeId = Guid.NewGuid(), LoanTypeName = "Personal", LoanNumber = "LN-" + Guid.NewGuid().ToString("N"), ApprovedAmount = 3000m, ApprovedInstallments = 6,
                 InstallmentAmount = 500m, OutstandingBalance = 1500m, Status = "Active", RepaymentMethod = "PayrollDeduction", Currency = "SAR",
             });
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeLoans.IgnoreQueryFilters().CountAsync(x => x.EmployeeIntId == id));
 
-        yield return new("open salary advance", (db, t) =>
+        yield return new("open salary advance", "open_advances", (db, t) =>
         {
             db.SalaryAdvances.Add(new SalaryAdvance
             {
                 TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, EmployeeName = t.Duplicate.FullName,
-                AdvanceNumber = "ADV-MERGE-1", ApprovedAmount = 1000m, OutstandingBalance = 1000m, Status = "Active",
+                AdvanceNumber = "ADV-" + Guid.NewGuid().ToString("N"), ApprovedAmount = 1000m, OutstandingBalance = 1000m, Status = "Active",
             });
             return Task.CompletedTask;
         }, (db, id) => db.SalaryAdvances.IgnoreQueryFilters().CountAsync(x => x.EmployeeIntId == id));
 
-        yield return new("approved bonus not yet paid", (db, t) =>
+        yield return new("approved bonus not yet paid", "unpaid_bonuses", (db, t) =>
         {
             db.EmployeeBonuses.Add(new EmployeeBonus
             {
@@ -123,7 +119,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeBonuses.IgnoreQueryFilters().CountAsync(x => x.EmployeeIntId == id));
 
-        yield return new("leave balance with days left", (db, t) =>
+        yield return new("leave balance with days left", "leave_balances", (db, t) =>
         {
             db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
             {
@@ -133,7 +129,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeLeaveBalances.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("pending leave request", (db, t) =>
+        yield return new("pending leave request", "leave_requests", (db, t) =>
         {
             db.LeaveRequests.Add(new LeaveRequest
             {
@@ -143,7 +139,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.LeaveRequests.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("active benefit enrolment", (db, t) =>
+        yield return new("active benefit enrolment", "benefit_enrollments", (db, t) =>
         {
             db.BenefitEnrollments.Add(new BenefitEnrollment
             {
@@ -152,7 +148,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.BenefitEnrollments.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("payroll slip in an open run", (db, t) =>
+        yield return new("payroll slip in an open run", "payroll_slips", (db, t) =>
         {
             db.PayrollSlips.Add(new PayrollSlip
             {
@@ -162,7 +158,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.PayrollSlips.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("social-insurance (GOSI) registration reference", (db, t) =>
+        yield return new("social-insurance (GOSI) registration reference", "payroll_profile", (db, t) =>
         {
             db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile
             {
@@ -171,7 +167,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EmployeePayrollProfiles.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id && x.SocialInsuranceReference != ""));
 
-        yield return new("end-of-service calculation", (db, t) =>
+        yield return new("end-of-service calculation", "eosb_calculations", (db, t) =>
         {
             db.EOSBCalculations.Add(new EOSBCalculation
             {
@@ -180,7 +176,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EOSBCalculations.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("employee document", (db, t) =>
+        yield return new("employee document", "documents", (db, t) =>
         {
             db.EmployeeDocuments.Add(new EmployeeDocument
             {
@@ -189,7 +185,7 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeDocuments.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("identity / compliance record", (db, t) =>
+        yield return new("identity / compliance record", "compliance_records", (db, t) =>
         {
             db.EmployeeComplianceRecords.Add(new EmployeeComplianceRecord
             {
@@ -198,11 +194,14 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeComplianceRecords.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
-        yield return new("self-service login link", (db, t) =>
+        yield return new("salary structure assignment", "salary_structures", (db, t) =>
         {
-            db.EmployeeUserAccounts.Add(new EmployeeUserAccount { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, Status = "Active", RequiresPasswordSetup = false });
+            db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+            {
+                TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, SalaryStructureId = Guid.NewGuid(), BasicSalary = 8000m, EffectiveDate = Today, Currency = "SAR", IsActive = true,
+            });
             return Task.CompletedTask;
-        }, (db, id) => db.EmployeeUserAccounts.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+        }, (db, id) => db.EmployeeSalaryStructures.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
     }
 
     // ── 1. LIVE ─────────────────────────────────────────────────────────────────────────────────────
@@ -217,28 +216,34 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         (await IsDeletedAsync(t.Survivor.Id)).Should().BeFalse();
     }
 
-    [Theory]
-    [MemberData(nameof(Blocking))]
-    public async Task Merge_TodayMovesNothing_TheRecordStaysOnTheSoftDeletedDuplicate_AndTheSurvivorGetsNone(OwnedRecord record)
+    [Fact]
+    public async Task Merge_ARowThatCarriesNoValue_DoesNotBlock_AndNeitherDoesALoginLink()
     {
         var t = await SeedTwinsAsync();
         await using (var seed = _fx.CreateDb())
         {
-            await record.Seed(seed, t);
+            // The empty shells a fresh record can hold: a payroll profile with no bank/insurance value, a compliance row with no value or
+            // date, a leave balance of zero, a settled loan, a paid bonus, a rejected leave request, a waived benefit, and a login link.
+            seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id });
+            seed.EmployeeComplianceRecords.Add(new EmployeeComplianceRecord { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, CountryCode = "SA", FieldKey = "iqama_number" });
+            seed.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, LeaveTypeId = Guid.NewGuid(), Year = DateTime.UtcNow.Year });
+            seed.EmployeeLoans.Add(new EmployeeLoan { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, LoanTypeId = Guid.NewGuid(), Status = "Settled" });
+            seed.EmployeeBonuses.Add(new EmployeeBonus { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, EmployeeIntId = t.Duplicate.Id, BonusBatchId = Guid.NewGuid(), BonusTypeId = Guid.NewGuid(), Status = "PaidInPayroll" });
+            seed.LeaveRequests.Add(new LeaveRequest { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.Id, LeaveTypeId = Guid.NewGuid(), StartDate = Today, EndDate = Today, Status = "Rejected" });
+            seed.BenefitEnrollments.Add(new BenefitEnrollment { TenantId = t.TenantId, CompanyId = t.CompanyId, BenefitPlanId = Guid.NewGuid(), EmployeeId = t.Duplicate.Id, Status = "Waived" });
+            seed.EmployeeUserAccounts.Add(new EmployeeUserAccount { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, Status = "Active", RequiresPasswordSetup = false });
             await seed.SaveChangesAsync();
         }
 
         var result = await MergeAsync(t);
 
         Assert.IsType<OkObjectResult>(result);
-        await using var read = _fx.CreateDb();
-        (await record.CountOwnedBy(read, t.Duplicate.Id)).Should().Be(1, $"'{record.Name}' is not moved by the merge: it stays keyed to the soft-deleted duplicate");
-        (await record.CountOwnedBy(read, t.Survivor.Id)).Should().Be(0, $"nothing is copied to the kept employee for '{record.Name}'");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
     }
 
-    // ── 2. SKIPPED: the planned refusal ─────────────────────────────────────────────────────────────
+    // ── 2. The refusal ──────────────────────────────────────────────────────────────────────────────
 
-    [Theory(Skip = PendingDecision)]
+    [Theory]
     [MemberData(nameof(Blocking))]
     public async Task Merge_IsRefusedWith409NamingTheRecord_AndDeletesNothing_WhenTheDuplicateOwnsOne(OwnedRecord record)
     {
@@ -253,12 +258,84 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
 
         var conflict = Assert.IsAssignableFrom<ObjectResult>(result);
         conflict.StatusCode.Should().Be(StatusCodes.Status409Conflict);
-        System.Text.Json.JsonSerializer.Serialize(conflict.Value).Should().Contain("merge_blocked_by_records", "the body names the reason code")
-            .And.Contain(record.Name, "and the specific record type that blocks it");
+        using var body = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(conflict.Value));
+        var root = body.RootElement;
+        root.GetProperty("error").GetString().Should().Be("merge_blocked_by_records");
+        root.GetProperty("code").GetString().Should().Be("merge_blocked_by_records");
+        root.GetProperty("message").GetString().Should().NotBeNullOrWhiteSpace();
+        root.GetProperty("messageAr").GetString().Should().MatchRegex("[\\u0600-\\u06FF]");
+        var blockers = root.GetProperty("blockers").EnumerateArray().ToList();
+        blockers.Should().ContainSingle(b => b.GetProperty("type").GetString() == record.Type, $"'{record.Name}' is the one blocker seeded");
+        var b1 = blockers.Single(b => b.GetProperty("type").GetString() == record.Type);
+        b1.GetProperty("count").GetInt32().Should().Be(1);
+        b1.GetProperty("label").GetString().Should().NotBeNullOrWhiteSpace();
+        b1.GetProperty("labelAr").GetString().Should().MatchRegex("[\\u0600-\\u06FF]");
         (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse("a refused merge deletes nothing");
         await using var read = _fx.CreateDb();
         (await read.Employees.IgnoreQueryFilters().Where(e => e.Id == t.Duplicate.Id).Select(e => e.DuplicateOfEmployeeId).SingleAsync()).Should().BeNull();
         (await record.CountOwnedBy(read, t.Duplicate.Id)).Should().Be(1);
+        (await record.CountOwnedBy(read, t.Survivor.Id)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Merge_Refusal_ListsEveryBlockerWithItsCount()
+    {
+        var t = await SeedTwinsAsync();
+        await using (var seed = _fx.CreateDb())
+        {
+            foreach (var r in Catalogue().Where(r => r.Type is "open_loans" or "documents"))
+            {
+                await r.Seed(seed, t);
+                await r.Seed(seed, t); // two of each
+            }
+            await seed.SaveChangesAsync();
+        }
+
+        var conflict = Assert.IsAssignableFrom<ObjectResult>(await MergeAsync(t));
+
+        conflict.StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        using var body = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(conflict.Value));
+        var counts = body.RootElement.GetProperty("blockers").EnumerateArray().ToDictionary(b => b.GetProperty("type").GetString()!, b => b.GetProperty("count").GetInt32());
+        counts.Should().BeEquivalentTo(new Dictionary<string, int> { ["open_loans"] = 2, ["documents"] = 2 });
+    }
+
+    [Fact]
+    public async Task Merge_Refusal_LeavesNoPartialState()
+    {
+        var t = await SeedTwinsAsync();
+        Guid approvalId;
+        await using (var seed = _fx.CreateDb())
+        {
+            await Catalogue().Single(r => r.Type == "payroll_profile").Seed(seed, t); // WPS-ineligible by the seeder; flip it so a footprint change would show
+            await Catalogue().Single(r => r.Type == "salary_structures").Seed(seed, t);
+            var approval = new ApprovalRequest
+            {
+                TenantId = t.TenantId, RequestedForEmployeeId = t.Duplicate.Id, EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(), Status = "Pending",
+            };
+            approvalId = approval.Id;
+            seed.ApprovalRequests.Add(approval);
+            seed.EmployeeImportGaps.Add(new EmployeeImportGap { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, GapType = "dup:strong" });
+            await seed.SaveChangesAsync();
+            var profile = await seed.EmployeePayrollProfiles.SingleAsync(p => p.EmployeeId == t.Duplicate.Id);
+            profile.WpsEligible = true;
+            await seed.SaveChangesAsync();
+        }
+
+        var result = await MergeAsync(t);
+
+        Assert.IsAssignableFrom<ObjectResult>(result).StatusCode.Should().Be(StatusCodes.Status409Conflict);
+        await using var read = _fx.CreateDb();
+        var dup = await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id);
+        dup.IsDeleted.Should().BeFalse();
+        dup.Status.Should().Be("Active");
+        dup.DuplicateOfEmployeeId.Should().BeNull();
+        dup.PrivacyStatus.Should().BeEmpty();
+        dup.RetentionUntilUtc.Should().BeNull();
+        (await read.ApprovalRequests.IgnoreQueryFilters().SingleAsync(a => a.Id == approvalId)).Status.Should().Be("Pending", "no approval is cancelled by a refused merge");
+        (await read.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.EmployeeId == t.Duplicate.Id)).WpsEligible.Should().BeTrue();
+        (await read.EmployeeSalaryStructures.IgnoreQueryFilters().SingleAsync(x => x.EmployeeId == t.Duplicate.Id)).IsActive.Should().BeTrue();
+        (await read.EmployeeImportGaps.IgnoreQueryFilters().SingleAsync(g => g.EmployeeId == t.Duplicate.Id)).ResolvedAtUtc.Should().BeNull();
+        (await read.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == t.TenantId && a.Action == "employee.merged_into_existing")).Should().BeFalse();
     }
 }
 
