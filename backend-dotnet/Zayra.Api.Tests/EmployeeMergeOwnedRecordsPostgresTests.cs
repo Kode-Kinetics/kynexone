@@ -478,6 +478,102 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         Assert.IsType<OkObjectResult>(await MergeAsync(t));
         (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
     }
+
+    // ── 5. Unmerge needs the same permission as the merge, and only undoes what the merge did ───────
+
+    private async Task MarkMergedAsync(Twins t)
+    {
+        await using var db = _fx.CreateDb();
+        var dup = await db.Employees.SingleAsync(e => e.Id == t.Duplicate.Id);
+        dup.IsDeleted = true;
+        dup.DuplicateOfEmployeeId = t.Survivor.Id;
+        dup.Status = "Inactive";
+        await db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Unmerge_WithoutTheDeletePermission_Is403WithACodeAndBothLanguages_AndRestoresNothing()
+    {
+        var t = await SeedTwinsAsync();
+        await MarkMergedAsync(t);
+
+        IActionResult result;
+        await using (var db = _fx.CreateDb())
+            result = await Controller(db, t, mayDelete: false).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None);
+
+        var forbidden = Assert.IsAssignableFrom<ObjectResult>(result);
+        forbidden.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
+        using var body = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(forbidden.Value));
+        body.RootElement.GetProperty("error").GetString().Should().Be("unmerge_requires_delete_permission");
+        body.RootElement.GetProperty("code").GetString().Should().Be("unmerge_requires_delete_permission");
+        body.RootElement.GetProperty("message").GetString().Should().NotBeNullOrWhiteSpace();
+        body.RootElement.GetProperty("messageAr").GetString().Should().MatchRegex("[\\u0600-\\u06FF]");
+        body.RootElement.GetProperty("requiredPermission").GetString().Should().Be("employees.delete");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue("a refused unmerge restores nothing");
+    }
+
+    [Fact]
+    public async Task Unmerge_WithTheDeletePermission_RestoresTheRecord()
+    {
+        var t = await SeedTwinsAsync();
+        await MarkMergedAsync(t);
+
+        await using var db = _fx.CreateDb();
+        var result = await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse();
+    }
+
+    private async Task<Dictionary<string, bool>> UnmergeWithStructuresAsync(Twins t, int mergeDeactivated, params (string Name, int EffectiveYear)[] inactiveStructures)
+    {
+        await MarkMergedAsync(t);
+        await using (var seed = _fx.CreateDb())
+        {
+            foreach (var (name, year) in inactiveStructures)
+                seed.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+                {
+                    TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, SalaryStructureId = Guid.NewGuid(), BasicSalary = 1000m * year, Currency = name,
+                    EffectiveDate = new DateOnly(year, 1, 1), IsActive = false,
+                });
+            if (mergeDeactivated > 0)
+                seed.AuditLogs.Add(new AuditLog
+                {
+                    TenantId = t.TenantId, Action = "employee.payroll_footprint_deactivated", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(),
+                    Metadata = System.Text.Json.JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = mergeDeactivated, profileDeactivated = 0 }),
+                });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        return await read.EmployeeSalaryStructures.IgnoreQueryFilters().Where(x => x.EmployeeId == t.Duplicate.Id).ToDictionaryAsync(x => x.Currency, x => x.IsActive);
+    }
+
+    [Fact]
+    public async Task Unmerge_DoesNotReactivate_ASalaryStructureThatWasAlreadyInactiveBeforeTheMerge()
+    {
+        var t = await SeedTwinsAsync();
+
+        // The merge deactivated nothing (no footprint audit row): the only structure is an old, closed one and it must stay closed.
+        var states = await UnmergeWithStructuresAsync(t, mergeDeactivated: 0, ("closed-2021", 2021));
+
+        states["closed-2021"].Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Unmerge_ReactivatesOnlyAsManyStructuresAsTheMergeDeactivated_LatestFirst()
+    {
+        var t = await SeedTwinsAsync();
+
+        // The merge deactivated exactly one structure; an older closed one existed before and must stay closed.
+        var states = await UnmergeWithStructuresAsync(t, mergeDeactivated: 1, ("closed-2021", 2021), ("was-active-2024", 2024));
+
+        states["was-active-2024"].Should().BeTrue("the merge deactivated it, so unmerge puts it back");
+        states["closed-2021"].Should().BeFalse("it was already inactive before the merge");
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService

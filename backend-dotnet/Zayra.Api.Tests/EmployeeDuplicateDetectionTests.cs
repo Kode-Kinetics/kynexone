@@ -711,6 +711,11 @@ public class EmployeeDuplicateDetectionTests
         // before that refusal existed would have left it): soft-deleted, linked, payroll profile ineligible, structure deactivated.
         db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t, EmployeeId = dupId, WpsEligible = false });
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = dupId, IsActive = false, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow) });
+        db.AuditLogs.Add(new AuditLog
+        {
+            TenantId = t, Action = "employee.payroll_footprint_deactivated", EntityName = "Employee", EntityId = dupId.ToString(),
+            Metadata = JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = 1, profileDeactivated = 1 }),
+        });
         var mergedRow = await db.Employees.SingleAsync(e => e.Id == dupId);
         mergedRow.IsDeleted = true;
         mergedRow.DuplicateOfEmployeeId = survivor.Id;

@@ -5330,6 +5330,16 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "unmerge")
         {
+            // Undoing a merge restores a record the merge removed, so it needs the same permission as the merge (and as DELETE).
+            if (!User.HasPermission("employees.delete"))
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    error = "unmerge_requires_delete_permission",
+                    code = "unmerge_requires_delete_permission",
+                    message = "Undoing a merge restores a record that the merge removed, so it needs the Delete employees permission.",
+                    messageAr = "التراجع عن الدمج يعيد سجلاً أزاله الدمج، لذلك يتطلب صلاحية حذف الموظفين.",
+                    requiredPermission = "employees.delete",
+                });
             // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the
             // record; payroll reactivation is best-effort (re-marks WPS-eligible + reactivates the latest
             // salary structure) — a deep field-level reconciliation is out of scope for this slice.
@@ -5350,10 +5360,34 @@ public class EmployeesController : ControllerBase
             var profiles = await _db.EmployeePayrollProfiles
                 .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted).ToListAsync(ct);
             foreach (var p in profiles) { p.WpsEligible = true; p.UpdatedAtUtc = DateTime.UtcNow; p.UpdatedBy = context.UserId; }
-            var latestStructure = await _db.EmployeeSalaryStructures
-                .Where(x => x.TenantId == tenantId && x.EmployeeId == id)
-                .OrderByDescending(x => x.EffectiveDate).FirstOrDefaultAsync(ct);
-            if (latestStructure is not null) latestStructure.IsActive = true;
+            // Put back only what the merge took away. The merge records how many salary structures it deactivated; a structure that was
+            // already inactive before the merge (a closed, historical package) must stay closed, so with no such record nothing is
+            // reactivated, and otherwise at most that many, latest effective date first.
+            var mergeFootprints = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Unmerge reads the merge's own footprint audit row, whatever company it was written under; the tenant is pinned.")
+                .Where(a => a.Action == "employee.payroll_footprint_deactivated" && a.EntityId == id.ToString() && a.Metadata != null)
+                .OrderByDescending(a => a.CreatedAtUtc)
+                .Select(a => a.Metadata)
+                .Take(20)
+                .ToListAsync(ct);
+            var mergeFootprint = mergeFootprints.FirstOrDefault(m => m is not null && m.Contains("merged_duplicate"));
+            var toReactivate = 0;
+            if (mergeFootprint is not null)
+            {
+                try
+                {
+                    using var footprint = JsonDocument.Parse(mergeFootprint);
+                    if (footprint.RootElement.TryGetProperty("salaryDeactivated", out var n) && n.TryGetInt32(out var count)) toReactivate = Math.Max(0, count);
+                }
+                catch (JsonException) { /* an unreadable row proves nothing was deactivated: reactivate nothing */ }
+            }
+            if (toReactivate > 0)
+            {
+                var closed = await _db.EmployeeSalaryStructures
+                    .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsActive)
+                    .OrderByDescending(x => x.EffectiveDate).Take(toReactivate).ToListAsync(ct);
+                foreach (var structure in closed) structure.IsActive = true;
+            }
 
             await _db.SaveChangesAsync(ct);
             await RefreshReadinessByIdAsync(tenantId, id, ct);
