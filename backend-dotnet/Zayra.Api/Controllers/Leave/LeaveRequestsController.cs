@@ -73,7 +73,9 @@ public class LeaveRequestsController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        return Ok(new PagedResult<LeaveRequest>(items, total, page, pageSize));
+        // The attachment key is the handle to a medical document: only the leave's employee and HR see it.
+        var shown = items.Select(i => LeaveFileKeyExposure.ForReader(_db, i, User, scope)).ToList();
+        return Ok(new PagedResult<LeaveRequest>(shown, total, page, pageSize));
     }
 
     /// <summary>The most pending requests one queue read examines; <c>truncated</c> says when there were more.</summary>
@@ -245,7 +247,7 @@ public class LeaveRequestsController : ControllerBase
             };
         }
 
-        return Ok(new { request, approvals, statutoryHistory, statutory, cancellation });
+        return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope), approvals, statutoryHistory, statutory, cancellation });
     }
 
     /// <summary>
@@ -650,10 +652,10 @@ public class LeaveRequestsController : ControllerBase
             if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
         }
 
-        var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
-        if (!withdrawable.Contains(leaveRequest.Status))
         // The fast path; LeaveService repeats this check under the employee's leave lock, so a final approval that
         // commits between this read and the write cannot be overwritten.
+        var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+        if (!withdrawable.Contains(leaveRequest.Status))
             return BadRequest(new { message = "Only unapproved requests can be withdrawn." });
 
         var employeeName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";

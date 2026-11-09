@@ -9,6 +9,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Attendance;
 using Zayra.Api.Infrastructure.Authorization;
@@ -931,6 +932,34 @@ public class EmployeeSelfServiceController : ControllerBase
             || (!normalizedStorage.StartsWith(localPrefix, StringComparison.OrdinalIgnoreCase)
                 && !normalizedStorage.StartsWith(objectPrefix, StringComparison.OrdinalIgnoreCase)))
             return BadRequest(new { message = "Document storage reference is not owned by this tenant." });
+
+        // This legacy endpoint turns a CLIENT-supplied storage key into a document of the caller's, which the caller can then
+        // download. The tenant prefix is the only thing that used to be checked, so a key learnt from another employee's leave
+        // request (the leave payload carried its attachment key) or document became a download of that colleague's file.
+        // The multipart POST /api/ess/documents generates the key on the server and replaces this. Until nothing calls this,
+        // refuse any key somebody else already holds, in any spelling that resolves to the same stored object.
+        //   RESIDUAL RISK: a key that exists in storage but is referenced by NO row (an orphan) can still be claimed by whoever
+        //   knows it. Keys are "<guid>_<name>" and were never listed to anyone but the leave payload (now redacted), so
+        //   guessing one is infeasible; closing it fully means retiring this endpoint.
+        var segments = normalizedStorage.Split('/');
+        if (segments.Any(segment => segment.Length == 0 || segment == "."))
+            return BadRequest(new { message = "Document storage reference is not valid. Upload the file with POST /api/ess/documents." });
+        var heldKey = normalizedStorage.ToLowerInvariant();
+        // Whether ANOTHER employee (or the company) already holds this key must see soft-deleted rows and every company's
+        // rows, so the company filter is dropped through the sanctioned bypass (the tenant is re-applied by it).
+        var heldByAnotherDocument = await ScopedBypass.TenantWide(_db.EmployeeDocuments, tenantId,
+                "a storage key held by another employee's or the company's document, in any company, deleted or not, must not be re-registered")
+            .AsNoTracking()
+            .AnyAsync(d => (d.EmployeeId == null || d.EmployeeId != employeeId)
+                && d.StorageUrl.Replace("\\", "/").ToLower() == heldKey, cancellationToken);
+        var heldByAnotherLeave = !heldByAnotherDocument && await ScopedBypass.TenantWide(_db.LeaveRequests, tenantId,
+                "a storage key held by another employee's leave attachment, in any company, must not be re-registered")
+            .AsNoTracking()
+            .AnyAsync(r => r.EmployeeId != employeeId
+                && r.AttachmentPath.Replace("\\", "/").ToLower() == heldKey, cancellationToken);
+        if (heldByAnotherDocument || heldByAnotherLeave)
+            return BadRequest(new { message = "Document storage reference is not valid. Upload the file with POST /api/ess/documents." });
+
         var document = new EmployeeDocument
         {
             TenantId = tenantId,
