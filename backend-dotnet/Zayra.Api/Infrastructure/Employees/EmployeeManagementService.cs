@@ -667,7 +667,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         // Normalised ONCE, here, so the row we persist and the audit evidence we write are the same
         // string. Serialising request.SeparationType instead logged "ARTICLE80" against a stored
         // "Article80" — the evidence line for a gratuity-determining fact not matching the fact.
-        var separationType = NormalizeSeparationType(request.SeparationType);
+        var separationType = NormalizeSeparationType(SeparationTypeImpliedByStatus(request.Status) ?? request.SeparationType);
         var cancelledSeparationIds = new List<Guid>();
         // Deliberately NOT conditioned on oldStatus. An earlier revision also required the PREVIOUS
         // status to be non-exit, which quietly excluded the exact population this fix exists for:
@@ -1397,6 +1397,16 @@ public class EmployeeManagementService : IEmployeeManagementService
             return false;
         }
     }
+
+    /// <summary>
+    /// The separation type a STATUS already states. A retirement is a Retirement and a death is a Death, whatever the caller sent
+    /// (the status PATCH route sends none), instead of defaulting to Termination. These are existing members of
+    /// <see cref="AllowedSeparationTypes"/>. Any other status states nothing and the request's own value (or the default) applies.
+    /// </summary>
+    private static string? SeparationTypeImpliedByStatus(string status) =>
+        string.Equals(status, "Retired", StringComparison.OrdinalIgnoreCase) ? "Retirement"
+        : string.Equals(status, "Deceased", StringComparison.OrdinalIgnoreCase) ? "Death"
+        : null;
 
     public static string NormalizeSeparationType(string? requested)
     {

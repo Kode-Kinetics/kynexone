@@ -103,6 +103,20 @@ public sealed class EmployeeSeparatedStatusPostgresTests
     }
 
     [Theory]
+    [InlineData("Terminated", "Termination")]
+    [InlineData("Retired", "Retirement")]
+    [InlineData("Deceased", "Death")]
+    public async Task EndingEmployment_RecordsTheSeparationTypeThatMatchesTheStatus_NotAlwaysTermination(string status, string expectedType)
+    {
+        var s = await SeedAsync(withLogin: false);
+
+        Assert.IsType<OkObjectResult>(await ChangeAsync(_fx, s, status));
+
+        await using var read = _fx.CreateDb();
+        (await read.EmployeeOffboardings.IgnoreQueryFilters().SingleAsync(o => o.EmployeeId == s.Employee.Id)).SeparationType.Should().Be(expectedType);
+    }
+
+    [Theory]
     [InlineData("Terminated")]
     [InlineData("Retired")]
     [InlineData("Deceased")]

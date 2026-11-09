@@ -123,7 +123,7 @@ public static class ManpowerReconClassifier
 {
     private static readonly HashSet<string> SeparatedStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Offboarded", "Terminated", "Exited", "Archived",
+        "Offboarded", "Terminated", "Exited", "Archived", "Retired", "Deceased",
     };
 
     private static readonly HashSet<string> NotActiveStatuses = new(StringComparer.OrdinalIgnoreCase)
