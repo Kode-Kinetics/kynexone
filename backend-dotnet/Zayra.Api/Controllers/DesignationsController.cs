@@ -128,9 +128,12 @@ public class DesignationsController : ControllerBase
 
     /// <summary>
     /// What the designation form may offer the signed-in user for designation-driven access: whether the feature is on, whether they
-    /// may configure it (security.manage), and the roles they may give (never a privileged one, nor one above their own access).
+    /// may configure it, and the roles they may give (never a privileged one, nor one above their own access). Only someone holding
+    /// security.manage may ask: it is the same permission the save requires, so nobody else is told anything about the setting.
     /// </summary>
     [HttpGet("access-options")]
+    [HasPermission("security.manage")]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<DesignationAccessOptions>> AccessOptions(CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();

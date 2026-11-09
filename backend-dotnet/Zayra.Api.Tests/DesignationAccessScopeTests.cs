@@ -1,4 +1,7 @@
+using System.Reflection;
 using FluentAssertions;
+using Zayra.Api.Controllers;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Tests.Security;
 
 namespace Zayra.Api.Tests;
@@ -40,5 +43,13 @@ public sealed class DesignationAccessScopeTests
         var service = SourceScan.StripCSharpComments(File.ReadAllText(Path.Combine(SourceScan.ResolveApiRoot(), "Infrastructure", "Auth", "DesignationAccessService.cs")));
         foreach (var forbidden in new[] { "Salary", "Allowance", "Benefit", "Payroll", "PayComponent", "Grade" })
             service.Should().NotContain(forbidden, $"designation access must not reach {forbidden}");
+    }
+
+    [Fact]
+    public void The_access_options_endpoint_answers_only_to_someone_holding_security_manage()
+    {
+        var method = typeof(DesignationsController).GetMethod(nameof(DesignationsController.AccessOptions))!;
+        method.GetCustomAttributes<HasPermissionAttribute>().Should().ContainSingle(a => a.Policy!.EndsWith("security.manage"),
+            "the form's option list is only for people who may set designation access, so it needs the same permission as the save");
     }
 }
