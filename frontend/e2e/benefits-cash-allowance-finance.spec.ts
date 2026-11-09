@@ -112,7 +112,7 @@ for (const locale of ['en', 'ar'] as const) {
 
     test('without the Finance permission there is no Waiting for Finance list', async ({ page }) => {
       const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage'], () => withAllowances([waiting]));
-      await expect(page.getByTestId('waiting-for-finance')).toHaveCount(1);   // the row badge stays
+      await expect(page.getByTestId('row-chip').filter({ hasText: say(locale, 'Waiting for Finance') })).toHaveCount(1);   // the row chip stays
       await expect(page.getByTestId('waiting-for-finance-list')).toHaveCount(0);
       expect(errors).toEqual([]);
     });
