@@ -702,7 +702,7 @@ function DailyTable({ records, loading, compact, empty }: { records: AttendanceD
                   <StatusChip label={enumLabel(t, 'AttendanceStatus', r.status)} tone={statusTone(r.status)} dot={!compact} />
                 </div>
                 <p className="text-meta text-fg-muted"><bdi>{r.department || r.branch}</bdi></p>
-                <p className="text-body text-fg"><bdi className="font-mono">{time(r.firstInUtc)}</bdi> → <bdi className="font-mono">{time(r.lastOutUtc)}</bdi></p>
+                <p className="text-body text-fg"><bdi className="font-mono">{time(r.firstInUtc)}</bdi> – <bdi className="font-mono">{time(r.lastOutUtc)}</bdi></p>
                 {(r.missingPunch || r.lateMinutes > 0) && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     {r.missingPunch && <StatusChip label={t('Missing punch')} tone="rose" dot />}
