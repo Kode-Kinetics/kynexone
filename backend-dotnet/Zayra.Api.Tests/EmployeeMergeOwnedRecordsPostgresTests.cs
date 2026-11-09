@@ -882,6 +882,38 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == done)).Status.Should().Be("Completed");
         (await read.EmployeeHistories.IgnoreQueryFilters().CountAsync(h => h.EmployeeId == t.Duplicate.Id && h.EventType == "TransferWithdrawn")).Should().Be(1);
     }
+
+    [Fact]
+    public async Task Unmerge_PutsTheRecordBackToItsPreMergeStatus_AndWritesAStatusHistoryRow()
+    {
+        var t = await SeedTwinsAsync();   // the duplicate is an Active imported twin with no status history of its own
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id)).Status.Should().Be("Active", "it comes back as it was, not forced to Draft");
+        var rows = await read.EmployeeStatusHistories.IgnoreQueryFilters().Where(h => h.EmployeeId == t.Duplicate.Id).ToListAsync();
+        rows.Should().Contain(h => h.OldStatus == "Inactive" && h.NewStatus == "Active", "the transition is recorded");
+    }
+
+    [Fact]
+    public async Task Unmerge_OfAnOldMergeThatRecordedNoStatus_FallsBackToDraft_AndSaysSoInTheHistory()
+    {
+        var t = await SeedTwinsAsync();
+        await MarkMergedAsync(t);   // a merge made before the pre-merge status was recorded: no audit row to read it from
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id)).Status.Should().Be("Draft");
+        var row = await read.EmployeeStatusHistories.IgnoreQueryFilters().SingleAsync(h => h.EmployeeId == t.Duplicate.Id);
+        row.OldStatus.Should().Be("Inactive");
+        row.NewStatus.Should().Be("Draft");
+        row.Reason.Should().Contain("not recorded");
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService

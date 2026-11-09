@@ -5308,6 +5308,7 @@ public class EmployeesController : ControllerBase
 
             var mergedAt = DateTime.UtcNow;
             var mergedCode = duplicate.EmployeeCode;
+            var previousStatus = duplicate.Status;   // recorded in the merge audit row so an unmerge can put it back
             duplicate.DuplicateOfEmployeeId = intoId;
             duplicate.IsDeleted = true;
             duplicate.DeletedAtUtc = mergedAt;
@@ -5380,6 +5381,7 @@ public class EmployeesController : ControllerBase
                 reroutedApprovals = rerouted,
                 clearedGaps = openGaps.Count,
                 heldSharedLogins = heldLoginIds.Count,
+                previousStatus,
                 credentials = new
                 {
                     links = revokedCredentials.Links,
@@ -5436,7 +5438,33 @@ public class EmployeesController : ControllerBase
             merged.DeletedBy = null;
             merged.RetentionUntilUtc = null;
             merged.PrivacyStatus = string.Empty;
-            merged.Status = "Draft";
+            // Back to the status it had before the merge, read from the merge's own audit row. A merge made before that was recorded has
+            // nothing to read: it falls back to Draft (the longstanding behaviour; Active is never assumed) and the status history says so.
+            var mergeAudits = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                    "Unmerge reads the merge's own audit row, whatever company it was written under; the tenant is pinned.")
+                .Where(a => a.Action == "employee.merged_into_existing" && a.EntityId == id.ToString() && a.Metadata != null)
+                .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).Take(5).ToListAsync(ct);
+            string? recordedStatus = null;
+            foreach (var meta in mergeAudits)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(meta!);
+                    if (doc.RootElement.TryGetProperty("previousStatus", out var ps) && ps.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(ps.GetString()))
+                    { recordedStatus = ps.GetString(); break; }
+                }
+                catch (JsonException) { /* an unreadable row proves nothing */ }
+            }
+            var statusBeforeUnmerge = merged.Status;
+            merged.Status = recordedStatus ?? "Draft";
+            _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
+            {
+                TenantId = tenantId, EmployeeId = id, OldStatus = statusBeforeUnmerge ?? string.Empty, NewStatus = merged.Status,
+                EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow), ChangedByUserId = context.UserId,
+                Reason = recordedStatus is null
+                    ? "Merge undone. The status before the merge was not recorded (an older merge), so the record returns to Draft."
+                    : "Merge undone. The record returns to the status it had before the merge.",
+            });
             merged.DuplicateOfEmployeeId = null;
 
             var profiles = await _db.EmployeePayrollProfiles
