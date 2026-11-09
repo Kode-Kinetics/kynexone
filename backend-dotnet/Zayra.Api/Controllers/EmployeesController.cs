@@ -7421,7 +7421,9 @@ public static class ExitEmployeeStatuses
     /// Excludes Offboarded — notice-period staff may still be paid and a rescind must stay clean.</summary>
     public static readonly string[] PayrollDeactivation =
     {
-        EmployeeStatuses.Archived, EmployeeStatuses.Terminated, EmployeeStatuses.Exited
+        EmployeeStatuses.Archived, EmployeeStatuses.Terminated, EmployeeStatuses.Exited,
+        // Retired and Deceased are over too: they leave the bank file and get a separation record, like Terminated.
+        "Retired", "Deceased"
     };
 }
 internal sealed class DraftApprovalValidationException : InvalidOperationException

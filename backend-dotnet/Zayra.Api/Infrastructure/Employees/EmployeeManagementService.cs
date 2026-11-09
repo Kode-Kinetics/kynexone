@@ -616,7 +616,10 @@ public class EmployeeManagementService : IEmployeeManagementService
             or EmployeeStatuses.Inactive
             or EmployeeStatuses.Terminated
             or EmployeeStatuses.Archived
-            or EmployeeStatuses.Exited;
+            or EmployeeStatuses.Exited
+            // Retired and Deceased end employment as surely as Terminated does: the login and its tokens close with the status.
+            or "Retired"
+            or "Deceased";
         var invalidatedLinks = 0;
         var invalidatedUsers = 0;
         var invalidatedPasswordResets = 0;
