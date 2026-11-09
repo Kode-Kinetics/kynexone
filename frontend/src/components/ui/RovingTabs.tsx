@@ -19,6 +19,8 @@ interface RovingTabListProps<T extends string> {
   label: string;
   variant?: 'pill' | 'underline';
   compact?: boolean;
+  /** Opt in: a chevron at each clipped edge of a strip wider than its container. Off by default, so no screen changes unless it asks. */
+  scrollCue?: boolean;
 }
 
 /**
@@ -34,6 +36,7 @@ export function RovingTabList<T extends string>({
   label,
   variant = 'pill',
   compact = false,
+  scrollCue = false,
 }: RovingTabListProps<T>) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const activeIndex = items.findIndex((item) => item.id === activeId);
@@ -46,9 +49,10 @@ export function RovingTabList<T extends string>({
   // Distances are measured from the inline start, so the same arithmetic holds in right-to-left.
   const scroller = useRef<HTMLDivElement>(null);
   const [cue, setCue] = useState({ start: false, end: false });
+  const tablist = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scroller.current;
-    if (!el) return;
+    if (!scrollCue || !el) return;
     const measure = () => {
       const max = el.scrollWidth - el.clientWidth;
       const pos = Math.abs(el.scrollLeft);
@@ -59,10 +63,12 @@ export function RovingTabList<T extends string>({
     };
     measure();
     el.addEventListener('scroll', measure, { passive: true });
+    // Observe the container and the tab list itself: a language switch or a late font changes the tabs' widths, not the container's.
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     observer?.observe(el);
+    if (tablist.current) observer?.observe(tablist.current);
     return () => { el.removeEventListener('scroll', measure); observer?.disconnect(); };
-  }, [items.length]);
+  }, [scrollCue, items.length]);
 
   const move = (index: number, event: React.KeyboardEvent<HTMLButtonElement>) => {
     let next = index;
@@ -80,12 +86,9 @@ export function RovingTabList<T extends string>({
     ? 'kx-tabs-pill'
     : 'kx-tabs-underline';
 
-  return (
-    <div className="relative" data-roving-tabs={idPrefix}>
-    {cue.start && <TabsCue edge="start" />}
-    {cue.end && <TabsCue edge="end" />}
-    <div ref={scroller} className="overflow-x-auto pb-1">
-      <div className={`flex w-max min-w-full items-center gap-1 ${shell}`} role="tablist" aria-label={label}>
+  const strip = (
+    <div ref={scroller} className="overflow-x-auto pb-1" data-roving-tabs={idPrefix}>
+      <div ref={tablist} className={`flex w-max min-w-full items-center gap-1 ${shell}`} role="tablist" aria-label={label}>
         {items.map((item, index) => {
           const selected = item.id === activeId;
           const Icon = item.icon;
@@ -119,6 +122,13 @@ export function RovingTabList<T extends string>({
         })}
       </div>
     </div>
+  );
+  if (!scrollCue) return strip;
+  return (
+    <div className="relative">
+      {cue.start && <TabsCue edge="start" />}
+      {cue.end && <TabsCue edge="end" />}
+      {strip}
     </div>
   );
 }

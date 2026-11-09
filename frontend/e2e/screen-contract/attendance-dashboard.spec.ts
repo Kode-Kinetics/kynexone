@@ -55,7 +55,7 @@ for (const locale of LOCALES) {
       expect(m.hostWidth, 'table width').toBeGreaterThanOrEqual(900);
       expect(m.overflow, 'table scrolls sideways by (px)').toBeLessThanOrEqual(0);
       expect(m.firstRowBottom, 'first row bottom edge').toBeLessThanOrEqual(VIEWPORTS.desktop.height);
-      expect(m.visibleRows, 'rows visible without scrolling').toBeGreaterThanOrEqual(10);
+      expect(m.visibleRows, 'rows visible without scrolling').toBeGreaterThanOrEqual(12);
     });
 
     test('space: at 320 the table has no horizontal scroll and no document overflow', async ({ page }) => {
@@ -250,12 +250,16 @@ for (const locale of LOCALES) {
       const region = recordRegion(page, locale);
       await region.getByRole('button', { name: t(locale, 'Select all shown') }).click();
       await region.getByLabel(t(locale, 'Reason (required)')).fill('Device offline');
+      await expect(page.locator('[data-page-header] [role="status"]'), 'mounted before the chip').toHaveCount(1);
       await region.getByRole('button', { name: /×/ }).click();
       await header(page).click();
       await expect(region).toBeHidden();
-      const chip = page.locator('[data-page-header] [role="status"]').filter({ hasText: t(locale, 'Recording {done} of {total}', { done: 0, total: 14 }) });
+      const live = page.locator('[data-page-header] [role="status"]');
+      const chip = page.locator('[data-page-header]').getByRole('button', { name: /14/ });
       await expect(chip).toBeVisible();
-      await chip.getByRole('button').click();
+      await expect(live, 'the run is announced through that same region').toContainText(/14/);
+      await expect(chip.locator('[data-essential-motion]'), 'the spinner is essential motion').toHaveCount(1);
+      await chip.click();
       await expect(region).toBeVisible();
       await expect(chip, 'gone once the run has finished').toHaveCount(0, { timeout: 15_000 });
     });
@@ -406,6 +410,31 @@ for (const locale of LOCALES) {
       await expect(page.locator('[data-tabs-cue]').first()).toBeVisible();
       await page.setViewportSize(VIEWPORTS.desktop);
       await expect(page.locator('[data-tabs-cue]')).toHaveCount(0);
+    });
+
+    test('panel: the run chip sits in the action area and never wraps the purpose line (keeps 12 rows)', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await page.route('**/api/attendance/events/bulk-entry', async route => {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        await route.fulfill({ json: { requested: 1, created: 1, duplicates: 0, failed: 0, errors: [] } });
+      });
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await region.getByRole('button', { name: t(locale, 'Select all shown') }).click();
+      await region.getByLabel(t(locale, 'Reason (required)')).fill('Device offline');
+      await region.getByRole('button', { name: /×/ }).click();
+      await header(page).click();
+      await expect(page.locator('[data-page-header]').getByRole('button', { name: /14/ })).toBeVisible();
+      const purpose = await page.locator('[data-purpose]').boundingBox();
+      expect(purpose!.height, 'purpose line height (one line)').toBeLessThanOrEqual(24);
+    });
+
+    test('filters: idle tiles say they filter in visible text on a phone, not only in a hover title', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-kpi-hint]')).toBeVisible();
+      await expect(page.locator('[data-kpi-hint]')).toHaveText(t(locale, 'Tap a count to filter the records.'));
     });
 
     for (const [name, viewport] of Object.entries(VIEWPORTS)) {

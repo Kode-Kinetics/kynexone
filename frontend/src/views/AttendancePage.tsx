@@ -406,20 +406,20 @@ export function AttendancePage() {
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <PageHeader
         title={t('Attendance workspace')}
         purpose={activeTab === 'dashboard'
           ? t('See who is in, late or missing on a day, and record the punches that are missing.')
           : t('Review punches, device health, corrections, processing, payroll impacts, and exceptions from available data sources.')}
         actions={<>
+          {/* One live region, always mounted (a region that appears with its content is often not announced); only its text changes. */}
+          <span role="status" className="sr-only">{runProgress && !showRecord ? t('Recording {done} of {total}', { done: runProgress.done, total: runProgress.total }) : ''}</span>
           {runProgress && !showRecord && (
             // A run keeps going while the panel is closed; this chip says so and brings the panel back.
-            <span role="status">
-              <button type="button" className="btn-secondary" onClick={openRecord}>
-                <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />{t('Recording {done} of {total}', { done: runProgress.done, total: runProgress.total })}
-              </button>
-            </span>
+            <button type="button" className="btn-secondary h-control-sm px-2 text-meta" onClick={openRecord}>
+              <RefreshCw data-essential-motion className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />{t('Recording {done} of {total}', { done: runProgress.done, total: runProgress.total })}
+            </button>
           )}
           <ModuleSettingsLink sections={['attendanceRules', 'attendanceDevices']} label={msg('Attendance settings')} />
         </>}
@@ -439,9 +439,9 @@ export function AttendancePage() {
       {message && <ResultBanner key={messageSeq} changed={message} next={messageNext} onDismiss={() => { setMessage(''); setMessageNext(undefined); }} />}
 
       {attendanceErrorSummary(loadErrors) && (
-        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-soft px-4 py-3 text-body text-warning-fg">
           <span>{attendanceErrorSummary(loadErrors)} {t('Successful sections remain available.')}</span>
-          <button type="button" onClick={load} disabled={loading} className="btn-secondary h-8 px-3 text-xs">{t('Retry data sources')}</button>
+          <button type="button" onClick={load} disabled={loading} className="btn-secondary h-8 px-3 text-meta">{t('Retry data sources')}</button>
         </div>
       )}
 
@@ -450,6 +450,7 @@ export function AttendancePage() {
         activeId={activeTab}
         onChange={setActiveTab}
         idPrefix="attendance"
+        scrollCue
         label={t('Attendance workspace sections')}
       />
 
@@ -458,16 +459,20 @@ export function AttendancePage() {
 
       <TabPanel idPrefix="attendance" tabId={activeTab}>
       {activeTab === 'dashboard' && (
-        <div className="space-y-5">
+        <div className="space-y-3">
           {/* One row: the day's counts as filter buttons, then the date, status and Refresh they act on. */}
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
-              <div role="group" aria-label={t('Attendance at a glance')} aria-describedby="attendance-kpi-hint" className="surface grid min-w-0 grow grid-cols-2 gap-2 p-1 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
+              <div className="min-w-0 grow sm:grow-0">
+              <div role="group" aria-label={t('Attendance at a glance')} aria-describedby="attendance-kpi-hint" className="surface grid min-w-0 grow grid-cols-2 gap-2 p-0.5 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
                 <span id="attendance-kpi-hint" className="sr-only">{t('Select a count to show only those records.')}</span>
                 <KpiTile label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" pressed={statusFilter === 'Present'} onClick={() => toggleStatusTile('Present')} />
                 <KpiTile label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" pressed={statusFilter === 'Absent'} onClick={() => toggleStatusTile('Absent')} />
                 <KpiTile label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" pressed={statusFilter === 'Late'} onClick={() => toggleStatusTile('Late')} />
                 <KpiTile label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" pressed={missingOnly} onClick={toggleMissingTile} />
+              </div>
+              {/* Touch has no hover title: say it in words where a finger will see it. */}
+              <p data-kpi-hint aria-hidden="true" className="hidden px-1 pt-1 text-caption text-fg-subtle max-sm:block [@media(pointer:coarse)]:block">{t('Tap a count to filter the records.')}</p>
               </div>
             )}
             {controls}
@@ -632,7 +637,7 @@ export function AttendancePage() {
             {insightsUnavailable ? <DomainUnavailable message={insightsUnavailable} /> : <InsightList insights={insights} />}
           </Panel>
           <Panel title={t('Human Review Guardrails')}>
-            <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+            <div className="space-y-3 text-body text-fg-muted">
               <Guardrail text={t('Insights surface anomalies, buddy-punching risk, late trends, and sync failures.')} />
               <Guardrail text={t('Insights never reject corrections, penalize employees, or finalize payroll decisions.')} />
               <Guardrail text={t('Payroll impacts remain pending until approved records are reviewed by authorized users.')} />
@@ -652,15 +657,15 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
     rose: 'text-rose-500 bg-rose-500/10',
     amber: 'text-amber-500 bg-amber-500/10',
     blue: 'text-sapphire bg-sapphire/10',
-    slate: 'text-slate-500 bg-slate-500/10',
+    slate: 'text-fg-muted bg-slate-500/10',
   }[tone];
   return (
     <div className="surface p-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{label}</p>
+        <p className="text-meta font-semibold uppercase tracking-wide text-fg-subtle">{label}</p>
         <span className={`grid h-9 w-9 place-items-center rounded-lg ${color}`}><Icon className="h-4 w-4" /></span>
       </div>
-      <p className="mt-3 text-2xl font-semibold text-slate-950 dark:text-white">{value === 'Unavailable' ? t('Unavailable') : value}</p>
+      <p className="mt-3 text-2xl font-semibold text-fg">{value === 'Unavailable' ? t('Unavailable') : value}</p>
     </div>
   );
 }
@@ -746,7 +751,7 @@ function DailyTable({ records, loading, compact, empty }: { records: AttendanceD
           </ul>
           <div className="hidden overflow-x-auto sm:block">
             <table className="w-full text-body">
-              <thead><tr className="border-b border-line">{heads.map((h) => <th key={h} scope="col" className="px-4 py-2 text-start text-meta font-semibold uppercase tracking-wide text-fg-muted">{t(h)}</th>)}</tr></thead>
+              <thead><tr className="border-b border-line">{heads.map((h) => <th key={h} scope="col" className="px-4 py-1.5 text-start text-meta font-semibold uppercase tracking-wide text-fg-muted">{t(h)}</th>)}</tr></thead>
               <tbody className="divide-y divide-line">
                 {records.map((r) => (
                   <tr key={r.id} className="hover:bg-surface-sunken">
@@ -786,14 +791,14 @@ function RawTable({ rows, canViewSelfie }: { rows: AttendanceRawEvent[]; canView
   if (rows.length === 0) return <Empty text={t('No raw attendance events found for this date.')} />;
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{[msg('Timestamp'), msg('Employee'), msg('Source'), msg('Direction'), msg('Method'), msg('Processed')].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{t(h)}</th>)}{canViewSelfie && <th className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Selfie')}</th>}</tr></thead>
-        <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
+      <table className="w-max min-w-full text-body">
+        <thead><tr className="border-b border-line">{[msg('Timestamp'), msg('Employee'), msg('Source'), msg('Direction'), msg('Method'), msg('Processed')].map((h) => <th key={h} className="px-4 py-3 text-start text-meta font-semibold uppercase tracking-wide text-fg-subtle">{t(h)}</th>)}{canViewSelfie && <th className="px-4 py-3 text-start text-meta font-semibold uppercase tracking-wide text-fg-subtle">{t('Selfie')}</th>}</tr></thead>
+        <tbody className="divide-y divide-line">
           {rows.map((r) => {
             const employee = r.employeeCode || String(r.employeeId ?? '');
             const time = r.punchTimestampUtc ? fx.dateTime(r.punchTimestampUtc) : '-';
-            return <tr key={r.id}><td className="px-4 py-3 font-mono text-slate-700 dark:text-slate-300">{time}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{employee}</td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.source}</td><td className="px-4 py-3"><StatusChip label={directionLabel(t, r.punchDirection)} tone="blue" /></td><td className="px-4 py-3 text-slate-600 dark:text-slate-300">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? t('Processed') : t('Raw')} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td>{canViewSelfie && <td className="px-4 py-3">{r.hasSelfie && (
-              <button type="button" className="btn-secondary px-3 py-1 text-xs" aria-label={t('View selfie for the punch by {employee} at {time}', { employee, time })}
+            return <tr key={r.id}><td className="px-4 py-3 font-mono text-fg">{time}</td><td className="px-4 py-3 text-fg-muted">{employee}</td><td className="px-4 py-3 text-fg-muted">{r.source}</td><td className="px-4 py-3"><StatusChip label={directionLabel(t, r.punchDirection)} tone="blue" /></td><td className="px-4 py-3 text-fg-muted">{r.verificationMethod}</td><td className="px-4 py-3"><StatusChip label={r.isProcessed ? t('Processed') : t('Raw')} tone={r.isProcessed ? 'emerald' : 'amber'} dot /></td>{canViewSelfie && <td className="px-4 py-3">{r.hasSelfie && (
+              <button type="button" className="btn-secondary px-3 py-1 text-meta" aria-label={t('View selfie for the punch by {employee} at {time}', { employee, time })}
                 onClick={() => setViewing({ id: r.id, employee, time })}>{t('View selfie')}</button>
             )}</td>}</tr>;
           })}
@@ -811,12 +816,12 @@ function RegularizationTable({ rows, onApprove, onReject }: { rows: AttendanceRe
   return (
     <div className="space-y-3">
       {rows.map((r) => (
-        <div key={r.id} className="rounded-lg border border-slate-100 p-3 dark:border-white/10">
+        <div key={r.id} className="rounded-lg border border-line p-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Employee #{id} · {type}', { id: r.employeeId, type: enumLabel(t, 'Status', r.requestType) })}</p><p className="text-xs text-slate-500">{fx.date(r.workDate)} · {r.reason}</p></div>
+            <div><p className="text-body font-semibold text-fg">{t('Employee #{id} · {type}', { id: r.employeeId, type: enumLabel(t, 'Status', r.requestType) })}</p><p className="text-meta text-fg-muted">{fx.date(r.workDate)} · {r.reason}</p></div>
             <StatusChip label={enumLabel(t, 'Status', r.status)} tone={statusTone(r.status)} dot />
           </div>
-          <div className="mt-3 flex gap-2"><button type="button" onClick={() => onApprove(r.id)} className="btn-secondary h-8 px-2 text-xs"><CheckCircle2 className="h-3.5 w-3.5" />{t('Approve')}</button><button type="button" onClick={() => onReject(r.id)} className="btn-secondary h-8 px-2 text-xs">{t('Reject')}</button></div>
+          <div className="mt-3 flex gap-2"><button type="button" onClick={() => onApprove(r.id)} className="btn-secondary h-8 px-2 text-meta"><CheckCircle2 className="h-3.5 w-3.5" />{t('Approve')}</button><button type="button" onClick={() => onReject(r.id)} className="btn-secondary h-8 px-2 text-meta">{t('Reject')}</button></div>
         </div>
       ))}
     </div>
@@ -829,9 +834,9 @@ function PayrollTable({ rows }: { rows: AttendancePayrollSummary[] }) {
   if (rows.length === 0) return <Empty text={t('No payroll attendance impacts for this date range.')} />;
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[640px] text-sm">
-        <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{[msg('Employee'), msg('Late'), msg('Early'), msg('Absences'), msg('OT'), msg('Lock')].map((h) => <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{t(h)}</th>)}</tr></thead>
-        <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">{rows.map((r) => <tr key={r.employeeId}><td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{r.employeeName}</td><td className="px-4 py-3">{t('{minutes}m', { minutes: r.lateMinutes })}</td><td className="px-4 py-3">{t('{minutes}m', { minutes: r.earlyExitMinutes })}</td><td className="px-4 py-3">{r.absenceDays}</td><td className="px-4 py-3">{minutes(r.overtimeMinutes)}</td><td className="px-4 py-3"><StatusChip label={r.hasLockedRecords ? enumLabel(t, 'Status', 'Locked') : enumLabel(t, 'Status', 'Open')} tone={r.hasLockedRecords ? 'rose' : 'emerald'} /></td></tr>)}</tbody>
+      <table className="w-max min-w-full text-body">
+        <thead><tr className="border-b border-line">{[msg('Employee'), msg('Late'), msg('Early'), msg('Absences'), msg('OT'), msg('Lock')].map((h) => <th key={h} className="px-4 py-3 text-start text-meta font-semibold uppercase tracking-wide text-fg-subtle">{t(h)}</th>)}</tr></thead>
+        <tbody className="divide-y divide-line">{rows.map((r) => <tr key={r.employeeId}><td className="px-4 py-3 font-semibold text-fg">{r.employeeName}</td><td className="px-4 py-3">{t('{minutes}m', { minutes: r.lateMinutes })}</td><td className="px-4 py-3">{t('{minutes}m', { minutes: r.earlyExitMinutes })}</td><td className="px-4 py-3">{r.absenceDays}</td><td className="px-4 py-3">{minutes(r.overtimeMinutes)}</td><td className="px-4 py-3"><StatusChip label={r.hasLockedRecords ? enumLabel(t, 'Status', 'Locked') : enumLabel(t, 'Status', 'Open')} tone={r.hasLockedRecords ? 'rose' : 'emerald'} /></td></tr>)}</tbody>
       </table>
     </div>
   );

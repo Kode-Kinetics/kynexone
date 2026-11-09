@@ -198,8 +198,8 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
     <div className="space-y-4" aria-busy={running}>
       {run.phase !== 'idle' && sentRef.current && (
         // While a run is shown the form folds into one line, so the progress view and the daily records below stay in reach.
-        <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-white/[0.04] dark:text-slate-300">
-          <span className="font-semibold text-slate-800 dark:text-slate-100">
+        <p className="rounded-lg bg-surface-sunken px-3 py-2 text-meta text-fg-muted">
+          <span className="font-semibold text-fg">
             {t(MASS_ENTRY_SUMMARY_KEY, { employees: run.people.length, days: inclusiveDays(sentRef.current.fromDate, sentRef.current.toDate) ?? 1 })}
           </span>
           {' · '}{fx.date(sentRef.current.fromDate)}{sentRef.current.toDate !== sentRef.current.fromDate && <> – {fx.date(sentRef.current.toDate)}</>}
@@ -226,7 +226,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
               <input id={`${ids}-out`} type="time" className="input w-full min-w-0 max-sm:min-h-11" value={outTime} onChange={(e) => setOutTime(e.target.value)} />
             </Field>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
+          <p className="text-meta text-fg-muted">
             {t('Enter an in time, an out time, or both.')}{defaultTimezone && <> {t('Times are in {zone}.', { zone: defaultTimezone })}</>}
             {state.overnight && <> {t('Overnight shift: the out time is recorded on the next day.')}</>}
           </p>
@@ -234,8 +234,8 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
             <input id={`${ids}-reason`} className="input w-full max-sm:min-h-11" maxLength={MASS_ENTRY_MAX_REASON} value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder={t('For example: the biometric device was offline')} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
           </Field>
-          {problem && selection.size > 0 && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{problem}</p>}
-          {plan.problem === 'no-employees' && <p className="text-xs text-slate-500">{t('Select at least one employee.')}</p>}
+          {problem && selection.size > 0 && <p role="alert" className="text-meta text-danger-fg">{problem}</p>}
+          {plan.problem === 'no-employees' && <p className="text-meta text-fg-muted">{t('Select at least one employee.')}</p>}
           {run.phase === 'idle' && (
             // The zone keeps the submit clear of the assistant button when it is scrolled into view (scroll margin plus padding).
             <div data-submit-zone className="scroll-mb-16 pb-4">
@@ -262,25 +262,25 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
             />
           )}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            <p role="status" className="text-body font-semibold text-fg">
               {running ? t('Recording attendance… {percent}%', { percent: summary.percent })
                 : run.phase === 'stopped' ? t('Stopped at {percent}%. The rest were not sent.', { percent: summary.percent })
                   : t('Finished: {done} of {total} employees recorded.', { done: summary.done, total: summary.total })}
             </p>
             {running && (
-              <button type="button" className="btn-secondary px-3 py-1 text-xs" disabled={run.stopRequested} onClick={() => { stopRef.current = true; dispatch({ type: 'requestStop' }); }}>
+              <button type="button" className="btn-secondary px-3 py-1 text-meta" disabled={run.stopRequested} onClick={() => { stopRef.current = true; dispatch({ type: 'requestStop' }); }}>
                 <Square className="h-3 w-3" aria-hidden="true" />{run.stopRequested ? t('Stopping…') : t('Stop')}
               </button>
             )}
           </div>
           <div className="flex items-center gap-2">
             <div role="progressbar" aria-label={t('Mass entry progress')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={summary.percent}
-              className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
+              className="h-2.5 flex-1 overflow-hidden rounded-full bg-surface-sunken">
               <div className={`h-full rounded-full transition-[width] duration-base ${barColour}`} style={{ width: `${summary.percent}%` }} />
             </div>
-            <span className="w-10 text-end text-xs font-semibold tabular-nums text-slate-700 dark:text-slate-200">{summary.percent}%</span>
+            <span className="w-10 text-end text-meta font-semibold tabular-nums text-fg">{summary.percent}%</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
+          <p className="text-meta text-fg-muted">
             {t('{created} punches recorded, {duplicates} already on file, {refused} refused.', { created: summary.created, duplicates: summary.duplicates, refused: summary.refused })}
           </p>
 
@@ -289,20 +289,20 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
               .filter(([key, , n]) => key === 'all' || n > 0)
               .map(([key, label, n]) => (
                 <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)}
-                  className={`rounded-full border px-2.5 py-1 text-xs font-medium ${filter === key ? 'border-sapphire bg-sapphire/10 text-sapphire' : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5'}`}>
+                  className={`rounded-full border px-2.5 py-1 text-meta font-medium ${filter === key ? 'border-sapphire bg-sapphire/10 text-sapphire' : 'border-line text-fg-muted hover:bg-surface-sunken'}`}>
                   {label} · {n}
                 </button>
               ))}
           </div>
 
-          <ul aria-label={t('Employees in this entry')} className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10">
+          <ul aria-label={t('Employees in this entry')} className="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
             {shownPeople.map((p) => (
-              <li key={p.id} className="flex items-start gap-2 px-3 py-2 text-sm">
+              <li key={p.id} className="flex items-start gap-2 px-3 py-2 text-body">
                 <span className="min-w-0 flex-1">
                   <span className="block break-words text-fg"><bdi>{p.name}</bdi></span>
                   <span className="block text-meta text-fg-muted"><bdi className="font-mono">{p.code}</bdi></span>
                   {p.reasons.length > 0 && (
-                    <span className="block text-xs text-slate-500 dark:text-slate-400">
+                    <span className="block text-meta text-fg-muted">
                       {p.reasons.slice(0, MAX_REASONS_SHOWN).join(' · ')}
                       {p.reasons.length > MAX_REASONS_SHOWN && <> {t('+{count} more', { count: p.reasons.length - MAX_REASONS_SHOWN })}</>}
                     </span>
@@ -331,7 +331,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canPro
             </div>
           )}
           {toProcess > 0 && !running && process.poll.phase === 'idle' && (
-            <p className="text-xs text-slate-500 dark:text-slate-400">{t('Recorded punches appear in the daily records after processing.')}</p>
+            <p className="text-meta text-fg-muted">{t('Recorded punches appear in the daily records after processing.')}</p>
           )}
           <ProcessJobProgress poll={process.poll} asked={processAskedRef.current} />
         </div>

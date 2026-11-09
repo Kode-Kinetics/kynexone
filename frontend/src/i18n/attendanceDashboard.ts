@@ -46,6 +46,7 @@ Object.assign(ar, {
     'أنت في لوحة المتابعة المباشرة. تتحدّث السجلات أدناه بعد معالجة البصمات.',
   'The punch was not saved': 'لم تُحفظ البصمة',
   'Check the details and try again.': 'راجع البيانات ثم حاول مرة أخرى.',
+  'Tap a count to filter the records.': 'اضغط على رقم لتصفية السجلات.',
   'Select a count to show only those records.': 'اختر رقمًا لعرض تلك السجلات فقط.',
   'Show only: {label}': 'عرض فقط: {label}',
   'The time of the in punch. Leave it empty to record only an out time.': 'وقت بصمة الدخول. اتركه فارغًا إذا أردت تسجيل بصمة الخروج فقط.',
