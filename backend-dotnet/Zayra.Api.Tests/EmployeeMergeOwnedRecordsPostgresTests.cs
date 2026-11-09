@@ -50,9 +50,9 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         return new Twins(tenantId, company.Id, dup, survivor);
     }
 
-    private EmployeesController Controller(ZayraDbContext db, Twins t)
+    private EmployeesController Controller(ZayraDbContext db, Twins t, Func<ZayraDbContext, IAuditService>? audit = null)
     {
-        var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), new AuditService(db), new NullDocumentStorage(), TestNotifications.For(db),
+        var controller = new EmployeesController(db, new Pbkdf2PasswordHasher(), audit?.Invoke(db) ?? new AuditService(db), new NullDocumentStorage(), TestNotifications.For(db),
             new MergePgHijri(), new Zayra.Api.Infrastructure.Common.DataScopeService(db), new MergePgLetters());
         var claims = new List<Claim>
         {
@@ -64,10 +64,10 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         return controller;
     }
 
-    private async Task<IActionResult> MergeAsync(Twins t)
+    private async Task<IActionResult> MergeAsync(Twins t, Func<ZayraDbContext, IAuditService>? audit = null)
     {
         await using var db = _fx.CreateDb();
-        return await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("merge", t.Survivor.Id, "same person"), CancellationToken.None);
+        return await Controller(db, t, audit).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("merge", t.Survivor.Id, "same person"), CancellationToken.None);
     }
 
     private async Task<bool> IsDeletedAsync(int id)
@@ -337,6 +337,85 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         (await read.EmployeeImportGaps.IgnoreQueryFilters().SingleAsync(g => g.EmployeeId == t.Duplicate.Id)).ResolvedAtUtc.Should().BeNull();
         (await read.AuditLogs.IgnoreQueryFilters().AnyAsync(a => a.TenantId == t.TenantId && a.Action == "employee.merged_into_existing")).Should().BeFalse();
     }
+
+    // ── 3. The merge is one unit of work, and it closes the duplicate's login ───────────────────────
+
+    private async Task<(Guid UserId, Guid LinkId, Guid RefreshId)> SeedLoginAsync(Twins t)
+    {
+        await using var db = _fx.CreateDb();
+        var user = new User
+        {
+            TenantId = t.TenantId, Email = $"{Guid.NewGuid():N}@merge.test", NormalizedEmail = $"{Guid.NewGuid():N}@MERGE.TEST", FullName = "Dup Person",
+            PasswordHash = "unimportant", Status = "Active", AccessMode = AccessModes.EssOnly, IsActive = true, IsEmailConfirmed = true,
+        };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        var dup = await db.Employees.SingleAsync(e => e.Id == t.Duplicate.Id);
+        dup.UserAccountId = user.Id;
+        var link = new EmployeeUserAccount
+        {
+            TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, UserId = user.Id, AccessMode = AccessModes.EssOnly, Status = "Active",
+            InvitationTokenHash = "live-invitation", InvitationExpiresAtUtc = DateTime.UtcNow.AddDays(1),
+        };
+        var refresh = new RefreshToken { UserId = user.Id, TokenHash = "live-refresh-" + Guid.NewGuid().ToString("N"), ExpiresAtUtc = DateTime.UtcNow.AddDays(7) };
+        db.AddRange(link, refresh);
+        await db.SaveChangesAsync();
+        return (user.Id, link.Id, refresh.Id);
+    }
+
+    [Fact]
+    public async Task Merge_ClosesTheDuplicatesLogin_AndItsRefreshTokens()
+    {
+        var t = await SeedTwinsAsync();
+        var (userId, linkId, refreshId) = await SeedLoginAsync(t);
+
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+
+        await using var read = _fx.CreateDb();
+        var link = await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.Id == linkId);
+        link.AccessMode.Should().Be(AccessModes.NoLogin, "a merged duplicate's self-service login must not authenticate");
+        link.Status.Should().Be("NoLogin");
+        link.InvitationTokenHash.Should().BeEmpty();
+        var user = await read.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == userId);
+        user.IsActive.Should().BeFalse();
+        user.Status.Should().Be("Deactivated");
+        (await read.RefreshTokens.SingleAsync(x => x.Id == refreshId)).RevokedAtUtc.Should().NotBeNull("a live refresh token kept minting access tokens after the merge");
+        var audit = await read.AuditLogs.IgnoreQueryFilters().SingleAsync(a => a.Action == "employee.merged_into_existing" && a.EntityId == t.Duplicate.Id.ToString());
+        audit.Metadata.Should().Contain("\"refreshTokens\":1").And.Contain("\"links\":1");
+    }
+
+    [Fact]
+    public async Task Merge_AFailureMidWay_LeavesNothingChanged()
+    {
+        var t = await SeedTwinsAsync();
+        var (userId, linkId, refreshId) = await SeedLoginAsync(t);
+        Guid approvalId;
+        await using (var seed = _fx.CreateDb())
+        {
+            var approval = new ApprovalRequest { TenantId = t.TenantId, RequestedForEmployeeId = t.Duplicate.Id, EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(), Status = "Pending" };
+            approvalId = approval.Id;
+            seed.ApprovalRequests.Add(approval);
+            seed.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, WpsEligible = true });
+            seed.EmployeeImportGaps.Add(new EmployeeImportGap { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, GapType = "dup:strong" });
+            await seed.SaveChangesAsync();
+        }
+
+        // The audit row is the last thing the merge writes: if it cannot be written, NOTHING before it may have been saved.
+        var act = async () => await MergeAsync(t, db => new FailingMergeAudit(new AuditService(db)));
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*audit unavailable*");
+
+        await using var read = _fx.CreateDb();
+        var dup = await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id);
+        dup.IsDeleted.Should().BeFalse();
+        dup.DuplicateOfEmployeeId.Should().BeNull();
+        dup.Status.Should().Be("Active");
+        (await read.ApprovalRequests.IgnoreQueryFilters().SingleAsync(a => a.Id == approvalId)).Status.Should().Be("Pending");
+        (await read.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.EmployeeId == t.Duplicate.Id)).WpsEligible.Should().BeTrue();
+        (await read.EmployeeImportGaps.IgnoreQueryFilters().SingleAsync(g => g.EmployeeId == t.Duplicate.Id)).ResolvedAtUtc.Should().BeNull();
+        (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.Id == linkId)).AccessMode.Should().Be(AccessModes.EssOnly);
+        (await read.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == userId)).IsActive.Should().BeTrue();
+        (await read.RefreshTokens.SingleAsync(x => x.Id == refreshId)).RevokedAtUtc.Should().BeNull();
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService
@@ -351,4 +430,18 @@ file sealed class MergePgLetters : ILetterService
     public Task<byte[]> GenerateAppointmentLetterAsync(LetterData data, CancellationToken cancellationToken = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateExperienceLetterAsync(LetterData data, CancellationToken cancellationToken = default) => Task.FromResult(Array.Empty<byte>());
     public Task<byte[]> GenerateOfferLetterAsync(OfferLetterData data, CancellationToken cancellationToken = default) => Task.FromResult(Array.Empty<byte>());
+}
+
+file sealed class FailingMergeAudit(IAuditService inner) : IAuditService
+{
+    public Task WriteAsync(string action, string entityName, string? entityId, RequestContext context, string? metadata, CancellationToken cancellationToken)
+        => action == "employee.merged_into_existing" ? throw new InvalidOperationException("audit unavailable") : inner.WriteAsync(action, entityName, entityId, context, metadata, cancellationToken);
+
+    public void Stage(string action, string entityName, string? entityId, RequestContext context, string? metadata)
+    {
+        if (action == "employee.merged_into_existing") throw new InvalidOperationException("audit unavailable");
+        inner.Stage(action, entityName, entityId, context, metadata);
+    }
+
+    public void DiscardStaged() => inner.DiscardStaged();
 }

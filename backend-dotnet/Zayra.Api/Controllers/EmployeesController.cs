@@ -5266,13 +5266,34 @@ public class EmployeesController : ControllerBase
                 .ToListAsync(ct);
             foreach (var g in openGaps) g.ResolvedAtUtc = mergedAt;
 
-            await _db.SaveChangesAsync(ct);
-            // Deactivate the merged record's payroll footprint (it is now IsDeleted, so EOSB/settlement
-            // calculators can no longer read its salary structure). Reversible via unmerge (best-effort).
-            await EmployeeManagementService.DeactivatePayrollFootprintAsync(
-                _db, _audit, tenantId, id, "merged_duplicate", deactivateSalaryStructure: true, context, ct);
-            // Full, reconstructable audit link (S4): both codes + signals, not just ids.
-            await _audit.WriteAsync("employee.merged_into_existing", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
+            // CREDENTIAL REVOCATION: the duplicate is removed exactly like DELETE, so its login (and refresh tokens, reset and MFA
+            // tokens, invitation) closes in the same unit of work, through the same primitives as SoftDeleteEmployeeAsync. A login this
+            // actor may not switch off (an Admin's, the last Admin's) is left active, audited and notified by the gate.
+            var (credentialLinks, credentialUsers, credentialUserIds) =
+                await EmployeeManagementService.LoadCredentialGraphAsync(_db, tenantId, id, duplicate.UserAccountId, ct);
+            var gatedCredentials = await EmployeeManagementService.GateLinkedLoginsAsync(
+                _db, tenantId, credentialLinks, credentialUsers, credentialUserIds, context,
+                "employee.merged", id, mergedAt, ct);
+            var revokedCredentials = await EmployeeManagementService.StageCredentialInvalidationAsync(
+                _db, gatedCredentials.Links, gatedCredentials.Users, gatedCredentials.UserIds,
+                loginDisabledReason: "Employee record was merged into another record as a duplicate.",
+                effectiveAtUtc: mergedAt,
+                actorUserId: context.UserId,
+                actorIpAddress: context.IpAddress,
+                bulkTokenUpdates: false,
+                ct);
+
+            // Deactivate the merged record's payroll footprint (it is now IsDeleted, so EOSB/settlement calculators can no longer read
+            // its salary structure). STAGED, so it commits with the merge or not at all. Reversible via unmerge (best-effort).
+            var (profilesDeactivated, structuresDeactivated) = await EmployeeManagementService.StagePayrollFootprintDeactivationAsync(
+                _db, tenantId, id, deactivateSalaryStructure: true, context, ct);
+            if (profilesDeactivated > 0 || structuresDeactivated > 0)
+                _audit.Stage("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
+                    JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = structuresDeactivated, profileDeactivated = profilesDeactivated }));
+
+            // Full, reconstructable audit link (S4): both codes + signals, not just ids. Staged LAST: the whole merge is ONE SaveChanges, so
+            // the soft-delete, the approvals, the flags, the credential closure, the payroll footprint and this row commit together or not at all.
+            _audit.Stage("employee.merged_into_existing", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
             {
                 intoEmployeeId = intoId,
                 intoEmployeeCode = survivor.EmployeeCode,
@@ -5281,8 +5302,17 @@ public class EmployeesController : ControllerBase
                 cancelledApprovals = cancelled,
                 reroutedApprovals = rerouted,
                 clearedGaps = openGaps.Count,
+                credentials = new
+                {
+                    links = revokedCredentials.Links,
+                    users = revokedCredentials.Users,
+                    passwordResets = revokedCredentials.PasswordResets,
+                    mfaChallenges = revokedCredentials.MfaChallenges,
+                    refreshTokens = revokedCredentials.RefreshTokens
+                },
                 reversible = "POST resolve-duplicate {resolution:'unmerge'} restores this record."
-            }), ct);
+            }));
+            await _db.SaveChangesAsync(ct);
             return Ok(new { resolved = "merge", intoEmployeeId = intoId });
         }
 
