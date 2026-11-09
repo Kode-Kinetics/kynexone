@@ -5133,7 +5133,8 @@ public class EmployeesController : ControllerBase
         foreach (var transfer in openTransfers)
         {
             var previousStatus = transfer.Status;
-            transfer.Status = TransferWithdrawn;
+            // Compare-and-set like every other transfer transition: a transfer that was approved or completed a moment ago is not overwritten.
+            if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previousStatus, TransferWithdrawn, TransferStamp.None, ct)) continue;
             AddTransferHistory(transfer, "TransferWithdrawn", previousStatus, cancelReason);
         }
 

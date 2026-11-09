@@ -388,6 +388,18 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
             db.EmployeeEntitlements.Add(new EmployeeEntitlement { TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeId = t.Duplicate.PublicId, ContractId = contract.Id, PayComponentCode = "HOUSING", Source = "Migrated", VerificationState = "Unverified", EffectiveFrom = Today.AddYears(-1), EffectiveTo = Today.AddMonths(6) });
             return Task.CompletedTask;
         }, (db, id) => db.EmployeeEntitlements.IgnoreQueryFilters().CountAsync(x => db.Employees.IgnoreQueryFilters().Where(e => e.Id == id).Select(e => e.PublicId).Contains(x.EmployeeId)));
+
+        yield return new("pending transfer of another employee naming the duplicate as new manager", "transfer_routing", (db, t) =>
+        {
+            db.EmployeeTransferRequests.Add(new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Survivor.Id, NewManagerEmployeeId = t.Duplicate.Id, EffectiveDate = Today, Status = "PendingNewManager" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeTransferRequests.IgnoreQueryFilters().CountAsync(x => x.NewManagerEmployeeId == id));
+
+        yield return new("pending transfer of another employee naming the duplicate as current manager", "transfer_routing", (db, t) =>
+        {
+            db.EmployeeTransferRequests.Add(new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Survivor.Id, CurrentManagerEmployeeId = t.Duplicate.Id, EffectiveDate = Today, Status = "PendingCurrentManager" });
+            return Task.CompletedTask;
+        }, (db, id) => db.EmployeeTransferRequests.IgnoreQueryFilters().CountAsync(x => x.CurrentManagerEmployeeId == id));
     }
 
     // ── 1. LIVE ─────────────────────────────────────────────────────────────────────────────────────
@@ -840,7 +852,35 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
 
         await using var read = _fx.CreateDb();
         (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == pending)).Status.Should().Be("Withdrawn");
+        var history = await read.EmployeeHistories.IgnoreQueryFilters().Where(h => h.EmployeeId == t.Duplicate.Id && h.EventType == "TransferWithdrawn").ToListAsync();
+        history.Should().ContainSingle("the withdrawal leaves its history row, naming the transfer and the old status");
+        history[0].OldValue.Should().Be("PendingHrApproval");
+        history[0].NewValue.Should().Be("Withdrawn");
+        history[0].FieldName.Should().Contain(pending.ToString());
         (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == done)).Status.Should().Be("Completed", "a finished transfer is history and is left alone");
+    }
+
+    [Fact]
+    public async Task Delete_WithdrawsTheEmployeesOpenTransfers_AndLeavesFinishedOnesAlone()
+    {
+        var t = await SeedTwinsAsync();
+        Guid pending, done;
+        await using (var seed = _fx.CreateDb())
+        {
+            var open = new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EffectiveDate = Today, Status = "PendingCurrentManager" };
+            var finished = new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EffectiveDate = Today.AddDays(-30), Status = "Completed" };
+            pending = open.Id; done = finished.Id;
+            seed.EmployeeTransferRequests.AddRange(open, finished);
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<NoContentResult>(await Controller(db, t).Delete(t.Duplicate.Id, CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == pending)).Status.Should().Be("Withdrawn");
+        (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == done)).Status.Should().Be("Completed");
+        (await read.EmployeeHistories.IgnoreQueryFilters().CountAsync(h => h.EmployeeId == t.Duplicate.Id && h.EventType == "TransferWithdrawn")).Should().Be(1);
     }
 }
 

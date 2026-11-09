@@ -79,6 +79,7 @@ public static class EmployeeMergeBlockers
         new("pending_payroll_impacts", "Attendance and leave effects on pay not yet applied", "آثار الحضور والإجازات على الراتب غير المطبقة بعد"),
         new("contracts_and_permits", "Contracts, passports, visas and work permits", "العقود وجوازات السفر والتأشيرات وتصاريح العمل"),
         new("dependents", "Dependents", "المعالون"),
+        new("transfer_routing", "Open transfers of other people that name this employee as manager", "طلبات نقل مفتوحة لأشخاص آخرين تذكر هذا الموظف كمدير"),
         new("approval_routing", "Approval steps that route to this employee", "خطوات اعتماد توجه إلى هذا الموظف"),
         new("merit_worksheets", "Open merit worksheets managed by this employee", "أوراق عمل الجدارة المفتوحة التي يديرها هذا الموظف"),
         new("acquired_rights", "Acquired-rights entitlements", "الاستحقاقات المكتسبة"),
@@ -91,6 +92,7 @@ public static class EmployeeMergeBlockers
 
     private static IQueryable<T> Q<T>(ZayraDbContext db, Target t) where T : class, ITenantOwned => ScopedBypass.TenantWide(db.Set<T>(), t.TenantId, Why);
 
+    private static readonly string[] OpenTransferStates = ["PendingCurrentManager", "PendingNewManager", "PendingHrApproval"];
     private static readonly string[] DeadStates = ["Cancelled", "Rejected", "Voided", "Void", "Withdrawn", "Draft"];
     private static readonly string[] SettledStates = ["Cancelled", "Rejected", "Voided", "Void", "Withdrawn", "Draft", "Paid", "Processed", "Applied", "Settled", "Completed", "Used", "Expired", "Closed"];
 
@@ -164,6 +166,9 @@ public static class EmployeeMergeBlockers
         ["ApprovalDelegation.FromEmployeeId"] = (db, t) => R(TypeOf("ApprovalDelegation.FromEmployeeId")!, Q<ApprovalDelegation>(db, t).Where(x => x.FromEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
         ["ApprovalDelegation.ToEmployeeId"] = (db, t) => R(TypeOf("ApprovalDelegation.ToEmployeeId")!, Q<ApprovalDelegation>(db, t).Where(x => x.ToEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
         ["LeaveDelegation.DelegateEmployeeId"] = (db, t) => R(TypeOf("LeaveDelegation.DelegateEmployeeId")!, Q<LeaveDelegation>(db, t).Where(x => x.DelegateEmployeeId == t.Id && x.Status == "Active" && x.EndDate >= t.Today)),
+        // An open transfer of ANOTHER employee names the duplicate as the manager whose approval it waits for, and on approval installs it as the new manager.
+        ["EmployeeTransferRequest.CurrentManagerEmployeeId"] = (db, t) => R(TypeOf("EmployeeTransferRequest.CurrentManagerEmployeeId")!, Q<EmployeeTransferRequest>(db, t).Where(x => x.EmployeeId != t.Id && x.CurrentManagerEmployeeId == t.Id && OpenTransferStates.Contains(x.Status))),
+        ["EmployeeTransferRequest.NewManagerEmployeeId"] = (db, t) => R(TypeOf("EmployeeTransferRequest.NewManagerEmployeeId")!, Q<EmployeeTransferRequest>(db, t).Where(x => x.EmployeeId != t.Id && x.NewManagerEmployeeId == t.Id && OpenTransferStates.Contains(x.Status))),
         ["ApprovalPolicyStep.SpecificEmployeeId"] = (db, t) => R(TypeOf("ApprovalPolicyStep.SpecificEmployeeId")!, Q<ApprovalPolicyStep>(db, t).Where(x => x.SpecificEmployeeId == t.Id)),
         ["ApprovalWorkflowStep.SpecificEmployeeId"] = (db, t) => R(TypeOf("ApprovalWorkflowStep.SpecificEmployeeId")!, Q<ApprovalWorkflowStep>(db, t).Where(x => x.SpecificEmployeeId == t.Id)),
         ["CompWorksheet.ManagerEmployeeId"] = (db, t) => R(TypeOf("CompWorksheet.ManagerEmployeeId")!, Q<CompWorksheet>(db, t).Where(x => x.ManagerEmployeeId == t.Id && (x.Status == "Draft" || x.Status == "Submitted" || x.Status == "Returned"))),
@@ -209,6 +214,7 @@ public static class EmployeeMergeBlockers
         "ApprovalDelegation.FromEmployeeId" or "ApprovalDelegation.ToEmployeeId" or "LeaveDelegation.DelegateEmployeeId" => "approval_authority",
         "ApprovalPolicyStep.SpecificEmployeeId" or "ApprovalWorkflowStep.SpecificEmployeeId" => "approval_routing",
         "CompWorksheet.ManagerEmployeeId" => "merit_worksheets",
+        "EmployeeTransferRequest.CurrentManagerEmployeeId" or "EmployeeTransferRequest.NewManagerEmployeeId" => "transfer_routing",
         _ => null,
     };
 
@@ -240,8 +246,8 @@ public static class EmployeeMergeBlockers
              "EmployeeUserAccount", "HRRequest", "HRRequestComment", "EmployeeDocumentRequest", "EmployeeProfileChangeRequest", "OnboardingTask"]),
         ("a pending request the merge cancels, or one that HR can raise again: no payment has been made against it",
             ["EmployeeChangeRequest", "EmployeeImportGap", "LeaveCancellationRequest", "LeaveModificationRequest", "CompOffUsage"]),
-        ("a pending transfer is cancelled with the other pending approval work when the merge runs (CancelPendingApprovalWorkAsync); a finished transfer is history. The manager columns are snapshots on that request",
-            ["EmployeeTransferRequest", "EmployeeTransferRequest.CurrentManagerEmployeeId", "EmployeeTransferRequest.NewManagerEmployeeId"]),
+        ("the duplicate's OWN transfers: a pending one is withdrawn (compare-and-set) with the other pending approval work when the merge runs, a finished one is history. Other people's open transfers that name the duplicate as a manager block (transfer_routing)",
+            ["EmployeeTransferRequest"]),
         ("derived at approval: created in the same SaveChanges as the OvertimePayrollImpact (OvertimeController), which blocks while unpaid",
             ["OvertimeCalculation"]),
         ("payroll run detail or diagnostics: the run line is covered by PayrollSlip/PayrollRunEmployee and the money by the adjustment, allowance and payment-record checks",
@@ -278,12 +284,6 @@ public static class EmployeeMergeBlockers
         entityNames.Where(n => !RuleMap.ContainsKey(n)).OrderBy(n => n, StringComparer.Ordinal).ToList();
 
     public static IReadOnlyList<string> BlockerTypeKeys => Types.Select(t => t.Key).ToList();
-
-    /// <summary>The cheap indexed checks that are re-run under the row locks: the money that loan/advance/bonus creation can add, and who reports to the duplicate.</summary>
-    public static readonly IReadOnlySet<string> RecheckUnderLock = new HashSet<string>
-    {
-        "open_loans", "open_advances", "unpaid_bonuses", "direct_reports", "reporting_lines", "department_manager", "position_incumbent", "approval_authority", "approval_routing",
-    };
 
     public static async Task<IReadOnlyList<MergeBlocker>> FindAsync(ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)
     {
