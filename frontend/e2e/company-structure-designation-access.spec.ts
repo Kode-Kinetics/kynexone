@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { axeSeriousOrWorse, boot, field } from './company-structure.fixture';
+import { axeSeriousOrWorse, boot, field, MANAGER_PERMISSIONS } from './company-structure.fixture';
 
 /** Setup → Designations → "Access roles" (designation-driven access) against a mocked API. */
 
-const ON = { access: { enabled: true, canConfigure: true } };
+// The form only asks (and the server only answers) for someone who holds security.manage.
+const ON = { access: { enabled: true, canConfigure: true }, permissions: [...MANAGER_PERMISSIONS, 'security.manage'] };
 
 test('the access roles field is not offered while the feature is off', async ({ page }) => {
   await boot(page, 'designations');
@@ -12,13 +13,20 @@ test('the access roles field is not offered while the feature is off', async ({ 
 });
 
 test('the access roles field is not offered to someone who may not configure access', async ({ page }) => {
-  await boot(page, 'designations', { access: { enabled: true, canConfigure: false } });
+  await boot(page, 'designations', { access: { enabled: true, canConfigure: false }, permissions: [...MANAGER_PERMISSIONS, 'security.manage'] });
   await page.getByRole('button', { name: /Edit Software Engineer/ }).click();
   await expect(page.getByRole('dialog').getByText('Access roles')).toHaveCount(0);
 });
 
+test('someone without security.manage never asks for access options and sees no field (no 403 toast for every HR user)', async ({ page }) => {
+  const { ctl } = await boot(page, 'designations', { access: { enabled: true, canConfigure: true } });
+  await page.getByRole('button', { name: /Edit Software Engineer/ }).click();
+  await expect(page.getByRole('dialog').getByText('Access roles')).toHaveCount(0);
+  expect(ctl.accessOptionsCalls).toBe(0);
+});
+
 test('a user who may not configure access never sends the roles', async ({ page }) => {
-  const { writes } = await boot(page, 'designations', { access: { enabled: true, canConfigure: false } });
+  const { writes } = await boot(page, 'designations', { access: { enabled: true, canConfigure: false }, permissions: [...MANAGER_PERMISSIONS, 'security.manage'] });
   await page.getByRole('button', { name: /Edit Software Engineer/ }).click();
   const dialog = page.getByRole('dialog');
   await field(dialog, 'Title (EN)').fill('Senior Software Engineer');

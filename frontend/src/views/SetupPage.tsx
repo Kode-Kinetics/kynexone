@@ -937,7 +937,10 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
   const [accessOptions, setAccessOptions] = useState<DesignationAccessOptions | null>(null);
   const [accessRoles, setAccessRoles] = useState<string[]>([]);
   const canConfigureAccess = !!accessOptions?.enabled && accessOptions.canConfigure;
-  useEffect(() => { designationsApi.accessOptions().then(setAccessOptions).catch(() => setAccessOptions(null)); }, []);
+  // The endpoint needs security.manage, so nobody else asks (a refusal would raise an access-denied toast for every ordinary HR user).
+  const { hasPermission: holds } = useAuth();
+  const mayAskAccess = holds('security.manage');
+  useEffect(() => { if (mayAskAccess) designationsApi.accessOptions().then(setAccessOptions).catch(() => setAccessOptions(null)); }, [mayAskAccess]);
   // Addendum B: a designation belongs to one company, and so does its grade.
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState('');

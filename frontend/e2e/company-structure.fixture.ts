@@ -71,6 +71,8 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     refuse: null as null | { status: number; body: unknown },
     /** While set, every write waits for it (hold a save in flight). */
     gate: null as null | Promise<void>,
+    /** How many times the form asked GET /api/designations/access-options. */
+    accessOptionsCalls: 0,
   };
   const roles = options.roles ?? ['HR Manager'];
   const permissions = options.permissions ?? MANAGER_PERMISSIONS;
@@ -104,6 +106,7 @@ export async function boot(page: Page, tab: Entity, options: FixtureOptions = {}
     if (p === '/api/reference/currencies') return reply([{ code: 'SAR', name: 'Saudi Riyal' }]);
     if (p === '/api/features/disabled-keys') return reply(['release_a']);
     if (p === '/api/designations/access-options') {
+      ctl.accessOptionsCalls += 1;
       const a = options.access ?? { enabled: false, canConfigure: false };
       return reply({
         ...a,
