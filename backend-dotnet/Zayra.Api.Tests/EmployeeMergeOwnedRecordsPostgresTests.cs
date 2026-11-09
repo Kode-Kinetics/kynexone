@@ -708,6 +708,61 @@ public sealed class EmployeeMergeOwnedRecordsPostgresTests
         states["was-active-2024"].Should().BeTrue("the merge deactivated it, so unmerge puts it back");
         states["closed-2021"].Should().BeFalse("it was already inactive before the merge");
     }
+
+    // ── 6. One transaction with a row lock, and a login someone else uses is never closed ───────────
+
+    [Fact]
+    public async Task Merge_AIntoB_AndBIntoA_AtTheSameTime_LeaveExactlyOneDeleted()
+    {
+        for (var round = 0; round < 6; round++)
+        {
+            var t = await SeedTwinsAsync();
+            var reverse = new Twins(t.TenantId, t.CompanyId, t.Survivor, t.Duplicate);
+
+            var results = await Task.WhenAll(MergeAsync(t), MergeAsync(reverse));
+
+            results.Count(r => r is OkObjectResult).Should().Be(1, $"round {round}: exactly one of the two opposite merges may win");
+            var deleted = new[] { await IsDeletedAsync(t.Duplicate.Id), await IsDeletedAsync(t.Survivor.Id) };
+            deleted.Count(d => d).Should().Be(1, $"round {round}: never both records deleted, never a survivor that is itself deleted");
+        }
+    }
+
+    [Theory]
+    [InlineData("survivor")]
+    [InlineData("another live employee")]
+    public async Task Merge_DoesNotCloseALoginThatTheSurvivorOrAnotherLiveEmployeeAlsoUses(string sharedWith)
+    {
+        var t = await SeedTwinsAsync();
+        var (userId, dupLinkId, refreshId) = await SeedLoginAsync(t);
+        await using (var seed = _fx.CreateDb())
+        {
+            int otherId;
+            if (sharedWith == "survivor") otherId = t.Survivor.Id;
+            else
+            {
+                var third = new Employee
+                {
+                    TenantId = t.TenantId, CompanyId = t.CompanyId, EmployeeCode = "THIRD-1", FullName = "Third", EnglishName = "Third",
+                    Status = "Active", ReadinessState = "Ready", JoiningDate = DateTime.SpecifyKind(new DateTime(2025, 1, 1), DateTimeKind.Utc),
+                };
+                seed.Employees.Add(third);
+                await seed.SaveChangesAsync();
+                otherId = third.Id;
+            }
+            // A user can have only ONE link row per tenant, so another employee shares this login through the legacy
+            // Employee.UserAccountId pointer.
+            (await seed.Employees.SingleAsync(e => e.Id == otherId)).UserAccountId = userId;
+            await seed.SaveChangesAsync();
+        }
+
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+
+        await using var read = _fx.CreateDb();
+        (await read.Users.IgnoreQueryFilters().SingleAsync(x => x.Id == userId)).IsActive.Should().BeTrue($"the {sharedWith} still signs in with this login");
+        (await read.RefreshTokens.SingleAsync(x => x.Id == refreshId)).RevokedAtUtc.Should().BeNull();
+        (await read.EmployeeUserAccounts.IgnoreQueryFilters().SingleAsync(x => x.Id == dupLinkId)).AccessMode.Should().Be(AccessModes.EssOnly, "the link row is the access record of that shared login, so it is held with it");
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService

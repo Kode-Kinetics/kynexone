@@ -5224,9 +5224,19 @@ public class EmployeesController : ControllerBase
                 return BadRequest(new { message = "A reason is required to merge a duplicate record." });
             if (!await CanAccessEmployeeAsync(intoId, ct)) return Forbid();
 
-            var duplicate = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
+            // THE WHOLE MERGE IS ONE TRANSACTION: both rows are locked (lowest id first, so two opposite merges cannot deadlock), the
+            // blocker check runs under that lock, and the writes below commit together. A second merge touching either row waits for the
+            // first, then re-reads it: a record the first merge deleted is no longer there, so A-into-B and B-into-A can never both win
+            // and a survivor can never be a record that has just been deleted.
+            async Task<IActionResult> MergeLockedAsync()
+            {
+            var lockedRows = await _db.Employees.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .Where(x => x.TenantId == tenantId && (x.Id == id || x.Id == intoId) && !x.IsDeleted)
+                .OrderBy(x => x.Id)
+                .ToListAsync(ct);
+            var duplicate = lockedRows.FirstOrDefault(x => x.Id == id);
             if (duplicate is null) return NotFound();
-            var survivor = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == intoId && !x.IsDeleted, ct);
+            var survivor = lockedRows.FirstOrDefault(x => x.Id == intoId);
             if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
 
             // A merge combines two entries of the SAME person within ONE company. Two records in different companies (or one with a company
@@ -5283,6 +5293,23 @@ public class EmployeesController : ControllerBase
             // actor may not switch off (an Admin's, the last Admin's) is left active, audited and notified by the gate.
             var (credentialLinks, credentialUsers, credentialUserIds) =
                 await EmployeeManagementService.LoadCredentialGraphAsync(_db, tenantId, id, duplicate.UserAccountId, ct);
+            // A login that the survivor or any other live employee also uses is NOT the duplicate's to close: twins often share one
+            // self-service login. It is held (user, tokens and the link row that records it stay as they are) and audited as held.
+            var liveOthers = ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Merge: which logins other live employees still use; the tenant is pinned.")
+                .Where(e => e.Id != id && !e.IsDeleted && e.DuplicateOfEmployeeId == null);
+            var heldViaPointer = await liveOthers.Where(e => e.UserAccountId != null && credentialUserIds.Contains(e.UserAccountId.Value))
+                .Select(e => e.UserAccountId!.Value).ToListAsync(ct);
+            var heldViaLink = await ScopedBypass.TenantWide(_db.EmployeeUserAccounts, tenantId, "Merge: which logins other live employees still use; the tenant is pinned.")
+                .Where(x => x.EmployeeId != id && !x.IsDeleted && x.UserId != null && credentialUserIds.Contains(x.UserId.Value)
+                    && liveOthers.Any(e => e.Id == x.EmployeeId))
+                .Select(x => x.UserId!.Value).ToListAsync(ct);
+            var heldLoginIds = heldViaPointer.Concat(heldViaLink).ToHashSet();
+            if (heldLoginIds.Count > 0)
+            {
+                credentialLinks = credentialLinks.Where(l => l.UserId is not Guid u || !heldLoginIds.Contains(u)).ToList();
+                credentialUsers = credentialUsers.Where(u => !heldLoginIds.Contains(u.Id)).ToList();
+                credentialUserIds = credentialUserIds.Where(u => !heldLoginIds.Contains(u)).ToList();
+            }
             var gatedCredentials = await EmployeeManagementService.GateLinkedLoginsAsync(
                 _db, tenantId, credentialLinks, credentialUsers, credentialUserIds, context,
                 "employee.merged", id, mergedAt, ct);
@@ -5314,6 +5341,7 @@ public class EmployeesController : ControllerBase
                 cancelledApprovals = cancelled,
                 reroutedApprovals = rerouted,
                 clearedGaps = openGaps.Count,
+                heldSharedLogins = heldLoginIds.Count,
                 credentials = new
                 {
                     links = revokedCredentials.Links,
@@ -5326,6 +5354,22 @@ public class EmployeesController : ControllerBase
             }));
             await _db.SaveChangesAsync(ct);
             return Ok(new { resolved = "merge", intoEmployeeId = intoId });
+            }
+
+            if (_db.Database.IsRelational() && _db.Database.CurrentTransaction is null)
+            {
+                var strategy = _db.Database.CreateExecutionStrategy();
+                return await strategy.ExecuteAsync(async () =>
+                {
+                    // A retried attempt starts clean: nothing from a rolled-back try (tracked rows, staged audit) is replayed.
+                    _db.ChangeTracker.Clear();
+                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                    var outcome = await MergeLockedAsync();
+                    if (outcome is OkObjectResult) await tx.CommitAsync(ct);
+                    return outcome;
+                });
+            }
+            return await MergeLockedAsync();
         }
 
         if (resolution == "unmerge")
