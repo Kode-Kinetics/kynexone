@@ -13,6 +13,11 @@ import { KIOSK_PERSONA, dailyRows, openAttendance } from './attendance-mocks';
  *   empty      filtered / first-use / no-devices each hold exactly one action (3c, 8e)
  *   result     a saved punch lands on a ResultBanner with a next action (3d); a refusal says what to do (3e)
  *   a11y       axe has no serious or critical violation (12)
+ *   phone      under 640 px no risk signal is hidden: a card list carries Missing punch and late (S1, S6)
+ *   filters    the four KPI tiles are filter buttons and announce the result count (S4)
+ *   panel      closed on load, one primary at a time, Close/Esc return focus, a run in progress stays visible when closed
+ *   reflow     the open record panel reflows to one column at 320 px
+ *   bidi       data text is isolated so Arabic and English mix without scrambling
  */
 const t = (locale: Locale, key: string, params?: Record<string, string | number>) => translate(locale, key, params);
 
@@ -35,6 +40,11 @@ async function tableMetrics(page: Page) {
   });
 }
 
+const RESULTS_KEY = '{count, plural, one {# result} other {# results}}';
+const header = (page: Page) => page.locator('[data-page-header] [data-primary-action] button');
+const recordRegion = (page: Page, locale: Locale) => page.getByRole('region', { name: t(locale, 'Record attendance') });
+const TZ_MOCK = { '/api/tenant-admin/localization': { countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh', stated: true } };
+
 for (const locale of LOCALES) {
   test.describe(`attendance dashboard (${locale})`, () => {
     test('space: at 1366 the daily table is at least 900 px wide, does not scroll sideways, and its first row is above the fold', async ({ page }) => {
@@ -45,7 +55,7 @@ for (const locale of LOCALES) {
       expect(m.hostWidth, 'table width').toBeGreaterThanOrEqual(900);
       expect(m.overflow, 'table scrolls sideways by (px)').toBeLessThanOrEqual(0);
       expect(m.firstRowBottom, 'first row bottom edge').toBeLessThanOrEqual(VIEWPORTS.desktop.height);
-      expect(m.visibleRows, 'rows visible without scrolling').toBeGreaterThanOrEqual(4);
+      expect(m.visibleRows, 'rows visible without scrolling').toBeGreaterThanOrEqual(10);
     });
 
     test('space: at 320 the table has no horizontal scroll and no document overflow', async ({ page }) => {
@@ -144,6 +154,160 @@ for (const locale of LOCALES) {
       await expect(alert).toBeVisible();
       await expect(alert).not.toContainText('status code');
       await expect(alert).toContainText(t(locale, 'error.forbidden'));
+    });
+
+    test('rows: the Date column is gone (one date is filtered), department sits inline with the name, rows are about 40 px', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      const heads = await page.locator('[data-daily-table] thead th').allTextContents();
+      expect(heads.map(h => h.trim().toLowerCase())).not.toContain(t(locale, 'Date').toLowerCase());
+      const row = await page.locator('[data-daily-table] tbody tr').first().boundingBox();
+      expect(row!.height, 'row height').toBeLessThanOrEqual(42);
+      const cell = page.locator('[data-daily-table] tbody tr').first().locator('td').first();
+      expect(await cell.locator('p').count(), 'department is inline, not a second paragraph').toBe(0);
+    });
+
+    test('phone: under 640 px every record is a card with its times, status, Missing punch and late minutes; at 640 the table returns', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      const cards = page.locator('[data-daily-cards] > li');
+      await expect(cards).toHaveCount(14);
+      await expect(page.locator('[data-daily-table] table')).toBeHidden();
+      const noura = cards.filter({ hasText: 'Noura Al-Qahtani' });
+      await expect(noura).toContainText(t(locale, 'Missing punch'));
+      await expect(noura).toContainText(t(locale, 'Present'));
+      await expect(cards.filter({ hasText: 'Layla Hassan' })).toContainText(t(locale, '{minutes}m late', { minutes: 17 }));
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+      await page.setViewportSize({ width: 640, height: 800 });
+      await expect(page.locator('[data-daily-table] table')).toBeVisible();
+      await expect(page.locator('[data-daily-cards]')).toBeHidden();
+    });
+
+    test('filters: the KPI tiles are buttons; Late filters by status, Missing punch filters the rows, and the live region announces the count', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      const tiles = page.getByRole('group', { name: t(locale, 'Attendance at a glance') });
+      const status = page.getByLabel(t(locale, 'Status filter'));
+      const live = page.locator('main [role="status"]').filter({ hasText: /\S/ });
+      await tiles.getByRole('button', { name: new RegExp(t(locale, 'Late')) }).click();
+      await expect(status).toHaveValue('Late');
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(3);
+      await expect(live.first()).toContainText(t(locale, RESULTS_KEY, { count: 3 }));
+      const missing = tiles.getByRole('button', { name: new RegExp(t(locale, 'Missing Punch')) });
+      await tiles.getByRole('button', { name: new RegExp(t(locale, 'Late')) }).click();
+      await expect(status).toHaveValue('');
+      await missing.click();
+      await expect(missing).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(2);
+      await expect(live.first()).toContainText(t(locale, RESULTS_KEY, { count: 2 }));
+      await missing.click();
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+    });
+
+    test('panel: it stays closed on load; open, the header button reads Close (secondary) so the panel holds the only primary', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      await expect(recordRegion(page, locale)).toBeHidden();
+      await header(page).click();
+      await expect(header(page)).toHaveText(t(locale, 'Close'));
+      await expect(header(page)).toHaveClass(/btn-secondary/);
+      await expect(header(page)).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('main .btn-primary:visible'), 'one primary in view: the panel submit').toHaveCount(1);
+      await expect(recordRegion(page, locale).locator('.btn-primary')).toHaveCount(1);
+    });
+
+    test('panel: the ghost Close in its header and Esc both close it and return focus to the header button', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await region.getByRole('button', { name: t(locale, 'Close') }).click();
+      await expect(region).toBeHidden();
+      await expect(header(page)).toBeFocused();
+      await expect(header(page)).toHaveText(t(locale, 'Record attendance'));
+      await header(page).click();
+      await region.getByLabel(t(locale, 'Reason (required)')).focus();
+      await page.keyboard.press('Escape');
+      await expect(region).toBeHidden();
+      await expect(header(page)).toBeFocused();
+    });
+
+    test('panel: a mass-entry run in progress shows "Recording n of m" in the header while closed, and the chip reopens the panel', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await page.route('**/api/attendance/events/bulk-entry', async route => {
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        await route.fulfill({ json: { requested: 14, created: 14, duplicates: 0, failed: 0, errors: [] } });
+      });
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await region.getByRole('button', { name: t(locale, 'Select all shown') }).click();
+      await region.getByLabel(t(locale, 'Reason (required)')).fill('Device offline');
+      await region.getByRole('button', { name: /×/ }).click();
+      await header(page).click();
+      await expect(region).toBeHidden();
+      const chip = page.locator('[data-page-header] [role="status"]').filter({ hasText: t(locale, 'Recording {done} of {total}', { done: 0, total: 14 }) });
+      await expect(chip).toBeVisible();
+      await chip.getByRole('button').click();
+      await expect(region).toBeVisible();
+      await expect(chip, 'gone once the run has finished').toHaveCount(0, { timeout: 15_000 });
+    });
+
+    test('guidance: the time zone clause is dropped when the company has none, and names the zone when it has', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await header(page).click();
+      await expect(recordRegion(page, locale)).toContainText(t(locale, 'Enter an in time, an out time, or both.'));
+      await expect(recordRegion(page, locale)).not.toContainText(t(locale, 'Times are in {zone}.', { zone: '' }).replace(/\s*\.$/, ''));
+      const zoned = await page.context().newPage();
+      await zoned.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(zoned, locale, { extra: TZ_MOCK });
+      await header(zoned).click();
+      await expect(recordRegion(zoned, locale)).toContainText(t(locale, 'Times are in {zone}.', { zone: 'Asia/Riyadh' }));
+    });
+
+    test('reflow: at 320 the open record panel is one column, dates fit, controls are 44 px and employee rows stack name over code and title', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await expect(region).toBeVisible();
+      await expect(region.locator('[data-employee-name]').first()).toBeVisible();
+      const from = await region.getByLabel(t(locale, 'From date')).boundingBox();
+      const to = await region.getByLabel(t(locale, 'To date')).boundingBox();
+      expect(from!.x).toBeGreaterThanOrEqual(0);
+      expect(from!.x + from!.width, 'From date inside the viewport').toBeLessThanOrEqual(320);
+      expect(to!.x + to!.width, 'To date inside the viewport').toBeLessThanOrEqual(320);
+      expect(to!.y, 'one column: To date under From date').toBeGreaterThan(from!.y + from!.height - 1);
+      expect(from!.height, 'date control height').toBeGreaterThanOrEqual(44);
+      const name = await region.locator('[data-employee-name]').first().boundingBox();
+      const meta = await region.locator('[data-employee-meta]').first().boundingBox();
+      expect(meta!.y, 'code and title under the name').toBeGreaterThanOrEqual(name!.y + name!.height - 1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    });
+
+    test('bidi: the Missing chip says what is missing, data text is isolated, and the assistant button does not cover the submit', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      await expect(page.locator('[data-daily-table] tbody')).toContainText(t(locale, 'Missing punch'));
+      await expect(page.locator('[data-daily-table] tbody')).toContainText(t(locale, 'Complete'));
+      if (locale === 'ar') await expect(page.locator('[data-daily-table] tbody')).not.toContainText('مسح');
+      expect(await page.locator('[data-daily-table] tbody tr td:first-child bdi').count()).toBeGreaterThanOrEqual(14);
+      await expect(page.locator('main [dir="auto"]', { hasText: 'Late arrivals up in Operations' })).toHaveCount(1);
+      await expect(page.locator('main bdi', { hasText: 'ZKTeco' }).first()).toBeVisible();
+      await header(page).click();
+      const submit = recordRegion(page, locale).locator('.btn-primary');
+      await submit.evaluate(el => el.scrollIntoView({ block: 'nearest' }));
+      const box = await submit.boundingBox();
+      const covered = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return !!el && !el.closest('#attendance-record-panel');
+      }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
+      expect(covered, 'something floats over the submit button').toBe(false);
     });
 
     for (const [name, viewport] of Object.entries(VIEWPORTS)) {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
-import { CalendarClock, RefreshCw, RotateCcw, Square } from 'lucide-react';
+import { CalendarClock, RefreshCw, RotateCcw, Square, X } from 'lucide-react';
 import { attendanceApi } from '../../api/attendance';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
@@ -48,22 +48,31 @@ interface Props {
   canProcess: boolean;
   /** Called after punches were recorded or processed, so the page reloads what it shows. */
   onRecorded: () => void;
+  /** Close the panel (the ghost Close in its header, and Esc). The page keeps it mounted, so nothing typed or running is lost. */
+  onClose: () => void;
+  /** Reports a mass-entry run in progress (people sent so far, of all), or null when none is running, so the page can show it while closed. */
+  onRunProgress?: (progress: { done: number; total: number } | null) => void;
 }
 
 /**
  * The Live Dashboard's one place to record attendance. With entry rights there is no mode to choose: one list, tick one person
  * or many, set the days and times, give a reason. Without them, the plain punch form.
  */
-export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded }: Props) {
+export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded, onClose, onRunProgress }: Props) {
   const { t } = useLocale();
   if (!single && !canMass) return null;
 
   return (
-    <section className="surface p-4" aria-label={t('Record attendance')}>
-      <SectionTitle icon={CalendarClock} title={t('Record attendance')}
-        subtitle={canMass ? t('Tick one or more employees, set the days and times, and give a reason. Every entry is kept in the audit trail.') : t('Save a web, mobile or kiosk punch for one employee now.')} />
+    // scroll-mb keeps the submit clear of the assistant button when the panel is scrolled into view.
+    <section className="surface scroll-mb-28 p-4" aria-label={t('Record attendance')}
+      onKeyDown={(e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); onClose(); } }}>
+      <div className="flex items-start justify-between gap-3">
+        <SectionTitle icon={CalendarClock} title={t('Record attendance')}
+          subtitle={canMass ? t('Tick one or more employees, set the days and times, and give a reason. Every entry is kept in the audit trail.') : t('Save a web, mobile or kiosk punch for one employee now.')} />
+        <button type="button" className="btn-ghost shrink-0" onClick={onClose}><X className="h-4 w-4" aria-hidden="true" />{t('Close')}</button>
+      </div>
       <div className="mt-3">
-        {canMass ? <MassEntry canProcess={canProcess} onRecorded={onRecorded} /> : single}
+        {canMass ? <MassEntry canProcess={canProcess} onRecorded={onRecorded} onRunProgress={onRunProgress} /> : single}
       </div>
     </section>
   );
@@ -74,7 +83,7 @@ const STATUS_TONE: Record<PersonStatus, 'emerald' | 'amber' | 'rose' | 'slate'> 
 const MAX_REASONS_SHOWN = 2;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded: () => void }) {
+function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: boolean; onRecorded: () => void; onRunProgress?: (progress: { done: number; total: number } | null) => void }) {
   const { t } = useLocale();
   const fx = useFormat();
   const { defaultTimezone } = useTenantSettings();
@@ -101,6 +110,12 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
   const state = massEntryState({ employees: selection.size, fromDate, toDate, inTime, outTime, reason, busy: running, canWrite: true });
   const { plan } = state;
   const summary = runSummary(run);
+  // Tell the page how far a run is, so the header can show "Recording 40 of 120" while this panel is closed.
+  const sentSoFar = summary.total - summary.waiting;
+  useEffect(() => {
+    onRunProgress?.(running ? { done: sentSoFar, total: summary.total } : null);
+  }, [onRunProgress, running, sentSoFar, summary.total]);
+  useEffect(() => () => onRunProgress?.(null), [onRunProgress]);
 
   const problem = (() => {
     switch (plan.problem) {
@@ -186,32 +201,32 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
           max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-52" />
         <fieldset className="min-w-0 space-y-3" disabled={locked}>
           <legend className="sr-only">{t('Attendance to record')}</legend>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-3">
+          <div className="grid grid-cols-1 gap-x-3 gap-y-3 min-[400px]:grid-cols-2">
             <Field label={t('From date')} noInfo="a plain date with one obvious meaning">
-              <input id={`${ids}-from`} type="date" className="input w-full" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+              <input id={`${ids}-from`} type="date" className="input w-full min-w-0 max-sm:min-h-11" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
             </Field>
             <Field label={t('To date')} noInfo="a plain date with one obvious meaning">
-              <input id={`${ids}-to`} type="date" className="input w-full" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+              <input id={`${ids}-to`} type="date" className="input w-full min-w-0 max-sm:min-h-11" value={toDate} onChange={(e) => setToDate(e.target.value)} />
             </Field>
             <Field label={t('In time')} info={t('The time of the in punch, in the company time zone. Leave it empty to record only an out time.')}>
-              <input id={`${ids}-in`} type="time" className="input w-full" value={inTime} onChange={(e) => setInTime(e.target.value)} />
+              <input id={`${ids}-in`} type="time" className="input w-full min-w-0 max-sm:min-h-11" value={inTime} onChange={(e) => setInTime(e.target.value)} />
             </Field>
             <Field label={t('Out time')} info={t('The time of the out punch. If it is the same as or earlier than the in time, it is recorded on the next day.')}>
-              <input id={`${ids}-out`} type="time" className="input w-full" value={outTime} onChange={(e) => setOutTime(e.target.value)} />
+              <input id={`${ids}-out`} type="time" className="input w-full min-w-0 max-sm:min-h-11" value={outTime} onChange={(e) => setOutTime(e.target.value)} />
             </Field>
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400">
-            {t('Enter an in time, an out time, or both.')} {t('Times are in {zone}.', { zone: defaultTimezone })}
+            {t('Enter an in time, an out time, or both.')}{defaultTimezone && <> {t('Times are in {zone}.', { zone: defaultTimezone })}</>}
             {state.overnight && <> {t('Overnight shift: the out time is recorded on the next day.')}</>}
           </p>
           <Field label={t('Reason (required)')} noInfo="free text; the entry's reason is kept in the audit trail, stated in the panel subtitle">
-            <input id={`${ids}-reason`} className="input w-full" maxLength={MASS_ENTRY_MAX_REASON} value={reason} onChange={(e) => setReason(e.target.value)}
+            <input id={`${ids}-reason`} className="input w-full max-sm:min-h-11" maxLength={MASS_ENTRY_MAX_REASON} value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder={t('For example: the biometric device was offline')} onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
           </Field>
           {problem && selection.size > 0 && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{problem}</p>}
           {plan.problem === 'no-employees' && <p className="text-xs text-slate-500">{t('Select at least one employee.')}</p>}
           {run.phase === 'idle' && (
-            <button type="button" onClick={submit} disabled={!state.canSubmit} className="btn-primary w-full justify-center">
+            <button type="button" onClick={submit} disabled={!state.canSubmit} className="btn-primary w-full scroll-mb-28 justify-center max-sm:min-h-11">
               {plan.problem === null ? t(MASS_ENTRY_SUBMIT_KEY, { employees: plan.employees, days: plan.days }) : t('Record attendance')}
             </button>
           )}
@@ -257,9 +272,9 @@ function MassEntry({ canProcess, onRecorded }: { canProcess: boolean; onRecorded
           <ul aria-label={t('Employees in this entry')} className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10">
             {shownPeople.map((p) => (
               <li key={p.id} className="flex items-start gap-2 px-3 py-2 text-sm">
-                <span className="mt-0.5 font-mono text-xs text-slate-500">{p.code}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-slate-800 dark:text-slate-100">{p.name}</span>
+                  <span className="block break-words text-slate-800 dark:text-slate-100"><bdi>{p.name}</bdi></span>
+                  <span className="block text-meta text-fg-muted"><bdi className="font-mono">{p.code}</bdi></span>
                   {p.reasons.length > 0 && (
                     <span className="block text-xs text-slate-500 dark:text-slate-400">
                       {p.reasons.slice(0, MAX_REASONS_SHOWN).join(' · ')}

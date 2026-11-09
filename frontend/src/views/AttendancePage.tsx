@@ -13,6 +13,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Timer,
+  X,
   Users,
 } from 'lucide-react';
 import { attendanceApi } from '../api/attendance';
@@ -156,6 +157,11 @@ export function AttendancePage() {
   // The record panel stays mounted while closed (hidden), so a run in progress or a half-typed entry survives closing it.
   const [recordOpen, setRecordOpen] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  // Client-side filter behind the "Missing punch" tile: the daily rows already carry `missingPunch`, the API takes no such status.
+  const [missingOnly, setMissingOnly] = useState(false);
+  // A mass-entry run in progress, reported by the (hidden but mounted) record panel so the header can show it while closed.
+  const [runProgress, setRunProgress] = useState<{ done: number; total: number } | null>(null);
+  const recordButtonRef = useRef<HTMLButtonElement>(null);
   const recordRef = useRef<HTMLDivElement>(null);
   const dateRef = useRef<HTMLInputElement>(null);
   const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
@@ -284,6 +290,9 @@ export function AttendancePage() {
     if (activeTab !== 'dashboard') { setActiveTab('dashboard'); setRecordOpen(true); return; }
     setRecordOpen((open) => !open);
   };
+  const openRecord = () => { setActiveTab('dashboard'); setRecordOpen(true); };
+  // Closing returns focus to the header button, which stays where it was (only its label changes).
+  const closeRecord = () => { setRecordOpen(false); recordButtonRef.current?.focus(); };
   useEffect(() => {
     if (!showRecord) return;
     const frame = requestAnimationFrame(focusRecord);
@@ -333,10 +342,21 @@ export function AttendancePage() {
   const regularizationsUnavailable = unavailableMessage('regularizations', loadErrors);
   const correctionQueueUnavailable = regularizationQueueUnavailableMessage(loadErrors, pendingRegularizations.length);
 
-  const dailyEmpty = statusFilter ? (
+  const clearFilters = () => { setStatusFilter(''); setMissingOnly(false); };
+  // What the Live Dashboard table shows: the day's rows, narrowed to the missing punches when that tile is on.
+  const shownDaily = useMemo(() => (missingOnly ? daily.filter((r) => r.missingPunch) : daily), [daily, missingOnly]);
+  const filtering = !!statusFilter || missingOnly;
+  // Announced in the live region next to Refresh, so a tile click is heard as well as seen.
+  const resultsNote = filtering && !loading && activeTab === 'dashboard' ? t('{count, plural, one {# result} other {# results}}', { count: shownDaily.length }) : '';
+  const toggleStatusTile = (status: string) => { setMissingOnly(false); setStatusFilter((current) => (current === status ? '' : status)); };
+  const toggleMissingTile = () => { setStatusFilter(''); setMissingOnly((on) => !on); };
+
+  const dailyEmpty = filtering ? (
     <EmptyState kind="filtered" title={t('No records match')}
-      description={t('No attendance with status {status} on {date}.', { status: enumLabel(t, 'AttendanceStatus', statusFilter), date: filterDate ? fx.date(filterDate) : '' })}
-      action={{ onClick: () => setStatusFilter('') }} />
+      description={missingOnly
+        ? t('No attendance with a missing punch on {date}.', { date: filterDate ? fx.date(filterDate) : '' })
+        : t('No attendance with status {status} on {date}.', { status: enumLabel(t, 'AttendanceStatus', statusFilter), date: filterDate ? fx.date(filterDate) : '' })}
+      action={{ onClick: clearFilters }} />
   ) : canRecord ? (
     <EmptyState kind="first-use" icon={Clock} title={t('Nothing recorded for this day yet')} description={t('Punches appear here once they are processed.')}
       action={{ label: t('Record attendance'), onClick: () => { setActiveTab('dashboard'); setRecordOpen(true); } }} />
@@ -345,17 +365,47 @@ export function AttendancePage() {
       action={{ label: t('Change the date'), onClick: () => dateRef.current?.focus() }} />
   );
 
+  // What the tabs show: one day, optionally one status. Directly above the records they filter.
+  const controls = (
+    <div className="flex flex-wrap items-center gap-2">
+      <input ref={dateRef} type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input w-auto" aria-label={t('Attendance date')} />
+      <select value={statusFilter} onChange={(e) => { setMissingOnly(false); setStatusFilter(e.target.value); }} className="select w-auto" aria-label={t('Status filter')}>
+        <option value="">{t('All statuses')}</option>
+        <option value="Present">{enumLabel(t, 'AttendanceStatus', 'Present')}</option>
+        <option value="Late">{enumLabel(t, 'AttendanceStatus', 'Late')}</option>
+        <option value="Half day">{enumLabel(t, 'AttendanceStatus', 'Half day')}</option>
+        <option value="Absent">{enumLabel(t, 'AttendanceStatus', 'Absent')}</option>
+      </select>
+      <button type="button" onClick={load} className="btn-ghost" disabled={loading}><RefreshCw className="h-4 w-4" aria-hidden="true" />{t('Refresh')}</button>
+      <span role="status" className="text-meta text-fg-muted">
+        {resultsNote && <span className="sr-only">{resultsNote}. </span>}
+        {updatedAt && !loading ? t('Updated {time}', { time: fx.time(updatedAt) }) : ''}
+      </span>
+    </div>
+  );
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <PageHeader
         title={t('Attendance workspace')}
         purpose={activeTab === 'dashboard'
           ? t('See who is in, late or missing on a day, and record the punches that are missing.')
           : t('Review punches, device health, corrections, processing, payroll impacts, and exceptions from available data sources.')}
-        actions={<ModuleSettingsLink sections={['attendanceRules', 'attendanceDevices']} label={msg('Attendance settings')} />}
+        actions={<>
+          {runProgress && !showRecord && (
+            // A run keeps going while the panel is closed; this chip says so and brings the panel back.
+            <span role="status">
+              <button type="button" className="btn-secondary" onClick={openRecord}>
+                <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />{t('Recording {done} of {total}', { done: runProgress.done, total: runProgress.total })}
+              </button>
+            </span>
+          )}
+          <ModuleSettingsLink sections={['attendanceRules', 'attendanceDevices']} label={msg('Attendance settings')} />
+        </>}
         primary={canRecord ? (
-          <button type="button" className="btn-primary" onClick={toggleRecord} aria-expanded={showRecord} aria-controls="attendance-record-panel">
-            <Clock className="h-4 w-4" aria-hidden="true" />{t('Record attendance')}
+          // While the panel is open this is a plain Close, so the panel's own submit is the one primary on screen.
+          <button ref={recordButtonRef} type="button" className={showRecord ? 'btn-secondary' : 'btn-primary'} onClick={toggleRecord} aria-expanded={showRecord} aria-controls="attendance-record-panel">
+            {showRecord ? <X className="h-4 w-4" aria-hidden="true" /> : <Clock className="h-4 w-4" aria-hidden="true" />}{showRecord ? t('Close') : t('Record attendance')}
           </button>
         ) : undefined}
       />
@@ -382,34 +432,26 @@ export function AttendancePage() {
         label={t('Attendance workspace sections')}
       />
 
-      {/* What the tabs below show: one day, optionally one status. Directly above the records they filter. */}
-      <div className="flex flex-wrap items-center gap-2">
-        <input ref={dateRef} type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input w-auto" aria-label={t('Attendance date')} />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="select w-auto" aria-label={t('Status filter')}>
-          <option value="">{t('All statuses')}</option>
-          <option value="Present">{enumLabel(t, 'AttendanceStatus', 'Present')}</option>
-          <option value="Late">{enumLabel(t, 'AttendanceStatus', 'Late')}</option>
-          <option value="Half day">{enumLabel(t, 'AttendanceStatus', 'Half day')}</option>
-          <option value="Absent">{enumLabel(t, 'AttendanceStatus', 'Absent')}</option>
-        </select>
-        <button type="button" onClick={load} className="btn-ghost" disabled={loading}><RefreshCw className="h-4 w-4" aria-hidden="true" />{t('Refresh')}</button>
-        <span role="status" className="text-meta text-fg-muted">{updatedAt && !loading ? t('Updated {time}', { time: fx.time(updatedAt) }) : ''}</span>
-      </div>
+      {/* On the other tabs the day and status controls sit on their own row; on the Live Dashboard they share the KPI strip row. */}
+      {activeTab !== 'dashboard' && controls}
 
       <TabPanel idPrefix="attendance" tabId={activeTab}>
       {activeTab === 'dashboard' && (
         <div className="space-y-5">
-          {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
-            // One slim strip, not four cards: the day's counts at a glance, leaving the height for the records.
-            <dl aria-label={t('Attendance at a glance')} className="surface grid grid-cols-2 divide-slate-100 px-2 py-1.5 sm:grid-cols-4 sm:divide-x dark:divide-white/[0.06] rtl:sm:divide-x-reverse">
-              <KpiInline label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" />
-              <KpiInline label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" />
-              <KpiInline label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" />
-              <KpiInline label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" />
-            </dl>
-          )}
+          {/* One row: the day's counts as filter buttons, then the date, status and Refresh they act on. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
+              <div role="group" aria-label={t('Attendance at a glance')} className="surface grid min-w-0 grow grid-cols-2 gap-1 p-1 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
+                <KpiTile label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" pressed={statusFilter === 'Present'} onClick={() => toggleStatusTile('Present')} />
+                <KpiTile label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" pressed={statusFilter === 'Absent'} onClick={() => toggleStatusTile('Absent')} />
+                <KpiTile label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" pressed={statusFilter === 'Late'} onClick={() => toggleStatusTile('Late')} />
+                <KpiTile label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" pressed={missingOnly} onClick={toggleMissingTile} />
+              </div>
+            )}
+            {controls}
+          </div>
 
-          <div ref={recordRef} id="attendance-record-panel" hidden={!recordOpen}>
+          <div ref={recordRef} id="attendance-record-panel" hidden={!showRecord} className="scroll-mb-28">
             <AttendanceRecordPanel
               single={canPunch ? (
                 <form onSubmit={submitPunch} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_200px_200px_auto] lg:items-end">
@@ -437,13 +479,15 @@ export function AttendancePage() {
               canMass={massEntryAllowed(hasPermission)}
               canProcess={canProcess}
               onRecorded={load}
+              onClose={closeRecord}
+              onRunProgress={setRunProgress}
             />
           </div>
 
           {/* The table takes the full width. Device health and exceptions sit under it, and beside it only on a screen wide enough
               (1680) to leave the table 960 px or more. */}
           <div className="grid gap-5 min-[1680px]:grid-cols-[minmax(0,1fr)_360px] min-[1680px]:items-start">
-            {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} empty={dailyEmpty} />}
+            {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={shownDaily} loading={loading} empty={dailyEmpty} />}
             <div className="grid gap-5 md:grid-cols-2 min-[1680px]:grid-cols-1">
               <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
                 {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
@@ -452,8 +496,9 @@ export function AttendancePage() {
                     {deviceSync.slice(0, 6).map((device) => (
                     <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-slate-100 p-3 dark:border-white/10">
                       <div>
-                        <p className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">{device.vendor} · {device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</p>
+                        <p dir="auto" className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{device.vendor}</bdi></p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</bdi></p>
                       </div>
                       <StatusChip label={enumLabel(t, 'Status', device.status || 'Never')} tone={statusTone(device.status || 'Never')} dot />
                     </div>
@@ -596,17 +641,16 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
 }
 
 /** A count in the slim strip: icon, label and number on one line. */
-function KpiInline({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof Activity; tone: 'emerald' | 'rose' | 'amber' | 'blue' }) {
-  const color = { emerald: 'text-emeraldZ bg-emeraldZ/10', rose: 'text-rose-500 bg-rose-500/10', amber: 'text-amber-500 bg-amber-500/10', blue: 'text-sapphire bg-sapphire/10' }[tone];
+/** A count that is also a filter: pressed means the table below is narrowed to it. */
+function KpiTile({ label, value, icon: Icon, tone, pressed, onClick }: { label: string; value: number; icon: typeof Activity; tone: 'emerald' | 'rose' | 'amber' | 'blue'; pressed: boolean; onClick: () => void }) {
+  const color = { emerald: 'text-emeraldZ', rose: 'text-rose-500', amber: 'text-amber-600', blue: 'text-sapphire' }[tone];
   return (
-    // A <dl> group holds only <dt> and <dd>, so the icon lives inside the term.
-    <div className="flex items-center gap-2.5 px-3 py-1.5">
-      <dt className="flex items-center gap-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        <span className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${color}`}><Icon className="h-3.5 w-3.5" aria-hidden="true" /></span>
-        {label}
-      </dt>
-      <dd className="ms-auto text-lg font-semibold tabular-nums text-slate-950 dark:text-white">{value}</dd>
-    </div>
+    <button type="button" aria-pressed={pressed} onClick={onClick}
+      className={`flex min-h-control-md items-center gap-2 rounded-lg px-3 py-1 text-start transition-colors duration-fast hover:bg-surface-sunken ${pressed ? 'bg-primary-soft ring-1 ring-primary' : ''}`}>
+      <Icon className={`h-4 w-4 shrink-0 ${color}`} aria-hidden="true" />
+      <span className="text-meta font-semibold text-fg-muted">{label}</span>
+      <span className="ms-auto text-h4 sm:ms-1 font-semibold tabular-nums text-fg">{value}</span>
+    </button>
   );
 }
 
@@ -632,38 +676,62 @@ function useAfterDelay(on: boolean, delayMs: number): boolean {
   return on && late;
 }
 
-/** Below 640 px the table keeps the person, the times and the status; the rest is one tap away in the records. */
-const PHONE_HIDDEN = 'hidden sm:table-cell';
-
+/**
+ * The day's records. From 640 px a table (no Date column: one date is filtered; the department sits inline with the name so
+ * a row is about 40 px). Under 640 px a card list: nothing that signals risk (a missing punch, late minutes) is dropped to save width.
+ */
 function DailyTable({ records, loading, compact, empty }: { records: AttendanceDailyRecord[]; loading?: boolean; compact?: boolean; empty?: ReactNode }) {
   const t = useT();
   const fx = useFormat();
   const minutes = useMinutes();
   const showSkeleton = useAfterDelay(!!loading, 150);
-  const heads: Array<[string, boolean]> = [[msg('Date'), true], [msg('Employee'), false], [msg('Check-in'), false], [msg('Check-out'), false], [msg('Worked'), true], [msg('Late'), true], [msg('Missing'), true], [msg('Status'), false]];
+  const heads = [msg('Employee'), msg('Check-in'), msg('Check-out'), msg('Worked'), msg('Late'), msg('Punch check'), msg('Status')];
+  const time = (value?: string) => (value ? fx.time(value) : '-');
+  const missingChip = (r: AttendanceDailyRecord) => (r.missingPunch ? <StatusChip label={t('Missing punch')} tone="rose" dot /> : <StatusChip label={t('Complete')} tone="emerald" />);
   return (
     <div data-daily-table className="surface overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr className="border-b border-slate-100 dark:border-white/[0.07]">{heads.map(([h, phoneHidden]) => <th key={h} className={`px-1.5 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400 sm:px-4 ${phoneHidden ? PHONE_HIDDEN : ''}`}>{t(h)}</th>)}</tr></thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
-            {loading && showSkeleton && <tr><td colSpan={8} className="p-3"><SkeletonRows rows={8} /><span className="sr-only">{t('Loading live attendance...')}</span></td></tr>}
-            {!loading && records.length === 0 && <tr><td colSpan={8}>{empty ?? <Empty text={t('No processed attendance records for this selection.')} />}</td></tr>}
+      {loading && showSkeleton && <div className="p-3"><SkeletonRows rows={8} /><span className="sr-only">{t('Loading live attendance...')}</span></div>}
+      {!loading && records.length === 0 && (empty ?? <Empty text={t('No processed attendance records for this selection.')} />)}
+      {records.length > 0 && (
+        <>
+          <ul data-daily-cards aria-label={t('Attendance records')} className="divide-y divide-line sm:hidden">
             {records.map((r) => (
-              <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                <td className={`px-1.5 py-3 font-medium text-slate-900 dark:text-white sm:px-4 ${PHONE_HIDDEN}`}>{fx.date(r.workDate)}</td>
-                <td className="px-1.5 py-3 text-slate-700 dark:text-slate-300 sm:px-4"><bdi>{r.employeeName}</bdi><p className="text-xs text-slate-400">{r.department || r.branch}</p></td>
-                <td className="whitespace-nowrap px-1.5 py-3 font-mono text-xs text-slate-600 dark:text-slate-300 sm:px-4 sm:text-sm">{r.firstInUtc ? fx.time(r.firstInUtc) : '-'}</td>
-                <td className="whitespace-nowrap px-1.5 py-3 font-mono text-xs text-slate-600 dark:text-slate-300 sm:px-4 sm:text-sm">{r.lastOutUtc ? fx.time(r.lastOutUtc) : '-'}</td>
-                <td className={`px-1.5 py-3 text-slate-600 dark:text-slate-300 sm:px-4 ${PHONE_HIDDEN}`}>{minutes(r.totalWorkedMinutes)}</td>
-                <td className={`px-1.5 py-3 text-slate-600 dark:text-slate-300 sm:px-4 ${PHONE_HIDDEN}`}>{r.lateMinutes ? t('{minutes}m', { minutes: r.lateMinutes }) : '-'}</td>
-                <td className={`px-1.5 py-3 sm:px-4 ${PHONE_HIDDEN}`}>{r.missingPunch ? <StatusChip label={t('Missing')} tone="rose" dot /> : <StatusChip label={t('Clear')} tone="emerald" />}</td>
-                <td className="px-1.5 py-3 sm:px-4"><StatusChip label={enumLabel(t, 'AttendanceStatus', r.status)} tone={statusTone(r.status)} dot={!compact} /></td>
-              </tr>
+              <li key={r.id} className="space-y-1 px-3 py-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 break-words text-body font-medium text-fg"><bdi>{r.employeeName}</bdi></p>
+                  <StatusChip label={enumLabel(t, 'AttendanceStatus', r.status)} tone={statusTone(r.status)} dot={!compact} />
+                </div>
+                <p className="text-meta text-fg-muted"><bdi>{r.department || r.branch}</bdi></p>
+                <p className="text-body text-fg"><bdi className="font-mono">{time(r.firstInUtc)}</bdi> → <bdi className="font-mono">{time(r.lastOutUtc)}</bdi></p>
+                {(r.missingPunch || r.lateMinutes > 0) && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {r.missingPunch && <StatusChip label={t('Missing punch')} tone="rose" dot />}
+                    {r.lateMinutes > 0 && <StatusChip label={t('{minutes}m late', { minutes: r.lateMinutes })} tone="amber" />}
+                  </div>
+                )}
+              </li>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </ul>
+          <div className="hidden overflow-x-auto sm:block">
+            <table className="w-full text-body">
+              <thead><tr className="border-b border-line">{heads.map((h) => <th key={h} scope="col" className="px-4 py-2 text-start text-meta font-semibold uppercase tracking-wide text-fg-muted">{t(h)}</th>)}</tr></thead>
+              <tbody className="divide-y divide-line">
+                {records.map((r) => (
+                  <tr key={r.id} className="hover:bg-surface-sunken">
+                    <td className="px-4 py-2 text-fg"><span className="font-medium"><bdi>{r.employeeName}</bdi></span>{(r.department || r.branch) && <span className="ms-2 text-meta text-fg-muted"><bdi>{r.department || r.branch}</bdi></span>}</td>
+                    <td className="whitespace-nowrap px-4 py-2 font-mono text-fg"><bdi>{time(r.firstInUtc)}</bdi></td>
+                    <td className="whitespace-nowrap px-4 py-2 font-mono text-fg"><bdi>{time(r.lastOutUtc)}</bdi></td>
+                    <td className="whitespace-nowrap px-4 py-2 text-fg">{minutes(r.totalWorkedMinutes)}</td>
+                    <td className="whitespace-nowrap px-4 py-2 text-fg">{r.lateMinutes ? t('{minutes}m', { minutes: r.lateMinutes }) : '-'}</td>
+                    <td className="px-4 py-2">{missingChip(r)}</td>
+                    <td className="px-4 py-2"><StatusChip label={enumLabel(t, 'AttendanceStatus', r.status)} tone={statusTone(r.status)} dot={!compact} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -742,7 +810,7 @@ function InsightList({ insights }: { insights: AttendanceAIInsight[] }) {
   if (insights.length === 0) return <Empty text={t('No attendance insights are open.')} />;
   return (
     <div className="space-y-3">
-      {insights.map((item) => <div key={item.id} className="rounded-lg border border-slate-100 p-3 dark:border-white/10"><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{item.summary}</p></div><StatusChip label={enumLabel(t, 'Status', item.severity)} tone={item.severity === 'High' ? 'rose' : item.severity === 'Medium' ? 'amber' : 'blue'} /></div></div>)}
+      {insights.map((item) => <div key={item.id} className="rounded-lg border border-slate-100 p-3 dark:border-white/10"><div className="flex items-start justify-between gap-3"><div><p dir="auto" className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p dir="auto" className="mt-1 text-sm text-slate-500 dark:text-slate-400">{item.summary}</p></div><StatusChip label={enumLabel(t, 'Status', item.severity)} tone={item.severity === 'High' ? 'rose' : item.severity === 'Medium' ? 'amber' : 'blue'} /></div></div>)}
     </div>
   );
 }

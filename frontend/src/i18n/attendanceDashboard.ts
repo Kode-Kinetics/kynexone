@@ -25,6 +25,14 @@ const ar: Record<string, string> = {
   'Devices are added by your HR administrator.': 'يضيف مسؤول الموارد البشرية الأجهزة.',
   'No exceptions on this day.': 'لا توجد استثناءات في هذا اليوم.',
   'Record another': 'تسجيل بصمة أخرى',
+  // Wave 1 follow-up: phone cards, KPI filters, the record panel's run chip.
+  'Punch check': 'فحص البصمات',
+  'Attendance records': 'سجلات الحضور والانصراف',
+  '{minutes}m late': 'متأخر {minutes} د',
+  '{count, plural, one {# result} other {# results}}':
+    '{count, plural, zero {لا توجد نتائج} one {نتيجة واحدة} two {نتيجتان} few {# نتائج} many {# نتيجة} other {# نتيجة}}',
+  'No attendance with a missing punch on {date}.': 'لا توجد سجلات ببصمة ناقصة في {date}.',
+  'Recording {done} of {total}': 'جارٍ التسجيل: {done} من {total}',
 };
 
 export const attendanceDashboard = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) as Record<string, string> };

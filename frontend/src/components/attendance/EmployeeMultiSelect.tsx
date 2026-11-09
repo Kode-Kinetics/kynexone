@@ -184,11 +184,14 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
         className={`${listMaxHeightClass} divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10`}>
         {shown.map((e) => (
           <li key={e.id}>
-            <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-              <input type="checkbox" checked={selection.has(e.id)} onChange={() => toggle(e)} />
-              <span className="font-mono text-xs text-slate-500">{e.employeeCode}</span>
-              <span className="min-w-0 flex-1 truncate text-slate-800 dark:text-slate-100">{nameOf(e)}</span>
-              <span className="max-w-[45%] truncate text-xs text-slate-400">{[e.designation, e.department].filter(Boolean).join(' · ')}</span>
+            {/* The name on top, "code · title" under it, both allowed to wrap: a long or right-to-left name is never cut at its start. */}
+            <label className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 px-3 py-2 text-sm hover:bg-slate-50 max-sm:min-h-11 dark:hover:bg-white/[0.03]">
+              <input type="checkbox" className="row-span-2 mt-1" checked={selection.has(e.id)} onChange={() => toggle(e)} />
+              <bdi data-employee-name className="block break-words text-slate-800 dark:text-slate-100">{nameOf(e)}</bdi>
+              <bdi data-employee-meta className="block break-words text-meta text-fg-muted">
+                <bdi className="font-mono">{e.employeeCode}</bdi>
+                {[e.designation, e.department].filter(Boolean).length > 0 && <> · {[e.designation, e.department].filter(Boolean).join(' · ')}</>}
+              </bdi>
             </label>
           </li>
         ))}
@@ -206,7 +209,7 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
           <ul className="mt-2 flex flex-wrap gap-1.5">
             {selectedList.map((p) => (
               <li key={p.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 dark:bg-white/10">
-                {p.employeeCode} · {p.fullName}
+                <bdi>{p.employeeCode} · {p.fullName}</bdi>
                 <button type="button" aria-label={t('Remove {name}', { name: p.fullName })} onClick={() => { setAtCap(false); const next = new Map(selection); next.delete(p.id); onChange(next); }}>
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>
