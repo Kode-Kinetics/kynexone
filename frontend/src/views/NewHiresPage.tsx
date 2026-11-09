@@ -41,6 +41,8 @@ import {
   type DraftFilterKey,
 } from '../lib/newHireReview';
 
+/** Where an employee opened from this page returns to (the People allow-list in peopleRoutes). */
+const NEW_HIRES_ROUTE = '/people/new-hires';
 const PAGE_SIZE = 25;
 
 function placement(row: Pick<EmployeeDraftListItem, 'department' | 'designation' | 'branch'>, emptyLabel: string): string {
@@ -273,7 +275,7 @@ export function NewHiresPage() {
           <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{notice.text}</span>
           {notice.employeeId != null && (
-            <Link href={employeeWorkspaceHref(notice.employeeId, { section: 'overview' })} className="font-semibold underline underline-offset-2">
+            <Link href={employeeWorkspaceHref(notice.employeeId, { section: 'overview', returnTo: NEW_HIRES_ROUTE })} className="font-semibold underline underline-offset-2">
               {t('Open employee record')}
             </Link>
           )}
@@ -414,7 +416,7 @@ export function NewHiresPage() {
                         </div>
                       )}
                       {action.kind === 'openEmployee' && (
-                        <Link href={employeeWorkspaceHref(action.employeeId, { section: 'overview' })} className="btn-secondary inline-flex h-8 items-center px-3 text-xs">
+                        <Link href={employeeWorkspaceHref(action.employeeId, { section: 'overview', returnTo: NEW_HIRES_ROUTE })} className="btn-secondary inline-flex h-8 items-center px-3 text-xs">
                           {t(action.label)}{row.activatedEmployeeCode ? ` ${row.activatedEmployeeCode}` : ''}
                         </Link>
                       )}

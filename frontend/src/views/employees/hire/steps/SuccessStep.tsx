@@ -7,6 +7,7 @@ import { employeeHireApi, type HireReview } from '@/src/api/employeeHire';
 import { reviewItemLabel } from '@/src/lib/hire/reviewLabels';
 import { ActivationBlockers } from '@/src/components/employeeAccess/ActivationBlockers';
 
+// "Add another" below is a plain anchor on purpose: the hard navigation remounts the wizard, which a same-route Link would not.
 export function SuccessStep({ id, name, rehired = false }: { id: number; name: string; rehired?: boolean }) {
   const { t } = useLocale();
   const [review, setReview] = useState<HireReview | null | 'failed'>(null);

@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Check, Download, Loader2, RotateCcw } from 'lucide-react';
 import { hrCompletionApi, problemOf, SECTION_ORDER, type InboxItem, type SectionKey } from '../../api/essCompletion';
+import { describeApiError } from '../../lib/apiError';
+import { downloadAuthenticated } from '../../lib/downloadFile';
 import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useFormat } from '../../hooks/useFormat';
@@ -11,6 +13,8 @@ import { canDownloadScanned, canRescan, rescanStatusKey, scanLabelKey, scanRefus
 import { hijriLine } from '../../lib/hire/dates';
 import { employeeWorkspaceHref } from '../../lib/peopleRoutes';
 import { EssEmpty, EssLoadError, EssNotice, essInput, essPrimaryButton } from '../../components/ess/EssParts';
+
+const PROFILE_REVIEW_ROUTE = '/people/onboarding-review';
 
 type Decision = { item: InboxItem; kind: 'accept' | 'reject' } | null;
 
@@ -36,6 +40,7 @@ export function CompletionReviewPage() {
   const mayRescan = hasPermission('employees.write') && hasPermission('employees.documents');
   const [scanned, setScanned] = useState<Record<string, string>>({});
   const [rescanning, setRescanning] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -78,6 +83,16 @@ export function CompletionReviewPage() {
 
   // The older mobile request has no section: it is a few personal details, shown with the fields it changes.
   const sectionTitle = (item: InboxItem) => (item.section ? t(`ess.completion.section.${item.section}.title`) : t('Personal details from the mobile app'));
+  /** The download route is bearer-protected, so the file is fetched through the API client and saved from a blob (a plain link would answer 401). */
+  const download = async (id: string, fileName: string) => {
+    setDownloading(id); setMessage(null);
+    try {
+      await downloadAuthenticated(() => hrCompletionApi.downloadDocument(id), fileName || 'document');
+    } catch (e) {
+      const p = problemOf(e);
+      setMessage({ tone: 'error', text: p.code === 'document_quarantined' ? t('ess.completion.error.document_quarantined') : t('ess.completion.download.failed', { reason: describeApiError(e, t) }) });
+    } finally { setDownloading(null); }
+  };
 
   const companies = user?.companies ?? [];
   return (
@@ -149,7 +164,7 @@ export function CompletionReviewPage() {
                             <span className="min-w-0"><bdi>{d.fileName}</bdi> · {t(`ess.completion.doc.${d.kind}`)}{scanLabelKey(scanState(d.scanStatus)) && <> · <span data-testid="scan-label">{t(scanLabelKey(scanState(d.scanStatus)) as string)}</span></>}</span>
                             {scanRefusalKey(scanState(d.scanStatus)) && <span className="basis-full text-xs text-rose-700 dark:text-rose-300" data-testid="scan-refused">{t(scanRefusalKey(scanState(d.scanStatus)) as string)}</span>}
                             {!d.id && canDownloadScanned(scanState(d.scanStatus)) && <span className="text-xs text-slate-500" data-testid="attachment-hidden">{t('You need the sensitive-data permission to download this file.')}</span>}
-                            {d.id && canDownloadScanned(scanState(d.scanStatus)) && <a href={hrCompletionApi.documentUrl(d.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent"><Download className="h-3.5 w-3.5" aria-hidden="true" />{t('Download')}</a>}
+                            {d.id && canDownloadScanned(scanState(d.scanStatus)) && <button type="button" data-testid="download" disabled={downloading === d.id} onClick={() => void download(d.id as string, d.fileName)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent">{downloading === d.id ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" /> : <Download className="h-3.5 w-3.5" aria-hidden="true" />}{t('Download')}</button>}
                             {d.id && mayRescan && canRescan(d.scanStatus, { write: true, documents: true }) && (
                               <button type="button" data-testid="rescan" disabled={rescanning === d.id} onClick={() => void rescan(d.id as string)} className="inline-flex items-center gap-1 text-xs font-semibold text-sapphire underline dark:text-cyanAccent">
                                 {rescanning === d.id ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden="true" /> : <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />}{rescanning === d.id ? t('Scanning…') : t('Scan again')}
@@ -163,7 +178,7 @@ export function CompletionReviewPage() {
                   <div className="flex flex-wrap gap-2">
                     <button type="button" className={essPrimaryButton} onClick={() => { setDecision({ item, kind: 'accept' }); setNote(''); setOverride(''); }}><Check className="h-4 w-4" aria-hidden="true" />{t('Accept')}</button>
                     <button type="button" className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 dark:border-white/20 dark:text-slate-200" onClick={() => { setDecision({ item, kind: 'reject' }); setNote(''); }}><RotateCcw className="h-4 w-4" aria-hidden="true" />{t('Request changes')}</button>
-                    <Link href={employeeWorkspaceHref(item.employee.id, { section: 'access-onboarding' })} className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-semibold text-sapphire underline dark:text-cyanAccent">{t('Open employee')}</Link>
+                    <Link href={employeeWorkspaceHref(item.employee.id, { section: 'access-onboarding', returnTo: PROFILE_REVIEW_ROUTE })} className="inline-flex items-center rounded-xl px-3 py-2 text-sm font-semibold text-sapphire underline dark:text-cyanAccent">{t('Open employee')}</Link>
                   </div>
                   {decision?.item.requestId === item.requestId && (
                     <form className="space-y-3 rounded-xl bg-slate-50 p-3 dark:bg-white/[0.04]" onSubmit={e => { e.preventDefault(); void run(); }}>

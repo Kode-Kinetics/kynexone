@@ -119,7 +119,7 @@ export function EmployeeWorkspaceShell({
             )}
           </div>
           {canWrite && (
-            <Link href={employeeWorkspaceHref(employee.id, { edit: true, mode: 'guided', section, returnTo })} className="btn-secondary min-h-11">
+            <Link href={employeeWorkspaceHref(employee.id, { edit: true, section, returnTo })} className="btn-secondary min-h-11">
               <Pencil className="h-4 w-4" aria-hidden="true" /> {t('Edit full record')}
             </Link>
           )}

@@ -40,6 +40,7 @@ const en: Record<string, string> = {
 
   // Card
   'Self-service': 'Self-service',
+  'Employee list': 'Employee list',
   'Checking self-service…': 'Checking self-service…',
   'Self-service could not be checked.': 'Self-service could not be checked.',
   'Add a work email so {name} can sign in.': 'Add a work email so {name} can sign in.',
@@ -166,6 +167,7 @@ const ar: Record<string, string> = {
     'لدى بعض الموظفين المحددين رمز سابق، وسيتوقف عن العمل. هل تريد المتابعة؟',
 
   'Self-service': 'الخدمة الذاتية',
+  'Employee list': 'قائمة الموظفين',
   'Checking self-service…': 'جارٍ التحقق من الخدمة الذاتية…',
   'Self-service could not be checked.': 'تعذّر التحقق من الخدمة الذاتية.',
   'Add a work email so {name} can sign in.': 'أضف البريد الإلكتروني الوظيفي ليتمكّن {name} من تسجيل الدخول.',

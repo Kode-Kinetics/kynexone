@@ -85,6 +85,8 @@ export function HireWizard() {
   const [draft, setDraft] = useState<{ id: number; name: string } | null>(null);
   const [created, setCreated] = useState<{ id: number; name: string; rehired?: boolean } | null>(null);
   const [banks, setBanks] = useState<SaBank[] | null>(null);
+  // "Start a new employee" (failed-resume panel) is a plain anchor on purpose: ?draft= is read once on mount, so only a hard
+  // navigation clears the failed resume; a same-route Link would keep the wizard mounted.
   // CD26: /people/new?draft=<id> resumes a saved draft. 'idle' = a normal new hire.
   const [resume, setResume] = useState<{ state: 'idle' | 'loading' | 'unavailable' | 'network' | 'notDraft'; id?: number }>({ state: 'idle' });
   const [savedForm, setSavedForm] = useState<HireForm | null>(null);

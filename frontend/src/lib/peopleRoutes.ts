@@ -102,6 +102,18 @@ export function buildPeopleReturnTo(state: PeopleDirectoryState): string {
   return query ? `/people?${query}` : '/people';
 }
 
+/** `/people/new` carrying the directory state, so Cancel / Back after create returns to the same filtered page. */
+export function buildPeopleCreateHref(state: PeopleDirectoryState): string {
+  const query = serializePeopleDirectoryState(state).toString();
+  return query ? `/people/new?${query}` : '/people/new';
+}
+
+/**
+ * The only internal routes a workspace may return to besides the directory: the three People worklists. They keep their
+ * filters in component state (no URL query), so the return target is the bare route and any query is dropped.
+ */
+const PEOPLE_WORKLIST_ROUTES: ReadonlySet<string> = new Set(['/people/new-hires', '/people/onboarding-review', '/people/onboarding-tasks']);
+
 function hasMalformedPercentEncoding(value: string): boolean {
   return /%(?![0-9a-f]{2})/i.test(value);
 }
@@ -112,9 +124,9 @@ function sanitizeInternalPeopleReturnTo(raw: string): string | undefined {
   }
   try {
     const target = new URL(raw, 'https://people-return.invalid');
-    if (target.origin !== 'https://people-return.invalid' || target.pathname !== '/people' || target.hash) {
-      return undefined;
-    }
+    if (target.origin !== 'https://people-return.invalid' || target.hash) return undefined;
+    if (PEOPLE_WORKLIST_ROUTES.has(target.pathname)) return target.pathname;
+    if (target.pathname !== '/people') return undefined;
     return buildPeopleReturnTo(parsePeopleDirectoryState(target.searchParams));
   } catch {
     return undefined;
@@ -128,7 +140,9 @@ export function validatePeopleReturnTo(raw: string | null | undefined, browserOr
     const base = new URL(browserOrigin);
     const target = new URL(raw, base.origin);
     if (target.origin !== base.origin || target.username || target.password) return '/people';
-    if (target.pathname !== '/people' || target.hash) return '/people';
+    if (target.hash) return '/people';
+    if (PEOPLE_WORKLIST_ROUTES.has(target.pathname)) return target.pathname;
+    if (target.pathname !== '/people') return '/people';
     return buildPeopleReturnTo(parsePeopleDirectoryState(target.searchParams));
   } catch {
     return '/people';
