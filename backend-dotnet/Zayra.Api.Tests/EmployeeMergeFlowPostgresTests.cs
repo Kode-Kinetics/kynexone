@@ -1,5 +1,6 @@
 using System.Data.Common;
 using FluentAssertions;
+using Npgsql;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -182,5 +183,49 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         var result = await MergeAsync(new Twins(t.TenantId, t.CompanyId, t.Duplicate, other));
 
         Assert.IsType<NotFoundResult>(result);
+    }
+
+    /// <summary>Moves a transfer to another open status the instant the compare-and-set UPDATE is about to run, as a concurrent approval would.</summary>
+    private sealed class MoveTransferJustBeforeTheClaim(string connectionString, Guid transferId, string movedTo) : DbCommandInterceptor
+    {
+        private bool _done;
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (!_done && command.CommandText.Contains("employee_transfer_requests", StringComparison.Ordinal) && command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+            {
+                _done = true;
+                await using var other = new NpgsqlConnection(connectionString);
+                await other.OpenAsync(cancellationToken);
+                await using var cmd = other.CreateCommand();
+                cmd.CommandText = "UPDATE employee_transfer_requests SET status = @s WHERE id = @id";
+                cmd.Parameters.AddWithValue("s", movedTo);
+                cmd.Parameters.AddWithValue("id", transferId);
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            return await base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task Delete_WhenAConcurrentApprovalMovesATransferToTheNextOpenStep_StillWithdrawsIt()
+    {
+        var t = await SeedTwinsAsync();
+        Guid transferId;
+        await using (var seed = _fx.CreateDb())
+        {
+            var transfer = new EmployeeTransferRequest { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, EffectiveDate = Today, Status = "PendingCurrentManager" };
+            transferId = transfer.Id;
+            seed.EmployeeTransferRequests.Add(transfer);
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseNpgsql(_fx.ConnectionString)
+            .AddInterceptors(new MoveTransferJustBeforeTheClaim(_fx.ConnectionString, transferId, "PendingNewManager")).Options))
+            Assert.IsType<NoContentResult>(await Controller(db, t).Delete(t.Duplicate.Id, CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.EmployeeTransferRequests.IgnoreQueryFilters().SingleAsync(x => x.Id == transferId)).Status.Should().Be("Withdrawn", "the first claim lost the race, so the transfer is re-read and claimed from its new open step");
+        var history = await read.EmployeeHistories.IgnoreQueryFilters().SingleAsync(h => h.EmployeeId == t.Duplicate.Id && h.EventType == "TransferWithdrawn");
+        history.OldValue.Should().Be("PendingNewManager");
     }
 }

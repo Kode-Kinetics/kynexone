@@ -5134,7 +5134,16 @@ public class EmployeesController : ControllerBase
         {
             var previousStatus = transfer.Status;
             // Compare-and-set like every other transfer transition: a transfer that was approved or completed a moment ago is not overwritten.
-            if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previousStatus, TransferWithdrawn, TransferStamp.None, ct)) continue;
+            if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previousStatus, TransferWithdrawn, TransferStamp.None, ct))
+            {
+                // Lost the race. If a concurrent approval only moved it to the NEXT open step (PendingCurrentManager -> PendingNewManager) it is
+                // still open and would later apply to a removed record: re-read it and claim once more from where it is now. A transfer that
+                // was completed or closed is left alone.
+                var now = await _db.EmployeeTransferRequests.AsNoTracking().Where(x => x.Id == transfer.Id && x.TenantId == tenantId).Select(x => x.Status).FirstOrDefaultAsync(ct);
+                if (now is null || !OpenTransferStatuses.Contains(now) || now == previousStatus) continue;
+                previousStatus = now;
+                if (!await EmployeeTransferClaim.TryClaimAsync(_db, transfer, previousStatus, TransferWithdrawn, TransferStamp.None, ct)) continue;
+            }
             AddTransferHistory(transfer, "TransferWithdrawn", previousStatus, cancelReason);
         }
 
@@ -5443,7 +5452,7 @@ public class EmployeesController : ControllerBase
             var mergeAudits = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
                     "Unmerge reads the merge's own audit row, whatever company it was written under; the tenant is pinned.")
                 .Where(a => a.Action == "employee.merged_into_existing" && a.EntityId == id.ToString() && a.Metadata != null)
-                .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).Take(5).ToListAsync(ct);
+                .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).Take(1).ToListAsync(ct);   // ONLY the newest merge row: an older merge's status is never borrowed
             string? recordedStatus = null;
             foreach (var meta in mergeAudits)
             {
@@ -5511,7 +5520,7 @@ public class EmployeesController : ControllerBase
             await _db.SaveChangesAsync(ct);
             await RefreshReadinessByIdAsync(tenantId, id, ct);
             await _audit.WriteAsync("employee.duplicate_merge_reversed", "Employee", id.ToString(), context,
-                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, reason = req.Reason?.Trim() }), ct);
+                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, restoredStatus = merged.Status, reason = req.Reason?.Trim() }), ct);
             return Ok(new { resolved = "unmerge", restored = id });
         }
 

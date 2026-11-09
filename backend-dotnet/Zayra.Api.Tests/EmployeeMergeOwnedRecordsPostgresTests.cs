@@ -980,6 +980,42 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         await using var read = _fx.CreateDb();
         (await read.EmployeePayrollProfiles.IgnoreQueryFilters().SingleAsync(p => p.EmployeeId == t.Duplicate.Id)).WpsEligible.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task Unmerge_ReadsOnlyTheNewestMergeRowForThePreMergeStatus()
+    {
+        var t = await SeedTwinsAsync();
+        await MarkMergedAsync(t);
+        await using (var seed = _fx.CreateDb())
+        {
+            // An OLDER merge row that recorded a status, then the NEWEST merge row, which recorded none (old format).
+            seed.AuditLogs.Add(new AuditLog { TenantId = t.TenantId, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(), Metadata = "{\"previousStatus\":\"Terminated\"}" });
+            await seed.SaveChangesAsync();
+            await Task.Delay(50);
+            seed.AuditLogs.Add(new AuditLog { TenantId = t.TenantId, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(), Metadata = "{\"reason\":\"newest, old format\"}" });
+            await seed.SaveChangesAsync();
+        }
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        (await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id)).Status.Should().Be("Draft", "the newest merge row has no status, so an older merge's status must not be borrowed");
+    }
+
+    [Fact]
+    public async Task Unmerge_WritesTheRestoredStatusIntoItsAuditRow()
+    {
+        var t = await SeedTwinsAsync();
+        Assert.IsType<OkObjectResult>(await MergeAsync(t));
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await Controller(db, t).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None));
+
+        await using var read = _fx.CreateDb();
+        var audit = await read.AuditLogs.IgnoreQueryFilters().SingleAsync(a => a.Action == "employee.duplicate_merge_reversed" && a.EntityId == t.Duplicate.Id.ToString());
+        audit.Metadata.Should().Contain("\"restoredStatus\":\"Active\"");
+    }
 }
 
 file sealed class MergePgHijri : Zayra.Api.Infrastructure.Localization.IHijriDateService
