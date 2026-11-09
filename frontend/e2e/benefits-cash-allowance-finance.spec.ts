@@ -68,9 +68,11 @@ async function boot(page: Page, locale: Locale, permissions: string[], matrix: (
   return { errors, calls };
 }
 
-// The toolbar button (it carries aria-expanded); the step strip also offers an "Add a benefit" link-style button as a shortcut.
-const addBenefitButton = (page: Page, locale: Locale) =>
-  page.getByRole('button', { name: say(locale, 'Add a benefit'), exact: true }).and(page.locator('[aria-expanded]'));
+// The toolbar button, which opens the Add a benefit dialog; its own submit has the same words, so it is reached through the dialog.
+const addBenefitButton = (page: Page, locale: Locale) => page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).first();
+// Finance's visible step on a waiting row: "Review and confirm", named for its benefit.
+const confirmButton = (page: Page, locale: Locale, benefit: string) =>
+  page.getByRole('button', { name: new RegExp(`${say(locale, 'Review and confirm')}\\s*${benefit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`) });
 // Any grade's cell for a benefit: the label is "{benefit} for {grade}: {value}" in the locale's word order, so the grade and value are matched, not left empty.
 const cellOfAnyGrade = (locale: Locale, benefit: string) => {
   const marks = say(locale, '{benefit} for {grade}: {value}', { benefit: 'BENEFIT_MARK', grade: 'GRADE_MARK', value: 'VALUE_MARK' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -84,8 +86,8 @@ for (const locale of ['en', 'ar'] as const) {
       const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage'], () => withAllowances([waiting]));
       const row = page.getByRole('row').filter({ hasText: name(locale, waiting) });
       // Words and an icon, not colour alone.
-      await expect(row.getByTestId('waiting-for-finance')).toHaveText(say(locale, 'Waiting for Finance'));
-      await expect(row.getByTestId('waiting-for-finance').locator('svg')).toHaveCount(1);
+      await expect(row.getByTestId('row-chip')).toHaveText(say(locale, 'Waiting for Finance'));
+      await expect(row.getByTestId('row-chip').locator('svg')).toHaveCount(1);
       // Its grade cells cannot be opened; nobody without the Finance permission is offered Confirm, and is told who can.
       await expect(row.getByRole('button', { name: cellOfAnyGrade(locale, name(locale, waiting)) }).first()).toBeDisabled();
       await expect(row.getByRole('button', { name: say(locale, 'Confirm') })).toHaveCount(0);
@@ -110,7 +112,7 @@ for (const locale of ['en', 'ar'] as const) {
 
     test('without the Finance permission there is no Waiting for Finance list', async ({ page }) => {
       const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage'], () => withAllowances([waiting]));
-      await expect(page.getByTestId('waiting-for-finance')).toHaveCount(1);   // the row badge stays
+      await expect(page.getByTestId('row-chip').filter({ hasText: say(locale, 'Waiting for Finance') })).toHaveCount(1);   // the row chip stays
       await expect(page.getByTestId('waiting-for-finance-list')).toHaveCount(0);
       expect(errors).toEqual([]);
     });
@@ -124,7 +126,7 @@ for (const locale of ['en', 'ar'] as const) {
         done = true;
         return route.fulfill({ json: { ...waiting, cashAllowance: info({ glDriverKey: 'EARN:CAR' }), warnings: [{ code: 'fixed_cash', message: 'A fixed monthly cash amount is normally part of the wage.' }] } });
       });
-      await page.getByRole('button', { name: say(locale, 'Confirm {benefit}', { benefit: name(locale, waiting) }) }).click();
+      await confirmButton(page, locale, name(locale, waiting)).click();
       const panel = page.getByTestId('finance-confirm-panel');
       await expect(panel).toBeVisible();
       await expect(panel.getByRole('heading', { name: say(locale, 'Confirm {benefit}', { benefit: name(locale, waiting) }) })).toBeFocused();
@@ -143,19 +145,19 @@ for (const locale of ['en', 'ar'] as const) {
         glDriverKey: 'EARN:CAR', eosbIncluded: false, eosbExclusionCategory: 'Discretionary', eosbExclusionReason: null } });
       // Server cautions are shown calmly, and the row is no longer waiting.
       await expect(page.getByTestId('allowance-cautions')).toContainText('A fixed monthly cash amount is normally part of the wage.');
-      await expect(page.getByTestId('waiting-for-finance')).toHaveCount(0);
+      await expect(page.getByTestId('row-chip').filter({ hasText: say(locale, 'Waiting for Finance') })).toHaveCount(0);
       expect(errors).toEqual([]);
     });
 
     test('the person who added it is told someone else must confirm, and Confirm is withdrawn', async ({ page }) => {
       const { errors } = await boot(page, locale, ['entitlements.read', 'entitlements.manage', 'payroll.approve'], () => withAllowances([waiting]));
       await page.route('**/api/entitlements/components/ALW_PHONE/confirm', route => route.fulfill({ status: 403, json: { error: 'maker_cannot_confirm', message: 'You added it.' } }));
-      await page.getByRole('button', { name: say(locale, 'Confirm {benefit}', { benefit: name(locale, waiting) }) }).click();
+      await confirmButton(page, locale, name(locale, waiting)).click();
       await page.getByTestId('finance-confirm-panel').getByRole('button', { name: say(locale, 'Confirm'), exact: true }).click();
       await expect(page.getByTestId('finance-confirm-panel').getByRole('alert')).toContainText(say(locale, 'You added this allowance, so someone else in Finance must confirm it.'));
       await expect(page.getByTestId('finance-confirm-panel').getByRole('button', { name: say(locale, 'Confirm'), exact: true })).toBeDisabled();
       await expect(page.getByTestId('maker-cannot-confirm')).toBeVisible();
-      await expect(page.getByRole('button', { name: say(locale, 'Confirm {benefit}', { benefit: name(locale, waiting) }) })).toHaveCount(0);
+      await expect(confirmButton(page, locale, name(locale, waiting))).toHaveCount(0);
       expect(errors).toEqual([]);
     });
 
@@ -168,7 +170,8 @@ for (const locale of ['en', 'ar'] as const) {
         return route.fulfill({ json: { component: { ...confirmed, cashAllowance: info({ glDriverKey: 'EARN:PHONE', effectiveFrom: '2027-01-01' }) },
           staleRuns: [{ id: 'run-1', year: 2027, month: 2, status: 'Draft' }, { id: 'run-0', year: 2027, month: 1, status: 'Draft' }] } });
       });
-      await page.getByRole('button', { name: say(locale, 'Correct GL account or end of service for {benefit}', { benefit: name(locale, confirmed) }) }).click();
+      await page.getByRole('button', { name: say(locale, 'Actions for {benefit}', { benefit: name(locale, confirmed) }), exact: true }).click();
+      await page.getByRole('menuitem', { name: say(locale, 'Correct GL / end of service'), exact: true }).click();
       const panel = page.getByTestId('finance-correct-panel');
       await expect(panel).toBeVisible();
       // Nothing changed, no reason: the problems are said at their fields and nothing is sent.
@@ -204,10 +207,10 @@ for (const locale of ['en', 'ar'] as const) {
       await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Phone');
       await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
       await page.getByLabel(say(locale, 'GL account for this allowance (required)')).selectOption('EARN:PHONE');
-      await page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
+      await page.getByRole('dialog').getByRole('button', { name: say(locale, 'Add benefit'), exact: true }).click();
       await expect(page.getByText(say(locale, 'Added. Finance must confirm the GL account and end-of-service setting before it can be used.'))).toBeVisible();
       await expect(page.getByTestId('allowance-cautions')).toContainText('The name sounds like a reimbursement');
-      await expect(page.getByTestId('waiting-for-finance')).toBeVisible();
+      await expect(page.getByTestId('row-chip')).toBeVisible();
       expect(errors).toEqual([]);
     });
   });

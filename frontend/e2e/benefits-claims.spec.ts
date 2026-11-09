@@ -478,22 +478,35 @@ test('re-creating a payslip line that already exists selects it instead of dead-
   expect(errors).toEqual([]);
 });
 
-test('with Release A there is no benefit plan form or payment policy: the old address hands over to Benefits by grade', async ({ page }) => {
+test('with Release A a tenant that already has plans can read them, cannot create one, and is told why in plain text with a link to Benefits by grade', async ({ page }) => {
   const { saves, errors } = await boot(page, { releaseA: true });
   await page.goto('/setup?tab=benefitPlans');
-  // Benefit plans is retired for a Release A tenant: Setup bounces to an available section and says so.
-  await expect(page).toHaveURL(/unavailable=benefitPlans/);
-  await expect(page.locator('[data-module-section="benefitPlans"]')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add benefit plan', exact: true })).toHaveCount(0);
+  // The section is retired for Release A, but this tenant has a plan made before: it opens, to read.
+  await expect(page.locator('[data-module-section="benefitPlans"]')).toBeVisible({ timeout: 30_000 });
+  await expect(page).not.toHaveURL(/unavailable=/);
+  await expect(page.getByTestId('benefit-plan-list')).toBeVisible();
+  // Creating a plan is a dead end here (nothing reaches the grid, payroll or the employee package): the control is off and the reason is TEXT beside it.
+  const add = page.getByRole('button', { name: 'Add benefit plan', exact: true });
+  await expect(add).toBeDisabled();
+  const reason = page.getByTestId('plan-create-blocked');
+  await expect(reason).toBeVisible();
+  await expect(reason).toContainText('A new plan would not reach the Benefits by grade grid, payroll or employee packages, so it cannot be created here.');
+  await expect(add).toHaveAttribute('aria-describedby', (await reason.getAttribute('id'))!);
+  await expect(reason.getByRole('link', { name: 'Open Benefits by grade', exact: true })).toHaveAttribute('href', '/benefits/by-grade');
+  // The plan itself is history: it can be read and followed, not edited, and it says so.
+  await page.getByTestId('benefit-plan-list').getByRole('button').first().click();
+  await expect(page.getByRole('button', { name: 'Edit plan', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('plan-kept-as-history')).toContainText('This plan is kept as history. It does not reach the Benefits by grade grid, payroll or employee packages.');
+  await expect(page.getByTestId('plan-kept-as-history').getByRole('link', { name: 'Open Benefits by grade', exact: true })).toHaveAttribute('href', '/benefits/by-grade');
+  // The old toast and modal note claimed a plan could be given a value in the grid; neither exists any more.
+  await expect(page.getByText('Set who gets it, and how much, in Benefits by grade')).toHaveCount(0);
   await expect(page.getByRole('dialog', { name: 'New benefit plan' })).toHaveCount(0);
-  await expect(page.getByLabel('How this benefit works', { exact: true })).toHaveCount(0);
   await expect(page.getByTestId('plan-payment-in-benefits-by-grade')).toHaveCount(0);
   // The benefits screen keeps the enrolments made before (this fixture has a plan) and points to Benefits by grade, where benefits are set.
   await page.goto('/benefits');
   const note = page.getByTestId('benefits-moved-note');
   await expect(note).toBeVisible();
   await expect(note.getByRole('link', { name: 'Open Benefits by grade', exact: true })).toHaveAttribute('href', '/benefits/by-grade');
-  await expect(page.getByRole('link', { name: 'Benefit settings', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Add benefit plan', exact: true })).toHaveCount(0);
   expect(saves, 'No benefit plan is created').toHaveLength(0);
   expect(errors).toEqual([]);

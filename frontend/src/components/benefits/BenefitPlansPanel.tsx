@@ -88,8 +88,10 @@ export function BenefitPlansPanel() {
   return (
     <div className="space-y-4">
       {!loading && !error && plans.length > 0 && canManagePlans && (
-        <div className="flex justify-end">
-          <button type="button" className={PRIMARY} onClick={() => setPlanModal({ mode: 'create' })}>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {releaseA && <CreatePlanBlocked />}
+          <button type="button" className={PRIMARY} disabled={releaseA} aria-describedby={releaseA ? CREATE_BLOCKED_ID : undefined}
+            onClick={() => setPlanModal({ mode: 'create' })}>
             <Plus className="h-3.5 w-3.5" /> {t('Add benefit plan')}
           </button>
         </div>
@@ -111,7 +113,7 @@ export function BenefitPlansPanel() {
           </button>
         </div>
       ) : plans.length === 0 ? (
-        <FirstPlanSetup canManage={canManagePlans} onCreate={() => setPlanModal({ mode: 'create' })} />
+        <FirstPlanSetup canManage={canManagePlans} blocked={releaseA} onCreate={() => setPlanModal({ mode: 'create' })} />
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
           <div className="space-y-3">
@@ -146,9 +148,22 @@ export function BenefitPlansPanel() {
   );
 }
 
+const CREATE_BLOCKED_ID = 'plan-create-blocked';
+
+/**
+ * Why a Release A tenant cannot add a plan, as text beside the disabled control (never a tooltip alone): a plan made now
+ * reaches neither the Benefits by grade grid, payroll nor the employee package, so it would be a record nothing reads.
+ */
+function CreatePlanBlocked() {
+  const { t } = useLocale();
+  return <div id={CREATE_BLOCKED_ID} data-testid="plan-create-blocked" className="max-w-xl text-start">
+    <BenefitsByGradeDoor intro={t('A new plan would not reach the Benefits by grade grid, payroll or employee packages, so it cannot be created here. Add the benefit in Benefits by grade.')} />
+  </div>;
+}
+
 // ── empty state: guided first plan ──────────────────────────────────────────────
 
-function FirstPlanSetup({ canManage, onCreate }: { canManage: boolean; onCreate: () => void }) {
+function FirstPlanSetup({ canManage, blocked, onCreate }: { canManage: boolean; blocked: boolean; onCreate: () => void }) {
   const releaseA = useReleaseA();
   const steps = [
     { n: 1, title: 'Create a plan', body: 'Medical, dental, life or any other benefit, with its currency and effective dates.' },
@@ -173,9 +188,12 @@ function FirstPlanSetup({ canManage, onCreate }: { canManage: boolean; onCreate:
       </ol>
       <div className="mt-6 flex justify-center">
         {canManage ? (
-          <button type="button" className={`${PRIMARY} px-4 py-2.5 text-sm`} onClick={onCreate}>
-            <Plus className="h-4 w-4" /> Create your first plan
-          </button>
+          <div className="flex flex-col items-center gap-2">
+            {blocked && <CreatePlanBlocked />}
+            <button type="button" className={`${PRIMARY} px-4 py-2.5 text-sm`} disabled={blocked} aria-describedby={blocked ? CREATE_BLOCKED_ID : undefined} onClick={onCreate}>
+              <Plus className="h-4 w-4" /> Create your first plan
+            </button>
+          </div>
         ) : (
           <p className="text-xs text-slate-500 dark:text-slate-400">Ask your client Admin to create the first plan and configure its grade entitlements.</p>
         )}
@@ -256,7 +274,8 @@ function PlanDetail({ plan, companyName, gradeName, companies, grades, canManage
           <BenefitPolicySummary policy={plan.paymentPolicy} currency={plan.currency} />
         </div>
         <div className="flex gap-2">
-          {canManage && <button type="button" className={SECONDARY} onClick={onEdit}><Pencil className="h-3.5 w-3.5" /> Edit plan</button>}
+          {canManage && !rulesFrozen && <button type="button" className={SECONDARY} onClick={onEdit}><Pencil className="h-3.5 w-3.5" /> Edit plan</button>}
+          {rulesFrozen && <div data-testid="plan-kept-as-history" className="max-w-sm text-start"><BenefitsByGradeDoor intro={t('This plan is kept as history. It does not reach the Benefits by grade grid, payroll or employee packages.')} /></div>}
           {canEnroll && plan.isActive && <Link href={`/benefits?enrol=${plan.id}`} className={PRIMARY}><UserPlus className="h-3.5 w-3.5" /> Enrol in this plan</Link>}
         </div>
       </div>
@@ -469,6 +488,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (releaseA && !editing) return; // a new plan reaches nothing on Release A: the control that opens this form is off
     if (form.effectiveTo && form.effectiveTo < form.effectiveFrom) { setError(t('Effective to cannot be before effective from.')); return; }
     if (form.planType === 'Custom' && !customPlanType.trim()) { setError(t('Enter a custom benefit type.')); return; }
     const rulesProblem = releaseA ? null : educationRulesProblem(paymentPolicy);
@@ -484,7 +504,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
       const saved = editing
         ? await benefitsApi.updatePlan(initial!.id, body)
         : await benefitsApi.createPlan({ ...body, companyId: form.companyId || null, code: form.code.trim().toUpperCase() });
-      toast.success(editing ? t('Plan updated.') : releaseA ? t('Plan created. Set who gets it, and how much, in Benefits by grade.') : form.classification === 'Mandatory'
+      toast.success(editing ? t('Plan updated.') : form.classification === 'Mandatory'
         ? t('Mandatory plan created. Grade rules can define optional enhancements.')
         : t('Plan created. Add at least one grade eligibility rule before enrolling employees.'));
       onSaved(saved);
@@ -538,7 +558,7 @@ function PlanModal({ initial, companies, onClose, onSaved }: {
           </label>
         </div>
         {releaseA
-          ? <div className="rounded-lg bg-slate-50 p-3 dark:bg-white/5" data-testid="plan-payment-in-benefits-by-grade"><BenefitsByGradeDoor intro={t('Who gets this benefit, how much, and the payslip line are set in Benefits by grade after you create the plan.')} /></div>
+          ? <div className="rounded-lg bg-slate-50 p-3 dark:bg-white/5" data-testid="plan-modal-history-note"><BenefitsByGradeDoor intro={t('This plan is kept as history. It does not reach the Benefits by grade grid, payroll or employee packages.')} /></div>
           : <BenefitPaymentPolicyEditor value={paymentPolicy} onChange={setPaymentPolicy} planName={form.name} planCode={form.code} currency={form.currency} editing={editing} paymentMethodLocked={editing && (initial?.policyVersion ?? 0) > 0} />}
         {editing && <p className="text-caption text-slate-500 dark:text-slate-400">{t('Code and company scope identify the plan to existing enrolments and cannot be changed.')}</p>}
         <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
