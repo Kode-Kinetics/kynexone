@@ -556,7 +556,7 @@ public static class ModuleCatalog
                 + "Q&A) is an opt-in feature, off for every tenant by the owner's decision: only manual company setup is "
                 + "enabled. Only the platform team can switch it on, and Tenant Admin cannot. See OptInFeatures.",
             [FeatureKeys.DesignationAccess] =
-                "Designation-driven access (a designation or grade carries an access mode and roles that people are given when "
+                "Designation-driven access (a designation carries existing roles that people are given when "
                 + "they are given it, and lose when they leave it) is an opt-in feature, off for every tenant until the platform "
                 + "team switches it on. While it is off nothing is configured, applied or removed. Tenant Admin cannot switch it. "
                 + "See OptInFeatures.",

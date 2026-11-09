@@ -1666,7 +1666,7 @@ public class OffboardingController : ControllerBase
             link.UpdatedBy = actorUserId;
         }
         employee.UserAccountId = uid;
-        // The returning person's designation and grade give their access again (nothing while that feature is off).
+        // The returning person's designation gives their access again (nothing while that feature is off).
         await new DesignationAccessService(_db).ReconcileAsync(employee.TenantId!.Value, employee, ActorContext(employee.TenantId!.Value), ct);
         return true;
     }

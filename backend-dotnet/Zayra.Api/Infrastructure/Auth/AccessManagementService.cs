@@ -327,7 +327,7 @@ public class AccessManagementService : IAccessManagementService
         var newEntityGrantId = Guid.NewGuid();
         var auditId = Guid.NewGuid();
         // The roles an invitation carries when the inviter names none: the baseline for the access mode, plus whatever the employee's
-        // designation (and grade) is meant to carry (designation-driven access; empty while that feature is off). Roles the inviter
+        // designation is meant to carry (designation-driven access; empty while that feature is off). Roles the inviter
         // names are exactly what they asked for.
         var baseRoleNames = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode)).ToList();
         IReadOnlyList<string> mappedRoleNames = request.Roles is { Count: > 0 }

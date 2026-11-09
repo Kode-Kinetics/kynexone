@@ -404,7 +404,6 @@ public class EmployeeManagementService : IEmployeeManagementService
 
         var priorDepartmentId = employee.DepartmentId;
         var priorDesignationId = employee.DesignationId;
-        var priorGradeId = employee.GradeId;
         var priorProbation = (employee.ProbationStartDate, employee.ProbationEndDate);
         var editAttributionBefore = await ApplyEmployee(employee, request, tenantId, cancellationToken, context);
         // A change to an EXISTING employee's attribution counts toward lock SoD; the form already staged the override row with its reason.
@@ -444,9 +443,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (!hasActiveSalary)   // a pending first package is kept when the figures are unchanged and replaced when they differ (the writer decides)
             await StageFirstSalaryPackageAsync(employee, salaryBreakdown, context, cancellationToken, isNewEmployee: false);
         await UpsertComplianceRecords(employee, request.ComplianceRecords ?? [], context, cancellationToken);
-        // Designation-driven access: a changed designation or grade gives the access it is meant to carry (and takes away what the previous
-        // one granted), in the same save as the change. Nothing happens while that feature is off, or when the person has no login yet.
-        if (employee.DesignationId != priorDesignationId || employee.GradeId != priorGradeId)
+        // Designation-driven access: a changed designation gives the access it is meant to carry (and takes away what the previous
+        // one granted), in the same save as the change. A grade never changes roles. Nothing happens while that feature is off, or when the person has no login yet.
+        if (employee.DesignationId != priorDesignationId)
             await new Zayra.Api.Infrastructure.Auth.DesignationAccessService(_db).ReconcileAsync(tenantId, employee, context, cancellationToken);
         // ESTABLISHMENT GUARD (path "update"): fires ONLY when the (department, designation) pair
         // actually changed — an unrelated edit (phone number, IBAN, …) can never trip it, and an
