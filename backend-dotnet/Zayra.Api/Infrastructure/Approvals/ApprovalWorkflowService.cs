@@ -1274,9 +1274,15 @@ public class ApprovalWorkflowService : IApprovalWorkflowService
 
         // HR makes, Finance approves: a package change is applied only on the word of a payroll.approve holder, whatever role
         // the workflow routed the step to (the Payroll queue has the same bar). Checked before anything is stamped or written.
-        if ((JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new()).ContainsKey(EmployeeSalaryBreakdownChanges.Key)
-            && !(context.Permissions ?? Array.Empty<string>()).Contains("payroll.approve", StringComparer.OrdinalIgnoreCase))
+        var proposedKeys = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(change.ProposedChangesJson) ?? new();
+        var holdsPayrollApprove = (context.Permissions ?? Array.Empty<string>()).Contains("payroll.approve", StringComparer.OrdinalIgnoreCase);
+        if (proposedKeys.ContainsKey(EmployeeSalaryBreakdownChanges.Key) && !holdsPayrollApprove)
             throw new SalaryApprovalAuthorityException(approval.TenantId);
+        // A started employee's grade move is decided the same way: HR makes, Finance approves.
+        if (proposedKeys.ContainsKey(EmployeeGradeResolution.Key) && !holdsPayrollApprove
+            && await _db.Employees.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == approval.TenantId && x.Id == change.EmployeeId && !x.IsDeleted, cancellationToken) is { } gradeSubject
+            && !await EmployeeGradeResolution.IsDraftAsync(_db, gradeSubject, cancellationToken))
+            throw new GradeApprovalAuthorityException(approval.TenantId);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow.Date);
         change.ApprovedByUserId = approverId;

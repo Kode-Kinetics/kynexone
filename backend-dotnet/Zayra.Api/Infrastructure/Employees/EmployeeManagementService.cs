@@ -1765,6 +1765,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.BranchId = request.BranchId;
         employee.DepartmentId = request.DepartmentId;
         employee.DesignationId = request.DesignationId;
+        var priorGradeId = employee.GradeId;
         employee.GradeId = request.GradeId;
         await ApplyCostCentreAsync(employee, request.CostCenterId, request.DepartmentId, tenantId, cancellationToken, context, request.CostCenterReason, hire: employee.Id == 0 && _db.Entry(employee).State == EntityState.Detached);
         employee.PositionId = request.PositionId;
@@ -1785,10 +1786,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (designation is not null)
             {
                 employee.Designation = designation.TitleEn;
-                employee.GradeId ??= designation.GradeId;
+                // A designation's default grade fills a grade that was never set. Someone who has started work gets a grade only through an approved grade change.
+                if (employee.ActivatedAtUtc is null && !await Zayra.Api.Application.Employees.EmployeeGradeResolution.HasStartedAsync(_db, employee, cancellationToken))
+                    employee.GradeId ??= designation.GradeId;
             }
         }
-        employee.Grade = request.GradeId is null ? employee.Grade : await _db.Grades.Where(x => x.TenantId == tenantId && x.Id == request.GradeId).Select(x => x.Code).FirstOrDefaultAsync(cancellationToken) ?? employee.Grade;
+        // The grade text follows the grade link in every case (a designation's default grade included); a cleared link clears the text.
+        await Zayra.Api.Application.Employees.EmployeeGradeResolution.SyncTextToGradeIdAsync(_db, tenantId, employee, priorGradeId, cancellationToken);
         // Wave A D3: the cached copy is the RESOLVED code (a Remove used to leave the old override's code behind).
         await Zayra.Api.Application.Employees.EmployeeOrgFieldResolver.RefreshCachedCostCentreAsync(_db, tenantId, employee, cancellationToken);
         employee.JobTitle = Clean(request.JobTitle);
@@ -2064,7 +2068,13 @@ public class EmployeeManagementService : IEmployeeManagementService
             if (designation is null) throw new InvalidOperationException("Selected designation is not active.");
             // OD8: a grade other than the designation's is an acknowledged exception (the input guard asks for the reason),
             // not a refusal; the grade the caller chose is kept.
-            employee.GradeId ??= designation.GradeId;
+            // A designation fills a grade that was never set, never for someone who has started work (their grade moves only by an approved grade change).
+            if (employee.GradeId is null && designation.GradeId is not null && employee.ActivatedAtUtc is null
+                && !await Zayra.Api.Application.Employees.EmployeeGradeResolution.HasStartedAsync(_db, employee, cancellationToken))
+            {
+                employee.GradeId = designation.GradeId;
+                await Zayra.Api.Application.Employees.EmployeeGradeResolution.SyncTextToGradeIdAsync(_db, tenantId, employee, null, cancellationToken);
+            }
         }
 
         // Pre-save, like the rest of this method, and AFTER the grade is resolved (a designation can supply it), so

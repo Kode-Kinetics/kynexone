@@ -129,6 +129,17 @@ public sealed record ResolvedApprover(
     string Name,
     bool Escalated);
 
+/// <summary>Moving a started employee to another grade moves their pay scale, loan limit, overtime and approval route, so it is decided like a pay change:
+/// by a payroll.approve holder, whatever the workflow routed it to.</summary>
+public sealed class GradeApprovalAuthorityException : ApprovalRoutingException
+{
+    public const string ErrorCode = "grade_approval_needs_finance";
+    public GradeApprovalAuthorityException(Guid tenantId)
+        : base(ErrorCode, tenantId, "EmployeeChangeRequest",
+            "Changing an active employee's grade moves their pay scale, loan limit, overtime and approval route, so it must be approved by a Finance approver (payroll.approve). Ask a Finance approver to decide it, or add one.")
+    { }
+}
+
 /// <summary>A change that sets an employee's pay is "HR makes, Finance approves": whoever decides it must hold payroll.approve,
 /// whatever the workflow routed it to. Refused with a stable code (422) so the client can say who to ask.</summary>
 public sealed class SalaryApprovalAuthorityException : ApprovalRoutingException

@@ -61,6 +61,9 @@ public sealed class EmployeeHireController : ControllerBase
         if (employee is null) return NotFound();
         if (!string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
             return Problem(409, "not_a_draft", "Only a draft can be autosaved.");
+        // Someone who has started work and was set back to Draft is not a new hire: this door must not move their grade, which is approved on Edit employee.
+        if (body.Request.GradeId != employee.GradeId && (employee.ActivatedAtUtc is not null || await EmployeeGradeResolution.HasStartedAsync(_db, employee, ct)))
+            return Problem(409, "grade_change_needs_approval", "This employee has already started work. Change their grade from Edit employee, where it is sent for approval.");
         // Same-base exclusion only holds for a save that says which version it was made from.
         if (body.BaseUpdatedAtUtc is not { } basis)
         {
@@ -185,7 +188,12 @@ public sealed class EmployeeHireController : ControllerBase
         employee.UpdatedAtUtc = DateTime.UtcNow;
         employee.UpdatedBy = context.UserId;
         if (body.DesignationId is Guid newDesignation) employee.DesignationId = newDesignation;
-        if (body.GradeId is Guid newGrade) employee.GradeId = newGrade;
+        if (body.GradeId is Guid newGrade)
+        {
+            var priorGradeId = employee.GradeId;
+            employee.GradeId = newGrade;
+            await EmployeeGradeResolution.SyncTextToGradeIdAsync(_db, tenantId, employee, priorGradeId, ct);
+        }
         // Designation-driven access: the (possibly new) designation gives its access to the returning person's login. A grade never changes roles.
         if (body.DesignationId is not null)
             await new DesignationAccessService(_db).ReconcileAsync(tenantId, employee, context, ct);
