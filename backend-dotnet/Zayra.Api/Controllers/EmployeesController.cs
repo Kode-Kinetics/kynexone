@@ -5235,18 +5235,53 @@ public class EmployeesController : ControllerBase
                 return BadRequest(new { message = "A reason is required to merge a duplicate record." });
             if (!await CanAccessEmployeeAsync(intoId, ct)) return Forbid();
 
+            IActionResult MergeBlocked(IReadOnlyList<MergeBlocker> blockers) => Conflict(new
+            {
+                error = "merge_blocked_by_records",
+                code = "merge_blocked_by_records",
+                message = "This record cannot be merged because it owns records that would be left behind: "
+                    + string.Join(", ", blockers.Select(b => $"{b.Label.ToLowerInvariant()} ({b.Count})"))
+                    + ". Move or close them first, or keep this record.",
+                messageAr = "لا يمكن دمج هذا السجل لأنه يملك سجلات ستبقى خلفه: "
+                    + string.Join("، ", blockers.Select(b => $"{b.LabelAr} ({b.Count})"))
+                    + ". انقلها أو أغلقها أولاً، أو أبقِ هذا السجل.",
+                blockers = blockers.Select(b => new { type = b.Type, label = b.Label, labelAr = b.LabelAr, count = b.Count }),
+            });
+
+            // A REPEAT of a merge that already happened (its answer was lost): the duplicate is already merged into this survivor. Answer 200 and
+            // write nothing. Any other deleted record is still "not found".
+            var before = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Merge: read the duplicate whether or not it is already merged; the tenant is pinned.")
+                .AsNoTracking().Where(x => x.Id == id).Select(x => new { x.IsDeleted, x.DuplicateOfEmployeeId, x.PublicId }).FirstOrDefaultAsync(ct);
+            if (before is null) return NotFound();
+            if (before.IsDeleted)
+                return before.DuplicateOfEmployeeId == intoId ? Ok(new { resolved = "merge", intoEmployeeId = intoId, alreadyMerged = true }) : NotFound();
+
+            // ALL the blocker counts first, as ONE statement and BEFORE any lock is taken: a duplicate that is going to be refused never
+            // holds or queues for a row lock. Only the cheap checks are repeated under the locks below.
+            var preBlockers = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, before.PublicId, null, ct);
+            if (preBlockers.Count > 0) return MergeBlocked(preBlockers);
+
             // THE WHOLE MERGE IS ONE TRANSACTION: both rows are locked (lowest id first, so two opposite merges cannot deadlock), the
             // blocker check runs under that lock, and the writes below commit together. A second merge touching either row waits for the
             // first, then re-reads it: a record the first merge deleted is no longer there, so A-into-B and B-into-A can never both win
             // and a survivor can never be a record that has just been deleted.
             async Task<IActionResult> MergeLockedAsync()
             {
+            // The same tenant-wide lock that loan and advance creation hold ("finance.loan-create"), taken before the rows: while a loan or
+            // advance is being created the merge waits, and once the merge holds it nothing of that kind can be created behind its check.
+            await Zayra.Api.Infrastructure.Finance.FinanceDecisionSerializer.AcquireAsync(_db, "finance.loan-create", tenantId, tenantId, ct);
             var lockedRows = await _db.Employees.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
                 .Where(x => x.TenantId == tenantId && (x.Id == id || x.Id == intoId) && !x.IsDeleted)
                 .OrderBy(x => x.Id)
                 .ToListAsync(ct);
             var duplicate = lockedRows.FirstOrDefault(x => x.Id == id);
-            if (duplicate is null) return NotFound();
+            if (duplicate is null)
+            {
+                // Another request merged it first (or a lost commit acknowledgement was retried): same survivor is a repeat, anything else is not found.
+                var done = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Merge: was the duplicate merged by an earlier attempt; the tenant is pinned.")
+                    .AsNoTracking().Where(x => x.Id == id && x.IsDeleted).Select(x => x.DuplicateOfEmployeeId).FirstOrDefaultAsync(ct);
+                return done == intoId ? Ok(new { resolved = "merge", intoEmployeeId = intoId, alreadyMerged = true }) : NotFound();
+            }
             var survivor = lockedRows.FirstOrDefault(x => x.Id == intoId);
             if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
 
@@ -5262,22 +5297,10 @@ public class EmployeesController : ControllerBase
                     messageAr = "هذان السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة للشخص نفسه داخل شركة واحدة، ونقل شخص بين الشركات ليس دمجاً.",
                 });
 
-            // The merge moves NOTHING to the kept employee, so any money or compliance record the duplicate owns would be orphaned on a
-            // hidden row. Refuse, naming what is in the way, BEFORE any write so a refusal leaves no partial state.
-            var blockers = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, ct);
-            if (blockers.Count > 0)
-                return Conflict(new
-                {
-                    error = "merge_blocked_by_records",
-                    code = "merge_blocked_by_records",
-                    message = "This record cannot be merged because it owns records that would be left behind: "
-                        + string.Join(", ", blockers.Select(b => $"{b.Label.ToLowerInvariant()} ({b.Count})"))
-                        + ". Move or close them first, or keep this record.",
-                    messageAr = "لا يمكن دمج هذا السجل لأنه يملك سجلات ستبقى خلفه: "
-                        + string.Join("، ", blockers.Select(b => $"{b.LabelAr} ({b.Count})"))
-                        + ". انقلها أو أغلقها أولاً، أو أبقِ هذا السجل.",
-                    blockers = blockers.Select(b => new { type = b.Type, label = b.Label, labelAr = b.LabelAr, count = b.Count }),
-                });
+            // The merge moves NOTHING to the kept employee. The full count already ran before the locks; here, under them, only the cheap
+            // checks are repeated (loans, advances, bonuses, and who reports to or is routed through the duplicate).
+            var recheck = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, duplicate.PublicId, EmployeeMergeBlockers.RecheckUnderLock, ct);
+            if (recheck.Count > 0) return MergeBlocked(recheck);
 
             var mergedAt = DateTime.UtcNow;
             var mergedCode = duplicate.EmployeeCode;
