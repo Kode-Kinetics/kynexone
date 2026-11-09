@@ -89,6 +89,20 @@ public sealed class DesignationAccessService
         return _enabled[tenantId] = on;
     }
 
+    /// <summary>The import cell that clears a designation's roles (a blank cell leaves them alone). Same token the department import uses.</summary>
+    public const string ClearToken = "[CLEAR]";
+
+    /// <summary>
+    /// The roles an import file's AccessRoles cell asks for: null = leave the mapping untouched (a blank cell), empty = clear it
+    /// (the explicit <see cref="ClearToken"/> only), otherwise the named roles separated by ';' or ','.
+    /// </summary>
+    public static IReadOnlyList<string>? ParseImportCell(string? cell)
+    {
+        if (string.IsNullOrWhiteSpace(cell)) return null;
+        if (string.Equals(cell.Trim(), ClearToken, StringComparison.OrdinalIgnoreCase)) return [];
+        return cell.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     // ── Configuration (Setup) ───────────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -192,7 +206,7 @@ public sealed class DesignationAccessService
         var addedNames = toAdd.Select(r => r.Name).OrderBy(x => x, StringComparer.Ordinal).ToList();
         var removedNames = toRemove.Where(ur => ur.Role!.NormalizedName != "EMPLOYEE").Select(ur => ur.Role!.Name).OrderBy(x => x, StringComparer.Ordinal).ToList();
 
-        if (desired.Skipped.Count > 0)
+        if (desired.Skipped.Count > 0 && !await SkipAlreadyAuditedAsync(tenantId, user.Id, desired.Skipped, ct))
             _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), now, SkippedAction, "User", user.Id.ToString(), context,
                 JsonSerializer.Serialize(new { employeeId = employee.Id, trigger, reason = "role_not_applied", skipped = desired.Skipped })));
 
@@ -285,16 +299,44 @@ public sealed class DesignationAccessService
             if (role.TenantId != tenantId) { skipped.Add(new(role.Name, "platform_role")); continue; }
             if (PrivilegedAccessGuard.IsPrivileged(role)) { skipped.Add(new(role.Name, "privileged_role")); continue; }
             // ... and the person who configured it must still be able to give it (while they are still an active user).
+            // FAIL CLOSED: a mapping nobody current vouches for (no recorded configurer, or one who is inactive, deleted or gone) is not applied
+            // until a current security manager saves it again.
+            var configurerUnavailable = false;
             var aboveConfigurer = false;
-            foreach (var configurerId in mappings.Where(m => m.RoleId == role.Id && m.CreatedBy.HasValue).Select(m => m.CreatedBy!.Value).Distinct())
+            foreach (var configurerId in mappings.Where(m => m.RoleId == role.Id).Select(m => m.CreatedBy).Distinct())
             {
-                var configurer = await ConfigurerAsync(tenantId, configurerId, ct);
-                if (configurer is not null && PrivilegeCeiling.AssignRefusal(configurer, Facts(role)) is not null) { aboveConfigurer = true; break; }
+                var configurer = configurerId is Guid id ? await ConfigurerAsync(tenantId, id, ct) : null;
+                if (configurer is null) { configurerUnavailable = true; break; }
+                if (PrivilegeCeiling.AssignRefusal(configurer, Facts(role)) is not null) { aboveConfigurer = true; break; }
             }
+            if (configurerUnavailable) { skipped.Add(new(role.Name, "configurer_unavailable")); continue; }
             if (aboveConfigurer) { skipped.Add(new(role.Name, "above_configurer")); continue; }
             usable.Add(role);
         }
         return _cache[(d, employeeCompanyId)] = new Desired(usable, skipped, d);
+    }
+
+    /// <summary>
+    /// Was this exact set of skipped roles already recorded as the LATEST skip for this person? Then a reconcile that finds the same thing again
+    /// writes nothing (otherwise every employee save would add a row). A different set, or a skip after an intervening different one, is recorded.
+    /// </summary>
+    private async Task<bool> SkipAlreadyAuditedAsync(Guid tenantId, Guid userId, IReadOnlyList<SkippedRole> skipped, CancellationToken ct)
+    {
+        var entityId = userId.ToString();
+        var latest = await _db.AuditLogs.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.Action == SkippedAction && a.EntityId == entityId)
+            .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).FirstOrDefaultAsync(ct);
+        if (latest is null) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(latest);
+            if (!doc.RootElement.TryGetProperty("reason", out var reason) || reason.GetString() != "role_not_applied") return false;
+            if (!doc.RootElement.TryGetProperty("skipped", out var recorded) || recorded.ValueKind != JsonValueKind.Array) return false;
+            var was = recorded.EnumerateArray().Select(e => $"{e.GetProperty("Role").GetString()}|{e.GetProperty("Reason").GetString()}").OrderBy(x => x, StringComparer.Ordinal);
+            var now = skipped.Select(x => $"{x.Role}|{x.Reason}").OrderBy(x => x, StringComparer.Ordinal);
+            return was.SequenceEqual(now);
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return false; }
     }
 
     private async Task<PrivilegeCeiling.Caller?> ConfigurerAsync(Guid tenantId, Guid userId, CancellationToken ct)

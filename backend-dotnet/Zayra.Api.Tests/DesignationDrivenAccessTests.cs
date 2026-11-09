@@ -479,6 +479,118 @@ public sealed class DesignationDrivenAccessTests
         (await w.Db.AuditLogs.SingleAsync(a => a.Action == DesignationAccessService.SkippedAction)).Metadata.Should().Contain("above_configurer");
     }
 
+    // ── the configurer must still be a current user able to give the role ───────────────────────────
+
+    [Theory]
+    [InlineData("inactive")]
+    [InlineData("deleted")]
+    [InlineData("unknown")]
+    public async Task A_mapped_role_whose_configurer_left_and_then_gained_permissions_is_not_granted(string how)
+    {
+        var w = await SeedAsync();
+        var configurer = await UserWithAsync(w, "Access Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], configurer, default);
+        await w.Db.SaveChangesAsync();
+        // the configurer leaves ...
+        var user = await w.Db.Users.SingleAsync(u => u.Id == configurer.UserId);
+        switch (how)
+        {
+            case "inactive": user.IsActive = false; break;
+            case "deleted": user.IsDeleted = true; break;
+            default: (await w.Db.DesignationAccessRoles.SingleAsync()).CreatedBy = null; break;
+        }
+        // ... and the role later gains a permission nobody current vouched for
+        w.Db.RolePermissions.Add(new RolePermission { Role = w.PayrollRole, Permission = Perm(w.Db, "payroll.approve") });
+        await w.Db.SaveChangesAsync();
+
+        var outcome = await AssignAsync(w, w.PayrollOfficer);
+
+        outcome.Added.Should().BeEmpty();
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee"]);
+        (await w.Db.AuditLogs.SingleAsync(a => a.Action == DesignationAccessService.SkippedAction)).Metadata.Should().Contain("configurer_unavailable");
+    }
+
+    [Fact]
+    public async Task A_skipped_role_is_audited_once_not_again_on_every_reconcile()
+    {
+        var w = await SeedAsync();
+        var configurer = await UserWithAsync(w, "Access Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], configurer, default);
+        await w.Db.SaveChangesAsync();
+        w.Db.RolePermissions.Add(new RolePermission { Role = w.PayrollRole, Permission = Perm(w.Db, "payroll.approve") });
+        await w.Db.SaveChangesAsync();
+
+        await AssignAsync(w, w.PayrollOfficer);
+        await AssignAsync(w, w.PayrollOfficer);
+        await AssignAsync(w, w.PayrollOfficer);
+
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == DesignationAccessService.SkippedAction)).Should().Be(1);
+    }
+
+    // ── the import file's AccessRoles cell ───────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task A_blank_import_cell_leaves_the_mapping_and_the_people_who_hold_it_unchanged(string? cell)
+    {
+        var w = await SeedAsync();
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        await AssignAsync(w, w.PayrollOfficer);
+        var audits = await w.Db.AuditLogs.CountAsync();
+        var stampBefore = (await w.Db.Users.AsNoTracking().SingleAsync(u => u.Id == w.EmpUser.Id)).UpdatedAtUtc;
+
+        var asked = DesignationAccessService.ParseImportCell(cell);
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, asked, w.Actor, default);
+        await w.Db.SaveChangesAsync();
+
+        asked.Should().BeNull();
+        (await w.Db.DesignationAccessRoles.CountAsync()).Should().Be(1);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee", "Payroll Officer"]);
+        (await w.Db.AuditLogs.CountAsync()).Should().Be(audits);
+        (await w.Db.Users.AsNoTracking().SingleAsync(u => u.Id == w.EmpUser.Id)).UpdatedAtUtc.Should().Be(stampBefore);
+    }
+
+    [Theory]
+    [InlineData("[CLEAR]")]
+    [InlineData(" [clear] ")]
+    public async Task The_explicit_clear_marker_in_an_import_cell_clears_the_mapping_and_takes_the_roles_back(string cell)
+    {
+        var w = await SeedAsync();
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        await AssignAsync(w, w.PayrollOfficer);
+
+        var asked = DesignationAccessService.ParseImportCell(cell);
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, asked, w.Actor, default);
+        await w.Db.SaveChangesAsync();
+
+        asked.Should().NotBeNull().And.BeEmpty();
+        (await w.Db.DesignationAccessRoles.CountAsync()).Should().Be(0);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee"]);
+    }
+
+    [Fact]
+    public async Task Clearing_the_mapping_from_an_import_cell_still_needs_security_manage()
+    {
+        var w = await SeedAsync();
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        await AssignAsync(w, w.PayrollOfficer);
+        var hr = await UserWithAsync(w, "HR Custom", "organization.write", "payroll.read", "payroll.run");
+
+        var act = () => Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, DesignationAccessService.ParseImportCell("[CLEAR]"), hr, default);
+
+        (await act.Should().ThrowAsync<DesignationAccessException>()).Which.Code.Should().Be("security_manage_required");
+        (await w.Db.DesignationAccessRoles.CountAsync()).Should().Be(1);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee", "Payroll Officer"]);
+    }
+
+    [Fact]
+    public void Named_roles_in_an_import_cell_are_split_on_semicolons_and_commas_without_duplicates()
+    {
+        DesignationAccessService.ParseImportCell("Payroll Officer; Reviewer, payroll officer").Should().BeEquivalentTo(["Payroll Officer", "Reviewer"]);
+    }
+
     // ── removal: mapping changes and leaving ────────────────────────────────────────────────────
 
     [Fact]

@@ -1002,6 +1002,7 @@ function DesignationsTab({ grades, gradesError, onRetryGrades }: { grades: Grade
             entityName="Designations"
             onExport={async () => { const csv = await designationsApi.export(); downloadCsv(csv, 'designations.csv'); }}
             onDownloadTemplate={async () => { const csv = await designationsApi.importTemplate(); downloadCsv(csv, 'designations-template.csv'); }}
+            importHelp={msg('Leave the Access roles cell blank to keep the roles a designation gives. Write [CLEAR] to remove them all (needs the security.manage permission).')}
             onImport={async (csv) => { const r = await designationsApi.import(csv, importCompanyId); load(); return { received: r.received, created: r.created, skipped: r.skipped, errors: r.errors }; }}
           />
         }

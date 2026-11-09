@@ -248,10 +248,8 @@ public class DesignationsController : ControllerBase
                     IsManagerRole: existing?.IsManagerRole ?? false,
                     IsActive: !row.TryGetValue("IsActive", out var av) || !string.Equals(av.Trim(), "false", StringComparison.OrdinalIgnoreCase),
                     CompanyId: companyId,
-                    // Absent column = leave the roles untouched (null); a present cell, even an empty one, is the intended value.
-                    AccessRoles: row.TryGetValue("AccessRoles", out var accessRoles)
-                        ? accessRoles.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-                        : null);
+                    // Absent column or a blank cell = leave the roles untouched (null); only the explicit [CLEAR] token clears them.
+                    AccessRoles: row.TryGetValue("AccessRoles", out var accessRoles) ? DesignationAccessService.ParseImportCell(accessRoles) : null);
 
                 try
                 {
