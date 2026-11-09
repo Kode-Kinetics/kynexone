@@ -133,7 +133,6 @@ public class DesignationsController : ControllerBase
     /// </summary>
     [HttpGet("access-options")]
     [HasPermission("security.manage")]
-    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<DesignationAccessOptions>> AccessOptions(CancellationToken cancellationToken)
     {
         var tenantId = this.GetTenantId();
