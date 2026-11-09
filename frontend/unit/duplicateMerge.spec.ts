@@ -87,3 +87,44 @@ test('Resigned stays in the ACTIVE list filter; only Terminated and Retired are 
   expect(kept).not.toContain('Terminated');
   expect(kept).not.toContain('Retired');
 });
+
+// The real bodies the backend now sends (EmployeesController.ResolveDuplicate / Unresolve): each carries `error`, `code`,
+// an English `message` and an Arabic `messageAr`. The screen shows the viewer's language once, with no doubled sentence.
+const BODIES = {
+  blocked: {
+    error: 'merge_blocked_by_records', code: 'merge_blocked_by_records',
+    message: 'This record cannot be merged because it owns records that would be left behind: open loans (2). Move or close them first, or keep this record.',
+    messageAr: 'لا يمكن دمج هذا السجل لأنه يملك سجلات ستُترك خلفه: قروض مفتوحة (2). انقلها أو أغلقها أولاً، أو احتفظ بهذا السجل.',
+    blockers: [{ type: 'open_loans', label: 'Open loans', labelAr: 'قروض مفتوحة', count: 2 }],
+  },
+  otherCompany: {
+    error: 'merge_across_companies', code: 'merge_across_companies',
+    message: 'These two records belong to different companies. A merge only combines duplicate entries of the same person within one company.',
+    messageAr: 'السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة لنفس الشخص داخل شركة واحدة.',
+  },
+  needsDelete: {
+    error: 'merge_requires_delete_permission', code: 'merge_requires_delete_permission',
+    message: REASON_EN, messageAr: 'الدمج يزيل السجل المكرر، لذلك يتطلب صلاحية حذف الموظفين.', requiredPermission: 'employees.delete',
+  },
+};
+
+test('a 409 refusal shows the server sentence in English and messageAr in Arabic, once', () => {
+  for (const [status, body] of [[409, BODIES.blocked], [409, BODIES.otherCompany]] as const) {
+    const english = mergeRefusal(http(status, body), (k, p) => en(k, p), 'en');
+    expect(english).toContain(body.message);
+    expect(english).not.toContain(body.messageAr);
+    expect(english.split(body.message).length - 1).toBe(1);
+    const arabic = mergeRefusal(http(status, body), (k, p) => ar(k, p), 'ar');
+    expect(arabic).toContain(body.messageAr);
+    expect(arabic.split(body.messageAr).length - 1).toBe(1);
+    expect(arabic).not.toContain(body.message);
+  }
+});
+
+test('the real 403 body is not doubled in either language', () => {
+  const english = mergeRefusal(http(403, BODIES.needsDelete), (k, p) => en(k, p), 'en');
+  expect(english.split(REASON_EN).length - 1).toBe(1);
+  const arabic = mergeRefusal(http(403, BODIES.needsDelete), (k, p) => ar(k, p), 'ar');
+  expect(arabic).toContain(BODIES.needsDelete.messageAr);
+  expect(arabic.split(BODIES.needsDelete.messageAr).length - 1).toBe(1);
+});
