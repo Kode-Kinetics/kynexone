@@ -34,6 +34,7 @@ import {
 import { selectedIds, type Selection } from '../../lib/attendanceSelection';
 import { useFormat } from '../../hooks/useFormat';
 import { StatusChip } from '../StatusChip';
+import { ResultBanner, type ResultNext } from '../ui/ResultBanner';
 import { Field } from '../ui/Field';
 import { EmployeeMultiSelect } from './EmployeeMultiSelect';
 import { ProcessJobProgress } from './ProcessJobProgress';
@@ -52,27 +53,32 @@ interface Props {
   onClose: () => void;
   /** Reports a mass-entry run in progress (people sent so far, of all), or null when none is running, so the page can show it while closed. */
   onRunProgress?: (progress: { done: number; total: number } | null) => void;
+  /** Take the user to the day's records (the next action of the result banner when there is nothing to process). */
+  onReview?: () => void;
 }
 
 /**
  * The Live Dashboard's one place to record attendance. With entry rights there is no mode to choose: one list, tick one person
  * or many, set the days and times, give a reason. Without them, the plain punch form.
  */
-export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded, onClose, onRunProgress }: Props) {
+export function AttendanceRecordPanel({ single, canMass, canProcess, onRecorded, onClose, onRunProgress, onReview }: Props) {
   const { t } = useLocale();
   if (!single && !canMass) return null;
 
   return (
     // scroll-mb keeps the submit clear of the assistant button when the panel is scrolled into view.
-    <section className="surface scroll-mb-28 p-4" aria-label={t('Record attendance')}
+    <section className="surface scroll-mb-16 p-4" aria-label={t('Record attendance')}
       onKeyDown={(e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); onClose(); } }}>
-      <div className="flex items-start justify-between gap-3">
-        <SectionTitle icon={CalendarClock} title={t('Record attendance')}
-          subtitle={canMass ? t('Tick one or more employees, set the days and times, and give a reason. Every entry is kept in the audit trail.') : t('Save a web, mobile or kiosk punch for one employee now.')} />
-        <button type="button" className="btn-ghost shrink-0" onClick={onClose}><X className="h-4 w-4" aria-hidden="true" />{t('Close')}</button>
+      {/* Under 400 px Close sits above the title, so the title keeps the whole width instead of collapsing beside it. */}
+      <div className="flex flex-col-reverse items-end gap-2 xs:flex-row xs:items-start xs:justify-between xs:gap-3">
+        <div className="min-w-0 self-stretch xs:flex-1">
+          <SectionTitle icon={CalendarClock} title={t('Record attendance')}
+            subtitle={canMass ? t('Tick one or more employees, set the days and times, and give a reason. Every entry is kept in the audit trail.') : t('Save a web, mobile or kiosk punch for one employee now.')} />
+        </div>
+        <button type="button" className="btn-ghost shrink-0 max-sm:min-h-11" onClick={onClose}><X className="h-4 w-4" aria-hidden="true" />{t('Close')}</button>
       </div>
       <div className="mt-3">
-        {canMass ? <MassEntry canProcess={canProcess} onRecorded={onRecorded} onRunProgress={onRunProgress} /> : single}
+        {canMass ? <MassEntry canProcess={canProcess} onRecorded={onRecorded} onRunProgress={onRunProgress} onReview={onReview} /> : single}
       </div>
     </section>
   );
@@ -83,7 +89,7 @@ const STATUS_TONE: Record<PersonStatus, 'emerald' | 'amber' | 'rose' | 'slate'> 
 const MAX_REASONS_SHOWN = 2;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: boolean; onRecorded: () => void; onRunProgress?: (progress: { done: number; total: number } | null) => void }) {
+function MassEntry({ canProcess, onRecorded, onRunProgress, onReview }: { canProcess: boolean; onRecorded: () => void; onRunProgress?: (progress: { done: number; total: number } | null) => void; onReview?: () => void }) {
   const { t } = useLocale();
   const fx = useFormat();
   const { defaultTimezone } = useTenantSettings();
@@ -96,6 +102,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
   const [reason, setReason] = useState('');
   const [run, dispatch] = useReducer(massRunReducer, initialMassRun);
   const [filter, setFilter] = useState<PersonStatus | 'all'>('all');
+  const [bannerDismissed, setBannerDismissed] = useState(false);
   const stopRef = useRef(false);
   const mountedRef = useRef(true);
   /** The entry as submitted, so a retry resends exactly that even if the fields were edited since. */
@@ -133,6 +140,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
     if (!entry || people.length === 0) return;
     const chunks = planChunks(people.map((p) => p.id));
     stopRef.current = false;
+    setBannerDismissed(false);
     if (retry) dispatch({ type: 'retry', ids: people.map((p) => p.id), chunksTotal: chunks.length });
     else dispatch({ type: 'start', people, days: inclusiveDays(entry.fromDate, entry.toDate) ?? 1, chunksTotal: chunks.length });
     const { recorded, finished } = await runChunks({
@@ -163,7 +171,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
   const processNow = () => {
     const entry = sentRef.current;
     const people = recordedIds(run);
-    if (!entry || people.length === 0) return;
+    if (!entry || people.length === 0 || process.busy) return;
     processAskedRef.current = { scope: 'selected', expected: people.length };
     void process.start({ fromDate: entry.fromDate, toDate: entry.toDate, employeeIds: people });
   };
@@ -176,6 +184,9 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
   const statusLabel = (s: PersonStatus) => ({ done: t('Recorded'), partial: t('Partly recorded'), notDone: t('Not recorded'), waiting: t('Pending') }[s]);
   const toProcess = recordedIds(run).length;
   const toRetry = retryIds(run).length;
+  const bannerNext: ResultNext | undefined = canProcess && toProcess > 0
+    ? { label: t('Process now'), onClick: processNow }
+    : onReview ? { label: t('Review {count, plural, one {# record} other {# records}}', { count: toProcess }), onClick: onReview } : undefined;
   const locked = running || run.phase !== 'idle';
   // While running the bar is neutral; once ended its colour says how it went: all recorded, some, or none.
   const barColour = running ? 'bg-sapphire'
@@ -196,19 +207,19 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
           {' · '}<span className="italic">{sentRef.current.reason}</span>
         </p>
       )}
-      {run.phase === 'idle' && <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      {run.phase === 'idle' && <div className="grid gap-5 lg:grid-cols-2">
         <EmployeeMultiSelect id={`${ids}-mass`} label={t('Employees to include')} selection={selection} onChange={setSelection}
           max={MASS_ENTRY_MAX_EMPLOYEES} disabled={locked} listMaxHeightClass="max-h-52" />
         <fieldset className="min-w-0 space-y-3" disabled={locked}>
           <legend className="sr-only">{t('Attendance to record')}</legend>
-          <div className="grid grid-cols-1 gap-x-3 gap-y-3 min-[400px]:grid-cols-2">
+          <div className="grid grid-cols-1 gap-x-3 gap-y-3 xs:grid-cols-2">
             <Field label={t('From date')} noInfo="a plain date with one obvious meaning">
               <input id={`${ids}-from`} type="date" className="input w-full min-w-0 max-sm:min-h-11" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
             </Field>
             <Field label={t('To date')} noInfo="a plain date with one obvious meaning">
               <input id={`${ids}-to`} type="date" className="input w-full min-w-0 max-sm:min-h-11" value={toDate} onChange={(e) => setToDate(e.target.value)} />
             </Field>
-            <Field label={t('In time')} info={t('The time of the in punch, in the company time zone. Leave it empty to record only an out time.')}>
+            <Field label={t('In time')} info={defaultTimezone ? t('The time of the in punch, in the company time zone. Leave it empty to record only an out time.') : t('The time of the in punch. Leave it empty to record only an out time.')}>
               <input id={`${ids}-in`} type="time" className="input w-full min-w-0 max-sm:min-h-11" value={inTime} onChange={(e) => setInTime(e.target.value)} />
             </Field>
             <Field label={t('Out time')} info={t('The time of the out punch. If it is the same as or earlier than the in time, it is recorded on the next day.')}>
@@ -226,15 +237,30 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
           {problem && selection.size > 0 && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{problem}</p>}
           {plan.problem === 'no-employees' && <p className="text-xs text-slate-500">{t('Select at least one employee.')}</p>}
           {run.phase === 'idle' && (
-            <button type="button" onClick={submit} disabled={!state.canSubmit} className="btn-primary w-full scroll-mb-28 justify-center max-sm:min-h-11">
-              {plan.problem === null ? t(MASS_ENTRY_SUBMIT_KEY, { employees: plan.employees, days: plan.days }) : t('Record attendance')}
-            </button>
+            // The zone keeps the submit clear of the assistant button when it is scrolled into view (scroll margin plus padding).
+            <div data-submit-zone className="scroll-mb-16 pb-4">
+              <button type="button" onClick={submit} disabled={!state.canSubmit} className="btn-primary w-full justify-center max-sm:min-h-11">
+                {plan.problem === null ? t(MASS_ENTRY_SUBMIT_KEY, { employees: plan.employees, days: plan.days }) : t('Record attendance')}
+              </button>
+            </div>
           )}
         </fieldset>
       </div>}
 
       {run.phase !== 'idle' && (
-        <div className="space-y-3 rounded-xl border border-slate-200 p-3 dark:border-white/10" aria-label={t('Mass entry progress')}>
+        <div className="space-y-3 rounded-xl border border-line p-3" aria-label={t('Mass entry progress')}>
+          {run.phase === 'finished' && summary.created > 0 && !bannerDismissed && sentRef.current && (
+            // What was recorded, where the user is, and the one next step (process, or go and look at the records).
+            <ResultBanner
+              changed={t('{count, plural, one {# entry} other {# entries}} recorded for {date}', {
+                count: summary.created,
+                date: sentRef.current.toDate === sentRef.current.fromDate ? fx.date(sentRef.current.fromDate) : `${fx.date(sentRef.current.fromDate)} – ${fx.date(sentRef.current.toDate)}`,
+              })}
+              where={t('You are on the Live Dashboard. The records below update once the punches are processed.')}
+              next={bannerNext}
+              onDismiss={() => setBannerDismissed(true)}
+            />
+          )}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p role="status" className="text-sm font-semibold text-slate-800 dark:text-slate-100">
               {running ? t('Recording attendance… {percent}%', { percent: summary.percent })
@@ -273,7 +299,7 @@ function MassEntry({ canProcess, onRecorded, onRunProgress }: { canProcess: bool
             {shownPeople.map((p) => (
               <li key={p.id} className="flex items-start gap-2 px-3 py-2 text-sm">
                 <span className="min-w-0 flex-1">
-                  <span className="block break-words text-slate-800 dark:text-slate-100"><bdi>{p.name}</bdi></span>
+                  <span className="block break-words text-fg"><bdi>{p.name}</bdi></span>
                   <span className="block text-meta text-fg-muted"><bdi className="font-mono">{p.code}</bdi></span>
                   {p.reasons.length > 0 && (
                     <span className="block text-xs text-slate-500 dark:text-slate-400">

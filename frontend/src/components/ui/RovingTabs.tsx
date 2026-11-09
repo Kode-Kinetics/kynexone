@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 
 export interface RovingTabItem<T extends string> {
   id: T;
@@ -41,6 +42,28 @@ export function RovingTabList<T extends string>({
     refs.current[activeIndex]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [activeId, activeIndex]);
 
+  // Scroll cue: when the strip is wider than the screen, a chevron at each clipped edge says there is more.
+  // Distances are measured from the inline start, so the same arithmetic holds in right-to-left.
+  const scroller = useRef<HTMLDivElement>(null);
+  const [cue, setCue] = useState({ start: false, end: false });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const measure = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      const pos = Math.abs(el.scrollLeft);
+      setCue((prev) => {
+        const next = { start: max > 1 && pos > 1, end: max > 1 && pos < max - 1 };
+        return prev.start === next.start && prev.end === next.end ? prev : next;
+      });
+    };
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => { el.removeEventListener('scroll', measure); observer?.disconnect(); };
+  }, [items.length]);
+
   const move = (index: number, event: React.KeyboardEvent<HTMLButtonElement>) => {
     let next = index;
     if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (index + 1) % items.length;
@@ -58,7 +81,10 @@ export function RovingTabList<T extends string>({
     : 'kx-tabs-underline';
 
   return (
-    <div className="overflow-x-auto pb-1" data-roving-tabs={idPrefix}>
+    <div className="relative" data-roving-tabs={idPrefix}>
+    {cue.start && <TabsCue edge="start" />}
+    {cue.end && <TabsCue edge="end" />}
+    <div ref={scroller} className="overflow-x-auto pb-1">
       <div className={`flex w-max min-w-full items-center gap-1 ${shell}`} role="tablist" aria-label={label}>
         {items.map((item, index) => {
           const selected = item.id === activeId;
@@ -93,6 +119,7 @@ export function RovingTabList<T extends string>({
         })}
       </div>
     </div>
+    </div>
   );
 }
 
@@ -117,5 +144,16 @@ export function TabPanel({
     >
       {children}
     </div>
+  );
+}
+
+/** A non-interactive chevron on the clipped edge of a scrolling tab strip (it points the way the strip scrolls). */
+function TabsCue({ edge }: { edge: 'start' | 'end' }) {
+  const side = edge === 'end' ? 'end-0 rtl:rotate-180' : 'start-0 rotate-180 rtl:rotate-0';
+  return (
+    <span data-tabs-cue={edge} aria-hidden="true"
+      className={`pointer-events-none absolute top-1/2 z-10 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full border border-line bg-surface text-fg-muted shadow-e1 ${side}`}>
+      <ChevronRight className="h-4 w-4" />
+    </span>
   );
 }

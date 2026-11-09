@@ -43,7 +43,7 @@ export function SectionTitle({ icon: Icon, title, subtitle }: { icon: typeof Act
   return (
     <div className="flex gap-3">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire"><Icon className="h-4 w-4" aria-hidden="true" /></span>
-      <div>
+      <div className="min-w-0">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
         <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
       </div>

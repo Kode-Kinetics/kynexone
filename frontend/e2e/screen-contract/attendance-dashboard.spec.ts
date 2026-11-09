@@ -140,6 +140,7 @@ for (const locale of LOCALES) {
       await expect(result).toBeVisible();
       await expect(result).toContainText(t(locale, 'Punch saved to live attendance events.'));
       await expect(result.locator('[data-result-next] button')).toHaveCount(1);
+      await expect(result.locator('[data-result-next] button'), 'the panel is already open, so no Record another').toHaveText(t(locale, 'Review records'));
       expect(writes).toContain('POST /api/attendance/punch/web');
     });
 
@@ -154,6 +155,9 @@ for (const locale of LOCALES) {
       await expect(alert).toBeVisible();
       await expect(alert).not.toContainText('status code');
       await expect(alert).toContainText(t(locale, 'error.forbidden'));
+      await expect(alert, 'the alert takes focus').toBeFocused();
+      await expect(alert, 'what happened').toContainText(t(locale, 'The punch was not saved'));
+      await expect(alert, 'what to do').toContainText(t(locale, 'Ask your HR administrator to grant you access.'));
     });
 
     test('rows: the Date column is gone (one date is filtered), department sits inline with the name, rows are about 40 px', async ({ page }) => {
@@ -301,13 +305,107 @@ for (const locale of LOCALES) {
       await expect(page.locator('main bdi', { hasText: 'ZKTeco' }).first()).toBeVisible();
       await header(page).click();
       const submit = recordRegion(page, locale).locator('.btn-primary');
-      await submit.evaluate(el => el.scrollIntoView({ block: 'nearest' }));
+      await submit.evaluate(el => (el.closest('[data-submit-zone]') ?? el).scrollIntoView({ block: 'nearest' }));
       const box = await submit.boundingBox();
       const covered = await page.evaluate(({ x, y }) => {
         const el = document.elementFromPoint(x, y);
         return !!el && !el.closest('#attendance-record-panel');
       }, { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 });
       expect(covered, 'something floats over the submit button').toBe(false);
+    });
+
+    test('result: a finished mass entry lands on a ResultBanner (what, where, one next action) that takes focus', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await page.route('**/api/attendance/events/bulk-entry', route => route.fulfill({ json: { requested: 1, created: 1, duplicates: 0, failed: 0, errors: [] } }));
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await region.getByRole('button', { name: t(locale, 'Select all shown') }).click();
+      await region.getByLabel(t(locale, 'Reason (required)')).fill('Device offline');
+      await region.getByRole('button', { name: /×/ }).click();
+      const result = region.locator('[data-result]');
+      await expect(result).toBeVisible({ timeout: 20_000 });
+      await expect(result.locator('[data-result-changed]')).toContainText('14');
+      await expect(result.locator('[data-result-where]')).toBeVisible();
+      await expect(result.locator('[data-result-next] button, [data-result-next] a')).toHaveCount(1);
+      await expect(result.locator('[data-result-next] button')).toHaveText(t(locale, 'Process now'));
+      await expect(result, 'focus moves to the banner').toBeFocused();
+    });
+
+    test('guidance: with no company time zone the In-time help does not claim one', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      await region.getByRole('button', { name: t(locale, 'About {field}', { field: t(locale, 'In time') }) }).click();
+      const tip = region.getByRole('tooltip').filter({ hasText: /\S/ }).first();
+      await expect(tip).toBeVisible();
+      await expect(tip).not.toContainText(locale === 'ar' ? 'توقيت الشركة' : 'company time zone');
+      const zoned = await page.context().newPage();
+      await zoned.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(zoned, locale, { extra: TZ_MOCK });
+      await header(zoned).click();
+      await recordRegion(zoned, locale).getByRole('button', { name: t(locale, 'About {field}', { field: t(locale, 'In time') }) }).click();
+      await expect(recordRegion(zoned, locale).getByRole('tooltip').filter({ hasText: /\S/ }).first()).toContainText(locale === 'ar' ? 'توقيت الشركة' : 'company time zone');
+    });
+
+    test('phone: the first record starts high (date and status share a row, Refresh is an icon) and the KPI tiles are 44 px', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-cards] > li')).toHaveCount(14);
+      const first = await page.locator('[data-daily-cards] > li').first().boundingBox();
+      expect(first!.y, 'first record top (px)').toBeLessThanOrEqual(520);
+      const date = await page.getByLabel(t(locale, 'Attendance date')).boundingBox();
+      const status = await page.getByLabel(t(locale, 'Status filter')).boundingBox();
+      expect(Math.abs(date!.y - status!.y), 'date and status on one row').toBeLessThanOrEqual(2);
+      const refresh = page.getByRole('button', { name: t(locale, 'Refresh') });
+      const rb = await refresh.boundingBox();
+      expect(rb!.width, 'Refresh is an icon button').toBeLessThanOrEqual(48);
+      expect(rb!.height).toBeGreaterThanOrEqual(44);
+      for (const tile of await page.getByRole('group', { name: t(locale, 'Attendance at a glance') }).getByRole('button').all()) {
+        expect((await tile.boundingBox())!.height, 'KPI tile height').toBeGreaterThanOrEqual(44);
+      }
+    });
+
+    test('rows: someone with no punches is not "Complete": the table and card say No punches', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      const huda = page.locator('[data-daily-table] tbody tr', { hasText: 'Huda Saleh' });
+      await expect(huda).toContainText(t(locale, 'No punches'));
+      await expect(huda).not.toContainText(t(locale, 'Complete'));
+      await page.setViewportSize(VIEWPORTS.phone);
+      const card = page.locator('[data-daily-cards] > li', { hasText: 'Huda Saleh' });
+      await expect(card).toContainText(t(locale, 'No punches'));
+    });
+
+    test('filters: a pressed KPI tile shows a check and the group says it filters', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await openAttendance(page, locale);
+      const tiles = page.getByRole('group', { name: t(locale, 'Attendance at a glance') });
+      await expect(tiles).toHaveAccessibleDescription(t(locale, 'Select a count to show only those records.'));
+      const late = tiles.getByRole('button', { name: new RegExp(t(locale, 'Late')) });
+      await expect(late.locator('[data-pressed-check]')).toHaveCount(0);
+      await late.click();
+      await expect(late.locator('[data-pressed-check]')).toHaveCount(1);
+      const gap = await tiles.evaluate(el => parseFloat(getComputedStyle(el).columnGap));
+      expect(gap).toBeGreaterThanOrEqual(8);
+    });
+
+    test('panel: at 320 the header Close is stacked above the title so the title keeps the full width', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      await header(page).click();
+      const region = recordRegion(page, locale);
+      const title = await region.getByRole('heading', { name: t(locale, 'Record attendance') }).boundingBox();
+      expect(title!.width, 'title width').toBeGreaterThanOrEqual(200);
+    });
+
+    test('tabs: when the tab strip scrolls (phone) a cue shows at the clipped edge', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-tabs-cue]').first()).toBeVisible();
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await expect(page.locator('[data-tabs-cue]')).toHaveCount(0);
     });
 
     for (const [name, viewport] of Object.entries(VIEWPORTS)) {

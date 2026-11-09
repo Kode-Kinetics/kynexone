@@ -49,6 +49,8 @@ export default {
       full: '9999px',
     },
     extend: {
+      // Named breakpoints from the Screen Standard (section 1) plus xs for the narrowest phones, so layout code needs no arbitrary min-[..px].
+      screens: { xs: '400px', rail: '1360px', wide: '1680px' },
       colors: {
         midnight: '#0B1020',
         sapphire: '#2F6BFF',

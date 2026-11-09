@@ -5,6 +5,7 @@ import {
   Activity,
   AlertTriangle,
   Lightbulb,
+  Check,
   CheckCircle2,
   Clock,
   Database,
@@ -49,7 +50,7 @@ import { Field } from '../components/ui/Field';
 import { EmptyState } from '../components/ui/EmptyState';
 import { ResultBanner, type ResultNext } from '../components/ui/ResultBanner';
 import { SkeletonRows } from '../components/ui/Skeleton';
-import { describeApiError } from '../lib/apiError';
+import { refusalFromError } from '../lib/refusal';
 import { DomainUnavailable, Empty, Panel as BasePanel, SectionTitle, statusTone } from '../components/attendance/attendanceUi';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import {
@@ -127,6 +128,7 @@ export function AttendancePage() {
   // used to be offered these and only ever got a 403.
   const { user, hasPermission } = useAuth();
   const t = useT();
+  const { locale } = useLocale();
   const fx = useFormat();
   const minutes = useMinutes();
   const canManageSources = hasPermission('attendance.bulk_import');
@@ -162,6 +164,8 @@ export function AttendancePage() {
   // A mass-entry run in progress, reported by the (hidden but mounted) record panel so the header can show it while closed.
   const [runProgress, setRunProgress] = useState<{ done: number; total: number } | null>(null);
   const recordButtonRef = useRef<HTMLButtonElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const dailyRef = useRef<HTMLDivElement>(null);
   const recordRef = useRef<HTMLDivElement>(null);
   const dateRef = useRef<HTMLInputElement>(null);
   const [loadErrors, setLoadErrors] = useState<AttendanceLoadErrors>({});
@@ -258,7 +262,7 @@ export function AttendancePage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const runAction = async (action: () => Promise<unknown>, success: string, next?: ResultNext) => {
+  const runAction = async (action: () => Promise<unknown>, success: string, next?: ResultNext, failure?: string) => {
     setSaving(true);
     setError('');
     setMessage('');
@@ -270,7 +274,10 @@ export function AttendancePage() {
       setMessageSeq((n) => n + 1);
       await load();
     } catch (err) {
-      setError(describeApiError(err, t));
+      // What did not happen, why (the server's own reason, in words), what to do. A 403 and a 5xx name their own next step.
+      const status = (err as { response?: { status?: number } } | null)?.response?.status;
+      const retryable = status !== undefined && status >= 400 && status < 500 && status !== 403;
+      setError(refusalFromError(err, { what: failure ?? t('Attendance action failed.'), fix: retryable ? t('Check the details and try again.') : undefined }, t, locale));
     } finally {
       setSaving(false);
     }
@@ -282,6 +289,17 @@ export function AttendancePage() {
     if (!host) return;
     host.scrollIntoView?.({ block: 'nearest' });
     host.querySelector<HTMLElement>('input:not([disabled]), select:not([disabled]), button:not([disabled])')?.focus();
+  }, []);
+  // The refusal takes focus when it appears, so it is heard and the keyboard is next to the fix.
+  useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  /** Take the user to the day's records: the panel folds away and focus lands on the table. */
+  const reviewRecords = useCallback(() => {
+    setActiveTab('dashboard');
+    setRecordOpen(false);
+    requestAnimationFrame(() => {
+      dailyRef.current?.scrollIntoView?.({ block: 'start' });
+      dailyRef.current?.focus({ preventScroll: true });
+    });
   }, []);
   const canRecord = canPunch || massEntryAllowed(hasPermission);
   const showRecord = recordOpen && activeTab === 'dashboard';
@@ -303,7 +321,7 @@ export function AttendancePage() {
     event.preventDefault();
     const employeeId = Number(punchEmployeeId);
     runAction(() => attendanceApi.punch[punchSource]({ employeeId, punchDirection, locationName: 'Web console' }), t('Punch saved to live attendance events.'),
-      { label: t('Record another'), onClick: focusRecord });
+      { label: t('Review records'), onClick: reviewRecords }, t('The punch was not saved'));
   };
 
   const submitRawEvent = (event: FormEvent) => {
@@ -367,17 +385,20 @@ export function AttendancePage() {
 
   // What the tabs show: one day, optionally one status. Directly above the records they filter.
   const controls = (
-    <div className="flex flex-wrap items-center gap-2">
-      <input ref={dateRef} type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input w-auto" aria-label={t('Attendance date')} />
-      <select value={statusFilter} onChange={(e) => { setMissingOnly(false); setStatusFilter(e.target.value); }} className="select w-auto" aria-label={t('Status filter')}>
+    // On a phone date and status share one row and Refresh is an icon; "Updated" is still read out by the live region.
+    <div className="flex w-full flex-nowrap items-center gap-2 sm:w-auto sm:flex-wrap">
+      <input ref={dateRef} type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input min-w-0 grow basis-3/5 px-2 max-sm:min-h-11 sm:w-auto sm:flex-none sm:basis-auto sm:px-3" aria-label={t('Attendance date')} />
+      <select value={statusFilter} onChange={(e) => { setMissingOnly(false); setStatusFilter(e.target.value); }} className="select min-w-0 grow basis-2/5 max-sm:min-h-11 sm:w-auto sm:flex-none sm:basis-auto" aria-label={t('Status filter')}>
         <option value="">{t('All statuses')}</option>
         <option value="Present">{enumLabel(t, 'AttendanceStatus', 'Present')}</option>
         <option value="Late">{enumLabel(t, 'AttendanceStatus', 'Late')}</option>
         <option value="Half day">{enumLabel(t, 'AttendanceStatus', 'Half day')}</option>
         <option value="Absent">{enumLabel(t, 'AttendanceStatus', 'Absent')}</option>
       </select>
-      <button type="button" onClick={load} className="btn-ghost" disabled={loading}><RefreshCw className="h-4 w-4" aria-hidden="true" />{t('Refresh')}</button>
-      <span role="status" className="text-meta text-fg-muted">
+      <button type="button" onClick={load} className="btn-ghost shrink-0 max-sm:h-11 max-sm:w-11 max-sm:px-0" disabled={loading} title={updatedAt ? t('Updated {time}', { time: fx.time(updatedAt) }) : undefined}>
+        <RefreshCw className="h-4 w-4" aria-hidden="true" /><span className="max-sm:sr-only">{t('Refresh')}</span>
+      </button>
+      <span role="status" className="text-meta text-fg-muted max-sm:sr-only">
         {resultsNote && <span className="sr-only">{resultsNote}. </span>}
         {updatedAt && !loading ? t('Updated {time}', { time: fx.time(updatedAt) }) : ''}
       </span>
@@ -411,7 +432,7 @@ export function AttendancePage() {
       />
 
       {error && (
-        <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+        <div ref={errorRef} role="alert" tabIndex={-1} className="rounded-lg border border-danger/30 bg-danger-soft px-4 py-3 text-body text-danger-fg outline-none focus-visible:ring-2 focus-visible:ring-primary">
           {error}
         </div>
       )}
@@ -441,7 +462,8 @@ export function AttendancePage() {
           {/* One row: the day's counts as filter buttons, then the date, status and Refresh they act on. */}
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
             {dashboardUnavailable ? <DomainUnavailable message={dashboardUnavailable} /> : (
-              <div role="group" aria-label={t('Attendance at a glance')} className="surface grid min-w-0 grow grid-cols-2 gap-1 p-1 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
+              <div role="group" aria-label={t('Attendance at a glance')} aria-describedby="attendance-kpi-hint" className="surface grid min-w-0 grow grid-cols-2 gap-2 p-1 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
+                <span id="attendance-kpi-hint" className="sr-only">{t('Select a count to show only those records.')}</span>
                 <KpiTile label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" pressed={statusFilter === 'Present'} onClick={() => toggleStatusTile('Present')} />
                 <KpiTile label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" pressed={statusFilter === 'Absent'} onClick={() => toggleStatusTile('Absent')} />
                 <KpiTile label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" pressed={statusFilter === 'Late'} onClick={() => toggleStatusTile('Late')} />
@@ -451,21 +473,21 @@ export function AttendancePage() {
             {controls}
           </div>
 
-          <div ref={recordRef} id="attendance-record-panel" hidden={!showRecord} className="scroll-mb-28">
+          <div ref={recordRef} id="attendance-record-panel" hidden={!showRecord} className="scroll-mb-16">
             <AttendanceRecordPanel
               single={canPunch ? (
-                <form onSubmit={submitPunch} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_200px_200px_auto] lg:items-end">
+                <form onSubmit={submitPunch} className="grid gap-3 sm:grid-cols-2 lg:flex lg:items-end">
                   {canPunchForOthers
-                    ? <Field label={t('Employee')} noInfo="a plain pick from the employee list"><EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} /></Field>
-                    : <p className="text-sm text-slate-600 dark:text-slate-300">{selectedEmployee ? <bdi>{`${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}`}</bdi> : t('Select an employee from live records')}</p>}
-                  <Field label={t('Punch source')} info={t('Where this punch comes from: web, mobile or kiosk. It is kept with the record and shown as the Source in Raw Punch Logs.')}>
+                    ? <Field className="lg:min-w-0 lg:flex-1" label={t('Employee')} noInfo="a plain pick from the employee list"><EmployeeSelect value={punchEmployeeId} employees={employees} onChange={setPunchEmployeeId} /></Field>
+                    : <p className="text-body text-fg-muted lg:flex-1">{selectedEmployee ? <bdi>{`${selectedEmployee.employeeCode} · ${selectedEmployee.fullName}`}</bdi> : t('Select an employee from live records')}</p>}
+                  <Field className="lg:w-48" label={t('Punch source')} info={t('Where this punch comes from: web, mobile or kiosk. It is kept with the record and shown as the Source in Raw Punch Logs.')}>
                     <select value={punchSource} onChange={(e) => setPunchSource(e.target.value as 'web' | 'mobile' | 'kiosk')} className="select w-full">
                       <option value="web">{t('Web punch')}</option>
                       <option value="mobile">{t('Mobile punch')}</option>
                       <option value="kiosk">{t('Kiosk/tablet punch')}</option>
                     </select>
                   </Field>
-                  <Field label={t('Punch direction')} info={t('In, out, or the start or end of a break. Daily hours and late time are worked out from these punches when attendance is processed.')}>
+                  <Field className="lg:w-48" label={t('Punch direction')} info={t('In, out, or the start or end of a break. Daily hours and late time are worked out from these punches when attendance is processed.')}>
                     <select value={punchDirection} onChange={(e) => setPunchDirection(e.target.value)} className="select w-full">
                       <option value="In">{directionLabel(t, 'In')}</option>
                       <option value="Out">{directionLabel(t, 'Out')}</option>
@@ -480,25 +502,28 @@ export function AttendancePage() {
               canProcess={canProcess}
               onRecorded={load}
               onClose={closeRecord}
+              onReview={reviewRecords}
               onRunProgress={setRunProgress}
             />
           </div>
 
           {/* The table takes the full width. Device health and exceptions sit under it, and beside it only on a screen wide enough
               (1680) to leave the table 960 px or more. */}
-          <div className="grid gap-5 min-[1680px]:grid-cols-[minmax(0,1fr)_360px] min-[1680px]:items-start">
-            {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={shownDaily} loading={loading} empty={dailyEmpty} />}
-            <div className="grid gap-5 md:grid-cols-2 min-[1680px]:grid-cols-1">
+          <div className="grid gap-5 wide:flex wide:items-start">
+            <div ref={dailyRef} tabIndex={-1} className="min-w-0 outline-none wide:flex-1">
+              {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={shownDaily} loading={loading} empty={dailyEmpty} />}
+            </div>
+            <div className="grid gap-5 md:grid-cols-2 wide:w-96 wide:shrink-0 wide:grid-cols-1">
               <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>
                 {deviceSyncUnavailable ? <DomainUnavailable message={deviceSyncUnavailable} /> : (
                   <div className="space-y-3">
                     {deviceSync.length === 0 && <DeviceEmpty />}
                     {deviceSync.slice(0, 6).map((device) => (
-                    <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-slate-100 p-3 dark:border-white/10">
+                    <div key={device.deviceId} className="flex items-center justify-between rounded-lg border border-line p-3">
                       <div>
-                        <p dir="auto" className="text-sm font-semibold text-slate-900 dark:text-white">{device.deviceName}</p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{device.vendor}</bdi></p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400"><bdi>{device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</bdi></p>
+                        <p dir="auto" className="text-body font-semibold text-fg">{device.deviceName}</p>
+                        <p className="text-meta text-fg-muted"><bdi>{device.vendor}</bdi></p>
+                        <p className="text-meta text-fg-muted"><bdi>{device.lastSyncAtUtc ? fx.dateTime(device.lastSyncAtUtc) : '-'}</bdi></p>
                       </div>
                       <StatusChip label={enumLabel(t, 'Status', device.status || 'Never')} tone={statusTone(device.status || 'Never')} dot />
                     </div>
@@ -641,15 +666,16 @@ function Kpi({ label, value, icon: Icon, tone }: { label: string; value: string 
 }
 
 /** A count in the slim strip: icon, label and number on one line. */
-/** A count that is also a filter: pressed means the table below is narrowed to it. */
+/** A count that is also a filter: pressed means the table below is narrowed to it (ring, tint and a check, not colour alone). */
 function KpiTile({ label, value, icon: Icon, tone, pressed, onClick }: { label: string; value: number; icon: typeof Activity; tone: 'emerald' | 'rose' | 'amber' | 'blue'; pressed: boolean; onClick: () => void }) {
+  const t = useT();
   const color = { emerald: 'text-emeraldZ', rose: 'text-rose-500', amber: 'text-amber-600', blue: 'text-sapphire' }[tone];
   return (
-    <button type="button" aria-pressed={pressed} onClick={onClick}
-      className={`flex min-h-control-md items-center gap-2 rounded-lg px-3 py-1 text-start transition-colors duration-fast hover:bg-surface-sunken ${pressed ? 'bg-primary-soft ring-1 ring-primary' : ''}`}>
-      <Icon className={`h-4 w-4 shrink-0 ${color}`} aria-hidden="true" />
+    <button type="button" aria-pressed={pressed} onClick={onClick} title={t('Show only: {label}', { label })}
+      className={`flex min-h-control-md items-center gap-2 rounded-lg px-3 py-1 text-start transition-colors duration-fast hover:bg-surface-sunken max-sm:min-h-11 ${pressed ? 'bg-primary-soft ring-1 ring-primary' : ''}`}>
+      {pressed ? <Check data-pressed-check className="h-4 w-4 shrink-0 text-primary-fg" aria-hidden="true" /> : <Icon className={`h-4 w-4 shrink-0 ${color}`} aria-hidden="true" />}
       <span className="text-meta font-semibold text-fg-muted">{label}</span>
-      <span className="ms-auto text-h4 sm:ms-1 font-semibold tabular-nums text-fg">{value}</span>
+      <span className="ms-auto text-h4 font-semibold tabular-nums text-fg sm:ms-1">{value}</span>
     </button>
   );
 }
@@ -687,7 +713,11 @@ function DailyTable({ records, loading, compact, empty }: { records: AttendanceD
   const showSkeleton = useAfterDelay(!!loading, 150);
   const heads = [msg('Employee'), msg('Check-in'), msg('Check-out'), msg('Worked'), msg('Late'), msg('Punch check'), msg('Status')];
   const time = (value?: string) => (value ? fx.time(value) : '-');
-  const missingChip = (r: AttendanceDailyRecord) => (r.missingPunch ? <StatusChip label={t('Missing punch')} tone="rose" dot /> : <StatusChip label={t('Complete')} tone="emerald" />);
+  // Nobody can be "Complete" with no punches at all (an absent day): say so plainly instead.
+  const noPunches = (r: AttendanceDailyRecord) => !r.firstInUtc && !r.lastOutUtc && !r.missingPunch;
+  const missingChip = (r: AttendanceDailyRecord) => (noPunches(r)
+    ? <span className="text-meta text-fg-muted">{t('No punches')}</span>
+    : r.missingPunch ? <StatusChip label={t('Missing punch')} tone="rose" dot /> : <StatusChip label={t('Complete')} tone="emerald" />);
   return (
     <div data-daily-table className="surface overflow-hidden">
       {loading && showSkeleton && <div className="p-3"><SkeletonRows rows={8} /><span className="sr-only">{t('Loading live attendance...')}</span></div>}
@@ -702,7 +732,9 @@ function DailyTable({ records, loading, compact, empty }: { records: AttendanceD
                   <StatusChip label={enumLabel(t, 'AttendanceStatus', r.status)} tone={statusTone(r.status)} dot={!compact} />
                 </div>
                 <p className="text-meta text-fg-muted"><bdi>{r.department || r.branch}</bdi></p>
-                <p className="text-body text-fg"><bdi className="font-mono">{time(r.firstInUtc)}</bdi> – <bdi className="font-mono">{time(r.lastOutUtc)}</bdi></p>
+                {noPunches(r)
+                  ? <p className="text-meta text-fg-muted">{t('No punches')}</p>
+                  : <p className="text-body text-fg"><bdi className="font-mono">{time(r.firstInUtc)}</bdi> – <bdi className="font-mono">{time(r.lastOutUtc)}</bdi></p>}
                 {(r.missingPunch || r.lateMinutes > 0) && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     {r.missingPunch && <StatusChip label={t('Missing punch')} tone="rose" dot />}
@@ -810,7 +842,7 @@ function InsightList({ insights }: { insights: AttendanceAIInsight[] }) {
   if (insights.length === 0) return <Empty text={t('No attendance insights are open.')} />;
   return (
     <div className="space-y-3">
-      {insights.map((item) => <div key={item.id} className="rounded-lg border border-slate-100 p-3 dark:border-white/10"><div className="flex items-start justify-between gap-3"><div><p dir="auto" className="text-sm font-semibold text-slate-900 dark:text-white">{item.title}</p><p dir="auto" className="mt-1 text-sm text-slate-500 dark:text-slate-400">{item.summary}</p></div><StatusChip label={enumLabel(t, 'Status', item.severity)} tone={item.severity === 'High' ? 'rose' : item.severity === 'Medium' ? 'amber' : 'blue'} /></div></div>)}
+      {insights.map((item) => <div key={item.id} className="rounded-lg border border-line p-3"><div className="flex items-start justify-between gap-3"><div><p dir="auto" className="text-body font-semibold text-fg">{item.title}</p><p dir="auto" className="mt-1 text-body text-fg-muted">{item.summary}</p></div><StatusChip label={enumLabel(t, 'Status', item.severity)} tone={item.severity === 'High' ? 'rose' : item.severity === 'Medium' ? 'amber' : 'blue'} /></div></div>)}
     </div>
   );
 }

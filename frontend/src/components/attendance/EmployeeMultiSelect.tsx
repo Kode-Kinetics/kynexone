@@ -185,9 +185,9 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
         {shown.map((e) => (
           <li key={e.id}>
             {/* The name on top, "code · title" under it, both allowed to wrap: a long or right-to-left name is never cut at its start. */}
-            <label className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 px-3 py-2 text-sm hover:bg-slate-50 max-sm:min-h-11 dark:hover:bg-white/[0.03]">
+            <label className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 px-3 py-2 text-body hover:bg-surface-sunken max-sm:min-h-11">
               <input type="checkbox" className="row-span-2 mt-1" checked={selection.has(e.id)} onChange={() => toggle(e)} />
-              <bdi data-employee-name className="block break-words text-slate-800 dark:text-slate-100">{nameOf(e)}</bdi>
+              <bdi data-employee-name className="block break-words text-fg">{nameOf(e)}</bdi>
               <bdi data-employee-meta className="block break-words text-meta text-fg-muted">
                 <bdi className="font-mono">{e.employeeCode}</bdi>
                 {[e.designation, e.department].filter(Boolean).length > 0 && <> · {[e.designation, e.department].filter(Boolean).join(' · ')}</>}
