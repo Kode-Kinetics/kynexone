@@ -48,7 +48,7 @@ export function RovingTabList<T extends string>({
   // Scroll cue: when the strip is wider than the screen, a chevron at each clipped edge says there is more.
   // Distances are measured from the inline start, so the same arithmetic holds in right-to-left.
   const scroller = useRef<HTMLDivElement>(null);
-  const [cue, setCue] = useState({ start: false, end: false });
+  const [cue, setCue] = useState({ start: false, end: false, overflow: false });
   const tablist = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scroller.current;
@@ -57,8 +57,8 @@ export function RovingTabList<T extends string>({
       const max = el.scrollWidth - el.clientWidth;
       const pos = Math.abs(el.scrollLeft);
       setCue((prev) => {
-        const next = { start: max > 1 && pos > 1, end: max > 1 && pos < max - 1 };
-        return prev.start === next.start && prev.end === next.end ? prev : next;
+        const next = { start: max > 1 && pos > 1, end: max > 1 && pos < max - 1, overflow: max > 1 };
+        return prev.start === next.start && prev.end === next.end && prev.overflow === next.overflow ? prev : next;
       });
     };
     measure();
@@ -124,8 +124,10 @@ export function RovingTabList<T extends string>({
     </div>
   );
   if (!scrollCue) return strip;
+  // When the strip scrolls, a gutter at each side holds the chevron so it never sits on top of a tab label.
+  // The gutter stays for as long as the strip overflows, so the tabs do not jump as you scroll.
   return (
-    <div className="relative">
+    <div className={`relative ${cue.overflow ? 'px-7' : ''}`}>
       {cue.start && <TabsCue edge="start" />}
       {cue.end && <TabsCue edge="end" />}
       {strip}

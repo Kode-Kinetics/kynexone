@@ -412,6 +412,23 @@ for (const locale of LOCALES) {
       await expect(page.locator('[data-tabs-cue]')).toHaveCount(0);
     });
 
+    test('tabs: the scroll cue sits in its own gutter, outside the scrolling strip, so it never covers a tab label', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.phone);
+      await openAttendance(page, locale);
+      const cues = page.locator('[data-tabs-cue]');
+      await expect(cues.first()).toBeVisible();
+      const scroller = await page.locator('[role=tablist]').first().evaluate((el) => {
+        let n: HTMLElement | null = el as HTMLElement;
+        while (n && getComputedStyle(n).overflowX !== 'auto' && getComputedStyle(n).overflowX !== 'scroll') n = n.parentElement;
+        return n ? n.getBoundingClientRect().toJSON() : null;
+      });
+      expect(scroller, 'scrolling strip').toBeTruthy();
+      for (const box of await cues.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()))) {
+        const overlapsX = box.left < scroller!.right && box.right > scroller!.left;
+        expect(overlapsX, 'cue overlaps the scrolling strip').toBe(false);
+      }
+    });
+
     test('panel: the run chip sits in the action area and never wraps the purpose line (keeps 12 rows)', async ({ page }) => {
       await page.setViewportSize(VIEWPORTS.desktop);
       await openAttendance(page, locale);

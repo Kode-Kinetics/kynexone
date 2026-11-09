@@ -406,7 +406,8 @@ export function AttendancePage() {
   );
 
   return (
-    <div className="space-y-3">
+    // Bottom room so the last rows can scroll clear of the floating assistant button.
+    <div className="space-y-3 pb-28 lg:pb-20">
       <PageHeader
         title={t('Attendance workspace')}
         purpose={activeTab === 'dashboard'
