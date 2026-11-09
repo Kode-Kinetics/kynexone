@@ -1586,6 +1586,82 @@ public class LeaveService : ILeaveService
         return request;
     }
 
+    /// <summary>The statuses an employee (or HR) may still withdraw: nobody has approved the request yet.</summary>
+    private static readonly string[] WithdrawableStatuses = ["Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval"];
+
+    public async Task<LeaveRequest> WithdrawRequestAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await WithdrawRequestCoreAsync(tenantId, requestId, withdrawnByName, reason, ct);
+
+        return await RunCancellationTransactionAsync(
+            retryCt => WithdrawRequestCoreAsync(tenantId, requestId, withdrawnByName, reason, retryCt),
+            retryCt => _db.LeaveRequests.AsNoTracking()
+                .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Withdrawn", retryCt),
+            ct);
+    }
+
+    /// <summary>
+    /// Withdraw used to run in the controller: read the status, check it in memory, save "Withdrawn". A final approval
+    /// that committed in between was overwritten (a Withdrawn request still holding its Used days), two withdraws both
+    /// released the balance, and no audit row or notice was written. It now takes the same employee leave lock as
+    /// submission, approval and cancellation, and decides on the status read UNDER that lock.
+    /// </summary>
+    private async Task<LeaveRequest> WithdrawRequestCoreAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct)
+    {
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
+        if (!WithdrawableStatuses.Contains(request.Status))
+            throw new LeaveDecisionConflictException(
+                $"Only unapproved requests can be withdrawn (current: {request.Status}). The request was decided or changed before this withdrawal.");
+
+        var previousStatus = request.Status;
+        request.Status = "Withdrawn";
+        request.CancellationReason = reason;
+        request.CancelledAtUtc = DateTime.UtcNow;
+
+        // A request may span calendar years. Release the exact reservations recorded during submission rather than
+        // subtracting the aggregate from the start-year balance.
+        var reference = requestId.ToString();
+        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && t.EmployeeId == request.EmployeeId
+                && t.LeaveTypeId == request.LeaveTypeId && t.Reference == reference && t.TransactionType == "Pending")
+            .ToListAsync(ct);
+        foreach (var reservation in reservations)
+        {
+            var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
+                b.TenantId == tenantId && b.EmployeeId == request.EmployeeId
+                && b.LeaveTypeId == request.LeaveTypeId && b.Year == reservation.Year, ct);
+            if (balance is null) continue;
+            var before = balance.Available;
+            balance.Pending = Math.Max(0, balance.Pending - reservation.Amount);
+            balance.UpdatedAtUtc = DateTime.UtcNow;
+            _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
+            {
+                TenantId = tenantId, CompanyId = request.CompanyId, EmployeeId = request.EmployeeId,
+                LeaveTypeId = request.LeaveTypeId, Year = reservation.Year, TransactionType = "Reversed",
+                Amount = reservation.Amount, BalanceBefore = before, BalanceAfter = balance.Available,
+                Reference = reference, Reason = "Leave request withdrawn", PerformedByName = withdrawnByName
+            });
+        }
+
+        var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(a => a.TenantId == tenantId
+            && a.EntityName == nameof(LeaveRequest) && a.EntityId == reference && a.Status == "Pending", ct);
+        if (projection is not null)
+        {
+            projection.Status = "Cancelled";
+            projection.CompletedAtUtc = DateTime.UtcNow;
+        }
+        var pendingApprovals = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
+            .ToListAsync(ct);
+        foreach (var approval in pendingApprovals) approval.Decision = "Cancelled";
+
+        await LogAuditAsync(tenantId, "LeaveRequest", reference, "Withdrawn", previousStatus, "Withdrawn", reason, withdrawnByName, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return request;
+    }
+
     public async Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default)
     {
         if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
@@ -1776,6 +1852,11 @@ public class LeaveService : ILeaveService
 
         if (request.Status == "Cancelled" || request.Status == "Withdrawn")
             throw new InvalidOperationException("Request is already cancelled or withdrawn.");
+        // A rejected request holds nothing: its reservation was released when it was rejected. Cancelling it released the
+        // same days AGAIN, from whatever other live requests of the employee were holding Pending, and rewrote history
+        // (Rejected -> Cancelled).
+        if (request.Status == "Rejected")
+            throw new InvalidOperationException("A rejected request cannot be cancelled. It was already closed when it was rejected.");
         // A leave awaiting a cancellation decision is decided through that decision (approve or reject the
         // cancellation request), never cancelled directly: a direct cancel would release the approved days
         // without the reviewer and leave the Pending cancellation row with nothing left to decide.
