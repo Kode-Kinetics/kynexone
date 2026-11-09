@@ -184,7 +184,12 @@ public class TableBudgetRatchetTests
         // own GL and end-of-service semantics. No existing table can carry it: employee_salary_structures has four fixed slots and cannot
         // hold an open-ended list of coded amounts. HR proposes, Finance approves; tenant data. Retention: kept with the salary record
         // (OWNERSHIP_AND_RETENTION.md updated); removed by whole-tenant erasure.
-        DeclaredDbSets().Should().HaveCount(384,
+        // Designation-driven access (AddDesignationAccessRoles; owner Security / HR, owner-confirmed 2026-11-08). One table, 384 -> 385.
+        // DesignationAccessRoles: which EXISTING roles a designation gives (a many-to-many link, no new role or permission model). No existing
+        // table can carry it: a designation maps to several roles and a role to several designations, and the link needs its own foreign keys
+        // so a deleted role or designation drops the mapping instead of leaving a dangling id. Opt-in, default off. Tenant data. Retention:
+        // kept for the life of the designation (config, no personal data); removed with it and by whole-tenant erasure.
+        DeclaredDbSets().Should().HaveCount(385,
             "the live schema is 328 tables and the approved rebuild target is 76 " +
             "(TARGET_SCHEMA.md). If this number moved, say so in the PR and update it here");
     }
