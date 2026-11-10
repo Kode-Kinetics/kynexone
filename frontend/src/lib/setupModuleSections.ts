@@ -46,6 +46,12 @@ export interface SetupModuleAccess {
   isFeatureEnabled: (key: string) => boolean;
   verdictForPath: (path: string) => { allowed: boolean };
   flagStatus: 'loading' | 'ready' | 'error';
+  /**
+   * Retired sections the tenant still has records in. A retired section (hiddenWhenFeatureKey) stays closed for a tenant
+   * with nothing in it; with records it opens, for the same people, so the history can be read. The caller learns this
+   * from the data (see useRetiredBenefitPlans); nothing else about access changes.
+   */
+  retiredInUse?: readonly string[];
 }
 
 /** Who may change leave and shift settings (the APIs' writes); a settings section opens for whoever can change it. */
@@ -130,7 +136,7 @@ export function moduleSectionAvailable(section: SetupModuleSection, access: Setu
   // Until the module switches are known, a module's settings are not offered (ModuleGate waits the same way).
   if (access.flagStatus === 'loading') return false;
   if (section.featureKey && !access.isFeatureEnabled(section.featureKey)) return false;
-  if (section.hiddenWhenFeatureKey && access.isFeatureEnabled(section.hiddenWhenFeatureKey)) return false;
+  if (section.hiddenWhenFeatureKey && access.isFeatureEnabled(section.hiddenWhenFeatureKey) && !access.retiredInUse?.includes(section.id)) return false;
   return access.verdictForPath(section.modulePath).allowed;
 }
 

@@ -398,13 +398,30 @@ public class OrganizationSetupService : IOrganizationSetupService
         var ordered = query.OrderBy(x => x.Code);
         var total = await ordered.CountAsync(cancellationToken);
         var items = await ordered.Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(cancellationToken);
+        var access = await new DesignationAccessService(_db).GetRolesAsync(tenantId, items.Select(x => x.Id).ToList(), cancellationToken);
+        items = items.Select(x => access.TryGetValue(x.Id, out var roles) ? x with { AccessRoles = roles } : x).ToList();
         return new PagedResult<DesignationDto>(items, total, page, pageSize);
     }
 
     public async Task<DesignationDto?> GetDesignationAsync(Guid tenantId, Guid id, CancellationToken cancellationToken)
     {
         var designation = await _db.Designations.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, cancellationToken);
-        return designation?.ToDto();
+        return designation is null ? null : await WithAccessAsync(tenantId, designation, cancellationToken);
+    }
+
+    /// <summary>The designation as the API shows it: with its access (designation-driven access, when that feature is on).</summary>
+    private async Task<DesignationDto> WithAccessAsync(Guid tenantId, Designation designation, CancellationToken cancellationToken)
+    {
+        var dto = designation.ToDto();
+        var access = await new DesignationAccessService(_db).GetRolesAsync(tenantId, [designation.Id], cancellationToken);
+        return access.TryGetValue(designation.Id, out var roles) ? dto with { AccessRoles = roles } : dto;
+    }
+
+    /// <summary>Sets the designation's access, carrying a refusal out as an organisation rule (a 400 with its code).</summary>
+    private async Task SetDesignationAccessAsync(Guid tenantId, Designation designation, DesignationRequest request, RequestContext context, CancellationToken cancellationToken)
+    {
+        try { await new DesignationAccessService(_db).SetRolesAsync(tenantId, designation, request.AccessRoles, context, cancellationToken); }
+        catch (DesignationAccessException ex) { throw new OrganizationRuleException(ex.Code, ex.Message); }
     }
 
     public async Task<DesignationDto> CreateDesignationAsync(Guid tenantId, DesignationRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -413,11 +430,13 @@ public class OrganizationSetupService : IOrganizationSetupService
         await EnsureDesignationLinksAsync(tenantId, companyId, request, cancellationToken);
         await EnsureDesignationCodeUnique(tenantId, companyId, request.Code, null, cancellationToken);
         var designation = new Designation { TenantId = tenantId, CompanyId = companyId, CreatedBy = context.UserId };
+        // Before the row is tracked: a refused access setting leaves nothing half-added in the unit of work.
+        await SetDesignationAccessAsync(tenantId, designation, request, context, cancellationToken);
         Apply(designation, request);
         _db.Designations.Add(designation);
         _audit.Stage("organization.designation_created", nameof(Designation), designation.Id.ToString(), context, null);
         await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
-        return designation.ToDto();
+        return await WithAccessAsync(tenantId, designation, cancellationToken);
     }
 
     public async Task<DesignationDto?> UpdateDesignationAsync(Guid tenantId, Guid id, DesignationRequest request, RequestContext context, CancellationToken cancellationToken)
@@ -430,6 +449,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var companyId = await ResolveCompanyOnUpdateAsync(tenantId, designation.CompanyId, request.CompanyId, cancellationToken);
         await EnsureDesignationLinksAsync(tenantId, companyId, request, cancellationToken);
         await EnsureDesignationCodeUnique(tenantId, companyId, request.Code, id, cancellationToken);
+        // Before any field is changed: a refused access setting leaves the row exactly as it was.
+        await SetDesignationAccessAsync(tenantId, designation, request, context, cancellationToken);
         designation.CompanyId = companyId;
         Apply(designation, request);
         designation.IsActive = wasActive;
@@ -437,7 +458,7 @@ public class OrganizationSetupService : IOrganizationSetupService
         designation.UpdatedBy = context.UserId;
         _audit.Stage("organization.designation_updated", nameof(Designation), designation.Id.ToString(), context, null);
         await SaveCodedRowAsync("Designation", request.Code, cancellationToken);
-        return designation.ToDto();
+        return await WithAccessAsync(tenantId, designation, cancellationToken);
     }
 
     public async Task<PagedResult<GradeDto>> GetGradesAsync(Guid tenantId, int page, int pageSize, CancellationToken cancellationToken)

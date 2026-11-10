@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { ADMIN, boot, movedSectionSpecs, type Persona } from './fixture';
 import { setupSectionEntries } from '../setupSections';
@@ -71,4 +73,36 @@ test.describe('Benefits by grade replaces Benefit plans (Release A)', () => {
     await expect(page.getByRole('button', { name: /Add benefit plan|New plan/ })).toHaveCount(0);
     expect(errors, 'No application runtime errors').toEqual([]);
   });
+});
+
+// Benefits by grade inside Setup, with the app menu and Setup's own menu both open (the owner's case: two rails leave about
+// 800 px). The grid must start in the top half of a 1366x768 screen, show more than a couple of benefits, and every grade.
+const fixtures = path.join(__dirname, '..', 'fixtures', 'benefits-by-grade');
+const loadFixture = (name: string) => JSON.parse(fs.readFileSync(path.join(fixtures, `${name}.json`), 'utf8'));
+
+test.describe('Benefits by grade in Setup uses the space it has', () => {
+  test.use({ viewport: { width: 1366, height: 768 } });
+  for (const locale of ['en', 'ar'] as const) {
+    test(`1366x768 with both menus open (${locale}): the grid starts in the top half, most rows and every grade are in view, nothing scrolls sideways`, async ({ page }) => {
+      const matrix = loadFixture('matrix-group');
+      const { errors } = await boot(page, { persona: READER, url: '/setup?tab=gradeBenefits', locale, mocks: { '/api/entitlements/matrix': matrix } });
+      await expect(page.getByRole('table')).toBeVisible({ timeout: 60_000 });
+      const m = await page.evaluate(() => {
+        const table = document.querySelector('table')!;
+        const rows = [...table.querySelectorAll('tbody tr')].filter(tr => tr.querySelector('th[scope=row]'));
+        const sc = (table.closest('[role=region]') ?? table.parentElement) as HTMLElement;
+        const box = sc.getBoundingClientRect(); const rtl = document.documentElement.dir === 'rtl';
+        const grades = [...table.querySelectorAll('thead th[data-grade]')].filter(th => { const r = th.getBoundingClientRect(); return rtl ? r.left >= box.left - 1 : r.right <= box.right + 1; });
+        return {
+          top: table.getBoundingClientRect().top, rowsVisible: rows.filter(tr => tr.getBoundingClientRect().bottom <= window.innerHeight).length,
+          grades: grades.length, overflowX: document.documentElement.scrollWidth - window.innerWidth,
+        };
+      });
+      expect(m.top, 'the grid starts in the top half').toBeLessThan(768 * 0.5);
+      expect(m.rowsVisible, 'benefit rows in view without scrolling').toBeGreaterThanOrEqual(5);
+      expect(m.grades, 'every grade is in view').toBe(matrix.grades.length);
+      expect(m.overflowX, 'the page does not scroll sideways').toBeLessThanOrEqual(0);
+      expect(errors, 'No application runtime errors').toEqual([]);
+    });
+  }
 });

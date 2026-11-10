@@ -88,6 +88,20 @@ test('a_retired_section_closes_when_its_replacement_flag_is_on', () => {
   expect(moduleSectionAvailable(grid, { ...everyone, isFeatureEnabled: () => false })).toBe(false);
 });
 
+test('a_retired_section_stays_reachable_read_only_for_a_tenant_that_still_has_what_it_held', () => {
+  // A Release A tenant that already has benefit plans can open Benefit plans to read them; one with none cannot, and the
+  // permission and role checks still apply (the data fact lifts only the retirement, nothing else).
+  const plans = section('benefitPlans');
+  const releaseA = { ...everyone, isFeatureEnabled: () => true };
+  expect(moduleSectionAvailable(plans, { ...releaseA, retiredInUse: ['benefitPlans'] })).toBe(true);
+  expect(moduleSectionAvailable(plans, { ...releaseA, retiredInUse: [] })).toBe(false);
+  expect(moduleSectionAvailable(plans, releaseA)).toBe(false);
+  expect(moduleSectionAvailable(plans, { ...releaseA, retiredInUse: ['benefitPlans'], hasPermission: () => false })).toBe(false);
+  expect(moduleSectionAvailable(plans, { ...releaseA, retiredInUse: ['benefitPlans'], hasRole: () => false })).toBe(false);
+  // Another section's retirement is not lifted by it.
+  expect(moduleSectionAvailable(plans, { ...releaseA, retiredInUse: ['loanTypes'] })).toBe(false);
+});
+
 test('a_section_follows_its_modules_switch_and_feature_flag', () => {
   for (const item of SETUP_MODULE_SECTIONS) {
     expect(moduleSectionAvailable(item, { ...live(item), verdictForPath: path => ({ allowed: path !== item.modulePath }) }), item.id).toBe(false);

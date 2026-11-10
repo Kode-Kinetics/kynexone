@@ -326,14 +326,35 @@ public class AccessManagementService : IAccessManagementService
         var newLinkId = Guid.NewGuid();
         var newEntityGrantId = Guid.NewGuid();
         var auditId = Guid.NewGuid();
-        var auditMetadata = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            employeeId = request.EmployeeId,
-            workEmailConfirmed = request.ConfirmedWorkEmail,
-            accessMode,
-            roles = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode))
-                .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
-        });
+        // The roles an invitation carries when the inviter names none: the baseline for the access mode, plus whatever the employee's
+        // designation is meant to carry (designation-driven access; empty while that feature is off). Roles the inviter
+        // names are exactly what they asked for.
+        var baseRoleNames = (request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode)).ToList();
+        IReadOnlyList<string> mappedRoleNames = request.Roles is { Count: > 0 }
+            ? []
+            : await new DesignationAccessService(_db).MappedRoleNamesForEmployeeAsync(tenantId, request.EmployeeId, cancellationToken);
+        string AuditMetadataFor(IEnumerable<string> derivedRoleNames, IReadOnlyCollection<string> derivedNotGranted) =>
+            System.Text.Json.JsonSerializer.Serialize(derivedNotGranted.Count == 0
+                ? (object)new
+                {
+                    employeeId = request.EmployeeId,
+                    workEmailConfirmed = request.ConfirmedWorkEmail,
+                    accessMode,
+                    roles = baseRoleNames.Concat(derivedRoleNames)
+                        .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList()
+                }
+                : new
+                {
+                    employeeId = request.EmployeeId,
+                    workEmailConfirmed = request.ConfirmedWorkEmail,
+                    accessMode,
+                    roles = baseRoleNames.Concat(derivedRoleNames)
+                        .Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                    designationRolesNotGranted = derivedNotGranted.OrderBy(x => x, StringComparer.Ordinal).ToList()
+                });
+        // Re-stated under the row lock once the inviter's ceiling has been applied to the designation-derived roles.
+        var auditMetadata = AuditMetadataFor(mappedRoleNames, []);
+        IReadOnlyList<string> designationRolesNotGranted = [];
         Guid? issuedUserId = null;
         Guid? issuedLinkId = null;
         string? issuedEmail = null;
@@ -432,6 +453,7 @@ public class AccessManagementService : IAccessManagementService
                     : AuthLinkBuilder.AcceptInvitation(_appUrl, user.Tenant.Slug, invitationToken)) with
             {
                 HandOverInPerson = handOverInPerson,
+                DesignationRolesNotGranted = designationRolesNotGranted,
             };
         }
 
@@ -572,22 +594,28 @@ public class AccessManagementService : IAccessManagementService
                 user.FullName = employee.FullName;
             }
 
-            var roles = await LoadRoles(
-                tenantId,
-                request.Roles is { Count: > 0 } ? request.Roles : DefaultRoles(accessMode),
-                ct);
-            if (roles.Any(x => x.NormalizedName == "ADMIN"
-                    || x.RolePermissions.Any(rp => string.Equals(
-                        rp.Permission?.Key,
-                        "security.manage",
-                        StringComparison.OrdinalIgnoreCase))))
+            var explicitRoles = await LoadRoles(tenantId, baseRoleNames, ct);
+            // Mapped roles were checked against the ceiling of whoever configured the designation and are re-checked for privileged
+            // access here and when applied. They are ALSO held to the inviter's own access below: with no mail transport the link
+            // comes back to the inviter, so a designation must not be a way to hand out a login carrying what the inviter does not hold.
+            var mappedCandidates = mappedRoleNames.Count == 0
+                ? (IReadOnlyCollection<Role>)Array.Empty<Role>()
+                : (await LoadRoles(tenantId, mappedRoleNames, ct)).Where(m => explicitRoles.All(e => e.Id != m.Id)).ToList();
+            if (explicitRoles.Concat(mappedCandidates).Any(PrivilegedAccessGuard.IsPrivileged))
                 throw new InvalidOperationException(
                     "Employee invitation cannot grant privileged security administration; use the dedicated privileged-user workflow.");
             // PRIVILEGE CEILING: with no mail transport the invitation link comes back to the inviter, so an
             // invitation may carry only roles inside the inviter's own access.
             var inviter = await LoadCallerCeilingAsync(tenantId, context, ct);
-            foreach (var role in roles.OrderBy(x => x.Name, StringComparer.Ordinal))
+            foreach (var role in explicitRoles.OrderBy(x => x.Name, StringComparer.Ordinal))
                 ThrowIfRefused(PrivilegeCeiling.AssignRefusal(inviter, Facts(role)));
+            // Roles the inviter NAMED are refused outright. Roles the DESIGNATION supplies were not chosen by the inviter, so one above
+            // their access is left off (fail closed) and reported back, rather than failing an otherwise ordinary invitation.
+            var mappedRoles = mappedCandidates.Where(m => PrivilegeCeiling.AssignRefusal(inviter, Facts(m)) is null).ToList();
+            designationRolesNotGranted = mappedCandidates.Where(m => mappedRoles.All(g => g.Id != m.Id))
+                .Select(m => m.Name).OrderBy(x => x, StringComparer.Ordinal).ToList();
+            auditMetadata = AuditMetadataFor(mappedRoles.Select(m => m.Name), designationRolesNotGranted);
+            var roles = explicitRoles.Concat(mappedRoles).ToList();
             // The access mode carries permissions of its own (ManagerPortal → approvals.decide): a grant like any other.
             ThrowIfRefused(PrivilegeCeiling.AccessModeRefusal(inviter, AuthService.AccessModePermissions(accessMode)));
             issuedRoleIds = roles.Select(x => x.Id).OrderBy(x => x).ToArray();
@@ -597,9 +625,10 @@ public class AccessManagementService : IAccessManagementService
             _db.UserPermissionOverrides.RemoveRange(user.PermissionOverrides);
             user.PermissionOverrides.Clear();
             user.IsGroupScope = false;
+            // The invitation re-states the user's roles in full: the ones the designation maps are marked as its grant, the rest are manual.
             foreach (var role in roles)
             {
-                var userRole = new UserRole { User = user, Role = role };
+                var userRole = new UserRole { User = user, Role = role, GrantedByDesignationId = mappedRoles.Any(m => m.Id == role.Id) ? employee.DesignationId : null };
                 _db.UserRoles.Add(userRole);
             }
 

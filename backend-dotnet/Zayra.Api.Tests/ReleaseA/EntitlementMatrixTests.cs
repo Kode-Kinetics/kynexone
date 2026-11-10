@@ -297,7 +297,7 @@ public class EntitlementMatrixTests
     {
         var actions = typeof(EntitlementMatrixController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttributes().Any(a => a is Microsoft.AspNetCore.Mvc.Routing.HttpMethodAttribute)).ToList();
-        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "AddBenefit", "CashGlDrivers", "ConfirmBenefit", "CorrectBenefit", "RemoveBenefit", "ImportLegacy");
+        actions.Select(a => a.Name).Should().BeEquivalentTo("Components", "Matrix", "Publish", "SetOffering", "AddBenefit", "CashGlDrivers", "ConfirmBenefit", "CorrectBenefit", "RemoveBenefit", "ImportLegacy", "UpdateBenefit");
         foreach (var action in actions)
         {
             var permissions = action.GetCustomAttribute<HasPermissionAttribute>()!.Permissions;

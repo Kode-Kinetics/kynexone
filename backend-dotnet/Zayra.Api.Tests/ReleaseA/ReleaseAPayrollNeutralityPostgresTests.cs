@@ -46,7 +46,35 @@ public class ReleaseAPayrollNeutralityPostgresTests(PostgresFixture fixture)
         Assert.Equal(expected, actual);
     }
 
-    private async Task<(Guid TenantId, Guid RunId)> SeedAsync(bool withReleaseA)
+    /// <summary>
+    /// The benefit definition columns (category, policy class, requires-enrolment, source plan) and a window on a customer-added <c>BEN_*</c> /
+    /// <c>ALW_*</c> row are descriptive: a tenant that holds them, with grade values and the feature on, must pay exactly what a tenant without them pays.
+    /// </summary>
+    [Fact]
+    public async Task BenefitDefinitionColumns_OnCustomRows_LeavePayrollOutputByteIdentical()
+    {
+        var plain = await SeedAsync(withReleaseA: true);
+        var defined = await SeedAsync(withReleaseA: true, withDefinitions: true);
+
+        foreach (var (tenantId, runId) in new[] { plain, defined })
+            await using (var db = fixture.CreateDb())
+            {
+                var result = await PayComponentNetPayDefectTests.Build(db, tenantId).Process(runId, CancellationToken.None);
+                if (result is ObjectResult { StatusCode: >= 400 } bad)
+                    Assert.Fail($"Process refused: HTTP {bad.StatusCode} {JsonSerializer.Serialize(bad.Value)}");
+            }
+
+        await using (var check = fixture.CreateDb())
+            Assert.Equal(2, await check.PayComponents.CountAsync(c => c.TenantId == defined.TenantId && c.BenefitCategory != null && c.PolicyClass != null && c.RequiresEnrolment == false));
+        var expected = await OutputAsync(plain.RunId);
+        var actual = await OutputAsync(defined.RunId);
+        Assert.NotEmpty(expected);
+        Assert.DoesNotContain("BEN_PARK", actual);
+        Assert.DoesNotContain("ALW_CAR", actual);
+        Assert.Equal(expected, actual);
+    }
+
+    private async Task<(Guid TenantId, Guid RunId)> SeedAsync(bool withReleaseA, bool withDefinitions = false)
     {
         await using var db = fixture.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
@@ -65,6 +93,7 @@ public class ReleaseAPayrollNeutralityPostgresTests(PostgresFixture fixture)
         };
         db.AddRange(company, grade, emp);
         await db.SaveChangesAsync();
+        if (withDefinitions) db.TenantFeatureFlags.Add(new TenantFeatureFlag { TenantId = tenantId, FeatureKey = FeatureKeys.BenefitDefinitionV1, IsEnabled = true });
         if (withReleaseA)
         {
             await PayComponentSeeder.EnsureEntitlementCatalogAsync(db, tenantId, CancellationToken.None);
@@ -75,6 +104,25 @@ public class ReleaseAPayrollNeutralityPostgresTests(PostgresFixture fixture)
                     tier: CoverageTiers.Economy),
                 Cell(tenantId, grade.Id, "PER_DIEM", PayEntitlementClasses.Facility, GradeEntitlementValueTypes.Amount, amount: 250m),
                 Cell(tenantId, grade.Id, "HOUSING", PayEntitlementClasses.QiwaWage, GradeEntitlementValueTypes.PercentOfBasic, rate: 0.25m));
+        }
+        if (withDefinitions)
+        {
+            db.PayComponents.AddRange(
+                new PayComponent
+                {
+                    TenantId = tenantId, Code = "BEN_PARK", NameEn = "Parking", NameAr = "موقف", ComponentType = PayComponentTypes.Benefit, CalcMethod = PayComponentCalcMethods.Fixed,
+                    EntitlementClass = PayEntitlementClasses.Contractual, WpsIncluded = false, DisplayOrder = 9100, BenefitCategory = "Facilities",
+                    PolicyClass = BenefitPolicyClasses.Discretionary, RequiresEnrolment = false, EffectiveFrom = new DateOnly(2026, 1, 1), EffectiveTo = new DateOnly(2026, 12, 31),
+                },
+                new PayComponent
+                {
+                    TenantId = tenantId, Code = "ALW_CAR", NameEn = "Car", NameAr = "سيارة", ComponentType = PayComponentTypes.Earning, CalcMethod = PayComponentCalcMethods.GradePackage,
+                    EntitlementClass = PayEntitlementClasses.QiwaWage, WpsIncluded = true, DisplayOrder = 9100, GlDriverKey = "EARN:CAR", EosbIncluded = true,
+                    FinanceConfirmedAtUtc = DateTime.UtcNow, BenefitCategory = "Vehicle", PolicyClass = BenefitPolicyClasses.Contractual, RequiresEnrolment = false,
+                });
+            db.GradeEntitlements.AddRange(
+                Cell(tenantId, grade.Id, "BEN_PARK", PayEntitlementClasses.Contractual, GradeEntitlementValueTypes.Amount, amount: 1_200m),
+                Cell(tenantId, grade.Id, "ALW_CAR", PayEntitlementClasses.QiwaWage, GradeEntitlementValueTypes.Amount, amount: 900m));
         }
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
         {

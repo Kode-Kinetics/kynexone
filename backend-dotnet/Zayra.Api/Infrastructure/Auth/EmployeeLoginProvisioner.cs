@@ -110,6 +110,7 @@ public sealed class EmployeeLoginProvisioner
 
         Role? employeeRole = null;
         var roleLoaded = false;
+        var designationAccess = new DesignationAccessService(_db);
 
         for (var i = 0; i < employees.Count; i++)
         {
@@ -162,6 +163,11 @@ public sealed class EmployeeLoginProvisioner
             };
             _db.Users.Add(user);
             _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = employeeRole!.Id });
+            // The access the employee's designation is meant to carry, besides the baseline: given with the login and marked so a later
+            // designation change can take it away again. Empty while designation-driven access is off.
+            var mapped = (await designationAccess.MappedRolesForNewLoginAsync(tenantId, employee, ct)).Where(r => r.Id != employeeRole.Id).ToList();
+            foreach (var role in mapped)
+                _db.UserRoles.Add(new UserRole { UserId = user.Id, RoleId = role.Id, GrantedByDesignationId = employee.DesignationId });
             if (employee.CompanyId is Guid companyId)
                 _db.UserEntityAccesses.Add(new UserEntityAccess
                 {
@@ -195,7 +201,11 @@ public sealed class EmployeeLoginProvisioner
             employee.UserAccountId = user.Id;
             _db.AuditLogs.Add(AuthAuditEntry.Create(
                 Guid.NewGuid(), nowUtc, StagedAction, "User", user.Id.ToString(), actor with { TenantId = tenantId },
-                JsonSerializer.Serialize(new { employeeId = employee.Id, linkId = link.Id, note = "Staged login: cannot sign in until the employee redeems a welcome code." })));
+                JsonSerializer.Serialize(new
+                {
+                    employeeId = employee.Id, linkId = link.Id, note = "Staged login: cannot sign in until the employee redeems a welcome code.",
+                    designationRoles = mapped.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToList(),
+                })));
             claimed.Add(normalized);
             linkedEmployeeIds.Add(employee.Id);
             outcomes[i] = new Outcome(employee.Id, Results.Staged, null, user.Id);

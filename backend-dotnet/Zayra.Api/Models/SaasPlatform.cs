@@ -179,6 +179,19 @@ public static class FeatureKeys
     /// (PolicyContentModelGate). See OptInFeatures.
     /// </summary>
     public const string PolicyIntake = "policy_intake";
+    /// <summary>
+    /// Designation-driven access: a designation carries a set of existing roles that an
+    /// employee is given when they are given the designation and loses when they leave it (DesignationAccessService). OPT-IN,
+    /// default OFF for every tenant: an absent row means OFF, and while it is off NOTHING is configured, applied or revoked.
+    /// Switched on per tenant only by the platform team. Owns no route; the service checks it. See OptInFeatures.
+    /// </summary>
+    public const string DesignationAccess = "designation_access";
+    /// <summary>
+    /// Benefit definition (Benefits by grade): the Add benefit form carries category, policy class, scope and dates, and a benefit can be edited.
+    /// OPT-IN, default OFF; owns no route (the entitlements routes are Release A's). Off = the benefit endpoints behave exactly as before and
+    /// a request carrying a definition field is refused. See OptInFeatures.
+    /// </summary>
+    public const string BenefitDefinitionV1 = "benefit_definition_v1";
 }
 
 // ── Tenant Subscription ───────────────────────────────────────────────────────

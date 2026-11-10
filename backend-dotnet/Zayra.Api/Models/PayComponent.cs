@@ -160,6 +160,36 @@ public class PayComponent : ITenantOwned, ICompanyScoped
     /// (CHECK ck_pay_components__floor_always_offered). Loans keep <c>loan_policies.is_offered</c>.
     /// </summary>
     public bool IsOffered { get; set; } = true;
+
+    // ── Customer-defined benefit definition (feature benefit_definition_v1). Set only on a tenant-wide BEN_*/ALW_* row (CHECK
+    // ck_pay_components__benefit_fields_custom_only); NULL on every other row and on every row written before the feature. No payroll effect. ──
+
+    /// <summary>A descriptive label for the grid ("Insurance", "Housing"). Free text, at most 120 characters; never read by payroll.</summary>
+    public string? BenefitCategory { get; set; }
+
+    /// <summary>Contractual or Discretionary (<see cref="BenefitPolicyClasses"/>); Mandatory is never customer-added. Has no effect on end-of-service pay.</summary>
+    public string? PolicyClass { get; set; }
+
+    /// <summary>Always false or NULL for now: Release A derives the package from the grade, so "requires enrolment" is refused rather than stored
+    /// and ignored (CHECK ck_pay_components__requires_enrolment_unsupported).</summary>
+    public bool? RequiresEnrolment { get; set; }
+
+    /// <summary>The legacy benefit plan this definition was brought in from (read-only history); NULL when it was created here. Unique per tenant.
+    /// <para><b>No tenant-match constraint.</b> The foreign key is on the plan's id alone, so the database does not stop a row from naming ANOTHER tenant's plan.
+    /// Nothing writes this column yet; any future import MUST load the plan with the caller's tenant id and refuse a plan of another tenant before setting it.</para></summary>
+    public Guid? SourceBenefitPlanId { get; set; }
+}
+
+/// <summary>Value set of <c>pay_components.policy_class</c> (CHECK ck_pay_components__policy_class). Mandatory statutory floors are catalogue rows, never customer-added.</summary>
+public static class BenefitPolicyClasses
+{
+    public const string Contractual = "Contractual";
+    public const string Discretionary = "Discretionary";
+    public static readonly string[] All = [Contractual, Discretionary];
+
+    /// <summary>The canonical spelling of <paramref name="value"/> (case-insensitive), or null when it is not one of the two.</summary>
+    public static string? Normalize(string? value) =>
+        All.FirstOrDefault(c => string.Equals(c, value?.Trim(), StringComparison.OrdinalIgnoreCase));
 }
 
 /// <summary>Value set of <c>pay_components.eosb_exclusion_category</c> (CHECK ck_pay_components__eosb_exclusion_category).</summary>

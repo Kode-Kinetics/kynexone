@@ -99,6 +99,7 @@ CountryPayrollRules
 DataProtectionKeys
 DepartmentStaffingBudgets
 Departments
+DesignationAccessRoles
 Designations
 DevelopmentPlanActions
 DevelopmentPlans
