@@ -196,7 +196,7 @@ test.describe('Attendance bulk operations — screen', () => {
     // Two past days, In and Out, a reason (Enter in the reason box sends nothing either).
     await panel.getByLabel(en('From date')).fill(massDays[0]);
     await panel.getByLabel(en('To date')).fill(massDays[1]);
-    await panel.getByLabel(en('In time')).fill(`09:${mm}`);
+    await panel.getByLabel(en('In time'), { exact: true }).fill(`09:${mm}`);
     await panel.getByLabel(en('Out time'), { exact: true }).fill(`14:${mm}`);
     const submit = panel.getByRole('button', { name: en(SUBMIT_KEY, { employees: 2, days: 2 }) });
     await expect(submit, 'a reason is required before anything can be recorded').toBeDisabled();
@@ -263,7 +263,7 @@ test.describe('Attendance bulk operations — screen', () => {
     await search.fill(e1.code);
     await panel.getByRole('checkbox', { name: codePattern(e1.code) }).check();
     await panel.getByLabel(en('To date')).fill(massDays[0]);
-    await panel.getByLabel(en('In time')).fill('');
+    await panel.getByLabel(en('In time'), { exact: true }).fill('');
     await panel.getByLabel(en('Out time'), { exact: true }).fill(`18:${mm}`);
     await panel.getByLabel(en('Reason (required)')).fill(`E2E forgot to punch out ${Date.now()}`);
     await panel.getByRole('button', { name: en(SUBMIT_KEY, { employees: 1, days: 1 }) }).click();
