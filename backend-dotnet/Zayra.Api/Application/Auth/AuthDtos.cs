@@ -76,6 +76,10 @@ public record EmployeeLoginInvitationDto(
     /// <summary>The caller set this employee's work email (WorkEmailSetterRule): the link is never emailed — it is
     /// returned to the caller to hand over in person, and that disclosure is recorded.</summary>
     public bool HandOverInPerson { get; init; }
+
+    /// <summary>Roles the employee's designation maps to that this invitation did NOT carry because the inviter does not hold
+    /// what they give (the designation-derived roles are held to the inviter's own access, like explicit ones). Empty normally.</summary>
+    public IReadOnlyList<string> DesignationRolesNotGranted { get; init; } = [];
 }
 
 /// <summary>A login as the employee-link screen shows it: who, what state, what access mode.</summary>

@@ -31,7 +31,10 @@ public static class OrgRowReferences
     };
 
     /// <summary>Entities that match by name but cannot be counted because they carry no TenantId to pin the count to.</summary>
-    public static readonly IReadOnlyDictionary<string, string> CannotBePinned = new Dictionary<string, string>(StringComparer.Ordinal);
+    public static readonly IReadOnlyDictionary<string, string> CannotBePinned = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        ["UserRole.GrantedByDesignationId"] = "A marker on a login's role row saying which designation gave it, not a record that uses the designation. The foreign key sets it to null when the designation goes, the designation's own role map is counted, and the row has no TenantId (the user does).",
+    };
 
     public sealed record Discovery(IReadOnlyList<OrgReference> References, IReadOnlyList<string> Unpinnable);
 

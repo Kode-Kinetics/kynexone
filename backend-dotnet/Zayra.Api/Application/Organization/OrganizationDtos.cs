@@ -120,7 +120,9 @@ public record DesignationDto(
     string JobDescription,
     bool IsManagerRole,
     bool IsActive,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null,
+    // Designation-driven access (opt-in feature): the names of the existing roles this designation grants. Null while the feature is off.
+    IReadOnlyList<string>? AccessRoles = null);
 
 public record DesignationRequest(
     Guid? DepartmentId,
@@ -133,7 +135,10 @@ public record DesignationRequest(
     [MaxLength(2000)] string? JobDescription,
     bool IsManagerRole = false,
     bool IsActive = true,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null,
+    // Designation-driven access: null = leave the designation's roles untouched; [] clears them. Changing them needs the feature on and a
+    // caller holding security.manage, and never a privileged role (DesignationAccessService).
+    IReadOnlyList<string>? AccessRoles = null);
 
 public record GradeDto(
     Guid Id, string Code, string Name, string Band, int Level,

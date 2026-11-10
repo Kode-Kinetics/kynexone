@@ -8,10 +8,10 @@
   "tintedShadow": 0,
   "fontWeightSprawl": 30,
   "rawDurationClass": 45,
-  "animatePulse": 65,
+  "animatePulse": 64,
   "animatePing": 4,
   "tile3d": 0,
-  "borderDashed": 36,
+  "borderDashed": 34,
   "adHocEmptyText": 190,
   "nativeDialog": 0
 }

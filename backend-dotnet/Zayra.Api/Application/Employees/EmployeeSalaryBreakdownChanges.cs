@@ -78,8 +78,7 @@ public static class EmployeeSalaryBreakdownChanges
         if (!changes.TryGetValue(Key, out var value)) return;
         if (changes.ContainsKey("salary")) throw new InvalidOperationException("Submit the salary breakdown or the legacy salary total, not both.");
         var salary = Read(value);
-        var grade = employee.GradeId is null ? null : await db.Grades.AsNoTracking()
-            .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
+        var grade = await GradeForRangeCheckAsync(db, employee, changes, ct);
         // The customer-defined cash allowances this package pays: stated lines are checked against the live definitions at submit, and a package that
         // does not mention them carries the current ones, so the grade range below is checked on the whole pay.
         var allowances = employee.TenantId is Guid allowanceTenant
@@ -123,6 +122,46 @@ public static class EmployeeSalaryBreakdownChanges
         if (richerContract) throw new InvalidOperationException(
             $"The salary dated {salary.EffectiveDate:yyyy-MM-dd} has a percent-of-basic or in-kind allowance, or a Qiwa-confirmed contract, so an amount-only package cannot replace it on that date. "
             + "Request the change as a governed salary change with a different effective date (approved in Approvals), or through the contract renewal workflow.");
+    }
+
+    /// <summary>The grade whose range judges this package: the grade the same edit moves the employee TO when it names exactly one grade (the rule every grade
+    /// edit uses, <see cref="EmployeeGradeResolution"/>), otherwise the grade the employee holds. Judged against the held grade alone, a promotion on a
+    /// promotion-sized salary was refused as outside the grade being left, and the grade never changed.</summary>
+    private static async Task<Grade?> GradeForRangeCheckAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
+    {
+        if (await EmployeeGradeResolution.FindAsync(db, employee, EmployeeGradeResolution.TermOf(changes), ct) is { } proposed) return proposed;
+        return employee.GradeId is null ? null : await db.Grades.AsNoTracking()
+            .FirstOrDefaultAsync(g => g.TenantId == employee.TenantId && g.Id == employee.GradeId && !g.IsDeleted, ct);
+    }
+
+    /// <summary>An employee's grade moves while they already have pay: the pay that will be in force after the write (the whole package, allowance lines included)
+    /// is judged against the range of the grade they are moving to, with the same hard refusal a salary package gets. Without this, moving to a looser grade,
+    /// raising the pay and moving back would leave pay outside the range of the grade held, and no step would ever have been judged.
+    /// A package sent in the same edit replaces the pay in force when it is dated the same day or later than the latest record dated today or before: the package
+    /// is then the pay, and its own check judges it against this grade. A package dated before that record is not the pay in force and hides nothing: the record
+    /// is judged. The wording is generic on purpose: there may be no package in the edit, and it states no band.</summary>
+    public static async Task RequireCurrentPayInRangeAsync(ZayraDbContext db, Employee employee, Grade grade, IReadOnlyDictionary<string, JsonElement> changes, CancellationToken ct)
+    {
+        if (grade.MinSalary <= 0 && grade.MaxSalary <= 0) return;
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var current = (await ReadScheduleAsync(db, employee, ct)).FirstOrDefault(s => s.EffectiveDate is { } date && date <= today);
+        if (current is null) return;
+        var proposed = changes.TryGetValue(Key, out var raw) ? TryRead(raw) : null;
+        // The package is the pay in force only when it is dated on or after the record now in force and no later than today: one dated in the future is not the
+        // pay today, so it hides nothing while the grade moves now.
+        if (proposed?.EffectiveDate is { } proposedDate && proposedDate >= current.EffectiveDate && proposedDate <= today) return;
+        var wholePay = Gross(current) + StatedLinesTotal(current);
+        if ((grade.MinSalary > 0 && wholePay < grade.MinSalary) || (grade.MaxSalary > 0 && wholePay > grade.MaxSalary))
+            throw new InvalidOperationException("The employee's current pay is outside the salary range of the grade they would move to, so the grade was not changed."
+                + (proposed?.EffectiveDate is { } early && early < current.EffectiveDate
+                    ? $" The salary package in this edit is dated before the pay now in force: date it on or after {current.EffectiveDate:yyyy-MM-dd}."
+                    : ""));
+    }
+
+    private static EmployeeSalaryBreakdownRequest? TryRead(JsonElement value)
+    {
+        try { return Read(value); }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { return null; }
     }
 
     public static async Task ApplyAsync(ZayraDbContext db, Employee employee, IReadOnlyDictionary<string, JsonElement> changes, Guid? actorId, CancellationToken ct,
