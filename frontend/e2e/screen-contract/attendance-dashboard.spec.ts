@@ -42,6 +42,7 @@ async function tableMetrics(page: Page) {
 
 const RESULTS_KEY = '{count, plural, one {# result} other {# results}}';
 const header = (page: Page) => page.locator('[data-page-header] [data-primary-action] button');
+const tilesOf = (page: Page, locale: Locale) => page.getByRole('group', { name: t(locale, 'Attendance at a glance') });
 const recordRegion = (page: Page, locale: Locale) => page.getByRole('region', { name: t(locale, 'Record attendance') });
 const TZ_MOCK = { '/api/tenant-admin/localization': { countryCode: 'SA', currencyCode: 'SAR', defaultTimezone: 'Asia/Riyadh', stated: true } };
 
@@ -188,26 +189,73 @@ for (const locale of LOCALES) {
       await expect(page.locator('[data-daily-cards]')).toBeHidden();
     });
 
-    test('filters: the KPI tiles are buttons; Late filters by status, Missing punch filters the rows, and the live region announces the count', async ({ page }) => {
+    test('filters: each KPI tile asks the server for its own records (tile=, never status=), and the live region announces the count', async ({ page }) => {
       await page.setViewportSize(VIEWPORTS.desktop);
+      const dailyQueries: URLSearchParams[] = [];
+      page.on('request', req => { const u = new URL(req.url()); if (u.pathname === '/api/attendance/daily') dailyQueries.push(u.searchParams); });
       await openAttendance(page, locale);
       await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
       const tiles = page.getByRole('group', { name: t(locale, 'Attendance at a glance') });
       const status = page.getByLabel(t(locale, 'Status filter'));
       const live = page.locator('main [role="status"]').filter({ hasText: /\S/ });
-      await tiles.getByRole('button', { name: new RegExp(t(locale, 'Late')) }).click();
-      await expect(status).toHaveValue('Late');
-      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(3);
-      await expect(live.first()).toContainText(t(locale, RESULTS_KEY, { count: 3 }));
+      const expected: Array<[string, string, number]> = [['Present', 'present', 12], ['Absent', 'absent', 2], ['Late', 'late', 3], ['Missing Punch', 'missingPunch', 2]];
+      for (const [label, tile, count] of expected) {
+        dailyQueries.length = 0;
+        const button = tiles.getByRole('button', { name: new RegExp(t(locale, label)) });
+        await button.click();
+        await expect(button).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(count);
+        await expect(live.first()).toContainText(t(locale, RESULTS_KEY, { count }));
+        const sent = dailyQueries.at(-1)!;
+        expect(sent.get('tile'), `${label} tile sends tile`).toBe(tile);
+        expect(sent.has('status'), `${label} tile does not send status`).toBe(false);
+        await expect(status, 'a tile leaves the status dropdown alone').toHaveValue('');
+        await button.click();
+        await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+        expect(dailyQueries.at(-1)!.has('tile'), 'unpressing clears the tile').toBe(false);
+      }
+    });
+
+    test('filters: the status dropdown still sends status, and the tile and the dropdown clear each other', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      const dailyQueries: URLSearchParams[] = [];
+      page.on('request', req => { const u = new URL(req.url()); if (u.pathname === '/api/attendance/daily') dailyQueries.push(u.searchParams); });
+      await openAttendance(page, locale);
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      const tiles = page.getByRole('group', { name: t(locale, 'Attendance at a glance') });
+      const status = page.getByLabel(t(locale, 'Status filter'));
       const missing = tiles.getByRole('button', { name: new RegExp(t(locale, 'Missing Punch')) });
-      await tiles.getByRole('button', { name: new RegExp(t(locale, 'Late')) }).click();
-      await expect(status).toHaveValue('');
       await missing.click();
       await expect(missing).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(2);
-      await expect(live.first()).toContainText(t(locale, RESULTS_KEY, { count: 2 }));
-      await missing.click();
+      dailyQueries.length = 0;
+      await status.selectOption('Late');
+      await expect(missing).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(3);
+      expect(dailyQueries.at(-1)!.get('status')).toBe('Late');
+      expect(dailyQueries.at(-1)!.has('tile'), 'selecting a status clears the tile').toBe(false);
+      await tiles.getByRole('button', { name: new RegExp(t(locale, 'Present')) }).click();
+      await expect(status).toHaveValue('');
+      expect(dailyQueries.at(-1)!.get('tile')).toBe('present');
+      expect(dailyQueries.at(-1)!.has('status'), 'pressing a tile clears the status').toBe(false);
+    });
+
+    test('filters: Missing Punch is the server list, not a client filter of the first page', async ({ page }) => {
+      await page.setViewportSize(VIEWPORTS.desktop);
+      // The server answers tile=missingPunch with a record the first page of the day never contained.
+      const firstPage = dailyRows().map(r => ({ ...r, missingPunch: false }));
+      const beyond = { ...dailyRows(1)[0], id: 'd-beyond', employeeName: 'Zed Beyond', missingPunch: true };
+      await openAttendance(page, locale, {
+        extra: {
+          '/api/attendance/daily': (url: URL) => {
+            const items = url.searchParams.get('tile') === 'missingPunch' ? [beyond] : firstPage;
+            return { items, total: items.length, page: 1, pageSize: 50 };
+          },
+        },
+      });
       await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(14);
+      await tilesOf(page, locale).getByRole('button', { name: new RegExp(t(locale, 'Missing Punch')) }).click();
+      await expect(page.locator('[data-daily-table] tbody tr')).toHaveCount(1);
+      await expect(page.locator('[data-daily-table] tbody')).toContainText('Zed Beyond');
     });
 
     test('panel: it stays closed on load; open, the header button reads Close (secondary) so the panel holds the only primary', async ({ page }) => {

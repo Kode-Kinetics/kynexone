@@ -17,7 +17,7 @@ import {
   X,
   Users,
 } from 'lucide-react';
-import { attendanceApi } from '../api/attendance';
+import { attendanceApi, type AttendanceTile } from '../api/attendance';
 import type {
   AttendanceAIInsight,
   AttendanceDailyRecord,
@@ -160,7 +160,9 @@ export function AttendancePage() {
   const [recordOpen, setRecordOpen] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   // Client-side filter behind the "Missing punch" tile: the daily rows already carry `missingPunch`, the API takes no such status.
-  const [missingOnly, setMissingOnly] = useState(false);
+  // The KPI tile that is pressed: the SERVER narrows the day to exactly the records that tile counted. Exclusive with statusFilter.
+  const [tileFilter, setTileFilter] = useState<AttendanceTile | ''>('');
+  const [dailyTotal, setDailyTotal] = useState(0);
   // A mass-entry run in progress, reported by the (hidden but mounted) record panel so the header can show it while closed.
   const [runProgress, setRunProgress] = useState<{ done: number; total: number } | null>(null);
   const recordButtonRef = useRef<HTMLButtonElement>(null);
@@ -234,7 +236,7 @@ export function AttendancePage() {
     setInsights([]);
     const [dashboard, day, raw, devicePage, employeePage, regPage, pendingPage, payroll, sync, ai] = await Promise.allSettled([
         attendanceApi.dashboard(filterDate),
-        attendanceApi.daily({ from: filterDate, to: filterDate, status: statusFilter || undefined, pageSize: 50 }),
+        attendanceApi.daily({ from: filterDate, to: filterDate, status: statusFilter || undefined, tile: tileFilter || undefined, pageSize: 50 }),
         attendanceApi.events.raw({ from: filterDate, to: filterDate, pageSize: 50 }),
         attendanceApi.devices.list({ pageSize: 50 }),
         employeesApi.listAll(),
@@ -246,7 +248,7 @@ export function AttendancePage() {
       ]);
     const failures: AttendanceLoadErrors = {};
     if (dashboard.status === 'fulfilled') setSummary(dashboard.value); else failures.dashboard = 'failed';
-    if (day.status === 'fulfilled') setDaily(day.value.items); else failures.daily = 'failed';
+    if (day.status === 'fulfilled') { setDaily(day.value.items); setDailyTotal(day.value.total); } else failures.daily = 'failed';
     if (raw.status === 'fulfilled') setRawEvents(raw.value.items); else failures.raw = 'failed';
     if (devicePage.status === 'fulfilled') setDevices(devicePage.value.items); else failures.devices = 'failed';
     if (employeePage.status === 'fulfilled') setEmployees(employeePage.value); else failures.employees = 'failed';
@@ -258,7 +260,7 @@ export function AttendancePage() {
     setLoadErrors(failures);
     setUpdatedAt(new Date());
     setLoading(false);
-  }, [filterDate, statusFilter]);
+  }, [filterDate, statusFilter, tileFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -360,20 +362,19 @@ export function AttendancePage() {
   const regularizationsUnavailable = unavailableMessage('regularizations', loadErrors);
   const correctionQueueUnavailable = regularizationQueueUnavailableMessage(loadErrors, pendingRegularizations.length);
 
-  const clearFilters = () => { setStatusFilter(''); setMissingOnly(false); };
-  // What the Live Dashboard table shows: the day's rows, narrowed to the missing punches when that tile is on.
-  const shownDaily = useMemo(() => (missingOnly ? daily.filter((r) => r.missingPunch) : daily), [daily, missingOnly]);
-  const filtering = !!statusFilter || missingOnly;
+  const clearFilters = () => { setStatusFilter(''); setTileFilter(''); };
+  const filtering = !!statusFilter || !!tileFilter;
   // Announced in the live region next to Refresh, so a tile click is heard as well as seen.
-  const resultsNote = filtering && !loading && activeTab === 'dashboard' ? t('{count, plural, one {# result} other {# results}}', { count: shownDaily.length }) : '';
-  const toggleStatusTile = (status: string) => { setMissingOnly(false); setStatusFilter((current) => (current === status ? '' : status)); };
-  const toggleMissingTile = () => { setStatusFilter(''); setMissingOnly((on) => !on); };
+  const resultsNote = filtering && !loading && activeTab === 'dashboard' ? t('{count, plural, one {# result} other {# results}}', { count: dailyTotal }) : '';
+  const toggleTile = (tile: AttendanceTile) => { setStatusFilter(''); setTileFilter((current) => (current === tile ? '' : tile)); };
+  // The empty-state wording for the pressed tile: the status it is named after, or the missing-punch sentence.
+  const tileStatusLabel = tileFilter === 'present' ? 'Present' : tileFilter === 'late' ? 'Late' : tileFilter === 'absent' ? 'Absent' : statusFilter;
 
   const dailyEmpty = filtering ? (
     <EmptyState kind="filtered" title={t('No records match')}
-      description={missingOnly
+      description={tileFilter === 'missingPunch'
         ? t('No attendance with a missing punch on {date}.', { date: filterDate ? fx.date(filterDate) : '' })
-        : t('No attendance with status {status} on {date}.', { status: enumLabel(t, 'AttendanceStatus', statusFilter), date: filterDate ? fx.date(filterDate) : '' })}
+        : t('No attendance with status {status} on {date}.', { status: enumLabel(t, 'AttendanceStatus', tileStatusLabel), date: filterDate ? fx.date(filterDate) : '' })}
       action={{ onClick: clearFilters }} />
   ) : canRecord ? (
     <EmptyState kind="first-use" icon={Clock} title={t('Nothing recorded for this day yet')} description={t('Punches appear here once they are processed.')}
@@ -388,7 +389,7 @@ export function AttendancePage() {
     // On a phone date and status share one row and Refresh is an icon; "Updated" is still read out by the live region.
     <div className="flex w-full flex-nowrap items-center gap-2 sm:w-auto sm:flex-wrap">
       <input ref={dateRef} type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="input min-w-0 grow basis-3/5 px-2 max-sm:min-h-11 sm:w-auto sm:flex-none sm:basis-auto sm:px-3" aria-label={t('Attendance date')} />
-      <select value={statusFilter} onChange={(e) => { setMissingOnly(false); setStatusFilter(e.target.value); }} className="select min-w-0 grow basis-2/5 max-sm:min-h-11 sm:w-auto sm:flex-none sm:basis-auto" aria-label={t('Status filter')}>
+      <select value={statusFilter} onChange={(e) => { setTileFilter(''); setStatusFilter(e.target.value); }} className="select min-w-0 grow basis-2/5 max-sm:min-h-11 sm:w-auto sm:flex-none sm:basis-auto" aria-label={t('Status filter')}>
         <option value="">{t('All statuses')}</option>
         <option value="Present">{enumLabel(t, 'AttendanceStatus', 'Present')}</option>
         <option value="Late">{enumLabel(t, 'AttendanceStatus', 'Late')}</option>
@@ -467,10 +468,10 @@ export function AttendancePage() {
               <div className="min-w-0 grow sm:grow-0">
               <div role="group" aria-label={t('Attendance at a glance')} aria-describedby="attendance-kpi-hint" className="surface grid min-w-0 grow grid-cols-2 gap-2 p-0.5 sm:grow-0 sm:auto-cols-max sm:grid-flow-col">
                 <span id="attendance-kpi-hint" className="sr-only">{t('Select a count to show only those records.')}</span>
-                <KpiTile label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" pressed={statusFilter === 'Present'} onClick={() => toggleStatusTile('Present')} />
-                <KpiTile label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" pressed={statusFilter === 'Absent'} onClick={() => toggleStatusTile('Absent')} />
-                <KpiTile label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" pressed={statusFilter === 'Late'} onClick={() => toggleStatusTile('Late')} />
-                <KpiTile label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" pressed={missingOnly} onClick={toggleMissingTile} />
+                <KpiTile label={t('Present')} value={summary?.present ?? 0} icon={Users} tone="emerald" pressed={tileFilter === 'present'} onClick={() => toggleTile('present')} />
+                <KpiTile label={t('Absent')} value={summary?.absent ?? 0} icon={AlertTriangle} tone="rose" pressed={tileFilter === 'absent'} onClick={() => toggleTile('absent')} />
+                <KpiTile label={t('Late')} value={summary?.late ?? 0} icon={Clock} tone="amber" pressed={tileFilter === 'late'} onClick={() => toggleTile('late')} />
+                <KpiTile label={t('Missing Punch')} value={summary?.missingPunch ?? 0} icon={Timer} tone="blue" pressed={tileFilter === 'missingPunch'} onClick={() => toggleTile('missingPunch')} />
               </div>
               {/* Touch has no hover title: say it in words where a finger will see it. */}
               <p data-kpi-hint aria-hidden="true" className="hidden px-1 pt-1 text-caption text-fg-subtle max-sm:block [@media(pointer:coarse)]:block">{t('Tap a count to filter the records.')}</p>
@@ -517,7 +518,7 @@ export function AttendancePage() {
               (1680) to leave the table 960 px or more. */}
           <div className="grid gap-5 wide:flex wide:items-start">
             <div ref={dailyRef} tabIndex={-1} className="min-w-0 outline-none wide:flex-1">
-              {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={shownDaily} loading={loading} empty={dailyEmpty} />}
+              {unavailableMessage('daily', loadErrors) ? <DomainUnavailable message={unavailableMessage('daily', loadErrors)!} /> : <DailyTable records={daily} loading={loading} empty={dailyEmpty} />}
             </div>
             <div className="grid gap-5 md:grid-cols-2 wide:w-96 wide:shrink-0 wide:grid-cols-1">
               <Panel title={t('Device Health')} action={deviceSyncUnavailable ? 'Unavailable' : `${deviceSync.length} devices`}>

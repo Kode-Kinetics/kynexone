@@ -37,6 +37,13 @@ const employees = PEOPLE.map(([code, name, department], i) => ({
   status: 'Active', profileCompletenessScore: 100, iqamaNumber: '', readinessState: 'Ready', activationBlockersCount: 0,
 }));
 
+const TILE_RULES: Record<string, (r: ReturnType<typeof dailyRows>[number]) => boolean> = {
+  present: r => ['Present', 'Late', 'Half day'].includes(r.status),
+  absent: r => r.status === 'Absent',
+  late: r => r.lateMinutes > 0,
+  missingPunch: r => r.missingPunch,
+};
+
 const page = <T,>(items: T[]) => ({ items, total: items.length, page: 1, pageSize: 50 });
 
 export interface AttendanceMockOptions {
@@ -59,8 +66,12 @@ export function attendanceMocks(options: AttendanceMockOptions = {}): ApiMocks {
   return {
     '/api/attendance/daily': (url: URL) => {
       const status = url.searchParams.get('status');
+      const tile = url.searchParams.get('tile');
       const list = typeof rows === 'function' ? rows(status) : rows;
-      return page(status && typeof rows !== 'function' ? list.filter(r => r.status === status) : list);
+      if (typeof rows === 'function') return page(list);
+      // `status` is an exact match; `tile` applies the server's tile rule (the same predicate the KPI count uses).
+      if (tile) return page(list.filter(r => TILE_RULES[tile]?.(r) ?? false));
+      return page(status ? list.filter(r => r.status === status) : list);
     },
     '/api/attendance/dashboard': { date: DAY, activeEmployees: 14, present: 11, absent: 2, late: 3, missingPunch: 2, overtimeEmployees: 1, deviceErrors: 1, pendingRegularizations: 0 },
     '/api/attendance/devices': page([]),
