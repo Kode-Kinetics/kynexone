@@ -33,7 +33,7 @@ function mergeOptions(known: Option[], seen: Array<string | undefined>, locale: 
 function FilterSelect({ id, label, any, value, onChange, options }: { id: string; label: string; any: string; value: string; onChange: (v: string) => void; options: Option[] }) {
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">{label}</label>
+      <label htmlFor={id} className="mb-1 block text-meta font-medium text-fg-muted">{label}</label>
       <select id={id} className="select w-full" value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{any}</option>
         {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -145,12 +145,12 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
       <div className="flex gap-2">
         <div className="relative min-w-0 flex-1">
           <label htmlFor={`${id}-search`} className="sr-only">{t('Find employees')}</label>
-          <Search className="pointer-events-none absolute start-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+          <Search className="pointer-events-none absolute start-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-fg-subtle" aria-hidden="true" />
           <input id={`${id}-search`} type="search" className="input w-full ps-8" autoComplete="off" value={query}
             placeholder={searchHint} title={searchHint} onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }} />
         </div>
-        <button type="button" className={`btn-secondary shrink-0 px-3 text-xs ${activeFilters > 0 ? 'border-sapphire text-sapphire' : ''}`}
+        <button type="button" className={`btn-secondary shrink-0 px-3 text-meta ${activeFilters > 0 ? 'border-sapphire text-sapphire' : ''}`}
           aria-expanded={filtersOpen} aria-controls={`${id}-filters`} onClick={() => setFiltersOpen((open) => !open)}>
           <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
           {activeFilters > 0 ? t('Filters ({count})', { count: activeFilters }) : t('Filters')}
@@ -165,48 +165,51 @@ export function EmployeeMultiSelect({ id, label, selection, onChange, max, disab
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={toggleAllShown} disabled={shown.length === 0}>
+        <button type="button" className="btn-secondary px-3 py-1 text-meta" onClick={toggleAllShown} disabled={shown.length === 0}>
           {everyShownSelected ? t('Deselect shown') : t('Select all shown')}
         </button>
         <span role="status" aria-live="polite">
           <StatusChip tone={selection.size > 0 ? 'blue' : 'slate'} label={t('{count, plural, one {# employee selected} other {# employees selected}}', { count: selection.size })} />
         </span>
         {selection.size > 0 && (
-          <button type="button" className="text-xs text-slate-500 underline hover:text-rose-600" onClick={() => { setAtCap(false); onChange(new Map()); }}>{t('Clear selection')}</button>
+          <button type="button" className="text-meta text-fg-muted underline hover:text-danger-fg" onClick={() => { setAtCap(false); onChange(new Map()); }}>{t('Clear selection')}</button>
         )}
         {activeFilters > 0 && (
-          <button type="button" className="text-xs text-slate-500 underline hover:text-sapphire" onClick={clearFilters}>{t('Clear filters')}</button>
+          <button type="button" className="text-meta text-fg-muted underline hover:text-sapphire" onClick={clearFilters}>{t('Clear filters')}</button>
         )}
       </div>
-      {atCap && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">{t('You can select at most {max} employees at once.', { max })}</p>}
+      {atCap && <p role="status" className="text-meta text-warning-fg">{t('You can select at most {max} employees at once.', { max })}</p>}
 
       <ul aria-label={t('Employees matching your search')} aria-busy={loading}
-        className={`${listMaxHeightClass} divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200 dark:divide-white/[0.06] dark:border-white/10`}>
+        className={`${listMaxHeightClass} divide-y divide-line overflow-y-auto rounded-lg border border-line`}>
         {shown.map((e) => (
           <li key={e.id}>
-            <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-              <input type="checkbox" checked={selection.has(e.id)} onChange={() => toggle(e)} />
-              <span className="font-mono text-xs text-slate-500">{e.employeeCode}</span>
-              <span className="min-w-0 flex-1 truncate text-slate-800 dark:text-slate-100">{nameOf(e)}</span>
-              <span className="max-w-[45%] truncate text-xs text-slate-400">{[e.designation, e.department].filter(Boolean).join(' · ')}</span>
+            {/* The name on top, "code · title" under it, both allowed to wrap: a long or right-to-left name is never cut at its start. */}
+            <label className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 px-3 py-2 text-body hover:bg-surface-sunken max-sm:min-h-11">
+              <input type="checkbox" className="row-span-2 mt-1" checked={selection.has(e.id)} onChange={() => toggle(e)} />
+              <bdi data-employee-name className="block break-words text-fg">{nameOf(e)}</bdi>
+              <bdi data-employee-meta className="block break-words text-meta text-fg-muted">
+                <bdi className="font-mono">{e.employeeCode}</bdi>
+                {[e.designation, e.department].filter(Boolean).length > 0 && <> · {[e.designation, e.department].filter(Boolean).join(' · ')}</>}
+              </bdi>
             </label>
           </li>
         ))}
       </ul>
-      {loading && <p role="status" className="text-xs text-slate-500">{t('Searching…')}</p>}
-      {!loading && searchFailed && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{t('Could not search employees. Try again.')}</p>}
-      {!loading && !searchFailed && shown.length === 0 && <p className="text-xs text-slate-500">{t('No active employees match your search.')}</p>}
+      {loading && <p role="status" className="text-meta text-fg-muted">{t('Searching…')}</p>}
+      {!loading && searchFailed && <p role="alert" className="text-meta text-danger-fg">{t('Could not search employees. Try again.')}</p>}
+      {!loading && !searchFailed && shown.length === 0 && <p className="text-meta text-fg-muted">{t('No active employees match your search.')}</p>}
       {!loading && !searchFailed && total > shown.length && shown.length > 0 && (
-        <p className="text-xs text-slate-500">{t('Showing {shown} of {total} active employees. Search or pick a department to narrow the list.', { shown: shown.length, total })}</p>
+        <p className="text-meta text-fg-muted">{t('Showing {shown} of {total} active employees. Search or pick a department to narrow the list.', { shown: shown.length, total })}</p>
       )}
 
       {selection.size > 0 && (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-slate-600 dark:text-slate-300">{t('Show selected employees')}</summary>
+        <details className="text-meta">
+          <summary className="cursor-pointer text-fg-muted">{t('Show selected employees')}</summary>
           <ul className="mt-2 flex flex-wrap gap-1.5">
             {selectedList.map((p) => (
-              <li key={p.id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 dark:bg-white/10">
-                {p.employeeCode} · {p.fullName}
+              <li key={p.id} className="inline-flex items-center gap-1 rounded-full bg-surface-sunken px-2.5 py-1">
+                <bdi>{p.employeeCode} · {p.fullName}</bdi>
                 <button type="button" aria-label={t('Remove {name}', { name: p.fullName })} onClick={() => { setAtCap(false); const next = new Map(selection); next.delete(p.id); onChange(next); }}>
                   <X className="h-3 w-3" aria-hidden="true" />
                 </button>

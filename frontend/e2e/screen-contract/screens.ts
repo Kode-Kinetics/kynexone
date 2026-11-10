@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { ALL_PERMISSIONS, boot } from '../setup-consolidation/fixture';
 import { bootEmployeeWorkspaceFixture } from '../employee-workspace.fixture';
+import { openAttendance } from './attendance-mocks';
 import type { Check, Locale, ScreenType } from './contract';
 
 /**
@@ -48,18 +49,12 @@ export const SCREENS: readonly ScreenContract[] = [
     name: 'attendance-dashboard',
     type: 'dashboard',
     async open(page, locale) {
-      await boot(page, {
-        locale, url: '/attendance',
-        persona: { roles: ['HR Manager'], permissions: [...ALL_PERMISSIONS, 'attendance.read', 'attendance.write'] },
-        mocks: {},
-      });
-      await page.locator('main').first().waitFor({ state: 'visible', timeout: 60_000 });
+      await openAttendance(page, locale);
+      // The header is part of the loaded screen, not the shell around it.
+      await page.locator('[data-page-header]').waitFor({ state: 'visible', timeout: 60_000 });
     },
-    ready: false,
-    failing: {
-      purpose: 'no [data-purpose] line under the title (Page primitive not adopted)',
-      'primary-action': 'no [data-primary-action] in [data-page-header] (the verb lives in a 360 px punch card)',
-    },
+    ready: true,
+    failing: {},
   },
   {
     name: 'benefits-by-grade',

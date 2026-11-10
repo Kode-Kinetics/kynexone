@@ -17,7 +17,7 @@ export const statusTone = (status: string): 'emerald' | 'rose' | 'amber' | 'blue
 
 export function DomainUnavailable({ message }: { message: string }) {
   return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+    <div className="rounded-lg border border-warning/30 bg-warning-soft px-3 py-3 text-body text-warning-fg">
       <span className="inline-flex items-center gap-2"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />{message}</span>
     </div>
   );
@@ -26,9 +26,9 @@ export function DomainUnavailable({ message }: { message: string }) {
 export function Panel({ title, action, children }: { title: string; action?: string; children: ReactNode }) {
   return (
     <div className="surface overflow-hidden">
-      <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-        {action && <span className="text-xs font-semibold text-slate-400 dark:text-slate-500">{action}</span>}
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="text-body font-semibold text-fg">{title}</h2>
+        {action && <span className="text-meta font-semibold text-fg-subtle">{action}</span>}
       </div>
       <div className="p-4">{children}</div>
     </div>
@@ -36,16 +36,16 @@ export function Panel({ title, action, children }: { title: string; action?: str
 }
 
 export function Empty({ text }: { text: string }) {
-  return <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400 dark:border-white/10 dark:text-slate-500">{text}</div>;
+  return <div className="rounded-lg border border-dashed border-line p-6 text-center text-body text-fg-subtle">{text}</div>;
 }
 
 export function SectionTitle({ icon: Icon, title, subtitle }: { icon: typeof Activity; title: string; subtitle: string }) {
   return (
     <div className="flex gap-3">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-sapphire/10 text-sapphire"><Icon className="h-4 w-4" aria-hidden="true" /></span>
-      <div>
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
+      <div className="min-w-0">
+        <h2 className="text-body font-semibold text-fg">{title}</h2>
+        <p className="mt-0.5 text-meta text-fg-muted">{subtitle}</p>
       </div>
     </div>
   );

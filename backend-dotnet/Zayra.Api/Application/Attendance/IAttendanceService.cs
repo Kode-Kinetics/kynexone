@@ -45,7 +45,13 @@ public interface IAttendanceService
     /// </summary>
     Task<int> ProcessEmployeeRangeAsync(Guid tenantId, Employee employee, IReadOnlyCollection<AttendancePolicy> policies,
         DateOnly fromDate, DateOnly toDate, RequestContext context, CancellationToken ct);
-    Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
+    /// <summary>
+    /// The daily list. <paramref name="tile"/> (present, absent, late, missingPunch) is a live-dashboard KPI tile: it applies the
+    /// SAME predicate and active-employee restriction the tile's count uses (<c>AttendanceTilePredicates</c>), so the drill-down
+    /// lists exactly the records the tile counted. An unknown tile is an <see cref="InvalidOperationException"/> (a 400).
+    /// <paramref name="status"/> keeps its exact-match behaviour.
+    /// </summary>
+    Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null, string? tile = null);
     Task<IReadOnlyCollection<AttendanceMonthlyDto>> GetMonthlyAsync(Guid tenantId, int year, int month, int? employeeId, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null);
     /// <param name="verification">What the server verified (AttendanceVerificationService). Its method is stored on the
     /// raw event, and its evidence id is consumed in the same SaveChanges. Null means nothing was verified ("None").</param>

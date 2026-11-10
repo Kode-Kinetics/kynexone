@@ -26,6 +26,9 @@ export default {
   darkMode: 'class',
   content: ['./app/**/*.{ts,tsx}', './src/**/*.{ts,tsx}'],
   theme: {
+    // The full ordered list (Tailwind emits screen variants in this order, so rail and wide must sit between the defaults,
+    // not after 2xl): xs for the narrowest phones, rail and wide from the Screen Standard (section 1). Defaults are unchanged.
+    screens: { xs: '400px', sm: '640px', md: '768px', lg: '1024px', xl: '1280px', rail: '1360px', '2xl': '1536px', wide: '1680px' },
     fontWeight: {
       thin: '400',
       extralight: '400',

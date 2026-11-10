@@ -287,13 +287,16 @@ export interface AttendanceAIInsight {
   createdAtUtc: string;
 }
 
+export type AttendanceTile = 'present' | 'absent' | 'late' | 'missingPunch';
+
 export const attendanceApi = {
   dashboard: (date?: string) =>
     client.get<AttendanceDashboardSummary>('/api/attendance/dashboard', { params: { date } }).then((r) => r.data),
 
   todaySummary: () => client.get<AttendanceTodaySummary>('/api/attendance/today').then((r) => r.data),
 
-  daily: (params: { employeeId?: number; from?: string; to?: string; status?: string; page?: number; pageSize?: number } = {}) =>
+  /** `tile` is a Live Dashboard KPI tile: the server lists exactly the records that tile counted. `status` stays an exact match. */
+  daily: (params: { employeeId?: number; from?: string; to?: string; status?: string; tile?: AttendanceTile; page?: number; pageSize?: number } = {}) =>
     client.get<PagedResult<AttendanceDailyRecord>>('/api/attendance/daily', { params }).then((r) => r.data),
 
   monthly: (params: { year?: number; month?: number; employeeId?: number } = {}) =>
