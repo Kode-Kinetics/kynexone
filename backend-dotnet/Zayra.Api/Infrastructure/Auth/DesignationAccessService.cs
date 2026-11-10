@@ -121,8 +121,19 @@ public sealed class DesignationAccessService
         }
         var existing = await _db.DesignationAccessRoles.Where(m => m.TenantId == tenantId && m.DesignationId == designation.Id).ToListAsync(ct);
         var (added, removed, roles) = await DiffAsync(tenantId, existing, roleNames, ct);
-        if (added.Count == 0 && removed.Count == 0) return;
+        if (added.Count == 0 && removed.Count == 0)
+        {
+            // Not a change, but saving the mapping again is the documented way for a replacement security manager to take over
+            // one whose configurer has gone: see TakeOverStaleMappingsAsync. Never refuses (an editor without security.manage can still save).
+            var tookOver = await TakeOverStaleMappingsAsync(tenantId, existing, roles, actor, ct);
+            if (tookOver.Count == 0) return;
+            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), DateTime.UtcNow, ConfiguredAction, "Designation", designation.Id.ToString(), actor with { TenantId = tenantId },
+                JsonSerializer.Serialize(new { code = designation.Code, rolesAdded = Array.Empty<string>(), rolesRemoved = Array.Empty<string>(), rolesReattributed = tookOver })));
+            _cache.Clear();
+            return;
+        }
         await EnsureMayConfigureAsync(tenantId, added, actor, ct);
+        var reattributed = await TakeOverStaleMappingsAsync(tenantId, existing.Where(m => !removed.Contains(m.RoleId)).ToList(), roles, actor, ct);
 
         var removedNames = await RoleNamesAsync(removed, ct);
         foreach (var gone in existing.Where(m => removed.Contains(m.RoleId))) _db.DesignationAccessRoles.Remove(gone);
@@ -134,9 +145,37 @@ public sealed class DesignationAccessService
                 code = designation.Code,
                 rolesAdded = roles.Where(r => added.Contains(r.Id)).Select(r => r.Name).OrderBy(x => x, StringComparer.Ordinal),
                 rolesRemoved = removedNames,
+                rolesReattributed = reattributed,
             })));
         await RevokeRemovedMappingAsync(tenantId, designation.Id, removed, actor, ct);
         _cache.Clear();
+    }
+
+    /// <summary>
+    /// A replacement security manager saving a mapping again: every RETAINED mapping row that nobody current vouches for (its configurer is
+    /// gone, inactive, or no longer holds what the role carries) is re-attributed to the saver, provided the saver holds security.manage and
+    /// the role is inside THEIR own access. A row a current configurer still vouches for is left alone (no needless churn), and a role above
+    /// the saver's access keeps its old attribution and stays inactive (fail closed). Changes provenance only: nobody's roles are touched,
+    /// and nothing is refused here. Returns the names of the roles taken over.
+    /// </summary>
+    private async Task<List<string>> TakeOverStaleMappingsAsync(Guid tenantId, List<DesignationAccessRole> retained, List<Role> requested, RequestContext actor, CancellationToken ct)
+    {
+        var taken = new List<string>();
+        if (actor.UserId is not Guid saverId || retained.Count == 0) return taken;
+        var saver = await PrivilegeCeilingGraph.TryLoadCallerAsync(_db, tenantId, saverId, ct);
+        if (saver is null || !saver.Held.Contains(SecurityManage)) return taken;
+        var rolesById = requested.ToDictionary(r => r.Id);
+        foreach (var row in retained.Where(m => m.CreatedBy != saverId && rolesById.ContainsKey(m.RoleId)).OrderBy(m => rolesById[m.RoleId].Name, StringComparer.Ordinal))
+        {
+            var role = rolesById[row.RoleId];
+            var configurer = row.CreatedBy is Guid id ? await ConfigurerAsync(tenantId, id, ct) : null;
+            if (configurer is not null && PrivilegeCeiling.AssignRefusal(configurer, Facts(role)) is null) continue; // still vouched for
+            if (role.TenantId != tenantId || PrivilegedAccessGuard.IsPrivileged(role)) continue;
+            if (PrivilegeCeiling.AssignRefusal(saver, Facts(role)) is not null) continue; // above the saver: stays unvouched
+            row.CreatedBy = saverId;
+            taken.Add(role.Name);
+        }
+        return taken;
     }
 
     /// <summary>The saved roles of these designations; empty while the feature is off (the API then answers exactly as it did before it existed).</summary>

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Auth;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Data;
 using Zayra.Api.Domain.Entities;
@@ -820,5 +821,198 @@ public sealed class DesignationDrivenAccessTests
         var list = await Org(w).GetDesignationsAsync(w.TenantId, null, 1, 50, default);
 
         list.Items.Should().OnlyContain(d => d.AccessRoles == null);
+    }
+
+    // ── recovery: a replacement security manager saves the mapping again ─────────────────────────────
+
+    private static async Task DeactivateAsync(World w, RequestContext who)
+    {
+        (await w.Db.Users.SingleAsync(u => u.Id == who.UserId)).IsActive = false;
+        await w.Db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task A_replacement_security_manager_saving_the_same_mapping_again_restores_it_and_takes_over_provenance()
+    {
+        var w = await SeedAsync();
+        var former = await UserWithAsync(w, "Former Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], former, default);
+        await w.Db.SaveChangesAsync();
+        await DeactivateAsync(w, former);
+        (await AssignAsync(w, w.PayrollOfficer)).Added.Should().BeEmpty();
+
+        var replacement = await UserWithAsync(w, "New Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], replacement, default);
+        await w.Db.SaveChangesAsync();
+
+        (await w.Db.DesignationAccessRoles.SingleAsync()).CreatedBy.Should().Be(replacement.UserId);
+        (await AssignAsync(w, w.PayrollOfficer)).Added.Should().BeEquivalentTo(["Payroll Officer"]);
+    }
+
+    [Fact]
+    public async Task Adding_another_role_as_a_replacement_re_attributes_the_retained_mappings_too()
+    {
+        var w = await SeedAsync();
+        var former = await UserWithAsync(w, "Former Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], former, default);
+        await w.Db.SaveChangesAsync();
+        await DeactivateAsync(w, former);
+
+        var replacement = await UserWithAsync(w, "New Lead", "security.manage", "payroll.read", "payroll.run", "reports.read");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer", "Reviewer"], replacement, default);
+        await w.Db.SaveChangesAsync();
+
+        (await w.Db.DesignationAccessRoles.Select(m => m.CreatedBy).ToListAsync()).Should().OnlyContain(c => c == replacement.UserId).And.HaveCount(2);
+        (await AssignAsync(w, w.PayrollOfficer)).Added.Should().BeEquivalentTo(["Payroll Officer", "Reviewer"]);
+    }
+
+    [Fact]
+    public async Task A_replacement_below_a_retained_roles_ceiling_does_not_vouch_for_it_and_nothing_is_refused()
+    {
+        var w = await SeedAsync();
+        var former = await UserWithAsync(w, "Former Lead", "security.manage", "payroll.read", "payroll.run", "reports.read");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer", "Reviewer"], former, default);
+        await w.Db.SaveChangesAsync();
+        await DeactivateAsync(w, former);
+
+        // holds the Reviewer's permission but not the Payroll Officer's
+        var replacement = await UserWithAsync(w, "Small Lead", "security.manage", "reports.read");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer", "Reviewer"], replacement, default);
+        await w.Db.SaveChangesAsync();
+
+        var rows = await w.Db.DesignationAccessRoles.ToListAsync();
+        rows.Single(m => m.RoleId == w.ReviewerRole.Id).CreatedBy.Should().Be(replacement.UserId);
+        rows.Single(m => m.RoleId == w.PayrollRole.Id).CreatedBy.Should().Be(former.UserId);
+        (await AssignAsync(w, w.PayrollOfficer)).Added.Should().BeEquivalentTo(["Reviewer"]);
+    }
+
+    [Fact]
+    public async Task A_second_security_manager_saving_a_mapping_a_current_configurer_still_vouches_for_does_not_take_it_over()
+    {
+        var w = await SeedAsync();
+        var first = await UserWithAsync(w, "First Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], first, default);
+        await w.Db.SaveChangesAsync();
+
+        var second = await UserWithAsync(w, "Second Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], second, default);
+        await w.Db.SaveChangesAsync();
+
+        (await w.Db.DesignationAccessRoles.SingleAsync()).CreatedBy.Should().Be(first.UserId);
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == DesignationAccessService.ConfiguredAction)).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Saving_the_same_mapping_without_security_manage_takes_over_nothing_and_still_does_not_refuse()
+    {
+        var w = await SeedAsync();
+        var former = await UserWithAsync(w, "Former Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], former, default);
+        await w.Db.SaveChangesAsync();
+        await DeactivateAsync(w, former);
+
+        var editor = await UserWithAsync(w, "Designation Editor", "payroll.read", "payroll.run", "organization.manage");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], editor, default);
+        await w.Db.SaveChangesAsync();
+
+        (await w.Db.DesignationAccessRoles.SingleAsync()).CreatedBy.Should().Be(former.UserId);
+    }
+
+    [Fact]
+    public async Task Taking_over_a_mapping_revokes_and_re_grants_nothing_and_is_audited()
+    {
+        var w = await SeedAsync();
+        var former = await UserWithAsync(w, "Former Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], former, default);
+        await w.Db.SaveChangesAsync();
+        await AssignAsync(w, w.PayrollOfficer);
+        await DeactivateAsync(w, former);
+        var userRolesBefore = await w.Db.UserRoles.Where(r => r.UserId == w.EmpUser.Id).Select(r => r.RoleId).OrderBy(x => x).ToListAsync();
+
+        var replacement = await UserWithAsync(w, "New Lead", "security.manage", "payroll.read", "payroll.run");
+        await Svc(w).SetRolesAsync(w.TenantId, w.PayrollOfficer, ["Payroll Officer"], replacement, default);
+        await w.Db.SaveChangesAsync();
+
+        (await w.Db.UserRoles.Where(r => r.UserId == w.EmpUser.Id).Select(r => r.RoleId).OrderBy(x => x).ToListAsync()).Should().Equal(userRolesBefore);
+        (await w.Db.AuditLogs.Where(a => a.Action == DesignationAccessService.ConfiguredAction).OrderBy(a => a.CreatedAtUtc).Select(a => a.Metadata).ToListAsync())
+            .Last().Should().Contain("rolesReattributed").And.Contain("Payroll Officer");
+    }
+
+    // ── an invitation carries only mapped roles the INVITER could give ───────────────────────────────
+
+    private static AccessManagementService Access(World w) =>
+        new(w.Db, new Pbkdf2PasswordHasher(), new Zayra.Api.Infrastructure.Audit.AuditService(w.Db), new PlainTokens());
+
+    private static Task<EmployeeLoginInvitationDto> InviteAsync(World w, RequestContext inviter, IReadOnlyCollection<string>? roles = null) =>
+        Access(w).InviteEmployeeLoginAsync(w.TenantId,
+            new InviteEmployeeLoginRequest(w.Emp.Id, null, AccessModes.EssOnly, roles), EntityScopeContext.GroupLevel, inviter, default);
+
+    private static async Task<DesignationAccessRole[]> StageMappingAsync(World w, params string[] roles)
+    {
+        w.Emp.DesignationId = w.PayrollOfficer.Id;
+        await MapAsync(w, w.PayrollOfficer, roles);
+        return await w.Db.DesignationAccessRoles.ToArrayAsync();
+    }
+
+    [Fact]
+    public async Task An_invitation_does_not_carry_a_mapped_role_the_inviter_does_not_hold_and_says_so()
+    {
+        var w = await SeedAsync(withLogin: false);
+        await StageMappingAsync(w, "Payroll Officer");
+        var inviter = await UserWithAsync(w, "Onboarding Clerk", "ess.read", "ess.write", "profile.read", "employees.read");
+
+        var invite = await InviteAsync(w, inviter);
+
+        (await RolesOfAsync(w, invite.UserId)).Should().BeEquivalentTo(["Employee"]);
+        invite.DesignationRolesNotGranted.Should().BeEquivalentTo(["Payroll Officer"]);
+        using var audit = System.Text.Json.JsonDocument.Parse((await w.Db.AuditLogs.SingleAsync(a => a.Action == "access.employee_invited")).Metadata!);
+        audit.RootElement.GetProperty("roles").EnumerateArray().Select(e => e.GetString()).Should().BeEquivalentTo(["Employee"]);
+        audit.RootElement.GetProperty("designationRolesNotGranted").EnumerateArray().Select(e => e.GetString()).Should().BeEquivalentTo(["Payroll Officer"]);
+    }
+
+    [Fact]
+    public async Task An_invitation_still_carries_the_mapped_roles_the_inviter_holds()
+    {
+        var w = await SeedAsync(withLogin: false);
+        await StageMappingAsync(w, "Payroll Officer");
+        var inviter = await UserWithAsync(w, "Payroll Lead", "ess.read", "ess.write", "profile.read", "payroll.read", "payroll.run");
+
+        var invite = await InviteAsync(w, inviter);
+
+        (await RolesOfAsync(w, invite.UserId)).Should().BeEquivalentTo(["Employee", "Payroll Officer"]);
+        invite.DesignationRolesNotGranted.Should().BeEmpty();
+        (await w.Db.UserRoles.SingleAsync(r => r.UserId == invite.UserId && r.RoleId == w.PayrollRole.Id)).GrantedByDesignationId.Should().Be(w.PayrollOfficer.Id);
+    }
+
+    [Fact]
+    public async Task An_invitation_carries_the_mapped_roles_inside_the_inviters_access_and_drops_only_the_rest()
+    {
+        var w = await SeedAsync(withLogin: false);
+        await StageMappingAsync(w, "Payroll Officer", "Reviewer");
+        var inviter = await UserWithAsync(w, "Reports Lead", "ess.read", "ess.write", "profile.read", "reports.read");
+
+        var invite = await InviteAsync(w, inviter);
+
+        (await RolesOfAsync(w, invite.UserId)).Should().BeEquivalentTo(["Employee", "Reviewer"]);
+        invite.DesignationRolesNotGranted.Should().BeEquivalentTo(["Payroll Officer"]);
+    }
+
+    [Fact]
+    public async Task An_explicit_role_the_inviter_does_not_hold_is_still_refused()
+    {
+        var w = await SeedAsync(withLogin: false);
+        var inviter = await UserWithAsync(w, "Onboarding Clerk", "ess.read", "ess.write", "profile.read");
+
+        var act = () => InviteAsync(w, inviter, ["Payroll Officer"]);
+
+        await act.Should().ThrowAsync<PrivilegeCeilingException>();
+    }
+
+    private sealed class PlainTokens : ITokenService
+    {
+        public string CreateAccessToken(User user, IReadOnlyCollection<string> roles, IReadOnlyCollection<string> permissions, Tenant tenant, IReadOnlyCollection<EntityAccessGrant> entityAccess, EntityScopeDescriptor entityScope, out DateTime expiresAtUtc)
+        { expiresAtUtc = DateTime.UtcNow.AddHours(1); return "t"; }
+        public string CreateSecureToken() => Guid.NewGuid().ToString("N");
+        public string HashToken(string token) => "h-" + token;
     }
 }
