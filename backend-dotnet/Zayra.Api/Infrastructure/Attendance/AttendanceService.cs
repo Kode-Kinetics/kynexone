@@ -1283,7 +1283,7 @@ public partial class AttendanceService : IAttendanceService
         }).ToList();
     }
 
-    public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null)
+    public async Task<PagedResult<AttendanceDailyDto>> GetDailyAsync(Guid tenantId, DateOnly? from, DateOnly? to, int? employeeId, string? status, int page, int pageSize, CancellationToken ct, IReadOnlyCollection<int>? scopeIds = null, string? tile = null)
     {
         // The TENANT's today (the date attendance gives a punch made now), not the UTC date: at 01:00 in Riyadh the UTC
         // date is still yesterday, so the default window ended a day early and hid the day being worked.
@@ -1304,6 +1304,15 @@ public partial class AttendanceService : IAttendanceService
         if (string.Equals(status, "PendingApproval", StringComparison.OrdinalIgnoreCase))
             query = query.Where(x => x.Status == "Submitted" || x.Status == "PendingHRApproval");
         else if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+        // A KPI tile's drill-down: the shared tile predicate over active employees' records, so the list is exactly what the
+        // tile counted (DashboardAsync uses the same predicates).
+        if (!string.IsNullOrWhiteSpace(tile))
+        {
+            if (!AttendanceTilePredicates.TryGet(tile, out var tilePredicate))
+                throw new InvalidOperationException("Unknown attendance tile. Use present, absent, late or missingPunch.");
+            var activeIds = AttendanceTilePredicates.ActiveEmployeeIds(_db.Employees, tenantId);
+            query = query.Where(tilePredicate).Where(x => activeIds.Contains(x.EmployeeId));
+        }
         var total = await query.CountAsync(ct);
         var items = await query.OrderByDescending(x => x.WorkDate).ThenBy(x => x.EmployeeName).Skip((page - 1) * pageSize).Take(pageSize).Select(x => x.ToDto()).ToListAsync(ct);
         return new PagedResult<AttendanceDailyDto>(items, total, page, pageSize);
@@ -1581,13 +1590,17 @@ public partial class AttendanceService : IAttendanceService
 
     public async Task<AttendanceDashboardDto> DashboardAsync(Guid tenantId, DateOnly date, CancellationToken ct)
     {
-        var activeIds = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted
-            && e.Status == EmployeeStatuses.Active).Select(e => e.Id);
+        var activeIds = AttendanceTilePredicates.ActiveEmployeeIds(_db.Employees, tenantId);
         var records = await _db.AttendanceDailyRecords
-            .Where(x => x.TenantId == tenantId && x.WorkDate == date && activeIds.Contains(x.EmployeeId))
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && x.WorkDate == date && activeIds.Contains(x.EmployeeId))
             .ToListAsync(ct);
+        // The tiles use the shared predicates (AttendanceTilePredicates), which the daily endpoint's `tile` filter also uses.
+        var present = AttendanceTilePredicates.Present.Compile();
+        var absent = AttendanceTilePredicates.Absent.Compile();
+        var late = AttendanceTilePredicates.Late.Compile();
+        var missing = AttendanceTilePredicates.MissingPunch.Compile();
         var activeEmployees = await _db.Employees.CountAsync(x => x.TenantId == tenantId && x.Status == "Active" && !x.IsDeleted, ct);
-        return new AttendanceDashboardDto(date, activeEmployees, records.Count(x => x.Status is "Present" or "Late" or "Half day"), records.Count(x => x.Status == "Absent"), records.Count(x => x.LateMinutes > 0), records.Count(x => x.MissingPunch), records.Count(x => x.OvertimeMinutes > 0), await _db.AttendanceDevices.CountAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.LastSyncStatus == "Failed", ct), await _db.AttendanceRegularizationRequests.CountAsync(x => x.TenantId == tenantId && x.Status == "Submitted", ct));
+        return new AttendanceDashboardDto(date, activeEmployees, records.Count(present), records.Count(absent), records.Count(late), records.Count(missing), records.Count(x => x.OvertimeMinutes > 0), await _db.AttendanceDevices.CountAsync(x => x.TenantId == tenantId && !x.IsDeleted && x.LastSyncStatus == "Failed", ct), await _db.AttendanceRegularizationRequests.CountAsync(x => x.TenantId == tenantId && x.Status == "Submitted", ct));
     }
 
     /// <summary>

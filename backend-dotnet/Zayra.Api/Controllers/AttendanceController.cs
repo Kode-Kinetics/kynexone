@@ -366,15 +366,16 @@ public class AttendanceController : ControllerBase
             result.Items.Select(r => AttendanceRawEventDto.From(r, withSelfie.Contains(r.Id))).ToList(), result.Total, result.Page, result.PageSize);
     }
 
+    /// <summary>`status` is an exact match (the status dropdown); `tile` (present, absent, late, missingPunch) is a Live Dashboard KPI tile and lists exactly what that tile counted. An unknown tile is a 400.</summary>
     [HttpGet]
     [HttpGet("daily")]
-    public async Task<PagedResult<AttendanceDailyDto>> Daily([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default)
+    public async Task<PagedResult<AttendanceDailyDto>> Daily([FromQuery] DateOnly? from, [FromQuery] DateOnly? to, [FromQuery] int? employeeId, [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken ct = default, [FromQuery] string? tile = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var scope = await _scopeService.ResolveAsync(User, RequireTenant(), ct);
         var (singleId, setFilter) = scope.Constrain(employeeId);
-        return await _attendance.GetDailyAsync(RequireTenant(), from, to, singleId, status, page, pageSize, ct, setFilter);
+        return await _attendance.GetDailyAsync(RequireTenant(), from, to, singleId, status, page, pageSize, ct, setFilter, tile);
     }
 
     /// <summary>HR's attendance exceptions (missing punches, paid days that changed, imported days with punches).</summary>
