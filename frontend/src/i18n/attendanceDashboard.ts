@@ -4,8 +4,8 @@
  * record = تسجيل). Native-speaker review is pending, as for the glossary.
  */
 const ar: Record<string, string> = {
-  'See who is in, late or missing on a day, and record the punches that are missing.':
-    'اطّلع على من حضر ومن تأخر ومن لم تُسجَّل بصمته في يوم محدد، وسجّل البصمات الناقصة.',
+  'See who is in, late or missing, and record missing punches.':
+    'اطّلع على من حضر ومن تأخر ومن لم تُسجَّل بصمته، وسجّل البصمات الناقصة.',
   'Where this punch comes from: web, mobile or kiosk. It is kept with the record and shown as the Source in Raw Punch Logs.':
     'مصدر هذه البصمة: الويب أو الجوال أو الكشك. يُحفظ مع السجل ويظهر في عمود المصدر ضمن سجلات البصمة الخام.',
   'In, out, or the start or end of a break. Daily hours and late time are worked out from these punches when attendance is processed.':

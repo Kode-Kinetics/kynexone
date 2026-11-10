@@ -411,7 +411,7 @@ export function AttendancePage() {
       <PageHeader
         title={t('Attendance workspace')}
         purpose={activeTab === 'dashboard'
-          ? t('See who is in, late or missing on a day, and record the punches that are missing.')
+          ? t('See who is in, late or missing, and record missing punches.')
           : t('Review punches, device health, corrections, processing, payroll impacts, and exceptions from available data sources.')}
         actions={<>
           {/* One live region, always mounted (a region that appears with its content is often not announced); only its text changes. */}
