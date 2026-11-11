@@ -2055,7 +2055,10 @@ for (const locale of ['en', 'ar'] as const) {
     await expectStep(page, t, 'Cost centres');
     await expect(page).toHaveURL(/part=costCentres/);
     if (info.project.name === 'mobile') {
-      await expect(page.getByTestId('wizard-rail-position')).toHaveText(t('Step {position} of {total} · {title} · Part {part} of {parts}: {partTitle}', { position: 4, total: 7, title: t('Organisation'), part: 1, parts: 4, partTitle: t('Cost centres') }));
+      // The total is the number of steps the rail shows (it grew from 7 to 8 with the Approvers step), not a literal.
+      const total = await page.getByTestId('wizard-rail').locator('> li').count();
+      expect(total).toBeGreaterThanOrEqual(7);
+      await expect(page.getByTestId('wizard-rail-position')).toHaveText(t('Step {position} of {total} · {title} · Part {part} of {parts}: {partTitle}', { position: 4, total, title: t('Organisation'), part: 1, parts: 4, partTitle: t('Cost centres') }));
       await expect(page.getByTestId('part-tab-costCentres')).toHaveAttribute('aria-selected', 'true');
     } else {
       const parts = page.getByTestId('wizard-rail-parts');
