@@ -2,7 +2,7 @@ name: Nightly
 
 # The heavy and per-feature browser suites that used to be orphaned (referenced by no workflow) run
 # here, once a night and on demand, instead of on every pull request. They are route-mocked
-# (page.route), need no backend, and are sharded by area so a night costs four short jobs.
+# (page.route), need no backend, and are sharded by area so a night costs a handful of short jobs.
 # Nothing here gates a merge or a deploy. The list of configs MUST match frontend/e2e/config-manifest.json
 # ("nightly" entries); frontend/scripts/check-playwright-configs.mjs (run in CI) enforces that.
 on:
@@ -64,14 +64,25 @@ jobs:
               playwright.people-dead-ends.config.ts
               playwright.ess-complete-profile.config.ts
               playwright.esign.config.ts
+          # The rest of the old people-and-ess shard. One job running all seventeen configs took over 45 minutes even
+          # when green, and the whole job was cancelled at the limit.
+          - name: ess-and-ops
+            configs: >-
               playwright.ess-workspace.config.ts
               playwright.jawazat.config.ts
               playwright.leave-per-company.config.ts
               playwright.loans.config.ts
               playwright.renewals.config.ts
-              playwright.fixture.config.ts
               playwright.ux-fixes.config.ts
               playwright.screen-contract.config.ts
+          # playwright.fixture.config.ts alone is ~1,300 tests (a desktop and a laptop pass over seventeen specs): split it
+          # with Playwright's own --shard so no test is dropped and each half fits the job limit.
+          - name: fixture-1of2
+            configs: playwright.fixture.config.ts
+            args: --shard=1/2
+          - name: fixture-2of2
+            configs: playwright.fixture.config.ts
+            args: --shard=2/2
           - name: talent-and-chrome
             configs: >-
               playwright.learning.config.ts
@@ -85,6 +96,8 @@ jobs:
       APP_CHROME_BASE_URL: http://127.0.0.1:5197
       BENEFIT_DEFAULTS_BASE_URL: http://127.0.0.1:5197
       COMPANY_WIZARD_BASE_URL: http://127.0.0.1:5197
+      COMPANY_STRUCTURE_BASE_URL: http://127.0.0.1:5197
+      ACCESS_STATES_BASE_URL: http://127.0.0.1:5197
       COMPENSATION_BASE_URL: http://127.0.0.1:5197
       EMPLOYEE_WIZARD_BASE_URL: http://127.0.0.1:5197
       ENGAGEMENT_BASE_URL: http://127.0.0.1:5197
@@ -141,6 +154,12 @@ jobs:
         working-directory: frontend
         env:
           CONFIGS: ${{ matrix.configs }}
+          PLAYWRIGHT_ARGS: ${{ matrix.args }}
+          # Some configs (employee-import, ess-workspace, jawazat, loans, renewals, fixture, g1) start their own `next dev` in
+          # this directory. `next dev` rewrites ./.next, which is the production build `next start` is serving on 5197: the
+          # routes loaded after it then render nothing (every /people/new wizard test timed out). Give the dev servers their
+          # own output directory; this step's env is inherited by the servers Playwright spawns, not by the one started above.
+          NEXT_DIST_DIR: .next-nightly-dev
         run: |
           failed=""
           {
@@ -149,7 +168,7 @@ jobs:
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           for cfg in $CONFIGS; do
-            if npx playwright test -c "e2e/$cfg" --reporter=list; then r=pass; else r=FAIL; failed="$failed $cfg"; fi
+            if npx playwright test -c "e2e/$cfg" --reporter=list $PLAYWRIGHT_ARGS; then r=pass; else r=FAIL; failed="$failed $cfg"; fi
             echo "| $cfg | $r |" >> "$GITHUB_STEP_SUMMARY"
           done
           if [ -n "$failed" ]; then echo "::error::failing configs:$failed"; exit 1; fi

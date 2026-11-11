@@ -128,7 +128,12 @@ test('in Arabic the minimum, the warning, the checkbox and the reason prompt are
 test('when the server knows a minimum the screen did not, the 409 is shown, nothing is lost, and the acknowledged resend saves', async ({ page }) => {
   const { writes } = await boot(page, '/setup?tab=leavePolicies', 'Leave policies', { screenKnowsMinimum: false });
   const dialog = await openNewMaternityPolicy(page);
+  // The form re-asks the server's dry run 250 ms after the last edit and replaces what it shows with the answer. Let the
+  // answer for 70 days land (an empty list: the screen does not know the minimum) before saving; otherwise it can arrive
+  // after the 409 below and wipe the warning the 409 put on screen (seen 2 in 20 runs on a fast machine).
+  const dryRun = page.waitForResponse(r => r.url().includes('/api/leave/policies/floor-check') && r.request().postDataJSON()?.annualEntitlementDays === 70);
   await dialog.locator('input[type=number]').first().fill('70');
+  await dryRun;
   await expect(dialog.getByTestId('below-minimum-panel')).toHaveCount(0);
 
   await dialog.getByRole('button', { name: /Create|Save/ }).last().click();
