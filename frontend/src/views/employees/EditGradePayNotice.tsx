@@ -9,8 +9,13 @@ import { gradePayVerdict, type GradeRange } from '../../lib/gradePayRange';
  * HR's to enter); this says which grade the pay will be judged against, its range, and whether the pay fits, before saving.
  */
 export function EditGradePayNotice({
-  fromCode, grade, gradeCode, gradeChanged, payEdited, monthlyPay, currency, compact = false,
+  fromCode, grade, gradeCode, gradeChanged, payEdited, monthlyPay, currency, todaysPay, compact = false,
 }: {
+  /**
+   * The grade change is also judged against today's pay (the edited package does not start today): that pay and the date the
+   * package must start from to count instead (lib/gradePayRange todaysPayAlsoChecked). Undefined when only the edited pay is judged.
+   */
+  todaysPay?: { amount: number; from: string };
   fromCode: string;
   /** The grade the pay is judged against (the new one when it changed); undefined when the code names no active grade. */
   grade: GradeRange | undefined;
@@ -27,7 +32,13 @@ export function EditGradePayNotice({
   const money = (n: number) => formatAmount(n, currency, locale);
   const verdict = grade ? gradePayVerdict(grade, monthlyPay) : 'noRange';
   const outside = verdict === 'below' || verdict === 'above';
-  if (compact && !outside) return null;
+  const todaysVerdict = grade && todaysPay ? gradePayVerdict(grade, todaysPay.amount) : 'noRange';
+  const todaysOutside = todaysVerdict === 'below' || todaysVerdict === 'above';
+  const todaysText = todaysOutside && todaysPay
+    ? t('The new pay does not start today, so the grade change is also checked against today’s pay of {amount}, which is outside this range. Date the new pay from {from} to today, or the grade change will be refused.',
+      { amount: money(todaysPay.amount), from: todaysPay.from })
+    : null;
+  if (compact && !outside && !todaysOutside) return null;
 
   const consequence = gradeChanged
     ? t('Change the pay before saving, or the grade change will be refused.')
@@ -45,12 +56,12 @@ export function EditGradePayNotice({
 
   if (compact) {
     return <p role="alert" data-testid="edit-grade-pay-review" className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
-      {rangeText} {verdictText} {consequence}
+      {rangeText} {verdictText}{outside && <> {consequence}</>}{todaysText && <> {todaysText}</>}
     </p>;
   }
 
   return (
-    <div data-testid="edit-grade-pay" className={`rounded-lg px-3 py-2.5 text-sm sm:col-span-2 ${outside ? 'bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-200' : 'bg-sky-50 text-slate-800 dark:bg-sky-500/10 dark:text-slate-100'}`}>
+    <div data-testid="edit-grade-pay" className={`rounded-lg px-3 py-2.5 text-sm sm:col-span-2 ${outside || todaysOutside ?'bg-rose-50 text-rose-800 dark:bg-rose-500/10 dark:text-rose-200' : 'bg-sky-50 text-slate-800 dark:bg-sky-500/10 dark:text-slate-100'}`}>
       {gradeChanged && <p className="font-semibold">{t('Grade changes from {from} to {to}.', { from: fromCode || t('None'), to: gradeCode })}{!payEdited && <> <span className="font-normal">{t('The pay below is the current pay. It stays as it is unless you change it.')}</span></>}</p>}
       {!grade
         ? <p className={gradeChanged ? 'mt-1' : undefined}>{t('{grade} is not an active grade of this company, so its salary range cannot be shown.', { grade: gradeCode })}</p>
@@ -59,6 +70,7 @@ export function EditGradePayNotice({
           : <p className={gradeChanged ? 'mt-1' : undefined} role={outside ? 'alert' : undefined}>
             {rangeText} {verdictText}{outside && <> {consequence}</>}
           </p>}
+      {todaysText && <p className="mt-1" role="alert" data-testid="edit-grade-pay-today">{todaysText}</p>}
     </div>
   );
 }

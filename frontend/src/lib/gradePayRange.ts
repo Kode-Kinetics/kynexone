@@ -31,6 +31,17 @@ export function monthlyPayFromDraft(form: Readonly<Record<string, string | undef
 }
 
 /**
+ * Whether a grade change is also judged against today's pay, as the server does (RequireCurrentPayInRangeAsync): the grade moves now,
+ * so an edited package counts only when it is the pay in force, dated from the current record's date up to today. A package dated
+ * later, or before the current record, leaves today's pay to be checked. Needs a current record already in force.
+ */
+export function todaysPayAlsoChecked(opts: { gradeChanged: boolean; payEdited: boolean; packageDate: string; recordDate: string; today: string }): boolean {
+  const { gradeChanged, payEdited, packageDate, recordDate, today } = opts;
+  if (!gradeChanged || !payEdited || !recordDate || recordDate > today) return false;
+  return !(packageDate >= recordDate && packageDate <= today);
+}
+
+/**
  * The grade a code names for this employee, as the server resolves it: the employee's company's own grade first, then a
  * group-wide one; code compared without regard to case. Undefined when nothing matches.
  */

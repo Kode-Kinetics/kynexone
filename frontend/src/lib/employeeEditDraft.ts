@@ -122,6 +122,21 @@ export function structureFollowsGrade(
   return { ...changes, salaryBreakdown: { ...salary, salaryStructureCode: '' } };
 }
 
+/**
+ * The server refused the structure the package was sent on (422 with `salaryStructureCode`): the same changes on the grade's own
+ * structure, to send once more. HR no longer picks a structure, and a person without payroll access cannot see that their current one
+ * was retired, so this is their way through. Null when the refusal is anything else, or the package was already on the grade's own.
+ */
+export function retryOnGradeStructure(changes: EmployeeEditChanges, error: unknown): EmployeeEditChanges | null {
+  const response = (error as { response?: { status?: number; data?: { salaryStructureCode?: unknown } } })?.response;
+  const salary = changes.salaryBreakdown;
+  if (response?.status !== 422 || !salary || typeof salary !== 'object') return null;
+  const sent = (salary.salaryStructureCode ?? '').trim();
+  const refused = typeof response.data?.salaryStructureCode === 'string' ? response.data.salaryStructureCode.trim() : '';
+  if (!sent || !refused || sent.toUpperCase() !== refused.toUpperCase()) return null;
+  return { ...changes, salaryBreakdown: { ...salary, salaryStructureCode: '' } };
+}
+
 export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSalaryBreakdownRequest {
   const value = (key: string) => (form[`salaryBreakdown.${key}`] ?? '').trim();
   const amounts = ['basicSalary', 'housingAllowance', 'transportAllowance', 'foodAllowance', 'mobileAllowance', 'otherAllowance', 'fixedDeduction'] as const;

@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { SALARY_BREAKDOWN_EDIT_FIELDS } from '../src/api/employeeFieldCatalog';
 import { releaseASlices } from '../src/i18n/releaseA';
-import { structureFollowsGrade } from '../src/lib/employeeEditDraft';
-import { gradeForCode, gradePayVerdict, monthlyPayFromDraft } from '../src/lib/gradePayRange';
+import { retryOnGradeStructure, structureFollowsGrade } from '../src/lib/employeeEditDraft';
+import { gradeForCode, gradePayVerdict, monthlyPayFromDraft, todaysPayAlsoChecked } from '../src/lib/gradePayRange';
 
 // Edit employee, salary step: the salary structure follows the grade, and the pay is shown against the grade it will be judged by.
 
@@ -66,6 +66,30 @@ test('the grade is the employee’s company’s own first, then a group-wide one
   expect(gradeForCode(grades, '', 'mine')).toBeUndefined();
 });
 
+test('a refused current structure is sent once more on the grade’s own, and nothing else is retried', () => {
+  const refused = (code: unknown, status = 422) => ({ response: { status, data: { code: 'inactive_salary_structure', salaryStructureCode: code } } });
+  const changes = { salaryBreakdown: { ...salary, salaryStructureCode: 'OPS-OLD' } };
+  expect(retryOnGradeStructure(changes, refused('ops-old'))).toEqual({ salaryBreakdown: { ...salary, salaryStructureCode: '' } });
+  expect(retryOnGradeStructure(changes, refused('OTHER'))).toBeNull();
+  expect(retryOnGradeStructure(changes, refused('OPS-OLD', 400))).toBeNull();
+  expect(retryOnGradeStructure(changes, { response: { status: 422, data: { message: 'Salary package is outside grade G5’s salary range.' } } })).toBeNull();
+  expect(retryOnGradeStructure({ salaryBreakdown: { ...salary, salaryStructureCode: '' } }, refused(''))).toBeNull();
+  expect(retryOnGradeStructure({ grade: 'G5' }, refused('OPS-OLD'))).toBeNull();
+});
+
+test('a grade change is judged against today’s pay too when the edited package is not the pay in force today', () => {
+  const at = (packageDate: string, extra: Partial<Parameters<typeof todaysPayAlsoChecked>[0]> = {}) =>
+    todaysPayAlsoChecked({ gradeChanged: true, payEdited: true, packageDate, recordDate: '2026-10-01', today: '2026-11-11', ...extra });
+  expect(at('2026-12-01')).toBe(true); // starts later
+  expect(at('2026-09-01')).toBe(true); // before the record in force
+  expect(at('2026-11-11')).toBe(false);
+  expect(at('2026-10-01')).toBe(false);
+  expect(at('2026-12-01', { gradeChanged: false })).toBe(false);
+  expect(at('2026-12-01', { payEdited: false })).toBe(false); // untouched pay is today's pay, already judged
+  expect(at('2026-12-01', { recordDate: '' })).toBe(false); // no record
+  expect(at('2026-12-01', { recordDate: '2026-11-20' })).toBe(false); // the record is not in force yet: the server finds none to judge
+});
+
 test('every new sentence has an Arabic translation', () => {
   const ar = releaseASlices.salaryAllowances.ar;
   for (const key of [
@@ -74,6 +98,7 @@ test('every new sentence has an Arabic translation', () => {
     '{grade} has no salary range set.', '{grade} is not an active grade of this company, so its salary range cannot be shown.',
     'The monthly pay of {amount} is inside this range.', 'The monthly pay of {amount} is below this range.', 'The monthly pay of {amount} is above this range.',
     'Change the pay before saving, or the grade change will be refused.', 'Change the pay before saving, or the salary change will be refused.',
+    'The new pay does not start today, so the grade change is also checked against today’s pay of {amount}, which is outside this range. Date the new pay from {from} to today, or the grade change will be refused.',
   ]) {
     expect(ar[key], key).toBeTruthy();
     for (const slot of key.match(/\{\w+\}/g) ?? []) expect(ar[key], `${key} keeps ${slot}`).toContain(slot);

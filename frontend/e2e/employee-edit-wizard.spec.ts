@@ -21,7 +21,7 @@ const initialEmployee = {
 const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 const salaryBreakdown = { basicSalary: 7000, housingAllowance: 2000, transportAllowance: 300, foodAllowance: 100, mobileAllowance: 50, otherAllowance: 25, fixedDeduction: 10, currency: 'SAR', effectiveDate: '2026-10-01', salaryStructureCode: 'PACKAGE-TEST' };
 type EditBody = { effectiveDate: string; changes: Record<string, unknown> };
-interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean; designations?: unknown[]; seniorGrade?: boolean }
+interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean; designations?: unknown[]; seniorGrade?: boolean; structuresForbidden?: boolean }
 
 async function boot(page: Page, options: BootOptions = {}) {
   let employee = { ...initialEmployee, ...(options.structuredSalary ? { salaryBreakdown: { ...salaryBreakdown, ...(options.salaryStructureCode ? { salaryStructureCode: options.salaryStructureCode } : {}) } } : options.legacySalaryWithNullPackage ? { salary: 7500, salaryBreakdown: null } : {}) };
@@ -34,6 +34,8 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (message.type() !== 'error') return;
     // The retry fixture deliberately returns one 503; all other browser errors fail the case.
     if ((options.failFirstSave || options.documentUploadStatus === 503) && /Failed to load resource.*503/.test(message.text())) return;
+    // The forbidden-structures fixture: the 403 on the structure list and the server's 422 for the refused structure are the point of the case.
+    if (options.structuresForbidden && /Failed to load resource.*(403|422)/.test(message.text())) return;
     errors.push(`console: ${message.text()}`);
   });
   await page.addInitScript(() => {
@@ -64,6 +66,7 @@ async function boot(page: Page, options: BootOptions = {}) {
       ...(options.seniorGrade ? [{ id: 'edit-grade-senior', name: 'Senior', code: 'G7', minSalary: 20000, maxSalary: 30000, currency: 'SAR', isActive: true }] : []),
     ]));
     if (path === '/api/organization/cost-centers') return reply(paged([]));
+    if (path === '/api/payroll/salary-structures' && options.structuresForbidden) return reply({ message: 'Forbidden.' }, 403);
     if (path === '/api/payroll/salary-structures') return reply([
       { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
       { id: 'structure-package', companyId: company.id, code: 'PACKAGE-TEST', name: 'Package test', isActive: true },
@@ -83,6 +86,8 @@ async function boot(page: Page, options: BootOptions = {}) {
       writes.push({ method: request.method(), body });
       if (options.readOnly) return reply({ message: 'Read-only fixture must never receive an employee mutation.' }, 403);
       if (options.failFirstSave && writes.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
+      const sentStructure = (body.changes.salaryBreakdown as { salaryStructureCode?: string } | undefined)?.salaryStructureCode;
+      if (sentStructure === 'OPS-OLD') return reply({ error: 'inactive_salary_structure', code: 'inactive_salary_structure', salaryStructureCode: 'OPS-OLD', message: 'Salary structure OPS-OLD is inactive.' }, 422);
       if (options.approval) {
         const sensitiveFields = Object.keys(body.changes).filter(key => ['salary', 'salaryBreakdown'].includes(key));
         const immediate = Object.fromEntries(Object.entries(body.changes).filter(([key]) => !sensitiveFields.includes(key)));
@@ -291,6 +296,41 @@ test('a retired current salary structure never blocks a salary change: the packa
   await expect(dialog).toHaveCount(0);
   expect(writes).toHaveLength(1);
   expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: '' } });
+  expect(errors).toEqual([]);
+});
+
+test('without access to the structure list, a refused retired structure is retried once on the grade’s own', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD', approval: true, structuresForbidden: true });
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(2);
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: 'OPS-OLD' } });
+  expect(writes[1].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: '' } });
+  expect(errors).toEqual([]);
+});
+
+test('a grade change with new pay that starts later is also judged against today’s pay', async ({ page }, info) => {
+  const { dialog, errors } = await boot(page, { structuredSalary: true, approval: true, seniorGrade: true });
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  await dialog.getByRole('combobox', { name: /^Grade/ }).selectOption('G7');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('20000');
+  const notice = dialog.getByTestId('edit-grade-pay');
+  await expect(notice).toContainText('is inside this range.');
+  await expect(notice.getByTestId('edit-grade-pay-today')).toHaveCount(0);
+  // Dated after today: the grade moves now, so today's 9,475 is judged too, and it is below G7's range.
+  const later = new Date(Date.now() + 40 * 86_400_000).toISOString().slice(0, 10);
+  await dialog.getByLabel(/^Effective date/).fill(later);
+  await expect(notice.getByTestId('edit-grade-pay-today')).toContainText('today’s pay of SAR 9,475.00, which is outside this range. Date the new pay from 2026-10-01 to today');
+  await evidence(page, info, 'grade-change-future-pay');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(dialog.getByTestId('edit-grade-pay-review')).toContainText('today’s pay of SAR 9,475.00');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByLabel(/^Effective date/).fill(new Date().toISOString().slice(0, 10));
+  await expect(notice.getByTestId('edit-grade-pay-today')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

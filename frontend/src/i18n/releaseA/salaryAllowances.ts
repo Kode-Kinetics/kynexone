@@ -19,6 +19,8 @@ const pairs: Array<[string, string]> = [
   ['The monthly pay of {amount} is above this range.', 'الراتب الشهري البالغ {amount} أعلى من هذا النطاق.'],
   ['Change the pay before saving, or the grade change will be refused.', 'عدّل الراتب قبل الحفظ، وإلا سيُرفض تغيير الدرجة.'],
   ['Change the pay before saving, or the salary change will be refused.', 'عدّل الراتب قبل الحفظ، وإلا سيُرفض تغيير الراتب.'],
+  ['The new pay does not start today, so the grade change is also checked against today’s pay of {amount}, which is outside this range. Date the new pay from {from} to today, or the grade change will be refused.',
+    'الراتب الجديد لا يبدأ اليوم، لذا يُقارَن تغيير الدرجة أيضاً براتب اليوم البالغ {amount}، وهو خارج هذا النطاق. اجعل تاريخ الراتب الجديد بين {from} واليوم، وإلا سيُرفض تغيير الدرجة.'],
   // The section
   ['Other monthly allowances', 'بدلات شهرية أخرى'],
   ['You changed these. Saving sends exactly the lines shown here.', 'غيّرتَ هذه البدلات. سيُرسَل عند الحفظ البنود الظاهرة هنا بالضبط.'],

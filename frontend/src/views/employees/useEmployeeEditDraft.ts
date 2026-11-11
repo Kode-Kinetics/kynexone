@@ -26,6 +26,7 @@ import {
   buildEmployeeEditChanges,
   buildEmployeeEditSnapshot,
   buildSalaryBreakdownChange,
+  retryOnGradeStructure,
   structureFollowsGrade,
   type EmployeeEditDraft,
 } from '../../lib/employeeEditDraft';
@@ -269,11 +270,20 @@ export function useEmployeeEditDraft({
     try {
       const patch = costCentre?.patch ?? {};
       // Never both a code and a decision (the server refuses that); editCostCentrePatch already guarantees it.
-      const response = await employeesApi.update(employee.id, effectiveDate, { ...changes, ...(patch.changes ?? {}) }, {
+      const send = (body: typeof changes) => employeesApi.update(employee.id, effectiveDate, { ...body, ...(patch.changes ?? {}) }, {
         costCenterReason: patch.costCenterReason,
         costCenterDecision: patch.costCenterDecision,
         expectedCostCenterOverrideId: patch.expectedCostCenterOverrideId,
       });
+      let response: Awaited<ReturnType<typeof send>>;
+      try {
+        response = await send(changes);
+      } catch (error) {
+        // The current structure was refused (retired, superseded, another company's): once more on the grade's own.
+        const retry = retryOnGradeStructure(changes, error);
+        if (!retry) throw error;
+        response = await send(retry);
+      }
       setOriginal({ ...form });
       setCostCentreIntentState(NO_INTENT);
       await onSaved(response.status);

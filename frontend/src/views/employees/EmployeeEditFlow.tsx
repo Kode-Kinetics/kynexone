@@ -24,7 +24,7 @@ import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRou
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
 import { useStaleSalaryStructure } from '../../hooks/useStaleSalaryStructure';
-import { gradeForCode, monthlyPayFromDraft } from '../../lib/gradePayRange';
+import { gradeForCode, monthlyPayFromDraft, todaysPayAlsoChecked } from '../../lib/gradePayRange';
 import { EditGradePayNotice } from './EditGradePayNotice';
 import { employeeEditStep, hasCostCentrePatch, useEmployeeEditDraft, type CostCentreIntent } from './useEmployeeEditDraft';
 import { useEditCostCentre } from './useEditCostCentre';
@@ -122,8 +122,14 @@ export function EmployeeEditFlow({
   const payGrade = gradeForCode(allGrades.filter((item) => item.isActive), payGradeCode, employee.companyId);
   const monthlyPay = monthlyPayFromDraft(draft.form, shownLines(draft.allowanceBaseline, draft.allowanceEdit));
   const showGradePay = salaryShown && !!payGradeCode && (gradeChanged || draft.salaryPackageChanged);
+  // The grade moves now: an edited package not in force today leaves today's pay (the current record) to be judged too, as the server does.
+  const recordDate = employee.salaryBreakdown ? (draft.original['salaryBreakdown.effectiveDate'] ?? '').slice(0, 10) : '';
+  const todaysPay = todaysPayAlsoChecked({
+    gradeChanged, payEdited: draft.salaryPackageChanged, packageDate: (draft.form['salaryBreakdown.effectiveDate'] ?? '').trim(),
+    recordDate, today: new Date().toISOString().slice(0, 10),
+  }) ? { amount: monthlyPayFromDraft(draft.original, draft.allowanceBaseline), from: recordDate } : undefined;
   const gradePayNotice = (compact: boolean) => <EditGradePayNotice fromCode={(draft.original.grade ?? '').trim()} grade={payGrade} gradeCode={payGradeCode}
-    gradeChanged={gradeChanged} payEdited={draft.salaryPackageChanged} monthlyPay={monthlyPay}
+    gradeChanged={gradeChanged} payEdited={draft.salaryPackageChanged} monthlyPay={monthlyPay} todaysPay={todaysPay}
     currency={draft.form['salaryBreakdown.currency'] || salaryCurrency} compact={compact} />;
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
 
