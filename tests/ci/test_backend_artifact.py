@@ -70,11 +70,36 @@ class ArtifactTests(unittest.TestCase):
         payload.write_bytes(payload.read_bytes()+b'corrupt')
         self.assertNotEqual(self.run_script('restore').returncode,0)
 
-    def test_wrong_sha_run_or_attempt_fails(self):
+    def test_wrong_sha_or_run_fails(self):
         self.pack()
-        for key,value in [('GITHUB_SHA','f'*40),('GITHUB_RUN_ID','456'),('GITHUB_RUN_ATTEMPT','3')]:
+        for key,value in [('GITHUB_SHA','f'*40),('GITHUB_RUN_ID','456')]:
             with self.subTest(key=key):
                 self.assertNotEqual(self.run_script('restore',{**self.env,key:value}).returncode,0)
+
+    def test_later_attempt_of_same_run_can_restore_earlier_attempts_build(self):
+        # "Re-run failed jobs": the producer is not re-run, so attempt 3 consumers read attempt 2's artifact.
+        self.pack()
+        for attempt in ['2','3','10']:
+            with self.subTest(attempt=attempt):
+                result=self.run_script('restore',{**self.env,'GITHUB_RUN_ATTEMPT':attempt})
+                self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_build_from_a_later_attempt_than_the_consumer_is_rejected(self):
+        self.pack()
+        result=self.run_script('restore',{**self.env,'GITHUB_RUN_ATTEMPT':'1'})
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('later run attempt',result.stderr)
+
+    def test_manifest_attempt_must_be_a_positive_integer(self):
+        self.pack()
+        path=self.artifact/'manifest.json'
+        for value in [None,'','0','x',-1]:
+            with self.subTest(value=value):
+                manifest=json.loads(path.read_text())
+                if value is None:manifest.pop('run_attempt')
+                else:manifest['run_attempt']=value
+                path.write_text(json.dumps(manifest))
+                self.assertNotEqual(self.run_script('restore').returncode,0)
 
     def test_checked_out_commit_must_match_expected_sha(self):
         self.assertNotEqual(self.run_script('pack',{**self.env,'GITHUB_SHA':'f'*40}).returncode,0)

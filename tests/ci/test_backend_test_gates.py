@@ -168,7 +168,7 @@ class AggregateEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for lane in ['unit','shard-1','shard-2','shard-3','shard-4']:
                 if lane==missing:continue
-                folder=Path(tmp)/('backend-results-'+lane+'-'+'a'*40+'-123-2')
+                folder=Path(tmp)/('backend-results-'+lane+'-'+'a'*40+'-123')
                 folder.mkdir()
                 (folder/(lane+'.trx')).write_text(TrxGateTests.trx('0','0') if lane==zero else TrxGateTests.trx())
             return subprocess.run(['python3',str(CI/'verify-backend-results.py'),tmp],capture_output=True,text=True,
@@ -180,3 +180,13 @@ class AggregateEvidenceTests(unittest.TestCase):
             with self.subTest(zero=lane):self.assertNotEqual(self.run_evidence(zero=lane).returncode,0)
         result=self.run_evidence()
         self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_attempt_suffixed_artifacts_are_not_accepted(self):
+        # The workflow no longer names artifacts per attempt; a stray attempt-suffixed folder is unexpected.
+        with tempfile.TemporaryDirectory() as tmp:
+            for lane in ['unit','shard-1','shard-2','shard-3','shard-4']:
+                folder=Path(tmp)/('backend-results-'+lane+'-'+'a'*40+'-123-2');folder.mkdir()
+                (folder/(lane+'.trx')).write_text(TrxGateTests.trx())
+            result=subprocess.run(['python3',str(CI/'verify-backend-results.py'),tmp],capture_output=True,text=True,
+                env={**os.environ,'GITHUB_SHA':'a'*40,'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'2'})
+            self.assertNotEqual(result.returncode,0)

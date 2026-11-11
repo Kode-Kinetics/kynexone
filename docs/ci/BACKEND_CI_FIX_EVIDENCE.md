@@ -61,7 +61,7 @@ Both independent specialists reviewed the final scripts/workflow and reran the P
 
 Release compilation moves from five independent builds to one immutable, exact-checkout/run/attempt artifact. Complete Release API/test output, restore assets, PDBs, testhost and copied fixtures are preserved and hash-verified before extraction. Source-relative tests retain full checkouts. Debug EF freshness checks, independently revision-marked Chrome compilation, CodeQL extraction and all existing schema/release/security dependencies retain their own contracts.
 
-**A failed-jobs-only retry cannot consume an earlier attempt's build or result artifacts. Rerun all jobs when the new attempt has no producer or complete evidence.** This is an intentional fail-closed constraint, not a missing-artifact fallback.
+**Superseded 2026-11-10:** a failed-jobs-only retry now restores the build and result artifacts an earlier attempt of the same run produced (names carry commit and run id, not run attempt; producers overwrite). See [the backend test contract](BACKEND_TESTS.md). The original design made this fail closed, which forced a ~75-minute full re-run for one transient deploy-gate failure.
 
 Changed files are `.github/workflows/ci.yml`; the existing `scripts/ci/shard-tests.sh` wrapper; new `scripts/ci/{shard-tests.py,verify-test-results.py,verify-backend-results.py,backend-build-artifact.py,run-with-resource-snapshots.py}`; new `tests/ci/{test_backend_test_gates.py,test_backend_artifact.py,test_resource_monitor.py}`; and `docs/ci/{BACKEND_TESTS.md,BACKEND_CI_FIX_EVIDENCE.md}`.
 
