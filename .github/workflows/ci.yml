@@ -57,8 +57,10 @@ jobs:
           if [ -z "$files" ] || [ -n "$code" ]; then echo "docs_only=false" >> "$GITHUB_OUTPUT"; else echo "docs_only=true" >> "$GITHUB_OUTPUT"; fi
 
   # Build the Release graph once and reuse it in every job that needs the full migration assembly.
-  # An attempt-scoped artifact never falls back to a prior retry; rerun ALL jobs after a partial
-  # retry fails to find this attempt's build artifact.
+  # The artifact is named per commit + run (NOT per run attempt) so "Re-run failed jobs" can restore the build
+  # an earlier attempt of this run produced (the producer is not re-run). Staleness is prevented by the manifest:
+  # restore verifies the commit and run id and rejects a build from a later attempt. If this job IS re-run,
+  # overwrite: true replaces the artifact so its dependents get the new build.
   backend-build:
     name: Backend Release build
     # Serial compilation plus workstation GC keeps the 4M-line graph inside the standard runner;
@@ -96,9 +98,10 @@ jobs:
         run: python3 scripts/ci/backend-build-artifact.py pack "$RUNNER_TEMP/backend-release"
       - uses: actions/upload-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
           if-no-files-found: error
+          overwrite: true
           # Production approval can legitimately wait through a long weekend; keep the exact
           # attempt artifact available without retaining it for the longer test-evidence window.
           retention-days: 7
@@ -123,7 +126,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
 
       - name: Verify and restore exact-checkout Release outputs
@@ -147,9 +150,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-results-unit-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-results-unit-${{ github.sha }}-${{ github.run_id }}
           path: backend-dotnet/Zayra.Api.Tests/TestResults/unit
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   # ── Backend: integration lane (Testcontainers), sharded 4 ways ─────────────────
@@ -193,7 +197,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
 
       - name: Verify and restore exact-checkout Release outputs
@@ -219,9 +223,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backend-results-shard-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-results-shard-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_id }}
           path: backend-dotnet/Zayra.Api.Tests/TestResults/shard-${{ matrix.shard }}
           if-no-files-found: error
+          overwrite: true
           retention-days: 14
 
   # ── Aggregator: keeps the required check name "Backend Tests (security gate)" ──
@@ -252,11 +257,14 @@ jobs:
             echo "::error::backend lanes did not all pass (unit=$UNIT integration=$INTEGRATION)"; exit 1
           fi
 
-      - name: Download this attempt's backend test evidence
+      # Result artifacts are per commit + run and overwritten by whichever attempt last ran that lane. The step
+      # above already requires every lane's CURRENT job result to be success (a re-run lane's result replaces the
+      # earlier one), so a lane whose artifact is from an earlier attempt is one that passed in that attempt.
+      - name: Download this run's backend test evidence
         if: needs.changes.outputs.docs_only == 'false'
         uses: actions/download-artifact@v4
         with:
-          pattern: backend-results-*-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: backend-results-*-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-results
 
       - name: Require unit and all four populated shard results
@@ -521,11 +529,11 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
 
-      # Restore the exact SHA/run/attempt output built above. The manifest and every file are hashed,
-      # so this cannot silently pick up an earlier retry or a different commit.
+      # Restore the exact SHA/run output built above (possibly by an earlier attempt of this run, so a failed-jobs
+      # re-run works). The manifest and every file are hashed, so this cannot pick up a different commit or run.
       - uses: actions/download-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
       - name: Verify and restore exact-checkout Release outputs
         run: python3 scripts/ci/backend-build-artifact.py restore "$RUNNER_TEMP/backend-release"
@@ -734,7 +742,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
       - name: Verify and restore exact-checkout Release outputs
         run: python3 scripts/ci/backend-build-artifact.py restore "$RUNNER_TEMP/backend-release"
@@ -1331,7 +1339,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: backend-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: backend-release-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/backend-release
       - name: Verify and restore exact-checkout Release outputs
         run: python3 scripts/ci/backend-build-artifact.py restore "$RUNNER_TEMP/backend-release"

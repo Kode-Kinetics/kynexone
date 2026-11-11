@@ -47,6 +47,15 @@ class WorkflowCostControlTests(unittest.TestCase):
         build = self.job_block(CI, "backend-build")
         self.assertIn("retention-days: 7", build)
 
+    def test_artifacts_survive_failed_jobs_reruns_and_cannot_conflict(self):
+        # "Re-run failed jobs" starts a new run_attempt but does not re-run the producer, so no artifact that a
+        # DIFFERENT job consumes may be named per attempt. Uploads that a re-run can repeat must overwrite.
+        self.assertNotIn("run_attempt", CI)
+        for job in ("backend-build", "backend-unit", "backend-integration"):
+            with self.subTest(job=job):
+                self.assertIn("overwrite: true", self.job_block(CI, job))
+        self.assertIn("backend-release-${{ github.sha }}-${{ github.run_id }}\n", CI)
+
     def test_codeql_cancels_superseded_prs_on_standard_runner(self):
         self.assertIn("|| 'ubuntu-24.04')", CODEQL)
         self.assertIn("matrix.language != 'csharp' && 'ubuntu-24.04'", CODEQL)

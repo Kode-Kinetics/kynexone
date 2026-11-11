@@ -40,6 +40,11 @@ FAILS CLOSED
 A missing API key, an API error, an unparseable value or a missing variable all BLOCK the deploy.
 A gate that switches itself off when its credential is missing is a gate that is off, and nobody
 notices which.
+
+The one tolerance: a TRANSIENT Render API failure (timeout, connection error, HTTP 429/5xx) is
+retried a bounded number of times (3 attempts, ~85 s worst case) before the gate fails closed. A
+definite answer (any other HTTP status, a missing variable, a mismatch) is never retried. Added
+after a single Render API timeout blocked a main deploy and cost a ~75 minute full CI re-run.
 """
 from __future__ import annotations
 
@@ -47,11 +52,17 @@ import argparse
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import NamedTuple
 
 RENDER_API = "https://api.render.com/v1"
+
+# Bounded retry of a transient Render API failure. Worst case: 3 x 25 s timeout + 3 s + 6 s backoff = 84 s.
+RENDER_ATTEMPTS = 3
+RENDER_TIMEOUT_SECONDS = 25
+RENDER_BACKOFF_SECONDS = (3, 6)
 
 
 class Target(NamedTuple):
@@ -110,20 +121,41 @@ def parse_target(value: str, source: str) -> Target:
     return Target(normalise_host(host), database.strip().lower())
 
 
-def render_connection_string(service_id: str, api_key: str) -> str:
+def fetch_render_env_vars(service_id: str, api_key: str, opener=urllib.request.urlopen, sleep=time.sleep):
+    """
+    GET the service's env vars, retrying ONLY transient failures (timeout, connection error, HTTP
+    429/5xx, unparseable body) up to RENDER_ATTEMPTS times with backoff. Any other HTTP status is a
+    definite answer and fails immediately. After the last attempt it fails closed.
+    """
+    import json
+
     req = urllib.request.Request(
         f"{RENDER_API}/services/{service_id}/env-vars?limit=100",
         headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            import json
+    for attempt in range(1, RENDER_ATTEMPTS + 1):
+        try:
+            with opener(req, timeout=RENDER_TIMEOUT_SECONDS) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                fail(f"Render API returned HTTP {e.code} for service {service_id}. Deploy blocked (fail-closed).")
+            reason = f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001 — any failure here must block (after retries), not skip
+            reason = type(e).__name__
+        if attempt == RENDER_ATTEMPTS:
+            fail(
+                f"Could not get a usable answer from the Render API after {RENDER_ATTEMPTS} attempts "
+                f"(last: {reason}). Deploy blocked (fail-closed)."
+            )
+        delay = RENDER_BACKOFF_SECONDS[attempt - 1]
+        print(f"check-migration-target: Render API attempt {attempt}/{RENDER_ATTEMPTS} failed ({reason}); "
+              f"retrying in {delay}s", file=sys.stderr)
+        sleep(delay)
 
-            payload = json.load(resp)
-    except urllib.error.HTTPError as e:
-        fail(f"Render API returned HTTP {e.code} for service {service_id}. Deploy blocked (fail-closed).")
-    except Exception as e:  # noqa: BLE001 — any failure here must block, not skip
-        fail(f"Could not reach the Render API ({type(e).__name__}). Deploy blocked (fail-closed).")
+
+def render_connection_string(service_id: str, api_key: str) -> str:
+    payload = fetch_render_env_vars(service_id, api_key)
 
     for row in payload:
         var = row.get("envVar") or row
@@ -144,6 +176,44 @@ def render_connection_string(service_id: str, api_key: str) -> str:
 def fail(message: str) -> "NoReturn":  # type: ignore[valid-type]
     print(f"::error::check-migration-target: {message}", file=sys.stderr)
     sys.exit(1)
+
+
+def retry_self_test() -> int:
+    """The Render fetch retries transient failures a bounded number of times and otherwise fails closed."""
+    import io
+
+    def run(script):
+        calls, naps = [], []
+
+        def opener(req, timeout):
+            calls.append(timeout)
+            outcome = script[min(len(calls), len(script)) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return io.BytesIO(outcome)
+
+        try:
+            return fetch_render_env_vars("srv-x", "k", opener, naps.append), len(calls), naps
+        except SystemExit as e:
+            return ("exit", e.code), len(calls), naps
+
+    def http(code):
+        return urllib.error.HTTPError("u", code, "m", {}, None)
+
+    cases = [
+        ("timeout then success -> retried, succeeds", [TimeoutError(), b"[]"], ([], 2)),
+        ("HTTP 503 twice then success -> succeeds on attempt 3", [http(503), http(503), b"[]"], ([], 3)),
+        ("timeout on every attempt -> fails closed after exactly 3", [TimeoutError()], (("exit", 1), 3)),
+        ("HTTP 401 -> definite answer, NOT retried, fails closed", [http(401)], (("exit", 1), 1)),
+        ("HTTP 404 -> definite answer, NOT retried, fails closed", [http(404)], (("exit", 1), 1)),
+    ]
+    failures = 0
+    for label, script, (want, want_calls) in cases:
+        got, calls, naps = run(script)
+        ok = got == want and calls == want_calls and sum(naps) <= 9
+        print(f"  {'PASS' if ok else 'FAIL'}  {label}")
+        failures += 0 if ok else 1
+    return failures
 
 
 def self_test() -> int:
@@ -192,6 +262,8 @@ def self_test() -> int:
         failures += 1
     else:
         print("  PASS  describe() emits host and database only — no user, no password")
+
+    failures += retry_self_test()
 
     print("self-test: " + ("all checks passed" if failures == 0 else f"{failures} FAILED"))
     return 1 if failures else 0

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Same-checkout, same-run, same-attempt Release outputs. Never fall back to stale assemblies."""
+"""Same-checkout, same-run Release outputs. Never fall back to stale assemblies.
+
+The artifact is shared by every attempt of a run (so "Re-run failed jobs" can reuse the build an earlier attempt
+produced); the manifest still binds commit, run id, platform and configuration, and a build stamped with a LATER
+attempt than the consumer's is rejected.
+"""
 import hashlib
 import json
 import os
@@ -86,8 +91,13 @@ def pack(root, directory, provenance):
 
 def restore(root, directory, provenance):
     manifest = json.loads((directory / 'manifest.json').read_text())
-    if any(manifest.get(key) != value for key, value in provenance.items()):
-        raise ValueError('artifact provenance mismatch; rerun all jobs to produce this run attempt')
+    # run_attempt is the one field that legitimately differs: a failed-jobs re-run restores the build an earlier
+    # attempt produced. Everything else must match exactly.
+    if any(manifest.get(key) != value for key, value in provenance.items() if key != 'run_attempt'):
+        raise ValueError('artifact provenance mismatch (commit, run, platform or configuration differs)')
+    built = str(manifest.get('run_attempt', ''))
+    if not re.fullmatch(r'[1-9][0-9]*', built) or int(built) > int(provenance['run_attempt']):
+        raise ValueError('artifact was produced by a later run attempt than this job')
     files = manifest.get('files')
     if not isinstance(files, dict) or not files or any(not allowed(name) for name in files):
         raise ValueError('invalid artifact file manifest')
