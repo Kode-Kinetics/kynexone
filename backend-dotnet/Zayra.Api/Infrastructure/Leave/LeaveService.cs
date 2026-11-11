@@ -923,7 +923,14 @@ public class LeaveService : ILeaveService
         {
             foreach (var segment in yearSegments)
                 if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
-                    throw new InvalidOperationException($"Insufficient leave balance for {segment.Year}.");
+                {
+                    // "Insufficient" was the same sentence for "you have 2 days left" and "no balance exists for that year at all", and told the person nothing to do.
+                    var hasRow = await _db.EmployeeLeaveBalances.AsNoTracking().AnyAsync(b =>
+                        b.TenantId == tenantId && b.EmployeeId == request.EmployeeId && b.LeaveTypeId == request.LeaveTypeId && b.Year == segment.Year, ct);
+                    throw new InvalidOperationException(hasRow
+                        ? $"Insufficient leave balance for {segment.Year}."
+                        : $"Your {leaveType.NameEn} balance for {segment.Year} has not been set up yet. Ask HR to set up your {segment.Year} leave balance.");
+                }
         }
 
         request.TenantId = tenantId;

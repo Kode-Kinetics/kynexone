@@ -863,6 +863,19 @@ public class EmployeeSelfServiceController : ControllerBase
         var leaveType = await _db.LeaveTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.LeaveTypeId && x.IsActive, cancellationToken);
         if (leaveType is null) return BadRequest(new { message = "Leave type is not available." });
 
+        // The supporting document is a reference to a document the CALLER owns (uploaded first via POST /api/ess/documents), resolved to its
+        // storage key here: never a path from the browser, never a colleague's document. Leave types that need one were unreachable from here before.
+        var attachmentPath = string.Empty;
+        if (request.AttachmentDocumentId is { } attachmentId)
+        {
+            var key = await _db.EmployeeDocuments.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted
+                    && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
+                .Select(x => x.StorageUrl).FirstOrDefaultAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(key)) return BadRequest(new { message = "The attachment was not found among your documents." });
+            attachmentPath = key;
+        }
+
         // Route through LeaveService so ESS submissions get the same treatment as HR-side
         // ones: overlap + balance checks, working-day calculation, approval-policy routing
         // (canonical Submitted/PendingManagerApproval statuses) and the approver's inbox
@@ -883,6 +896,7 @@ public class EmployeeSelfServiceController : ControllerBase
             Reason = request.Reason,
             StatutoryEventDate = request.StatutoryEventDate,
             SeparateEventReason = request.SeparateEventReason,
+            AttachmentPath = attachmentPath,
             PayrollImpact = leaveType.IsPaid ? "Full" : "None",
         };
         try
@@ -1796,7 +1810,11 @@ public record ESSAttendanceRegularizationDto(DateOnly WorkDate, string RequestTy
 /// <param name="SeparateEventReason">KSA bereavement, birth or marriage leave: why this is a separate event
 /// from earlier leave of the same kind. Requires <paramref name="StatutoryEventDate"/>.</param>
 public record ESSLeaveRequestDto(Guid LeaveTypeId, DateOnly StartDate, DateOnly EndDate, string? DayType, string Reason,
-    DateOnly? StatutoryEventDate = null, string? SeparateEventReason = null);
+    DateOnly? StatutoryEventDate = null, string? SeparateEventReason = null)
+{
+    /// <summary>The supporting document for a leave type that needs one: the id of an <c>EmployeeDocument</c> the CALLER uploaded first (POST /api/ess/documents). Resolved to its storage key server-side.</summary>
+    public Guid? AttachmentDocumentId { get; init; }
+}
 public record ESSDocumentUploadDto(string DocumentType, string FileName, string ContentType, string StorageUrl, DateOnly? ExpiryDate, bool IsRequired);
 public record EssLetterTypeDto(string LetterType, string NameEn, string NameAr);
 public record EssDocumentRequestDto(string LetterType, string? Language, string? Purpose, string? AddresseeName);
