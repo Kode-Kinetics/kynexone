@@ -109,6 +109,19 @@ export function buildEmployeeEditChanges(
   return changes;
 }
 
+/**
+ * The salary structure follows the grade; HR does not choose it. A salary package carries the employee's current structure
+ * forward, except when the same edit changes the grade, or the current structure is no longer valid (retired, superseded,
+ * another company's): then it is sent blank, which the server reads as "the grade's own structure".
+ */
+export function structureFollowsGrade(
+  changes: EmployeeEditChanges, opts: { gradeChanged: boolean; currentStructureStale: boolean },
+): EmployeeEditChanges {
+  const salary = changes.salaryBreakdown;
+  if (!salary || typeof salary !== 'object' || (!opts.gradeChanged && !opts.currentStructureStale)) return changes;
+  return { ...changes, salaryBreakdown: { ...salary, salaryStructureCode: '' } };
+}
+
 export function buildSalaryBreakdownChange(form: EmployeeEditDraft): EmployeeSalaryBreakdownRequest {
   const value = (key: string) => (form[`salaryBreakdown.${key}`] ?? '').trim();
   const amounts = ['basicSalary', 'housingAllowance', 'transportAllowance', 'foodAllowance', 'mobileAllowance', 'otherAllowance', 'fixedDeduction'] as const;

@@ -1,6 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { Plus, Trash2 } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import type { CashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
 import { formatAmount } from '../../lib/hire/money';
@@ -41,6 +43,7 @@ export function SalaryAllowancesEditor({
   serverProblem?: string | null;
 }) {
   const { t, locale } = useLocale();
+  const { hasPermission } = useAuth();
   const lines = shownLines(baseline, value);
   const touched = value !== null;
   const problems = allowanceProblems(lines, basic);
@@ -158,12 +161,20 @@ export function SalaryAllowancesEditor({
         </p>
       )}
 
-      {ready && choices.length === 0 && <p className="mt-2 text-xs text-slate-500">{t('No monthly allowance has been added in Benefits by grade yet.')}</p>}
+      {/* Nothing in the catalogue to add: say where allowances are set up, rather than offering a button that can never work. */}
+      {ready && choices.length === 0 && (
+        <p className="mt-2 text-xs text-slate-600 dark:text-slate-300" data-testid="salary-allowances-none-defined">
+          {t('No monthly allowance has been added in Benefits by grade yet.')}{' '}
+          {hasPermission('entitlements.manage')
+            ? <Link href="/benefits/by-grade" target="_blank" rel="noopener noreferrer" className="font-semibold text-sapphire underline">{t('Add allowances in Benefits by grade')}<span className="sr-only"> {t('(opens in a new tab)')}</span></Link>
+            : t('Ask an administrator to add them in Benefits by grade.')}
+        </p>
+      )}
 
-      {ready && (
+      {ready && (choices.length > 0 || touched) && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={!editable || allUsed}
-            onClick={() => set([...lines, blankLine()])}><Plus className="h-4 w-4" aria-hidden="true" />{t('Add an allowance')}</button>
+          {choices.length > 0 && <button type="button" className="btn-secondary h-8 px-3 text-xs" disabled={!editable || allUsed}
+            onClick={() => set([...lines, blankLine()])}><Plus className="h-4 w-4" aria-hidden="true" />{t('Add an allowance')}</button>}
           {touched && (
             <button type="button" className="text-xs text-sapphire underline" disabled={disabled}
               onClick={() => onChange(null)}>{baselineKind === 'record' ? t('Go back to the allowances on the salary now') : t('Go back to the grade’s allowances')}</button>

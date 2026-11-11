@@ -5,6 +5,20 @@ import type { ReleaseADict } from './types';
  * Finance approval comparison and the employee profile list. Whole sentences with {placeholders} so Arabic orders its own words.
  */
 const pairs: Array<[string, string]> = [
+  // No allowance defined yet: where to add them
+  ['Add allowances in Benefits by grade', 'أضف البدلات في «المزايا حسب الدرجة»'],
+  ['Ask an administrator to add them in Benefits by grade.', 'اطلب من المسؤول إضافتها في «المزايا حسب الدرجة».'],
+  // Edit employee, salary step: the grade the pay is judged against
+  ['Grade changes from {from} to {to}.', 'تتغير الدرجة من {from} إلى {to}.'],
+  ['The pay below is the current pay. It stays as it is unless you change it.', 'الراتب أدناه هو الراتب الحالي، ويبقى كما هو ما لم تغيّره.'],
+  ['{grade} salary range: {min} to {max} a month.', 'نطاق راتب الدرجة {grade}: من {min} إلى {max} شهرياً.'],
+  ['{grade} has no salary range set.', 'لم يُحدَّد نطاق راتب للدرجة {grade}.'],
+  ['{grade} is not an active grade of this company, so its salary range cannot be shown.', 'الدرجة {grade} ليست درجة نشطة في هذه الشركة، لذا لا يمكن عرض نطاق راتبها.'],
+  ['The monthly pay of {amount} is inside this range.', 'الراتب الشهري البالغ {amount} ضمن هذا النطاق.'],
+  ['The monthly pay of {amount} is below this range.', 'الراتب الشهري البالغ {amount} أقل من هذا النطاق.'],
+  ['The monthly pay of {amount} is above this range.', 'الراتب الشهري البالغ {amount} أعلى من هذا النطاق.'],
+  ['Change the pay before saving, or the grade change will be refused.', 'عدّل الراتب قبل الحفظ، وإلا سيُرفض تغيير الدرجة.'],
+  ['Change the pay before saving, or the salary change will be refused.', 'عدّل الراتب قبل الحفظ، وإلا سيُرفض تغيير الراتب.'],
   // The section
   ['Other monthly allowances', 'بدلات شهرية أخرى'],
   ['You changed these. Saving sends exactly the lines shown here.', 'غيّرتَ هذه البدلات. سيُرسَل عند الحفظ البنود الظاهرة هنا بالضبط.'],

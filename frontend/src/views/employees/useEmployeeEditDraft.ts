@@ -26,6 +26,7 @@ import {
   buildEmployeeEditChanges,
   buildEmployeeEditSnapshot,
   buildSalaryBreakdownChange,
+  structureFollowsGrade,
   type EmployeeEditDraft,
 } from '../../lib/employeeEditDraft';
 
@@ -111,6 +112,7 @@ export function useEmployeeEditDraft({
   onSaved,
   formatValue,
   describeAllowanceChange,
+  currentStructureStale = false,
 }: {
   employee: EmployeeDetail;
   canWrite: boolean;
@@ -121,6 +123,8 @@ export function useEmployeeEditDraft({
   formatValue?: (key: string, value: string) => string;
   /** The review's words for a change to the monthly allowances ("From … to …"), in the reader's language. */
   describeAllowanceChange?: (before: readonly AllowanceDraftLine[], after: readonly AllowanceDraftLine[], basic: number | undefined) => string;
+  /** The employee's current salary structure is no longer valid: a salary change then goes on the grade's own structure. */
+  currentStructureStale?: boolean;
 }) {
   const [catalog, setCatalog] = useState<ResolvedFieldCatalog>(LOCAL_FIELD_CATALOG);
   const fields = useMemo(() => fieldsForEmployee(employee, catalog, canSeeSensitive), [employee, catalog, canSeeSensitive]);
@@ -251,7 +255,8 @@ export function useEmployeeEditDraft({
     }
     let changes: ReturnType<typeof buildEmployeeEditChanges>;
     try {
-      changes = buildEmployeeEditChanges(form, availableFields, changedKeys);
+      changes = structureFollowsGrade(buildEmployeeEditChanges(form, availableFields, changedKeys),
+        { gradeChanged: changedKeys.includes('grade'), currentStructureStale });
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Review the changed values and try again.');
       if (decodeValue(form[ALLOWANCES_KEY]) !== null) setAllowanceProblemsShown(true);
@@ -287,7 +292,7 @@ export function useEmployeeEditDraft({
     } finally {
       setSaving(false);
     }
-  }, [availableFields, canWrite, changedKeys, employee.id, form, onSaved, saving, step, validateStep]);
+  }, [availableFields, canWrite, changedKeys, currentStructureStale, employee.id, form, onSaved, saving, step, validateStep]);
 
   const displayValue = useCallback((field: EmployeeEditField, before = false) => {
     const value = (before ? original : form)[field.key];
