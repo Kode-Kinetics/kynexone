@@ -6,6 +6,7 @@ import { launchLeave } from './launchLeave';
 import { launchCompliance } from './launchCompliance';
 import { launchAttendance } from './launchAttendance';
 import { launchRecruitment } from './launchRecruitment';
+import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
@@ -99,6 +100,7 @@ const en: Dict = {
   ...launchCompliance.en,
   ...launchAttendance.en,
   ...launchRecruitment.en,
+  ...launchNewHires.en,
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
@@ -1667,6 +1669,7 @@ const ar: Dict = {
   ...launchCompliance.ar,
   ...launchAttendance.ar,
   ...launchRecruitment.ar,
+  ...launchNewHires.ar,
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
   ...companyStructure.ar,

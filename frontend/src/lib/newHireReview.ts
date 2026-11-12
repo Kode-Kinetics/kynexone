@@ -5,16 +5,17 @@
  */
 
 import { normalizeDigits, validateIdNumber } from './hire/saudiId';
+import { msg } from '../i18n/translations';
 
 export type DraftTone = 'amber' | 'emerald' | 'rose' | 'slate';
 
 const STATUS: Record<string, { label: string; tone: DraftTone }> = {
-  Draft: { label: 'Being prepared', tone: 'slate' },
-  Submitted: { label: 'Waiting for HR approval', tone: 'amber' },
-  PendingHrApproval: { label: 'Waiting for HR approval', tone: 'amber' },
-  Activated: { label: 'Activated', tone: 'emerald' },
-  Rejected: { label: 'Rejected', tone: 'rose' },
-  Cancelled: { label: 'Withdrawn', tone: 'slate' },
+  Draft: { label: msg('Being prepared'), tone: 'slate' },
+  Submitted: { label: msg('Waiting for HR approval'), tone: 'amber' },
+  PendingHrApproval: { label: msg('Waiting for HR approval'), tone: 'amber' },
+  Activated: { label: msg('Activated'), tone: 'emerald' },
+  Rejected: { label: msg('Rejected'), tone: 'rose' },
+  Cancelled: { label: msg('Withdrawn'), tone: 'slate' },
 };
 
 export function draftStatusChip(status: string): { label: string; tone: DraftTone } {
@@ -50,21 +51,21 @@ export type DraftNextAction =
 export function nextDraftAction(row: DraftRowFacts): DraftNextAction {
   if (row.status === 'Activated') {
     return row.activatedEmployeeId != null
-      ? { kind: 'openEmployee', label: 'Open employee', employeeId: row.activatedEmployeeId }
-      : { kind: 'closed', label: 'Activated' };
+      ? { kind: 'openEmployee', label: msg('Open employee'), employeeId: row.activatedEmployeeId }
+      : { kind: 'closed', label: msg('Activated') };
   }
   if (!isOpenDraft(row.status)) return { kind: 'closed', label: draftStatusChip(row.status).label };
   // A draft that has not been sent yet is not ready to decide: its maker sends it first.
   if (row.status === 'Draft') {
     return row.isMine
-      ? { kind: 'submit', label: 'Send for HR approval' }
-      : { kind: 'waiting', label: 'View', reason: 'Still being prepared: not yet sent for approval.' };
+      ? { kind: 'submit', label: msg('Send for HR approval') }
+      : { kind: 'waiting', label: msg('View'), reason: msg('Still being prepared: not yet sent for approval.') };
   }
-  if (canDecideDraft(row.status, row.canApprove)) return { kind: 'review', label: 'Review and decide' };
+  if (canDecideDraft(row.status, row.canApprove)) return { kind: 'review', label: msg('Review and decide') };
   return {
     kind: 'waiting',
-    label: 'View',
-    reason: row.approveBlockedReason ?? 'Waiting for an HR approver.',
+    label: msg('View'),
+    reason: row.approveBlockedReason ?? msg('Waiting for an HR approver.'),
   };
 }
 
@@ -172,10 +173,10 @@ export function isClosedDraftError(err: unknown): boolean {
 export type DraftFilterKey = 'awaiting' | 'Draft' | 'Activated' | 'Rejected' | 'Cancelled' | 'all';
 
 export const DRAFT_FILTERS: ReadonlyArray<{ key: DraftFilterKey; label: string; countKey?: 'awaitingApproval' | 'draft' | 'activated' | 'rejected' | 'cancelled' }> = [
-  { key: 'awaiting', label: 'Waiting for approval', countKey: 'awaitingApproval' },
-  { key: 'Draft', label: 'Being prepared', countKey: 'draft' },
-  { key: 'Activated', label: 'Activated', countKey: 'activated' },
-  { key: 'Rejected', label: 'Rejected', countKey: 'rejected' },
-  { key: 'Cancelled', label: 'Withdrawn', countKey: 'cancelled' },
-  { key: 'all', label: 'All' },
+  { key: 'awaiting', label: msg('Waiting for approval'), countKey: 'awaitingApproval' },
+  { key: 'Draft', label: msg('Being prepared'), countKey: 'draft' },
+  { key: 'Activated', label: msg('Activated'), countKey: 'activated' },
+  { key: 'Rejected', label: msg('Rejected'), countKey: 'rejected' },
+  { key: 'Cancelled', label: msg('Withdrawn'), countKey: 'cancelled' },
+  { key: 'all', label: msg('All') },
 ];
