@@ -570,6 +570,75 @@ public class KsaNitaqatTests
     }
 
     [Fact]
+    public async Task ThresholdsVerified_IsFalse_WhenTheGridBehindTheBandIsUnverified_ButTheBandAndPercentageAreStillComputed()
+    {
+        await using var db = NewDb(nameof(ThresholdsVerified_IsFalse_WhenTheGridBehindTheBandIsUnverified_ButTheBandAndPercentageAreStillComputed));
+        SeedReference(db);
+        SeedCompany(db, TenantA, CompanyA, "SA");
+        SeedProfile(db, TenantA, CompanyA, "RETAIL");
+        SeedGrid(db, "RETAIL", "SmallB", 10m, 18m, 26m, 36m, verified: false);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Saudi", "FullTime", 8000m);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Indian", "FullTime", 5000m);
+        await db.SaveChangesAsync();
+
+        var s = (await Svc(db).GetStandingAsync(TenantA, CompanyA, AsOf)).Standing!;
+
+        s.ThresholdsVerified.Should().BeFalse("the screen withholds the band when its thresholds are not verified");
+        s.AchievedPercent.Should().Be(50m, "the Saudization percentage is a fact about the workforce and is always available");
+        s.Band.Should().Be(NitaqatBands.Platinum, "the computed band is unchanged for the callers that still read it");
+    }
+
+    [Fact]
+    public async Task ThresholdsVerified_IsTrue_WhenEveryThresholdBehindTheBandIsVerified()
+    {
+        await using var db = NewDb(nameof(ThresholdsVerified_IsTrue_WhenEveryThresholdBehindTheBandIsVerified));
+        SeedReference(db);
+        SeedCompany(db, TenantA, CompanyA, "SA");
+        SeedProfile(db, TenantA, CompanyA, "RETAIL");
+        SeedGrid(db, "RETAIL", "SmallB", 10m, 18m, 26m, 36m, verified: true);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Saudi", "FullTime", 8000m);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Indian", "FullTime", 5000m);
+        await db.SaveChangesAsync();
+
+        var s = (await Svc(db).GetStandingAsync(TenantA, CompanyA, AsOf)).Standing!;
+
+        s.ThresholdsVerified.Should().BeTrue();
+        s.Band.Should().Be(NitaqatBands.Platinum);
+    }
+
+    [Fact]
+    public async Task ThresholdsVerified_IsFalse_WhenOneThresholdOfTheLadderIsUnverified()
+    {
+        await using var db = NewDb(nameof(ThresholdsVerified_IsFalse_WhenOneThresholdOfTheLadderIsUnverified));
+        SeedReference(db);
+        SeedCompany(db, TenantA, CompanyA, "SA");
+        SeedProfile(db, TenantA, CompanyA, "RETAIL");
+        SeedGrid(db, "RETAIL", "SmallB", 10m, 18m, 26m, 36m, verified: true);
+        db.NitaqatBandThresholds.Local.First(t => t.Band == NitaqatBands.Platinum).IsVerified = false;
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Saudi", "FullTime", 8000m);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Indian", "FullTime", 5000m);
+        await db.SaveChangesAsync();
+
+        (await Svc(db).GetStandingAsync(TenantA, CompanyA, AsOf)).Standing!.ThresholdsVerified.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ThresholdsVerified_IsFalse_ForTheIllustrativeActivity_EvenWhenItsRowsAreMarkedVerified()
+    {
+        await using var db = NewDb(nameof(ThresholdsVerified_IsFalse_ForTheIllustrativeActivity_EvenWhenItsRowsAreMarkedVerified));
+        SeedReference(db);
+        SeedCompany(db, TenantA, CompanyA, "SA");
+        SeedProfile(db, TenantA, CompanyA, "GENERAL_UNVERIFIED");
+        SeedGrid(db, "GENERAL_UNVERIFIED", "SmallB", 10m, 18m, 26m, 36m, verified: true);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Saudi", "FullTime", 8000m);
+        for (var i = 0; i < 5; i++) AddEmployee(db, TenantA, CompanyA, "Indian", "FullTime", 5000m);
+        await db.SaveChangesAsync();
+
+        (await Svc(db).GetStandingAsync(TenantA, CompanyA, AsOf)).Standing!.ThresholdsVerified
+            .Should().BeFalse("the demo activity is not an MHRSD activity: no band computed from it is a real band");
+    }
+
+    [Fact]
     public async Task WhenQiwaDisagrees_TheProductSaysSoRatherThanQuietlyWinning()
     {
         await using var db = NewDb(nameof(WhenQiwaDisagrees_TheProductSaysSoRatherThanQuietlyWinning));

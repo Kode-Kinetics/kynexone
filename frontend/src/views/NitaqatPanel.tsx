@@ -13,6 +13,7 @@ import {
 } from '../api/nitaqat';
 import { companiesApi, type CompanyDto } from '../api/organization';
 import { isSaudiCompany } from '../lib/saudiCompany';
+import { useLocale } from '../contexts/LocaleContext';
 
 const NitaqatTrendChart = dynamic(
   () => import('../components/charts/compliance/NitaqatTrendChart').then((m) => m.NitaqatTrendChart),
@@ -576,6 +577,7 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 export function NitaqatPanel() {
+  const { t } = useLocale();
   const [companies, setCompanies] = useState<CompanyDto[] | null>(null);
   const [companyId, setCompanyId] = useState<string>('');
   const [data, setData] = useState<NitaqatStandingResponse | null>(null);
@@ -690,6 +692,9 @@ export function NitaqatPanel() {
   );
 
   const standing = data?.standing ?? null;
+  // A band is only shown when the thresholds behind it are verified for the activity (a server that does not say is
+  // treated as verified). Otherwise the percentage stays and the band, floor and distances are withheld.
+  const bandShown = standing?.thresholdsVerified !== false;
 
   return (
     <div className="space-y-4">
@@ -736,7 +741,7 @@ export function NitaqatPanel() {
         />
       )}
 
-      {standing && <BandingMethodNotice standing={standing} />}
+      {standing && bandShown && <BandingMethodNotice standing={standing} />}
 
       {standing && (
         <>
@@ -745,7 +750,7 @@ export function NitaqatPanel() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2.5">
-                  <BandChip band={standing.band} large />
+                  {bandShown && <BandChip band={standing.band} large />}
                   <span className="text-2xl font-semibold tabular-nums text-slate-800 dark:text-slate-100">
                     {standing.achievedPercent.toFixed(2)}%
                   </span>
@@ -762,9 +767,19 @@ export function NitaqatPanel() {
               </div>
             </div>
 
-            <BandRail standing={standing} />
+            {!bandShown && (
+              <p
+                data-testid="nitaqat-band-withheld"
+                className="mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-300"
+              >
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{t('No band is shown: the MHRSD thresholds for this activity are not loaded or not verified.')}</span>
+              </p>
+            )}
 
-            <p
+            {bandShown && <BandRail standing={standing} />}
+
+            {bandShown && <p
               className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
                 standing.restrictsServices
                   ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800/60 dark:bg-rose-900/20 dark:text-rose-300'
@@ -777,9 +792,9 @@ export function NitaqatPanel() {
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               )}
               <span>{standing.consequenceSummary}</span>
-            </p>
+            </p>}
 
-            {standing.disagreesWithQiwa && (
+            {bandShown && standing.disagreesWithQiwa && (
               <p className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
@@ -791,7 +806,7 @@ export function NitaqatPanel() {
               </p>
             )}
 
-            {!standing.allInputsVerified && (
+            {bandShown && !standing.allInputsVerified && (
               <details className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                 <summary className="cursor-pointer font-medium">
                   <Info className="me-1 inline h-4 w-4" />
@@ -812,7 +827,7 @@ export function NitaqatPanel() {
           </div>
 
           {/* Distance, both ways */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          {bandShown && <div className="grid gap-4 sm:grid-cols-3">
             <Stat
               label="Current band floor"
               value={`${standing.currentBandFloorPercent.toFixed(2)}%`}
@@ -833,9 +848,9 @@ export function NitaqatPanel() {
               sub={standing.bandBelow ? `then ${bandLabel(standing.bandBelow.band)}` : 'lowest band'}
               tone={standing.achievedPercent - standing.currentBandFloorPercent < 2 ? 'warn' : 'default'}
             />
-          </div>
+          </div>}
 
-          <ScenarioCard standing={standing} companyId={standing.companyId} />
+          {bandShown && <ScenarioCard standing={standing} companyId={standing.companyId} />}
 
           {/* Trend */}
           <div className="surface p-5">
@@ -874,11 +889,11 @@ export function NitaqatPanel() {
                 <div className="h-56">
                   <NitaqatTrendChart
                     points={trend.points}
-                    floor={standing.currentBandFloorPercent}
-                    nextFloor={standing.nextBandUp?.requiredPercent ?? null}
+                    floor={bandShown ? standing.currentBandFloorPercent : null}
+                    nextFloor={bandShown ? standing.nextBandUp?.requiredPercent ?? null : null}
                   />
                 </div>
-                {trend.projectedBandWarning && (
+                {bandShown && trend.projectedBandWarning && (
                   <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{trend.projectedBandWarning}</span>

@@ -74,6 +74,12 @@ export interface NitaqatStanding {
    */
   bandingMethod: string;
   bandingMethodNote: string;
+  /**
+   * True when every threshold behind the band is verified for the activity (and it is a real MHRSD activity).
+   * When false the screen shows the Saudization percentage but no band, floor or distance. Absent on an older
+   * server, which is treated as verified.
+   */
+  thresholdsVerified?: boolean;
 }
 
 export const NITAQAT_CURVE_METHOD = 'nitaqat_mutawar_curve';
