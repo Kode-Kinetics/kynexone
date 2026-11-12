@@ -317,6 +317,20 @@ public static class GlEventTypes
     /// <summary>Statutory cash left the bank on a run that is now voided: DR Prepaid Statutory / CR 2101-2106-2102.</summary>
     public const string RemitReclassPrefix    = "PayrollRemitReclass:";         // + group
 
+    /// <summary>
+    /// Every event posted as part of a payroll period's LOCK, under SourceModule "Payroll" with the run as the
+    /// source entity: the accrual itself, the bonus and settlement payable clearings emitted inside it, and the
+    /// monthly EOSB provision movement. These are month-end journals, so the export dates them on the period
+    /// end (see <c>JournalExportBuilder.DeriveAccountingDate</c>). A new journal written inside Lock (the
+    /// leave-provision accrual) is added HERE and nowhere else. Payment, remittance, reversal, contra and the
+    /// settlement-approval journals are deliberately not in this list: they are dated by when they happened.
+    /// </summary>
+    public static readonly string[] PayrollLockEvents =
+        { Accrual, BonusPayrollClearing, SettlementPayrollClearing, EosbProvisionAccrual };
+
+    public static bool IsPayrollLockEvent(string? eventType) =>
+        eventType is not null && Array.IndexOf(PayrollLockEvents, eventType) >= 0;
+
     public static string Remit(string group)         => RemitPrefix + group;
     public static string RemitReversal(string group) => RemitReversalPrefix + group;
     public static string RemitReclass(string group)  => RemitReclassPrefix + group;

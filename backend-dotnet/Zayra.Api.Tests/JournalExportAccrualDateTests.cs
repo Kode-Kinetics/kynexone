@@ -63,6 +63,49 @@ public class JournalExportAccrualDateTests
         JournalExportBuilder.Expand(new[] { outOfPeriod }, "CO").Single().AccountingDate.Should().Be(new DateOnly(2026, 11, 30));
     }
 
+    // Everything posted as part of a payroll period's Lock is a month-end journal: the clearing rows that retire
+    // a bonus / settlement payable and the EOSB provision movement are dated the period end like the accrual.
+    [Theory]
+    [InlineData(GlEventTypes.BonusPayrollClearing)]
+    [InlineData(GlEventTypes.SettlementPayrollClearing)]
+    [InlineData(GlEventTypes.EosbProvisionAccrual)]
+    public void EveryJournalPostedAtLock_ExportsOnThePeriodEnd(string eventType)
+    {
+        var inPeriod = Row(eventType, "2026-11", new DateOnly(2026, 11, 12));
+        var line = JournalExportBuilder.Expand(new[] { inPeriod }, "CO").Single();
+        line.AccountingDate.Should().Be(new DateOnly(2026, 11, 30));
+        line.SystemPostedDate.Should().Be(new DateOnly(2026, 11, 12));
+
+        var afterPeriod = Row(eventType, "2026-11", new DateOnly(2026, 12, 3));
+        JournalExportBuilder.Expand(new[] { afterPeriod }, "CO").Single().AccountingDate.Should().Be(new DateOnly(2026, 11, 30));
+    }
+
+    // Not part of a Lock: these happen when they happen, so an in-period posting keeps its own day.
+    [Theory]
+    [InlineData(GlEventTypes.SettlementAccrual)]
+    [InlineData(GlEventTypes.SettlementAccrualReversal)]
+    [InlineData(GlEventTypes.SettlementExternalPayment)]
+    [InlineData(GlEventTypes.SettlementResidualReclass)]
+    [InlineData(GlEventTypes.EosbProvisionConsumption)]
+    [InlineData(GlEventTypes.EosbProvisionConsumptionReversal)]
+    [InlineData(GlEventTypes.EosbActuarialTrueUp)]
+    [InlineData(GlEventTypes.NetSettlementReclass)]
+    [InlineData("PayrollRemitReclass:GOSI")]
+    public void JournalsNotPostedAtLock_KeepTheirOwnDate(string eventType)
+    {
+        var e = Row(eventType, "2026-11", new DateOnly(2026, 11, 12));
+        JournalExportBuilder.Expand(new[] { e }, "CO").Single().AccountingDate.Should().Be(new DateOnly(2026, 11, 12));
+    }
+
+    [Theory]
+    [InlineData(GlEventTypes.BonusPayrollClearing)]
+    [InlineData(GlEventTypes.EosbProvisionAccrual)]
+    public void ALockEventFromAnotherModule_IsNotAffected(string eventType)
+    {
+        var e = Row(eventType, "2026-11", new DateOnly(2026, 11, 12), module: "Bonus");
+        JournalExportBuilder.Expand(new[] { e }, "CO").Single().AccountingDate.Should().Be(new DateOnly(2026, 11, 12));
+    }
+
     [Fact]
     public void AnAccrualEventFromAnotherModule_IsNotAffected()
     {
