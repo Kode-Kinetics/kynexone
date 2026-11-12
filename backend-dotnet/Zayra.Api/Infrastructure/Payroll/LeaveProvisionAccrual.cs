@@ -52,7 +52,7 @@ public static class LeaveProvisionPlanner
     public static (List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<LeaveObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null)
+        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null, string? snapshotPeriod = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<LeaveProvisionSnapshot>();
@@ -106,7 +106,8 @@ public static class LeaveProvisionPlanner
             var movement = Math.Round(obligation - carried, 2);
             snapshots.Add(new LeaveProvisionSnapshot
             {
-                TenantId = tenantId, CompanyId = companyId, EmployeeId = o.EmployeeId, Period = period,
+                // Keyed on the PAY period (a Replacement may book its journal into a later GL period).
+                TenantId = tenantId, CompanyId = companyId, EmployeeId = o.EmployeeId, Period = snapshotPeriod ?? period,
                 MeasuredAt = measuredAt, PayrollRunId = runId, Days = Math.Round(o.Days, 2),
                 DailyRate = Math.Round(o.DailyRate, 6), Basis = o.Basis, Obligation = obligation,
                 CarriedBefore = carried, Movement = movement, IsCatchUp = o.IsCatchUp, Currency = currency,

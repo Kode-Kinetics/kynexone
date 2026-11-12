@@ -237,6 +237,37 @@ public sealed class PayrollVoidService
             .ToListAsync(ct);
         var originating = liveGl.Where(g => GlEventTypes.IsOriginatingPayrollJournal(g.EventType)).ToList();
 
+        // ── 2b. PROVISION ALREADY CONSUMED BY A SETTLEMENT ────────────────────────────────────────
+        // A final settlement's approval consumes (DR 2310 / 2330) and releases the provision this run carried for the leaver. Reversing
+        // the run's provision lines on top of that would push the liability into DEBIT. The settlement has to be cancelled first
+        // (its contra re-opens the provision), after which this void reverses the run's lines cleanly.
+        var provisionEmployeeRefs = originating
+            .Where(g => (g.EventType == GlEventTypes.EosbProvisionAccrual || g.EventType == GlEventTypes.LeaveProvisionAccrual)
+                     && int.TryParse(g.SourceEntityRef, out _))
+            .Select(g => g.SourceEntityRef).Distinct().ToList();
+        if (provisionEmployeeRefs.Count > 0)
+        {
+            var consumedRefs = await ScopedBypass.TenantWide(_db.FinanceGlEntries, tenantId,
+                    "A void must see a settlement's provision consumption booked under ANY legal entity before it reverses the run's provision lines.")
+                .AsNoTracking()
+                .Where(x => x.SourceModule == "Payroll" && !x.IsReversed
+                         && (x.EventType == GlEventTypes.EosbProvisionConsumption || x.EventType == GlEventTypes.LeaveProvisionConsumption)
+                         && provisionEmployeeRefs.Contains(x.SourceEntityRef))
+                .Select(x => x.SourceEntityRef).Distinct().ToListAsync(ct);
+            if (consumedRefs.Count > 0)
+            {
+                var ids = consumedRefs.Select(r => int.Parse(r)).ToList();
+                var names = await _db.Employees.AsNoTracking()
+                    .Where(e => e.TenantId == tenantId && ids.Contains(e.Id))
+                    .Select(e => e.FullName).ToListAsync(ct);
+                var who = string.Join(", ", names.OrderBy(n => n, StringComparer.Ordinal));
+                return VoidRunResult.Blocked("provision_consumed_by_settlement",
+                    $"A final settlement has already consumed the leave or end-of-service provision this run booked for {who}. " +
+                    $"Voiding the run now would push the provision account into debit: cancel the final settlement for {who} first, then void the run.",
+                    new { employeeIds = ids });
+            }
+        }
+
         // ── 3. ERP — we cannot un-post someone else's ledger ───────────────────────────────────────
         if (run.ErpPostingStatus == ErpPostingStatuses.Posted && !opts.AcknowledgeErpPosted)
             return VoidRunResult.Blocked("erp_already_posted",

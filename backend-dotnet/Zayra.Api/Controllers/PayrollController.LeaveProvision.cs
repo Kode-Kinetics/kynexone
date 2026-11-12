@@ -31,7 +31,7 @@ namespace Zayra.Api.Controllers;
 public partial class PayrollController
 {
     private sealed record LeaveProvisionBuild(
-        List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots, int CatchUpEmployees, int UnmeasuredEmployees)
+        List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots, int CatchUpEmployees, int UnmeasuredEmployees, bool On = false)
     {
         public static LeaveProvisionBuild None() => new(new List<FinanceGlEntry>(), new List<LeaveProvisionSnapshot>(), 0, 0);
     }
@@ -45,6 +45,8 @@ public partial class PayrollController
             return LeaveProvisionBuild.None();
 
         var periodEnd = new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
+        // The measurement is keyed on the PAY period; `period` is the GL posting period the lines book into (a Replacement may post later).
+        var payPeriod = $"{run.Year}-{run.Month:D2}";
         var mode = await new CompanyRatePolicyResolver(_db).ResolveAsync(
             tenantId, companyId, LeaveProvisioningRateKeys.Mode, periodEnd, ct);
         if (mode is null || !LeaveProvisioningRateKeys.IsOn(mode.RateValue)) return LeaveProvisionBuild.None();
@@ -96,7 +98,10 @@ public partial class PayrollController
         {
             if (settled.Contains(employee.Id)) continue;
             var history = measured.Where(m => m.EmployeeId == employee.Id).ToList();
-            if (history.Any(m => string.CompareOrdinal(m.Period, period) >= 0)) continue;
+            // A Replacement re-measures its OWN month even when a later month is already measured; every other run must not wind back.
+            if (run.RunType == PayrollRunTypes.Replacement
+                ? history.Any(m => m.Period == payPeriod)
+                : history.Any(m => string.CompareOrdinal(m.Period, payPeriod) >= 0)) continue;
 
             salaries.TryGetValue(employee.Id, out var salary);
             if (salary is null && (employee.Salary ?? 0m) <= 0m) { unmeasured++; continue; }
@@ -109,9 +114,7 @@ public partial class PayrollController
                 statutoryAnnualLeaveCashOut: rules.LeaveCashOutOnExit,
                 basisLabel: LeaveCashOutRate.LabelFor(rules.LeaveCashOutBasis),
                 netCarriedForward: true);
-            var carried = positions
-                .Where(p => p.EmployeeId == employee.Id && (p.CompanyId == companyId || p.CompanyId is null))
-                .Sum(p => p.Remaining);
+            var carried = LeaveProvisionLedger.CarriedFor(positions, employee.Id, companyId);
             obligations.Add(new LeaveObligation(
                 employee.Id, employee.EmployeeCode, encashment.TotalDays,
                 dayRateBase > 0m ? Math.Round(dayRateBase / 30m, 6) : 0m, rules.LeaveCashOutBasis,
@@ -119,13 +122,13 @@ public partial class PayrollController
                 CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
         }
 
-        if (obligations.Count == 0) return new LeaveProvisionBuild(new List<FinanceGlEntry>(), new List<LeaveProvisionSnapshot>(), 0, unmeasured);
+        if (obligations.Count == 0) return new LeaveProvisionBuild(new List<FinanceGlEntry>(), new List<LeaveProvisionSnapshot>(), 0, unmeasured, On: true);
         var (lines, snapshots) = LeaveProvisionPlanner.Build(
             tenantId, companyId, run.Id, period, periodEnd, currency,
             GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ExpenseDriverKey, glCtx),
             GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ProvisionDriverKey, glCtx),
             obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow),
-            costPlan.Enabled ? new LeaveCostContext(glCtx) : null);
-        return new LeaveProvisionBuild(lines, snapshots, snapshots.Count(s => s.IsCatchUp), unmeasured);
+            costPlan.Enabled ? new LeaveCostContext(glCtx) : null, payPeriod);
+        return new LeaveProvisionBuild(lines, snapshots, snapshots.Count(s => s.IsCatchUp), unmeasured, On: true);
     }
 }

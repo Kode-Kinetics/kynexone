@@ -70,7 +70,7 @@ public static class EosbProvisionPlanner
     public static (List<FinanceGlEntry> Lines, List<EosbProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<EosbObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate, EosbCostContext? cost = null)
+        Guid? postedBy, string postedByName, DateOnly entryDate, EosbCostContext? cost = null, string? snapshotPeriod = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<EosbProvisionSnapshot>();
@@ -123,7 +123,8 @@ public static class EosbProvisionPlanner
             var movement = Math.Round(obligation - carried, 2);
             snapshots.Add(new EosbProvisionSnapshot
             {
-                TenantId = tenantId, CompanyId = companyId, EmployeeId = o.EmployeeId, Period = period,
+                // Keyed on the PAY period (a Replacement may book its journal into a later GL period).
+                TenantId = tenantId, CompanyId = companyId, EmployeeId = o.EmployeeId, Period = snapshotPeriod ?? period,
                 MeasuredAt = measuredAt, PayrollRunId = runId, Obligation = obligation,
                 CarriedBefore = carried, Movement = movement, IsCatchUp = o.IsCatchUp,
                 WageBase = Math.Round(o.WageBase, 2), ServiceYears = Math.Round(o.ServiceYears, 4),

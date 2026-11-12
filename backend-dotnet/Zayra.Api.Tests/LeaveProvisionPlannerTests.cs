@@ -147,4 +147,36 @@ public class LeaveProvisionPlannerTests
         LeaveCashOutRate.MonthlyGross(salary, 6_000m, 150m).Should().Be(9_000m);
         LeaveCashOutRate.MonthlyGross(null, 5_000m, 0m).Should().Be(5_000m, "no salary record: the employee's own salary figure is the whole package");
     }
+
+    // ── The carried provision when the provision account was remapped between months ──
+
+    [Fact]
+    public void Carried_NetsAcrossAccounts_BeforeClampingOnce_SoARemapDoesNotRepeatTheRelease()
+    {
+        // June credited 2330 with 3,150; the account was then remapped and July's fall of 375 debits the NEW account:
+        // that position alone is -375 (clamped to 0 on its own), but the employee still carries 3,150 - 375 = 2,775.
+        var positions = new[]
+        {
+            new LeaveProvisionPosition(1, Company, "2330 - Accrued Annual Leave Provision", "SAR", 3_150m, 0m),
+            new LeaveProvisionPosition(1, Company, "2331 - Leave Provision (new)", "SAR", -375m, 0m),
+            new LeaveProvisionPosition(2, Company, "2330 - Accrued Annual Leave Provision", "SAR", 100m, 0m),
+        };
+
+        LeaveProvisionLedger.CarriedFor(positions, 1, Company).Should().Be(2_775m);
+        LeaveProvisionLedger.CarriedFor(positions, 3, Company).Should().Be(0m);
+        LeaveProvisionLedger.CarriedFor(new[] { new LeaveProvisionPosition(1, Company, "2330", "SAR", -10m, 0m) }, 1, Company)
+            .Should().Be(0m, "clamped once, never negative");
+    }
+
+    [Fact]
+    public void Carried_Eosb_NetsAcrossAccounts_BeforeClampingOnce()
+    {
+        var positions = new[]
+        {
+            new EosbProvisionPosition(1, Company, "2310 - End of Service Benefit Provision", "SAR", 15_000m, 0m),
+            new EosbProvisionPosition(1, Company, "2311 - EOSB (new)", "SAR", -500m, 0m),
+        };
+
+        EosbProvisionLedger.CarriedFor(positions, 1, Company).Should().Be(14_500m);
+    }
 }

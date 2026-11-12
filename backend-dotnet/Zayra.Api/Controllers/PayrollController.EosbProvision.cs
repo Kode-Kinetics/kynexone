@@ -53,6 +53,8 @@ public partial class PayrollController
 
         var periodStart = new DateOnly(run.Year, run.Month, 1);
         var periodEnd = new DateOnly(run.Year, run.Month, DateTime.DaysInMonth(run.Year, run.Month));
+        // The measurement is keyed on the PAY period; `period` is the GL posting period the lines book into (a Replacement may post later).
+        var payPeriod = $"{run.Year}-{run.Month:D2}";
         var mode = await new CompanyRatePolicyResolver(_db).ResolveAsync(
             tenantId, companyId, EosbProvisioningRateKeys.Mode, periodEnd, ct);
         if (mode is null || !EosbProvisioningRateKeys.IsOn(mode.RateValue)) return EosbProvisionBuild.None();
@@ -128,7 +130,10 @@ public partial class PayrollController
         {
             if (settled.Contains(employee.Id)) continue;
             var history = measured.Where(m => m.EmployeeId == employee.Id).ToList();
-            if (history.Any(m => string.CompareOrdinal(m.Period, period) >= 0)) continue;
+            // A Replacement re-measures its OWN month even when a later month is already measured; every other run must not wind back.
+            if (run.RunType == PayrollRunTypes.Replacement
+                ? history.Any(m => m.Period == payPeriod)
+                : history.Any(m => string.CompareOrdinal(m.Period, payPeriod) >= 0)) continue;
 
             var (serviceStart, _) = PickEosbServiceStart(employee, carriedStarts.GetValueOrDefault(employee.Id));
             if (serviceStart > periodEnd) continue;
@@ -142,9 +147,7 @@ public partial class PayrollController
                 company.CountryCode, company.Jurisdiction, companyId, wageBasis, serviceStart,
                 periodEnd.ToDateTime(TimeOnly.MinValue), EosbProvisioningRateKeys.ObligationScenario,
                 employee, unpaid, gcc, ct);
-            var carried = positions
-                .Where(p => p.EmployeeId == employee.Id && (p.CompanyId == companyId || p.CompanyId is null))
-                .Sum(p => p.Remaining);
+            var carried = EosbProvisionLedger.CarriedFor(positions, employee.Id, companyId);
             obligations.Add(new EosbObligation(
                 employee.Id, employee.EmployeeCode, result.TotalGratuity, carried,
                 IsCatchUp: history.Count == 0,
@@ -159,7 +162,7 @@ public partial class PayrollController
             GlAccountResolver.AccountLabel(EosbProvisionExpenseDriver, glCtx),
             GlAccountResolver.AccountLabel(EosbProvisionLedger.ProvisionDriverKey, glCtx),
             obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow),
-            costPlan.Enabled ? new EosbCostContext(glCtx) : null);
+            costPlan.Enabled ? new EosbCostContext(glCtx) : null, payPeriod);
         return new EosbProvisionBuild(lines, snapshots, null);
     }
 }

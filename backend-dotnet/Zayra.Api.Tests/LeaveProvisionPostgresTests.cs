@@ -159,6 +159,81 @@ public sealed class LeaveProvisionPostgresTests
     }
 
     [Fact]
+    public async Task SwitchingLeaveProvisioningOnBetweenApproveAndLock_SendsTheCostedRunBack_ButBalanceMovesDoNot()
+    {
+        await using var k = await KitAsync();
+        // Off at approval: remove the switch row the kit seeded, approve, then switch on before Lock.
+        await using (var db = k.K.NewContext())
+        {
+            db.CompanyRatePolicies.RemoveRange(db.CompanyRatePolicies.Where(p => p.TenantId == k.TenantId && p.RateKey == LeaveProvisioningRateKeys.Mode));
+            await db.SaveChangesAsync();
+        }
+        var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 6000m), E("E2", "BASIC", 6000m) }, Array.Empty<(string, string, string, decimal, bool)>(), month: 6);
+        await using (var db = k.K.NewContext())
+        {
+            await ReconTestSupport.SignOffAsync(db, run.Id);
+            (await Ksa(db, k.TenantId, k.ApproverId).Approve(run.Id, new PayrollDecisionRequest("ok"), default)).Should().BeOfType<OkObjectResult>();
+        }
+        await using (var db = k.K.NewContext())
+        {
+            db.CompanyRatePolicies.Add(new CompanyRatePolicy
+            {
+                TenantId = k.TenantId, CompanyId = k.CompanyId, RateKey = LeaveProvisioningRateKeys.Mode, RateCategory = "PayParameter", RateValue = LeaveProvisioningRateKeys.BalanceMonthly,
+                DataType = "string", Unit = "enum", EffectiveFrom = new DateOnly(2026, 6, 1), Status = CompanyPolicyStatuses.Active,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await using var lockDb = k.K.NewContext();
+        var res = await Ksa(lockDb, k.TenantId, k.LockerId).Lock(run.Id, default);
+
+        res.Should().NotBeOfType<OkObjectResult>("the leave provision switch is part of what the approver sealed");
+        await using var read = k.K.NewContext();
+        (await read.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).Status.Should().Be("Processed");
+    }
+
+    [Fact]
+    public async Task ARequiredCostCentreOnTheLeaveExpense_WithAnUncostedEmployee_RefusesWithTheCostCentreError_NotGlUnbalanced()
+    {
+        await using var k = await KitAsync();
+        await using (var db = k.K.NewContext())
+        {
+            // Only the leave expense account requires a cost centre; E3 resolves to none.
+            foreach (var a in await db.GlAccounts.Where(a => a.TenantId == k.TenantId).ToListAsync())
+                a.CostCenterRule = a.Code == "5115" ? "Required" : "Optional";
+            await db.SaveChangesAsync();
+        }
+        var e3 = await k.AddEmployee("E3");
+        e3.JoiningDate = new DateTime(2023, 7, 1, 0, 0, 0, DateTimeKind.Utc); e3.Nationality = "SAU"; e3.ContractType = "Indefinite"; e3.WorkEmail = "e3@test.com";
+        var structure = await k.Db.SalaryStructures.FirstAsync(s => s.TenantId == k.TenantId);
+        var leaveType = await k.Db.LeaveTypes.FirstAsync(t => t.TenantId == k.TenantId);
+        k.Db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure
+        {
+            TenantId = k.TenantId, EmployeeId = e3.Id, SalaryStructureId = structure.Id, BasicSalary = 6_000m, HousingAllowance = 2_000m, TransportAllowance = 1_000m,
+            Currency = "SAR", EffectiveDate = new DateOnly(2023, 6, 30), IsActive = true,
+        });
+        k.Db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = k.TenantId, EmployeeId = e3.Id, EmployeeName = e3.FullName, LeaveTypeId = leaveType.Id, LeaveTypeName = "Annual leave", Year = 2026, Accrued = 4m,
+        });
+        await k.Db.SaveChangesAsync();
+        k.Db.ChangeTracker.Clear();
+        var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 6000m), E("E2", "BASIC", 6000m), E("E3", "BASIC", 6000m) }, Array.Empty<(string, string, string, decimal, bool)>(), month: 6);
+
+        await using (var db = k.K.NewContext())
+        {
+            await ReconTestSupport.SignOffAsync(db, run.Id);
+            var approved = await Ksa(db, k.TenantId, k.ApproverId).Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedUncostedCount: 1), default);
+            approved.Should().BeOfType<OkObjectResult>(Json(approved).ToString());
+        }
+        await using var lockDb = k.K.NewContext();
+        var res = await Ksa(lockDb, k.TenantId, k.LockerId).Lock(run.Id, default);
+
+        Err(res).Should().NotBe("gl_unbalanced");
+        Err(res).Should().Be("cost_centre_required", Json(res).ToString());
+    }
+
+    [Fact]
     public async Task TheErpExport_CarriesTheLeaveLines_TiesOutToTheLedger_AndNamesNoEmployee()
     {
         await using var k = await KitAsync();
