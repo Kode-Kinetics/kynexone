@@ -736,7 +736,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
             <Field label={t('Hours Requested')}><input type="number" step="0.5" min="1" max="8" className={inp} value={form.hoursRequested} onChange={e => set('hoursRequested', e.target.value)} /></Field>
           )}
 
-          <Field label={`Reason${selectedType?.requiresReason ? ' *' : ''}`}>
+          <Field label={`${t('Reason')}${selectedType?.requiresReason ? ' *' : ''}`}>
             <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? t('Reason is required for this leave type…') : t('Optional reason…')} />
           </Field>
 

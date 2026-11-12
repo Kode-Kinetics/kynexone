@@ -3434,7 +3434,7 @@ function EOSBTab() {
       setResult(res as Record<string, unknown>);
       payrollApi.listEosb(Number(employeeId)).then(h => setHistory(h as unknown[])).catch(() => {});
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Calculation failed.';
+      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Calculation failed.');
       setError(msg);
     } finally { setLoading(false); }
   };

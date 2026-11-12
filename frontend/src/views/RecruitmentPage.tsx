@@ -1565,7 +1565,7 @@ function CandidatesTab() {
                   <p className="text-xs text-slate-400 dark:text-slate-500">{c.currentCompany || ''}</p>
                 </td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.totalExperienceYears}y</td>
-                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel || '—'}</td>
+                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel ? t(c.educationLevel) : '—'}</td>
                 <td className="px-4 py-3">
                   <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{t(c.source)}</span>
                 </td>
