@@ -138,6 +138,75 @@ public class AttendanceRestDayLateEarlyTests
         (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == AttendanceImpactTypes.EarlyExitDeduction)).Should().BeFalse();
     }
 
+    // ── A public holiday has no required hours either ────────────────────────────
+
+    private static async Task<(Guid Tenant, int Employee)> SeedHolidayPunchesAsync(ZayraDbContext db, DateOnly date, (int H, int M) @in, (int H, int M) @out)
+    {
+        var (tenant, emp) = await SeedPunchesAsync(db, date, @in, @out);
+        var calendar = new PublicHolidayCalendar { TenantId = tenant, Name = "Co", IsActive = true };
+        db.PublicHolidayCalendars.Add(calendar);
+        db.PublicHolidays.Add(new PublicHoliday { TenantId = tenant, CalendarId = calendar.Id, Date = date, NameEn = "Eid" });
+        await db.SaveChangesAsync();
+        return (tenant, emp);
+    }
+
+    [Fact]
+    public async Task APublicHoliday_LateArrivalAndEarlyLeave_ProduceNoMinutesAndNoDeduction_ButKeepOvertime()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedHolidayPunchesAsync(db, Thu12, (12, 0), (17, 0));
+
+        await ProcessAsync(db, tenant, emp, Thu12);
+
+        var day = await db.AttendanceDailyRecords.SingleAsync();
+        day.LateMinutes.Should().Be(0);
+        day.EarlyExitMinutes.Should().Be(0);
+        day.Status.Should().Be("Present");
+        day.OvertimeMinutes.Should().Be(240, "overtime on a holiday is unchanged: 12:00-17:00 less the 60-minute break");
+        (await db.AttendancePayrollImpacts.SingleAsync()).ImpactType.Should().Be(AttendanceImpactTypes.OvertimePayable);
+        (await db.AttendanceExceptions.AnyAsync(x => x.ExceptionType == "LateArrival")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TheSameLateArrivalOnAnOrdinaryWeekday_StillGetsItsLateDeduction()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedPunchesAsync(db, Thu12, (12, 0), (18, 0));
+
+        await ProcessAsync(db, tenant, emp, Thu12);
+
+        (await db.AttendanceDailyRecords.SingleAsync()).LateMinutes.Should().Be(170);
+        (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == AttendanceImpactTypes.LateDeduction)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task TheStaleCheck_AgreesWithTheProcessor_ForAProcessedPublicHoliday()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedHolidayPunchesAsync(db, Thu12, (12, 0), (17, 0));
+        await ProcessAsync(db, tenant, emp, Thu12);
+
+        (await AttendanceImpactReconciliation.FindStaleDaysAsync(db, tenant, [emp], Thu12, Thu12, null, default)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AHolidayRecordWrittenWithLateMinutes_IsFlaggedStale_SoItCanBeRecomputed()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedHolidayPunchesAsync(db, Thu12, (12, 0), (17, 0));
+        await ProcessAsync(db, tenant, emp, Thu12);
+        var day = await db.AttendanceDailyRecords.SingleAsync();
+        day.LateMinutes = 170; day.EarlyExitMinutes = 45;
+        db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact
+            { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, ImpactType = AttendanceImpactTypes.LateDeduction, Minutes = 215, DailyRecordId = day.Id });
+        await db.SaveChangesAsync();
+
+        (await AttendanceImpactReconciliation.FindStaleDaysAsync(db, tenant, [emp], Thu12, Thu12, null, default))
+            .Should().ContainSingle().Which.Reason.Should().Be(AttendanceImpactReconciliation.MinutesDiffer);
+        await ProcessAsync(db, tenant, emp, Thu12);
+        (await db.AttendancePayrollImpacts.AnyAsync(x => x.ImpactType == AttendanceImpactTypes.LateDeduction)).Should().BeFalse();
+    }
+
     private sealed class FixedClock(DateTime utcNow) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => new(DateTime.SpecifyKind(utcNow, DateTimeKind.Utc));
