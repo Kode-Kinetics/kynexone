@@ -134,8 +134,14 @@ public sealed class SaudiComplianceDashboardService
             if (lastRun.Status != "Locked" && lastRun.Status != "Paid")
                 issues.Add($"Latest payroll run ({lastRunPeriod}) is not yet approved/locked.");
 
+            // The payroll run's population: active, undeleted employees. A Draft, left or removed employee is never paid by
+            // the run, so a missing IBAN on their profile is not a WPS problem (it used to count them: 46 "missing" with 9
+            // active employees who all had one).
+            var activeIds = _db.Employees.AsNoTracking()
+                .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active")
+                .Select(e => e.Id);
             var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
-                .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+                .Where(p => p.TenantId == tenantId && !p.IsDeleted && activeIds.Contains(p.EmployeeId))
                 .ToListAsync(ct);
             missingIbanCount = profiles.Count(p => !IbanValidator.IsValid(p.Iban));
             if (missingIbanCount > 0)
@@ -188,8 +194,14 @@ public sealed class SaudiComplianceDashboardService
             reports.Add((await GosiReadinessValidator.AssessAsync(
                 _rules, e, GosiReadinessValidator.SalaryForPeriod(salaries, e.Id, periodDate), periodDate, ct)).Readiness);
 
-        var readyCount      = reports.Count(r => r.IsReady);
-        var blockedCount    = reports.Count(r => !r.IsReady);
+        // Ready means what the run means: no blocking finding AND no unrecorded GOSI cohort. The run raises
+        // GOSI_COHORT_NOT_RECORDED for every Saudi with no first-registration date (the contribution basis is unverified),
+        // so "100% ready" next to that flag was a contradiction. The finding stays a warning in the run and in the
+        // per-employee GOSI readiness report; only this dashboard counts it against readiness.
+        static bool Ready(Zayra.Api.Infrastructure.Payroll.GosiReadinessReport r) =>
+            r.IsReady && !r.Warnings.Any(w => w.Code == PayrollValidationEngine.GosiCohortNotRecorded);
+        var readyCount      = reports.Count(Ready);
+        var blockedCount    = reports.Count(r => !Ready(r));
         var warningCount    = reports.Count(r => r.WarningCount > 0);
         // Was `employees.Count == 0 ? 100.0`, which put a full green "100% Readiness" bar directly
         // above the tenant's own "Company GOSI employer ID is not set" warning. Zero ready out of
@@ -199,12 +211,14 @@ public sealed class SaudiComplianceDashboardService
 
         // Blocked employee list: only codes + blocking issue codes, no sensitive values.
         var blockedEmployees = reports
-            .Where(r => !r.IsReady)
+            .Where(r => !Ready(r))
             .Join(employees, r => r.EmployeeId, e => e.Id, (r, e) => new GosiBlockedEmployee(
                 r.EmployeeId,
                 r.EmployeeCode,
                 e.FullName,
-                r.BlockingIssues.Select(i => i.Code).ToList()))
+                r.BlockingIssues.Select(i => i.Code)
+                    .Concat(r.Warnings.Where(w => w.Code == PayrollValidationEngine.GosiCohortNotRecorded).Select(w => w.Code))
+                    .ToList()))
             .ToList();
 
         // Variance count from the most recent completed payroll run.
