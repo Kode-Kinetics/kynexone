@@ -484,8 +484,8 @@ test('shared_leave_modal_preserves_holiday_and_source_page_editors', async ({ pa
 test('existing_record_identity_survives_edit', async ({ page }) => {
   await boot(page, { area: 'leave', setting: 'leavePolicies' });
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(page.getByPlaceholder('e.g. UAE Annual Leave — Full-Time')).toHaveValue('Saved annual policy');
-  await page.getByPlaceholder('e.g. UAE Annual Leave — Full-Time').fill('Renamed annual policy');
+  await expect(page.getByPlaceholder('For example: Saudi Annual Leave — Full-Time')).toHaveValue('Saved annual policy');
+  await page.getByPlaceholder('For example: Saudi Annual Leave — Full-Time').fill('Renamed annual policy');
   const request = page.waitForRequest(request => request.method() === 'PUT' && request.url().includes('/leave/policies/'));
   await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   expect(new URL((await request).url()).pathname).toBe('/api/leave/policies/existing-policy');
@@ -656,7 +656,7 @@ test('source_pages_still_use_the_canonical_forms', async ({ page }) => {
   await expect(page).toHaveURL(/\/setup\?tab=leavePolicies/);
   await expect(page.getByText('Saved annual policy', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(page.getByPlaceholder('e.g. UAE Annual Leave — Full-Time')).toHaveValue('Saved annual policy');
+  await expect(page.getByPlaceholder('For example: Saudi Annual Leave — Full-Time')).toHaveValue('Saved annual policy');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   // Onboarding keeps its daily work (generating a joiner's tasks from a checklist) and links to the checklist editor,
   // which is Setup → Onboarding checklists and is the same editor.

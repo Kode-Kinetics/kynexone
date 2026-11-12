@@ -154,9 +154,9 @@
   "totals": {
     "hardcoded": 2721,
     "rawStatus": 31,
-    "locale": 175,
+    "locale": 173,
     "icons": 0,
-    "files": 115
+    "files": 114
   },
   "fragmentKeys": [
     ", ",
@@ -494,9 +494,6 @@
     "src/lib/calendarDate.ts": {
       "locale": 1
     },
-    "src/lib/newHireReview.ts": {
-      "locale": 1
-    },
     "src/lib/paging.ts": {
       "locale": 2
     },
@@ -535,7 +532,7 @@
       "locale": 3
     },
     "src/views/LeavePage.tsx": {
-      "locale": 3
+      "locale": 2
     },
     "src/views/LoansPage.tsx": {
       "hardcoded": 261,

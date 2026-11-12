@@ -5,7 +5,11 @@
  */
 
 import { normalizeDigits, validateIdNumber } from './hire/saudiId';
-import { msg } from '../i18n/translations';
+import { msg, translate } from '../i18n/translations';
+
+/** A translator for messages with {placeholders} and plurals; the default speaks English so a caller without one still reads correctly. */
+export type Translate = (key: string, params?: Record<string, string | number>) => string;
+const english: Translate = (key, params) => translate('en', key, params);
 
 export type DraftTone = 'amber' | 'emerald' | 'rose' | 'slate';
 
@@ -73,12 +77,12 @@ export const REJECTION_REASON_MIN = 5;
 export const REJECTION_REASON_MAX = 1000;
 
 /** Mirrors the server rule so the reviewer learns it before the round trip, not after. */
-export function rejectionReasonError(reason: string): string | null {
+export function rejectionReasonError(reason: string, t: Translate = english): string | null {
   const trimmed = reason.trim();
   if (trimmed.length < REJECTION_REASON_MIN)
-    return `Say why this hire is rejected (at least ${REJECTION_REASON_MIN} characters). The reason is kept on the record.`;
+    return t(msg('Say why this hire is rejected (at least {min} characters). The reason is kept on the record.'), { min: REJECTION_REASON_MIN });
   if (trimmed.length > REJECTION_REASON_MAX)
-    return `Keep the reason under ${REJECTION_REASON_MAX.toLocaleString('en-GB')} characters.`;
+    return t(msg('Keep the reason under {max} characters.'), { max: REJECTION_REASON_MAX });
   return null;
 }
 
@@ -90,11 +94,12 @@ export function approveDisabledReason(
   canApprove: boolean,
   approveBlockedReason: string | null,
   problemCount: number | null,
+  t: Translate = english,
 ): string | null {
-  if (!canApprove) return approveBlockedReason ?? 'You cannot approve this draft.';
-  if (problemCount === null) return 'Checking whether this hire can be activated…';
+  if (!canApprove) return approveBlockedReason ?? t(msg('You cannot approve this draft.'));
+  if (problemCount === null) return t(msg('Checking whether this hire can be activated…'));
   if (problemCount > 0)
-    return `Fix the ${problemCount === 1 ? 'problem' : `${problemCount} problems`} above before approving. Activation would be refused.`;
+    return t(msg('Fix the {count, plural, one {problem} other {# problems}} above before approving. Activation would be refused.'), { count: problemCount });
   return null;
 }
 
@@ -154,14 +159,14 @@ type AxiosLike = {
  * difference: a 403 carries the server's own reason when it gives one, because the draft endpoints
  * use 403 for maker-checker ("a second user with employees.approve must activate this hire"), which is actionable.
  */
-export function draftRequestFailureReason(err: unknown): string {
+export function draftRequestFailureReason(err: unknown, t: Translate = english): string {
   const e = err as AxiosLike;
   const status = e?.response?.status;
   const message = e?.response?.data?.message;
-  if (status === 403) return message ?? 'You do not have permission for this.';
-  if (e?.isAxiosError && !e.response) return 'The server could not be reached. Check your connection, then retry.';
-  if (e?.response) return message ?? `The server returned an error (HTTP ${status}).`;
-  return 'Something went wrong. Please retry.';
+  if (status === 403) return message ?? t(msg('You do not have permission for this.'));
+  if (e?.isAxiosError && !e.response) return t(msg('The server could not be reached. Check your connection, then retry.'));
+  if (e?.response) return message ?? t(msg('The server returned an error (HTTP {status}).'), { status: status ?? 0 });
+  return t(msg('Something went wrong. Please retry.'));
 }
 
 /** True when the server refused because the draft had already been decided (409 draft_closed). */

@@ -10,7 +10,7 @@ const SHOTS = process.env.LAUNCH_I18N_SHOTS || '/tmp/claude/demo/i18n';
 const LOCALE = (process.env.LAUNCH_I18N_LOCALE || 'ar') as 'ar' | 'en';
 
 const PERMS = ['dashboard.read', 'payroll.read', 'payroll.write', 'payroll.approve', 'payroll.lock', 'employees.read', 'employees.write', 'leave.read', 'leave.write', 'leave.approve', 'leave.policy_manage',
-  'attendance.read', 'attendance.write', 'attendance.manage', 'recruitment.read', 'recruitment.write', 'recruitment.approve', 'compliance.read', 'compliance.write', 'gosi.read', 'gosi.write', 'employees.access.issue'];
+  'attendance.read', 'attendance.write', 'attendance.manage', 'recruitment.read', 'recruitment.write', 'recruitment.approve', 'compliance.read', 'compliance.write', 'gosi.read', 'gosi.write', 'employees.access.issue', 'ess.read', 'ess.write'];
 const USER = {
   id: 'u1', employeeId: 9, tenantId: 't1', tenantSlug: 'fixture', email: 'hr@example.invalid', fullName: 'Yaser Al-Ghamdi', roles: ['Admin'], accountType: 'Tenant', isGroupScope: true, permissions: PERMS,
   companies: [{ id: 'c1', name: 'Acme Arabia', code: 'ACME', countryCode: 'SA', isActive: true }],
@@ -102,6 +102,9 @@ function mockApi(page: Page, unmocked: Set<string>, ctx: { screen: string }) {
     if (p === '/api/leave/balances') return json({ items: [{ employeeId: 7, employeeName: 'Khalid Alotaibi', leaveTypeId: 'lt1', leaveTypeName: 'Annual Leave', year: 2026, entitledDays: 21, carriedForwardDays: 3, usedDays: 8, pendingDays: 2, balanceDays: 14, encashedDays: 0 }], total: 1, page: 1, pageSize: 100 });
     if (p === '/api/leave/policies') return json({ items: [{ id: 'lp1', name: 'Saudi Annual Leave — Full-Time', leaveTypeId: 'lt1', countryCode: 'SA', annualEntitlementDays: 21, accrualMethod: 'Monthly', departmentName: '', grade: '', employmentType: '', companyId: 'c1', isActive: true, isEncashable: true, includesWeekends: false, includesPublicHolidays: false, payrollImpact: 'None' }], total: 1, page: 1, pageSize: 100 });
     if (p === '/api/leave/holidays/calendars') return json([{ id: 'hc1', name: 'Saudi Public Holidays 2026', year: 2026, countryCode: 'SA', companyId: 'c1', holidays: [{ id: 'h1', name: 'Saudi National Day', date: '2026-09-23', hijriDate: '', holidayType: 'Public' }] }]);
+    if (p === '/api/ess/leave/balance') return json([{ leaveTypeId: 'lt1', leaveTypeName: 'Annual Leave', entitled: 21, used: 8, pending: 2, available: 14 }, { leaveTypeId: 'lt3', leaveTypeName: 'Maternity Leave', entitled: 0, used: 0, pending: 0, available: 0, statutoryEntitlementDays: 84 }]);
+    if (p === '/api/leave/calendar') return json([{ id: 'ce1', employeeId: 7, employeeName: 'Khalid Alotaibi', leaveTypeName: 'Annual Leave', colorCode: '#10b981', startDate: '2026-11-18', endDate: '2026-11-20', status: 'Approved', totalDays: 3, department: 'Sales' }]);
+    if (p === '/api/leave/calendar/team' || p === '/api/leave/calendar/today') return json({});
     if (p === '/api/leave/dashboard' || p === '/api/leave/summary') return json({ onLeaveToday: [], pendingApprovals: 1, unauthorizedAbsences: 0, pendingEncashments: 0 });
     if (p.startsWith('/api/leave/')) return json({ items: [], total: 0, page: 1, pageSize: 100 });
     // saudi compliance / gosi

@@ -319,6 +319,15 @@ const ar: Record<string, string> = {
   "{count, plural, one {# interview} other {# interviews}}": "{count, plural, zero {لا مقابلات} one {مقابلة واحدة} two {مقابلتان} few {# مقابلات} many {# مقابلة} other {# مقابلة}}",
   "{count, plural, one {# assessment} other {# assessments}}": "{count, plural, zero {لا تقييمات} one {تقييم واحد} two {تقييمان} few {# تقييمات} many {# تقييمًا} other {# تقييم}}",
   "{count, plural, one {# task} other {# tasks}}": "{count, plural, zero {لا مهام} one {مهمة واحدة} two {مهمتان} few {# مهام} many {# مهمة} other {# مهمة}}",
+  "Basic Salary ({currencyCode})": "الراتب الأساسي ({currencyCode})",
+  "Current HC": "العدد الحالي",
+  "Planned HC": "العدد المخطط",
+  "Plan Name": "اسم الخطة",
+  "Enter a whole number from 0 to {max}.": "أدخل عددًا صحيحًا من 0 إلى {max}.",
+  "Failed to create opening.": "تعذر إنشاء الوظيفة الشاغرة.",
+  "Hire": "توظيف",
+  "Hold": "تعليق",
+  "StrongHire": "توظيف بقوة",
 };
 
 export const launchRecruitment = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) as Record<string, string> };

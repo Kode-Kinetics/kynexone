@@ -62,6 +62,12 @@ const ar: Record<string, string> = {
   "Still being prepared: not yet sent for approval.": "لا يزال قيد الإعداد: لم يُرسل للموافقة بعد.",
   "Withdrawn": "مسحوب",
   "Activated": "تم التفعيل",
+  "Checking whether this hire can be activated…": "جارٍ التحقق من إمكانية تفعيل هذا التعيين…",
+  "Fix the {count, plural, one {problem} other {# problems}} above before approving. Activation would be refused.": "أصلح {count, plural, one {المشكلة} two {المشكلتين} few {المشكلات الـ#} many {المشكلات الـ#} other {المشكلات الـ#}} أعلاه قبل الاعتماد. سيُرفض التفعيل.",
+  "Keep the reason under {max} characters.": "اجعل السبب أقل من {max} حرف.",
+  "Say why this hire is rejected (at least {min} characters). The reason is kept on the record.": "اذكر سبب رفض هذا التعيين (لا يقل عن {min} أحرف). يُحفظ السبب في السجل.",
+  "The server returned an error (HTTP {status}).": "أعاد الخادم خطأ (HTTP {status}).",
+  "You cannot approve this draft.": "لا يمكنك اعتماد هذه المسودة.",
 };
 
 export const launchNewHires = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) as Record<string, string> };

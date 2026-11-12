@@ -565,7 +565,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
         </button>
       </div>
 
-      {list.error != null && <LoadFailure what="Requisitions" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Requisitions')} error={list.error} />}
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
@@ -677,7 +677,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
         location: form.location, assignedHrName: form.assignedHrName,
       });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Failed to create opening.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Failed to create opening.'))); setSaving(false); }
   };
 
   return createPortal(
@@ -1265,7 +1265,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       />
                       <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label={t('Start date')} />
                       <div className="grid grid-cols-2 gap-2">
-                        <input type="number" className="input w-full" placeholder={`Basic Salary (${currencyCode})`} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label={t('Basic salary')} />
+                        <input type="number" className="input w-full" placeholder={t('Basic Salary ({currencyCode})', { currencyCode })} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label={t('Basic salary')} />
                         <input type="number" className="input w-full" placeholder={t('Housing Allowance')} value={offerForm.housingAllowance} onChange={e => setOfferForm(f => ({ ...f, housingAllowance: e.target.value }))} aria-label={t('Housing allowance')} />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -1584,7 +1584,7 @@ function CandidatesTab() {
         </table>
         <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} candidates', { shown: items.length, total: list.total ?? items.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       </div>
-      {list.error != null && <LoadFailure what="Candidates" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Candidates')} error={list.error} />}
 
       {addOpen && <AddCandidateModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
     </div>
@@ -1663,17 +1663,17 @@ function WorkforcePlanningTab() {
           <div className="mb-4 rounded-xl border border-slate-200 dark:border-white/10 p-4 space-y-3 bg-slate-50 dark:bg-white/[0.03]">
             <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('New Workforce Plan')}</h4>
             <div className="grid grid-cols-2 gap-3">
-              {[['planName', 'Plan Name', 'text'], ['planYear', 'Year', 'number'], ['departmentName', 'Department', 'text']].map(([k, l, t]) => (
+              {[['planName', t('Plan Name'), 'text'], ['planYear', t('Year'), 'number'], ['departmentName', t('Department'), 'text']].map(([k, l, inputType]) => (
                 <div key={k}>
                   <label htmlFor={`wfp-${k}`} className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{l}</label>
-                  <input id={`wfp-${k}`} type={t} title={l as string} value={(form as Record<string, unknown>)[k] as string} onChange={e => setForm(f => ({ ...f, [k]: t === 'number' ? Number(e.target.value) : e.target.value }))}
+                  <input id={`wfp-${k}`} type={inputType} title={l as string} value={(form as Record<string, unknown>)[k] as string} onChange={e => setForm(f => ({ ...f, [k]: inputType === 'number' ? Number(e.target.value) : e.target.value }))}
                     className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-900 dark:text-white" />
                 </div>
               ))}
-              {[['currentHeadcount', 'Current HC', 'number'], ['plannedHeadcount', 'Planned HC', 'number'], ['budgetAllocated', 'Budget', 'number']].map(([k, l, t]) => (
+              {[['currentHeadcount', t('Current HC'), 'number'], ['plannedHeadcount', t('Planned HC'), 'number'], ['budgetAllocated', t('Budget'), 'number']].map(([k, l, inputType]) => (
                 <div key={k}>
                   <label htmlFor={`wfp-${k}`} className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{l}</label>
-                  <input id={`wfp-${k}`} type={t} title={l as string} value={(form as Record<string, unknown>)[k] as number} onChange={e => setForm(f => ({ ...f, [k]: Number(e.target.value) }))}
+                  <input id={`wfp-${k}`} type={inputType} title={l as string} value={(form as Record<string, unknown>)[k] as number} onChange={e => setForm(f => ({ ...f, [k]: Number(e.target.value) }))}
                     className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-900 dark:text-white" />
                 </div>
               ))}
@@ -1892,7 +1892,7 @@ function InterviewsTab() {
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Interviews" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Interviews')} error={list.error} />}
       {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && interviews.length === 0 ? null : interviews.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No interviews found. Schedule the first one above.')}</p>
       ) : (
@@ -1966,7 +1966,7 @@ function InterviewsTab() {
                       <select aria-label={t('Interview recommendation')} value={completionForm.recommendation}
                         onChange={e => setCompletionForm(f => ({ ...f, recommendation: e.target.value }))}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
-                        {['StrongHire', 'Hire', 'Hold', 'Reject'].map(r => <option key={r} value={r}>{r.replace(/([A-Z])/g, ' $1').trim()}</option>)}
+                        {[msg('StrongHire'), msg('Hire'), msg('Hold'), msg('Reject')].map(r => <option key={r} value={r}>{t(r)}</option>)}
                       </select>
                     </label>
                     <label className="sm:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
@@ -2088,7 +2088,7 @@ function AssessmentsTab() {
     // Raw marks when the template has a question bank, a percentage when it does not.
     const score = parseAssessmentScore(scoreInput[a.id], a.totalMarks);
     if (score == null) {
-      setScoreError(s => ({ ...s, [a.id]: `Enter a whole number from 0 to ${assessmentScoreMax(a.totalMarks)}.` }));
+      setScoreError(s => ({ ...s, [a.id]: t('Enter a whole number from 0 to {max}.', { max: assessmentScoreMax(a.totalMarks) }) }));
       return;
     }
     setScoreError(s => ({ ...s, [a.id]: '' }));
@@ -2230,7 +2230,7 @@ function AssessmentsTab() {
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Assessments" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Assessments')} error={list.error} />}
       {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No assessments found. Assign one above.')}</p>
       ) : (
@@ -2387,7 +2387,7 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
               <input type="date" title={t('Response deadline')} placeholder={t('Response deadline')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={offerForm.responseDeadline} onChange={e => setOfferForm(f => ({ ...f, responseDeadline: e.target.value }))} />
             </div>
-            {[['basicSalary', 'Basic Salary'], ['housingAllowance', 'Housing Allowance'], ['transportAllowance', 'Transport Allowance'], ['otherAllowances', 'Other Allowances']].map(([k, l]) => (
+            {[['basicSalary', t('Basic Salary')], ['housingAllowance', t('Housing Allowance')], ['transportAllowance', t('Transport Allowance')], ['otherAllowances', t('Other Allowances')]].map(([k, l]) => (
               <div key={k}>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{l} ({currencyCode})</label>
                 <input type="number" min={0} title={l} placeholder="0" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"

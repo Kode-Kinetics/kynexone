@@ -51,7 +51,7 @@ import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
-import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { EnumLabel, enumLabel, type EnumName } from '../components/EnumLabel';
 import { describeApiError } from '../lib/apiError';
 import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
@@ -61,6 +61,7 @@ import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
 import { grantedDays } from '../lib/leaveBalanceDisplay';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -315,7 +316,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{e.employeeName}</p>
                     <p className="text-xs text-slate-400">{e.departmentName} · {e.leaveTypeName}</p>
                   </div>
-                  <span className="text-xs tabular-nums text-slate-400">{e.totalDays}d</span>
+                  <span className="text-xs tabular-nums text-slate-400">{t('{days}d', { days: e.totalDays })}</span>
                 </li>
               ))}
             </ul>
@@ -339,7 +340,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                     <p className="text-xs text-slate-400">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                   </div>
-                  <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{r.totalDays}d</span>
+                  <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{t('{days}d', { days: r.totalDays })}</span>
                 </li>
               ))}
             </ul>
@@ -405,7 +406,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     try {
       await leaveBalancesApi.adjust({ employeeId: adjustModal.employeeId, leaveTypeId: adjustModal.leaveTypeId, year, amount: Number(adjAmount), reason: adjReason });
       setAdjustModal(null); setAdjAmount(''); setAdjReason(''); load();
-    } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
+    } catch (e) { notifyApiError(e, t('Adjustment failed.')); }
   };
 
   const openYear = async () => {
@@ -521,7 +522,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
       <ListWindowFooter shown={balances.length} total={list.total} noun="balances" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} balances', { shown: balances.length, total: list.total ?? balances.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
 
       {adjustModal && (
-        <Modal title={`Adjust Balance — ${adjustModal.leaveTypeName} (${adjustModal.employeeName})`} onClose={() => setAdjustModal(null)}>
+        <Modal title={t('Adjust Balance — {leaveTypeName} ({employeeName})', { leaveTypeName: adjustModal.leaveTypeName, employeeName: adjustModal.employeeName })} onClose={() => setAdjustModal(null)}>
           <div className="space-y-4">
             <Field label={t('Adjustment Amount (use negative to deduct)')}>
               <input type="number" step="0.5" className={inp} value={adjAmount} onChange={e => setAdjAmount(e.target.value)} />
@@ -838,7 +839,7 @@ function MyRequestsTab() {
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
           <option value="">{t('All Statuses')}</option>
           {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', 'Approved', 'CancellationRequested', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
-            <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>
+            <option key={s} value={s}>{enumLabel(t, 'LeaveRequestStatus', s)}</option>
           ))}
         </select>
         <p className="text-sm text-slate-400">{t('{count, plural, one {# request} other {# requests}}', { count: requestCount })}</p>
@@ -1066,7 +1067,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       )}
       <WaitingOnOthers groupFilter={groupFilter} reloadKey={requests.length} />
       {rejectModal && (
-        <Modal title={`Reject Leave — ${rejectModal.employeeName}`} onClose={() => setRejectModal(null)}>
+        <Modal title={t('Reject Leave — {employeeName}', { employeeName: rejectModal.employeeName })} onClose={() => setRejectModal(null)}>
           <div className="space-y-4">
             <Field label={t('Rejection Reason *')}>
               <textarea className={inp} rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={t('Provide a clear reason for rejection…')} />
@@ -1087,6 +1088,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
 function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   const t = useT();
+  const fx = useFormat();
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth());
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -1111,7 +1113,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       .catch(() => {});
   }, [month, calYear, dept, groupFilter.companyId, groupFilter.branchId]);
 
-  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DAYS = [msg('Sun'), msg('Mon'), msg('Tue'), msg('Wed'), msg('Thu'), msg('Fri'), msg('Sat')];
   const startPad = firstDay.getDay();
   const totalCells = startPad + lastDay.getDate();
   const cells = Array.from({ length: Math.ceil(totalCells / 7) * 7 }, (_, i) => {
@@ -1128,14 +1130,14 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month - 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>{t('‹ Prev')}</button>
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{new Date(calYear, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</p>
+        <p className="text-sm font-semibold text-slate-800 dark:text-white">{fx.date(new Date(calYear, month, 15), 'monthYear')}</p>
         <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month + 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>{t('Next ›')}</button>
         <input className={`${inp} w-48`} placeholder={t('Filter by department…')} value={dept} onChange={e => setDept(e.target.value)} />
       </div>
 
       <div className="surface overflow-hidden">
         <div className="grid grid-cols-7 border-b border-slate-100 dark:border-white/5">
-          {DAYS.map(d => <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400">{d}</div>)}
+          {DAYS.map(d => <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400">{t(d)}</div>)}
         </div>
         <div className="grid grid-cols-7">
           {cells.map((day, i) => {
@@ -1167,7 +1169,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             {entries.filter(e => e.status === 'Approved').slice(0, 12).map((e, i) => (
               <div key={i} className="flex items-center gap-1.5">
                 <LeaveColorDot color={e.colorCode || '#2F6BFF'} />
-                <span className="text-xs text-slate-600 dark:text-slate-300">{e.employeeName} ({e.leaveTypeName}, {e.totalDays}d)</span>
+                <span className="text-xs text-slate-600 dark:text-slate-300">{e.employeeName} ({e.leaveTypeName}, {t('{days}d', { days: e.totalDays })})</span>
               </div>
             ))}
           </div>
@@ -1229,9 +1231,9 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
           <Field label={t('Colour')}><input type="color" className="h-10 w-full rounded-lg border border-slate-200 dark:border-white/10" value={form.colorCode} onChange={e => set('colorCode', e.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          {([['isPaid', 'Paid Leave'], ['isHalfDayAllowed', 'Half-Day Allowed'], ['isHourlyAllowed', 'Hourly Allowed'], ['requiresAttachment', 'Requires Attachment'], ['requiresReason', 'Requires Reason']] as [keyof typeof form, string][]).map(([k, l]) => (
+          {([['isPaid', msg('Paid Leave')], ['isHalfDayAllowed', msg('Half-Day Allowed')], ['isHourlyAllowed', msg('Hourly Allowed')], ['requiresAttachment', msg('Requires Attachment')], ['requiresReason', msg('Requires Reason')]] as [keyof typeof form, string][]).map(([k, l]) => (
             <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-              <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
+              <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{t(l)}
             </label>
           ))}
         </div>
@@ -1517,7 +1519,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
           </Field>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t('Policy Name *')}><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder={t('For example: UAE Annual Leave — Full-Time')} /></Field>
+          <Field label={t('Policy Name *')}><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder={t('For example: Saudi Annual Leave — Full-Time')} /></Field>
           <Field label={t('Leave Type *')} info={t('The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow.')} infoKey="leave.leave_type">
             <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
               <option value="">{t('Select…')}</option>
@@ -1528,7 +1530,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label={t('Country')}>
             <select className={sel} value={form.countryCode} onChange={e => set('countryCode', e.target.value)}>
-              {['UAE', 'KSA', 'QAT', 'KWT', 'BHR', 'OMN', 'OTHER'].map(c => <option key={c}>{c}</option>)}
+              {[msg('UAE'), msg('KSA'), msg('QAT'), msg('KWT'), msg('BHR'), msg('OMN'), msg('OTHER')].map(c => <option key={c} value={c}>{t(c)}</option>)}
             </select>
           </Field>
           <Field label={t('Department (blank=all)')}><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} /></Field>
@@ -1610,10 +1612,10 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
             <Field label={t('Notice Required (days)')}><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'],
-               ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', 'Hajj: allow before 2 years or more than once']] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
+            {([['weekendsIncluded', msg('Count Weekends')], ['publicHolidaysIncluded', msg('Count Public Holidays')], ['encashmentAllowed', msg('Encashment Allowed')],
+               ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', msg('Hajj: allow before 2 years or more than once')]] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
               <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
+                <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{t(l)}
               </label>
             ))}
           </div>
@@ -2017,12 +2019,12 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
         <Modal title={calModal === 'edit' ? t('Edit Calendar') : t('New Holiday Calendar')} onClose={() => setCalModal('none')}>
           <div className="space-y-4">
             <Field label={t('Calendar Name *')}>
-              <input className={inp} value={calForm.name} onChange={e => setCalForm(f => ({ ...f, name: e.target.value }))} placeholder={t('For example: UAE Public Holidays 2026')} />
+              <input className={inp} value={calForm.name} onChange={e => setCalForm(f => ({ ...f, name: e.target.value }))} placeholder={t('For example: Saudi Public Holidays 2026')} />
             </Field>
             <div className="grid grid-cols-2 gap-3">
               <Field label={t('Country')}>
                 <select className={sel} value={calForm.countryCode} onChange={e => setCalForm(f => ({ ...f, countryCode: e.target.value }))}>
-                  {['UAE', 'KSA', 'QAT', 'KWT', 'BHR', 'OMN'].map(c => <option key={c}>{c}</option>)}
+                  {[msg('UAE'), msg('KSA'), msg('QAT'), msg('KWT'), msg('BHR'), msg('OMN')].map(c => <option key={c} value={c}>{t(c)}</option>)}
                 </select>
               </Field>
               <Field label={t('Year')}>
@@ -2187,7 +2189,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     <div className="space-y-4">
       {confirmDialog}
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-slate-400">{loading ? '' : `${encashmentCount} encashment request${encashmentCount !== 1 ? 's' : ''}`}</p>
+        <p className="text-sm text-slate-400">{loading ? '' : t('{count, plural, one {# encashment request} other {# encashment requests}}', { count: encashmentCount })}</p>
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('Request Encashment')}</button>
       </div>
       {list.error != null && <LoadFailure what={t('Encashment requests')} error={list.error} />}
@@ -2216,7 +2218,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                 {r.status === 'HRApproved' && canPayrollApprove && (
                   <div className="flex items-center gap-2">
                     <select
-                      aria-label={`Target payroll run for ${r.employeeName}`}
+                      aria-label={t('Target payroll run for {employeeName}', { employeeName: r.employeeName })}
                       className={sel}
                       value={selectedRun[r.id] ?? ''}
                       onChange={e => setSelectedRun(s => ({ ...s, [r.id]: e.target.value }))}
@@ -2307,10 +2309,10 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-slate-400">{loading ? '' : `${creditCount} comp-off credit${creditCount !== 1 ? 's' : ''}`}</p>
+        <p className="text-sm text-slate-400">{loading ? '' : t('{count, plural, one {# comp-off credit} other {# comp-off credits}}', { count: creditCount })}</p>
         <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('Add Comp-Off Credit')}</button>
       </div>
-      {list.error != null && <LoadFailure what="Comp-off credits" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Comp-off credits')} error={list.error} />}
       {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && credits.length === 0 ? null : credits.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Star className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -2413,7 +2415,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       )}
       <ListWindowFooter shown={absences.length} total={list.total} noun="absence records" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} absence records', { shown: absences.length, total: list.total ?? absences.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {regModal && (
-        <Modal title={`Regularize Absence — ${regModal.employeeName}`} onClose={() => setRegModal(null)}>
+        <Modal title={t('Regularize Absence — {employeeName}', { employeeName: regModal.employeeName })} onClose={() => setRegModal(null)}>
           <div className="space-y-4">
             <p className="text-sm text-slate-600 dark:text-slate-400">{t('Absence date')}: <strong className="text-slate-900 dark:text-white">{fmtDate(regModal.absenceDate)}</strong></p>
             <Field label={t('Reason for Regularization *')}>
@@ -2446,7 +2448,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
-        {([['onleave', 'On Leave Today'], ['sick', 'Sick Leave Trend']] as const).map(([v, l]) => (
+        {([['onleave', msg('On Leave Today')], ['sick', msg('Sick Leave Trend')]] as const).map(([v, l]) => (
           <button key={v} type="button" onClick={() => setView(v)} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${view === v ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{l}</button>
         ))}
       </div>
@@ -2461,7 +2463,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               </div>
               <div className="text-end">
                 <p className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
-                <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays}d</p>
+                <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{days}d', { days: r.totalDays })}</p>
               </div>
             </div>
           ))}
@@ -2479,7 +2481,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                     <div className="h-2 rounded-full bg-amber-400" style={{ width: `${Math.min(100, (m.totalDays / Math.max(...sickTrend.map(x => x.totalDays), 1)) * 100)}%` }} />
                   </div>
-                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
+                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{t('{days}d', { days: m.totalDays })} / {m.count}</span>
                 </div>
               ))}
             </div>

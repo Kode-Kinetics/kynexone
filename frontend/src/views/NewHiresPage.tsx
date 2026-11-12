@@ -99,11 +99,11 @@ export function NewHiresPage() {
       if (seq !== requestSeq.current) return;
       // Never show an outage as "no new hires": drop the rows and say why.
       setData(null);
-      setLoadError(draftRequestFailureReason(err));
+      setLoadError(draftRequestFailureReason(err, t));
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [filter, appliedSearch, page]);
+  }, [filter, appliedSearch, page, t]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setPage(1); }, [filter, appliedSearch]);
@@ -115,11 +115,11 @@ export function NewHiresPage() {
       setReview(await employeeDraftsApi.get(id));
     } catch (err) {
       setReview(null);
-      setReviewError(draftRequestFailureReason(err));
+      setReviewError(draftRequestFailureReason(err, t));
     } finally {
       setReviewLoading(false);
     }
-  }, []);
+  }, [t]);
 
   const openReview = (row: EmployeeDraftListItem) => {
     setSelected(row);
@@ -154,7 +154,7 @@ export function NewHiresPage() {
         }
         setNotice({ text: t('{name} was not sent: {reason}', { name: row.name, reason: probation.message }) });
       } else {
-        setNotice({ text: t('{name} could not be sent: {reason}', { name: row.name, reason: draftRequestFailureReason(err) }) });
+        setNotice({ text: t('{name} could not be sent: {reason}', { name: row.name, reason: draftRequestFailureReason(err, t) }) });
       }
     } finally {
       setRowBusy(null);
@@ -186,7 +186,7 @@ export function NewHiresPage() {
       } else if (budget) {
         setEstablishmentBlock({ block: budget, name: selected.name });
       } else {
-        setDecisionError(draftRequestFailureReason(err));
+        setDecisionError(draftRequestFailureReason(err, t));
         if (isClosedDraftError(err)) { void load(); void loadReview(selected.id); }
       }
     } finally {
@@ -196,7 +196,7 @@ export function NewHiresPage() {
 
   const reject = async () => {
     if (!selected) return;
-    const invalid = rejectionReasonError(reason);
+    const invalid = rejectionReasonError(reason, t);
     if (invalid) { setDecisionError(invalid); return; }
     setDeciding('reject');
     setDecisionError('');
@@ -207,7 +207,7 @@ export function NewHiresPage() {
       setReview(null);
       void load();
     } catch (err) {
-      setDecisionError(draftRequestFailureReason(err));
+      setDecisionError(draftRequestFailureReason(err, t));
       if (isClosedDraftError(err)) { void load(); void loadReview(selected.id); }
     } finally {
       setDeciding(null);
@@ -225,7 +225,7 @@ export function NewHiresPage() {
       setReview(null);
       void load();
     } catch (err) {
-      setDecisionError(draftRequestFailureReason(err));
+      setDecisionError(draftRequestFailureReason(err, t));
       if (isClosedDraftError(err)) { void load(); void loadReview(selected.id); }
     } finally {
       setDeciding(null);
@@ -238,7 +238,7 @@ export function NewHiresPage() {
   const check = review?.activationCheck ?? null;
   const problemCount = check ? check.problems.length : (review && !review.activationCheck ? 0 : null);
   const disabledReason = summary
-    ? approveDisabledReason(summary.canApprove, summary.approveBlockedReason, problemCount)
+    ? approveDisabledReason(summary.canApprove, summary.approveBlockedReason, problemCount, t)
     : null;
   const canDecide = !!summary && canDecideDraft(summary.status, summary.canApprove);
   // Placement problems the reviewer can fix here: an unmatched name, or a branch and department in

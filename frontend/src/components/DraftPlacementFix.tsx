@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react';
 import { employeeDraftsApi } from '../api/employeeDrafts';
 import { branchesApi, departmentsApi, designationsApi } from '../api/organization';
 import { draftRequestFailureReason } from '../lib/newHireReview';
+import { useT } from '../hooks/useT';
 
 type Option = { value: string; label: string };
 type Field = 'department' | 'designation' | 'branch';
@@ -39,6 +40,7 @@ interface DraftPlacementFixProps {
  * so the activation check and approval match them.
  */
 export function DraftPlacementFix({ draftId, current, problemFields, isMaker, onSaved }: DraftPlacementFixProps) {
+  const t = useT();
   const [options, setOptions] = useState<Record<Field, Option[]> | null>(null);
   const [loadError, setLoadError] = useState('');
   const [values, setValues] = useState<Record<Field, string>>(current);
@@ -61,9 +63,9 @@ export function DraftPlacementFix({ draftId, current, problemFields, isMaker, on
           branch: activeOptions(branches, (b) => ({ value: b.nameEn, label: b.nameEn })),
         });
       })
-      .catch((err) => { if (!cancelled) setLoadError(draftRequestFailureReason(err)); });
+      .catch((err) => { if (!cancelled) setLoadError(draftRequestFailureReason(err, t)); });
     return () => { cancelled = true; };
-  }, []);
+  }, [t]);
 
   const changed = (Object.keys(values) as Field[]).filter((f) => values[f] !== current[f]);
 
@@ -75,7 +77,7 @@ export function DraftPlacementFix({ draftId, current, problemFields, isMaker, on
       await employeeDraftsApi.updatePlacement(draftId, Object.fromEntries(changed.map((f) => [f, values[f]])));
       onSaved();
     } catch (err) {
-      setSaveError(draftRequestFailureReason(err));
+      setSaveError(draftRequestFailureReason(err, t));
     } finally {
       setSaving(false);
     }
