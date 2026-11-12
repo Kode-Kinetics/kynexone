@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
@@ -49,10 +50,10 @@ public class ComplianceReportsController : ControllerBase
 
     // GET /api/compliance/reports/dashboard
     // The counts summarise colleagues' visa, passport, permit and contract expiries, so they are as restricted as those registers
-    // (VisaTrackingController, ContractsController): the role list names the audience and the pipeline requires compliance.read
-    // beside it (LegacyRolePermissionResolver), so an employee login is refused. Rows are cut to the caller's employee data scope.
+    // (VisaTrackingController, ContractsController, whose role lists the pipeline enforces as compliance.read): an employee login
+    // is refused, and the rows are cut to the caller's employee data scope.
     [HttpGet("dashboard")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("compliance.read")]
     public async Task<IActionResult> Dashboard(CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -148,7 +149,7 @@ public class ComplianceReportsController : ControllerBase
     // GET /api/compliance/reports/expiry-alerts
     // Names each employee whose visa, passport, work permit or contract is about to expire: gated and scoped like the dashboard.
     [HttpGet("expiry-alerts")]
-    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
+    [HasPermission("compliance.read")]
     public async Task<IActionResult> ExpiryAlerts([FromQuery] int withinDays = 90, CancellationToken ct = default)
     {
         var tid = GetTenantId();
