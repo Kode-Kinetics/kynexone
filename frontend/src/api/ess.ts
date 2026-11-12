@@ -145,6 +145,13 @@ export const essApi = {
   attendance: () => client.get('/api/ess/attendance').then((r) => r.data),
   leaveBalance: () => client.get('/api/ess/leave/balance').then((r) => r.data),
   documents: () => client.get<EssDocument[]>('/api/ess/documents').then((r) => r.data),
+  /** Uploads one of the caller's own documents (multipart); the server picks the storage key. Returns the new document, whose id a leave request or HR request can cite. */
+  uploadDocument: (file: File, documentType: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('documentType', documentType);
+    return client.post<{ id: string }>('/api/ess/documents', form).then((r) => r.data);
+  },
   hrRequests: () => client.get<EssHrRequest[]>('/api/ess/hr-requests/my').then((r) => r.data),
   profileChangeRequests: () => client.get<EssProfileChangeRequest[]>('/api/ess/profile-change-requests/mine').then((r) => r.data),
   hrRequestDetail: (id: string) => client.get<EssHrRequestDetail>(`/api/ess/hr-requests/${encodeURIComponent(id)}`).then((r) => r.data),
@@ -254,6 +261,8 @@ export interface EssLeaveApplication {
   reason: string;
   statutoryEventDate?: string;
   separateEventReason?: string;
+  /** Id of a document the caller uploaded first (essApi.uploadDocument); needed for a leave type that requires one. */
+  attachmentDocumentId?: string;
 }
 
 export interface EssOvertimeApplication {
