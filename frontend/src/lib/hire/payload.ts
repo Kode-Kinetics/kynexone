@@ -28,9 +28,9 @@ export interface PayloadContext {
   currency: string;
   /** Unused for the work email since OD7 (any domain is allowed); kept so existing callers still compile. */
   emailDomain?: string;
-  /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
   /** What the grade adds to each blank allowance (lib/hire/gradePackage): sent as the amount, so the saved pay is the total the person confirmed. */
   gradeFill?: GradeFill;
+  /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
   costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean; /** The override the saved draft holds (null = none). */ overrideId?: string | null };
 }
 export interface PayloadExtras { acknowledgedWarnings?: AcknowledgedWarning[]; duplicateOverrideReason?: string; hireTemplateId?: string }
