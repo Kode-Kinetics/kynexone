@@ -49,12 +49,12 @@ test.describe('browserless UI truthfulness contracts', () => {
     expect(attendance).toContain("deviceSyncUnavailable ? <DomainUnavailable");
     // The device list moved to Setup (Attendance devices); a failed load still never reads as "no devices".
     expect(read('src/components/attendance/AttendanceDevicesPanel.tsx')).toContain("devicesUnavailable ? <DomainUnavailable");
-    expect(attendance).toContain("dailyUnavailable ? 'Unavailable' : minutes(totalWorked)");
-    expect(attendance).toContain("dashboardUnavailable ? 'Unavailable' : (summary?.overtimeEmployees ?? 0)");
-    expect(attendance).toContain("action={insightsUnavailable ? 'Unavailable' : `${insights.length} open`}");
-    expect(attendance).toContain("action={rawUnavailable ? 'Unavailable' : `${rawEvents.length} latest`}");
-    expect(attendance).toContain("action={payrollSummaryUnavailable ? 'Unavailable' : `${payrollSummary.length} employees`}");
-    expect(attendance).toContain("action={insightsUnavailable ? 'Unavailable' : `${insights.length} signals`}");
+    expect(attendance).toContain("dailyUnavailable ? t('Unavailable') : minutes(totalWorked)");
+    expect(attendance).toContain("dashboardUnavailable ? t('Unavailable') : (summary?.overtimeEmployees ?? 0)");
+    expect(attendance).toContain("action={insightsUnavailable ? t('Unavailable') : t('{count} open', { count: insights.length })}");
+    expect(attendance).toContain("action={rawUnavailable ? t('Unavailable') : t('{count} latest', { count: rawEvents.length })}");
+    expect(attendance).toContain("action={payrollSummaryUnavailable ? t('Unavailable') : t('{count, plural, one {# employee} other {# employees}}', { count: payrollSummary.length })}");
+    expect(attendance).toContain("action={insightsUnavailable ? t('Unavailable') : t('{count, plural, one {# signal} other {# signals}}', { count: insights.length })}");
     expect(attendance).toContain("correctionQueueUnavailable");
   });
 
@@ -574,9 +574,10 @@ test.describe('browserless payroll payment-readiness contracts', () => {
   test('the payroll dashboard shows payment readiness ahead of the totals, with blocking and recommended apart', () => {
     const payroll = read('src/views/PayrollPage.tsx');
     expect(payroll).toContain('<PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />');
-    expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf('<KpiCard label="Gross Payroll"'));
-    expect(payroll).toContain('>Blocks payment</p>');
-    expect(payroll).toContain('>Recommended — does not block approval</p>');
+    expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf("<KpiCard label={t('Gross Payroll')}"));
+    expect(payroll.indexOf("<KpiCard label={t('Gross Payroll')}")).toBeGreaterThan(-1);
+    expect(payroll).toContain(">{t('Blocks payment')}</p>");
+    expect(payroll).toContain(">{t('Recommended — does not block approval')}</p>");
     expect(payroll).toContain("employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })");
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');
   });
@@ -657,7 +658,7 @@ test.describe('browserless outbound-integration truthfulness contracts', () => {
     expect(dashboard).toContain('qiwa-simulation-notice');
     expect(dashboard).not.toContain('Last filed with Qiwa');
     expect(dashboard).not.toContain('<dt className="text-slate-400">Last sync</dt>');
-    expect(dashboard).toContain('{qiwaConnectionLabel(status, live)}');
+    expect(dashboard).toContain('{t(qiwaConnectionLabel(status, live))}');
     expect(dashboard).toContain("{qiwa.isLiveIntegration === true && (");
 
     // WS3: the Qiwa screens never print a sync/connection claim for the sandbox, and the OAuth form
