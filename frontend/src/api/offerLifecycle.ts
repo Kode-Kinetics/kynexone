@@ -47,7 +47,10 @@ export const offerLifecycleApi = {
   withdraw: (id: string, expectedVersion: number, reason: string) => client.post(`${base}/${id}/withdraw`, { expectedVersion, reason }).then(r => r.data),
   respond: (id: string, body: ResponseRequest) => client.post(`${base}/${id}/responses`, body).then(r => r.data),
   original: (id: string) => client.get<Blob>(`${base}/${id}/original`, { responseType: 'blob' }).then(r => r.data),
-  options: (startDate: string) => client.get<ComponentOptions>(`${base}/component-options`, { params: { startDate } }).then(r => r.data),
+  // The component catalogue and policy are the offer's own company's: a draft is saved and frozen against that policy
+  // version. Name it explicitly (and bypass the switcher's company) so a group-scope user with no company selected, or a
+  // different one selected, still gets the right options.
+  options: (startDate: string, companyId?: string | null) => client.get<ComponentOptions>(`${base}/component-options`, { params: { startDate }, ...(companyId ? { workspaceScope: true, headers: { 'X-Company-Id': companyId } } : {}) }).then(r => r.data),
   policy: () => client.get<OfferPolicy>(`${base}/policy`).then(r => r.data),
   savePolicy: ({ precision, requiredComponentCodes, expectedVersion }: OfferPolicy) => client.put<OfferPolicy>(`${base}/policy`, { precision, requiredComponentCodes, expectedVersion }).then(r => r.data),
   readiness: () => client.get<MailReadiness>(`${base}/mail-readiness`).then(r => r.data),
