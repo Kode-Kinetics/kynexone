@@ -9463,17 +9463,21 @@ public partial class PayrollController : ControllerBase
                 .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
 
         var emp = await _db.Employees.AsNoTracking()
-            .Select(e => new { e.Id, e.Designation })
-            .FirstOrDefaultAsync(e => e.Id == slip.EmployeeId, ct);
+            .Where(e => e.Id == slip.EmployeeId)
+            .Select(e => new { e.Id, e.Designation, e.DesignationId })
+            .FirstOrDefaultAsync(ct);
+        var designationTitle = await ResolvePayslipDesignationAsync(tenantId, emp?.Designation, emp?.DesignationId, ct);
 
         var profile = await _db.EmployeePayrollProfiles.AsNoTracking()
             .FirstOrDefaultAsync(p => p.TenantId == tenantId && p.EmployeeId == slip.EmployeeId && !p.IsDeleted, ct);
 
-        // Individual statutory EE deduction lines (GOSI-ANN-EE, GOSI-SANED-EE, etc.)
-        var statutoryLines = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
-                        && d.EmployeeId == slip.EmployeeId && d.Source == "Statutory")
-            .Select(d => new { d.ComponentCode, d.ComponentName, d.Amount })
+        // The persisted per-line rows Process wrote (statutory EE lines, late/early, loss of pay, loans, overtime, ...).
+        // PayslipItemiser itemises the page from them instead of printing the two catch-all header buckets.
+        var deductionRows = await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId && d.EmployeeId == slip.EmployeeId)
+            .ToListAsync(ct);
+        var earningRows = await _db.PayrollEarnings.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId && d.EmployeeId == slip.EmployeeId)
             .ToListAsync(ct);
 
         var canSeeSalary = HasPermission("payroll.export");
@@ -9493,18 +9497,6 @@ public partial class PayrollController : ControllerBase
                 .OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
                 .ToListAsync(ct);
 
-        // The 1420 recovery, named rather than swallowed by the "Other Deductions" residual — without it
-        // a zero-net replacement payslip shows a gross, a residual lump, and no reason.
-        // Summed client-side over a handful of rows: SQLite (the test provider) cannot translate a decimal
-        // SUM, and the same client-side pattern is already used for statutoryLines just above.
-        var recoveryTotal = (await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == payslip.PayrollRunId
-                     && d.EmployeeId == slip.EmployeeId
-                     && (d.Source == PayrollRecoveryComponents.RecoverySource
-                         || d.ComponentCode == PayrollRecoveryComponents.ReceivableRecovery))
-            .Select(d => d.Amount)
-            .ToListAsync(ct)).Sum();
-
         // No run row ⇒ no period ⇒ no honest "joined on" test, so the narrative is skipped rather than
         // guessed. Unreachable in practice (the payslip carries PayrollRunId), and silent when it happens.
         var prorationNote = run is null
@@ -9512,36 +9504,9 @@ public partial class PayrollController : ControllerBase
             : ProrationCalculator.NarrativeFromSlip(slip, new DateOnly(run.Year, run.Month, 1));
         string Label(string name) => string.IsNullOrEmpty(prorationNote) ? name : $"{name} ({prorationNote})";
 
-        // Build items from stored slip fields (no recompute)
-        var items = new List<PayslipLineItem>();
-        if (slip.BasicSalary > 0)        items.Add(new(Label("Basic Salary"),  canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
-        if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",    canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
-        if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance",  canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
-        // slip.OtherAllowances INCLUDES the arrears (PayrollController.cs:2316), so the arrears are lifted
-        // OUT of it before the residual is shown — itemising them on top of the unchanged bucket would
-        // overstate the gross on the page by exactly the arrears amount.
-        var otherAllowancesExArrears = slip.OtherAllowances - slip.ArrearsAmount;
-        if (otherAllowancesExArrears > 0) items.Add(new("Other Allowances", canSeeSalary ? otherAllowancesExArrears : 0m, "Earning"));
-        foreach (var a in arrearsLines)
-            items.Add(new($"Arrears — {PayrollArrearsComponents.Label(a.ComponentCode)} ({a.CoveredYear}-{a.CoveredMonth:D2})",
-                canSeeSalary ? a.Amount : 0m, "Earning"));
-        // Any arrears the slip carries that no line accounts for is still shown, never dropped silently.
-        var unitemisedArrears = slip.ArrearsAmount - arrearsLines.Sum(a => a.Amount);
-        if (unitemisedArrears > 0) items.Add(new("Arrears", canSeeSalary ? unitemisedArrears : 0m, "Earning"));
-
-        foreach (var line in statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
-            items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
-
-        if (recoveryTotal > 0)
-            items.Add(new(PayrollRecoveryComponents.ReceivableRecoveryName, canSeeSalary ? recoveryTotal : 0m, "Deduction"));
-
-        // Non-statutory deductions (loans, advances, fixed)
-        var otherDeductions = slip.Deductions
-                            - statutoryLines.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount)
-                            - recoveryTotal;
-        if (otherDeductions > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDeductions : 0m, "Deduction"));
-
-        items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+        // Build items from the persisted rows (no recompute). Every itemised amount is lifted out of its header
+        // bucket, so the page still adds up to the slip exactly; "Other …" holds only what no row explains.
+        var items = PayslipItemiser.Build(slip, Label("Basic Salary"), earningRows, deductionRows, arrearsLines, canSeeSalary);
 
         // Load the template version that was stamped at generate time, falling back to current default
         var templateId = payslip.PayslipTemplateId
@@ -9578,7 +9543,7 @@ public partial class PayrollController : ControllerBase
             EmployeeCode:  slip.EmployeeCode,
             EmployeeName:  slip.EmployeeName,
             Department:    slip.Department,
-            Designation:   emp?.Designation ?? string.Empty,
+            Designation:   designationTitle,
             PayYear:       run?.Year  ?? generatedOn.Year,
             PayMonth:      run?.Month ?? generatedOn.Month,
             Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
@@ -9635,9 +9600,17 @@ public partial class PayrollController : ControllerBase
                 .Where(c => c.TenantId == tenantId && c.IsActive && !c.IsDeleted)
                 .OrderBy(c => c.CreatedAtUtc).FirstOrDefaultAsync(ct);
 
-        var allStatutory = await _db.PayrollDeductions.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id && d.Source == "Statutory")
-            .ToListAsync(ct);
+        // The persisted per-line rows, grouped per employee, so each bundle page is itemised exactly like the single download.
+        var allDeductions = (await _db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
+            .ToListAsync(ct)).ToLookup(d => d.EmployeeId);
+        var allEarnings = (await _db.PayrollEarnings.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.PayrollRunId == id)
+            .ToListAsync(ct)).ToLookup(d => d.EmployeeId);
+        var allArrears = (await _db.PayrollArrearsLines.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == PayrollArrearsStatuses.Settled)
+            .OrderBy(a => a.CoveredYear).ThenBy(a => a.CoveredMonth).ThenBy(a => a.ComponentCode)
+            .ToListAsync(ct)).ToLookup(a => a.EmployeeId);
 
         var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
             .Where(p => p.TenantId == tenantId && !p.IsDeleted)
@@ -9646,8 +9619,12 @@ public partial class PayrollController : ControllerBase
 
         var designations = await _db.Employees.AsNoTracking()
             .Where(e => e.TenantId == tenantId)
-            .Select(e => new { e.Id, e.Designation })
+            .Select(e => new { e.Id, e.Designation, e.DesignationId })
             .ToListAsync(ct);
+        var designationTitles = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId)
+            .Select(d => new { d.Id, d.TitleEn })
+            .ToDictionaryAsync(d => d.Id, d => d.TitleEn, ct);
 
         var canSeeSalary = HasPermission("payroll.export");
         var generatedOn = DateTime.UtcNow;
@@ -9711,20 +9688,10 @@ public partial class PayrollController : ControllerBase
 
                 var profile = profiles.FirstOrDefault(p => p.EmployeeId == slip.EmployeeId);
                 var desig = designations.FirstOrDefault(e => e.Id == slip.EmployeeId);
-                var empStatutory = allStatutory.Where(d => d.EmployeeId == slip.EmployeeId).ToList();
-
-                var items = new List<PayslipLineItem>();
-                if (slip.BasicSalary > 0)        items.Add(new("Basic Salary",        canSeeSalary ? slip.BasicSalary        : 0m, "Earning"));
-                if (slip.HousingAllowance > 0)   items.Add(new("Housing Allowance",   canSeeSalary ? slip.HousingAllowance   : 0m, "Earning"));
-                if (slip.TransportAllowance > 0) items.Add(new("Transport Allowance", canSeeSalary ? slip.TransportAllowance : 0m, "Earning"));
-                if (slip.OtherAllowances > 0)    items.Add(new("Other Allowances",    canSeeSalary ? slip.OtherAllowances    : 0m, "Earning"));
-
-                foreach (var line in empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase) && l.Amount > 0))
-                    items.Add(new(line.ComponentName, canSeeSalary ? line.Amount : 0m, "Deduction"));
-
-                var otherDed = slip.Deductions - empStatutory.Where(l => l.ComponentCode.EndsWith("-EE", StringComparison.OrdinalIgnoreCase)).Sum(l => l.Amount);
-                if (otherDed > 0) items.Add(new("Other Deductions", canSeeSalary ? otherDed : 0m, "Deduction"));
-                items.Add(new("Net Pay", canSeeSalary ? slip.NetSalary : 0m, "Net"));
+                var prorationNote = ProrationCalculator.NarrativeFromSlip(slip, new DateOnly(run.Year, run.Month, 1));
+                var basicLabel = string.IsNullOrEmpty(prorationNote) ? "Basic Salary" : $"Basic Salary ({prorationNote})";
+                var items = PayslipItemiser.Build(slip, basicLabel, allEarnings[slip.EmployeeId].ToList(),
+                    allDeductions[slip.EmployeeId].ToList(), allArrears[slip.EmployeeId].ToList(), canSeeSalary);
 
                 var tmpl = payslip.PayslipTemplateId.HasValue
                     ? templateCache.GetValueOrDefault(payslip.PayslipTemplateId.Value, defaultTmpl!)
@@ -9747,7 +9714,7 @@ public partial class PayrollController : ControllerBase
                     EmployeeCode:  slip.EmployeeCode,
                     EmployeeName:  slip.EmployeeName,
                     Department:    slip.Department,
-                    Designation:   desig?.Designation ?? string.Empty,
+                    Designation:   PayslipDesignation(desig?.Designation, desig?.DesignationId, designationTitles),
                     PayYear:       run.Year,
                     PayMonth:      run.Month,
                     Currency:      profile?.SalaryCurrency ?? company?.DefaultCurrency ?? "SAR",
@@ -9779,6 +9746,24 @@ public partial class PayrollController : ControllerBase
 
         ms.Position = 0;
         return File(ms.ToArray(), "application/zip", $"payslips-{period}.zip");
+    }
+
+    /// <summary>
+    /// The designation a payslip prints: the employee's own title text, else the title of the designation they are linked to.
+    /// The text column can be blank while the link is set (records created through the master-data pickers), and a blank
+    /// Designation on a payslip reads as a missing contract detail.
+    /// </summary>
+    private static string PayslipDesignation(string? text, Guid? designationId, IReadOnlyDictionary<Guid, string> titles) =>
+        !string.IsNullOrWhiteSpace(text) ? text.Trim()
+        : designationId is Guid id && titles.TryGetValue(id, out var title) ? title
+        : string.Empty;
+
+    private async Task<string> ResolvePayslipDesignationAsync(Guid tenantId, string? text, Guid? designationId, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(text) || designationId is not Guid id) return text?.Trim() ?? string.Empty;
+        var title = await _db.Designations.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.Id == id).Select(d => d.TitleEn).FirstOrDefaultAsync(ct);
+        return title ?? string.Empty;
     }
 
     private Guid GetTenantId() => Guid.Parse(User.FindFirstValue("tenant_id")!);
