@@ -66,7 +66,7 @@ import { useLockWithSummary } from '../hooks/useLockWithSummary';
 import { startRunProcessing } from '../api/payrollProcessing';
 import { parseDeepLink, withDeepLink } from '../lib/payrollPipeline';
 
-import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { EnumLabel, enumLabel, type EnumName } from '../components/EnumLabel';
 import { RunDeductionsReview } from '../components/deductions/RunDeductionsReview';
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 import { LoadError, serverMessage } from '../components/gl/glUi';
@@ -76,17 +76,26 @@ import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/Uncos
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
+import { msg } from '../i18n/translations';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
   return formatCalendarDate(s, 'en-US');
 }
 
-function fmtAmt(n: number, currency = 'USD') {
-  return `${currency} ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
+function useFmtAmt() {
+  const fx = useFormat();
+  return useCallback((n: number, currency = 'USD') => fx.money(n, currency), [fx]);
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Month (and optional year) names in the viewer's language; MONTHS stays the English key list the API uses. */
+function useMonthLabel() {
+  const fmt = useFormat();
+  return useCallback((month: number, year?: number) => fmt.period(year == null ? MONTHS[month - 1] : `${MONTHS[month - 1]} ${year}`, 'long'), [fmt]);
+}
 
 const STATUS_COLOR: Record<string, string> = {
   Draft: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
@@ -129,12 +138,13 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
 }
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  const t = useT();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className={`relative w-full rounded-2xl bg-white shadow-2xl dark:bg-slate-800 ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto`}>
         <div className="sticky top-0 flex items-center justify-between border-b border-slate-100 bg-white px-6 py-4 dark:border-white/10 dark:bg-slate-800">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-white">{title}</h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10">
+          <button type="button" onClick={onClose} aria-label={t('Close')} className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10">
             <X className="h-4 w-4 text-slate-500" />
           </button>
         </div>
@@ -158,27 +168,28 @@ const btn = {
 type Tab = 'dashboard' | 'salary-structures' | 'employee-salary' | 'runs' | 'validation' | 'approvals' | 'payslips' | 'bank-wps' | 'payment-tracking' | 'reports' | 'eosb' | 'ai-validation' | 'audit-integrity' | 'gl-journal' | 'reconciliation' | 'final-settlement';
 
 const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { key: 'dashboard',        label: 'Dashboard',          icon: BarChart2 },
-  { key: 'salary-structures', label: 'Grade Packages',     icon: Layers3 },
-  { key: 'employee-salary',  label: 'Employee Salary',     icon: Users },
-  { key: 'runs',             label: 'Payroll Runs',        icon: Play },
-  { key: 'validation',       label: 'Validation',          icon: AlertTriangle },
-  { key: 'approvals',        label: 'Approvals',           icon: CheckCircle2 },
-  { key: 'payslips',         label: 'Payslips',            icon: FileText },
-  { key: 'bank-wps',         label: 'Bank / WPS Files',    icon: Landmark },
-  { key: 'payment-tracking', label: 'Payment Tracking',    icon: TrendingUp },
-  { key: 'reports',          label: 'Reports',             icon: BarChart2 },
-  { key: 'eosb',             label: 'EOSB / Gratuity',    icon: FileText },
-  { key: 'gl-journal',       label: 'GL Journal',          icon: BookOpen },
-  { key: 'reconciliation',   label: 'Reconciliation',      icon: RefreshCw },
-  { key: 'final-settlement', label: 'Final Settlement',    icon: Calculator },
-  { key: 'ai-validation',    label: 'Anomaly Checks',      icon: ShieldCheck },
-  { key: 'audit-integrity',  label: 'Audit Integrity',     icon: Shield },
+  { key: 'dashboard',        label: msg('Dashboard'),          icon: BarChart2 },
+  { key: 'salary-structures', label: msg('Grade Packages'),     icon: Layers3 },
+  { key: 'employee-salary',  label: msg('Employee Salary'),     icon: Users },
+  { key: 'runs',             label: msg('Payroll Runs'),        icon: Play },
+  { key: 'validation',       label: msg('Validation'),          icon: AlertTriangle },
+  { key: 'approvals',        label: msg('Approvals'),           icon: CheckCircle2 },
+  { key: 'payslips',         label: msg('Payslips'),            icon: FileText },
+  { key: 'bank-wps',         label: msg('Bank / WPS Files'),    icon: Landmark },
+  { key: 'payment-tracking', label: msg('Payment Tracking'),    icon: TrendingUp },
+  { key: 'reports',          label: msg('Reports'),             icon: BarChart2 },
+  { key: 'eosb',             label: msg('EOSB / Gratuity'),    icon: FileText },
+  { key: 'gl-journal',       label: msg('GL Journal'),          icon: BookOpen },
+  { key: 'reconciliation',   label: msg('Reconciliation'),      icon: RefreshCw },
+  { key: 'final-settlement', label: msg('Final Settlement'),    icon: Calculator },
+  { key: 'ai-validation',    label: msg('Anomaly Checks'),      icon: ShieldCheck },
+  { key: 'audit-integrity',  label: msg('Audit Integrity'),     icon: Shield },
 ];
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
 
 function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadiness; onNavigate: (t: Tab) => void }) {
+  const t = useT();
   const stepToTab: Record<number, Tab> = {
     1: 'salary-structures',
     2: 'salary-structures',
@@ -196,8 +207,8 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
             <Settings className="h-5 w-5 text-sapphire dark:text-cyanAccent" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Setup Wizard</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Complete these steps before running payroll · {readiness.completionPercent}% done</p>
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Payroll Setup Wizard')}</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{t('Complete these steps before running payroll · {completionPercent}% done', { completionPercent: readiness.completionPercent })}</p>
           </div>
           <div className="ms-auto">
             <div className="h-2 w-32 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
@@ -222,7 +233,7 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
             {!s.complete && (
               <button type="button" onClick={() => onNavigate(stepToTab[s.step] ?? 'salary-structures')}
                 className="shrink-0 inline-flex items-center gap-1 rounded-lg bg-sapphire/10 px-3 py-1.5 text-xs font-medium text-sapphire hover:bg-sapphire/20 dark:bg-cyanAccent/10 dark:text-cyanAccent dark:hover:bg-cyanAccent/20">
-                Configure <ChevronRight className="h-3 w-3" />
+                {t('Configure')} <ChevronRight className="h-3 w-3" />
               </button>
             )}
           </div>
@@ -240,16 +251,17 @@ function PayrollSetupWizard({ readiness, onNavigate }: { readiness: PayrollReadi
 function PrerequisiteRow({ label, count, nextAction, danger, action }: {
   label: string; count?: number; nextAction: string; danger: boolean; action?: { label: string; onClick: () => void };
 }) {
+  const t = useT();
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5">
       <span className={`w-12 shrink-0 text-sm font-semibold tabular-nums ${danger ? 'text-rose-700 dark:text-rose-300' : 'text-amber-700 dark:text-amber-300'}`}>
         {count !== undefined
           ? count.toLocaleString('en-US')
-          : <Building2 className="h-4 w-4" aria-label="Company setting" />}
+          : <Building2 className="h-4 w-4" aria-label={t('Company setting')} />}
       </span>
       <span className="min-w-0 flex-1 text-sm text-slate-800 dark:text-slate-100">
         {label}
-        <span className="block text-xs text-slate-500 dark:text-slate-400">Next: {nextAction}</span>
+        <span className="block text-xs text-slate-500 dark:text-slate-400">{t('Next: {nextAction}', { nextAction })}</span>
       </span>
       {action && (
         <button type="button" onClick={action.onClick} className={btn.sm}>{action.label} <ChevronRight className="h-3 w-3" /></button>
@@ -259,6 +271,7 @@ function PrerequisiteRow({ label, count, nextAction, danger, action }: {
 }
 
 function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisites: PaymentPrerequisites; onNavigate: (t: Tab) => void }) {
+  const t = useT();
   const headline = paymentReadinessHeadline(prerequisites);
   if (headline.tone === 'unknown' || headline.tone === 'empty') return null;
   const tone = {
@@ -267,13 +280,13 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
     clear: { box: 'border-emerald-200 dark:border-emerald-500/30', icon: 'text-emerald-600 dark:text-emerald-400' },
   }[headline.tone];
   // Salary gaps are fixed on a payroll tab; every other gap lives on the employee record.
-  const salaryAction = { label: 'Assign salaries', onClick: () => onNavigate('employee-salary') };
+  const salaryAction = { label: t('Assign salaries'), onClick: () => onNavigate('employee-salary') };
   const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
   const hasRecommended = prerequisites.companyRecommended.length > 0 || prerequisites.recommended.length > 0;
   const listed = prerequisites.employees.length;
 
   return (
-    <section aria-label="Payment readiness" className={`surface overflow-hidden border ${tone.box}`}>
+    <section aria-label={t('Payment readiness')} className={`surface overflow-hidden border ${tone.box}`}>
       <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
         {headline.tone === 'clear'
           ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
@@ -282,15 +295,16 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
           <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{headline.title}</h3>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{headline.detail}</p>
           <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
-            Checked for {prerequisites.evaluatedEmployees.toLocaleString('en-US')} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality
-            {prerequisites.attendanceChecked ? ', and attendance for this period' : ' (attendance is checked once the period starts)'} — the rules the run validation applies. One employee can have more than one gap.
+            {prerequisites.attendanceChecked
+              ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
+              : t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality (attendance is checked once the period starts) — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })}
           </p>
         </div>
       </div>
 
       {hasBlocking && (
         <div>
-          <p className="bg-rose-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">Blocks payment</p>
+          <p className="bg-rose-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('Blocks payment')}</p>
           <ul className="divide-y divide-slate-100 dark:divide-white/5">
             {prerequisites.companyBlocking.map(c => (
               <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
@@ -305,7 +319,7 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
 
       {hasRecommended && (
         <div>
-          <p className="bg-amber-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">Recommended — does not block approval</p>
+          <p className="bg-amber-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{t('Recommended — does not block approval')}</p>
           <ul className="divide-y divide-slate-100 dark:divide-white/5">
             {prerequisites.companyRecommended.map(c => (
               <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={false} label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
@@ -320,16 +334,18 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
       {listed > 0 && (
         <details className="border-t border-slate-100 dark:border-white/10">
           <summary className="cursor-pointer px-5 py-3 text-xs font-medium text-sapphire dark:text-cyanAccent">
-            Show each employee ({listed.toLocaleString('en-US')}{prerequisites.employeesTruncated ? ', the first 500 — the counts above include everyone' : ''})
+            {prerequisites.employeesTruncated
+              ? t('Show each employee ({count}, the first 500 — the counts above include everyone)', { count: listed })
+              : t('Show each employee ({count})', { count: listed })}
           </summary>
           <div className="max-h-96 overflow-auto">
             <table className="w-full text-xs">
               <thead className="sticky top-0 bg-surface-sunken text-fg-muted">
                 <tr>
-                  <th scope="col" className="px-5 py-2 text-start font-medium">Employee</th>
-                  <th scope="col" className="px-3 py-2 text-start font-medium">Blocks payment</th>
-                  <th scope="col" className="px-3 py-2 text-start font-medium">Recommended</th>
-                  <th scope="col" className="px-5 py-2 text-end font-medium">Next action</th>
+                  <th scope="col" className="px-5 py-2 text-start font-medium">{t('Employee')}</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">{t('Blocks payment')}</th>
+                  <th scope="col" className="px-3 py-2 text-start font-medium">{t('Recommended')}</th>
+                  <th scope="col" className="px-5 py-2 text-end font-medium">{t('Next action')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-white/5">
@@ -343,10 +359,10 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
                     <td className="px-3 py-2 text-amber-700 dark:text-amber-300">{e.recommended.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
                     <td className="px-5 py-2 text-end">
                       {e.blocking.length === 1 && e.blocking[0] === 'MISSING_SALARY_STRUCTURE' ? (
-                        <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">Assign salary</button>
+                        <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">{t('Assign salary')}</button>
                       ) : (
                         <Link href={employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">
-                          Open {e.employeeCode}
+                          {t('Open {employeeCode}', { employeeCode: e.employeeCode })}
                         </Link>
                       )}
                     </td>
@@ -364,6 +380,9 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
 // ── Company Bird's-Eye Table ───────────────────────────────────────────────────
 
 function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOverview; onDrillDown: (company: PayrollCompanySummary) => void }) {
+  const t = useT();
+  const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   // Group totals add every company's run together, so they only have one currency when every
   // company with a run pays in the same one. A mixed group is read per company row instead.
   const groupCurrency = commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun));
@@ -371,15 +390,15 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
     <div className="surface overflow-hidden">
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          All Group Companies — {MONTHS[overview.month - 1]} {overview.year}
+          {t('All Group Companies — {period}', { period: monthLabel(overview.month, overview.year) })}
         </h3>
-        <span className="text-xs text-slate-400">{overview.totalCompanies} companies · {overview.totalActiveEmployees.toLocaleString()} employees</span>
+        <span className="text-xs text-slate-400">{t('{totalCompanies} companies · {toLocaleString} employees', { totalCompanies: overview.totalCompanies, toLocaleString: overview.totalActiveEmployees.toLocaleString() })}</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-line bg-surface-sunken">
-              {['Company', 'Employees', 'Salary Coverage', 'Gross Payroll', 'Net Payroll', 'Errors', 'Pending Approvals', 'Status', ''].map(h => (
+              {[t('Company'), t('Employees'), t('Salary Coverage'), t('Gross Payroll'), t('Net Payroll'), t('Errors'), t('Pending Approvals'), t('Status'), ''].map(h => (
                 <th key={h} className="px-4 py-2.5 text-start font-medium text-fg-muted">{h}</th>
               ))}
             </tr>
@@ -398,7 +417,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
                     for it made a brand-new tenant read as a broken one. */}
                 <td className="px-4 py-3">
                   {c.activeEmployees === 0 ? (
-                    <span className="text-slate-400 dark:text-slate-500">No employees yet</span>
+                    <span className="text-slate-400 dark:text-slate-500">{t('No employees yet')}</span>
                   ) : (
                     <>
                       <div className="flex items-center gap-2">
@@ -412,7 +431,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
                           {c.salaryCoveragePercent.toFixed(0)}%
                         </span>
                       </div>
-                      {c.employeesMissingSalary > 0 && <p className="mt-0.5 text-rose-500">{c.employeesMissingSalary} missing</p>}
+                      {c.employeesMissingSalary > 0 && <p className="mt-0.5 text-rose-500">{t('{employeesMissingSalary} missing', { employeesMissingSalary: c.employeesMissingSalary })}</p>}
                     </>
                   )}
                 </td>
@@ -428,11 +447,11 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
                     ? <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-1.5 py-0.5 text-amber-600 dark:bg-amber-500/10 dark:text-amber-400"><Circle className="h-2 w-2 fill-current" />{c.pendingApprovals}</span>
                     : <span className="text-slate-300 dark:text-slate-600">—</span>}
                 </td>
-                <td className="px-4 py-3">{c.payrollRunStatus ? <StatusBadge status={c.payrollRunStatus} /> : <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-500 dark:bg-white/10 dark:text-slate-400">Not started</span>}</td>
+                <td className="px-4 py-3">{c.payrollRunStatus ? <StatusBadge status={c.payrollRunStatus} /> : <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-500 dark:bg-white/10 dark:text-slate-400">{t('Not started')}</span>}</td>
                 <td className="px-4 py-3">
                   <button type="button" onClick={() => onDrillDown(c)}
                     className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 opacity-0 transition-opacity hover:bg-slate-50 group-hover:opacity-100 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
-                    Drill down <ArrowUpRight className="h-3 w-3" />
+                    {t('Drill down')} <ArrowUpRight className="h-3 w-3" />
                   </button>
                 </td>
               </tr>
@@ -444,34 +463,33 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
           once it is not, and give the one next action. Never a row of zeroes dressed as a result. */}
       {overview.totalActiveEmployees === 0 ? (
         <div role="status" className="border-t border-line bg-surface-sunken px-5 py-5">
-          <p className="text-sm font-semibold text-slate-900 dark:text-white">No employees yet</p>
+          <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('No employees yet')}</p>
           <p className="mt-1 max-w-prose text-xs text-slate-600 dark:text-slate-400">
-            Salary coverage and payroll totals fill in per company once the first employees are on record.
-            Nothing has failed here — there is simply nobody to pay yet.
+            {t('Salary coverage and payroll totals fill in per company once the first employees are on record. Nothing has failed here — there is simply nobody to pay yet.')}
           </p>
           <Link
             href="/people"
             className="mt-3 inline-flex w-fit items-center gap-1.5 rounded-lg bg-sapphire px-3.5 py-2 text-xs font-semibold text-white hover:bg-sapphire/90 dark:bg-cyanAccent dark:text-slate-900 dark:hover:bg-cyanAccent/90"
           >
-            Add employees <ChevronRight className="h-3.5 w-3.5" />
+            {t('Add employees')} <ChevronRight className="h-3.5 w-3.5" />
           </Link>
         </div>
       ) : (
         <div className="border-t border-line bg-surface-sunken px-5 py-3">
           <div className="flex items-center gap-8 text-xs">
-            <span className="text-slate-500 dark:text-slate-400">Group totals:</span>
+            <span className="text-slate-500 dark:text-slate-400">{t('Group totals')}:</span>
             {groupCurrency ? (
               <>
-                <span className="font-semibold text-slate-800 dark:text-white">Gross: {fmtAmt(overview.totalGrossPayroll, groupCurrency)}</span>
-                <span className="font-semibold text-emerald-600 dark:text-emerald-400">Net: {fmtAmt(overview.totalNetPayroll, groupCurrency)}</span>
+                <span className="font-semibold text-slate-800 dark:text-white">{t('Gross: {totalGrossPayroll}', { totalGrossPayroll: fmtAmt(overview.totalGrossPayroll, groupCurrency) })}</span>
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">{t('Net: {totalNetPayroll}', { totalNetPayroll: fmtAmt(overview.totalNetPayroll, groupCurrency) })}</span>
               </>
             ) : overview.companies.some((company) => company.hasPayrollRun) ? (
-              <span className="font-semibold text-amber-700 dark:text-amber-300">Companies pay in different currencies — read the totals per company above</span>
+              <span className="font-semibold text-amber-700 dark:text-amber-300">{t('Companies pay in different currencies — read the totals per company above')}</span>
             ) : (
-              <span className="text-slate-500 dark:text-slate-400">No payroll run in this period</span>
+              <span className="text-slate-500 dark:text-slate-400">{t('No payroll run in this period')}</span>
             )}
-            {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{overview.totalValidationErrors} errors</span>}
-            {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{overview.totalPendingApprovals} pending approvals</span>}
+            {overview.totalValidationErrors > 0 && <span className="font-semibold text-rose-600 dark:text-rose-400">{t('{totalValidationErrors} errors', { totalValidationErrors: overview.totalValidationErrors })}</span>}
+            {overview.totalPendingApprovals > 0 && <span className="font-semibold text-amber-600 dark:text-amber-400">{t('{totalPendingApprovals} pending approvals', { totalPendingApprovals: overview.totalPendingApprovals })}</span>}
           </div>
         </div>
       )}
@@ -482,6 +500,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 // ── AI Insights Panel ─────────────────────────────────────────────────────────
 
 function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
+  const t = useT();
   // This panel is ADVISORY and nobody asked for it — it fetches on mount, beside whatever payroll work
   // the operator is actually doing. /api/ai/insights requires `ai.insights_view`, which the HR Manager
   // and Finance Approver bundles do not hold, so for them it 403'd and the shared client's global
@@ -526,7 +545,7 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
   // at all, so it never reads as either an alarm or an all-clear.
   if (!enabled) return null;
   const state = payrollInsightState(loading, failed, visibleInsights.length);
-  if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label="Loading payroll insights" />;
+  if (state === 'loading') return <div className="surface h-16 animate-pulse" aria-label={t('Loading payroll insights')} />;
   if (state === 'empty' || state === 'unavailable') return (
     <div role={state === 'unavailable' ? 'alert' : 'status'} className={`surface flex items-center gap-3 p-5 ${state === 'unavailable' ? 'border-amber-300 dark:border-amber-500/30' : ''}`}>
       {state === 'unavailable' ? <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" /> : <Lightbulb className="h-4 w-4 shrink-0 text-slate-400" />}
@@ -538,8 +557,8 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
     <div className="surface overflow-hidden">
       <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
         <Lightbulb className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Insights</h3>
-        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{visibleInsights.length} active</span>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Insights')}</h3>
+        <span className="ms-auto rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">{t('{length} active', { length: visibleInsights.length })}</span>
       </div>
       <div className="divide-y divide-slate-100 dark:divide-white/5">
         {visibleInsights.map(ins => (
@@ -565,6 +584,9 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
 // ── Dashboard Tab (Command Center) ─────────────────────────────────────────────
 
 function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
+  const t = useT();
+  const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const now = new Date();
   const [selectedCompanyId, setSelectedCompanyId] = useState<string>('all');
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
@@ -607,7 +629,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       ? commonPayrollCurrency(overview.companies.filter((company) => company.hasPayrollRun))
       : commonPayrollCurrency(overview.companies.filter((company) => company.companyId === selectedCompanyId))
     : null;
-  const overviewAmount = (value: number) => overviewCurrency ? fmtAmt(value, overviewCurrency) : 'Mixed currencies';
+  const overviewAmount = (value: number) => overviewCurrency ? fmtAmt(value, overviewCurrency) : t('Mixed currencies');
 
   const years = Array.from({ length: 3 }, (_, i) => now.getFullYear() - i);
 
@@ -618,24 +640,24 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       <div className="surface flex flex-wrap items-center gap-3 p-3.5">
         <Building2 className="h-4 w-4 shrink-0 text-slate-400" />
         <select
-          aria-label="Company scope"
+          aria-label={t('Company scope')}
           className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
           value={selectedCompanyId}
           onChange={e => { setSelectedCompanyId(e.target.value); setDrillDown(null); }}
         >
-          <option value="all">All Group Companies</option>
+          <option value="all">{t('All Group Companies')}</option>
           {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select
-          aria-label="Month"
+          aria-label={t('Month')}
           className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
           value={selectedMonth}
           onChange={e => setSelectedMonth(Number(e.target.value))}
         >
-          {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+          {MONTHS.map((m, i) => <option key={m} value={i + 1}>{monthLabel(i + 1)}</option>)}
         </select>
         <select
-          aria-label="Year"
+          aria-label={t('Year')}
           className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-sapphire focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
           value={selectedYear}
           onChange={e => setSelectedYear(Number(e.target.value))}
@@ -643,29 +665,29 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
           {years.map(y => <option key={y}>{y}</option>)}
         </select>
         <button type="button" onClick={load} className="ms-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
-          <RefreshCw className="h-3.5 w-3.5" /> Refresh
+          <RefreshCw className="h-3.5 w-3.5" /> {t('Refresh')}
         </button>
       </div>
 
       {/* ── Setup Wizard (when payroll not yet configured) ── */}
       {!loading && overviewFailed && (
         <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">
-          Payroll overview is unavailable. Totals and period status are not shown because the request failed.
+          {t('Payroll overview is unavailable. Totals and period status are not shown because the request failed.')}
         </div>
       )}
       {!loading && periodState === 'no-run' && (
         <div role="status" className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-slate-300">
-          No payroll run exists for {MONTHS[selectedMonth - 1]} {selectedYear}. Empty totals do not indicate a completed or healthy payroll.
+          {t('No payroll run exists for {period}. Empty totals do not indicate a completed or healthy payroll.', { period: monthLabel(selectedMonth, selectedYear) })}
         </div>
       )}
       {isNotConfigured && readiness && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 dark:border-amber-500/20 dark:bg-amber-500/5">
           <div className="mb-3 flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Payroll is not yet configured</p>
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">{t('Payroll is not yet configured')}</p>
           </div>
           <p className="mb-4 text-xs text-amber-700 dark:text-amber-400">
-            Complete the setup steps below to enable payroll processing. Once configured, this dashboard will show live payroll data.
+            {t('Complete the setup steps below to enable payroll processing. Once configured, this dashboard will show live payroll data.')}
           </p>
           <PayrollSetupWizard readiness={readiness} onNavigate={onNavigate} />
         </div>
@@ -684,10 +706,10 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
       {/* ── Summary KPIs ── */}
       {!loading && overview && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <KpiCard label="Active Employees" value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Gross Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net Payroll" value={periodState === 'no-run' ? 'No run' : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? 'See each company below' : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Locked Runs YTD" value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
+          <KpiCard label={t('Active Employees')} value={overview.totalActiveEmployees.toLocaleString()} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Gross Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalGrossPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label={t('Net Payroll')} value={periodState === 'no-run' ? t('No run') : overviewAmount(overview.totalNetPayroll)} sub={periodState !== 'no-run' && !overviewCurrency ? t('See each company below') : undefined} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Locked Runs YTD')} value={summary?.lockedRuns ?? '—'} icon={Lock} color="bg-violet-100 text-violet-600 dark:bg-violet-500/20 dark:text-violet-400" />
         </div>
       )}
 
@@ -706,39 +728,39 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
           <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 dark:border-white/10">
             <div className="flex items-center gap-2">
               <Building2 className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{drillDown.companyName} — Payroll Drill-Down</h3>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('{companyName} — Payroll Drill-Down', { companyName: drillDown.companyName })}</h3>
             </div>
-            <button type="button" aria-label="Close drill-down" onClick={() => setDrillDown(null)} className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10">
+            <button type="button" aria-label={t('Close drill-down')} onClick={() => setDrillDown(null)} className="rounded-lg p-1 hover:bg-slate-100 dark:hover:bg-white/10">
               <X className="h-4 w-4 text-slate-400" />
             </button>
           </div>
           <div className="grid grid-cols-2 gap-4 p-5 lg:grid-cols-4">
             <div>
-              <p className="text-xs text-slate-400">Active Employees</p>
+              <p className="text-xs text-slate-400">{t('Active Employees')}</p>
               <p className="text-xl font-bold text-slate-800 dark:text-white">{drillDown.activeEmployees}</p>
-              {drillDown.employeesMissingSalary > 0 && <p className="text-xs text-rose-500">{drillDown.employeesMissingSalary} missing salary</p>}
+              {drillDown.employeesMissingSalary > 0 && <p className="text-xs text-rose-500">{t('{employeesMissingSalary} missing salary', { employeesMissingSalary: drillDown.employeesMissingSalary })}</p>}
             </div>
             <div>
-              <p className="text-xs text-slate-400">Gross Payroll</p>
+              <p className="text-xs text-slate-400">{t('Gross Payroll')}</p>
               <p className="text-xl font-bold text-slate-800 dark:text-white">{drillDown.hasPayrollRun ? fmtAmt(drillDown.grossPayroll, drillDown.currency) : '—'}</p>
             </div>
             <div>
-              <p className="text-xs text-slate-400">Net Payroll</p>
+              <p className="text-xs text-slate-400">{t('Net Payroll')}</p>
               <p className="text-xl font-bold text-emerald-600 dark:text-emerald-400">{drillDown.hasPayrollRun ? fmtAmt(drillDown.netPayroll, drillDown.currency) : '—'}</p>
             </div>
             <div>
-              <p className="text-xs text-slate-400">Run Status</p>
+              <p className="text-xs text-slate-400">{t('Run Status')}</p>
               {drillDown.payrollRunStatus
                 ? <StatusBadge status={drillDown.payrollRunStatus} />
-                : <span className="text-sm text-slate-400">Not started</span>}
+                : <span className="text-sm text-slate-400">{t('Not started')}</span>}
             </div>
           </div>
           <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-3.5 dark:border-white/10">
-            {drillDown.validationErrors > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-3 py-1 text-xs font-medium text-rose-600 dark:bg-rose-500/10 dark:text-rose-400"><AlertTriangle className="h-3 w-3" />{drillDown.validationErrors} validation error(s)</span>}
-            {drillDown.validationWarnings > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-600 dark:bg-amber-500/10 dark:text-amber-400"><AlertTriangle className="h-3 w-3" />{drillDown.validationWarnings} warning(s)</span>}
-            {drillDown.pendingApprovals > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400"><CheckCircle2 className="h-3 w-3" />{drillDown.pendingApprovals} pending approval(s)</span>}
+            {drillDown.validationErrors > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-3 py-1 text-xs font-medium text-rose-600 dark:bg-rose-500/10 dark:text-rose-400"><AlertTriangle className="h-3 w-3" />{t('{validationErrors} validation error(s)', { validationErrors: drillDown.validationErrors })}</span>}
+            {drillDown.validationWarnings > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-600 dark:bg-amber-500/10 dark:text-amber-400"><AlertTriangle className="h-3 w-3" />{t('{validationWarnings} warning(s)', { validationWarnings: drillDown.validationWarnings })}</span>}
+            {drillDown.pendingApprovals > 0 && <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400"><CheckCircle2 className="h-3 w-3" />{t('{pendingApprovals} pending approval(s)', { pendingApprovals: drillDown.pendingApprovals })}</span>}
             <button type="button" onClick={() => onNavigate('runs')} className="inline-flex items-center gap-1 rounded-full bg-sapphire/10 px-3 py-1 text-xs font-medium text-sapphire hover:bg-sapphire/20 dark:bg-cyanAccent/10 dark:text-cyanAccent">
-              Go to Payroll Runs <ChevronRight className="h-3 w-3" />
+              {t('Go to Payroll Runs')} <ChevronRight className="h-3 w-3" />
             </button>
           </div>
         </div>
@@ -756,17 +778,17 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
       {/* ── Quick actions ── */}
       <div className="surface p-5">
-        <h3 className="mb-3 text-sm font-semibold text-slate-800 dark:text-white">Quick Actions</h3>
+        <h3 className="mb-3 text-sm font-semibold text-slate-800 dark:text-white">{t('Quick Actions')}</h3>
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
           {([
-            ['New Payroll Run', 'runs', Plus],
-            ['Grade Packages', 'salary-structures', Layers3],
-            ['Employee Salary', 'employee-salary', Users],
-            ['Validation', 'validation', AlertTriangle],
-            ['Approvals', 'approvals', CheckCircle2],
-            ['Anomaly Checks', 'ai-validation', ShieldCheck],
-          ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
-            <button key={t} type="button" onClick={() => onNavigate(t)}
+            [t('New Payroll Run'), 'runs', Plus],
+            [t('Grade Packages'), 'salary-structures', Layers3],
+            [t('Employee Salary'), 'employee-salary', Users],
+            [t('Validation'), 'validation', AlertTriangle],
+            [t('Approvals'), 'approvals', CheckCircle2],
+            [t('Anomaly Checks'), 'ai-validation', ShieldCheck],
+          ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, tabKey, Icon]) => (
+            <button key={tabKey} type="button" onClick={() => onNavigate(tabKey)}
               className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 text-start hover:border-sapphire/40 hover:bg-sapphire/3 dark:border-white/10 dark:hover:border-cyanAccent/30 dark:hover:bg-cyanAccent/5">
               <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sapphire/10 dark:bg-cyanAccent/10">
                 <Icon className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
@@ -1033,7 +1055,7 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
     catalog.status === 'ready' ? catalog.choices : [], locale);
 
   const save = async () => {
-    if (!form.employeeId || !form.basicSalary) { setError('Employee ID and basic salary are required.'); return; }
+    if (!form.employeeId || !form.basicSalary) { setError(t('Employee ID and basic salary are required.')); return; }
     if (Object.keys(allowanceProblems(shownAllowances, basicNumber)).length > 0) {
       setShowAllowanceProblems(true); setError(t('Fix the allowance lines that show a message before saving.')); return;
     }
@@ -1062,7 +1084,7 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
       }
       const refusal = allowanceRefusal(e);
       if (refusal && refusal.code !== 'salary_change_stale') { setAllowanceServerProblem(refusal.message); setError(t('The salary was not saved.')); setShowAllowanceProblems(true); }
-      else setError(apiErrorReason(e, 'Save failed.'));
+      else setError(apiErrorReason(e, t('Save failed.')));
       setSaving(false);
     }
   };
@@ -1071,10 +1093,10 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
     .reduce((sum, k) => sum + (Number(form[k as keyof typeof form]) || 0), 0) + allowanceTotal;
 
   return (
-    <Modal title="Assign Salary to Employee" onClose={onClose} wide>
+    <Modal title={t('Assign Salary to Employee')} onClose={onClose} wide>
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Employee ID *"><input type="number" aria-label="Employee ID" className={inp} value={form.employeeId} onChange={e => set('employeeId', e.target.value)} /></Field>
+          <Field label={t('Employee ID *')}><input type="number" aria-label={t('Employee ID')} className={inp} value={form.employeeId} onChange={e => set('employeeId', e.target.value)} /></Field>
           <Field label={t('Salary structure')}>
             <select aria-label={t('Salary structure')} className={sel} value={form.salaryStructureId} onChange={e => set('salaryStructureId', e.target.value)}>
               <option value="">{t("The employee's grade package (automatic)")}</option>
@@ -1084,18 +1106,18 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
         </div>
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Earnings</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Earnings')}</p>
           <div className="grid grid-cols-3 gap-3">
             {[
-              ['basicSalary', 'Basic Salary *'], ['housingAllowance', 'Housing Allowance'],
-              ['transportAllowance', 'Transport Allowance'], ['foodAllowance', 'Food Allowance'],
-              ['mobileAllowance', 'Mobile Allowance'], ['otherAllowance', 'Other Allowances'],
+              ['basicSalary', t('Basic Salary *')], ['housingAllowance', t('Housing Allowance')],
+              ['transportAllowance', t('Transport Allowance')], ['foodAllowance', t('Food Allowance')],
+              ['mobileAllowance', t('Mobile Allowance')], ['otherAllowance', t('Other Allowances')],
             ].map(([k, label]) => (
               <Field key={k} label={label}><input type="number" step="0.01" aria-label={label} className={inp} value={form[k as keyof typeof form]} onChange={e => set(k as keyof typeof form, e.target.value)} /></Field>
             ))}
           </div>
           <div className="mt-3 rounded-lg bg-slate-50 px-4 py-2.5 dark:bg-white/5">
-            <p className="text-sm font-semibold text-sapphire dark:text-cyanAccent">Gross Total: {form.currency} {gross.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+            <p className="text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Gross Total: {currency} {toLocaleString}', { currency: form.currency, toLocaleString: gross.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
             {allowanceTotal > 0 && <p className="text-xs text-slate-600 dark:text-slate-300" data-testid="gross-includes-allowances">{t('Includes {amount} a month in other monthly allowances.', { amount: formatAmount(allowanceTotal, effectiveCurrency, locale) })}</p>}
           </div>
         </div>
@@ -1109,10 +1131,10 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
           onReference={setReference} problem={referenceProblem} focusToken={referenceFocus} lineLabel={lineLabel} />}
 
         <div className="grid grid-cols-3 gap-3">
-          <Field label="Fixed Deduction" info="A fixed amount removed every month (e.g. accommodation recovery), in the salary currency. Numbers only." infoKey="payroll.fixed_deduction"><input type="number" step="0.01" aria-label="Fixed deduction" className={inp} value={form.fixedDeduction} onChange={e => set('fixedDeduction', e.target.value)} /></Field>
-          <Field label="Effective Date"><input type="date" aria-label="Effective date" className={inp} value={form.effectiveDate} onChange={e => set('effectiveDate', e.target.value)} /></Field>
-          <Field label="Currency">
-            <select aria-label="Currency" className={sel} value={effectiveCurrency} onChange={e => set('currency', e.target.value)}>
+          <Field label={t('Fixed Deduction')} info={t('A fixed amount removed every month (e.g. accommodation recovery), in the salary currency. Numbers only.')} infoKey="payroll.fixed_deduction"><input type="number" step="0.01" aria-label={t('Fixed deduction')} className={inp} value={form.fixedDeduction} onChange={e => set('fixedDeduction', e.target.value)} /></Field>
+          <Field label={t('Effective Date')}><input type="date" aria-label={t('Effective date')} className={inp} value={form.effectiveDate} onChange={e => set('effectiveDate', e.target.value)} /></Field>
+          <Field label={t('Currency')}>
+            <select aria-label={t('Currency')} className={sel} value={effectiveCurrency} onChange={e => set('currency', e.target.value)}>
               {['USD', 'GBP', 'EUR', 'CAD', 'AUD', 'SGD', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR', 'EGP', 'INR', 'PKR', 'PHP', 'JOD', 'ZAR', 'NGN', 'KES'].map(c => <option key={c}>{c}</option>)}
             </select>
           </Field>
@@ -1120,8 +1142,8 @@ function AssignSalaryModal({ structures, onClose, onSaved }: { structures: Salar
 
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Assign Salary'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Assign Salary')}</button>
         </div>
       </div>
     </Modal>
@@ -1151,9 +1173,9 @@ function EmployeeSalaryTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <input type="number" aria-label="Employee ID filter" placeholder="Filter by Employee ID" className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
-        <button type="button" className={btn.ghost} onClick={load}>Search</button>
-        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> Assign Salary</button>
+        <input type="number" aria-label={t('Employee ID filter')} placeholder={t('Filter by Employee ID')} className={`${inp} w-52`} value={empIdFilter} onChange={e => setEmpIdFilter(e.target.value)} />
+        <button type="button" className={btn.ghost} onClick={load}>{t('Search')}</button>
+        <button type="button" className={`ms-auto ${btn.primary}`} onClick={() => setShowAssign(true)}><Plus className="h-4 w-4" /> {t('Assign Salary')}</button>
       </div>
       {submitted && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
@@ -1162,17 +1184,17 @@ function EmployeeSalaryTab() {
       )}
       <SecondApproverNotice />
       <SalaryChangesPanel onApplied={load} />
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : assignments.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : assignments.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Users className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No salary assignments found</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No salary assignments found')}</p>
         </div>
       ) : (
         <div className="surface overflow-hidden">
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Employee', 'Structure', 'Basic', 'Housing', 'Transport', 'Gross', 'Deduction', 'Effective', 'Status'].map(h => (
+                {[t('Employee'), t('Structure'), t('Basic'), t('Housing'), t('Transport'), t('Gross'), t('Deduction'), t('Effective'), t('Status')].map(h => (
                   <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
@@ -1182,7 +1204,7 @@ function EmployeeSalaryTab() {
                 const gross = a.basicSalary + a.housingAllowance + a.transportAllowance + a.foodAllowance + a.mobileAllowance + a.otherAllowance;
                 return (
                   <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                    <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">Emp #{a.employeeId}</td>
+                    <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{employeeId}', { employeeId: a.employeeId })}</td>
                     <td className="px-3 py-2 text-slate-500">{structName(a.salaryStructureId)}</td>
                     <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.basicSalary.toLocaleString()}</td>
                     <td className="px-3 py-2 text-end text-slate-700 dark:text-slate-300">{a.housingAllowance.toLocaleString()}</td>
@@ -1190,7 +1212,7 @@ function EmployeeSalaryTab() {
                     <td className="px-3 py-2 text-end font-semibold text-slate-900 dark:text-white">{gross.toLocaleString()}</td>
                     <td className="px-3 py-2 text-end text-rose-500">{a.fixedDeduction > 0 ? `(${a.fixedDeduction.toLocaleString()})` : '—'}</td>
                     <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(a.effectiveDate)}</td>
-                    <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? 'Active' : 'Inactive'}</span></td>
+                    <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${a.isActive ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500'}`}>{a.isActive ? t('Active') : t('Inactive')}</span></td>
                   </tr>
                 );
               })}
@@ -1239,6 +1261,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
   // next action is the recompute on the Validation tab.
   const [staleAttendanceRun, setStaleAttendanceRun] = useState<PayrollRun | null>(null);
   const t = useT();
+  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   // Cost accounting v1: for an Approved run of a company with costing on, Lock becomes "Review & lock" (the preview owns the lock).
   // A company whose switch cannot be read keeps today's Lock: the server still decides.
@@ -1305,7 +1328,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
     // Every slip, page by page: one page of 200 left a larger run's register silently short.
     payrollApi.allSlips(run.id)
       .then(all => { if (slipsFetchSeq.current === seq) setSlips(all); })
-      .catch(e => { if (slipsFetchSeq.current === seq) setSlipsError(`Slips could not be loaded. ${requestFailureReason(e)}`); })
+      .catch(e => { if (slipsFetchSeq.current === seq) setSlipsError(t('Slips could not be loaded. {requestFailureReason}', { requestFailureReason: requestFailureReason(e) })); })
       .finally(() => { if (slipsFetchSeq.current === seq) setSlipsLoading(false); });
   };
 
@@ -1316,7 +1339,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       setShowCreate(false); load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to create payroll run.');
+      setError(msg ?? t('Failed to create payroll run.'));
     } finally { setSaving(false); }
   };
 
@@ -1332,7 +1355,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
     } catch (e) {
       const data = (e as { response?: { data?: { message?: string; code?: string } } })?.response?.data;
       if (data?.code === 'ERR_ATTENDANCE_IMPACT_STALE') setStaleAttendanceRun(runs.find(r => r.id === id) ?? null);
-      setError(data?.message ?? 'Failed to process the payroll run. Check that the company has a country code and a statutory pack configured.');
+      setError(data?.message ?? t('Failed to process the payroll run. Check that the company has a country code and a statutory pack configured.'));
     }
   };
 
@@ -1362,7 +1385,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       if (selectedRunId === id) { setSelectedRunId(null); setSlips([]); }
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to delete the payroll run.');
+      setError(msg ?? t('Failed to delete the payroll run.'));
     }
   };
 
@@ -1373,8 +1396,8 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       {lockDialog}
       {confirmDialog}
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500">{total} payroll run{total !== 1 ? 's' : ''}</p>
-        <button type="button" className={btn.primary} onClick={() => { setShowCreate(true); setError(''); }}><Plus className="h-4 w-4" /> New Payroll Run</button>
+        <p className="text-sm text-slate-500">{t('{count, plural, one {# payroll run} other {# payroll runs}}', { count: total })}</p>
+        <button type="button" className={btn.primary} onClick={() => { setShowCreate(true); setError(''); }}><Plus className="h-4 w-4" /> {t('New Payroll Run')}</button>
       </div>
 
       {!showCreate && error && (
@@ -1393,32 +1416,32 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="surface overflow-hidden">
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Payroll Runs</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Payroll Runs')}</p>
           </div>
           {loading && <div className="flex justify-center py-10"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div>}
           {!loading && runsError != null && <LoadFailedNotice error={runsError} onRetry={load} />}
-          {!loading && runsError == null && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">No runs yet. Create one above.</p>}
+          {!loading && runsError == null && runs.length === 0 && <p className="py-10 text-center text-sm text-slate-400">{t('No runs yet. Create one above.')}</p>}
           <div className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {runs.map(run => (
               <div key={run.id} role="button" tabIndex={0} onClick={() => openSlips(run)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlips(run); } }}
                 className={`w-full cursor-pointer px-4 py-3 text-start transition hover:bg-slate-50 dark:hover:bg-white/[0.03] ${selectedRun?.id === run.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
                 <div className="flex items-center justify-between">
-                  <p className="font-semibold text-slate-900 dark:text-white">{MONTHS[run.month - 1]} {run.year}</p>
+                  <p className="font-semibold text-slate-900 dark:text-white">{monthLabel(run.month, run.year)}</p>
                   <StatusBadge status={run.status} />
                 </div>
                 {companies.length > 1 && run.companyId && (
                   <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{companies.find(c => c.id === run.companyId)?.name ?? ''}</p>
                 )}
-                <p className="mt-1 text-xs text-slate-500">{run.employeeCount} employees · Net {fmt(run.totalNetSalary)}</p>
+                <p className="mt-1 text-xs text-slate-500">{t('{employeeCount} employees · Net {totalNetSalary}', { employeeCount: run.employeeCount, totalNetSalary: fmt(run.totalNetSalary) })}</p>
                 {run.status !== 'Locked' && (
                   <div className="mt-2 flex gap-1">
                     <button type="button" onClick={e => { e.stopPropagation(); processRun(run.id); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                      <Play className="h-3 w-3" /> Process
+                      <Play className="h-3 w-3" /> {t('Process')}
                     </button>
                     {run.status === 'Processed' && (
                       <button type="button" onClick={e => { e.stopPropagation(); onSelectRun(run, 'approvals'); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                        <CheckCircle2 className="h-3 w-3" /> Approve
+                        <CheckCircle2 className="h-3 w-3" /> {t('Approve')}
                       </button>
                     )}
                     {run.status === 'Approved' && run.companyId && costingCompanies.has(run.companyId) && (
@@ -1428,32 +1451,32 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                     )}
                     {run.status === 'Approved' && !(run.companyId && costingCompanies.has(run.companyId)) && (
                       <button type="button" onClick={e => { e.stopPropagation(); lockRun(run.id); }} disabled={lockingId !== null || !costingChecked} className={`${btn.sm} h-6 px-2 text-xs`}>
-                        <Lock className="h-3 w-3" /> {lockingId === run.id ? 'Locking…' : 'Lock'}
+                        <Lock className="h-3 w-3" /> {lockingId === run.id ? t('Locking…') : t('Lock')}
                       </button>
                     )}
                     <button type="button" onClick={e => { e.stopPropagation(); onSelectRun(run, 'validation'); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                      <AlertTriangle className="h-3 w-3" /> Validate
+                      <AlertTriangle className="h-3 w-3" /> {t('Validate')}
                     </button>
                     {/* Reopen releases the loan installments, attendance/leave/overtime impacts and
                         bonuses a run consumed. The backend refuses once any Payroll GL row exists,
                         so a Locked/Paid run is deliberately not offered it. */}
                     {(run.status === 'Processed' || run.status === 'PendingFinanceReview' || run.status === 'Approved') && (
                       <button type="button" onClick={e => { e.stopPropagation(); setReopening(run); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                        <RotateCcw className="h-3 w-3" /> Reopen
+                        <RotateCcw className="h-3 w-3" /> {t('Reopen')}
                       </button>
                     )}
                     {run.status === 'Draft' && (
                       <button type="button" onClick={e => { e.stopPropagation(); deleteRun(run.id); }}
-                        aria-label="Delete draft run"
+                        aria-label={t('Delete draft run')}
                         className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10">
-                        <Trash2 className="h-3 w-3" /> Delete
+                        <Trash2 className="h-3 w-3" /> {t('Delete')}
                       </button>
                     )}
                     {run.status !== 'Draft' && run.status !== 'Voided' && (
                       <button type="button" onClick={e => { e.stopPropagation(); setVoiding(run); }}
-                        aria-label="Void run"
+                        aria-label={t('Void run')}
                         className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10">
-                        <X className="h-3 w-3" /> Void
+                        <X className="h-3 w-3" /> {t('Void')}
                       </button>
                     )}
                   </div>
@@ -1463,12 +1486,12 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                 {(run.status === 'Locked' || run.status === 'Paid') && (
                   <div className="mt-2 flex gap-1">
                     <button type="button" onClick={e => { e.stopPropagation(); onSelectRun(run, 'validation'); }} className={`${btn.sm} h-6 px-2 text-xs`}>
-                      <AlertTriangle className="h-3 w-3" /> Validate
+                      <AlertTriangle className="h-3 w-3" /> {t('Validate')}
                     </button>
                     <button type="button" onClick={e => { e.stopPropagation(); setVoiding(run); }}
-                      aria-label="Void run"
+                      aria-label={t('Void run')}
                       className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10">
-                      <X className="h-3 w-3" /> Void
+                      <X className="h-3 w-3" /> {t('Void')}
                     </button>
                   </div>
                 )}
@@ -1481,15 +1504,15 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
           {!selectedRun ? (
             <div className="flex flex-col items-center justify-center py-24 text-center">
               <FileText className="mb-3 h-10 w-10 text-slate-200 dark:text-slate-700" />
-              <p className="text-sm text-slate-400">Select a payroll run to view salary slips</p>
+              <p className="text-sm text-slate-400">{t('Select a payroll run to view salary slips')}</p>
             </div>
           ) : (
             <>
               <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-white/[0.07]">
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">Slips — {MONTHS[selectedRun.month - 1]} {selectedRun.year}</p>
+                <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Slips — {period}', { period: monthLabel(selectedRun.month, selectedRun.year) })}</p>
                 <div className="flex items-center gap-3 text-xs text-slate-500">
-                  <span>Gross: <span className="font-semibold text-slate-900 dark:text-white">{fmt(selectedRun.totalGrossSalary)}</span></span>
-                  <span>Net: <span className="font-bold text-emerald-600 dark:text-emerald-400">{fmt(selectedRun.totalNetSalary)}</span></span>
+                  <span>{t('Gross')}: <span className="font-semibold text-slate-900 dark:text-white">{fmt(selectedRun.totalGrossSalary)}</span></span>
+                  <span>{t('Net')}: <span className="font-bold text-emerald-600 dark:text-emerald-400">{fmt(selectedRun.totalNetSalary)}</span></span>
                 </div>
               </div>
               {slipsLoading ? <div className="flex justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></div> : (
@@ -1500,14 +1523,14 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                         {/* Loans sits AFTER Deductions and says "of which", because the EMI is already
                             inside the Deductions total (PayrollController.cs:2635). Side by side, both
                             bracketed, the two columns read as two separate subtractions. */}
-                        {['Employee', 'Dept', 'Basic', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
+                        {[t('Employee'), t('Dept'), t('Basic'), t('Gross'), t('Deductions'), t('Of which: Loans'), t('Net'), t('YTD Gross'), t('YTD Net')].map(h => (
                           <th key={h} className="px-3 py-3 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                       {slipsError && <tr><td colSpan={9} role="alert" className="py-10 text-center text-sm text-rose-600 dark:text-rose-400">{slipsError}</td></tr>}
-                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">No slips. Click Process to generate.</td></tr>}
+                      {!slipsError && slips.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-slate-400">{t('No slips. Click Process to generate.')}</td></tr>}
                       {slips.map(s => (
                         <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                           <td className="px-3 py-2.5">
@@ -1521,7 +1544,7 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                             {s.prorationFactor != null && s.prorationFactor !== 1 && (
                               <p className="text-[10px] leading-tight text-sky-600 dark:text-sky-400">
                                 {s.paidDays}/{s.prorationDenominatorDays} d
-                                {s.isFinalWageMonth ? ' · final month' : s.paidFromDate ? ` · from ${s.paidFromDate}` : ''}
+                                {s.isFinalWageMonth ? ` · ${t('Final month')}` : s.paidFromDate ? ` · ${t('From {date}', { date: s.paidFromDate })}` : ''}
                               </p>
                             )}
                           </td>
@@ -1529,14 +1552,14 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                             {fmt(s.grossSalary)}
                             {s.arrearsAmount != null && s.arrearsAmount > 0 && (
                               <p className="text-[10px] font-normal leading-tight text-violet-600 dark:text-violet-400">
-                                incl. arrears {fmt(s.arrearsAmount)}
+                                {t('Incl. arrears {arrearsAmount}', { arrearsAmount: fmt(s.arrearsAmount) })}
                               </p>
                             )}
                           </td>
                           <td className="px-3 py-2.5 text-end text-rose-500">
                             ({fmt(s.deductions)})
                             {s.employeeStatutoryTotal > 0 && (
-                              <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                              <p className="text-[10px] leading-tight text-rose-400">{t('Of which GOSI {employeeStatutoryTotal}', { employeeStatutoryTotal: fmt(s.employeeStatutoryTotal) })}</p>
                             )}
                             {/* F02 — which cohort and rate basis produced the statutory lines, read off the slip. */}
                             {s.statutoryBasis && <GosiBasisNote cohort={s.gosiCohort} basis={s.statutoryBasis} />}
@@ -1559,30 +1582,30 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       </div>
 
       {showCreate && (
-        <Modal title="New Payroll Run" onClose={() => setShowCreate(false)}>
+        <Modal title={t('New Payroll Run')} onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
             {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{error}</p>}
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Year" info="The calendar year this payroll run covers, e.g. 2026." infoKey="payroll.run_year">
-                <input type="number" aria-label="Year" className={inp} value={createYear} onChange={e => setCreateYear(Number(e.target.value))} min={2020} max={new Date().getFullYear() + 1} />
+              <Field label={t('Year')} info={t('The calendar year this payroll run covers, e.g. 2026.')} infoKey="payroll.run_year">
+                <input type="number" aria-label={t('Year')} className={inp} value={createYear} onChange={e => setCreateYear(Number(e.target.value))} min={2020} max={new Date().getFullYear() + 1} />
               </Field>
-              <Field label="Month" info="The salary month to process. One run per month — duplicates are rejected." infoKey="payroll.run_month">
-                <select aria-label="Month" className={sel} value={createMonth} onChange={e => setCreateMonth(Number(e.target.value))}>
-                  {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              <Field label={t('Month')} info={t('The salary month to process. One run per month — duplicates are rejected.')} infoKey="payroll.run_month">
+                <select aria-label={t('Month')} className={sel} value={createMonth} onChange={e => setCreateMonth(Number(e.target.value))}>
+                  {MONTHS.map((m, i) => <option key={m} value={i + 1}>{monthLabel(i + 1)}</option>)}
                 </select>
               </Field>
             </div>
             {companies.length > 0 && (
-              <Field label="Company" info="The company whose country pack (GOSI/GPSSA/GRSIA) will be applied. Required for statutory deductions." infoKey="payroll.run_company">
-                <select aria-label="Company" className={sel} value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value)}>
-                  {companies.length > 1 && <option value="">— select company —</option>}
+              <Field label={t('Company')} info={t('The company whose country pack (GOSI/GPSSA/GRSIA) will be applied. Required for statutory deductions.')} infoKey="payroll.run_company">
+                <select aria-label={t('Company')} className={sel} value={createCompanyId} onChange={e => setCreateCompanyId(e.target.value)}>
+                  {companies.length > 1 && <option value="">{t('— select company —')}</option>}
                   {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </Field>
             )}
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={createRun} disabled={saving}>{saving ? 'Creating…' : 'Create Run'}</button>
+              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={createRun} disabled={saving}>{saving ? t('Creating…') : t('Create Run')}</button>
             </div>
           </div>
         </Modal>
@@ -1590,10 +1613,10 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
 
       {reopening && (
         <ReasonActionModal
-          title={`Reopen ${MONTHS[reopening.month - 1]} ${reopening.year}`}
-          confirmLabel="Reopen run"
+          title={t('Reopen {period}', { period: monthLabel(reopening.month, reopening.year) })}
+          confirmLabel={t('Reopen run')}
           minLength={1}
-          blurb="Reopening returns the run to Draft and releases everything it consumed: loan and advance installments, attendance, leave and overtime impacts, and bonuses. Any validation overrides recorded on it are discarded, so a judgement made earlier must be re-entered. It is refused outright once the run has posted to the general ledger."
+          blurb={t('Reopening returns the run to Draft and releases everything it consumed: loan and advance installments, attendance, leave and overtime impacts, and bonuses. Any validation overrides recorded on it are discarded, so a judgement made earlier must be re-entered. It is refused outright once the run has posted to the general ledger.')}
           onClose={() => setReopening(null)}
           onSubmit={async reason => { await payrollApi.reopenRun(reopening.id, reason); setReopening(null); load(); }}
         />
@@ -1601,11 +1624,11 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
 
       {voiding && (
         <ReasonActionModal
-          title={`Void ${MONTHS[voiding.month - 1]} ${voiding.year}`}
-          confirmLabel="Void run"
+          title={t('Void {period}', { period: monthLabel(voiding.month, voiding.year) })}
+          confirmLabel={t('Void run')}
           danger
           minLength={1}
-          blurb="Voiding never deletes. The run's status becomes Voided, its payslips are voided, and contra-entries are written for any general-ledger rows it already posted. The period is then free for a replacement run. This is irreversible and the reason is recorded against your identity."
+          blurb={t('Voiding never deletes. The run\'s status becomes Voided, its payslips are voided, and contra-entries are written for any general-ledger rows it already posted. The period is then free for a replacement run. This is irreversible and the reason is recorded against your identity.')}
           onClose={() => setVoiding(null)}
           onSubmit={async reason => { await payrollApi.voidRun(voiding.id, reason); setVoiding(null); load(); }}
         />
@@ -1628,6 +1651,7 @@ function ReasonActionModal({ title, blurb, confirmLabel, minLength, danger, onCl
   onClose: () => void;
   onSubmit: (reason: string) => Promise<void>;
 }) {
+  const t = useT();
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1637,7 +1661,7 @@ function ReasonActionModal({ title, blurb, confirmLabel, minLength, danger, onCl
     try {
       await onSubmit(reason.trim());
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'The action was refused.');
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('The action was refused.'));
       setBusy(false);
     }
   };
@@ -1646,14 +1670,14 @@ function ReasonActionModal({ title, blurb, confirmLabel, minLength, danger, onCl
     <Modal title={title} onClose={onClose}>
       <div className="space-y-4">
         <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">{blurb}</p>
-        <Field label="Reason (required)">
-          <textarea aria-label="Reason" className={inp} rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="Recorded against your identity on the audit trail." />
+        <Field label={t('Reason (required)')}>
+          <textarea aria-label={t('Reason')} className={inp} rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder={t('Recorded against your identity on the audit trail.')} />
         </Field>
         {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
           <button type="button" className={danger ? btn.danger : btn.primary} onClick={submit} disabled={busy || reason.trim().length < minLength}>
-            {busy ? 'Working…' : confirmLabel}
+            {busy ? t('Working…') : confirmLabel}
           </button>
         </div>
       </div>
@@ -1670,28 +1694,25 @@ function ReasonActionModal({ title, blurb, confirmLabel, minLength, danger, onCl
 // are deliberately barred from attesting their own integrity.
 
 function AuditIntegrityTab() {
+  const t = useT();
   return (
     <div className="space-y-4">
       <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-900 dark:text-white">Tamper-evident audit chains</p>
+        <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Tamper-evident audit chains')}</p>
         <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">
-          Every payroll decision and every security event is written into a hash chain: each entry seals the
-          hash of the one before it. Altering or removing a historical row breaks the chain at that point and
-          every point after it. These two checks walk each chain end to end and report the first break.
-          Verification is restricted to Admin and the read-only Auditor role — the roles that create the
-          entries cannot attest to them.
+          {t('Every payroll decision and every security event is written into a hash chain: each entry seals the hash of the one before it. Altering or removing a historical row breaks the chain at that point and every point after it. These two checks walk each chain end to end and report the first break. Verification is restricted to Admin and the read-only Auditor role — the roles that create the entries cannot attest to them.')}
         </p>
       </div>
       <ChainVerifier
-        title="Payroll audit chain"
-        description="Run created, processed, validated, overridden, approved, locked, voided, paid — POD-A3."
-        allowedRoles="Admin · Auditor"
+        title={t('Payroll audit chain')}
+        description={t('Run created, processed, validated, overridden, approved, locked, voided, paid — POD-A3.')}
+        allowedRoles={t('Admin · Auditor')}
         verify={() => payrollApi.auditIntegrity()}
       />
       <ChainVerifier
-        title="Tenant audit chain"
-        description="The tenant-wide security and configuration trail."
-        allowedRoles="Admin"
+        title={t('Tenant audit chain')}
+        description={t('The tenant-wide security and configuration trail.')}
+        allowedRoles={t('Admin')}
         verify={() => identityAuditApi.integrity()}
       />
     </div>
@@ -1704,6 +1725,7 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
   allowedRoles: string;
   verify: () => Promise<AuditIntegrityReport>;
 }) {
+  const t = useT();
   const [report, setReport] = useState<AuditIntegrityReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1715,8 +1737,8 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
     } catch (e: unknown) {
       const status = (e as { response?: { status?: number } })?.response?.status;
       setError(status === 403 || status === 401
-        ? `Your role cannot verify this chain. Verification is restricted to ${allowedRoles} — by design, the roles that write these entries cannot attest to them.`
-        : (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'The verification could not be run.');
+        ? t('Your role cannot verify this chain. Verification is restricted to {allowedRoles} — by design, the roles that write these entries cannot attest to them.', { allowedRoles })
+        : (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('The verification could not be run.'));
     } finally { setBusy(false); }
   };
 
@@ -1729,7 +1751,7 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
         </div>
         <button type="button" className={btn.primary} onClick={run} disabled={busy}>
           <Shield className="h-4 w-4" />
-          {busy ? 'Verifying…' : 'Verify chain'}
+          {busy ? t('Verifying…') : t('Verify chain')}
         </button>
       </div>
 
@@ -1748,12 +1770,12 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
           <p className={`flex items-center gap-2 text-sm font-bold ${report.isValid ? 'text-emerald-800 dark:text-emerald-300' : 'text-rose-800 dark:text-rose-300'}`}>
             {report.isValid ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
             {report.isValid
-              ? `Intact — ${report.checkedEntries} entries verified.`
-              : `Broken — ${report.failures.length} break(s) across ${report.checkedEntries} entries.`}
+              ? t('Intact — {checkedEntries} entries verified.', { checkedEntries: report.checkedEntries })
+              : t('Broken — {length} break(s) across {checkedEntries} entries.', { length: report.failures.length, checkedEntries: report.checkedEntries })}
           </p>
           <p className={`mt-1 text-xs ${report.isValid ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-700 dark:text-rose-400'}`}>
             {report.checkedEntries === 0
-              ? 'There is nothing on this chain yet.'
+              ? t('There is nothing on this chain yet.')
               : `${fmtDate(report.firstEntryUtc)} → ${fmtDate(report.lastEntryUtc)}`}
           </p>
           {report.failures.length > 0 && (
@@ -1786,6 +1808,7 @@ const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
 
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
+  const monthLabel = useMonthLabel();
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
@@ -1801,9 +1824,9 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
     setLoading(true); setError('');
     payrollApi.listValidationResults(runId)
       .then(setResults)
-      .catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Unable to load saved validation results.'))
+      .catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Unable to load saved validation results.')))
       .finally(() => setLoading(false));
-  }, [runId]);
+  }, [runId, t]);
 
   // The published overridable list comes from the server — a default-deny policy the client must
   // not restate. An unclassified code is NOT overridable, so offering the button would be a lie.
@@ -1821,7 +1844,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
     payrollApi.validateRun(runId).then(r => {
       setResults(Array.isArray(r) ? r : (r as { warnings?: PayrollValidationResult[] }).warnings ?? []);
     }).catch((e: unknown) => {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Payroll validation failed.');
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Payroll validation failed.'));
     }).finally(() => setLoading(false));
   };
 
@@ -1842,12 +1865,12 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run" className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select a payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select a payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading}>
-          {loading ? 'Validating…' : 'Run Validation'}
+          {loading ? t('Validating…') : t('Run Validation')}
         </button>
       </div>
 
@@ -1857,25 +1880,23 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
 
       {results.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
-          <KpiCard label="Total Issues" value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label="Warnings" value={warnings.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-          <KpiCard label="Errors" value={errors.length} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+          <KpiCard label={t('Total Issues')} value={results.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label={t('Warnings')} value={warnings.length} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label={t('Errors')} value={errors.length} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
         </div>
       )}
 
       {(cohortNotRecorded.length > 0 || cohortBlocked.length > 0 || cohortApplied.length > 0 || belowMinimumWage.length > 0) && (
         <div className="surface space-y-2 px-5 py-4" data-testid="gosi-cohort-findings">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">GOSI cohort — checked per employee</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('GOSI cohort — checked per employee')}</p>
             <button type="button" className={`${btn.sm} h-7 px-2 text-xs`} onClick={() => setCohortOnly(v => !v)} aria-pressed={cohortOnly}>
-              {cohortOnly ? 'Show all findings' : 'Show only these employees'}
+              {cohortOnly ? t('Show all findings') : t('Show only these employees')}
             </button>
           </div>
           {cohortBlocked.length > 0 && (
             <p className="text-sm text-rose-700 dark:text-rose-400">
-              {cohortBlocked.length} employee{cohortBlocked.length === 1 ? '' : 's'} first registered with GOSI on or after
-              3 July 2024, but their GOSI on this run was not computed on the new-entrant schedule, so approval is
-              blocked. Reopen the run and process it again; correct the date first if it is wrong.
+              {t('{count, plural, one {# employee first registered} other {# employees first registered}} with GOSI on or after 3 July 2024, but their GOSI on this run was not computed on the new-entrant schedule, so approval is blocked. Reopen the run and process it again; correct the date first if it is wrong.', { count: cohortBlocked.length })}
             </p>
           )}
           {cohortApplied.length > 0 && (
@@ -1890,9 +1911,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
           )}
           {cohortNotRecorded.length > 0 && (
             <p className="text-sm text-amber-700 dark:text-amber-400">
-              {cohortNotRecorded.length} employee{cohortNotRecorded.length === 1 ? ' has' : 's have'} no GOSI
-              first-registration date, so their contribution basis is unverified (computed on the pre-3-July-2024
-              schedule). Record each date on the employee&apos;s Payroll tab (approval required); runs processed afterwards use it.
+              {t('{count, plural, one {# employee has} other {# employees have}} no GOSI first-registration date, so their contribution basis is unverified (computed on the pre-3-July-2024 schedule). Record each date on the employee’s Payroll tab (approval required); runs processed afterwards use it.', { count: cohortNotRecorded.length })}
             </p>
           )}
         </div>
@@ -1902,7 +1921,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">
-            {runId ? 'No saved validation issues. Run validation to refresh the current checks.' : 'Select a run and click validate'}
+            {runId ? t('No saved validation issues. Run validation to refresh the current checks.') : t('Select a run and click validate')}
           </p>
         </div>
       ) : (
@@ -1914,12 +1933,12 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
                 <div className="flex items-center gap-2">
                   <StatusBadge status={r.severity} />
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
-                  {r.employeeId && <span className="text-xs text-slate-400">Emp #{r.employeeId}</span>}
+                  {r.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: r.employeeId })}</span>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
               </div>
               {r.isResolved
-                ? <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">Overridden</span>
+                ? <span className="ms-auto shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Overridden')}</span>
                 : r.severity === 'Error' && overridableCodes.includes(r.code)
                   ? (
                     <button
@@ -1927,16 +1946,16 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
                       className={`${btn.sm} ms-auto h-7 shrink-0 px-2 text-xs`}
                       onClick={() => setOverriding(r)}
                     >
-                      Override…
+                      {t('Override…')}
                     </button>
                   )
                   : r.severity === 'Error'
                     ? (
                       <span
                         className="ms-auto shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-white/10 dark:text-slate-400"
-                        title="This code is not on the published overridable list. Fix the underlying data and re-validate."
+                        title={t('This code is not on the published overridable list. Fix the underlying data and re-validate.')}
                       >
-                        Must be fixed
+                        {t('Must be fixed')}
                       </span>
                     )
                     : null}
@@ -1972,6 +1991,7 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
   onClose: () => void;
   onDone: () => void;
 }) {
+  const t = useT();
   const [reason, setReason] = useState('');
   const [documentReference, setDocumentReference] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1986,48 +2006,46 @@ function OverrideValidationModal({ runId, result, onClose, onDone }: {
       await payrollApi.resolveValidationResult(runId, result.id, reason.trim(), needsDocument ? documentReference.trim() : undefined);
       onDone();
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'The override was refused.');
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('The override was refused.'));
     } finally { setSaving(false); }
   };
 
   return (
-    <Modal title="Override a blocking compliance error" onClose={onClose}>
+    <Modal title={t('Override a blocking compliance error')} onClose={onClose}>
       <div className="space-y-4">
         <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs dark:border-rose-400/20 dark:bg-rose-500/10">
           <p className="font-mono font-semibold text-rose-800 dark:text-rose-300">{result.code}</p>
           <p className="mt-1 text-rose-700 dark:text-rose-400">{result.message}</p>
         </div>
         <p className="text-xs leading-5 text-slate-600 dark:text-slate-400">
-          This error blocks Approve and Lock. Clearing it is a judgement you are making on the record: your
-          identity and this reason are written to the tamper-evident payroll audit chain, and the approver of
-          this run will be required to acknowledge the override before they can approve it.
+          {t('This error blocks Approve and Lock. Clearing it is a judgement you are making on the record: your identity and this reason are written to the tamper-evident payroll audit chain, and the approver of this run will be required to acknowledge the override before they can approve it.')}
         </p>
-        <Field label={`Reason (at least ${MIN_OVERRIDE_REASON} characters)`}>
+        <Field label={t('Reason (at least {MIN_OVERRIDE_REASON} characters)', { MIN_OVERRIDE_REASON })}>
           <textarea
-            aria-label="Override reason"
+            aria-label={t('Override reason')}
             className={inp}
             rows={3}
             value={reason}
             onChange={e => setReason(e.target.value)}
-            placeholder="Why is this acceptable for this run?"
+            placeholder={t('Why is this acceptable for this run?')}
           />
         </Field>
         {needsDocument && (
-          <Field label="Decision or document reference (required)">
+          <Field label={t('Decision or document reference (required)')}>
             <input
-              aria-label="Decision or document reference"
+              aria-label={t('Decision or document reference')}
               className={inp}
               value={documentReference}
               onChange={e => setDocumentReference(e.target.value)}
-              placeholder="Labour court / commission decision or other written basis — its reference number"
+              placeholder={t('Labour court / commission decision or other written basis — its reference number')}
             />
           </Field>
         )}
         {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
           <button type="button" className={btn.danger} onClick={submit} disabled={saving || tooShort}>
-            {saving ? 'Recording…' : 'Override on the record'}
+            {saving ? t('Recording…') : t('Override on the record')}
           </button>
         </div>
       </div>
@@ -2104,23 +2122,25 @@ function AcknowledgementPanel({
 // currency label (and the approval view withholds approval).
 
 function useRunCurrency(run: PayrollRun | undefined) {
+  const t = useT();
+  const fmtAmt = useFmtAmt();
   const { companies, state: companiesState, retry } = usePayrollCompanies();
   const resolution = resolvePayrollRunCurrency(run, companies, companiesState);
   const amount = (n: number) => resolution.status === 'resolved'
     ? fmtAmt(n, resolution.currency)
-    : unconfirmedAmount(n);
+    : unconfirmedAmount(n, t);
   return { resolution, companiesState, companies, amount, retry };
 }
 
-const unconfirmedAmount = (n: number) =>
-  `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (currency not confirmed)`;
+const unconfirmedAmount = (n: number, t: (key: string) => string) =>
+  `${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${t('Currency not confirmed')})`;
 
 /**
  * R03 — amounts in several currencies, one line per currency. Used where a total spans runs or batches
  * of different companies; the amounts are never added across currencies.
  */
-function perCurrency(totals: Array<{ currency: string | null; total: number }>) {
-  return totals.map(t => t.currency ? fmtAmt(t.total, t.currency) : unconfirmedAmount(t.total)).join(' · ');
+function perCurrency(totals: Array<{ currency: string | null; total: number }>, fmtAmt: (n: number, currency?: string) => string, t: (key: string) => string) {
+  return totals.map(row => row.currency ? fmtAmt(row.total, row.currency) : unconfirmedAmount(row.total, t)).join(' · ');
 }
 
 function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval }: {
@@ -2129,20 +2149,21 @@ function RunCurrencyNotice({ resolution, companiesState, onRetry, blocksApproval
   onRetry: () => void;
   blocksApproval?: boolean;
 }) {
+  const t = useT();
   if (resolution.status === 'loading') return (
     <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
       <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-      Confirming the employing company's currency…
+      {t('Confirming the employing company\'s currency…')}
     </p>
   );
   if (resolution.status !== 'unavailable') return null;
   return (
     <div role="alert" className="flex flex-wrap items-start gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-400">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-      <span className="min-w-0 flex-1">{resolution.reason}{blocksApproval ? ' Approval is unavailable until the currency is confirmed.' : ''}</span>
+      <span className="min-w-0 flex-1">{resolution.reason}{blocksApproval ? ` ${t('Approval is unavailable until the currency is confirmed.')}` : ''}</span>
       {companiesState === 'failed' && (
         <button type="button" className={btn.sm} onClick={onRetry}>
-          <RefreshCw className="h-3.5 w-3.5" /> Retry
+          <RefreshCw className="h-3.5 w-3.5" /> {t('Retry')}
         </button>
       )}
     </div>
@@ -2159,6 +2180,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 }) {
   const { hasPermission } = useAuth();
   const t = useT();
+  const monthLabel = useMonthLabel();
   const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
@@ -2193,10 +2215,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
         // A failure here is not cosmetic: without the counts the approver cannot acknowledge, and
         // the backend will refuse. Say so rather than presenting a button that 409s.
         if (pop.status === 'rejected' || ovr.status === 'rejected')
-          setGateError('The exclusion and override counts this run must be approved against could not be read. Approval will be refused until they load — reload the page or check your role.');
+          setGateError(t('The exclusion and override counts this run must be approved against could not be read. Approval will be refused until they load — reload the page or check your role.'));
       })
       .finally(() => setGateLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => { refreshRuns(); }, []);
   useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
@@ -2275,7 +2297,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
         setAckOverridden(false);
         refreshGate(runId);
       }
-      setError(data?.message ?? 'Action failed.');
+      setError(data?.message ?? t('Action failed.'));
     } finally { setSaving(false); }
   };
 
@@ -2288,7 +2310,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
       payrollApi.runApprovals(runId).then(setApprovals).catch(() => {});
       setNotes('');
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Action failed.');
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Action failed.'));
     } finally { setSaving(false); }
   };
 
@@ -2307,16 +2329,16 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
     <div className="space-y-4">
       {/* Approval chain diagram */}
       <div className="surface p-4">
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Approval Workflow</p>
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Approval Workflow')}</p>
         <div className="flex flex-wrap items-center gap-2 text-sm">
           {[
-            { label: 'Process', badge: 'Payroll Officer', color: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' },
+            { label: t('Process'), badge: t('Payroll Officer'), color: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' },
             { label: '→', badge: null, color: '' },
-            { label: 'HR / Payroll Review', badge: 'Payroll Manager · HR Manager', color: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
+            { label: t('HR / Payroll Review'), badge: t('Payroll Manager · HR Manager'), color: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
             { label: '→', badge: null, color: '' },
-            { label: 'Finance Approval', badge: 'Finance Controller · Finance Approver', color: 'bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' },
+            { label: t('Finance Approval'), badge: t('Finance Controller · Finance Approver'), color: 'bg-orange-50 text-orange-700 dark:bg-orange-500/10 dark:text-orange-400' },
             { label: '→', badge: null, color: '' },
-            { label: 'Approved', badge: null, color: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' },
+            { label: t('Approved'), badge: null, color: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' },
           ].map((step, i) => step.badge === null && step.label === '→' ? (
             <span key={i} className="text-slate-300 dark:text-slate-600">→</span>
           ) : (
@@ -2329,9 +2351,9 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
       </div>
 
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run to approve" className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run to approve')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
       </div>
 
@@ -2340,10 +2362,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                Payroll Run — {MONTHS[selectedRun.month - 1]} {selectedRun.year}
+                {t('Payroll Run — {period}', { period: monthLabel(selectedRun.month, selectedRun.year) })}
                 {runCurrency.status === 'resolved' && runCurrency.companyName ? ` · ${runCurrency.companyName}` : ''}
               </p>
-              <p className="text-xs text-slate-400">{selectedRun.employeeCount} employees · Gross {runAmount(selectedRun.totalGrossSalary)} · Net {runAmount(selectedRun.totalNetSalary)}</p>
+              <p className="text-xs text-slate-400">{t('{employeeCount} employees · Gross {runAmount} · Net {runAmount2}', { employeeCount: selectedRun.employeeCount, runAmount: runAmount(selectedRun.totalGrossSalary), runAmount2: runAmount(selectedRun.totalNetSalary) })}</p>
             </div>
             <StatusBadge status={selectedRun.status} />
           </div>
@@ -2352,7 +2374,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 
           {canApproveStep1 && !canFinanceApproveDirectly && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400">
-              Your approval will advance this run to <strong>Pending Finance Review</strong> for final Finance Controller sign-off.
+              {t('Your approval will advance this run to Pending Finance Review for final Finance Controller sign-off.')}
             </div>
           )}
 
@@ -2361,7 +2383,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
               {gateLoading && (
                 <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                   <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                  Reading what this run deliberately excludes and what was overridden on it…
+                  {t('Reading what this run deliberately excludes and what was overridden on it…')}
                 </p>
               )}
               {gateError && (
@@ -2374,10 +2396,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
                 <AcknowledgementPanel
                   tone="amber"
                   title={`${excludedCount} employee(s) are deliberately excluded from payment`}
-                  blurb="An exclusion is intentional, so it is only a Warning and does not block. But you are not the person who set it. Read the list, then state the count."
+                  blurb={t('An exclusion is intentional, so it is only a Warning and does not block. But you are not the person who set it. Read the list, then state the count.')}
                   checked={ackExcluded}
                   onChange={setAckExcluded}
-                  confirmLabel={`I have reviewed the exclusions and confirm this run excludes exactly ${excludedCount} employee(s).`}
+                  confirmLabel={t('I have reviewed the exclusions and confirm this run excludes exactly {excludedCount} employee(s).', { excludedCount })}
                   rows={population.excluded.map(e => ({
                     key: String(e.employeeId),
                     primary: `${e.code} — ${e.name}`,
@@ -2389,14 +2411,14 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
               {needsOutsideAck && overrideReport && (
                 <AcknowledgementPanel
                   tone="amber"
-                  title={`${outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file`}
+                  title={t('{outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file', { outsideCount })}
                   blurb={`They will be left out of the bank file and their wages must be paid and recorded separately. ${overrideReport.mudadNote ?? ''}`}
                   checked={ackOutside}
                   onChange={setAckOutside}
-                  confirmLabel={`I have reviewed the list and confirm exactly ${outsideCount} employee(s) are paid outside the bank file.`}
+                  confirmLabel={t('I have reviewed the list and confirm exactly {outsideCount} employee(s) are paid outside the bank file.', { outsideCount })}
                   rows={outsideList.map(o => ({
                     key: String(o.employeeId),
-                    primary: `Employee #${o.employeeId}${o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? ' — a valid IBAN is on file' : ''}`,
+                    primary: o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? t('Employee #{id} — a valid IBAN is on file', { id: o.employeeId }) : t('Employee #{id}', { id: o.employeeId }),
                     secondary: o.message,
                   }))}
                 />
@@ -2405,23 +2427,23 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
               {needsOverriddenAck && overrideReport && (
                 <AcknowledgementPanel
                   tone="rose"
-                  title={`${overriddenCount} blocking compliance error(s) were consciously overridden`}
-                  blurb="Each of these was an Error that would have blocked this run, cleared by a named person with a stated reason. Approving accepts them."
+                  title={t('{count, plural, one {# blocking compliance error was consciously overridden} other {# blocking compliance errors were consciously overridden}}', { count: overriddenCount })}
+                  blurb={t('Each of these was an Error that would have blocked this run, cleared by a named person with a stated reason. Approving accepts them.')}
                   checked={ackOverridden}
                   onChange={setAckOverridden}
-                  confirmLabel={`I have read every override and confirm this run carries exactly ${overriddenCount} of them.`}
+                  confirmLabel={t('I have read every override and confirm this run carries exactly {overriddenCount} of them.', { overriddenCount })}
                   rows={overrideReport.overrides.map(o => ({
                     key: o.id,
-                    primary: o.employeeId === null ? o.code : `${o.code} — employee #${o.employeeId}`,
-                    secondary: `${o.reason} · overridden by ${o.overriddenByName || 'unknown'} on ${fmtDate(o.createdAtUtc)}`,
+                    primary: o.employeeId === null ? o.code : t('{code} — employee #{id}', { code: o.code, id: o.employeeId }),
+                    secondary: t('{reason} · overridden by {name} on {date}', { reason: o.reason, name: o.overriddenByName || t('Unknown'), date: fmtDate(o.createdAtUtc) }),
                   }))}
                 />
               )}
 
               {uncosted.needed && <UncostedApprovalAck count={uncosted.count} affirmed={uncosted.affirmed} onChange={uncosted.setAffirmed} />}
 
-              <Field label="Notes / Comments">
-                <textarea aria-label="Approval notes" className={inp} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional comments for the record…" />
+              <Field label={t('Notes / Comments')}>
+                <textarea aria-label={t('Approval notes')} className={inp} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder={t('Optional comments for the record…')} />
               </Field>
               {reconNotice && <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-400/20 dark:bg-amber-500/10 dark:text-amber-400" data-testid="approve-reconciliation-notice">{reconNotice}</p>}
               {error && <p role="alert" className="text-xs text-rose-500">{error}</p>}
@@ -2432,15 +2454,15 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
                   onClick={handleApprove}
                   disabled={saving || !gateSatisfied}
                   title={gateSatisfied ? undefined : !currencyConfirmed
-                    ? "The run's currency must be confirmed before it can be approved."
-                    : 'Acknowledge the exclusions and overrides above before approving.'}
+                    ? t('The run\'s currency must be confirmed before it can be approved.')
+                    : t('Acknowledge the exclusions and overrides above before approving.')}
                 >
                   <CheckCircle2 className="h-4 w-4" />
-                  {saving ? 'Saving…' : canFinanceApproveDirectly || canApproveStep2 ? 'Approve — Final' : 'Approve → Send to Finance'}
+                  {saving ? t('Saving…') : canFinanceApproveDirectly || canApproveStep2 ? t('Approve — Final') : t('Approve → Send to Finance')}
                 </button>
                 {canSendBack && (
                   <button type="button" className={btn.danger} onClick={handleSendBack} disabled={saving}>
-                    <RotateCcw className="h-4 w-4" /> Send Back to Payroll
+                    <RotateCcw className="h-4 w-4" /> {t('Send Back to Payroll')}
                   </button>
                 )}
               </div>
@@ -2449,10 +2471,10 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 
           {!canAct && (
             <p className="text-sm text-slate-400">
-              {selectedRun.status === 'Approved' ? 'Payroll run has been approved and is ready to lock.' :
-               selectedRun.status === 'Locked' ? 'Run is locked and finalised.' :
-               selectedRun.status === 'PendingFinanceReview' ? 'Awaiting Finance Controller approval.' :
-               'No action available for this run at its current stage.'}
+              {selectedRun.status === 'Approved' ? t('Payroll run has been approved and is ready to lock.') :
+               selectedRun.status === 'Locked' ? t('Run is locked and finalised.') :
+               selectedRun.status === 'PendingFinanceReview' ? t('Awaiting Finance Controller approval.') :
+               t('No action available for this run at its current stage.')}
             </p>
           )}
         </div>
@@ -2460,7 +2482,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 
       {approvals.length > 0 && (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          <div className="px-5 py-3"><p className="text-sm font-semibold text-slate-800 dark:text-white">Approval Chain History</p></div>
+          <div className="px-5 py-3"><p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Approval Chain History')}</p></div>
           {approvals.map(a => (
             <div key={a.id} className="flex items-start gap-3 px-5 py-4">
               {a.decision === 'SentBack' ? <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" /> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />}
@@ -2483,6 +2505,8 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 // ── Payslips Tab ────────────────────────────────────────────────────────────────
 
 function PayslipsTab() {
+  const t = useT();
+  const monthLabel = useMonthLabel();
   // The payslip PDF and the run's ZIP bundle are `payroll.export` on the API (PayrollController
   // DownloadSlipPdf / DownloadRunPdfBundle); offering them without it only produced a 403.
   const { hasPermission } = useAuth();
@@ -2505,7 +2529,7 @@ function PayslipsTab() {
     setListError('');
     payrollApi.allPayslips(runId)
       .then(setPayslips)
-      .catch(e => { setPayslips([]); setListError(`Payslips could not be loaded. ${requestFailureReason(e)}`); })
+      .catch(e => { setPayslips([]); setListError(t('Payslips could not be loaded. {requestFailureReason}', { requestFailureReason: requestFailureReason(e) })); })
       .finally(() => setLoading(false));
   };
   useEffect(() => { if (runId) loadPayslips(); }, [runId]);
@@ -2518,7 +2542,7 @@ function PayslipsTab() {
       await payrollApi.generatePayslips(runId);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to generate payslips. The run must be Processed first.');
+      setError(msg ?? t('Failed to generate payslips. The run must be Processed first.'));
     }
     loadPayslips();
     setGenerating(false);
@@ -2538,19 +2562,19 @@ function PayslipsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run" className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select a payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select a payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         {runId && (
           <button type="button" className={btn.primary} onClick={generate} disabled={generating}>
-            {generating ? 'Generating…' : 'Generate Payslips'}
+            {generating ? t('Generating…') : t('Generate Payslips')}
           </button>
         )}
         {payslips.length > 0 && canExport && (
           <button type="button" className={btn.ghost} onClick={downloadBundle} disabled={downloadingBundle}>
             <Download className="h-4 w-4" />
-            {downloadingBundle ? 'Preparing ZIP…' : 'Download All (ZIP)'}
+            {downloadingBundle ? t('Preparing ZIP…') : t('Download All (ZIP)')}
           </button>
         )}
       </div>
@@ -2564,13 +2588,13 @@ function PayslipsTab() {
 
       {payslips.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
-          <KpiCard label="Total Payslips" value={payslips.length} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Published to ESS" value={published} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Pending Publish" value={payslips.length - published} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label={t('Total Payslips')} value={payslips.length} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Published to ESS')} value={published} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Pending Publish')} value={payslips.length - published} icon={AlertTriangle} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         </div>
       )}
 
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : listError ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : listError ? (
         <div role="alert" className="surface flex items-start gap-2 p-4 text-sm text-rose-700 dark:text-rose-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{listError}</span>
@@ -2578,14 +2602,14 @@ function PayslipsTab() {
       ) : payslips.length === 0 && runId ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No payslips yet — click Generate to create payslips for this run</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payslips yet — click Generate to create payslips for this run')}</p>
         </div>
       ) : (
         <div className="surface overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Employee', 'Payslip #', 'Language', 'ESS Published', 'Published At', 'Generated', ''].map(h => (
+                {[t('Employee'), t('Payslip #'), t('Language'), t('ESS Published'), t('Published At'), t('Generated'), ''].map(h => (
                   <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
@@ -2603,7 +2627,7 @@ function PayslipsTab() {
                   <td className="px-4 py-2 text-slate-500">{p.language.toUpperCase()}</td>
                   <td className="px-4 py-2">
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${p.isPublishedToEss ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-white/10'}`}>
-                      {p.isPublishedToEss ? 'Published' : 'Not published'}
+                      {p.isPublishedToEss ? t('Published') : t('Not published')}
                     </span>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-400">{p.publishedAtUtc ? fmtDate(p.publishedAtUtc) : '—'}</td>
@@ -2611,7 +2635,7 @@ function PayslipsTab() {
                   <td className="px-4 py-2">
                     {canExport ? <button
                       type="button"
-                      title="Download payslip PDF"
+                      title={t('Download payslip PDF')}
                       disabled={downloadingId === p.id}
                       onClick={() => {
                         setDownloadingId(p.id);
@@ -2620,7 +2644,7 @@ function PayslipsTab() {
                       className="flex items-center gap-1 text-xs text-sapphire hover:text-sapphire/80 disabled:opacity-40"
                     >
                       <Download className="h-3.5 w-3.5" />
-                      {downloadingId === p.id ? 'Downloading…' : 'PDF'}
+                      {downloadingId === p.id ? t('Downloading…') : 'PDF'}
                     </button> : <span className="text-xs text-slate-400">—</span>}
                   </td>
                 </tr>
@@ -2637,6 +2661,8 @@ function PayslipsTab() {
 
 function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
+  const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
@@ -2709,7 +2735,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       openBatch(batch);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
+      setError(msg ?? t('Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).'));
     } finally {
       setCreating(false);
     }
@@ -2721,7 +2747,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       await payrollApi.generateWpsFile(batchId);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'File generation failed.');
+      setError(msg ?? t('File generation failed.'));
     }
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
@@ -2730,17 +2756,17 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
     <div className="space-y-4">
       {confirmDialog}
       <div className="flex flex-wrap items-center gap-3">
-        <select aria-label="Select payroll run" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         {runId && (
           <>
-            <select aria-label="Payment method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
-              {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m}>{m}</option>)}
+            <select aria-label={t('Payment method')} className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
+              {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m} value={m}>{m === 'BankTransfer' ? t('Bank transfer') : m === 'Cash' ? t('Cash') : m}</option>)}
             </select>
             <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || hasExistingBatch}>
-              {creating ? 'Creating…' : hasExistingBatch ? 'Payment Batch Created' : 'Create Payment Batch'}
+              {creating ? t('Creating…') : hasExistingBatch ? t('Payment Batch Created') : t('Create Payment Batch')}
             </button>
           </>
         )}
@@ -2748,7 +2774,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       {runId && !runIsLocked && (
         <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>This run is <strong>{selectedRun?.status}</strong>. A payment batch can only be created once the run is <strong>Locked</strong> — finalise it on the Approvals tab (Lock Run) first.</span>
+          <span>{t('This run is {status}. A payment batch can only be created once the run is Locked — finalise it on the Approvals tab (Lock Run) first.', { status: enumLabel(t, 'PayrollRunStatus', selectedRun?.status) })}</span>
         </div>
       )}
       {error && (
@@ -2761,9 +2787,9 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="surface overflow-hidden">
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">Payment Batches</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
           </div>
-          {batches.length === 0 ? <p className="p-5 text-sm text-slate-400">No batches yet.</p> : (
+          {batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
             <div className="divide-y divide-slate-100 dark:divide-white/5">
               {batches.map(b => (
                 <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
@@ -2776,8 +2802,8 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
                   <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
                   {b.status !== 'FileGenerated' && (
                     <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}
-                      title={b.isSaudi ? 'For review only. The Saudi bank payroll file is the ANB Connect instruction.' : undefined}>
-                      {b.isSaudi ? 'Generate payroll register (internal — not a bank/WPS file)' : 'Generate WPS/SIF (not verified with any gateway)'}
+                      title={b.isSaudi ? t('For review only. The Saudi bank payroll file is the ANB Connect instruction.') : undefined}>
+                      {b.isSaudi ? t('Generate payroll register (internal — not a bank/WPS file)') : t('Generate WPS/SIF (not verified with any gateway)')}
                     </button>
                   )}
                 </div>
@@ -2790,23 +2816,23 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
           {!selectedBatch ? (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <Landmark className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm text-slate-400">Select a batch to view payment records</p>
+              <p className="text-sm text-slate-400">{t('Select a batch to view payment records')}</p>
             </div>
           ) : (
             <>
               <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-                <p className="text-sm font-semibold text-slate-800 dark:text-white">Records — {selectedBatch.batchNumber}</p>
+                <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
               </div>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                    {['Employee', 'Amount', 'IBAN', 'WPS Reference', 'Status'].map(h => (
+                    {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
                       <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">No records.</td></tr>}
+                  {records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
                   {records.map(r => (
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
@@ -2815,7 +2841,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
                           : t('Emp #{id}', { id: r.employeeId })}
                       </td>
                       <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">Missing IBAN</span>}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
                       <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
                       <td className="px-4 py-2"><StatusBadge status={r.status} /></td>
                     </tr>
@@ -2830,9 +2856,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
         <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
           <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            Saudi bank payroll file: the <strong>ANB Connect payroll instruction</strong> (with WPS fields) is the file to send to the bank.
-            It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs —
-            keep the bank&apos;s output file or a Mudad screenshot as evidence before marking the batch Accepted.
+            {t('Saudi bank payroll file: the ANB Connect payroll instruction (with WPS fields) is the file to send to the bank. It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
           </span>
         </div>
       )}
@@ -2845,6 +2869,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
 
 function PaymentTrackingTab() {
   const t = useT();
+  const fmtAmt = useFmtAmt();
   const { confirm, ask, dialog: confirmDialog } = useConfirm();
   type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
@@ -2869,7 +2894,7 @@ function PaymentTrackingTab() {
   // R03 — each batch is labelled with its OWN currency (the same one its row shows), never the tenant
   // default, and batches in different currencies are totalled per currency rather than added together.
   const totals = totalsByCurrency(batches, b => b.currency, b => b.totalAmount);
-  const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : 'Mixed currencies';
+  const totalLabel = totals.length === 1 && totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : t('Mixed currencies');
   const fileGenerated = batches.filter(b => b.status === 'FileGenerated').length;
   // The server owns the WPS transition table and the effective status (a frozen ANB instruction counts as
   // Generated). The screen only renders what it is given, so the two can never drift apart again.
@@ -2883,7 +2908,7 @@ function PaymentTrackingTab() {
   const uploadEvidence = async (batch: PayrollPaymentBatch) => {
     const form = wpsForms[batch.id] ?? emptyWpsForm;
     if (!form.evidenceFile) {
-      notifyApiError({ response: { data: { message: 'Choose the bank\'s WPS output file or a Mudad compliance screenshot/PDF first.' } } });
+      notifyApiError({ response: { data: { message: t('Choose the bank\'s WPS output file or a Mudad compliance screenshot/PDF first.') } } });
       return;
     }
     setEvidenceSaving(batch.id);
@@ -2901,7 +2926,7 @@ function PaymentTrackingTab() {
     const key = outsideKey(batch.id, employeeId);
     const form = outsideForm(key);
     if (!form.reference.trim()) {
-      notifyApiError({ response: { data: { message: 'Enter the cheque number or cash receipt reference.' } } });
+      notifyApiError({ response: { data: { message: t('Enter the cheque number or cash receipt reference.') } } });
       return;
     }
     setOutsideSaving(key);
@@ -2918,7 +2943,7 @@ function PaymentTrackingTab() {
     // screenshot/PDF already attached to this batch), and only by someone other than its maker.
     const evidenceId = batch.latestEvidenceId ?? undefined;
     if (form.status === 'Accepted' && !evidenceId) {
-      notifyApiError({ response: { data: { message: 'Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF to this batch first. Another person then marks it Accepted.' } } });
+      notifyApiError({ response: { data: { message: t('Attach the bank\'s WPS output file or a Mudad compliance screenshot/PDF to this batch first. Another person then marks it Accepted.') } } });
       return;
     }
     if (form.status === 'Accepted' && batch.acceptBlockedReason) {
@@ -2945,7 +2970,7 @@ function PaymentTrackingTab() {
   const runFinanceAction = async (batch: PayrollPaymentBatch, action: 'settle' | 'reverse-settle' | 'remit' | 'reverse-remit') => {
     const form = financeForm(batch.id);
     if (action.startsWith('reverse') && !form.reason.trim()) {
-      notifyApiError({ response: { data: { message: 'A reason is required for reversal.' } } });
+      notifyApiError({ response: { data: { message: t('A reason is required for reversal.') } } });
       return;
     }
     if (action.startsWith('reverse') && !(await confirm({
@@ -2972,23 +2997,23 @@ function PaymentTrackingTab() {
       {confirmDialog}
       {batches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
-          <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Bank / payroll files generated" value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Total Amount" value={totalLabel} sub={totalLabel === 'Mixed currencies' ? perCurrency(totals) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label={t('Total Batches')} value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Bank / payroll files generated')} value={fileGenerated} icon={CheckCircle2} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Total Amount')} value={totalLabel} sub={totalLabel === t('Mixed currencies') ? perCurrency(totals, fmtAmt, t) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : batches.length === 0 ? (
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : batches.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <TrendingUp className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No payment batches yet</p>
-          <p className="text-xs text-slate-400">Create payment batches from the Bank/WPS Files tab after processing a payroll run.</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payment batches yet')}</p>
+          <p className="text-xs text-slate-400">{t('Create payment batches from the Bank/WPS Files tab after processing a payroll run.')}</p>
         </div>
       ) : (
         <div className="surface overflow-hidden">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Batch', 'Method', 'Total Amount', 'Currency', 'Status', 'WPS Lifecycle', 'Created', 'Action'].map(h => (
+                {[t('Batch'), t('Method'), t('Total Amount'), t('Currency'), t('Status'), t('WPS Lifecycle'), t('Created'), t('Action')].map(h => (
                   <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
@@ -3007,11 +3032,11 @@ function PaymentTrackingTab() {
                       {b.wpsStatusLabel && b.wpsStatusLabel !== effectiveStatus(b) && <p className="max-w-56 text-[11px] text-slate-500">{b.wpsStatusLabel}</p>}
                       {(b.paymentExclusions?.length ?? 0) > 0 && (
                         <p className="max-w-56 text-[11px] text-amber-600 dark:text-amber-400" title={b.paymentExclusions!.map(x => `${x.employeeCode}: ${x.reason}`).join('\n')}>
-                          {b.paymentExclusions!.length} not in the bank file (cash/cheque or zero net): {(b.excludedTotal ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          {t('{length} not in the bank file (cash/cheque or zero net): {toLocaleString}', { length: b.paymentExclusions!.length, toLocaleString: (b.excludedTotal ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 }) })}
                         </p>
                       )}
                       {b.wpsSubmissionReference && <p className="text-[11px] text-slate-500">{b.wpsSubmissionReference}</p>}
-                      {(b.acceptanceEvidenceCount ?? 0) > 0 && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">Evidence on record: {b.acceptanceEvidenceCount} file{b.acceptanceEvidenceCount === 1 ? '' : 's'}</p>}
+                      {(b.acceptanceEvidenceCount ?? 0) > 0 && <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{t('{count, plural, one {Evidence on record: # file} other {Evidence on record: # files}}', { count: b.acceptanceEvidenceCount ?? 0 })}</p>}
                       {b.wpsRejectionReason && <p className="max-w-48 truncate text-[11px] text-rose-500">{b.wpsRejectionReason}</p>}
                     </div>
                   </td>
@@ -3020,48 +3045,48 @@ function PaymentTrackingTab() {
                     <div className="grid min-w-[290px] gap-2">
                     {effectiveStatus(b) === 'Submitted' && (
                       <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
-                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Acceptance evidence</p>
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">{t('Acceptance evidence')}</p>
                         <select
-                          aria-label={`Evidence type for ${b.batchNumber}`}
+                          aria-label={t('Evidence type for {batchNumber}', { batchNumber: b.batchNumber })}
                           className={sel}
                           value={wpsForms[b.id]?.evidenceKind ?? 'bank_output_file'}
                           onChange={e => setWpsForm(b.id, { evidenceKind: e.target.value as WpsEvidenceKind, evidenceFile: null })}
                         >
-                          <option value="bank_output_file">Bank WPS output file (upload it unopened)</option>
-                          <option value="mudad_compliance_screenshot">Mudad compliance screenshot or PDF</option>
+                          <option value="bank_output_file">{t('Bank WPS output file (upload it unopened)')}</option>
+                          <option value="mudad_compliance_screenshot">{t('Mudad compliance screenshot or PDF')}</option>
                         </select>
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input
                             type="file"
-                            aria-label={`Evidence file for ${b.batchNumber}`}
+                            aria-label={t('Evidence file for {batchNumber}', { batchNumber: b.batchNumber })}
                             className="text-xs"
                             accept={(wpsForms[b.id]?.evidenceKind ?? 'bank_output_file') === 'mudad_compliance_screenshot' ? '.png,.jpg,.jpeg,.pdf' : undefined}
                             onChange={e => setWpsForm(b.id, { evidenceFile: e.target.files?.[0] ?? null })}
                           />
                           <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => uploadEvidence(b)} disabled={evidenceSaving === b.id || !wpsForms[b.id]?.evidenceFile}>
-                            {evidenceSaving === b.id ? 'Uploading…' : 'Attach evidence'}
+                            {evidenceSaving === b.id ? t('Uploading…') : t('Attach evidence')}
                           </button>
                         </div>
-                        <p className="text-[11px] text-slate-500">The file is stored with its SHA-256 fingerprint. Mudad&apos;s verdict never reaches this system, so Accepted means &ldquo;evidence attached&rdquo;, and a second person records it.</p>
+                        <p className="text-[11px] text-slate-500">{t('The file is stored with its SHA-256 fingerprint. Mudad\'s verdict never reaches this system, so Accepted means “evidence attached”, and a second person records it.')}</p>
                       </div>
                     )}
                     {nextStatuses(b).length > 0 && (
                       <>
                         <select
-                          title="Next WPS status"
+                          title={t('Next WPS status')}
                           className={sel}
                           value={wpsForms[b.id]?.status ?? ''}
                           onChange={e => setWpsForm(b.id, { status: e.target.value })}
                         >
-                          <option value="">Next status</option>
+                          <option value="">{t('Next status')}</option>
                           {nextStatuses(b).map(s => (
                             <option key={s} value={s} disabled={s === 'Accepted' && (!b.latestEvidenceId || !!b.acceptBlockedReason)}>
-                              {s === 'Accepted' ? 'Accepted — evidence attached (not verified by Mudad)' : s}
+                              {s === 'Accepted' ? t('Accepted — evidence attached (not verified by Mudad)') : s}
                             </option>
                           ))}
                         </select>
                         {nextStatuses(b).includes('Accepted') && !b.latestEvidenceId && (
-                          <p className="text-[11px] text-slate-500">Attach evidence above before the batch can be marked Accepted.</p>
+                          <p className="text-[11px] text-slate-500">{t('Attach evidence above before the batch can be marked Accepted.')}</p>
                         )}
                         {nextStatuses(b).includes('Accepted') && b.latestEvidenceId && b.acceptBlockedReason && (
                           <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.acceptBlockedReason}</p>
@@ -3069,12 +3094,12 @@ function PaymentTrackingTab() {
                         <div className="grid grid-cols-[1fr_auto] gap-2">
                           <input
                             className={inp}
-                            placeholder={(wpsForms[b.id]?.status ?? '') === 'Rejected' ? 'Rejection reason' : 'Reference'}
+                            placeholder={(wpsForms[b.id]?.status ?? '') === 'Rejected' ? t('Rejection reason') : t('Reference')}
                             value={(wpsForms[b.id]?.status ?? '') === 'Rejected' ? (wpsForms[b.id]?.notes ?? '') : (wpsForms[b.id]?.reference ?? '')}
                             onChange={e => setWpsForm(b.id, (wpsForms[b.id]?.status ?? '') === 'Rejected' ? { notes: e.target.value } : { reference: e.target.value })}
                           />
                           <button type="button" className={btn.primary} onClick={() => updateWps(b)} disabled={wpsSaving === b.id || !(wpsForms[b.id]?.status)}>
-                            {wpsSaving === b.id ? 'Saving…' : 'Save'}
+                            {wpsSaving === b.id ? t('Saving…') : t('Save')}
                           </button>
                         </div>
                       </>
@@ -3082,22 +3107,22 @@ function PaymentTrackingTab() {
                     {(b.wpsStatus === 'Accepted' || b.wpsStatus === 'Paid') && (
                       <div className="grid gap-2 border-t border-slate-100 pt-2 dark:border-white/10">
                         <div className="grid grid-cols-2 gap-2">
-                          <input className={inp} type="date" aria-label={`Finance action date for ${b.batchNumber}`} value={financeForm(b.id).date} onChange={e => setFinanceForm(b.id, { date: e.target.value })} />
-                          <input className={inp} aria-label={`Finance reference for ${b.batchNumber}`} placeholder="Bank / filing reference" value={financeForm(b.id).reference} onChange={e => setFinanceForm(b.id, { reference: e.target.value })} />
+                          <input className={inp} type="date" aria-label={t('Finance action date for {batchNumber}', { batchNumber: b.batchNumber })} value={financeForm(b.id).date} onChange={e => setFinanceForm(b.id, { date: e.target.value })} />
+                          <input className={inp} aria-label={t('Finance reference for {batchNumber}', { batchNumber: b.batchNumber })} placeholder={t(t('Bank / filing reference'))} value={financeForm(b.id).reference} onChange={e => setFinanceForm(b.id, { reference: e.target.value })} />
                         </div>
-                        {b.wpsStatus === 'Accepted' && <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'settle')} disabled={financeSaving !== null}>Settle net pay to GL</button>}
+                        {b.wpsStatus === 'Accepted' && <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'settle')} disabled={financeSaving !== null}>{t('Settle net pay to GL')}</button>}
                         {b.wpsStatus === 'Paid' && (
                           <>
                             <div className="grid grid-cols-[1fr_auto] gap-2">
-                              <select className={sel} aria-label={`Remittance group for ${b.batchNumber}`} value={financeForm(b.id).group} onChange={e => setFinanceForm(b.id, { group: e.target.value as 'GOSI' | 'TAX' | 'LOAN' | 'All' })}>
-                                {['All', 'GOSI', 'TAX', 'LOAN'].map(g => <option key={g}>{g}</option>)}
+                              <select className={sel} aria-label={t('Remittance group for {batchNumber}', { batchNumber: b.batchNumber })} value={financeForm(b.id).group} onChange={e => setFinanceForm(b.id, { group: e.target.value as 'GOSI' | 'TAX' | 'LOAN' | 'All' })}>
+                                {['All', 'GOSI', 'TAX', 'LOAN'].map(g => <option key={g} value={g}>{g === 'All' ? t('All') : g}</option>)}
                               </select>
-                              <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'remit')} disabled={financeSaving !== null}>Remit</button>
+                              <button type="button" className={btn.primary} onClick={() => runFinanceAction(b, 'remit')} disabled={financeSaving !== null}>{t('Remit')}</button>
                             </div>
-                            <input className={inp} aria-label={`Reversal reason for ${b.batchNumber}`} placeholder="Required reversal reason" value={financeForm(b.id).reason} onChange={e => setFinanceForm(b.id, { reason: e.target.value })} />
+                            <input className={inp} aria-label={t('Reversal reason for {batchNumber}', { batchNumber: b.batchNumber })} placeholder={t(t('Required reversal reason'))} value={financeForm(b.id).reason} onChange={e => setFinanceForm(b.id, { reason: e.target.value })} />
                             <div className="flex gap-2">
-                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-settle')} disabled={financeSaving !== null}>Reverse settlement</button>
-                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-remit')} disabled={financeSaving !== null || financeForm(b.id).group === 'All'}>Reverse remit</button>
+                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-settle')} disabled={financeSaving !== null}>{t('Reverse settlement')}</button>
+                              <button type="button" className={btn.danger} onClick={() => runFinanceAction(b, 'reverse-remit')} disabled={financeSaving !== null || financeForm(b.id).group === 'All'}>{t('Reverse remit')}</button>
                             </div>
                           </>
                         )}
@@ -3105,14 +3130,14 @@ function PaymentTrackingTab() {
                     )}
                     {(b.paymentExclusions ?? []).some(x => x.canRecordOutsidePayment) && (
                       <div className="grid gap-1.5 border-t border-slate-100 pt-2 dark:border-white/10">
-                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">Paid outside the bank file</p>
+                        <p className="text-[11px] font-medium text-slate-600 dark:text-slate-300">{t('Paid outside the bank file')}</p>
                         {b.mudadNote && <p className="text-[11px] text-amber-600 dark:text-amber-400">{b.mudadNote}</p>}
                         {(b.paymentExclusions ?? []).filter(x => x.canRecordOutsidePayment).map(x => {
                           const key = outsideKey(b.id, x.employeeId);
                           const f = outsideForm(key);
                           return x.outsidePaymentRecorded ? (
                             <div key={key} className="flex items-center justify-between gap-2">
-                              <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{x.employeeCode}: payment recorded</p>
+                              <p className="text-[11px] text-emerald-600 dark:text-emerald-400">{t('{employeeCode}: payment recorded', { employeeCode: x.employeeCode })}</p>
                               {b.wpsStatus !== 'Reconciled' && (
                                 <button type="button" className={`${btn.sm} disabled:opacity-50`} disabled={outsideSaving === key}
                                   onClick={async () => {
@@ -3128,7 +3153,7 @@ function PaymentTrackingTab() {
                                     catch (err) { notifyApiError(err); }
                                     finally { setOutsideSaving(null); }
                                   }}>
-                                  Reverse payment
+                                  {t('Reverse payment')}
                                 </button>
                               )}
                             </div>
@@ -3138,19 +3163,19 @@ function PaymentTrackingTab() {
                                 {x.employeeCode} — {x.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} {b.currency}
                               </p>
                               <div className="grid grid-cols-[auto_1fr] gap-1.5">
-                                <select className={sel} aria-label={`Payment method for ${x.employeeCode}`} value={f.method}
+                                <select className={sel} aria-label={t('Payment method for {employeeCode}', { employeeCode: x.employeeCode })} value={f.method}
                                   onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, method: e.target.value as 'Cash' | 'Cheque' } }))}>
-                                  <option value="Cash">Cash</option>
-                                  <option value="Cheque">Cheque</option>
+                                  <option value="Cash">{t('Cash')}</option>
+                                  <option value="Cheque">{t('Cheque')}</option>
                                 </select>
-                                <input className={inp} aria-label={`Cheque or receipt reference for ${x.employeeCode}`} placeholder="Cheque no. / receipt ref."
+                                <input className={inp} aria-label={t('Cheque or receipt reference for {employeeCode}', { employeeCode: x.employeeCode })} placeholder={t(t('Cheque no. / receipt ref.'))}
                                   value={f.reference} onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, reference: e.target.value } }))} />
                               </div>
                               <div className="grid grid-cols-[1fr_auto] gap-1.5">
-                                <input className={inp} type="date" aria-label={`Date paid for ${x.employeeCode}`} value={f.date}
+                                <input className={inp} type="date" aria-label={t('Date paid for {employeeCode}', { employeeCode: x.employeeCode })} value={f.date}
                                   onChange={e => setOutsideForms(p => ({ ...p, [key]: { ...f, date: e.target.value } }))} />
                                 <button type="button" className={`${btn.sm} disabled:opacity-50`} onClick={() => recordOutside(b, x.employeeId)} disabled={outsideSaving === key}>
-                                  {outsideSaving === key ? 'Recording…' : 'Record payment outside the bank file'}
+                                  {outsideSaving === key ? t('Recording…') : t('Record payment outside the bank file')}
                                 </button>
                               </div>
                             </div>
@@ -3158,7 +3183,7 @@ function PaymentTrackingTab() {
                         })}
                       </div>
                     )}
-                    {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
+                    {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">{t('No action')}</span>}
                     </div>
                   </td>
                 </tr>
@@ -3174,6 +3199,9 @@ function PaymentTrackingTab() {
 // ── Reports Tab ─────────────────────────────────────────────────────────────────
 
 function ReportsTab() {
+  const t = useT();
+  const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
@@ -3186,14 +3214,14 @@ function ReportsTab() {
   // figure shown unlabelled rather than with the tenant default.
   const ytd = (pick: (row: { totalGrossYtd: number; totalNetYtd: number }) => number): { value: string; sub?: string } => {
     if (!summary) return { value: '' };
-    if (!summary.ytdByCompany) return { value: unconfirmedAmount(pick(summary)) };
-    if (summary.ytdByCompany.length === 0) return { value: 'None yet', sub: 'No locked run this year' };
+    if (!summary.ytdByCompany) return { value: unconfirmedAmount(pick(summary), t) };
+    if (summary.ytdByCompany.length === 0) return { value: t('None yet'), sub: t('No locked run this year') };
     const totals = totalsByCurrency(summary.ytdByCompany, row => {
       const resolved = resolvePayrollRunCurrency({ companyId: row.companyId }, registerCurrency.companies, registerCurrency.companiesState);
       return resolved.status === 'resolved' ? resolved.currency : null;
     }, pick);
-    if (totals.length === 1) return { value: totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : unconfirmedAmount(totals[0].total) };
-    return { value: 'Mixed currencies', sub: perCurrency(totals) };
+    if (totals.length === 1) return { value: totals[0].currency ? fmtAmt(totals[0].total, totals[0].currency) : unconfirmedAmount(totals[0].total, t) };
+    return { value: t('Mixed currencies'), sub: perCurrency(totals, fmtAmt, t) };
   };
   const grossYtd = ytd(row => row.totalGrossYtd);
   const netYtd = ytd(row => row.totalNetYtd);
@@ -3215,22 +3243,22 @@ function ReportsTab() {
     <div className="space-y-6">
       {summary && (
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <KpiCard label="Total Runs" value={summary.totalRuns} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-          <KpiCard label="Locked Runs" value={summary.lockedRuns} icon={Lock} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-          <KpiCard label="Gross YTD" value={grossYtd.value} sub={grossYtd.sub} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
-          <KpiCard label="Net YTD" value={netYtd.value} sub={netYtd.sub} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+          <KpiCard label={t('Total Runs')} value={summary.totalRuns} icon={FileText} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+          <KpiCard label={t('Locked Runs')} value={summary.lockedRuns} icon={Lock} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+          <KpiCard label={t('Gross YTD')} value={grossYtd.value} sub={grossYtd.sub} icon={WalletCards} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
+          <KpiCard label={t('Net YTD')} value={netYtd.value} sub={netYtd.sub} icon={TrendingUp} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
         </div>
       )}
 
       <div className="surface p-5">
-        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Payroll Register</p>
+        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Payroll Register')}</p>
         <div className="flex items-center gap-3">
-          <select aria-label="Select payroll run for register" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-            <option value="">Select a payroll run…</option>
-            {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+          <select aria-label={t('Select payroll run for register')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+            <option value="">{t('Select a payroll run…')}</option>
+            {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
           </select>
           <button type="button" className={btn.primary} onClick={loadRegister} disabled={!runId || loading}>
-            {loading ? 'Loading…' : 'Load Register'}
+            {loading ? t('Loading…') : t('Load Register')}
           </button>
         </div>
 
@@ -3238,7 +3266,7 @@ function ReportsTab() {
           <>
             <div className="mt-4 rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                {slips.length} employees · Gross {registerCurrency.amount(slips.reduce((s, x) => s + x.grossSalary, 0))} · Net {registerCurrency.amount(slips.reduce((s, x) => s + x.netSalary, 0))}
+                {t('{length} employees · Gross {amount} · Net {amount2}', { length: slips.length, amount: registerCurrency.amount(slips.reduce((s, x) => s + x.grossSalary, 0)), amount2: registerCurrency.amount(slips.reduce((s, x) => s + x.netSalary, 0)) })}
               </p>
             </div>
             <RunCurrencyNotice resolution={registerCurrency.resolution} companiesState={registerCurrency.companiesState} onRetry={registerCurrency.retry} />
@@ -3256,7 +3284,7 @@ function ReportsTab() {
                           GOSI share (:2542-2543, :2635). Loans and GOSI are therefore subsets, headed "of which", and
                           printed unbracketed so nobody subtracts them a second time.
                         · Net = Gross − Deductions. */}
-                    {['Code', 'Employee', 'Department', 'Basic', 'Housing', 'Transport', 'Other earnings', 'Gross', 'Deductions', 'of which: Loans', 'Net', 'YTD Gross', 'YTD Net'].map(h => (
+                    {[t('Code'), t('Employee'), t('Department'), t('Basic'), t('Housing'), t('Transport'), t('Other earnings'), t('Gross'), t('Deductions'), t('Of which: Loans'), t('Net'), t('YTD Gross'), t('YTD Net')].map(h => (
                       <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                     ))}
                   </tr>
@@ -3275,7 +3303,7 @@ function ReportsTab() {
                       <td className="px-3 py-2 text-end text-rose-500">
                         ({fmt(s.deductions)})
                         {s.employeeStatutoryTotal > 0 && (
-                          <p className="text-[10px] leading-tight text-rose-400">of which GOSI {fmt(s.employeeStatutoryTotal)}</p>
+                          <p className="text-[10px] leading-tight text-rose-400">{t('Of which GOSI {employeeStatutoryTotal}', { employeeStatutoryTotal: fmt(s.employeeStatutoryTotal) })}</p>
                         )}
                       </td>
                       {/* Unbracketed on purpose: this is a slice of the Deductions cell to its left, not a
@@ -3290,9 +3318,9 @@ function ReportsTab() {
               </table>
             </div>
             <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-400">
-              <p><span className="font-semibold text-slate-700 dark:text-slate-300">How a row adds up:</span> Basic + Housing + Transport + Other earnings = Gross. Gross − Deductions = Net.</p>
-              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">Other earnings</span> is everything paid this period that is not basic, housing or transport — other allowances, overtime, bonuses, arrears, adjustments and final-settlement earnings.</p>
-              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">Loans and GOSI are already inside Deductions.</span> They are shown so you can see what Deductions is made of — do not subtract them again.</p>
+              <p><span className="font-semibold text-slate-700 dark:text-slate-300">{t('How a row adds up')}:</span> {t('Basic + Housing + Transport + Other earnings = Gross. Gross − Deductions = Net.')}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">{t('Other earnings')}</span>: {t('Everything paid this period that is not basic, housing or transport — other allowances, overtime, bonuses, arrears, adjustments and final-settlement earnings.')}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-700 dark:text-slate-300">{t('Loans and GOSI are already inside Deductions.')}</span> {t('They are shown so you can see what Deductions is made of — do not subtract them again.')}</p>
             </div>
           </>
         )}
@@ -3306,6 +3334,8 @@ function ReportsTab() {
 // ── AI Validation Tab ───────────────────────────────────────────────────────────
 
 function AIValidationTab() {
+  const t = useT();
+  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
@@ -3325,22 +3355,21 @@ function AIValidationTab() {
         <div className="flex items-start gap-3">
           <ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-sapphire dark:text-cyanAccent" />
           <div>
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">Payroll Anomaly Checks — Advisory Only</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payroll Anomaly Checks — Advisory Only')}</p>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              These checks flag anomalies like salary variance, unusual overtime, missing IBANs, and duplicate entries.
-              They do not approve payroll or change salaries automatically.
+              {t('These checks flag anomalies like salary variance, unusual overtime, missing IBANs, and duplicate entries. They do not approve payroll or change salaries automatically.')}
             </p>
           </div>
         </div>
       </div>
 
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run for anomaly checks" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select a payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run for anomaly checks')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select a payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         <button type="button" className={btn.primary} onClick={runAI} disabled={!runId || loading}>
-          <Zap className="h-4 w-4" /> {loading ? 'Analyzing…' : 'Run Checks'}
+          <Zap className="h-4 w-4" /> {loading ? t('Analyzing…') : t('Run Checks')}
         </button>
       </div>
 
@@ -3351,13 +3380,13 @@ function AIValidationTab() {
               <Shield className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
               <p className="text-sm font-semibold text-slate-800 dark:text-white">{result.summary}</p>
             </div>
-            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">Advisory: AI findings are recommendations only — HR/Finance must review and act.</p>
+            <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t('Advisory: AI findings are recommendations only — HR/Finance must review and act.')}</p>
           </div>
 
           {result.warnings.length === 0 ? (
             <div className="surface flex flex-col items-center py-12 text-center">
               <CheckCircle2 className="mb-3 h-8 w-8 text-emerald-500" />
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">No anomalies detected for this payroll run.</p>
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('No anomalies detected for this payroll run.')}</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -3369,7 +3398,7 @@ function AIValidationTab() {
                       <div className="flex items-center gap-2">
                         <StatusBadge status={w.severity} />
                         <span className="font-mono text-xs text-slate-500">{w.code}</span>
-                        {w.employeeId && <span className="text-xs text-slate-400">Emp #{w.employeeId}</span>}
+                        {w.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: w.employeeId })}</span>}
                       </div>
                       <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{w.message}</p>
                     </div>
@@ -3387,6 +3416,7 @@ function AIValidationTab() {
 // ── EOSB / Gratuity Tab ──────────────────────────────────────────────────────────
 
 function EOSBTab() {
+  const t = useT();
   const [employeeId, setEmployeeId] = useState('');
   const [asOfDate, setAsOfDate] = useState(new Date().toISOString().substring(0, 10));
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
@@ -3412,24 +3442,23 @@ function EOSBTab() {
   return (
     <div className="space-y-5 max-w-2xl">
       <div className="surface p-4 space-y-3">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">EOSB / Gratuity Calculator</p>
+        <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('EOSB / Gratuity Calculator')}</p>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Calculates End-of-Service Benefit under the rules of the employee’s employing-company country.
-          Statutory rates and wage-basis rules come from that country pack and your tenant settings (Setup → GCC Settings).
+          {t('Calculates End-of-Service Benefit under the rules of the employee’s employing-company country. Statutory rates and wage-basis rules come from that country pack and your tenant settings (Setup → GCC Settings).')}
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Employee ID *</label>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee ID *')}</label>
             <input type="number" className={inp} placeholder="e.g. 1" value={employeeId} onChange={e => setEmployeeId(e.target.value)} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">As of Date</label>
-            <input type="date" className={inp} aria-label="As of date" value={asOfDate} onChange={e => setAsOfDate(e.target.value)} />
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('As of Date')}</label>
+            <input type="date" className={inp} aria-label={t('As of date')} value={asOfDate} onChange={e => setAsOfDate(e.target.value)} />
           </div>
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <button type="button" className={btn.primary} onClick={calculate} disabled={!employeeId || loading}>
-          {loading ? 'Calculating…' : 'Calculate EOSB'}
+          {loading ? t('Calculating…') : t('Calculate EOSB')}
         </button>
       </div>
 
@@ -3437,29 +3466,29 @@ function EOSBTab() {
         <div className="surface p-5 space-y-3">
           <p className="font-semibold text-slate-900 dark:text-white">{result.employeeName as string}</p>
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div className="text-slate-500">Total Service</div><div className="font-medium">{(result.totalYears as number).toFixed(2)} years</div>
-            <div className="text-slate-500">Eligible Salary</div><div className="font-medium">{result.currency as string} {(result.eligibleSalary as number).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-            <div className="text-slate-500">Daily Rate</div><div className="font-medium">{result.currency as string} {(result.dailySalary as number).toFixed(4)}</div>
-            <div className="text-slate-500">Rate (1–5 yrs)</div><div className="font-medium">{result.rate1To5Years as number} days/year</div>
-            <div className="text-slate-500">Rate (5+ yrs)</div><div className="font-medium">{result.rateAbove5Years as number} days/year</div>
+            <div className="text-slate-500">{t('Total Service')}</div><div className="font-medium">{t('{value} years', { value: (result.totalYears as number).toFixed(2) })}</div>
+            <div className="text-slate-500">{t('Eligible Salary')}</div><div className="font-medium">{result.currency as string} {(result.eligibleSalary as number).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div className="text-slate-500">{t('Daily Rate')}</div><div className="font-medium">{result.currency as string} {(result.dailySalary as number).toFixed(4)}</div>
+            <div className="text-slate-500">{t('Rate (1–5 yrs)')}</div><div className="font-medium">{t('{rate1To5Years} days/year', { rate1To5Years: result.rate1To5Years as number })}</div>
+            <div className="text-slate-500">{t('Rate (5+ yrs)')}</div><div className="font-medium">{t('{rateAbove5Years} days/year', { rateAbove5Years: result.rateAbove5Years as number })}</div>
           </div>
           <div className="rounded-xl bg-sapphire/10 p-4 dark:bg-cyanAccent/10">
-            <p className="text-xs text-slate-500 dark:text-slate-400">Calculated EOSB</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{t('Calculated EOSB')}</p>
             <p className="text-2xl font-bold text-sapphire dark:text-cyanAccent">{result.currency as string} {(result.eosbAmount as number).toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
             <p className="mt-1 text-xs text-slate-500">{result.message as string}</p>
           </div>
-          <p className="text-xs text-amber-600 dark:text-amber-400">Advisory only. Consult legal/HR before processing EOSB payment.</p>
+          <p className="text-xs text-amber-600 dark:text-amber-400">{t('Advisory only. Consult legal/HR before processing EOSB payment.')}</p>
         </div>
       )}
 
       {history.length > 0 && (
         <div className="surface overflow-hidden">
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/10">
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">Previous Calculations</p>
+            <p className="text-sm font-semibold text-slate-900 dark:text-white">{t('Previous Calculations')}</p>
           </div>
           <table className="min-w-full text-sm">
             <thead><tr className="border-b border-slate-100 dark:border-white/10">
-              {['Date', 'Eligible Salary', 'EOSB Amount', 'Status'].map(h => <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-fg-muted">{h}</th>)}
+              {[t('Date'), t('Eligible Salary'), t('EOSB Amount'), t('Status')].map(h => <th key={h} className="px-4 py-2.5 text-start text-xs font-bold uppercase tracking-wide text-fg-muted">{h}</th>)}
             </tr></thead>
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {(history as Array<Record<string, unknown>>).map((h, i) => (
@@ -3484,6 +3513,8 @@ function EOSBTab() {
 
 function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: string; onGoToApprovals?: () => void }) {
   const t = useT();
+  const fmtAmt = useFmtAmt();
+  const monthLabel = useMonthLabel();
   const { hasPermission } = useAuth();
   const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -3529,16 +3560,16 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
     <div className="space-y-4">
       <div className="surface p-4">
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.
+          {t('Double-entry GL journal generated from processed payroll earnings and deductions. Use this to post payroll to your accounting system.')}
         </p>
       </div>
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run for GL journal" data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run for GL journal')} data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
-          <BookOpen className="h-4 w-4" /> {loading ? 'Loading…' : 'Generate Journal'}
+          <BookOpen className="h-4 w-4" /> {loading ? t('Loading…') : t('Generate Journal')}
         </button>
       </div>
       {runsError && <LoadError message={runsError} onRetry={loadRuns} />}
@@ -3561,15 +3592,15 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
             <div className="surface p-4">
-              <p className="text-xs text-slate-400">Period</p>
+              <p className="text-xs text-slate-400">{t('Period')}</p>
               <p className="text-lg font-bold text-slate-900 dark:text-white">{journal.period}</p>
             </div>
             <div className="surface p-4">
-              <p className="text-xs text-slate-400">Total Debits</p>
+              <p className="text-xs text-slate-400">{t('Total Debits')}</p>
               <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalDebits, journal.currency)}</p>
             </div>
             <div className="surface p-4">
-              <p className="text-xs text-slate-400">Total Credits</p>
+              <p className="text-xs text-slate-400">{t('Total Credits')}</p>
               <p className="text-lg font-bold text-sapphire dark:text-cyanAccent">{fmtAmt(journal.totalCredits, journal.currency)}</p>
             </div>
           </div>
@@ -3577,17 +3608,17 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
           {journal.isBalanced ? (
             <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-4 py-2.5 dark:bg-emerald-500/10">
               <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-              <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">Journal is balanced — Debits = Credits</p>
+              <p className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{t('Journal is balanced — Debits = Credits')}</p>
             </div>
           ) : (
             <div className="flex items-center gap-2 rounded-lg bg-rose-50 px-4 py-2.5 dark:bg-rose-500/10">
               <AlertTriangle className="h-4 w-4 text-rose-500" />
-              <p className="text-sm font-medium text-rose-700 dark:text-rose-400">Journal is out of balance — investigate before posting</p>
+              <p className="text-sm font-medium text-rose-700 dark:text-rose-400">{t('Journal is out of balance — investigate before posting')}</p>
             </div>
           )}
 
           <div className="grid gap-4 lg:grid-cols-2">
-            {[{ title: 'Debit Entries (DR)', entries: debits, color: 'text-sapphire dark:text-cyanAccent' }, { title: 'Credit Entries (CR)', entries: credits, color: 'text-emerald-600 dark:text-emerald-400' }].map(side => (
+            {[{ title: t('Debit Entries (DR)'), entries: debits, color: 'text-sapphire dark:text-cyanAccent' }, { title: t('Credit Entries (CR)'), entries: credits, color: 'text-emerald-600 dark:text-emerald-400' }].map(side => (
               <div key={side.title} className="surface overflow-hidden">
                 <div className="border-b border-slate-100 px-4 py-2.5 dark:border-white/5">
                   <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{side.title}</p>
@@ -3595,7 +3626,7 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/5">
-                      {['GL Account', 'Description', 'Amount'].map(h => <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
+                      {[t('GL Account'), t('Description'), t('Amount')].map(h => <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -3607,7 +3638,7 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
                       </tr>
                     ))}
                     <tr className="border-t-2 border-slate-200 dark:border-white/10">
-                      <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300">Total</td>
+                      <td colSpan={2} className="px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300">{t('Total')}</td>
                       <td className={`px-3 py-2 text-end text-sm font-extrabold tabular-nums ${side.color}`}>{fmtAmt(side.entries.reduce((s, e) => s + e.amount, 0), journal.currency)}</td>
                     </tr>
                   </tbody>
@@ -3627,6 +3658,9 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
 // ── Reconciliation Tab ──────────────────────────────────────────────────────────
 
 function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
+  const t = useT();
+  const fx = useFormat();
+  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
@@ -3650,8 +3684,8 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
       setError(
         response?.data?.message
         ?? (response?.status === 403
-          ? 'You do not have permission to run payroll reconciliation.'
-          : 'Payroll reconciliation could not be loaded. Try again.'),
+          ? t('You do not have permission to run payroll reconciliation.')
+          : t('Payroll reconciliation could not be loaded. Try again.')),
       );
     } finally {
       setLoading(false);
@@ -3664,17 +3698,17 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
     <div className="space-y-4">
       <div className="surface p-4">
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Month-over-month payroll reconciliation. Compares current run headcount and compensation vs the prior month. Variances above 5% are flagged for review.
+          {t('Month-over-month payroll reconciliation. Compares current run headcount and compensation vs the prior month. Variances above 5% are flagged for review.')}
         </p>
       </div>
 
       <div className="flex items-center gap-3">
-        <select aria-label="Select payroll run for reconciliation" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
-          <option value="">Select payroll run…</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{MONTHS[r.month - 1]} {r.year} — {r.status}</option>)}
+        <select aria-label={t('Select payroll run for reconciliation')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
+          <option value="">{t('Select payroll run…')}</option>
+          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
         </select>
         <button type="button" className={btn.primary} onClick={load} disabled={!runId || loading}>
-          <RefreshCw className="h-4 w-4" /> {loading ? 'Loading…' : 'Reconcile'}
+          <RefreshCw className="h-4 w-4" /> {loading ? t('Loading…') : t('Reconcile')}
         </button>
       </div>
 
@@ -3689,20 +3723,20 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
       {report && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <KpiCard label="Headcount" value={`${report.priorHeadcount} → ${report.currentHeadcount}`} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-            <KpiCard label="Joiners" value={report.joinerCount} icon={Plus} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
-            <KpiCard label="Leavers" value={report.leaverCount} icon={X} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
-            <KpiCard label="Flagged Variances" value={report.flaggedVariances} icon={AlertTriangle} color={report.flaggedVariances > 0 ? 'bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400' : 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400'} />
+            <KpiCard label={t('Headcount')} value={`${report.priorHeadcount} → ${report.currentHeadcount}`} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+            <KpiCard label={t('Joiners')} value={report.joinerCount} icon={Plus} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+            <KpiCard label={t('Leavers')} value={report.leaverCount} icon={X} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+            <KpiCard label={t('Flagged Variances')} value={report.flaggedVariances} icon={AlertTriangle} color={report.flaggedVariances > 0 ? 'bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400' : 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400'} />
           </div>
 
           <div className="surface overflow-hidden">
             <div className="grid grid-cols-2 divide-x rtl:divide-x-reverse divide-slate-100 dark:divide-white/5">
-              {[{ label: 'Gross', prior: report.priorTotalGross, current: report.currentTotalGross }, { label: 'Net', prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
+              {[{ label: t('Gross'), prior: report.priorTotalGross, current: report.currentTotalGross }, { label: t('Net'), prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
                 <div key={m.label} className="p-4">
-                  <p className="text-xs text-slate-400">Total {m.label}</p>
+                  <p className="text-xs text-slate-400">{(m.label === 'Gross' ? t('Total Gross') : t('Total Net'))}</p>
                   <p className="text-lg font-bold text-slate-900 dark:text-white">{runCurrency.amount(m.current)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    {m.current >= m.prior ? '+' : ''}{runCurrency.amount(m.current - m.prior)} vs {report.priorPeriod ?? 'prior period'}
+                    {m.current >= m.prior ? '+' : ''}{t('{amount} vs {period}', { amount: runCurrency.amount(m.current - m.prior), period: report.priorPeriod ? fx.period(report.priorPeriod, 'long') : t('Prior period') })}
                   </p>
                 </div>
               ))}
@@ -3712,13 +3746,13 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
           {report.variances.length > 0 && (
             <div className="surface overflow-hidden">
               <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
-                <p className="text-sm font-semibold text-slate-800 dark:text-white">Employee Variance Detail</p>
+                <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Employee Variance Detail')}</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[640px] text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                      {['Employee', 'Prior Gross', 'Current Gross', 'Δ Gross', 'Var %', 'Prior Net', 'Current Net', 'Flag'].map(h => (
+                      {[t('Employee'), t('Prior Gross'), t('Current Gross'), t('Δ Gross'), t('Var %'), t('Prior Net'), t('Current Net'), t('Flag')].map(h => (
                         <th key={h} className="px-3 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                       ))}
                     </tr>
@@ -3736,7 +3770,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
                         <td className={`px-3 py-2 text-end tabular-nums font-semibold ${Math.abs(v.grossVariancePct) > 5 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500'}`}>{v.grossVariancePct >= 0 ? '+' : ''}{v.grossVariancePct.toFixed(1)}%</td>
                         <td className="px-3 py-2 text-end tabular-nums text-slate-500">{fmt(v.priorNet)}</td>
                         <td className="px-3 py-2 text-end tabular-nums text-slate-700 dark:text-slate-300">{fmt(v.currentNet)}</td>
-                        <td className="px-3 py-2">{v.isVarianceFlag && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"><AlertTriangle className="h-3 w-3" />Flag</span>}</td>
+                        <td className="px-3 py-2">{v.isVarianceFlag && <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"><AlertTriangle className="h-3 w-3" />{t('Flag')}</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -3754,6 +3788,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
 
 function FinalSettlementTab() {
   const t = useT();
+  const fmtAmt = useFmtAmt();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
@@ -3769,7 +3804,8 @@ function FinalSettlementTab() {
 
   const loadSettlements = () => payrollApi.listFinalSettlements().then(r => {
     setSettlements(r.rows); setOutstandingTotal(r.outstandingTotal);
-  }).catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Unable to load final settlements.'));
+  }).catch((e: unknown) => setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Unable to load final settlements.')));
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- load once; the loader only reads the translator
   useEffect(() => { loadSettlements(); }, []);
 
   const defaultActionForm = {
@@ -3783,7 +3819,7 @@ function FinalSettlementTab() {
 
   const transition = async (settlement: FinalSettlementListRow, action: 'submit' | 'approve' | 'cancel') => {
     const af = actionForm(settlement.id);
-    if (action === 'cancel' && !af.reason.trim()) { setError('A cancellation reason is required.'); return; }
+    if (action === 'cancel' && !af.reason.trim()) { setError(t('A cancellation reason is required.')); return; }
     if (action === 'cancel' && !(await confirm({
       title: t('Cancel this settlement?'),
       message: t('Any required contra journal is posted. The reason you entered is sent with the cancellation.'),
@@ -3816,7 +3852,7 @@ function FinalSettlementTab() {
       setResult(res);
       await loadSettlements();
     } catch (e: unknown) {
-      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Calculation failed.');
+      setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? t('Calculation failed.'));
     } finally { setLoading(false); }
   };
 
@@ -3825,47 +3861,47 @@ function FinalSettlementTab() {
       <SettlementRunDutyPanel settlements={settlements} onChanged={() => void loadSettlements()} />
       {confirmDialog}
       <div className="surface p-4">
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">Final Settlement Lifecycle</p>
+        <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Final Settlement Lifecycle')}</p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.
+          {t('Calculate and save a Draft payable, submit it, approve the GL accrual, disburse it through an off-cycle payroll run, then settle the accepted payment batch.')}
         </p>
         <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-          Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.
+          {t('Approval needs a second person: whoever calculated, recalculated or submitted a settlement cannot approve it.')}
         </p>
-        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">Outstanding approved/disbursing payable: {outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
+        <p className="mt-2 text-sm font-semibold text-sapphire dark:text-cyanAccent">{t('Outstanding approved/disbursing payable: {toLocaleString}', { toLocaleString: outstandingTotal.toLocaleString('en-US', { minimumFractionDigits: 2 }) })}</p>
       </div>
 
       <div className="surface p-5 space-y-4">
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Employee ID *</label>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee ID *')}</label>
             <input type="number" className={inp} placeholder="e.g. 1" value={form.employeeId} onChange={e => setForm(f => ({ ...f, employeeId: e.target.value }))} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Last Working Day *</label>
-            <input type="date" className={inp} aria-label="Last working day" value={form.lastWorkingDay} onChange={e => setForm(f => ({ ...f, lastWorkingDay: e.target.value }))} />
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Last Working Day *')}</label>
+            <input type="date" className={inp} aria-label={t('Last working day')} value={form.lastWorkingDay} onChange={e => setForm(f => ({ ...f, lastWorkingDay: e.target.value }))} />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Notice Period Short (days)</label>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Notice Period Short (days)')}</label>
             <input type="number" className={inp} min="0" placeholder="0" value={form.noticePeriodDaysShort} onChange={e => setForm(f => ({ ...f, noticePeriodDaysShort: e.target.value }))} />
-            <p className="mt-0.5 text-xs text-slate-400">Days employee served less than the contractual notice period</p>
+            <p className="mt-0.5 text-xs text-slate-400">{t('Days employee served less than the contractual notice period')}</p>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Separation Reason</label>
-            <select className={inp} aria-label="Separation reason" value={form.terminationReason} onChange={e => setForm(f => ({ ...f, terminationReason: e.target.value }))}>
-              <option value="">Auto (from offboarding record)</option>
-              <option value="Termination">Termination (employer) — full gratuity</option>
-              <option value="EndOfContract">End of Contract — full gratuity</option>
-              <option value="Retirement">Retirement — full gratuity</option>
-              <option value="Resignation">Resignation — Art.85 reduction</option>
-              <option value="Article80">Dismissal for cause (Art.80) — forfeited</option>
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Separation Reason')}</label>
+            <select className={inp} aria-label={t('Separation reason')} value={form.terminationReason} onChange={e => setForm(f => ({ ...f, terminationReason: e.target.value }))}>
+              <option value="">{t('Auto (from offboarding record)')}</option>
+              <option value="Termination">{t('Termination (employer) — full gratuity')}</option>
+              <option value="EndOfContract">{t('End of Contract — full gratuity')}</option>
+              <option value="Retirement">{t('Retirement — full gratuity')}</option>
+              <option value="Resignation">{t('Resignation — Art.85 reduction')}</option>
+              <option value="Article80">{t('Dismissal for cause (Art.80) — forfeited')}</option>
             </select>
-            <p className="mt-0.5 text-xs text-slate-400">Drives the EOSB entitlement (KSA Art.80/84/85). Leave on Auto to use the recorded separation type.</p>
+            <p className="mt-0.5 text-xs text-slate-400">{t('Drives the EOSB entitlement (KSA Art.80/84/85). Leave on Auto to use the recorded separation type.')}</p>
           </div>
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <button type="button" className={btn.primary} onClick={calculate} disabled={!form.employeeId || !form.lastWorkingDay || loading}>
-          <Calculator className="h-4 w-4" /> {loading ? 'Creating draft…' : 'Calculate & Save Draft'}
+          <Calculator className="h-4 w-4" /> {loading ? t('Creating draft…') : t('Calculate & Save Draft')}
         </button>
       </div>
 
@@ -3873,14 +3909,14 @@ function FinalSettlementTab() {
         <div className="surface p-5 space-y-4">
           <div>
             <p className="text-sm font-semibold text-slate-900 dark:text-white">{result.employeeName}</p>
-            <p className="text-xs text-slate-400">Settlement {result.settlementId} · {result.status} · Last working day: {result.lastWorkingDay} · Service: {result.totalYears.toFixed(2)} years · Reason: {result.terminationReason}</p>
+            <p className="text-xs text-slate-400">{t('Settlement {settlementId} · {status} · Last working day: {lastWorkingDay} · Service: {value} years · Reason: {terminationReason}', { settlementId: result.settlementId, status: result.status, lastWorkingDay: result.lastWorkingDay, value: result.totalYears.toFixed(2), terminationReason: result.terminationReason })}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div className="text-slate-500">Basic Salary</div><div className="font-medium text-end">{result.currency} {result.basicSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-            <div className="text-slate-500">Gross Salary</div><div className="font-medium text-end">{result.currency} {result.grossSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-            <div className="text-slate-500">Days Worked in Month</div><div className="font-medium text-end">{result.daysWorkedInMonth} / {result.daysInMonth}</div>
-            <div className="text-slate-500">Leave Balance</div><div className="font-medium text-end">{result.leaveBalanceDays.toFixed(2)} days</div>
+            <div className="text-slate-500">{t('Basic Salary')}</div><div className="font-medium text-end">{result.currency} {result.basicSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div className="text-slate-500">{t('Gross Salary')}</div><div className="font-medium text-end">{result.currency} {result.grossSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <div className="text-slate-500">{t('Days Worked in Month')}</div><div className="font-medium text-end">{result.daysWorkedInMonth} / {result.daysInMonth}</div>
+            <div className="text-slate-500">{t('Leave Balance')}</div><div className="font-medium text-end">{t('{value} days', { value: result.leaveBalanceDays.toFixed(2) })}</div>
           </div>
 
           <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 dark:divide-white/5 dark:border-white/10">
@@ -3895,53 +3931,53 @@ function FinalSettlementTab() {
           </div>
 
           <div className="rounded-xl bg-sapphire/10 px-5 py-4 dark:bg-cyanAccent/10">
-            <p className="text-xs text-slate-500 dark:text-slate-400">Total Settlement Payable</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{t('Total Settlement Payable')}</p>
             <p className="text-2xl font-extrabold text-sapphire dark:text-cyanAccent">{result.currency} {result.totalPayable.toLocaleString('en-US', { minimumFractionDigits: 2 })}</p>
           </div>
 
-          <p className="text-xs text-amber-600 dark:text-amber-400">This is a persisted Draft payable. Review every warning and component before submitting or approving it.</p>
+          <p className="text-xs text-amber-600 dark:text-amber-400">{t('This is a persisted Draft payable. Review every warning and component before submitting or approving it.')}</p>
           {result.warnings?.map(w => <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>)}
         </div>
       )}
 
       <div className="surface overflow-x-auto">
         <div className="border-b border-slate-100 px-4 py-3 dark:border-white/10">
-          <p className="text-sm font-semibold text-slate-800 dark:text-white">Settlement Register</p>
+          <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Settlement Register')}</p>
         </div>
         <table className="w-full min-w-[1100px] text-sm">
           <thead><tr className="border-b border-slate-100 dark:border-white/10">
-            {['Employee', 'Last day', 'Due', 'Net payable', 'Status', 'Workflow controls'].map(h => <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
+            {[t('Employee'), t('Last day'), t('Due'), t('Net payable'), t('Status'), t('Workflow controls')].map(h => <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>)}
           </tr></thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/5">
-            {settlements.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-400">No final settlements.</td></tr>}
+            {settlements.length === 0 && <tr><td colSpan={6} className="py-8 text-center text-slate-400">{t('No final settlements.')}</td></tr>}
             {settlements.map(s => {
               const af = actionForm(s.id);
               const mutable = !['Paid', 'Cancelled', 'Disbursing'].includes(s.status);
               return <tr key={s.id} className="align-top">
                 <td className="px-4 py-3"><p className="font-medium text-slate-900 dark:text-white">{s.employeeName}</p><p className="text-xs text-slate-400">{s.employeeCode}</p></td>
                 <td className="px-4 py-3 text-xs text-slate-500">{s.lastWorkingDay}</td>
-                <td className={`px-4 py-3 text-xs ${s.isOverdue ? 'font-semibold text-rose-500' : 'text-slate-500'}`}>{s.settlementDueDate}{s.isOverdue ? ` · ${s.overdueDays}d overdue` : ''}</td>
+                <td className={`px-4 py-3 text-xs ${s.isOverdue ? 'font-semibold text-rose-500' : 'text-slate-500'}`}>{s.settlementDueDate}{s.isOverdue ? ` · ${t('{days} days overdue', { days: s.overdueDays })}` : ''}</td>
                 <td className="px-4 py-3 font-semibold">{fmtAmt(s.netPayable, s.currency)}</td>
                 <td className="px-4 py-3"><StatusBadge status={s.status} /></td>
                 <td className="px-4 py-3">
                   {mutable ? <div className="grid min-w-[420px] gap-2">
                     <div className="grid grid-cols-2 gap-2">
-                      <input className={inp} type="date" aria-label={`Accrual date for ${s.employeeName}`} value={af.accrualDate} onChange={e => setActionForm(s.id, { accrualDate: e.target.value })} />
-                      <input className={inp} aria-label={`Workflow reason for ${s.employeeName}`} placeholder="Reason / approval note" value={af.reason} onChange={e => setActionForm(s.id, { reason: e.target.value })} />
+                      <input className={inp} type="date" aria-label={t('Accrual date for {employeeName}', { employeeName: s.employeeName })} value={af.accrualDate} onChange={e => setActionForm(s.id, { accrualDate: e.target.value })} />
+                      <input className={inp} aria-label={t('Workflow reason for {employeeName}', { employeeName: s.employeeName })} placeholder={t(t('Reason / approval note'))} value={af.reason} onChange={e => setActionForm(s.id, { reason: e.target.value })} />
                     </div>
                     {(s.status === 'Draft' || s.status === 'PendingApproval') && <>
                       <div className="flex flex-wrap gap-3 text-xs text-slate-600 dark:text-slate-300">
-                        <label><input type="checkbox" checked={af.acknowledgeWageBaseFloor} onChange={e => setActionForm(s.id, { acknowledgeWageBaseFloor: e.target.checked })} /> Accept flagged wage-base floor</label>
-                        <label><input type="checkbox" checked={af.acknowledgeWagesUnpaid} onChange={e => setActionForm(s.id, { acknowledgeWagesUnpaid: e.target.checked })} /> Add acknowledged unpaid wages</label>
+                        <label><input type="checkbox" checked={af.acknowledgeWageBaseFloor} onChange={e => setActionForm(s.id, { acknowledgeWageBaseFloor: e.target.checked })} /> {t('Accept flagged wage-base floor')}</label>
+                        <label><input type="checkbox" checked={af.acknowledgeWagesUnpaid} onChange={e => setActionForm(s.id, { acknowledgeWagesUnpaid: e.target.checked })} /> {t('Add acknowledged unpaid wages')}</label>
                       </div>
-                      {af.acknowledgeWagesUnpaid && <input className={inp} aria-label={`Unpaid wages reason for ${s.employeeName}`} placeholder="Required unpaid-wages justification" value={af.wagesUnpaidReason} onChange={e => setActionForm(s.id, { wagesUnpaidReason: e.target.value })} />}
+                      {af.acknowledgeWagesUnpaid && <input className={inp} aria-label={t('Unpaid wages reason for {employeeName}', { employeeName: s.employeeName })} placeholder={t(t('Required unpaid-wages justification'))} value={af.wagesUnpaidReason} onChange={e => setActionForm(s.id, { wagesUnpaidReason: e.target.value })} />}
                     </>}
                     <div className="flex gap-2">
-                      {s.status === 'Draft' && <button type="button" className={btn.primary} onClick={() => transition(s, 'submit')} disabled={actionSaving !== null}>Submit</button>}
-                      {(s.status === 'Draft' || s.status === 'PendingApproval') && <button type="button" className={btn.primary} onClick={() => transition(s, 'approve')} disabled={actionSaving !== null}>Approve & Post GL</button>}
-                      <button type="button" className={btn.danger} onClick={() => transition(s, 'cancel')} disabled={actionSaving !== null}>Cancel</button>
+                      {s.status === 'Draft' && <button type="button" className={btn.primary} onClick={() => transition(s, 'submit')} disabled={actionSaving !== null}>{t('Submit')}</button>}
+                      {(s.status === 'Draft' || s.status === 'PendingApproval') && <button type="button" className={btn.primary} onClick={() => transition(s, 'approve')} disabled={actionSaving !== null}>{t('Approve & Post GL')}</button>}
+                      <button type="button" className={btn.danger} onClick={() => transition(s, 'cancel')} disabled={actionSaving !== null}>{t('Cancel')}</button>
                     </div>
-                  </div> : <p className="text-xs text-slate-400">{s.status === 'Approved' ? 'Create an off-cycle settlement run to disburse.' : 'No direct action.'}</p>}
+                  </div> : <p className="text-xs text-slate-400">{s.status === 'Approved' ? t('Create an off-cycle settlement run to disburse.') : t('No direct action.')}</p>}
                 </td>
               </tr>;
             })}
@@ -4031,9 +4067,9 @@ export function PayrollPage() {
     }
   };
 
-  const roleBadge = isAdmin ? { label: 'Admin', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' }
-    : isFinance ? { label: 'Finance', cls: 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300' }
-    : isHROrPayroll ? { label: 'HR / Payroll', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' }
+  const roleBadge = isAdmin ? { label: t('Admin'), cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' }
+    : isFinance ? { label: t('Finance'), cls: 'bg-violet-100 text-violet-700 dark:bg-violet-500/20 dark:text-violet-300' }
+    : isHROrPayroll ? { label: t('HR / Payroll'), cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' }
     : null;
 
   return (
@@ -4041,7 +4077,7 @@ export function PayrollPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
-          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.</p>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{t('End-to-end payroll lifecycle — structures, processing, Finance Controller approval, GL journal, WPS files, and final settlement.')}</p>
         </div>
         {roleBadge && <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-xs font-semibold ${roleBadge.cls}`}>{roleBadge.label}</span>}
       </div>
@@ -4056,11 +4092,11 @@ export function PayrollPage() {
       />
 
       <RovingTabList
-        items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label, icon }))}
+        items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
         activeId={activeTab}
         onChange={setActiveTab}
         idPrefix="payroll"
-        label="Payroll workspace sections"
+        label={t('Payroll workspace sections')}
         compact
       />
 
