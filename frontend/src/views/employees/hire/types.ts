@@ -4,6 +4,7 @@ import type { EmployeeReferenceLists } from '@/src/hooks/useReferenceLists';
 import type { HireForm } from '@/src/lib/hire/hireForm';
 import type { SaBank } from '@/src/lib/hire/iban';
 import type { CashAllowanceCatalog } from '@/src/hooks/useCashAllowanceCatalog';
+import type { GradeFill } from '@/src/lib/hire/gradePackage';
 import type { HireCostCentre } from './useHireCostCentre';
 
 export interface Lookups {
@@ -32,6 +33,8 @@ export interface StepProps {
   banks: SaBank[] | null;
   /** The monthly cash allowances this tenant offers and what the grade gives (Benefits by grade), read once for the whole wizard. */
   allowanceCatalog: { catalog: CashAllowanceCatalog; retry: () => void };
+  /** What the grade adds to each blank housing / transport / other allowance (Benefits by grade); empty when the tenant has none or it cannot be read. */
+  gradeFill: GradeFill;
   /** Wave A: the cost centre (dropdown, follow option, its words for Review). */
   costCentre?: HireCostCentre;
 }

@@ -7,6 +7,7 @@ import { gradeLinesFrom } from '@/src/hooks/useCashAllowanceCatalog';
 import { decodeValue, encodeValue } from '@/src/lib/salaryAllowances';
 import { formatAmount } from '@/src/lib/hire/money';
 import { isFixedTerm, parseAmount } from '@/src/lib/hire/payload';
+import { bandStatus, hirePackage } from '@/src/lib/hire/gradePackage';
 import { bankNameFor } from '@/src/lib/hire/iban';
 import { referenceOptions } from '@/src/lib/referenceLists';
 import { defaultIdType, nationalityClass, type IdType } from '@/src/lib/hire/nationality';
@@ -27,7 +28,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, allowanceCatalog, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
+export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, allowanceCatalog, gradeFill, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
   canOverrideChecksum: boolean; resident: boolean; onResident: (v: boolean) => void; onIdBlur: () => void;
 }) {
   const { t, locale } = useLocale();
@@ -37,7 +38,10 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
   const basic = parseAmount(form.basic);
   // What the grade gives (what an untouched section means: the server fills a first package from it).
   const gradeLines = useMemo(() => gradeLinesFrom(allowanceCatalog.catalog, form.gradeId), [allowanceCatalog.catalog, form.gradeId]);
-  const outOfBand = !!grade && basic !== undefined && basic > 0 && grade.maxSalary > 0 && (basic < grade.minSalary || basic > grade.maxSalary);
+  // The package as it will be saved: typed figures plus what the grade adds to a blank allowance. The grade's band is checked on this TOTAL, as the server does.
+  const pkg = hirePackage(form, gradeFill);
+  const fromGrade = pkg.rows.filter(r => r.fromGrade).reduce((sum, r) => sum + r.amount, 0);
+  const band = bandStatus(pkg.total, grade);
   const klass = nationalityClass(form.nationalityCode);
   const idType = (form.idType || defaultIdType(form.nationalityCode, resident) || '') as IdType | '';
   const idOptions: Array<{ value: IdType; label: string }> = [
@@ -47,11 +51,14 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
   const checksumBad = (idType === 'nationalId' || idType === 'iqama') && form.idNumber.trim() !== '' && validateIdNumber(idType, form.idNumber) === 'checksum';
   const fixed = isFixedTerm(form.contractType);
   const bank = companyCountry === 'SA' ? bankNameFor(form.iban, banks, locale) : '';
-  const money = (f: 'basic' | 'housing' | 'transport' | 'other', label: string) => (
-    <FieldShell field={f} label={label} error={errorFor(f)} hint={f === 'basic' && grade && grade.maxSalary > 0 ? t('Grade band: {min} to {max}', { min: formatAmount(grade.minSalary, currency, locale), max: formatAmount(grade.maxSalary, currency, locale) }) : undefined}>
-      {p => <input {...p} type="text" inputMode="decimal" dir="ltr" value={form[f]} onChange={e => set(f, e.target.value)} onBlur={() => blur(f)} className={`${inputClass} text-start`} />}
-    </FieldShell>
-  );
+  const money = (f: 'basic' | 'housing' | 'transport' | 'other', label: string) => {
+    const given = f === 'basic' || form[f].trim() !== '' ? undefined : pkg.rows.find(r => r.field === f && r.fromGrade)?.amount;
+    return (
+      <FieldShell field={f} label={label} error={errorFor(f)} hint={given !== undefined ? t('Left blank, the grade adds {amount} a month. Enter 0 for none.', { amount: formatAmount(given, currency, locale) }) : undefined}>
+        {p => <input {...p} type="text" inputMode="decimal" dir="ltr" value={form[f]} onChange={e => set(f, e.target.value)} onBlur={() => blur(f)} className={`${inputClass} text-start`} />}
+      </FieldShell>
+    );
+  };
   const select = 'input w-full min-w-0';
   return (
     <div className="space-y-4">
@@ -93,7 +100,15 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
           value={decodeValue(form.allowances)} onChange={v => set('allowances', encodeValue(v))} basic={basic} currency={currency}
           catalog={allowanceCatalog.catalog} onRetry={allowanceCatalog.retry} showProblems={!!errorFor('allowances')} />
         {errorFor('allowances') && <p role="alert" className="text-sm text-red-600 sm:col-span-2">{errorFor('allowances')}</p>}
-        {outOfBand && <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 sm:col-span-2 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">{t('The basic salary is outside the pay band of the grade. You can still save; you will be asked for a reason.')}</p>}
+        {pkg.total > 0 && (
+          <p className="text-sm text-slate-700 sm:col-span-2 dark:text-slate-200" data-testid="hire-package-total">
+            <span className="font-semibold">{t('Total monthly pay')}</span>{' '}
+            <bdi dir="ltr">{formatAmount(pkg.total, currency, locale)}</bdi>
+            {fromGrade > 0 && <span className="text-slate-500"> {t('({amount} of it from the grade)', { amount: formatAmount(fromGrade, currency, locale) })}</span>}
+            {grade && grade.maxSalary > 0 && <span className="block text-xs text-slate-500">{t('Grade band: {min} to {max}', { min: formatAmount(grade.minSalary, currency, locale), max: formatAmount(grade.maxSalary, currency, locale) })}</span>}
+          </p>
+        )}
+        {band && <p role="status" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 sm:col-span-2 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-100">{t('The total pay is outside the pay band of the grade. You can still save; you will be asked for a reason.')}</p>}
       </Section>
       <Section title={t('Identity documents')}>
         <FieldShell field="idType" label={t('ID type')} hint={klass === 'unknown' ? t('Choose a nationality on the previous step to suggest the ID type.') : undefined}>
