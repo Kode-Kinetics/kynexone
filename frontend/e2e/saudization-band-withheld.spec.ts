@@ -50,7 +50,7 @@ async function open(page: Page, s: Record<string, unknown>) {
     return json([]);
   });
   await page.goto('/saudi-compliance');
-  await page.getByRole('button', { name: 'Saudization', exact: true }).click();
+  await page.getByRole('button', { name: /^(Saudization|السعودة)$/ }).click();
   await expect(page.getByText('66.67%').first()).toBeVisible({ timeout: 30_000 });
 }
 

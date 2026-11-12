@@ -65,7 +65,7 @@ async function boot(page: Page, url: string, section: string, options: Options =
 async function openNewMaternityPolicy(page: Page) {
   await page.getByRole('button', { name: 'New Policy' }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByPlaceholder('e.g. UAE Annual Leave — Full-Time').fill('Maternity KSA');
+  await dialog.getByPlaceholder('For example: Saudi Annual Leave — Full-Time').fill('Maternity KSA');
   await dialog.locator('select').filter({ has: page.locator('option', { hasText: 'Maternity Leave' }) }).selectOption('mat-a');
   await dialog.locator('select').filter({ has: page.locator('option', { hasText: 'KSA' }) }).first().selectOption('KSA');
   return dialog;
@@ -112,10 +112,10 @@ test('a value above the statutory minimum is "More generous than the law" and ne
 
 test('in Arabic the minimum, the warning, the checkbox and the reason prompt are all Arabic', async ({ page }) => {
   await boot(page, '/setup?tab=leavePolicies', 'سياسات الإجازات', { locale: 'ar' });
-  await page.getByRole('button', { name: 'New Policy' }).click();
+  await page.getByRole('button', { name: 'سياسة جديدة' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.locator('select').filter({ has: page.locator('option', { hasText: 'Maternity Leave' }) }).selectOption('mat-a');
-  await dialog.locator('select').filter({ has: page.locator('option', { hasText: 'KSA' }) }).first().selectOption('KSA');
+  await dialog.locator('select').filter({ has: page.locator('option', { hasText: /KSA|السعودية/ }) }).first().selectOption('KSA');
   const days = dialog.locator('input[type=number]').first();
   await expect(days).toHaveValue('84');
   await expect(dialog.getByTestId('floor-leave_special_entitlement_below_minimum')).toContainText('الافتراضي السعودي: 84');

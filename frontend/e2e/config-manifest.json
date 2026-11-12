@@ -129,6 +129,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.launch-i18n-shots.config.ts": {
+      "disposition": "manual",
+      "reason": "Arabic screenshot tour of the launch screens against mocked APIs, run by hand when reviewing translations; its harness file (launch-i18n-shots.shots.ts) is named so no other config collects it."
+    },
     "playwright.learning-journey.config.ts": {
       "disposition": "manual-stack",
       "reason": "Needs its own disposable backend stack plus the cmi5 sample unit on :5411 (see root playwright.config.ts testIgnore). OWNER DECISION: add a compose-backed nightly job or retire."

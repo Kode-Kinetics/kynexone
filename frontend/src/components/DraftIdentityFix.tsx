@@ -49,7 +49,7 @@ export function DraftIdentityFix({ draftId, kind, current, isMaker, canEdit, onS
       onSaved();
     } catch (err) {
       const verdict = draftIdentityServerError(kind, err);
-      setError(verdict ? t(verdict) : draftRequestFailureReason(err));
+      setError(verdict ? t(verdict) : draftRequestFailureReason(err, t));
     } finally {
       setSaving(false);
     }
