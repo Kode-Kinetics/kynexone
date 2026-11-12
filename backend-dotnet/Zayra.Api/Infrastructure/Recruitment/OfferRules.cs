@@ -167,6 +167,24 @@ public static class OfferRules
                     && normalized.Contains(ur.Role.NormalizedName)));
     }
 
+    /// <summary>
+    /// <see cref="EligibleApprovers"/> narrowed to the people the approve endpoint would not refuse for lack of the key
+    /// (<c>recruitment.approve</c>, see <see cref="OfferAccess.CanApprove"/>): the key arrives through one of their eligible
+    /// roles or an active personal grant, and an active personal Deny removes it. The dropdown lists exactly these, so it never
+    /// offers a name that could not decide the step.
+    /// </summary>
+    public static IQueryable<Domain.Entities.User> ApproversWhoCanDecide(ZayraDbContext db, Guid tenantId)
+    {
+        const string key = "recruitment.approve";
+        var normalized = ApproverRoleNames.Select(r => r.ToUpperInvariant()).ToArray();
+        var now = DateTime.UtcNow;
+        return EligibleApprovers(db, tenantId).Where(u =>
+            !u.PermissionOverrides.Any(o => o.PermissionKey == key && o.Effect == "Deny" && o.IsActive && (o.ExpiresAtUtc == null || o.ExpiresAtUtc > now))
+            && (u.PermissionOverrides.Any(o => o.PermissionKey == key && o.Effect == "Allow" && o.IsActive && (o.ExpiresAtUtc == null || o.ExpiresAtUtc > now))
+                || u.UserRoles.Any(ur => ur.Role != null && ur.Role.IsActive && !ur.Role.IsDeleted && normalized.Contains(ur.Role.NormalizedName)
+                    && ur.Role.RolePermissions.Any(rp => rp.Permission != null && rp.Permission.Key == key))));
+    }
+
     public static async Task<OfferApproverVerdict> EvaluateApproverAsync(
         ZayraDbContext db, Guid tenantId, Guid offerId, Guid? approverUserId, CancellationToken ct)
     {

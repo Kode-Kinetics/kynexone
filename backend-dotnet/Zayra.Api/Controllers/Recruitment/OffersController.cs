@@ -125,8 +125,8 @@ public class OffersController : ControllerBase
     }
 
     // GET /api/recruitment/offers/{id}/approver-options
-    /// <summary>The people who can approve this offer: active HR Managers and Admins, other than the
-    /// offer's author.</summary>
+    /// <summary>The people who can approve this offer: active HR Managers and Admins who actually hold
+    /// recruitment.approve, other than the offer's author.</summary>
     [HttpGet("{id:guid}/approver-options")]
     [Authorize(Roles = "Admin,HR Manager")]
     public async Task<IActionResult> ApproverOptions(Guid id, CancellationToken ct)
@@ -134,7 +134,7 @@ public class OffersController : ControllerBase
         var tid = GetTenantId();
         if (!await _db.OfferLetters.AnyAsync(x => x.Id == id && x.TenantId == tid, ct)) return NotFound();
         var writers = await OfferRules.TermsWritersAsync(_db, tid, id, ct);
-        var options = await OfferRules.EligibleApprovers(_db, tid)
+        var options = await OfferRules.ApproversWhoCanDecide(_db, tid)
             .Where(u => !writers.Contains(u.Id))
             .OrderBy(u => u.FullName)
             .Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email))
