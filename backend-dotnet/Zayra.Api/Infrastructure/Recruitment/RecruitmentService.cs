@@ -224,7 +224,12 @@ public class RecruitmentService : IRecruitmentService
             JoiningDate = offer.StartDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc),
             Salary = offer.BasicSalary,
             ContractType = "Permanent",
-            ProbationEndDate = offer.StartDate.AddMonths(offer.ProbationMonths),
+            // A Saudi probation never runs past day 180 (Art. 53): six months is served as 180 days.
+            ProbationEndDate = Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationEnd(
+                offer.CompanyId is { } offerCompany
+                    ? await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == offerCompany).Select(c => c.CountryCode).FirstOrDefaultAsync(ct)
+                    : null,
+                offer.StartDate, offer.ProbationMonths),
         };
 
         // Production providers use one transaction plus compare-and-swap writes. Exactly one

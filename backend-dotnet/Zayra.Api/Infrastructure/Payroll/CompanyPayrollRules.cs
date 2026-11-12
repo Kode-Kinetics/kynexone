@@ -204,13 +204,37 @@ public static class CompanyPayrollRules
     /// </summary>
     public static string? StatutoryProbationOverLimit(string? companyCountryCode, DateOnly startDate, int probationMonths)
     {
-        if (!IsSaudiCountry(companyCountryCode) || probationMonths <= 0 || startDate == DateOnly.MinValue) return null;
-        var days = startDate.AddMonths(probationMonths).DayNumber - startDate.DayNumber;
-        if (days <= ExtendedProbationDays) return null;
-        var fits = 0;
-        while (startDate.AddMonths(fits + 1).DayNumber - startDate.DayNumber <= ExtendedProbationDays) fits++;
-        return $"Saudi Labour Law (Art. 53) allows a probation of at most {ExtendedProbationDays} days. A probation of {probationMonths} month(s) " +
-               $"from {startDate:yyyy-MM-dd} is {days} days. Offer at most {fits} months.";
+        if (!IsSaudiCountry(companyCountryCode) || probationMonths <= SaudiMaxProbationMonths || startDate == DateOnly.MinValue) return null;
+        return $"Saudi Labour Law (Art. 53) allows a probation of at most {ExtendedProbationDays} days. Offer at most " +
+               $"{SaudiMaxProbationMonths} months: six months is served as {ExtendedProbationDays} days.";
+    }
+
+    /// <summary>
+    /// The longest probation a Saudi offer may state, in months. Six calendar months is 181 to 184 days, one to four days over
+    /// Art. 53's 180, so it is served as 180 days (owner decision 2026-11-12: HR writes "6 months", meaning the legal maximum).
+    /// </summary>
+    public const int SaudiMaxProbationMonths = 6;
+
+    /// <summary>
+    /// The probation end for an offered probation in months, by the convention the product already uses (start + period). In a
+    /// Saudi company it never runs past day 180 (start + 180 days), so a six-month probation ends on day 180; elsewhere, and
+    /// below the ceiling, it is calendar months as before.
+    /// </summary>
+    public static DateOnly ProbationEnd(string? companyCountryCode, DateOnly startDate, int probationMonths)
+    {
+        var end = startDate.AddMonths(probationMonths);
+        if (!IsSaudiCountry(companyCountryCode)) return end;
+        var ceiling = startDate.AddDays(ExtendedProbationDays);
+        return end > ceiling ? ceiling : end;
+    }
+
+    /// <summary>The probation as the offer letter states it: "180 days" when the Saudi ceiling applies, else months.</summary>
+    public static string ProbationPeriodText(string? companyCountryCode, DateOnly startDate, int probationMonths)
+    {
+        if (probationMonths <= 0) return "None";
+        if (IsSaudiCountry(companyCountryCode) && startDate.AddMonths(probationMonths) > startDate.AddDays(ExtendedProbationDays))
+            return $"{ExtendedProbationDays} days";
+        return probationMonths == 1 ? "1 month" : $"{probationMonths} months";
     }
 
     /// <summary>A Saudi company, by its ISO-2 or ISO-3 country code.</summary>
