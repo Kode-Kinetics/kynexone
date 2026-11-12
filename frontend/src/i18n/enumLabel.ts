@@ -27,7 +27,9 @@ export type EnumName =
   | 'HrRequestStatus'
   | 'OvertimeStatus'
   | 'AttendanceStatus'
-  | 'NitaqatBand';
+  | 'NitaqatBand'
+  | 'RecruitmentStage'
+  | 'RecruitmentEvent';
 
 /** "Half day" → "HalfDay", "pending" → "Pending", "PendingHRApproval" unchanged. */
 export function normaliseEnumValue(value: string): string {
