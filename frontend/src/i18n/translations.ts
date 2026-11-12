@@ -34,6 +34,7 @@ import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
 import { glEosb } from './glEosb';
+import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
 import { deadEnds } from './deadEnds';
@@ -1651,6 +1652,7 @@ const en: Dict = {
   // Engagement surveys — see ./engagement.
   ...engagement.en,
   ...glEosb.en,
+  ...glLeaveProvision.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
   ...deadEnds.en,
@@ -3215,6 +3217,7 @@ const ar: Dict = {
   ...compensation.ar,
   ...engagement.ar,
   ...glEosb.ar,
+  ...glLeaveProvision.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
   ...deadEnds.ar,

@@ -1393,6 +1393,8 @@ public partial class PayrollController : ControllerBase
         decimal lockRounding = 0m;
         decimal lockEosbMovement = 0m;
         var lockEosbEmployees = 0;
+        decimal lockLeaveMovement = 0m;
+        int lockLeaveEmployees = 0, lockLeaveCatchUp = 0, lockLeaveUnmeasured = 0;
         if (!alreadyPosted)
         {
             // POD-B1 — a closed GL period rejects NEW postings. Dated into the accrual (run) period, so
@@ -1503,6 +1505,12 @@ public partial class PayrollController : ControllerBase
             if (plan.EosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.AddRange(plan.EosbSnapshots);
             lockEosbMovement = plan.EosbSnapshots.Sum(x => x.Movement);
             lockEosbEmployees = plan.EosbSnapshots.Count;
+            // The annual-leave provision's witnesses commit with the journal they explain, or not at all.
+            if (plan.LeaveSnapshots.Count > 0) _db.LeaveProvisionSnapshots.AddRange(plan.LeaveSnapshots);
+            lockLeaveMovement = plan.LeaveSnapshots.Sum(x => x.Movement);
+            lockLeaveEmployees = plan.LeaveSnapshots.Count;
+            lockLeaveCatchUp = plan.LeaveCatchUpEmployees;
+            lockLeaveUnmeasured = plan.LeaveUnmeasuredEmployees;
         }
 
         run.Status = "Locked";
@@ -1540,6 +1548,10 @@ public partial class PayrollController : ControllerBase
             catchAllComponents = lockCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }).ToList(),
             roundingAdjustment = lockRounding,
             eosbProvisionMovement = lockEosbMovement, eosbProvisionEmployees = lockEosbEmployees,
+            // The annual-leave provision: the net movement booked, who was measured, how many of them were the opening catch-up
+            // (the first month books everything owed to date), and who could not be measured (no salary record).
+            leaveProvisionMovement = lockLeaveMovement, leaveProvisionEmployees = lockLeaveEmployees,
+            leaveProvisionCatchUpEmployees = lockLeaveCatchUp, leaveProvisionUnmeasuredEmployees = lockLeaveUnmeasured,
             costing = CostingSummary(lockCostPlan),
         }, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
@@ -1570,6 +1582,10 @@ public partial class PayrollController : ControllerBase
             // POD-C2 — the end-of-service provision movement this Lock booked (0 when provisioning is off).
             eosbProvisionMovement = lockEosbMovement,
             eosbProvisionEmployees = lockEosbEmployees,
+            // The annual-leave provision movement this Lock booked (0 when provisioning is off) and how many employees were its opening catch-up.
+            leaveProvisionMovement = lockLeaveMovement,
+            leaveProvisionEmployees = lockLeaveEmployees,
+            leaveProvisionCatchUpEmployees = lockLeaveCatchUp,
             // Cost accounting (WP-C2): whether the journal was costed, and the W-1 / W-2 warnings (counts and aggregates only).
             costing = CostingSummary(lockCostPlan),
         }), true, run);
@@ -6563,6 +6579,10 @@ public partial class PayrollController : ControllerBase
         public IReadOnlyList<EosbProvisionSnapshot> EosbSnapshots { get; init; } = Array.Empty<EosbProvisionSnapshot>();
         /// <summary>POD-C2 — set when provisioning is on but cannot be measured; Lock refuses rather than skip it.</summary>
         public EosbProvisionRefusal? EosbRefusal { get; init; }
+        /// <summary>The per-employee annual-leave measurements Lock persists beside the leave provision lines.</summary>
+        public IReadOnlyList<LeaveProvisionSnapshot> LeaveSnapshots { get; init; } = Array.Empty<LeaveProvisionSnapshot>();
+        public int LeaveCatchUpEmployees { get; init; }
+        public int LeaveUnmeasuredEmployees { get; init; }
         /// <summary>Cost accounting (WP-C2): the cost-centre decisions made in the SAME pass that built <see cref="Lines"/>.</summary>
         public PayrollCostPlan CostPlan { get; init; } = PayrollCostPlan.Off;
         /// <summary>The approval fingerprint of everything this journal depends on (null when costing is off).</summary>
@@ -6643,6 +6663,16 @@ public partial class PayrollController : ControllerBase
             used.Add(EosbProvisionLedger.ProvisionDriverKey);
         }
 
+        // The monthly annual-leave provision movement, when the company has switched it on. Also balanced on its own, so it never
+        // moves the rounding line.
+        var leave = await BuildLeaveProvisionAsync(tenantId, run, period, currency, glCtx, earnings, postedBy, postedByName, costPlan, ct);
+        if (leave.Lines.Count > 0)
+        {
+            lines.AddRange(leave.Lines);
+            used.Add(LeaveProvisioningRateKeys.ExpenseDriverKey);
+            used.Add(LeaveProvisioningRateKeys.ProvisionDriverKey);
+        }
+
         // A switched-off SYSTEM rule blocks only when this run would have used it: route the run again
         // as if those rules were on, and any pay item (or employer pair) that lands on one of them is a
         // component that is being silently re-routed (usually to a catch-all) because it is off. A rule
@@ -6677,12 +6707,19 @@ public partial class PayrollController : ControllerBase
             var accountMasters = await PayrollCostStamper.LoadAccountMastersAsync(_db, tenantId, run.CompanyId!.Value, ct);
             var extra = problems.Select(p => $"problem:{p.DriverKey}:{p.Kind}")
                 .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" });
-            costHash = PayrollCostStamper.ComputeHash(costPlan, lines, glCtx, accountMasters, extra);
+            // The leave provision lines are left out of the approval fingerprint: their amounts follow the live leave balances, which move
+            // whenever a leave request is approved or accrues, and a balance change between Approve and Lock is not a cost-centre or
+            // posting-rule decision. The cost-centre resolution, the accounts and the mappings they post through ARE still sealed.
+            costHash = PayrollCostStamper.ComputeHash(
+                costPlan, lines.Where(l => l.EventType != GlEventTypes.LeaveProvisionAccrual).ToList(), glCtx, accountMasters, extra);
         }
         return new PayrollLockJournal(lines, totalDebits, totalCredits, catchAlls, problems, rounding, earnings, dedxns)
         {
             EosbSnapshots = eosb.Snapshots,
             EosbRefusal = eosb.Refusal,
+            LeaveSnapshots = leave.Snapshots,
+            LeaveCatchUpEmployees = leave.CatchUpEmployees,
+            LeaveUnmeasuredEmployees = leave.UnmeasuredEmployees,
             CostPlan = costPlan, CostHash = costHash, RoundingBlock = roundingBlock, Context = glCtx,
         };
     }
@@ -6834,6 +6871,7 @@ public partial class PayrollController : ControllerBase
         if (line.EventType == GlEventTypes.BonusPayrollClearing) return ("BONUS_PAYABLE", line.Description);
         if (line.EventType == GlEventTypes.SettlementPayrollClearing) return ("SETTLEMENT_PAYABLE", line.Description);
         if (line.EventType == GlEventTypes.EosbProvisionAccrual) return ("EOSB_PROVISION", line.Description);
+        if (line.EventType == GlEventTypes.LeaveProvisionAccrual) return ("LEAVE_PROVISION", line.Description);
         if (line.Description == PayrollGlDescriptions.NetPayable) return ("NET_SALARY", "Net Salary Payable");
         if (line.Description == PayrollGlDescriptions.EmployerStatutory) return ("SOCIAL_INS_ER_DR", "Employer Social Insurance Expense");
         if (line.Description == PayrollGlDescriptions.Rounding) return ("ROUNDING", "Payroll rounding difference");
@@ -8220,6 +8258,18 @@ public partial class PayrollController : ControllerBase
             provisionReleases.Add((releasedFrom.ProvisionAccount, released));
         }
 
+        // The annual-leave provision, consumed the same way: what was provided for this employee's leave relieves 2330 first, the rest of
+        // the encashment is expensed to 5111, and any provision left after the encashment is released back out of 5115.
+        var leaveCursor = await LeaveProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
+        var (leavePosition, leaveTaken) = leaveCursor.Take(s.EmployeeId, s.CompanyId, s.LeaveEncashmentAmount);
+        var leaveReleases = new List<(string Account, decimal Amount)>();
+        while (leaveCursor.PositionFor(s.EmployeeId, s.CompanyId) is { } leaveLeftover)
+        {
+            var (releasedFrom, released) = leaveCursor.Take(s.EmployeeId, s.CompanyId, leaveCursor.RemainingOn(leaveLeftover));
+            if (releasedFrom is null || released <= 0m) break;
+            leaveReleases.Add((releasedFrom.ProvisionAccount, released));
+        }
+
         // Cost accounting (WP-C2): the leaver's cost centre AT THE APPROVAL DATE (contract 2.4). A Required expense account with no cost
         // centre for the leaver refuses the approval with M-1 and nothing is written.
         Guid? settlementCostCentre = null;
@@ -8241,7 +8291,8 @@ public partial class PayrollController : ControllerBase
         }
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
             tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
-            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre);
+            provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre,
+            leaveTaken, leavePosition?.ProvisionAccount, leaveReleases);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new
             {
@@ -8275,6 +8326,8 @@ public partial class PayrollController : ControllerBase
             glPeriod, totalDebits = dr, totalCredits = cr,
             provisionConsumed = provisionTaken, provisionAccount = provisionPosition?.ProvisionAccount,
             provisionReleased = provisionReleases.Sum(r => r.Amount),
+            leaveProvisionConsumed = leaveTaken, leaveProvisionAccount = leavePosition?.ProvisionAccount,
+            leaveProvisionReleased = leaveReleases.Sum(r => r.Amount),
             wageBaseDelta = s.WageBaseDeltaAmount,
             wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
             wagesAcknowledgedUnpaid = s.WagesAcknowledgedUnpaid,
@@ -8299,6 +8352,7 @@ public partial class PayrollController : ControllerBase
             totalDebits = dr,
             totalCredits = cr,
             provisionConsumed = provisionTaken,
+            leaveProvisionConsumed = leaveTaken,
             netPayable = s.NetPayable,
             journal = glLines.Select(l => new
             {
@@ -8407,7 +8461,8 @@ public partial class PayrollController : ControllerBase
                      && x.SourceModule == FinalSettlementGlDescriptions.SourceModule
                      && x.SourceEntityId == s.Id && !x.IsReversed
                      && (x.EventType == GlEventTypes.SettlementAccrual
-                      || x.EventType == GlEventTypes.EosbProvisionConsumption))
+                      || x.EventType == GlEventTypes.EosbProvisionConsumption
+                      || x.EventType == GlEventTypes.LeaveProvisionConsumption))
             .ToListAsync(cancellationToken);
 
         // Do not silently rewrite closed books — every period the contra would write into is guarded.
@@ -8434,7 +8489,9 @@ public partial class PayrollController : ControllerBase
                     // provision position re-opens (LoadPositionsAsync filters !IsReversed on both legs).
                     EventType = orig.EventType == GlEventTypes.EosbProvisionConsumption
                         ? GlEventTypes.EosbProvisionConsumptionReversal
-                        : GlEventTypes.SettlementAccrualReversal,
+                        : orig.EventType == GlEventTypes.LeaveProvisionConsumption
+                            ? GlEventTypes.LeaveProvisionConsumptionReversal
+                            : GlEventTypes.SettlementAccrualReversal,
                     DebitAccount = orig.CreditAccount, CreditAccount = orig.DebitAccount,
                     Amount = orig.Amount, Currency = orig.Currency,
                     EntryDate = today, Period = orig.Period,
@@ -8763,8 +8820,7 @@ public partial class PayrollController : ControllerBase
         // the leaver's wages for the last month, the day rate for notice, and the full-package encashment base all include them.
         var cashAllowanceTotal = salary is null ? 0m
             : (await _db.EmployeeSalaryAllowances.AsNoTracking().Where(x => x.TenantId == tenantId && x.SalaryStructureId == salary.Id).Select(x => x.Amount).ToListAsync(ct)).Sum();
-        var monthlyGross = basicWage + (salary?.HousingAllowance ?? 0m) + (salary?.TransportAllowance ?? 0m)
-                         + (salary?.FoodAllowance ?? 0m) + (salary?.MobileAllowance ?? 0m) + (salary?.OtherAllowance ?? 0m) + cashAllowanceTotal;
+        var monthlyGross = LeaveCashOutRate.MonthlyGross(salary, basicWage, cashAllowanceTotal);
         var currency = !string.IsNullOrWhiteSpace(salary?.Currency)
             ? salary!.Currency
             : await ResolveCurrencyAsync(tenantId, ct);
@@ -8828,21 +8884,12 @@ public partial class PayrollController : ControllerBase
 
         // ── K5: one authoritative encashable-days function ───────────────────────────────────────────
         var exitRules = await CompanyPayrollRules.ResolveAsync(_db, tenantId, companyId, ct, lastDay);
-        var cashOutBase = exitRules.LeaveCashOutBasis switch
-        {
-            CompanyPayrollRules.BasisBasic => basicWage,
-            CompanyPayrollRules.BasisBasicHousing => basicWage + (salary?.HousingAllowance ?? 0m),
-            _ => monthlyGross,
-        };
+        // The SAME rule the monthly leave provision values its days by (LeaveCashOutRate), so the two agree.
+        var cashOutBase = LeaveCashOutRate.BaseFor(exitRules.LeaveCashOutBasis, basicWage, salary?.HousingAllowance ?? 0m, monthlyGross);
         var encashment = await LeaveEncashmentCalculator.ComputeAsync(
             _db, tenantId, employee.Id, companyId, lastDay, cashOutBase, ct,
             statutoryAnnualLeaveCashOut: exitRules.LeaveCashOutOnExit,
-            basisLabel: exitRules.LeaveCashOutBasis switch
-            {
-                CompanyPayrollRules.BasisBasic => "basic/30",
-                CompanyPayrollRules.BasisBasicHousing => "(basic+housing)/30",
-                _ => LeaveEncashmentCalculator.DayRateBasis,
-            });
+            basisLabel: LeaveCashOutRate.LabelFor(exitRules.LeaveCashOutBasis));
         warnings.AddRange(encashment.Warnings);
 
         // ── K1: THE NOTICE RULES DEPEND ON WHO TERMINATED (Art. 75/76) ───────────────────────────────

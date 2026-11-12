@@ -69,6 +69,7 @@ public class JournalExportAccrualDateTests
     [InlineData(GlEventTypes.BonusPayrollClearing)]
     [InlineData(GlEventTypes.SettlementPayrollClearing)]
     [InlineData(GlEventTypes.EosbProvisionAccrual)]
+    [InlineData(GlEventTypes.LeaveProvisionAccrual)]
     public void EveryJournalPostedAtLock_ExportsOnThePeriodEnd(string eventType)
     {
         var inPeriod = Row(eventType, "2026-11", new DateOnly(2026, 11, 12));
@@ -88,6 +89,8 @@ public class JournalExportAccrualDateTests
     [InlineData(GlEventTypes.SettlementResidualReclass)]
     [InlineData(GlEventTypes.EosbProvisionConsumption)]
     [InlineData(GlEventTypes.EosbProvisionConsumptionReversal)]
+    [InlineData(GlEventTypes.LeaveProvisionConsumption)]
+    [InlineData(GlEventTypes.LeaveProvisionConsumptionReversal)]
     [InlineData(GlEventTypes.EosbActuarialTrueUp)]
     [InlineData(GlEventTypes.NetSettlementReclass)]
     [InlineData("PayrollRemitReclass:GOSI")]
@@ -100,6 +103,7 @@ public class JournalExportAccrualDateTests
     [Theory]
     [InlineData(GlEventTypes.BonusPayrollClearing)]
     [InlineData(GlEventTypes.EosbProvisionAccrual)]
+    [InlineData(GlEventTypes.LeaveProvisionAccrual)]
     public void ALockEventFromAnotherModule_IsNotAffected(string eventType)
     {
         var e = Row(eventType, "2026-11", new DateOnly(2026, 11, 12), module: "Bonus");

@@ -194,6 +194,12 @@ public static class PayrollGlCatalog
         // What the leaver is owed between approval and disbursement. Cleared by the payroll run's own
         // Lock journal, exactly the way POD-B1b clears Bonus Payable.
         new Driver("SETTLEMENT_PAYABLE",    "Final Settlement Payable",      "2320", "Final Settlement Payable",        "Liability"),
+        // The monthly ANNUAL-LEAVE provision. Accrued at payroll Lock for companies that switch
+        // payparameter.leave_provisioning on; settlement approval consumes it (see LeaveProvisionLedger) and
+        // releases any remainder. Codes sit beside the EOSB pair (2310 / 5110) on purpose; 2330 and 5115 were
+        // free in every shipped chart. With provisioning off, a settlement expenses the whole encashment (5111).
+        new Driver("LEAVE_PROVISION",         "Accrued Annual Leave Provision",   "2330", "Accrued Annual Leave Provision",   "Liability"),
+        new Driver("LEAVE_PROVISION_EXPENSE", "Annual Leave Provision Expense",   "5115", "Annual Leave Provision Expense",   "Expense"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -266,6 +272,10 @@ public static class PayrollGlCatalog
         // account by accident. They are resolved EXCLUSIVELY by explicit GlAccountResolver.AccountLabel.
         Sys(tenantId, "EOSB_PROVISION",        "End of Service Benefit Provision",GlDriverCategories.Balancing,"CR","Liability","2310", "End of Service Benefit Provision", null,        "Any",    null,               108),
         Sys(tenantId, "SETTLEMENT_PAYABLE",    "Final Settlement Payable",      GlDriverCategories.Balancing, "CR", "Liability", "2320", "Final Settlement Payable",         null,        "Any",    null,               109),
+        // Annual-leave provision pair. Balancing: resolved only by explicit key from the Lock journal and the
+        // settlement approval, never by component routing.
+        Sys(tenantId, "LEAVE_PROVISION",         "Accrued Annual Leave Provision", GlDriverCategories.Balancing, "CR", "Liability", "2330", "Accrued Annual Leave Provision", null,      "Any",    null,               111),
+        Sys(tenantId, "LEAVE_PROVISION_EXPENSE", "Annual Leave Provision Expense", GlDriverCategories.Balancing, "DR", "Expense",   "5115", "Annual Leave Provision Expense", null,      "Any",    null,               112),
         // Balancing: resolved only by explicit key from the Lock journal's rounding line, never by routing.
         Sys(tenantId, "ROUNDING",              "Payroll Rounding Differences",  GlDriverCategories.Balancing, "DR", "Expense",   "5199", "Payroll Rounding Differences",     null,        "Any",    null,               110),
     };
@@ -320,13 +330,13 @@ public static class GlEventTypes
     /// <summary>
     /// Every event posted as part of a payroll period's LOCK, under SourceModule "Payroll" with the run as the
     /// source entity: the accrual itself, the bonus and settlement payable clearings emitted inside it, and the
-    /// monthly EOSB provision movement. These are month-end journals, so the export dates them on the period
+    /// monthly EOSB and annual-leave provision movements. These are month-end journals, so the export dates them on the period
     /// end (see <c>JournalExportBuilder.DeriveAccountingDate</c>). A new journal written inside Lock (the
     /// leave-provision accrual) is added HERE and nowhere else. Payment, remittance, reversal, contra and the
     /// settlement-approval journals are deliberately not in this list: they are dated by when they happened.
     /// </summary>
     public static readonly string[] PayrollLockEvents =
-        { Accrual, BonusPayrollClearing, SettlementPayrollClearing, EosbProvisionAccrual };
+        { Accrual, BonusPayrollClearing, SettlementPayrollClearing, EosbProvisionAccrual, LeaveProvisionAccrual };
 
     public static bool IsPayrollLockEvent(string? eventType) =>
         eventType is not null && Array.IndexOf(PayrollLockEvents, eventType) >= 0;
@@ -350,6 +360,7 @@ public static class GlEventTypes
      // true for it or a void could not re-open the payable it consumed.
      || eventType == SettlementAccrualReversal
      || eventType == EosbProvisionConsumptionReversal
+     || eventType == LeaveProvisionConsumptionReversal
      || (eventType is not null && (eventType.StartsWith(RemitReversalPrefix, StringComparison.Ordinal)
                                 || eventType.StartsWith(RemitReclassPrefix, StringComparison.Ordinal)));
 
@@ -436,6 +447,18 @@ public static class GlEventTypes
     /// <summary>Contra of a consumption when the settlement that took it is cancelled (re-opens the
     /// provision for the same employee).</summary>
     public const string EosbProvisionConsumptionReversal = "EosbProvisionConsumptionReversal";
+
+    // ── The monthly ANNUAL-LEAVE liability accrual (mirrors the EOSB provision above) ──────────────
+    // Written INSIDE the payroll Lock journal (SourceEntityId = run) for a company whose
+    // payparameter.leave_provisioning is BalanceMonthly: per employee, CR 2330 for a rise in the unused-leave
+    // value or DR 2330 for a fall (SourceEntityRef = employee id), against 5115 expense lines
+    // (SourceEntityRef = period). Settlement approval consumes the per-employee position first.
+    /// <summary>The monthly leave provision movement: DR 5115 / CR 2330 (or the reverse), per employee.</summary>
+    public const string LeaveProvisionAccrual = "LeaveProvisionAccrual";
+    /// <summary>DR 2330 provision: the settlement CONSUMES what was provided for this employee's leave.</summary>
+    public const string LeaveProvisionConsumption = "LeaveProvisionConsumption";
+    /// <summary>Contra of a leave consumption when the settlement that took it is cancelled.</summary>
+    public const string LeaveProvisionConsumptionReversal = "LeaveProvisionConsumptionReversal";
 }
 
 /// <summary>Stable, remap-immune identifiers embedded in bonus/loan/advance line Descriptions —

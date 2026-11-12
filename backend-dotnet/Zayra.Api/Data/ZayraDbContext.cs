@@ -1668,6 +1668,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
     public DbSet<GlPeriodClose> GlPeriodCloses => Set<GlPeriodClose>();
     // POD-C2 — per-employee EOSB obligation witness behind the monthly provision movement.
     public DbSet<EosbProvisionSnapshot> EosbProvisionSnapshots => Set<EosbProvisionSnapshot>();
+    public DbSet<LeaveProvisionSnapshot> LeaveProvisionSnapshots => Set<LeaveProvisionSnapshot>();
     // Maker-checker finance journals: EOSB actuarial true-up, legacy 2104/2105 reclassification.
     public DbSet<GlAdjustmentRequest> GlAdjustmentRequests => Set<GlAdjustmentRequest>();
     public DbSet<PayComponent> PayComponents => Set<PayComponent>();
@@ -2371,6 +2372,28 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             // NULLS NOT DISTINCT is created via raw SQL in AddGlPeriodClose (Npgsql 8 can't express it) so
             // one scope cannot hold two rows for the same period.
             entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+        });
+
+        modelBuilder.Entity<LeaveProvisionSnapshot>(entity =>
+        {
+            entity.ToTable("leave_provision_snapshots");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Period).HasMaxLength(7).IsRequired();
+            entity.Property(x => x.Days).HasPrecision(10, 2);
+            entity.Property(x => x.DailyRate).HasPrecision(18, 6);
+            entity.Property(x => x.Basis).HasMaxLength(24).IsRequired();
+            entity.Property(x => x.Obligation).HasPrecision(18, 2);
+            entity.Property(x => x.CarriedBefore).HasPrecision(18, 2);
+            entity.Property(x => x.Movement).HasPrecision(18, 2);
+            entity.Property(x => x.Currency).HasMaxLength(3).IsRequired();
+            // One measurement per employee per month — also what makes a retried Lock unable to provide twice.
+            entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Period })
+                  .IsUnique().HasDatabaseName("ux_leave_provision_snapshots_tenant_employee_period");
+            // Serves the void (delete the run's rows) and the panel's per-company drill-down.
+            entity.HasIndex(x => new { x.TenantId, x.PayrollRunId });
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.Period });
+            // Cascade: a snapshot is meaningless without its run, and a tenant purge removes runs first.
+            entity.HasOne<PayrollRun>().WithMany().HasForeignKey(x => x.PayrollRunId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<EosbProvisionSnapshot>(entity =>

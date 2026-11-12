@@ -50,6 +50,7 @@ public class FinanceLedgerWriterSweepTests
         ["Controllers/PayrollController.cs"] = (10, 4, 7, 15),   // C2: lines built with At(new FinanceGlEntry ...), one construction fewer
         ["Infrastructure/Payroll/BonusCostSplit.cs"] = (0, 0, 0, 1),            // costed bonus accrual rows (inserts), BonusCostingPostgresTests + oracle
         ["Infrastructure/Payroll/EosbProvisionAccrual.cs"] = (0, 0, 0, 1),      // EOSB provision lines (inserts), inside the Lock journal
+        ["Infrastructure/Payroll/LeaveProvisionAccrual.cs"] = (0, 0, 0, 1),     // annual-leave provision lines (inserts), inside the Lock journal
         ["Infrastructure/Payroll/FinalSettlementGlLedger.cs"] = (0, 0, 0, 1),   // settlement accrual lines (inserts), oracle ApproveFinalSettlement
         // StampAsync / StampRejectionAsync: 8 ledger-line stamps and one PayrollRun stamp.
         ["Infrastructure/Finance/ErpPostingEvidence.cs"] = (0, 0, 9, 0),

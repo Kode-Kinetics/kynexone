@@ -20873,6 +20873,101 @@ namespace Zayra.Api.Migrations
                     b.ToTable("leave_policy_eligibilities", (string)null);
                 });
 
+            modelBuilder.Entity("Zayra.Api.Models.LeaveProvisionSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Basis")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("basis");
+
+                    b.Property<decimal>("CarriedBefore")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("carried_before");
+
+                    b.Property<Guid?>("CompanyId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("character varying(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("DailyRate")
+                        .HasPrecision(18, 6)
+                        .HasColumnType("numeric(18,6)")
+                        .HasColumnName("daily_rate");
+
+                    b.Property<decimal>("Days")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)")
+                        .HasColumnName("days");
+
+                    b.Property<int>("EmployeeId")
+                        .HasColumnType("integer")
+                        .HasColumnName("employee_id");
+
+                    b.Property<bool>("IsCatchUp")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_catch_up");
+
+                    b.Property<DateOnly>("MeasuredAt")
+                        .HasColumnType("date")
+                        .HasColumnName("measured_at");
+
+                    b.Property<decimal>("Movement")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("movement");
+
+                    b.Property<decimal>("Obligation")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)")
+                        .HasColumnName("obligation");
+
+                    b.Property<Guid>("PayrollRunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payroll_run_id");
+
+                    b.Property<string>("Period")
+                        .IsRequired()
+                        .HasMaxLength(7)
+                        .HasColumnType("character varying(7)")
+                        .HasColumnName("period");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PayrollRunId");
+
+                    b.HasIndex("TenantId", "CompanyId");
+
+                    b.HasIndex("TenantId", "PayrollRunId");
+
+                    b.HasIndex("TenantId", "CompanyId", "Period");
+
+                    b.HasIndex("TenantId", "EmployeeId", "Period")
+                        .IsUnique()
+                        .HasDatabaseName("ux_leave_provision_snapshots_tenant_employee_period");
+
+                    b.ToTable("leave_provision_snapshots", (string)null);
+                });
+
             modelBuilder.Entity("Zayra.Api.Models.LeaveRequest", b =>
                 {
                     b.Property<Guid>("Id")
@@ -34878,6 +34973,15 @@ namespace Zayra.Api.Migrations
                         .HasForeignKey("TenantId", "CompanyId")
                         .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Zayra.Api.Models.LeaveProvisionSnapshot", b =>
+                {
+                    b.HasOne("Zayra.Api.Models.PayrollRun", null)
+                        .WithMany()
+                        .HasForeignKey("PayrollRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.LeaveType", b =>

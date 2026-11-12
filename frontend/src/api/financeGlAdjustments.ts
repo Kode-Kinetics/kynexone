@@ -4,19 +4,23 @@ import client from './client';
 // End-of-service provision + maker-checker finance journals (GlAdjustmentsController).
 //
 //   GET  /api/finance/gl/eosb/provision?companyId=        provision panel (balance, employees, true-ups)
+//   GET  /api/finance/gl/leave/provision?companyId=       annual-leave provision panel (balance, employees)
 //   POST /api/finance/gl/eosb/true-up                     request an actuarial true-up (PENDING)
 //   GET  /api/finance/gl/reclassifications/legacy-absence  2104/2105 balances still on the books
 //   POST /api/finance/gl/reclassifications/legacy-absence  request a move of one balance (PENDING)
 //   POST /api/finance/gl/adjustments/{id}/approve|reject   a second person decides; approval posts the journal
 //
 // Turning monthly provisioning on/off is an ordinary company rate (payparameter.eosb_provisioning),
-// written through /api/finance/rates/company like every other one.
+// written through /api/finance/rates/company like every other one. The annual-leave provision switch is the same
+// kind of rate (payparameter.leave_provisioning).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = '/api/finance/gl';
 
 export const EOSB_PROVISIONING_KEY = 'payparameter.eosb_provisioning';
 export type EosbProvisioningMode = 'Off' | 'StatutoryMonthly';
+export const LEAVE_PROVISIONING_KEY = 'payparameter.leave_provisioning';
+export type LeaveProvisioningMode = 'Off' | 'BalanceMonthly';
 export type GlAdjustmentStatus = 'Pending' | 'Approved' | 'Rejected';
 
 export interface GlAdjustment {
@@ -80,6 +84,43 @@ export interface EosbProvisionSummary {
   trueUps: GlAdjustment[];
 }
 
+export interface LeaveProvisionEmployee {
+  employeeId: number;
+  employeeCode: string;
+  employeeName: string;
+  lastMeasuredPeriod: string;
+  days: number;
+  dailyRate: number;
+  obligation: number;
+  lastMovement: number;
+  /** What the ledger still carries for the person (accruals less what a settlement consumed). */
+  provisionCarried: number;
+}
+
+export interface LeaveProvisionSummary {
+  companyId: string;
+  provisionAccount: string;
+  expenseAccount: string;
+  /** The day-rate basis the company's leave cash-out rule sets, e.g. "gross/30". Final settlement values the same days the same way. */
+  basis: { rule: string; label: string };
+  provisioning: {
+    enabled: boolean;
+    value: string;
+    effectiveFrom: string | null;
+    rateKey: string;
+    currentRateId: string | null;
+    latestValue: string | null;
+    latestEffectiveFrom: string | null;
+    inheritedFromTenant: boolean;
+  };
+  glBalance: number;
+  employeeObligation: number;
+  employeeProvisionCarried: number;
+  totalDays: number;
+  employees: LeaveProvisionEmployee[];
+  history: { period: string; employees: number; obligation: number; movement: number; catchUp: number }[];
+}
+
 export interface LegacyAbsenceAccount {
   account: string;
   code: string;
@@ -100,6 +141,8 @@ export interface LegacyAbsenceSummary {
 export const financeGlAdjustmentsApi = {
   provision: (companyId: string) =>
     client.get<EosbProvisionSummary>(`${BASE}/eosb/provision`, { params: { companyId } }).then((r) => r.data),
+  leaveProvision: (companyId: string) =>
+    client.get<LeaveProvisionSummary>(`${BASE}/leave/provision`, { params: { companyId } }).then((r) => r.data),
   requestTrueUp: (data: { companyId: string; period: string; amount: number; reason: string; reportReference: string }) =>
     client.post<GlAdjustment>(`${BASE}/eosb/true-up`, data).then((r) => r.data),
   legacyAbsence: (companyId: string) =>

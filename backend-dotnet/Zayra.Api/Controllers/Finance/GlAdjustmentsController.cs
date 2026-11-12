@@ -163,6 +163,124 @@ public class GlAdjustmentsController : ControllerBase
         });
     }
 
+    // ═══ Annual-leave provision ═════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// The annual-leave provision panel: is monthly provisioning on for the company, what 2330 carries, the day-rate basis the company's
+    /// leave cash-out rule sets, and the per-employee measurements (from the Lock snapshots) that explain it. Read-only; the switch is an
+    /// ordinary company rate (payparameter.leave_provisioning) written through /api/finance/rates/company.
+    /// </summary>
+    [HttpGet("leave/provision")]
+    public async Task<IActionResult> GetLeaveProvision([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!CanRead()) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (await CompanyError(tid.Value, companyId, ct) is { } err) return err;
+        var cid = companyId!.Value;
+
+        var gl = await GlAccountResolver.LoadAsync(_db, tid.Value, cid, ct);
+        var provisionAccount = GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ProvisionDriverKey, gl);
+        var expenseAccount = GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ExpenseDriverKey, gl);
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+
+        var mode = await new CompanyRatePolicyResolver(_db).ResolveAsync(tid.Value, cid, LeaveProvisioningRateKeys.Mode, today, ct);
+        // The latest row for the key, whatever its start — so a switch scheduled for next month is visible.
+        var latestRow = await ScopedBypass.TenantWide(_db.CompanyRatePolicies, tid.Value,
+                "company scope authorised above; the tenant-default row is shared by every company")
+            .AsNoTracking()
+            .Where(p => !p.IsDeleted && p.Status == CompanyPolicyStatuses.Active && p.RateKey == LeaveProvisioningRateKeys.Mode
+                     && (p.CompanyId == cid || p.CompanyId == null))
+            .OrderByDescending(p => p.CompanyId != null).ThenByDescending(p => p.EffectiveFrom)
+            .FirstOrDefaultAsync(ct);
+
+        // 2330 as the GL carries it for this company: Σ CR − Σ DR over every row, reversed ones included (a contra is a real posting).
+        var provisionRows = await _db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.CompanyId == cid
+                     && (x.DebitAccount == provisionAccount || x.CreditAccount == provisionAccount))
+            .Select(x => new { x.DebitAccount, x.Amount })
+            .ToListAsync(ct);
+        var glBalance = Math.Round(provisionRows.Sum(r => r.DebitAccount == provisionAccount ? -r.Amount : r.Amount), 2);
+
+        var snapshots = await _db.LeaveProvisionSnapshots.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.CompanyId == cid)
+            .ToListAsync(ct);
+        // A leaver whose settlement is approved has had their provision consumed and released: their last measurement is history, not a
+        // figure still provided for.
+        var settledIds = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tid.Value,
+                    "company scope authorised above; a leaver settled under any entity no longer carries a provision")
+                .AsNoTracking()
+                .Where(s => (s.Status == FinalSettlementStatuses.Approved || s.Status == FinalSettlementStatuses.Disbursing || s.Status == FinalSettlementStatuses.Paid))
+                .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+        var latest = snapshots.GroupBy(x => x.EmployeeId)
+            .Select(g => g.OrderByDescending(x => x.Period, StringComparer.Ordinal).First())
+            .Where(x => !settledIds.Contains(x.EmployeeId))
+            .ToList();
+        var employeeIds = latest.Select(x => x.EmployeeId).ToList();
+        var people = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tid && employeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
+            .ToDictionaryAsync(e => e.Id, ct);
+        var positions = await LeaveProvisionLedger.LoadPositionsAsync(_db, tid.Value, employeeIds, ct);
+        var employees = latest
+            .Select(x => new
+            {
+                employeeId = x.EmployeeId,
+                employeeCode = people.TryGetValue(x.EmployeeId, out var p) ? p.EmployeeCode : string.Empty,
+                employeeName = people.TryGetValue(x.EmployeeId, out var q) ? q.FullName : string.Empty,
+                lastMeasuredPeriod = x.Period,
+                days = x.Days,
+                dailyRate = x.DailyRate,
+                obligation = x.Obligation,
+                lastMovement = x.Movement,
+                // What the ledger still carries for the person (accruals less what a settlement consumed).
+                provisionCarried = Math.Round(positions
+                    .Where(pp => pp.EmployeeId == x.EmployeeId && (pp.CompanyId == cid || pp.CompanyId is null))
+                    .Sum(pp => pp.Remaining), 2),
+            })
+            .OrderBy(x => x.employeeCode, StringComparer.Ordinal)
+            .ToList();
+
+        var history = snapshots.GroupBy(x => x.Period)
+            .Select(g => new
+            {
+                period = g.Key,
+                employees = g.Count(),
+                obligation = Math.Round(g.Sum(x => x.Obligation), 2),
+                movement = Math.Round(g.Sum(x => x.Movement), 2),
+                catchUp = Math.Round(g.Where(x => x.IsCatchUp).Sum(x => x.Movement), 2),
+            })
+            .OrderByDescending(x => x.period, StringComparer.Ordinal)
+            .Take(24)
+            .ToList();
+
+        var rules = await CompanyPayrollRules.ResolveAsync(_db, tid.Value, cid, ct, today);
+        return Ok(new
+        {
+            companyId = cid,
+            provisionAccount,
+            expenseAccount,
+            basis = new { rule = rules.LeaveCashOutBasis, label = LeaveCashOutRate.LabelFor(rules.LeaveCashOutBasis) },
+            provisioning = new
+            {
+                enabled = mode is not null && LeaveProvisioningRateKeys.IsOn(mode.RateValue),
+                value = mode?.RateValue ?? LeaveProvisioningRateKeys.Off,
+                effectiveFrom = mode?.EffectiveFrom,
+                rateKey = LeaveProvisioningRateKeys.Mode,
+                // The row the panel changes (PUT /api/finance/rates/company/{id}) — or none yet (POST).
+                currentRateId = latestRow?.CompanyId == cid ? latestRow?.Id : null,
+                latestValue = latestRow?.RateValue,
+                latestEffectiveFrom = latestRow?.EffectiveFrom,
+                inheritedFromTenant = latestRow is not null && latestRow.CompanyId is null,
+            },
+            glBalance,
+            employeeObligation = Math.Round(employees.Sum(e => e.obligation), 2),
+            employeeProvisionCarried = Math.Round(employees.Sum(e => e.provisionCarried), 2),
+            totalDays = Math.Round(employees.Sum(e => e.days), 2),
+            employees,
+            history,
+        });
+    }
+
     [HttpGet("eosb/true-up")]
     public async Task<IActionResult> ListTrueUps([FromQuery] Guid? companyId, CancellationToken ct)
     {
