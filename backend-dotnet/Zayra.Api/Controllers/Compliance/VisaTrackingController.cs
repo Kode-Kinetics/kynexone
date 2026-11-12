@@ -319,7 +319,7 @@ public class VisaTrackingController : ControllerBase
         var employee = identity.Employee!;
         var renewal = new ComplianceRenewal
         {
-            TenantId = tid, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            TenantId = tid, CompanyId = employee.CompanyId, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
             DocumentType = req.DocumentType, DocumentNumber = req.DocumentNumber ?? string.Empty,
             ExpiryDate = req.ExpiryDate, AssignedToName = req.AssignedToName ?? string.Empty,
             AssignedToUserId = req.AssignedToUserId, Notes = req.Notes ?? string.Empty,

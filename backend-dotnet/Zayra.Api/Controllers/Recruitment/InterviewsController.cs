@@ -77,6 +77,7 @@ public class InterviewsController : ControllerBase
         var interview = new InterviewSchedule
         {
             TenantId = tid,
+            CompanyId = app.CompanyId,
             ApplicationId = req.ApplicationId,
             InterviewType = req.InterviewType,
             InterviewerNames = req.InterviewerNames,
@@ -179,6 +180,7 @@ public class InterviewsController : ControllerBase
         var feedback = new InterviewFeedback
         {
             TenantId = tid,
+            CompanyId = interview.CompanyId,
             InterviewScheduleId = id,
             ApplicationId = interview.ApplicationId,
             InterviewerUserId = GetUserId(),

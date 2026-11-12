@@ -18,8 +18,11 @@ public class RecruitmentService : IRecruitmentService
     {
         var year = DateTime.UtcNow.Year;
         var prefix = $"MRQ-{year}-";
-        var last = await _db.ManpowerRequisitions
-            .Where(r => r.TenantId == tenantId && r.RequisitionNumber.StartsWith(prefix))
+        // The number is unique per TENANT, so the last one is read across every company: under a company-scoped caller the
+        // ambient filter would hide the other companies' numbers and hand out one that is already taken.
+        var last = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.ManpowerRequisitions, tenantId,
+                "Requisition numbers are unique per tenant: the next number must see every company's rows, not the caller's company only.")
+            .Where(r => r.RequisitionNumber.StartsWith(prefix))
             .OrderByDescending(r => r.RequisitionNumber)
             .Select(r => r.RequisitionNumber)
             .FirstOrDefaultAsync(ct);
@@ -37,8 +40,10 @@ public class RecruitmentService : IRecruitmentService
     {
         var year = DateTime.UtcNow.Year;
         var prefix = $"JOB-{year}-";
-        var last = await _db.JobOpenings
-            .Where(j => j.TenantId == tenantId && j.JobCode.StartsWith(prefix))
+        // Unique per TENANT, so read across every company (see GenerateRequisitionNumberAsync).
+        var last = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.JobOpenings, tenantId,
+                "Job codes are unique per tenant: the next code must see every company's rows, not the caller's company only.")
+            .Where(j => j.JobCode.StartsWith(prefix))
             .OrderByDescending(j => j.JobCode)
             .Select(j => j.JobCode)
             .FirstOrDefaultAsync(ct);
