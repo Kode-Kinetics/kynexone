@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
@@ -58,6 +58,9 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import { enumLabel } from '../i18n/enumLabel';
+import { EmployeeSearchSelect, type EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useConfirm } from '../components/ui/useConfirm';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { msg } from '../i18n/translations';
@@ -67,7 +70,7 @@ import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFor
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
-  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction, applicationStageChanges,
 } from '../lib/recruitmentJourney';
 
 // ── Offer approval ────────────────────────────────────────────────────────────
@@ -344,6 +347,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 interface CreateReqModalProps { onClose: () => void; onSaved: () => void; }
 
 function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     departmentName: '', designationTitle: '', headCount: 1, employmentType: 'Full-Time',
@@ -448,7 +452,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Required Skills</label>
-              <textarea className="input w-full resize-none" rows={2} placeholder="e.g. React, TypeScript, Node.js…" value={form.requiredSkills} onChange={e => set('requiredSkills', e.target.value)} />
+              <textarea className="input w-full resize-none" rows={2} placeholder={t('For example: customer service, Excel, Arabic and English')} value={form.requiredSkills} onChange={e => set('requiredSkills', e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -607,6 +611,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
 function CreateOpeningModal({ requisition, onClose, onSaved }: {
   requisition: ManpowerRequisition | null; onClose: () => void; onSaved: () => void;
 }) {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     title: requisition?.designationTitle ?? '',
@@ -698,7 +703,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Requirements (one per line)</label>
-              <textarea className="input w-full resize-none" rows={3} placeholder="5+ years of experience&#10;Strong TypeScript skills…" value={form.requirements} onChange={e => set('requirements', e.target.value)} />
+              <textarea className="input w-full resize-none" rows={3} placeholder={t('5+ years of experience\nBachelor’s degree in a relevant field…')} value={form.requirements} onChange={e => set('requirements', e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -713,7 +718,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Location</label>
-                <input className="input w-full" placeholder="e.g. Dubai, UAE" aria-label="Location" value={form.location} onChange={e => set('location', e.target.value)} />
+                <input className="input w-full" placeholder={t('For example: Riyadh, Saudi Arabia')} aria-label="Location" value={form.location} onChange={e => set('location', e.target.value)} />
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Assigned HR</label>
@@ -934,6 +939,8 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 // ── Application Detail Drawer ──────────────────────────────────────────────────
 
 function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: () => void; onRefresh: () => void }) {
+  const t = useT();
+  const f = useFormat();
   const navigationGuard = useNavigationGuard();
   const offerT = useOfferLifecycleT();
   const [templateId, setTemplateId] = useState('');
@@ -1012,13 +1019,16 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         otherAllowances: Number(offerForm.otherAllowances) || 0,
         probationMonths: offerForm.probationMonths,
       });
-      setOfferForm({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
+      // The guard reads the form as of the last render: commit the cleared form first, or it still sees
+      // the saved values as unsaved changes and asks whether to discard them.
+      flushSync(() => setOfferForm({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 }));
       navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const offer = detail.offer as OfferLetter | null;
+  const stageChanges = applicationStageChanges(detail.events);
 
   // Authenticated offer preview: fetch the PDF via the axios client (bearer token attached),
   // then open the blob. The old `<a href=.../html>` sent no token (401) and served executable
@@ -1035,7 +1045,9 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
     finally { setActing(''); }
   };
 
-  return (
+  // Portalled to <body>: inside <main> the drawer shares the page's stacking context, which sits under the
+  // sticky top bar, so its header (name + close) was hidden behind it.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={() => navigationGuard.run('application-close', onClose)} />
       <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-surface">
@@ -1046,7 +1058,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             <p className="text-xs text-slate-500 dark:text-slate-400">{app.jobTitle}</p>
             <div className="mt-2 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" style={{ backgroundColor: STAGE_COLORS[app.stage] ?? '#64748b' }}>
-                {app.stage}
+                {enumLabel(t, 'RecruitmentStage', app.stage)}
               </span>
               {app.status !== 'Active' && (
                 <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{app.status}</span>
@@ -1092,11 +1104,11 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
 
         {/* Sub-tabs */}
         <div className="flex gap-1 border-b border-slate-200 px-5 dark:border-white/[0.06]">
-          {(['timeline', 'interviews', 'offer'] as const).map(t => (
-            <button key={t} type="button" onClick={() => setTab(t)}
-              className={`py-2.5 text-xs font-medium capitalize transition ${tab === t ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
-              {t}
-              {t === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-caption dark:bg-white/10">{detail.interviews.length}</span>}
+          {([['timeline', 'Timeline'], ['interviews', 'Interviews'], ['offer', 'Offer']] as const).map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setTab(key)}
+              className={`px-2 py-2.5 text-xs font-medium transition first:ps-0 ${tab === key ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
+              {t(label)}
+              {key === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-caption dark:bg-white/10">{detail.interviews.length}</span>}
             </button>
           ))}
         </div>
@@ -1107,19 +1119,31 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
           {tab === 'timeline' && (
             <div>
               <div className="space-y-3">
-                {detail.events.map(ev => (
-                  <div key={ev.id} className="flex gap-3">
-                    <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sapphire" />
-                    <div className="flex-1">
-                      <div className="flex items-baseline justify-between">
-                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{ev.eventType.replace(/([A-Z])/g, ' $1').trim()}</p>
-                        <p className="text-caption text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc)}</p>
+                {detail.events.map(ev => {
+                  const change = stageChanges.get(ev.id);
+                  // "Advanced application stage." is the API's default note: the from → to line says it better.
+                  const note = change && ev.notes === 'Advanced application stage.' ? '' : ev.notes;
+                  return (
+                    <div key={ev.id} className="flex gap-3">
+                      <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sapphire" />
+                      <div className="flex-1">
+                        <div className="flex items-baseline justify-between">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{enumLabel(t, 'RecruitmentEvent', ev.eventType)}</p>
+                          <p className="text-caption text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc)}</p>
+                        </div>
+                        {change && (
+                          <p className="mt-0.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                            <bdi>{enumLabel(t, 'RecruitmentStage', change.from)}</bdi>{' '}
+                            <span className="inline-block rtl:-scale-x-100">→</span>{' '}
+                            <bdi>{enumLabel(t, 'RecruitmentStage', change.to)}</bdi>
+                          </p>
+                        )}
+                        {note && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{note}</p>}
+                        {ev.performedByName && <p className="text-caption text-slate-400">by {ev.performedByName}</p>}
                       </div>
-                      {ev.notes && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{ev.notes}</p>}
-                      {ev.performedByName && <p className="text-caption text-slate-400">by {ev.performedByName}</p>}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {detail.events.length === 0 && <p className="text-xs text-slate-400 dark:text-slate-500">No events yet.</p>}
               </div>
               <div className="mt-4 flex gap-2">
@@ -1138,7 +1162,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{iv.interviewType}</p>
                     <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'}`}>{iv.status}</span>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{new Date(iv.scheduledAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} · {iv.mode}</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{f.dateTime(iv.scheduledAt)} · {iv.mode}</p>
                   {iv.interviewerNames && <p className="text-xs text-slate-400">With: {iv.interviewerNames}</p>}
                   {iv.overallRating && (
                     <div className="mt-2 flex items-center gap-1">
@@ -1242,7 +1266,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1387,6 +1412,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
 // ── Add Candidate Modal ────────────────────────────────────────────────────────
 
 function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const t = useT();
   const [form, setForm] = useState({
     firstName: '', lastName: '', email: '', phone: '', currentJobTitle: '',
     currentCompany: '', totalExperienceYears: 0, educationLevel: 'Bachelor',
@@ -1423,8 +1449,8 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
               <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Last Name</label><input className="input w-full" placeholder="Last name" aria-label="Last name" value={form.lastName} onChange={e => set('lastName', e.target.value)} /></div>
             </div>
             <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Email *</label><input type="email" className="input w-full" placeholder="email@example.com" value={form.email} onChange={e => set('email', e.target.value)} /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Phone</label><input className="input field-ltr w-full" placeholder="+971 50 000 0000" aria-label="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Phone</label><input className="input field-ltr w-full" placeholder="+966 50 000 0000" aria-label="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
               <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Experience (years)</label><input type="number" className="input w-full" min={0} value={form.totalExperienceYears} onChange={e => set('totalExperienceYears', Number(e.target.value))} aria-label="Experience years" /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -1445,7 +1471,7 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
                 </select>
               </div>
             </div>
-            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Nationality</label><input className="input w-full" placeholder="e.g. UAE" aria-label="Nationality" value={form.nationality} onChange={e => set('nationality', e.target.value)} /></div>
+            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Nationality</label><input className="input w-full" placeholder={t('For example: Saudi')} aria-label="Nationality" value={form.nationality} onChange={e => set('nationality', e.target.value)} /></div>
             <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Resume / CV URL <span className="text-slate-400 font-normal">(LinkedIn, Google Drive, etc.)</span></label><input type="url" className="input w-full" placeholder="https://…" value={form.resumeUrl} onChange={e => set('resumeUrl', e.target.value)} /></div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
@@ -1676,6 +1702,8 @@ function WorkforcePlanningTab() {
 // ── Interviews Tab ────────────────────────────────────────────────────────────
 
 function InterviewsTab() {
+  const t = useT();
+  const f = useFormat();
   const [statusFilter, setStatusFilter] = useState('');
   const [showSchedule, setShowSchedule] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1704,6 +1732,9 @@ function InterviewsTab() {
   };
 
   useEffect(() => { load(); }, [statusFilter]);
+  // The interview list carries only an application id: the candidate and job come from the application list.
+  useEffect(() => { void loadApps(); }, []);
+  const applicationById = new Map(applications.map(a => [a.id, a]));
 
   const openSchedule = () => { loadApps(); setShowSchedule(true); };
 
@@ -1847,6 +1878,12 @@ function InterviewsTab() {
             <div key={iv.id} className="surface p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
+                  {applicationById.get(iv.applicationId) && (
+                    <p className="mb-1 truncate text-sm font-semibold text-slate-900 dark:text-white">
+                      <bdi>{applicationById.get(iv.applicationId)!.candidateName}</bdi>
+                      <span className="font-normal text-slate-500 dark:text-slate-400"> · <bdi>{applicationById.get(iv.applicationId)!.jobTitle}</bdi></span>
+                    </p>
+                  )}
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-semibold text-slate-900 dark:text-white">{iv.interviewType}</span>
                     <span className="text-xs text-slate-400">{MODE_ICON[iv.mode] ?? '🗓'} {iv.mode}</span>
@@ -1856,13 +1893,16 @@ function InterviewsTab() {
                     }`}>{iv.status}</span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {new Date(iv.scheduledAt).toLocaleString()} · {iv.durationMinutes}min
+                    {f.dateTime(iv.scheduledAt)} · {iv.durationMinutes}min
                   </p>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Interviewers: {iv.interviewerNames}</p>
                   {iv.recommendation && (
                     <p className={`text-xs font-medium mt-1 ${RECOMMENDATION_COLORS[iv.recommendation] ?? ''}`}>
                       Recommendation: {iv.recommendation}
                     </p>
+                  )}
+                  {iv.feedbackNotes && (
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300"><span className="font-medium">{t('Feedback notes')}:</span> {iv.feedbackNotes}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -2267,8 +2307,8 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
         transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances),
         probationMonths: Number(offerForm.probationMonths),
       });
-      setShowCreate(false);
-      setOfferForm(emptyOfferForm);
+      // Commit the cleared form before navigating (see ApplicationDrawer.doGenerateOffer).
+      flushSync(() => { setShowCreate(false); setOfferForm(emptyOfferForm); });
       navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { setOfferError(offerCreationFailure(e)); }
     finally { setOfferSaving(false); }
@@ -2383,6 +2423,18 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
     return () => onDirtyChange?.(false);
   }, [checklistForm, templateForm, onDirtyChange]);
   const [generateForm, setGenerateForm] = useState({ employeeId: '', applicationId: '', startDate: '' });
+  // Tasks are generated for a person picked from the records, not for an id someone has to copy.
+  const [generateEmployee, setGenerateEmployee] = useState<EmployeeSelection | null>(null);
+  const [hiredApplications, setHiredApplications] = useState<JobApplication[] | null>(null);
+  const [hiredApplicationsFailed, setHiredApplicationsFailed] = useState(false);
+  useEffect(() => {
+    if (configurationOnly) return;
+    let active = true;
+    applicationsApi.listAll({ status: 'Hired' })
+      .then(items => { if (active) setHiredApplications(items); })
+      .catch(() => { if (active) { setHiredApplications([]); setHiredApplicationsFailed(true); } });
+    return () => { active = false; };
+  }, [configurationOnly]);
   const [taskForm, setTaskForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false,
   });
@@ -2520,7 +2572,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   const generateFromChecklist = async () => {
     if (!selectedChecklistId || (!generateForm.employeeId && !generateForm.applicationId)) {
-      setTaskError('Select a checklist and provide an employee or application ID.');
+      setTaskError(t('Select a checklist and choose an employee or a hired candidate.'));
       return;
     }
     setTemplateSaving(true); setTaskError('');
@@ -2532,6 +2584,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         startDate: generateForm.startDate || undefined,
       });
       setGenerateForm({ employeeId: '', applicationId: '', startDate: '' });
+      setGenerateEmployee(null);
       load();
     } catch (e) { notifyApiError(e); }
     finally { setTemplateSaving(false); }
@@ -2633,13 +2686,27 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         {!configurationOnly && (
           <div className="mt-4 space-y-2">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Generate tasks from the selected checklist')}</p>
-            <div className="grid grid-cols-3 gap-2">
-              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
-                value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
-              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
-                value={generateForm.applicationId} onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))} />
-              <input type="date" title="Start date" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee (optional)')}</span>
+                <EmployeeSearchSelect value={generateEmployee} placeholder={t('Search by name or code…')}
+                  onChange={emp => { setGenerateEmployee(emp); setGenerateForm(f => ({ ...f, employeeId: emp?.publicId ?? '' })); }} />
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Hired application (optional)')}</span>
+                <select className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  disabled={hiredApplications === null} value={generateForm.applicationId}
+                  onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))}>
+                  <option value="">{hiredApplications && hiredApplications.length === 0 && !hiredApplicationsFailed ? t('Nobody has been hired yet') : t('Choose a hired candidate…')}</option>
+                  {(hiredApplications ?? []).map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
+                </select>
+                {hiredApplicationsFailed && <span role="alert" className="mt-1 block text-xs text-rose-500">{t('The hired candidates could not be loaded.')}</span>}
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Start date')}</span>
+                <input type="date" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+              </label>
             </div>
             <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
               className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">

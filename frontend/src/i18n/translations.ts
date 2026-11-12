@@ -29,6 +29,7 @@ import { glEosb } from './glEosb';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
 import { deadEnds } from './deadEnds';
+import { recruitmentDemo } from './recruitmentDemo';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -1631,6 +1632,7 @@ const en: Dict = {
   ...belowMinimum.en,
   ...loanBatchApprover.en,
   ...deadEnds.en,
+  ...recruitmentDemo.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -3183,6 +3185,7 @@ const ar: Dict = {
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
   ...deadEnds.ar,
+  ...recruitmentDemo.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

@@ -104,3 +104,27 @@ export function parseAssessmentScore(raw: string | undefined, totalMarks: number
   if (!Number.isInteger(score) || score < 0 || score > assessmentScoreMax(totalMarks)) return null;
   return score;
 }
+
+/**
+ * The stage an application left and the stage it reached, for each "stage advanced" event on its
+ * timeline. The API records only the stage an event ended at (ApplicationEvent.Stage), so the stage
+ * it left is the stage the previous event ended at; an application starts at Applied. Events must be
+ * in the order the API returns them (oldest first).
+ */
+export function applicationStageChanges(
+  events: ReadonlyArray<{ id: string; eventType: string; stage: string }>,
+): Map<string, { from: string; to: string }> {
+  const changes = new Map<string, { from: string; to: string }>();
+  let current: string = PIPELINE_STAGES[0];
+  for (const event of events) {
+    if (!event.stage) continue;
+    if (event.eventType === 'StageAdvanced' && event.stage !== current) changes.set(event.id, { from: current, to: event.stage });
+    current = event.stage;
+  }
+  return changes;
+}
+
+/** An offer made before managed revisions existed has no revision number: it is the original. */
+export function offerRevisionLabel(revisionNumber: number | null | undefined): string {
+  return revisionNumber == null ? 'Original' : String(revisionNumber);
+}
