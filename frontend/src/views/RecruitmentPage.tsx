@@ -63,6 +63,7 @@ import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../compone
 import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
+import { localInputToInstant } from '../lib/localDateTime';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
@@ -985,7 +986,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
       await applicationsApi.scheduleInterview(id, {
         interviewType: interviewForm.interviewType,
         interviewerNames: interviewForm.interviewerNames,
-        scheduledAt: interviewForm.scheduledAt,
+        // The input holds the browser's wall time with no zone; the server needs the instant it names.
+        scheduledAt: localInputToInstant(interviewForm.scheduledAt),
         durationMinutes: interviewForm.durationMinutes,
         mode: interviewForm.mode,
         meetingLink: interviewForm.meetingLink,
@@ -1713,7 +1715,7 @@ function InterviewsTab() {
     }
     setSchedSaving(true); setSchedError('');
     try {
-      await interviewsApi.schedule({ ...schedForm, durationMinutes: Number(schedForm.durationMinutes) });
+      await interviewsApi.schedule({ ...schedForm, scheduledAt: localInputToInstant(schedForm.scheduledAt), durationMinutes: Number(schedForm.durationMinutes) });
       setShowSchedule(false);
       setSchedForm({ applicationId: '', interviewType: 'Technical', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
       load();
