@@ -330,13 +330,13 @@ public static class GlEventTypes
     /// <summary>
     /// Every event posted as part of a payroll period's LOCK, under SourceModule "Payroll" with the run as the
     /// source entity: the accrual itself, the bonus and settlement payable clearings emitted inside it, and the
-    /// monthly EOSB provision movement. These are month-end journals, so the export dates them on the period
+    /// monthly EOSB and annual-leave provision movements. These are month-end journals, so the export dates them on the period
     /// end (see <c>JournalExportBuilder.DeriveAccountingDate</c>). A new journal written inside Lock (the
     /// leave-provision accrual) is added HERE and nowhere else. Payment, remittance, reversal, contra and the
     /// settlement-approval journals are deliberately not in this list: they are dated by when they happened.
     /// </summary>
     public static readonly string[] PayrollLockEvents =
-        { Accrual, BonusPayrollClearing, SettlementPayrollClearing, EosbProvisionAccrual };
+        { Accrual, BonusPayrollClearing, SettlementPayrollClearing, EosbProvisionAccrual, LeaveProvisionAccrual };
 
     public static bool IsPayrollLockEvent(string? eventType) =>
         eventType is not null && Array.IndexOf(PayrollLockEvents, eventType) >= 0;
