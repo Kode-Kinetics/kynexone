@@ -226,6 +226,11 @@ public class AuthSeeder : IAuthSeeder
             // the whole offer lifecycle, and is one of the two audiences that may decide an offer approval (OfferAccess.CanApprove).
             // Existing tenants: migration GrantHrManagerRecruitment. Deleting recruitment records stays with HR Director and Admin.
             x.Key is "recruitment.read" or "recruitment.write" or "recruitment.approve" ||
+            // Compliance, READ only (owner decision 2026-11-12): the visa, Iqama, passport, work-permit and contract registers, the
+            // expiry alerts and the compliance dashboard. Never compliance.write/approve: changing a compliance record stays with
+            // Compliance Officer and HR Director. Data scope and company scope still limit which employees' rows are returned.
+            // Existing tenants: migration GrantHrManagerComplianceRead. HR Officer is deliberately not included.
+            x.Key is "compliance.read" ||
             // CMP: runs merit cycles and is the default first approval step (never on a worksheet carrying their own pay).
             x.Key is "compensation.read" or "compensation.manage" or "compensation.approve" or "compensation.benchmarks.manage" or "compensation.equity.read" ||
             // Engagement surveys, by name: runs surveys and reads comments; NOT identified per-person answers.
