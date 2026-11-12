@@ -58,6 +58,7 @@ import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceVal
 import { msg } from '../i18n/translations';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { grantedDays } from '../lib/leaveBalanceDisplay';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
@@ -469,8 +470,8 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
             const available = b.available;
             // `granted` is max(entitled, accrued) — the bar has a denominator even for a tenant whose
             // figure lives in `accrued` with `entitled` at zero, which `entitled` alone did not.
-            const grantedDays = b.granted ?? Math.max(b.entitled, b.accrued);
-            const pct = grantedDays > 0 ? Math.min(100, (b.used / grantedDays) * 100) : 0;
+            const granted = grantedDays(b);
+            const pct = granted > 0 ? Math.min(100, (b.used / granted) * 100) : 0;
             return (
               <div key={b.id} className="surface p-5">
                 <div className="mb-3 flex items-start justify-between gap-2">
@@ -495,7 +496,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                 )}
                 <div className="grid grid-cols-3 gap-2 text-center">
                   {[
-                    { label: 'Entitled', val: b.entitled },
+                    { label: 'Entitled', val: granted },
                     { label: 'Used', val: b.used },
                     { label: 'Available', val: b.statutoryEntitlementDays != null ? '—' : available },
                     { label: 'Pending', val: b.pending },

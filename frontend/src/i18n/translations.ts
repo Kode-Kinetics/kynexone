@@ -5,6 +5,7 @@ import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
+import { demoFixes } from './demoFixes';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
@@ -1607,6 +1608,7 @@ const en: Dict = {
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...hireWizard.en,
+  ...demoFixes.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
   ...onboardingP4.en,
@@ -3169,6 +3171,7 @@ const ar: Dict = {
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...hireWizard.ar,
+  ...demoFixes.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,
   ...onboardingP4.ar,
