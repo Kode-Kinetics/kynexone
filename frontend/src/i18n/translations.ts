@@ -2,6 +2,7 @@ import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
 import { launchPayroll } from './launchPayroll';
+import { launchLeave } from './launchLeave';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
@@ -91,6 +92,7 @@ type Dict = Record<string, string>;
 const en: Dict = {
   // Launch rehearsal wording (payroll, leave, compliance, attendance, recruitment, new hires). First, so any key another module already translates keeps its existing wording.
   ...launchPayroll.en,
+  ...launchLeave.en,
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
@@ -1655,6 +1657,7 @@ const en: Dict = {
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
   ...launchPayroll.ar,
+  ...launchLeave.ar,
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
   ...companyStructure.ar,
