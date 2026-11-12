@@ -141,8 +141,11 @@ public sealed class SaudiComplianceDashboardService
             var today = DateOnly.FromDateTime(DateTime.UtcNow);
             var periodStart = new DateOnly(today.Year, today.Month, 1);
             var leaverIds = (await PayrollRunProcessor.PayableLeaverIdsAsync(_db, tenantId, periodStart, periodStart.AddMonths(1).AddDays(-1), ct)).ToList();
+            // An Active employee who joins AFTER the period ends is not payable yet (the run excludes them: ProrationCalculator's empty window), so their
+            // profile is not a WPS problem this period either.
+            var afterPeriodEnd = periodStart.AddMonths(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
             var activeIds = _db.Employees.AsNoTracking()
-                .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.Status == "Active" || leaverIds.Contains(e.Id)))
+                .Where(e => e.TenantId == tenantId && !e.IsDeleted && ((e.Status == "Active" && e.JoiningDate < afterPeriodEnd) || leaverIds.Contains(e.Id)))
                 .Select(e => e.Id);
             var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
                 .Where(p => p.TenantId == tenantId && !p.IsDeleted && activeIds.Contains(p.EmployeeId))
