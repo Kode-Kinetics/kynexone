@@ -35,6 +35,8 @@ export interface StepProps {
   allowanceCatalog: { catalog: CashAllowanceCatalog; retry: () => void };
   /** What the grade adds to each blank housing / transport / other allowance (Benefits by grade); empty when the tenant has none or it cannot be read. */
   gradeFill: GradeFill;
+  /** What a new hire in the chosen company starts with: its default notice period (days), or null when none is set. */
+  hireDefaults: { noticePeriodDays: number | null };
   /** Wave A: the cost centre (dropdown, follow option, its words for Review). */
   costCentre?: HireCostCentre;
 }

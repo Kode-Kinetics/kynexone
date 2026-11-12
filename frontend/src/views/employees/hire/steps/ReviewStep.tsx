@@ -5,6 +5,7 @@ import { useLocale } from '@/src/contexts/LocaleContext';
 import { formatAmount } from '@/src/lib/hire/money';
 import { composeWorkEmail, parseAmount } from '@/src/lib/hire/payload';
 import { bandStatus, hirePackage } from '@/src/lib/hire/gradePackage';
+import { effectiveNoticeDays, gosiCohortFor } from '@/src/lib/hire/gosiNotice';
 import { buildCountryOptions } from '@/src/lib/hire/nationality';
 import { bankNameFor, normalizeIban } from '@/src/lib/hire/iban';
 import { activationNeeds } from '@/src/lib/hire/hireValidation';
@@ -46,7 +47,7 @@ function Block({ name, onEdit, children }: { name: string; onEdit: () => void; c
   );
 }
 
-export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, allowanceCatalog, gradeFill, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
+export function ReviewStep({ form, lookups, currency, companyCountry, today, banks, allowanceCatalog, gradeFill, hireDefaults, costCentre, onEdit, hireTemplate }: StepProps & { onEdit: (step: 1 | 2 | 3) => void; hireTemplate?: HireTemplate | null }) {
   const { t, locale } = useLocale();
   const ar = locale === 'ar';
   const nat = buildCountryOptions().find(o => o.code === form.nationalityCode);
@@ -143,6 +144,9 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
         {form.contractEndDate && dateRow('contractEndDate', t('Contract end date'), form.contractEndDate)}
         {form.probationWaived && <Row label={t('Probation')} value={t('No probation')} />}
         {!form.probationWaived && form.probationEndDate && dateRow('probationEndDate', t('Probation end date'), form.probationEndDate)}
+        {effectiveNoticeDays(form.noticePeriodDays, hireDefaults.noticePeriodDays) !== undefined && (
+          <Row label={t('Notice period (days)')} value={String(effectiveNoticeDays(form.noticePeriodDays, hireDefaults.noticePeriodDays))} ltr />
+        )}
         <Row label={t('IBAN')} value={form.iban.trim() ? normalizeIban(form.iban) : ''} ltr />
         {bank && <Row label={t('Bank')} value={bank} />}
         <Row label={t('Basic salary')} value={money(form.basic)} ltr />
@@ -160,6 +164,9 @@ export function ReviewStep({ form, lookups, currency, companyCountry, today, ban
         {form.idType && <Row label={t('ID type')} value={t(ID_TYPES[form.idType] ?? form.idType)} />}
         <Row label={t('ID number')} value={form.idNumber.trim()} ltr />
         {dateRow('idExpiry', t('ID expiry date'), form.idExpiry, true)}
+        {nat?.code === 'SA' && form.gosiFirstRegisteredOn && (
+          <Row label={t('First GOSI registration date')} value={`${date(form.gosiFirstRegisteredOn)}${gosiCohortFor(form.gosiFirstRegisteredOn) ? ` · ${gosiCohortFor(form.gosiFirstRegisteredOn) === 'newEntrant' ? t('New-entrant schedule') : t('Existing schedule')}` : ''}`} />
+        )}
         {form.passportNumber.trim() && <Row label={t('Passport number')} value={form.passportNumber.trim().toUpperCase()} ltr />}
         {form.passportNumber.trim() && dateRow('passportExpiry', t('Passport expiry date'), form.passportExpiry, true)}
       </Block>

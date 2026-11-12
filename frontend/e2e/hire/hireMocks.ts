@@ -51,6 +51,8 @@ export interface HireMockOptions {
   permissions?: string[];
   /** Release A on, with this Benefits-by-grade matrix (GET /api/entitlements/matrix). Needs the `entitlements.read` permission to be read. */
   matrix?: { components?: Array<Record<string, any>>; cells: Array<Record<string, any>> };
+  /** The company's default notice period (GET /api/employees/hire-defaults). Omitted = the company has none. */
+  noticeDefault?: number;
   /** Arabic name suggestions the transliterate endpoint knows, by the English text sent. Any other name answers requiresManualEntry. */
   transliterations?: Record<string, string>;
   /** P3: the company's hire templates. Omitted = the picker is not shown (the endpoint answers an empty list). */
@@ -133,6 +135,7 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       companies: companies.map(c => ({ id: c.id, name: c.legalNameEn, code: 'T', countryCode: c.countryCode, isActive: true })),
     });
     if (p === '/api/features/disabled-keys') return reply(options.flagOff ? ['release_a', 'hire_wizard_v2'] : options.matrix ? [] : ['release_a']);
+    if (p === '/api/employees/hire-defaults') return reply({ noticePeriodDays: options.noticeDefault ?? null });
     if (p === '/api/entitlements/matrix') return reply({ asOf: '2026-11-01', today: '2026-11-12', companyId: null, currency: 'SAR', grades: [], components: options.matrix?.components ?? [], cells: options.matrix?.cells ?? [], offerings: [], gaps: [] });
     if (p === '/api/features/modules') return reply([]);
     if (p === '/api/tenant-admin/localization') return reply({ currencyCode: 'SAR', countryCode: 'SA', defaultTimezone: 'Asia/Riyadh' });

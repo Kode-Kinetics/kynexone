@@ -49,6 +49,18 @@ public sealed class EmployeeHireController : ControllerBase
     public sealed record RehireRequest(DateTime StartDate, Guid? DesignationId, Guid? GradeId, string? Reason);
     public sealed record ApproveCompensationRequest(string? Note, bool OverrideGradeRange = false);
 
+    // ── What a new hire starts with ──────────────────────────────────────────────────────────────
+    /// <summary>The company's defaults for a new hire, so the form can show them pre-filled (editable): today the default notice period.
+    /// Null when the company has none. Read only; nothing is applied until the hire is created.</summary>
+    [HttpGet("hire-defaults")]
+    [HasPermission("employees.write")]
+    public async Task<IActionResult> HireDefaults([FromQuery] Guid companyId, CancellationToken ct)
+    {
+        var tenantId = RequireTenant();
+        var country = await _db.Companies.AsNoTracking().Where(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
+        return Ok(new { noticePeriodDays = await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, country, ct) });
+    }
+
     // ── Draft autosave ───────────────────────────────────────────────────────────────────────────
     [HttpPut("{id:int}/hire-draft")]
     [HasPermission("employees.write")]
@@ -268,6 +280,8 @@ public sealed class EmployeeHireController : ControllerBase
         }
         if (request.ComplianceRecords is { } records)
             request = request with { ComplianceRecords = records.Where(r => !BlankOrMasked(r.FieldValue)).ToList() };
+        // F02: a caller who cannot see the GOSI first-registration date resumed a form that shows none; keep what is stored.
+        request = request with { GosiFirstRegisteredOn = await _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.GosiFirstRegisteredOn).FirstOrDefaultAsync(ct) };
         if (request.SalaryBreakdown is { } b
             && (b.BasicSalary ?? 0m) == 0m && (b.HousingAllowance ?? 0m) == 0m && (b.TransportAllowance ?? 0m) == 0m && (b.FoodAllowance ?? 0m) == 0m
             && (b.MobileAllowance ?? 0m) == 0m && (b.OtherAllowance ?? 0m) == 0m && (b.FixedDeduction ?? 0m) == 0m)

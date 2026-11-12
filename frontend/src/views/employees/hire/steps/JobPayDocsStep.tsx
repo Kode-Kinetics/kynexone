@@ -8,6 +8,7 @@ import { decodeValue, encodeValue } from '@/src/lib/salaryAllowances';
 import { formatAmount } from '@/src/lib/hire/money';
 import { isFixedTerm, parseAmount } from '@/src/lib/hire/payload';
 import { bandStatus, hirePackage } from '@/src/lib/hire/gradePackage';
+import { effectiveNoticeDays, gosiCohortFor } from '@/src/lib/hire/gosiNotice';
 import { bankNameFor } from '@/src/lib/hire/iban';
 import { referenceOptions } from '@/src/lib/referenceLists';
 import { defaultIdType, nationalityClass, type IdType } from '@/src/lib/hire/nationality';
@@ -28,7 +29,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, allowanceCatalog, gradeFill, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
+export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, companyCountry, banks, allowanceCatalog, gradeFill, hireDefaults, today, canOverrideChecksum, resident, onResident, onIdBlur }: StepProps & {
   canOverrideChecksum: boolean; resident: boolean; onResident: (v: boolean) => void; onIdBlur: () => void;
 }) {
   const { t, locale } = useLocale();
@@ -43,6 +44,7 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
   const fromGrade = pkg.rows.filter(r => r.fromGrade).reduce((sum, r) => sum + r.amount, 0);
   const band = bandStatus(pkg.total, grade);
   const klass = nationalityClass(form.nationalityCode);
+  const cohort = klass === 'saudi' ? gosiCohortFor(form.gosiFirstRegisteredOn) : null;
   const idType = (form.idType || defaultIdType(form.nationalityCode, resident) || '') as IdType | '';
   const idOptions: Array<{ value: IdType; label: string }> = [
     { value: 'nationalId', label: t('National ID') }, { value: 'iqama', label: t('Iqama') }, { value: 'border', label: t('Border Number') },
@@ -80,6 +82,11 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
         </label>
         <FieldShell field="workLocation" label={t('Work location')}>
           {p => <input {...p} value={form.workLocation} onChange={e => set('workLocation', e.target.value)} className={inputClass} />}
+        </FieldShell>
+        <FieldShell field="noticePeriodDays" label={t('Notice period (days)')} error={errorFor('noticePeriodDays')}
+          hint={hireDefaults.noticePeriodDays !== null ? t('The company default is {days} days. Change it for this person if their contract says otherwise.', { days: hireDefaults.noticePeriodDays }) : t('Days of notice either side must give. Leave blank if it is not set yet.')}>
+          {p => <input {...p} type="text" inputMode="numeric" dir="ltr" value={form.noticePeriodDays !== '' ? form.noticePeriodDays : String(effectiveNoticeDays('', hireDefaults.noticePeriodDays) ?? '')}
+            onChange={e => set('noticePeriodDays', e.target.value)} onBlur={() => blur('noticePeriodDays')} className={`${inputClass} text-start`} />}
         </FieldShell>
       </Section>
       <Section title={t('Payroll and bank')}>
@@ -128,6 +135,13 @@ export function JobPayDocsStep({ form, set, errorFor, blur, lookups, currency, c
           {p => <input {...p} dir="ltr" autoComplete="off" value={form.idNumber} onChange={e => set('idNumber', e.target.value)} onBlur={() => { blur('idNumber'); onIdBlur(); }} className={`${inputClass} text-start`} />}
         </FieldShell>
         <DateField field="idExpiry" label={t('ID expiry date')} value={form.idExpiry} onChange={v => set('idExpiry', v)} onBlur={() => blur('idExpiry')} error={errorFor('idExpiry')} />
+        {klass === 'saudi' && (
+          <DateField field="gosiFirstRegisteredOn" label={t('First GOSI registration date')} value={form.gosiFirstRegisteredOn} max={today}
+            onChange={v => set('gosiFirstRegisteredOn', v)} onBlur={() => blur('gosiFirstRegisteredOn')} error={errorFor('gosiFirstRegisteredOn')}
+            hint={cohort === 'newEntrant' ? t('On or after 3 July 2024: the new-entrant GOSI schedule applies.')
+              : cohort === 'existing' ? t('Before 3 July 2024: the existing GOSI schedule applies.')
+              : t('Optional. The date GOSI first registered this person decides the GOSI rate schedule: before 3 July 2024 is the existing schedule, on or after is the new-entrant schedule. Leave blank if you do not know it; payroll then uses the existing schedule and flags it.')} />
+        )}
         {klass === 'expat' && idType !== 'passport' && (
           <>
             <FieldShell field="passportNumber" label={t('Passport number')} error={errorFor('passportNumber')}>

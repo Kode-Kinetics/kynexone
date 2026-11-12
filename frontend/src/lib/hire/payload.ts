@@ -6,6 +6,8 @@ import { normalizeIban } from './iban';
 import { decodeValue, requestLines } from '../salaryAllowances';
 import { createCostCentreFields } from '../employeeCostCentre';
 import type { GradeFill } from './gradePackage';
+import { effectiveNoticeDays } from './gosiNotice';
+import { nationalityClass } from './nationality';
 
 export interface AcknowledgedWarning { code: string; reason: string }
 /** The create request plus the additive fields of 40-ARCHITECTURE 3.2. */
@@ -22,6 +24,8 @@ export type HireCreateRequest = Omit<EmployeeCreateRequest, 'payrollProfile'> & 
   acknowledgedWarnings?: AcknowledgedWarning[];
   /** P3: the hire template the wizard applied; the server uses it only to raise the onboarding checklist. */
   hireTemplateId?: string;
+  /** Saudi nationals only (F02): when GOSI first registered the person. The server ignores it for anyone else. */
+  gosiFirstRegisteredOn?: string;
 };
 export interface PayloadContext {
   companyCountry: string;
@@ -30,6 +34,8 @@ export interface PayloadContext {
   emailDomain?: string;
   /** What the grade adds to each blank allowance (lib/hire/gradePackage): sent as the amount, so the saved pay is the total the person confirmed. */
   gradeFill?: GradeFill;
+  /** The company's default notice period (days): a blank notice field is sent as this, so the saved record equals what the form showed. */
+  defaultNoticeDays?: number | null;
   /** Wave A: the cost centre is sent only with this (organization.costcenter.manage); without it nothing about it goes out. */
   costCentre?: { canManage: boolean; departmentCostCentreId: string; hadOverride?: boolean; /** The override the saved draft holds (null = none). */ overrideId?: string | null };
 }
@@ -110,6 +116,8 @@ export function buildCreateRequest(form: HireForm, ctx: PayloadContext, extras: 
     contractEndDate: isFixedTerm(form.contractType) ? opt(form.contractEndDate) : undefined,
     probationEndDate: form.probationWaived ? undefined : opt(form.probationEndDate),
     probationWaived: form.probationWaived ? true : undefined,
+    noticePeriodDays: effectiveNoticeDays(form.noticePeriodDays, ctx.defaultNoticeDays),
+    gosiFirstRegisteredOn: nationalityClass(form.nationalityCode) === 'saudi' ? opt(form.gosiFirstRegisteredOn) : undefined,
     workEmail: composeWorkEmail(form.workEmail),
     joiningDate: opt(form.startDate),
     workLocation: opt(form.workLocation),
