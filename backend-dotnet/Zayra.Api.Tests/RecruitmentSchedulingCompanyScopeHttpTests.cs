@@ -418,6 +418,7 @@ public sealed class SchedulingScopeFixture : IAsyncLifetime
         await AddUser(db, scope, nameof(HrB), "HR Manager", groupScope: false, CompanyB);
         await AddUser(db, scope, nameof(HrGroup), "HR Manager", groupScope: true, null);
         await AddUser(db, scope, "AdminA", "Admin", groupScope: false, CompanyA);
+        await AddUser(db, scope, "HrOfficerA", "HR Officer", groupScope: false, CompanyA);
         await SeedComplianceAsync(db, scope);
     }
 
