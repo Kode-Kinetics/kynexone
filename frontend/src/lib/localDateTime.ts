@@ -22,3 +22,17 @@ export function instantToLocalInput(instant: string | null | undefined): string 
   if (Number.isNaN(d.getTime())) return '';
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * A date with no time ("2026-12-15") that means "by the end of that day", as the instant 23:59:59 on it in the browser's zone,
+ * "2026-12-15T20:59:59.000Z" in Riyadh. Sent as the bare date the server reads it as 00:00Z, which is 03:00 in Riyadh on the day itself,
+ * so a deadline of the 15th lapsed in the small hours of the 15th. Blank or anything but YYYY-MM-DD is blank.
+ */
+export function endOfLocalDayInstant(value: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((value ?? '').trim());
+  if (!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 0);
+  // new Date() rolls an impossible day ("2026-02-31") into the next month; that is not the day the person chose.
+  if (Number.isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1 || d.getDate() !== Number(m[3])) return '';
+  return d.toISOString();
+}

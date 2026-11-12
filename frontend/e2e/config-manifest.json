@@ -41,6 +41,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.demo-r1-fe.config.ts": {
+      "disposition": "manual",
+      "reason": "Route-mocked demo round 1 front-end fixes (F5 readiness Arabic, F6 leave balance, F7 offer deadline, F10 channel); its spec is also collected by the root chromium project on PRs, this config is the focused local run."
+    },
     "playwright.demo-seed.config.ts": {
       "disposition": "manual",
       "reason": "Seeds the Masar demo tenant on demand (npm run seed:demo-masar); a tool, not a test suite."

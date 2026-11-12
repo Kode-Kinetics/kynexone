@@ -66,7 +66,8 @@ import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../compone
 import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
-import { localInputToInstant } from '../lib/localDateTime';
+import { raisedByViewer } from '../lib/requisitionDecision';
+import { endOfLocalDayInstant, localInputToInstant } from '../lib/localDateTime';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
@@ -492,7 +493,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
   // Approving or rejecting a requisition is `recruitment.approve` on the API (RequisitionsController).
   // A Recruiter holds recruitment.read/write only, so these buttons only ever returned 403 for them.
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canDecide = hasPermission('recruitment.approve');
   const t = useT();
   const { ask, dialog: confirmDialog } = useConfirm();
@@ -584,7 +585,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
                     )}
                     {canDecide && (r.status === 'Submitted' || r.status === 'PendingApproval') && (
                       <>
-                        <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">Approve</button>
+                        {!raisedByViewer(r, user?.id) && <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">Approve</button>}
                         <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">Reject</button>
                       </>
                     )}
@@ -2302,6 +2303,8 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
     try {
       const created = await offersApi.create({
         ...offerForm,
+        // A date with no time means the end of that day where the person sits, not 00:00Z (03:00 in Riyadh on the day itself).
+        responseDeadline: endOfLocalDayInstant(offerForm.responseDeadline) || undefined,
         expectedApplicationVersion: applications.find(a => a.id === offerForm.applicationId)!.version,
         templateId: templateId || undefined,
         departmentId: offerForm.departmentId || undefined,

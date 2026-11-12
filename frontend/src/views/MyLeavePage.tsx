@@ -3,6 +3,7 @@
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { essActionsApi, essApi, type EssBalance } from '@/src/api/ess';
+import { leaveBalanceTotal } from '@/src/lib/leaveBalanceDisplay';
 import { leaveRequestsApi, type LeaveRequest, type LeaveType } from '@/src/api/leave';
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
@@ -163,7 +164,7 @@ export function MyLeavePage() {
               <EssEmpty text={t('No leave balances have been set up for you yet. Ask HR if you expected to see one.')} />
             ) : (
               <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {balances.map((b) => (
+                {balances.map((b) => { const total = leaveBalanceTotal(b); return (
                   <li key={b.leaveTypeId} className="rounded-xl bg-slate-50 p-3 dark:bg-white/[0.03]">
                     <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{typeNameById(b.leaveTypeId, b.leaveTypeName)}</p>
                     {b.statutoryEntitlementDays != null ? (
@@ -175,14 +176,16 @@ export function MyLeavePage() {
                       </>
                     ) : (
                       <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                        {fillTemplate(t('{available} of {entitled} days available'), { available: b.available, entitled: b.entitled })}
+                        {total != null
+                          ? fillTemplate(t('{available} of {entitled} days available'), { available: b.available, entitled: total })
+                          : fillTemplate(t('{available} days available'), { available: b.available })}
                       </p>
                     )}
                     {b.pending > 0 && (
                       <p className="text-caption text-amber-700 dark:text-amber-300">{fillTemplate(t('{days} days waiting for approval'), { days: b.pending })}</p>
                     )}
                   </li>
-                ))}
+                ); })}
               </ul>
             )}
           </EssCard>

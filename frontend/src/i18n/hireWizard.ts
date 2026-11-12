@@ -332,6 +332,7 @@ const ar: Record<string, string> = {
   'Work permit reference': 'مرجع تصريح العمل',
   // hire-review items rendered by key (I-8) and the readiness checklist (I-2)
   'Pay package awaiting Finance approval': 'حزمة الراتب بانتظار موافقة المالية',
+  'Salary package waiting for Finance approval — it must be approved by a different person before this employee can be activated': 'حزمة الراتب بانتظار موافقة المالية، ويجب أن يعتمدها شخص آخر قبل أن يمكن تفعيل هذا الموظف',
   'Imported bank details to verify': 'بيانات البنك المستوردة بحاجة إلى التحقق',
   'Iqama due — employee is on border number': 'الإقامة مستحقة: الموظف على رقم الحدود',
   'Iqama required before payroll — the border-number period has ended': 'الإقامة مطلوبة قبل الرواتب: انتهت فترة رقم الحدود',

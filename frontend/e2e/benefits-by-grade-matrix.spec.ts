@@ -57,7 +57,7 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
 }
 
-async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[] } = {}) {
+async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[]; publishRefusal?: unknown } = {}) {
   const errors: string[] = [];
   const publishes: { dryRun: boolean; body: any }[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -78,6 +78,7 @@ async function boot(page: Page, locale: Locale, options: { matrix?: unknown; com
     if (p === '/api/entitlements/matrix' && request.method() === 'PUT') {
       const isDry = url.searchParams.get('dryRun') === 'true';
       publishes.push({ dryRun: isDry, body: request.postDataJSON() });
+      if (options.publishRefusal && !isDry) return route.fulfill({ status: 400, json: options.publishRefusal });
       return route.fulfill({ json: isDry ? dryRun : { ...dryRun, dryRun: false, matrix: groupMatrix } });
     }
     if (p === '/api/entitlements/matrix/import-legacy') return route.fulfill({ json: legacyPreview });
@@ -145,6 +146,32 @@ for (const locale of ['en', 'ar'] as const) {
       expect(last.body.cells.find((c: any) => c.componentCode === 'HOUSING').rate).toBeCloseTo(0.35);
       expect(publishes.some(x => !x.dryRun)).toBe(false);
       await shot(page, `publish-dry-run-${locale}`);
+      expect(errors).toEqual([]);
+    });
+
+    test('publish without touching the date: it starts today, and a binder refusal never reaches the screen', async ({ page }) => {
+      const { errors, publishes } = await boot(page, locale, { publishRefusal: {
+        title: 'One or more validation errors occurred.',
+        errors: { req: ['The req field is required.'], '$.effectiveFrom': ['The JSON value could not be converted to Zayra.Api.Controllers.PublishMatrixRequest. Path: $.effectiveFrom | LineNumber: 0 | BytePositionInLine: 120.'] },
+      } });
+      await cellButton(page, locale, 'HOUSING', 'G3').click();
+      await page.getByLabel(say(locale, 'Percent of basic salary')).fill('35');
+      await page.getByRole('button', { name: say(locale, 'Done editing'), exact: true }).click();
+      // The date box already holds a day (today), so a publish is never sent blank.
+      await expect(page.getByLabel(say(locale, 'Effective from'))).toHaveValue(groupMatrix.today);
+      await shot(page, `publish-default-date-${locale}`);
+      await page.getByRole('button', { name: say(locale, 'Publish {count} change(s)', { count: 1 }) }).click();
+      await expect(page.getByText(say(locale, 'Unable to publish benefits by grade.'))).toBeVisible();
+      await expect(page.getByText(/field is required|could not be converted/)).toHaveCount(0);
+      const real = publishes.filter(x => !x.dryRun).at(-1)!;
+      expect(real.body.effectiveFrom).toBe(groupMatrix.today);
+      await shot(page, `publish-refused-human-${locale}`);
+      // Clearing the date is caught before anything is sent.
+      await page.getByLabel(say(locale, 'Effective from')).fill('');
+      const before = publishes.length;
+      await page.getByRole('button', { name: say(locale, 'Publish {count} change(s)', { count: 1 }) }).click();
+      await expect(page.getByText(say(locale, 'Choose the date these changes start from.'))).toBeVisible();
+      expect(publishes.length).toBe(before);
       expect(errors).toEqual([]);
     });
 
