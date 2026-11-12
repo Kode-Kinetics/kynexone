@@ -345,7 +345,7 @@ public class BonusGlRemediationTests
     }
 
     [Fact]
-    public async Task P0_2_LoanRemit_WithNoDisbursementGl_CreditsCashNotAPhantomReceivable()
+    public async Task P0_2_LoanRemit_WithNoDisbursementGl_IsRefusedAndPostsNothing()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -369,20 +369,22 @@ public class BonusGlRemediationTests
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<UnprocessableEntityObjectResult>(
+                "there is no receivable to amortise and a cash credit would book a bank outflow that never happened");
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "accrual + remittance must balance");
+        AssertBalanced(gl, "the accrual alone must balance");
         Asset(gl, "1410").Should().Be(0m,
             "there is no receivable to amortise — crediting 1410 anyway drove an ASSET to a CREDIT balance");
         Cr(gl, "1410").Should().Be(0m, "nothing may be credited to a receivable that was never debited");
-        Liability(gl, "2107").Should().Be(0m, "the loan-deduction control account still clears");
+        Cr(gl, "1000").Should().Be(0m, "and Cash/Bank is not credited for the uncovered withholding either");
+        Liability(gl, "2107").Should().Be(1_200m, "the withheld EMI stays open in the control account");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
     [Fact]
-    public async Task P0_2_LoanRemit_WithPartialDisbursementGl_SplitsReceivableAndCash()
+    public async Task P0_2_LoanRemit_WithPartialDisbursementGl_IsRefusedWithTheShortfall()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -413,18 +415,33 @@ public class BonusGlRemediationTests
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
         var remit = (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>().Subject;
+            .Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
         db.ChangeTracker.Clear();
 
+        // The refusal names the shortfall (1,200 withheld − 500 receivable = 700) and posts nothing.
+        JsonSerializer.Serialize(remit.Value).Should().Contain("loan_receivable_shortfall").And.Contain("700");
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "disbursement + accrual + remittance must balance");
-        Cr(gl, "1410").Should().Be(500m, "the receivable is credited only up to what it actually held");
-        Asset(gl, "1410").Should().Be(0m, "…which amortises it to exactly zero, never below");
-        Liability(gl, "2107").Should().Be(0m, "the whole 1,200 withholding still clears the control account");
+        AssertBalanced(gl, "disbursement + accrual must balance");
+        Cr(gl, "1410").Should().Be(0m, "no remittance was posted, so the receivable is untouched");
+        Asset(gl, "1410").Should().Be(500m);
+        Cr(gl, "1000").Should().Be(500m, "only the real disbursement credits cash");
+        Liability(gl, "2107").Should().Be(1_200m);
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
+    }
 
-        // The split is surfaced on the response so Finance can reconcile it (review: "make it testable").
-        JsonSerializer.Serialize(remit.Value).Should().Contain("credits");
+    [Fact]
+    public void SplitterReportsTheUncoveredPartOfAKnownReceivable_ButNotAThirdPartyPayout()
+    {
+        var splitter = new ReceivableClearingSplitter("1000 - Cash/Bank", new[]
+        {
+            new KeyValuePair<string, decimal>("1400 - X", 300m),
+        });
+
+        splitter.Split("1400 - X", 500m);
+        splitter.UncoveredByReceivable.Should().Be(200m, "500 against a 300 receivable leaves 200 with nothing behind it");
+
+        splitter.Split(null, 80m);   // a garnishment routed to DED:LOAN is a genuine third-party cash payment
+        splitter.UncoveredByReceivable.Should().Be(200m, "a real third-party payout is not an uncovered receivable");
     }
 
     // ══════════════════════════════════════════════════════════════════════════════

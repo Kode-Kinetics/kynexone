@@ -4845,9 +4845,14 @@ public partial class PayrollController : ControllerBase
         // carry an operational balance with NO 1400/1410 debit behind it. Crediting them anyway drove an
         // ASSET into a credit balance, and BuildLiabilityClearingGl being balanced by construction meant
         // the gl_unbalanced 422 below could never catch it. So: CAP the receivable credit at the account's
-        // real carrying balance and route the EXCESS to Cash/Bank — which is exactly the pre-B1b treatment
-        // for the uncovered portion. Metered across the whole remittance by the splitter (the P0-1 lesson:
+        // real carrying balance. Metered across the whole remittance by the splitter (the P0-1 lesson:
         // never re-read an immutable balance per iteration).
+        //
+        // The uncovered EXCESS used to be routed to Cash/Bank, as the pre-B1b code did. That books a bank
+        // outflow that never happened (the EMI was withheld from pay; the loan was never lent through the
+        // ledger), so the remittance is now REFUSED with the shortfall named (loan_receivable_shortfall).
+        // Only a component that is not an employer loan/advance (a third-party garnishment routed to
+        // DED:LOAN) is a genuine cash payment and still credits Cash/Bank.
         var loanReceivableAccount    = GlAccountResolver.AccountLabel("LOAN_RECEIVABLE", glCtx);
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var loanContraByCode = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -4908,6 +4913,25 @@ public partial class PayrollController : ControllerBase
                 g == RemitGroups.Loan ? LoanContraFor : null);
             if (Math.Abs(dr - cr) > 0.01m)
                 return UnprocessableEntity(new { error = "gl_unbalanced", group = g, message = "Statutory remittance GL is not balanced.", totalDebits = dr, totalCredits = cr });
+
+            // A loan / advance instalment the receivable cannot cover is REFUSED, never sent to Cash/Bank:
+            // the cash left (or never left) at disbursement, so crediting the bank for the uncovered part
+            // books an outflow that never happened. Nothing from this request has been saved, so the whole
+            // request (every group) is refused together. Finance posts or reclasses the missing receivable,
+            // then remits.
+            if (g == RemitGroups.Loan && receivableSplitter.UncoveredByReceivable > 0m)
+            {
+                var shortfall = receivableSplitter.UncoveredByReceivable;
+                return UnprocessableEntity(new
+                {
+                    error = "loan_receivable_shortfall",
+                    group = g,
+                    shortfall,
+                    message = $"The loan / advance instalments withheld ({cr:N2}) exceed what the loan and advance receivable accounts " +
+                              $"hold by {shortfall:N2}. Remitting would credit Cash/Bank for money that never left the bank. " +
+                              "Nothing was posted. Record the missing disbursement (or reclassify the receivable), then remit again.",
+                });
+            }
 
             _db.FinanceGlEntries.AddRange(lines);
             // POD-B1b-FIX (P0-2) — surface the cap-and-route-excess split explicitly: how much of the LOAN
