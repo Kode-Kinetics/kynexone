@@ -45,6 +45,8 @@ import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { essApi } from '../api/ess';
+import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
@@ -535,8 +537,13 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
 
 // ── Apply Leave Tab ───────────────────────────────────────────────────────────
 
+const LEAVE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const LEAVE_ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
+
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
   const { t } = useLocale();
+  const { user } = useAuth();
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [pickedEmployee, setPickedEmployee] = useState<SelectedEmployee | null>(null);
   const [delegatePicked, setDelegatePicked] = useState<SelectedEmployee | null>(null);
@@ -599,8 +606,23 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
     if (!form.employeeId || !form.leaveTypeId || !form.startDate || !form.endDate) {
       setError('Employee ID, Leave Type, and dates are required.'); return;
     }
+    if (selectedType?.requiresAttachment && !attachment) {
+      setError(t('Add a supporting document. This leave type needs one.')); return;
+    }
+    if (attachment && attachment.size > LEAVE_ATTACHMENT_MAX_BYTES) {
+      setError(t('The file is larger than 10 MB.')); return;
+    }
     setSaving(true); setError('');
     try {
+      // The document goes up first (onto the employee's own file) and the request then cites it by id, so nothing is
+      // created if the upload fails. The server refuses a leave type that requires a document without one.
+      let attachmentDocumentId: string | undefined;
+      if (selectedType?.requiresAttachment && attachment) {
+        const ownRecord = user?.employeeId != null && user.employeeId === Number(form.employeeId);
+        attachmentDocumentId = ownRecord
+          ? (await essApi.uploadDocument(attachment, 'Leave Attachment')).id
+          : (await employeesApi.uploadDocument(Number(form.employeeId), { documentType: 'Leave Attachment', isRequired: false }, attachment)).id;
+      }
       await leaveRequestsApi.create({
         employeeId: Number(form.employeeId), employeeName: form.employeeName,
         departmentName: form.departmentName, designationTitle: form.designationTitle,
@@ -611,7 +633,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         delegateEmployeeName: form.delegateEmployeeName,
         statutoryEventDate: isDeclarableLeave(applyKind) && form.statutoryEventDate ? form.statutoryEventDate : undefined,
         separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
+        attachmentDocumentId,
       });
+      setAttachment(null);
       setSuccess(true);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -725,9 +749,18 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           )}
 
           {selectedType?.requiresAttachment && (
-            <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-white/20">
-              This leave type requires a supporting document. Upload after submission via the request detail.
-            </div>
+            <Field label={t('Supporting document (required)')} info={t('This leave type needs a supporting document, for example a medical certificate. It is saved on the employee\'s file and sent with the request.')}>
+              <input
+                type="file"
+                accept={LEAVE_ATTACHMENT_ACCEPT}
+                data-testid="leave-apply-attachment"
+                className={inp}
+                onChange={e => setAttachment(e.target.files?.[0] ?? null)}
+              />
+              <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
+                {attachment ? attachment.name : t('A PDF or a photo, up to 10 MB.')}
+              </p>
+            </Field>
           )}
 
           <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">

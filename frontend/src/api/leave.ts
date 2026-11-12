@@ -510,6 +510,8 @@ export const leaveRequestsApi = {
     dayType?: string; hoursRequested?: number; reason: string; isEmergency?: boolean;
     attachmentPath?: string; delegateEmployeeId?: number; delegateEmployeeName?: string;
     statutoryEventDate?: string; separateEventReason?: string;
+    /** Id of a document the employee already has on file (uploaded first); a leave type that requires one refuses the request without it. */
+    attachmentDocumentId?: string;
   }) => client.post<LeaveRequest>('/api/leave/requests', body).then(r => r.data),
   approve: (id: string, notes?: string) =>
     client.post<LeaveRequest>(`/api/leave/requests/${id}/approve`, { notes }).then(r => r.data),
