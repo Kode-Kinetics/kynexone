@@ -71,7 +71,11 @@ import { RunDeductionsReview } from '../components/deductions/RunDeductionsRevie
 import { JournalExportsPanel } from '../components/gl/JournalExportsPanel';
 import { LoadError, serverMessage } from '../components/gl/glUi';
 import { financeGlApi } from '../api/financeGl';
-import { CostCentreLockPreview, CostingOffNote } from '../components/payroll/CostCentreLockPreview';
+import { CostCentreLockPreview, CostingOffNote, periodLabel } from '../components/payroll/CostCentreLockPreview';
+import { VoidRunForm } from '../components/payroll/VoidRunForm';
+import { PostedJournalsView, PostedWithoutCostCentresNote } from '../components/payroll/PostedJournals';
+import { costingNote } from '../lib/glJournalView';
+import { paymentActionRefusal, paymentActionsAllowed, PAYMENT_ACTION_DENIED } from '../lib/payrollPaymentAccess';
 import { UncostedApprovalAck, useUncostedAck } from '../components/payroll/UncostedApprovalAck';
 import { CostCentreJournalReport } from '../components/payroll/CostCentreJournalReport';
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
@@ -1411,7 +1415,8 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                   <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{companies.find(c => c.id === run.companyId)?.name ?? ''}</p>
                 )}
                 <p className="mt-1 text-xs text-slate-500">{run.employeeCount} employees · Net {fmt(run.totalNetSalary)}</p>
-                {run.status !== 'Locked' && (
+                {/* A Voided run is finished: there is nothing left to process or validate, and a re-process would be refused. */}
+                {run.status !== 'Locked' && run.status !== 'Voided' && (
                   <div className="mt-2 flex gap-1">
                     <button type="button" onClick={e => { e.stopPropagation(); processRun(run.id); }} className={`${btn.sm} h-6 px-2 text-xs`}>
                       <Play className="h-3 w-3" /> Process
@@ -1600,17 +1605,29 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
       )}
 
       {voiding && (
-        <ReasonActionModal
-          title={`Void ${MONTHS[voiding.month - 1]} ${voiding.year}`}
-          confirmLabel="Void run"
-          danger
-          minLength={1}
-          blurb="Voiding never deletes. The run's status becomes Voided, its payslips are voided, and contra-entries are written for any general-ledger rows it already posted. The period is then free for a replacement run. This is irreversible and the reason is recorded against your identity."
+        <VoidRunDialog
+          run={voiding}
           onClose={() => setVoiding(null)}
-          onSubmit={async reason => { await payrollApi.voidRun(voiding.id, reason); setVoiding(null); load(); }}
+          onVoided={() => { setVoiding(null); load(); }}
         />
       )}
     </div>
+  );
+}
+
+/** Void: the reason, plus the cash elections the server asks for once money has left the bank (see VoidRunForm). */
+function VoidRunDialog({ run, onClose, onVoided }: { run: PayrollRun; onClose: () => void; onVoided: () => void }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const { resolution } = useRunCurrency(run);
+  return (
+    <Modal title={t('Void {period}', { period: periodLabel(`${run.year}-${String(run.month).padStart(2, '0')}`, locale) })} onClose={onClose}>
+      <VoidRunForm
+        currency={resolution.status === 'resolved' ? resolution.currency : null}
+        onClose={onClose}
+        onSubmit={async (reason, options) => { await payrollApi.voidRun(run.id, reason, options); onVoided(); }}
+      />
+    </Modal>
   );
 }
 
@@ -2637,6 +2654,9 @@ function PayslipsTab() {
 
 function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
+  // Creating a batch and generating the file need payroll.export (Admin only). Without it the actions are shown off, with the reason.
+  const { hasPermission } = useAuth();
+  const canExport = paymentActionsAllowed(hasPermission);
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
@@ -2709,7 +2729,9 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       openBatch(batch);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
+      // A 403 is a missing permission, never "lock the run first" (the run may well be locked).
+      const refusal = paymentActionRefusal(e, 'create');
+      setError(refusal ? t(refusal) : msg ?? 'Could not create payment batch. The payroll run must be Locked first (Approvals tab → Lock Run).');
     } finally {
       setCreating(false);
     }
@@ -2721,7 +2743,8 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       await payrollApi.generateWpsFile(batchId);
     } catch (e) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'File generation failed.');
+      const refusal = paymentActionRefusal(e, 'wps');
+      setError(refusal ? t(refusal) : msg ?? 'File generation failed.');
     }
     payrollApi.listPaymentBatches(runId).then(setBatches).catch(() => {});
   };
@@ -2739,7 +2762,8 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
             <select aria-label="Payment method" className={`${sel} w-40`} value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)}>
               {['WPS', 'BankTransfer', 'Cash'].map(m => <option key={m}>{m}</option>)}
             </select>
-            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || hasExistingBatch}>
+            <button type="button" className={btn.primary} onClick={createBatch} disabled={creating || !runIsLocked || hasExistingBatch || !canExport}
+              title={canExport ? undefined : t(PAYMENT_ACTION_DENIED.create)}>
               {creating ? 'Creating…' : hasExistingBatch ? 'Payment Batch Created' : 'Create Payment Batch'}
             </button>
           </>
@@ -2749,6 +2773,12 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
         <div className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>This run is <strong>{selectedRun?.status}</strong>. A payment batch can only be created once the run is <strong>Locked</strong> — finalise it on the Approvals tab (Lock Run) first.</span>
+        </div>
+      )}
+      {runId && !canExport && (
+        <div role="note" className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{t(PAYMENT_ACTION_DENIED.create)}</span>
         </div>
       )}
       {error && (
@@ -2771,12 +2801,14 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
                   className={`w-full cursor-pointer px-4 py-3 text-start hover:bg-slate-50 dark:hover:bg-white/5 ${selectedBatch?.id === b.id ? 'bg-sapphire/5 dark:bg-sapphire/10' : ''}`}>
                   <div className="flex items-center justify-between">
                     <p className="text-sm font-medium text-slate-800 dark:text-white">{b.batchNumber}</p>
-                    <StatusBadge status={b.status} />
+                    {/* One status: the lifecycle's. The file-generation flag is a step toward it, not a second status. */}
+                    <StatusBadge status={b.effectiveWpsStatus || b.wpsStatus || b.status} />
                   </div>
                   <p className="mt-1 text-xs text-slate-400">{b.paymentMethod} · {fmtAmt(b.totalAmount, b.currency)}</p>
                   {b.status !== 'FileGenerated' && (
-                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs`}
-                      title={b.isSaudi ? 'For review only. The Saudi bank payroll file is the ANB Connect instruction.' : undefined}>
+                    <button type="button" onClick={e => { e.stopPropagation(); generateWps(b.id); }} className={`mt-1.5 ${btn.sm} h-6 px-2 text-xs disabled:opacity-50`}
+                      disabled={!canExport}
+                      title={!canExport ? t(PAYMENT_ACTION_DENIED.wps) : b.isSaudi ? 'For review only. The Saudi bank payroll file is the ANB Connect instruction.' : undefined}>
                       {b.isSaudi ? 'Generate payroll register (internal — not a bank/WPS file)' : 'Generate WPS/SIF (not verified with any gateway)'}
                     </button>
                   )}
@@ -2845,6 +2877,9 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
 
 function PaymentTrackingTab() {
   const t = useT();
+  // WPS status, settlement and remittance all need payroll.export (Admin only): without it the row actions give way to the reason.
+  const { hasPermission } = useAuth();
+  const canExport = paymentActionsAllowed(hasPermission);
   const { confirm, ask, dialog: confirmDialog } = useConfirm();
   type FinanceActionForm = { reference: string; date: string; group: 'GOSI' | 'TAX' | 'LOAN' | 'All'; reason: string };
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
@@ -2970,6 +3005,12 @@ function PaymentTrackingTab() {
   return (
     <div className="space-y-4">
       {confirmDialog}
+      {!canExport && (
+        <div role="note" className="flex items-start gap-2 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{t('Only an administrator can create payment batches, generate WPS files, settle net pay and remit. You can still review them here.')}</span>
+        </div>
+      )}
       {batches.length > 0 && (
         <div className="grid grid-cols-3 gap-4">
           <KpiCard label="Total Batches" value={batches.length} icon={WalletCards} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
@@ -2988,7 +3029,7 @@ function PaymentTrackingTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
-                {['Batch', 'Method', 'Total Amount', 'Currency', 'Status', 'WPS Lifecycle', 'Created', 'Action'].map(h => (
+                {['Batch', 'Method', 'Total Amount', 'Currency', 'Status', 'Created', 'Action'].map(h => (
                   <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
                 ))}
               </tr>
@@ -3000,7 +3041,6 @@ function PaymentTrackingTab() {
                   <td className="px-4 py-2 text-slate-500">{b.paymentMethod}</td>
                   <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{b.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                   <td className="px-4 py-2 text-slate-500">{b.currency}</td>
-                  <td className="px-4 py-2"><StatusBadge status={b.status} /></td>
                   <td className="px-4 py-2">
                     <div className="space-y-1">
                       <StatusBadge status={effectiveStatus(b)} />
@@ -3017,6 +3057,9 @@ function PaymentTrackingTab() {
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(b.createdAtUtc)}</td>
                   <td className="px-4 py-2">
+                    {!canExport ? (
+                      <p className="text-xs text-slate-500 dark:text-slate-400" title={t(PAYMENT_ACTION_DENIED.wps)}>{t('Needs an administrator')}</p>
+                    ) : (
                     <div className="grid min-w-[290px] gap-2">
                     {effectiveStatus(b) === 'Submitted' && (
                       <div className="grid gap-1.5 rounded-lg bg-slate-50 p-2 dark:bg-white/5">
@@ -3160,6 +3203,7 @@ function PaymentTrackingTab() {
                     )}
                     {nextStatuses(b).length === 0 && effectiveStatus(b) !== 'Accepted' && effectiveStatus(b) !== 'Paid' && <span className="text-xs text-slate-400">No action</span>}
                     </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -3555,9 +3599,14 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
           onGoToApprovals={() => onGoToApprovals?.()}
         />
       )}
-      {journal && journal.costing && !journal.costing.enabled && <CostingOffNote />}
+      {/* A posted run's note comes from what was posted (costing.enabled is the preview plan, always off once posted). */}
+      {journal && costingNote(journal) === 'off' && <CostingOffNote />}
+      {journal && costingNote(journal) === 'postedWithout' && <PostedWithoutCostCentresNote />}
 
-      {journal && !journal.costing?.enabled && (
+      {/* A posted run holds one journal per event (accrual, settlement, remittance, void): each is shown on its own. */}
+      {journal && !journal.costing?.enabled && journal.isPosted && (journal.journals?.length ?? 0) > 0 && <PostedJournalsView journal={journal} />}
+
+      {journal && !journal.costing?.enabled && !(journal.isPosted && (journal.journals?.length ?? 0) > 0) && (
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-4">
             <div className="surface p-4">
