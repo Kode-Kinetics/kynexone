@@ -197,6 +197,28 @@ public static class CompanyPayrollRules
     }
 
     /// <summary>
+    /// The refusal message when an offered probation in a SAUDI company is longer than Labour Law Art. 53 allows (at most
+    /// 180 days, the extended limit), or null. It applies whatever the company configured, and to companies that set no
+    /// maximum. Probation is offered in months but the law counts days, so the message names the longest whole number of
+    /// months that fits from this start date (six months is always 181 to 184 days).
+    /// </summary>
+    public static string? StatutoryProbationOverLimit(string? companyCountryCode, DateOnly startDate, int probationMonths)
+    {
+        if (!IsSaudiCountry(companyCountryCode) || probationMonths <= 0 || startDate == DateOnly.MinValue) return null;
+        var days = startDate.AddMonths(probationMonths).DayNumber - startDate.DayNumber;
+        if (days <= ExtendedProbationDays) return null;
+        var fits = 0;
+        while (startDate.AddMonths(fits + 1).DayNumber - startDate.DayNumber <= ExtendedProbationDays) fits++;
+        return $"Saudi Labour Law (Art. 53) allows a probation of at most {ExtendedProbationDays} days. A probation of {probationMonths} month(s) " +
+               $"from {startDate:yyyy-MM-dd} is {days} days. Offer at most {fits} months.";
+    }
+
+    /// <summary>A Saudi company, by its ISO-2 or ISO-3 country code.</summary>
+    public static bool IsSaudiCountry(string? countryCode) =>
+        string.Equals(countryCode?.Trim(), "SA", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(countryCode?.Trim(), "SAU", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// The warning text when a probation that runs from <paramref name="start"/> to <paramref name="end"/> (both days
     /// counted) is longer than the company's own maximum, or null. Used for employee records and import rows, where the
     /// dates are given rather than a number of months. Never a refusal: the row is kept and flagged.

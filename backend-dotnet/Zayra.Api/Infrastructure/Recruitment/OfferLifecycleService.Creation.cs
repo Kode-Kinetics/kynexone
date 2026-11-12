@@ -27,6 +27,10 @@ public sealed partial class OfferLifecycleService
                     await Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ResolveAsync(db, actor.TenantId, actor.CompanyId, ct),
                     input.StartDate, input.ProbationMonths) is { } probationMessage)
                 throw new OfferLifecycleException("offer_probation_over_company_limit", probationMessage, 422);
+            if (Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.StatutoryProbationOverLimit(
+                    await db.Companies.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == actor.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct),
+                    input.StartDate, input.ProbationMonths) is { } statutoryMessage)
+                throw new OfferLifecycleException("offer_probation_over_statutory_limit", statutoryMessage, 422);
             var opening = await db.JobOpenings.AsNoTracking().SingleOrDefaultAsync(o => o.TenantId == actor.TenantId && o.Id == app.JobOpeningId, ct)
                 ?? throw new OfferLifecycleException("offer_opening_not_found", "The application's job opening was not found.", 422);
             var placement = await OfferPlacement.ResolveAsync(db, actor.TenantId,

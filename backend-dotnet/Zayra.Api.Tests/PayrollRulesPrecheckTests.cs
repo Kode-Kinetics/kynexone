@@ -85,4 +85,21 @@ public class PayrollRulesPrecheckTests
         var rules = CompanyPayrollRuleSet.Defaults with { MaxProbationDays = max };
         (CompanyPayrollRules.ProbationOverLimit(rules, DateOnly.Parse(start), months) is not null).Should().Be(refused);
     }
+
+    // Saudi Labour Law Art. 53: a probation never exceeds 180 days, whatever the company configured (or did not).
+    [Theory]
+    [InlineData("SA", "2026-01-01", 3, false)]
+    [InlineData("SAU", "2026-01-01", 5, false)]   // 151 days
+    [InlineData("SA", "2026-01-01", 6, true)]     // 181 days: one over the ceiling
+    [InlineData("sau", "2026-03-01", 6, true)]    // 184 days
+    [InlineData("SA", "2026-01-01", 12, true)]
+    [InlineData("AE", "2026-01-01", 12, false)]   // not a Saudi company: the statutory ceiling is not this country's
+    [InlineData("", "2026-01-01", 12, false)]
+    public void Probation_InASaudiCompany_NeverExceedsTheStatutory180Days(string country, string start, int months, bool refused)
+        => (CompanyPayrollRules.StatutoryProbationOverLimit(country, DateOnly.Parse(start), months) is not null).Should().Be(refused);
+
+    [Fact]
+    public void Probation_StatutoryRefusal_SaysTheLawTheDaysAndTheLongestProbationThatFits()
+        => CompanyPayrollRules.StatutoryProbationOverLimit("SA", new DateOnly(2026, 1, 1), 6).Should()
+            .Contain("180 days").And.Contain("Art. 53").And.Contain("181 days").And.Contain("5 months");
 }
