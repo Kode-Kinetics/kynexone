@@ -21,6 +21,13 @@ public static class LeaveFileKeyExposure
         scope.CallerEmployeeId == leaveEmployeeId || Roles.Any(user.IsInRole);
 
     /// <summary>
+    /// The attachment column of the leave CSV export: the key for HR/Admin, empty for any other exporter (an Auditor reads
+    /// the leave history, not the employees' medical documents).
+    /// </summary>
+    public static string KeyForExport(ClaimsPrincipal user, string? attachmentPath) =>
+        Roles.Any(user.IsInRole) ? attachmentPath ?? string.Empty : string.Empty;
+
+    /// <summary>
     /// The request as <paramref name="user"/> may see it. For a reader who may not see the key this is a DETACHED copy
     /// with the key blanked: the tracked entity is never changed, so a later SaveChanges can never erase the stored key.
     /// </summary>

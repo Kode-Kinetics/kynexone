@@ -25,6 +25,24 @@ public sealed class LeaveBatch1Fixture : IAsyncLifetime
     private SqliteConnection _anchor = null!;
     private readonly Dictionary<string, string> _tokens = new();
     private int _dayCursor = 14;
+    private readonly SemaphoreSlim _onceGate = new(1, 1);
+    private readonly HashSet<string> _done = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Runs <paramref name="seed"/> once per fixture. xUnit builds a new test-class instance (and calls its InitializeAsync)
+    /// for EVERY test, while the class fixture is shared, so seeding from the test class would pile the rows up test after test.
+    /// </summary>
+    public async Task OnceAsync(string key, Func<Task> seed)
+    {
+        await _onceGate.WaitAsync();
+        try
+        {
+            if (_done.Contains(key)) return;
+            await seed();
+            _done.Add(key);
+        }
+        finally { _onceGate.Release(); }
+    }
 
     public AuthorizationPipelineHost Host { get; private set; } = null!;
     public HttpClient Client { get; private set; } = null!;
@@ -100,6 +118,7 @@ public sealed class LeaveBatch1Fixture : IAsyncLifetime
                 "employees.read", "leave.read", "leave.write", "leave.approve", "approvals.decide", "ess.read", "ess.write", "reports.read");
             await AddUserAsync("admin", "Admin", null, "FullPortal",
                 "employees.read", "leave.read", "leave.write", "leave.approve", "approvals.decide", "reports.read");
+            await AddUserAsync("auditor", "Auditor", null, "FullPortal", "employees.read", "leave.read", "reports.read");
 
             var leaveType = new LeaveType { TenantId = TenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true, IsPaid = true };
             db.LeaveTypes.Add(leaveType);
@@ -116,7 +135,7 @@ public sealed class LeaveBatch1Fixture : IAsyncLifetime
             await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, TenantId, approverType: "Manager");
         }
 
-        foreach (var name in new[] { "manager", "employee", "peer", "hr", "admin" })
+        foreach (var name in new[] { "manager", "employee", "peer", "hr", "admin", "auditor" })
             _tokens[name] = await MintAsync(name);
     }
 

@@ -45,8 +45,10 @@ public sealed class LeaveBatch1HttpTests(LeaveBatch1Fixture f) : IClassFixture<L
     [Fact]
     public async Task Withdraw_with_no_request_body_withdraws_the_request_and_releases_the_reservation()
     {
+        // Other tests in this class reserve leave for the same employee, so compare with the pending total before this request.
+        var before = (await BalanceAsync(Guid.Empty)).Pending;
         var id = await f.SubmitAsync();
-        (await BalanceAsync(id)).Pending.Should().BeGreaterThan(0);
+        (await BalanceAsync(id)).Pending.Should().BeGreaterThan(before);
 
         // Exactly what the web client sends: a POST with no content at all.
         using var withdraw = await f.Send(HttpMethod.Post, $"/api/leave/requests/{id}/withdraw", f.Token("employee"));
@@ -54,7 +56,7 @@ public sealed class LeaveBatch1HttpTests(LeaveBatch1Fixture f) : IClassFixture<L
 
         (await StatusAsync(id)).Should().Be("Withdrawn");
         var balance = await BalanceAsync(id);
-        balance.Pending.Should().Be(0);
+        balance.Pending.Should().Be(before);
         balance.Reversals.Should().BeGreaterThan(0);
     }
 
@@ -285,5 +287,67 @@ public sealed class LeaveBatch1HttpTests(LeaveBatch1Fixture f) : IClassFixture<L
         var text = await response.Content.ReadAsStringAsync();
         response.StatusCode.Should().Be(HttpStatusCode.OK, text);
         text.Contains(key, StringComparison.OrdinalIgnoreCase).Should().Be(seesKey);
+    }
+
+    // ── The decision responses and the export follow the same rule as List/Get ─────────────────
+
+    private async Task<(Guid Id, string Key)> SubmittedLeaveWithKeyAsync()
+    {
+        var id = await f.SubmitAsync();
+        var key = NewKey("sick-note.pdf");
+        await f.WithDb(async db =>
+        {
+            var row = await db.LeaveRequests.SingleAsync(r => r.Id == id);
+            row.AttachmentPath = key;
+            return await db.SaveChangesAsync();
+        });
+        return (id, key);
+    }
+
+    [Fact]
+    public async Task A_manager_who_approves_is_not_handed_the_attachment_key()
+    {
+        var (id, key) = await SubmittedLeaveWithKeyAsync();
+        using var response = await f.Send(HttpMethod.Post, $"/api/leave/requests/{id}/approve", f.Token("manager"), new { notes = "ok" });
+        var text = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, text);
+        text.Contains(key, StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+        (await f.WithDb(db => db.LeaveRequests.AsNoTracking().Where(r => r.Id == id).Select(r => r.AttachmentPath).SingleAsync()))
+            .Should().Be(key, "the stored key is never changed by hiding it");
+    }
+
+    [Fact]
+    public async Task A_manager_who_rejects_is_not_handed_the_attachment_key()
+    {
+        var (id, key) = await SubmittedLeaveWithKeyAsync();
+        using var response = await f.Send(HttpMethod.Post, $"/api/leave/requests/{id}/reject", f.Token("manager"), new { reason = "busy period" });
+        var text = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, text);
+        text.Contains(key, StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_manager_who_approves_a_cancellation_is_not_handed_the_attachment_key()
+    {
+        var (id, key) = await LeaveWithKeyForEmployeeAsync();
+        using (var ask = await f.Send(HttpMethod.Post, $"/api/leave/requests/{id}/cancel", f.Token("employee"), new { reason = "plans changed" }))
+            ask.IsSuccessStatusCode.Should().BeTrue(await ask.Content.ReadAsStringAsync());
+        using var response = await f.Send(HttpMethod.Post, $"/api/leave/requests/{id}/cancel-approve", f.Token("manager"), new { notes = "fine" });
+        var text = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, text);
+        text.Contains(key, StringComparison.OrdinalIgnoreCase).Should().BeFalse();
+    }
+
+    // The export's own query uses APPLY, which this SQLite host cannot translate, so its key column is proven on the rule it calls.
+    [Theory]
+    [InlineData("Auditor", "")]
+    [InlineData("HR Officer", "leave/sick.pdf")]
+    [InlineData("HR Manager", "leave/sick.pdf")]
+    [InlineData("Admin", "leave/sick.pdf")]
+    public void The_leave_export_carries_attachment_keys_only_for_hr(string role, string expected)
+    {
+        var user = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
+            [new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, role)], "test"));
+        Zayra.Api.Infrastructure.Leave.LeaveFileKeyExposure.KeyForExport(user, "leave/sick.pdf").Should().Be(expected);
     }
 }

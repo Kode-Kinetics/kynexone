@@ -425,7 +425,7 @@ public class LeaveRequestsController : ControllerBase
                 "Leave Request Awaiting Approval",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request for {result.TotalDays} day(s) is waiting for your decision.",
                 "LeaveRequest", result.Id.ToString(), ct);
-            return Ok(result);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, result, User, scope));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -474,7 +474,7 @@ public class LeaveRequestsController : ControllerBase
                 "Leave Rejected",
                 $"{result.EmployeeName}'s {result.LeaveTypeName} request has been rejected.",
                 "LeaveRequest", result.Id.ToString(), ct);
-            return Ok(result);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, result, User, scope));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -578,7 +578,7 @@ public class LeaveRequestsController : ControllerBase
             // second save after the cancellation committed: a failure in between stranded it Pending forever.
             var leave = await _leaveService.ApproveCancellationAsync(tenantId.Value, id, reviewer, req.Notes ?? string.Empty, ct);
             await LeaveNotifications.NotifyCancellationDecidedAsync(_db, _notifications, tenantId.Value, leave, approved: true, req.Notes, ct);
-            return Ok(leave);
+            return Ok(LeaveFileKeyExposure.ForReader(_db, leave, User, scope));
         }
         catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
@@ -758,7 +758,7 @@ public class LeaveRequestsController : ControllerBase
         {
             x.e.EmployeeCode, x.r.EmployeeName, x.leaveType?.Code ?? string.Empty, x.r.LeaveTypeName,
             x.r.StartDate.ToString("yyyy-MM-dd"), x.r.EndDate.ToString("yyyy-MM-dd"),
-            x.r.DayType, x.r.HoursRequested, x.r.IsEmergency ? "true" : "false", x.r.AttachmentPath,
+            x.r.DayType, x.r.HoursRequested, x.r.IsEmergency ? "true" : "false", LeaveFileKeyExposure.KeyForExport(User, x.r.AttachmentPath),
             x.r.TotalDays, x.r.Status, x.r.Reason
         });
         var csv = Csv.Build(LeaveRequestCsvHeaders, rows);
