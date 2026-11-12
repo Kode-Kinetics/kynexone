@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Common;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Compliance;
@@ -12,7 +14,32 @@ namespace Zayra.Api.Controllers.Compliance;
 public class ComplianceReportsController : ControllerBase
 {
     private readonly ZayraDbContext _db;
-    public ComplianceReportsController(ZayraDbContext db) => _db = db;
+    private readonly IDataScopeService _scope;
+
+    /// <param name="scope">Optional so a hand-built controller keeps working; the container always supplies it.</param>
+    public ComplianceReportsController(ZayraDbContext db, IDataScopeService? scope = null)
+    {
+        _db = db;
+        _scope = scope ?? new DataScopeService(db);
+    }
+
+    /// <summary>
+    /// The employees (by public id) the caller may see compliance records for, or null for an unrestricted caller. A record
+    /// whose employee is not in the set is not shown: a team-scoped reader sees their reporting line, never the company or the
+    /// group, and a legacy row that names no resolvable employee is withheld from them rather than guessed at.
+    /// </summary>
+    private async Task<List<Guid>?> InScopeEmployeesAsync(Guid tenantId, CancellationToken ct)
+    {
+        var scope = await _scope.ResolveAsync(User, tenantId, ct);
+        if (scope.IsUnrestricted) return null;
+        var allowed = scope.AllowedEmployeeIds!.ToList();
+        return await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && allowed.Contains(e.Id))
+            .Select(e => e.PublicId).ToListAsync(ct);
+    }
+
+    private static IQueryable<T> InScope<T>(IQueryable<T> query, List<Guid>? employees) where T : class =>
+        employees is null ? query : query.Where(x => employees.Contains(EF.Property<Guid>(x, nameof(VisaRecord.EmployeeId))));
 
     private Guid GetTenantId() =>
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
@@ -21,7 +48,11 @@ public class ComplianceReportsController : ControllerBase
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
 
     // GET /api/compliance/reports/dashboard
+    // The counts summarise colleagues' visa, passport, permit and contract expiries, so they are as restricted as those registers
+    // (VisaTrackingController, ContractsController): the role list names the audience and the pipeline requires compliance.read
+    // beside it (LegacyRolePermissionResolver), so an employee login is refused. Rows are cut to the caller's employee data scope.
     [HttpGet("dashboard")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> Dashboard(CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -29,34 +60,35 @@ public class ComplianceReportsController : ControllerBase
         var in30 = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(30));
         var in60 = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(60));
         var in90 = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(90));
+        var employees = await InScopeEmployeesAsync(tid, ct);
 
         // Active contracts
-        var activeContracts = await _db.EmployeeContracts
+        var activeContracts = await InScope(_db.EmployeeContracts, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active", ct);
 
         // Expiring visas (30 / 60 / 90 days)
-        var visasExpiring30 = await _db.VisaRecords
+        var visasExpiring30 = await InScope(_db.VisaRecords, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted
                 && x.ExpiryDate >= today && x.ExpiryDate <= in30
                 && x.Status == "Active", ct);
 
-        var visasExpiring60 = await _db.VisaRecords
+        var visasExpiring60 = await InScope(_db.VisaRecords, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted
                 && x.ExpiryDate > in30 && x.ExpiryDate <= in60
                 && x.Status == "Active", ct);
 
-        var passportsExpiring90 = await _db.PassportRecords
+        var passportsExpiring90 = await InScope(_db.PassportRecords, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted
                 && x.ExpiryDate >= today && x.ExpiryDate <= in90
                 && x.Status == "Active", ct);
 
-        var expiredVisas = await _db.VisaRecords
+        var expiredVisas = await InScope(_db.VisaRecords, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.ExpiryDate < today && x.Status == "Active", ct);
 
-        var pendingRenewals = await _db.ComplianceRenewals
+        var pendingRenewals = await InScope(_db.ComplianceRenewals, employees)
             .CountAsync(x => x.TenantId == tid && (x.Status == "Pending" || x.Status == "InProgress"), ct);
 
-        var passportsHeldByCompany = await _db.PassportRecords
+        var passportsHeldByCompany = await InScope(_db.PassportRecords, employees)
             .CountAsync(x => x.TenantId == tid && !x.IsDeleted && x.IsHeldByCompany && x.Status == "Active", ct);
 
         return Ok(new
@@ -114,32 +146,35 @@ public class ComplianceReportsController : ControllerBase
     }
 
     // GET /api/compliance/reports/expiry-alerts
+    // Names each employee whose visa, passport, work permit or contract is about to expire: gated and scoped like the dashboard.
     [HttpGet("expiry-alerts")]
+    [Authorize(Roles = "Admin,HR Manager,HR Officer")]
     public async Task<IActionResult> ExpiryAlerts([FromQuery] int withinDays = 90, CancellationToken ct = default)
     {
         var tid = GetTenantId();
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(withinDays));
+        var employees = await InScopeEmployeesAsync(tid, ct);
 
-        var visaAlerts = await _db.VisaRecords
+        var visaAlerts = await InScope(_db.VisaRecords, employees)
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active"
                 && x.ExpiryDate >= today && x.ExpiryDate <= cutoff)
             .Select(x => new { x.EmployeeId, x.EmployeeName, type = "Visa", subType = x.VisaType, x.ExpiryDate, daysLeft = (x.ExpiryDate.DayNumber - today.DayNumber) })
             .ToListAsync(ct);
 
-        var passportAlerts = await _db.PassportRecords
+        var passportAlerts = await InScope(_db.PassportRecords, employees)
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active"
                 && x.ExpiryDate >= today && x.ExpiryDate <= cutoff)
             .Select(x => new { x.EmployeeId, x.EmployeeName, type = "Passport", subType = x.Nationality, x.ExpiryDate, daysLeft = (x.ExpiryDate.DayNumber - today.DayNumber) })
             .ToListAsync(ct);
 
-        var permitAlerts = await _db.WorkPermitRecords
+        var permitAlerts = await InScope(_db.WorkPermitRecords, employees)
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active"
                 && x.ExpiryDate >= today && x.ExpiryDate <= cutoff)
             .Select(x => new { x.EmployeeId, x.EmployeeName, type = "WorkPermit", subType = x.PermitType, x.ExpiryDate, daysLeft = (x.ExpiryDate.DayNumber - today.DayNumber) })
             .ToListAsync(ct);
 
-        var contractAlerts = await _db.EmployeeContracts
+        var contractAlerts = await InScope(_db.EmployeeContracts, employees)
             .Where(x => x.TenantId == tid && !x.IsDeleted && x.Status == "Active"
                 && x.EndDate.HasValue && x.EndDate.Value >= today && x.EndDate.Value <= cutoff)
             .Select(x => new { x.EmployeeId, x.EmployeeName, type = "Contract", subType = x.ContractType, ExpiryDate = x.EndDate!.Value, daysLeft = (x.EndDate!.Value.DayNumber - today.DayNumber) })
