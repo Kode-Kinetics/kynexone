@@ -1216,7 +1216,7 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name (English) *"><input className={inp} value={form.nameEn} onChange={e => set('nameEn', e.target.value)} /></Field>
-          <Field label="Name (Arabic)"><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} onSuggest={(s) => set('nameAr', s)} /></div></Field>
+          <Field label="Name (Arabic)"><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => set('nameAr', s)} /></div></Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Max Consecutive Days (0=unlimited)"><input type="number" min={0} className={inp} value={form.maxConsecutiveDays} onChange={e => set('maxConsecutiveDays', Number(e.target.value))} /></Field>
