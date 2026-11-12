@@ -2953,6 +2953,50 @@ public sealed class PayrollRunProcessor
         return new RunPopulation(population, exclusions, notEligible, selections, mode);
     }
 
+    /// <summary>The newest non-cancelled offboarding's last working day per employee (a re-hire may have an older, completed one).</summary>
+    internal static IEnumerable<(int EmployeeId, DateOnly LastWorkingDay)> NewestLastWorkingDays(
+        IEnumerable<(int EmployeeId, DateOnly LastWorkingDay, DateTime CreatedAtUtc)> offboardings) =>
+        offboardings.GroupBy(o => o.EmployeeId)
+            .Select(g => (g.Key, g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay));
+
+    /// <summary>
+    /// Whether a non-active employee with this last working day is still paid by the period's run: employed in the period at
+    /// all, and not left before it. The ONE rule the run's leaver union and the compliance readiness population share.
+    /// </summary>
+    internal static bool LeaverIsPayableInPeriod(DateOnly lastWorkingDay, DateTime joiningDate, DateOnly periodStart, DateOnly periodEnd)
+    {
+        var joined = joiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(joiningDate);
+        if (joined is DateOnly jd && jd > periodEnd) return false;   // not employed in this period at all
+        return lastWorkingDay >= periodStart;                        // false: already left before the period
+    }
+
+    /// <summary>
+    /// The non-active employees (notice-period leavers) the run for this period still pays, tenant-wide, by the same rules as
+    /// <c>LoadEligibleWithLeaversAsync</c>: a non-cancelled offboarding whose last working day is on or after the period's
+    /// start, employed in the period, and no non-voided final-wage slip yet. Company scope is the ambient filter of
+    /// <paramref name="db"/>; the settlement-disbursement branch (runs of that purpose only) is not part of it.
+    /// </summary>
+    internal static async Task<HashSet<int>> PayableLeaverIdsAsync(ZayraDbContext db, Guid tenantId, DateOnly periodStart, DateOnly periodEnd, CancellationToken ct)
+    {
+        var offboardings = await db.EmployeeOffboardings.AsNoTracking()
+            .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay >= periodStart)
+            .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+            .ToListAsync(ct);
+        if (offboardings.Count == 0) return [];
+        var lwd = NewestLastWorkingDays(offboardings.Select(o => (o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc))).ToDictionary(x => x.EmployeeId, x => x.LastWorkingDay);
+        var candidateIds = lwd.Keys.ToList();
+        var leavers = await db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && candidateIds.Contains(e.Id) && e.Status != "Active")
+            .Select(e => new { e.Id, e.JoiningDate })
+            .ToListAsync(ct);
+        var leaverIds = leavers.Select(e => e.Id).ToList();
+        var finalised = (await db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.IsFinalWageMonth && s.Status != "Voided" && leaverIds.Contains(s.EmployeeId))
+            .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+        return leavers.Where(e => !finalised.Contains(e.Id) && LeaverIsPayableInPeriod(lwd[e.Id], e.JoiningDate, periodStart, periodEnd))
+            .Select(e => e.Id).ToHashSet();
+    }
+
     /// <summary>
     /// POD-C3 — the SAME eligible query as above, UNIONED with this period's LEAVERS.
     ///
@@ -3037,8 +3081,8 @@ public sealed class PayrollRunProcessor
             .ToListAsync(ct);
         if (offboardings.Count == 0) return (active, leaverIds, lwdByEmp, unpayable, settlementIds);
 
-        foreach (var g in offboardings.GroupBy(o => o.EmployeeId))
-            lwdByEmp[g.Key] = g.OrderByDescending(o => o.CreatedAtUtc).First().LastWorkingDay;
+        foreach (var (employeeId, lastWorkingDay) in NewestLastWorkingDays(offboardings.Select(o => (o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc))))
+            lwdByEmp[employeeId] = lastWorkingDay;
 
         var candidateIds = lwdByEmp.Keys.ToList();
         // COMPANY SCOPE re-applied from the employee, exactly as the Active query does.
@@ -3065,10 +3109,7 @@ public sealed class PayrollRunProcessor
             // POD-C1 — already admitted by the settlement branch above; adding them twice would produce
             // two identical Employee entries and therefore two payslips for one person.
             if (settlementIds.Contains(e.Id)) continue;
-            var lwd = lwdByEmp[e.Id];
-            var joined = e.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(e.JoiningDate);
-            if (joined is DateOnly jd && jd > pEnd) continue;   // not employed in this period at all
-            if (lwd < pStart) continue;                          // already left before the period
+            if (!LeaverIsPayableInPeriod(lwdByEmp[e.Id], e.JoiningDate, pStart, pEnd)) continue;
             active.Add(e);
             leaverIds.Add(e.Id);
         }
