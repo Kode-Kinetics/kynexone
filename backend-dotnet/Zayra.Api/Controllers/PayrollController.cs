@@ -2851,7 +2851,7 @@ public partial class PayrollController : ControllerBase
         var run = await _db.PayrollRuns.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
 
-        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName)>();
+        var entries = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>();
         PayrollCostPlan previewCostPlan = PayrollCostPlan.Off;
         RoundingCostBlock? previewRoundingBlock = null;
 
@@ -2892,30 +2892,49 @@ public partial class PayrollController : ControllerBase
         IReadOnlyList<PayrollGlCatchAll> previewCatchAlls = Array.Empty<PayrollGlCatchAll>();
         IReadOnlyList<GlResolutionProblem> previewProblems = Array.Empty<GlResolutionProblem>();
         decimal previewRounding = 0m;
+        List<object> postedJourneys = new();
+        var postedWithCostCentres = false;
         if (isPosted)
         {
-            foreach (var e in posted)
-            {
-                var (compCode, compName) = DescribePostedLine(e.Description);
-                // FinanceGlEntry deliberately supports both historical two-sided rows and newer
-                // one-sided ledger rows. A two-sided row is TWO journal lines. Choosing the debit side
-                // when it exists drops the paired credit and turns a balanced ledger into the exact
-                // DR>0/CR=0 false imbalance observed in the client pilot.
-                if (!string.IsNullOrWhiteSpace(e.DebitAccount))
+            // A settled and remitted run holds SEVERAL journals in the ledger (accrual, net-pay settlement,
+            // remittances, void). The tab used to merge them: 2100 then showed as both a debit and a credit
+            // and the headline total doubled. The headline is the ACCRUAL journal alone; every other event
+            // is reported as its own journal in `journals`, each with its own balanced totals.
+            var postedNames = await ResolvePostedByNamesAsync(tenantId, posted, cancellationToken);
+            var accrualRows = posted.Where(e => PostedJournalKindOf(e.EventType).Kind == "accrual").ToList();
+            // A posted run with no recognisable accrual rows (legacy tags) falls back to everything it holds.
+            var headlineRows = accrualRows.Count > 0 ? accrualRows : posted;
+            entries = ExpandPostedLines(headlineRows);
+            postedWithCostCentres = posted.Any(e => e.CostCenterId != null || !string.IsNullOrWhiteSpace(e.CostCenterCode));
+            postedJourneys = posted
+                .GroupBy(e => PostedJournalKindOf(e.EventType))
+                .Select(g =>
                 {
-                    var (code, name) = SplitAccountLabel(e.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", e.Amount, e.CostCenterCode, e.CostCenterName));
-                }
-                if (!string.IsNullOrWhiteSpace(e.CreditAccount))
-                {
-                    var (code, name) = SplitAccountLabel(e.CreditAccount);
-                    // A two-sided row's cost centre belongs to its expense side only.
-                    entries.Add((compCode, compName, code, name, "CR", e.Amount,
-                        string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterCode : null, string.IsNullOrWhiteSpace(e.DebitAccount) ? e.CostCenterName : null));
-                }
-            }
-            // Deterministic display order: debits first, then credits, each by account code.
-            entries = entries.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
+                    var lines = ExpandPostedLines(g);
+                    var dr = lines.Where(l => l.EntryType == "DR").Sum(l => l.Amount);
+                    var cr = lines.Where(l => l.EntryType == "CR").Sum(l => l.Amount);
+                    var first = g.OrderBy(x => x.CreatedAtUtc).First();
+                    var by = g.Select(x => postedNames(x)).FirstOrDefault(n => n.Length > 0) ?? string.Empty;
+                    return (Rank: PostedJournalRank(g.Key.Kind, g.Key.Group), Created: first.CreatedAtUtc, Journal: (object)new
+                    {
+                        kind = g.Key.Kind,
+                        group = g.Key.Group,
+                        eventType = g.First().EventType,
+                        period = g.Select(x => x.Period).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal).FirstOrDefault() ?? string.Empty,
+                        entryDate = g.Min(x => x.EntryDate).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                        postedAtUtc = first.CreatedAtUtc,
+                        postedByName = by,
+                        isReversed = g.All(x => x.IsReversed),
+                        hasCostCentres = lines.Any(l => !string.IsNullOrWhiteSpace(l.CostCentreCode)),
+                        entries = lines.Select(l => new { componentCode = l.Code, componentName = l.Name, glAccount = l.Account, glAccountName = l.AccountName, entryType = l.EntryType, amount = l.Amount, costCentreCode = l.CostCentreCode, costCentreName = l.CostCentreName, costCentreErpCode = l.CostCentreErp }),
+                        totalDebits = dr,
+                        totalCredits = cr,
+                        isBalanced = Math.Abs(dr - cr) < 0.01m,
+                    });
+                })
+                .OrderBy(x => x.Rank).ThenBy(x => x.Created)
+                .Select(x => x.Journal)
+                .ToList();
         }
         else
         {
@@ -2936,13 +2955,13 @@ public partial class PayrollController : ControllerBase
                 if (!string.IsNullOrWhiteSpace(line.DebitAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.DebitAccount);
-                    entries.Add((compCode, compName, code, name, "DR", line.Amount, line.CostCenterCode, line.CostCenterName));
+                    entries.Add((compCode, compName, code, name, "DR", line.Amount, line.CostCenterCode, line.CostCenterName, null));
                 }
                 if (!string.IsNullOrWhiteSpace(line.CreditAccount))
                 {
                     var (code, name) = SplitAccountLabel(line.CreditAccount);
                     entries.Add((compCode, compName, code, name, "CR", line.Amount,
-                        string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterCode : null, string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterName : null));
+                        string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterCode : null, string.IsNullOrWhiteSpace(line.DebitAccount) ? line.CostCenterName : null, null));
                 }
             }
             previewCostPlan = plan.CostPlan;
@@ -2991,11 +3010,14 @@ public partial class PayrollController : ControllerBase
             period   = $"{run.Year}-{run.Month:D2}",
             currency = journalCurrency,
             isPosted, // true = immutable as-posted ledger; false = live preview through current mappings
-            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount, costCentreCode = e.CostCentreCode, costCentreName = e.CostCentreName }),
+            entries  = entries.Select(e => new { componentCode = e.Code, componentName = e.Name, glAccount = e.Account, glAccountName = e.AccountName, entryType = e.EntryType, amount = e.Amount, costCentreCode = e.CostCentreCode, costCentreName = e.CostCentreName, costCentreErpCode = e.CostCentreErp }),
             // Cost accounting (WP-C2, for the Lock-preview screen): what Lock would refuse and warn about, in the same shapes Lock answers with.
             costing = new
             {
                 enabled = previewCostPlan.Enabled,
+                // `enabled` is the PREVIEW plan and is always Off for a posted run, so it cannot say whether the
+                // posted lines carry cost centres. For a posted run that is read from the posted entries.
+                postedWithCostCentres,
                 blockers = previewCostPlan.Blockers.Select(b => new
                 {
                     employeeId = b.EmployeeId, employeeCode = b.EmployeeCode, level = b.Level, departmentId = b.DepartmentId, positionId = b.PositionId,
@@ -3008,6 +3030,9 @@ public partial class PayrollController : ControllerBase
             },
             totalDebits, totalCredits,
             isBalanced = Math.Abs(totalDebits - totalCredits) < 0.01m,
+            // Posted run only: every journal the ledger holds for it, one per event (accrual, net-pay settlement,
+            // remittance per group, reversals, void), each with its own lines, date, poster and balanced totals.
+            journals = postedJourneys,
             // Readiness, as Lock will judge it (preview only; empty once posted). Non-blocking warning:
             // pay items that will land in a catch-all account because no posting rule names them.
             catchAllComponents = previewCatchAlls.Select(c => new { componentCode = c.ComponentCode, label = c.Label, driverKey = c.DriverKey, amount = c.Amount }),
@@ -6278,6 +6303,84 @@ public partial class PayrollController : ControllerBase
     {
         var idx = label.IndexOf(" - ", StringComparison.Ordinal);
         return idx < 0 ? (label, string.Empty) : (label[..idx], label[(idx + 3)..]);
+    }
+
+    /// <summary>
+    /// Expands as-posted ledger rows into journal lines. A two-sided row is TWO lines (dropping the paired
+    /// credit turns a balanced ledger into a false imbalance); its cost centre belongs to the expense side only.
+    /// Debits first, then credits, each by account code.
+    /// </summary>
+    private static List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>
+        ExpandPostedLines(IEnumerable<FinanceGlEntry> rows)
+    {
+        var lines = new List<(string Code, string Name, string Account, string AccountName, string EntryType, decimal Amount, string? CostCentreCode, string? CostCentreName, string? CostCentreErp)>();
+        foreach (var e in rows)
+        {
+            var (compCode, compName) = DescribePostedLine(e.Description);
+            var segment = string.IsNullOrWhiteSpace(e.CostCenterGlSegment) ? null : e.CostCenterGlSegment;
+            if (!string.IsNullOrWhiteSpace(e.DebitAccount))
+            {
+                var (code, name) = SplitAccountLabel(e.DebitAccount);
+                lines.Add((compCode, compName, code, name, "DR", e.Amount, e.CostCenterCode, e.CostCenterName, segment));
+            }
+            if (!string.IsNullOrWhiteSpace(e.CreditAccount))
+            {
+                var (code, name) = SplitAccountLabel(e.CreditAccount);
+                var creditCarriesCostCentre = string.IsNullOrWhiteSpace(e.DebitAccount);
+                lines.Add((compCode, compName, code, name, "CR", e.Amount,
+                    creditCarriesCostCentre ? e.CostCenterCode : null, creditCarriesCostCentre ? e.CostCenterName : null, creditCarriesCostCentre ? segment : null));
+            }
+        }
+        return lines.OrderByDescending(x => x.EntryType).ThenBy(x => x.Account, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Which journal a posted payroll row belongs to. Everything Lock writes (the payroll accrual and the bonus,
+    /// settlement and EOSB lines inside it, plus legacy untagged rows) is the ACCRUAL; settlement, remittance,
+    /// their reversals, the disbursed-funds reclassification and the void are journals of their own.
+    /// </summary>
+    internal static (string Kind, string? Group) PostedJournalKindOf(string? eventType)
+    {
+        var e = eventType ?? string.Empty;
+        if (e == GlEventTypes.NetSettlement) return ("settlement", null);
+        if (e == GlEventTypes.NetSettlementReversal) return ("settlementReversal", null);
+        if (e == GlEventTypes.NetSettlementReclass || e == GlEventTypes.SettlementResidualReclass) return ("reclass", null);
+        if (e == GlEventTypes.Void) return ("void", null);
+        if (e.StartsWith(GlEventTypes.RemitReversalPrefix, StringComparison.Ordinal)) return ("remittanceReversal", e[GlEventTypes.RemitReversalPrefix.Length..]);
+        if (e.StartsWith(GlEventTypes.RemitReclassPrefix, StringComparison.Ordinal)) return ("reclass", e[GlEventTypes.RemitReclassPrefix.Length..]);
+        if (e.StartsWith(GlEventTypes.RemitPrefix, StringComparison.Ordinal)) return ("remittance", e[GlEventTypes.RemitPrefix.Length..]);
+        if (e == GlEventTypes.SettlementAccrualReversal || e == GlEventTypes.EosbProvisionConsumptionReversal) return ("other", null);
+        return ("accrual", null);
+    }
+
+    private static int PostedJournalRank(string kind, string? group) => kind switch
+    {
+        "accrual" => 0,
+        "settlement" => 10,
+        "remittance" => 20 + (group switch { "GOSI" => 0, "TAX" => 1, "LOAN" => 2, _ => 3 }),
+        "settlementReversal" => 30,
+        "remittanceReversal" => 31,
+        "reclass" => 40,
+        "void" => 50,
+        _ => 60,
+    };
+
+    /// <summary>
+    /// Who posted each ledger row. Rows posted by an older build, or by a caller whose token carried no
+    /// display-name claim of the expected type, hold a blank or "Unknown" name even though posted_by is set;
+    /// the name is then resolved from the posting user.
+    /// </summary>
+    private async Task<Func<FinanceGlEntry, string>> ResolvePostedByNamesAsync(Guid tenantId, IEnumerable<FinanceGlEntry> rows, CancellationToken ct)
+    {
+        static bool Missing(string? n) => string.IsNullOrWhiteSpace(n) || string.Equals(n.Trim(), "Unknown", StringComparison.OrdinalIgnoreCase);
+        var ids = rows.Where(r => Missing(r.PostedByName) && r.PostedBy != null).Select(r => r.PostedBy!.Value).Distinct().ToList();
+        var byId = ids.Count == 0
+            ? new Dictionary<Guid, string>()
+            : await _db.Users.AsNoTracking().Where(u => u.TenantId == tenantId && ids.Contains(u.Id))
+                .ToDictionaryAsync(u => u.Id, u => u.FullName, ct);
+        return r => !Missing(r.PostedByName) ? r.PostedByName
+            : r.PostedBy is Guid id && byId.TryGetValue(id, out var full) && !string.IsNullOrWhiteSpace(full) ? full
+            : string.Empty;
     }
 
     /// <summary>Best-effort (componentCode, componentName) for an as-posted ledger line, derived
