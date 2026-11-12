@@ -622,6 +622,7 @@ public record EmployeeDraftDto
     public string VisaNumber { get; init; } = string.Empty;
     public string VisaFileNumber { get; init; } = string.Empty;
     public string IqamaNumber { get; init; } = string.Empty;
+    public string IdNumber { get; init; } = string.Empty;
     public string BorderNumber { get; init; } = string.Empty;
     public string MuqeemNumber { get; init; } = string.Empty;
     public string GosiReference { get; init; } = string.Empty;
@@ -686,6 +687,7 @@ public record EmployeeDraftDto
         VisaNumber               = includeSensitive ? d.VisaNumber : string.Empty,
         VisaFileNumber           = includeSensitive ? d.VisaFileNumber : string.Empty,
         IqamaNumber              = includeSensitive ? d.IqamaNumber : string.Empty,
+        IdNumber                 = includeSensitive ? d.IdNumber : string.Empty,
         BorderNumber             = includeSensitive ? d.BorderNumber : string.Empty,
         MuqeemNumber             = includeSensitive ? d.MuqeemNumber : string.Empty,
         GosiReference            = includeSensitive ? d.GosiReference : string.Empty,
