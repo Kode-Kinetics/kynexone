@@ -4169,7 +4169,14 @@ public partial class PayrollController : ControllerBase
     {
         var batch = await _db.PayrollPaymentBatches.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batchId, cancellationToken);
         if (batch is null) return NotFound();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
+        // FOR UPDATE on the run row: the same lock Void (and Lock, Approve, remit) takes. The per-batch advisory
+        // lock the caller holds only serialises settles of THIS batch, so a settle could read the run as Locked
+        // and post its cash journal after a concurrent void of the run had committed. Waiting on the run row
+        // makes the two strictly sequential: this settle then reads the committed status (Voided -> refused
+        // below) and the void, if it comes second, sees the settlement and asks for its cash election.
+        // Lock order is batch advisory lock -> run row; no path takes the run row and then a batch lock.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
         if (run is null) return NotFound();
 
         if (run.Status != "Locked")
@@ -4233,6 +4240,21 @@ public partial class PayrollController : ControllerBase
         if (toSettle <= 0m)
             return BadRequest(new { error = "nothing_to_settle", message = "Every payslip in this run is paid outside the bank file; record those payments instead of settling the batch." });
         var clearing = TakeFromAccrual(netLines, toSettle);
+
+        // The amount about to leave Cash/Bank must be exactly what this batch pays. The batch total is the sum
+        // of the payslips it carries; the clearing is the accrued net liability less what is left outside the
+        // bank file. If the two ever disagree, the bank file and the books describe different payments: refuse
+        // rather than settle "whatever the ledger holds".
+        var clearedTotal = clearing.Sum(l => l.Amount);
+        if (clearedTotal != batch.TotalAmount)
+            return UnprocessableEntity(new
+            {
+                error = "settlement_amount_mismatch",
+                message = $"Settling this batch would clear {clearedTotal:N2} from Salaries Payable, but the batch pays {batch.TotalAmount:N2}. " +
+                          "The bank file and the accrued net pay disagree; nothing was posted. Investigate the difference before settling.",
+                clearedAmount = clearedTotal,
+                batchTotal = batch.TotalAmount,
+            });
 
         var glCtx = await LoadGlResolutionContextAsync(tenantId, run.CompanyId, cancellationToken);
         var (cashCode, cashName) = ResolveGlAccount("CASH_BANK", glCtx.Overrides, glCtx.DriverDefaults);
@@ -4773,8 +4795,22 @@ public partial class PayrollController : ControllerBase
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
+        // ONE remittance per group, even under concurrent requests. The "already remitted" probe below and
+        // the insert it guards used to run with no transaction and no lock, so two simultaneous "Remit GOSI"
+        // calls both passed the probe and both posted DR 2101/2106 / CR Cash/Bank — a double payment that
+        // still balanced, so nothing flagged it. The whole remit now runs in one transaction that first
+        // takes FOR UPDATE on the payroll_runs row (the same row lock Lock, Void and settle take): the second
+        // caller waits, then sees the committed remittance and gets the 409. It also serialises a remit
+        // against a concurrent void of the same run.
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        return await InRunRowLockTransactionAsync(
+            () => RemitStatutoryCoreAsync(id, tenantId, req, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult> RemitStatutoryCoreAsync(Guid id, Guid tenantId, RemitStatutoryRequest req, CancellationToken cancellationToken)
+    {
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status != "Locked")
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be remitted." });
@@ -4831,9 +4867,14 @@ public partial class PayrollController : ControllerBase
         // carry an operational balance with NO 1400/1410 debit behind it. Crediting them anyway drove an
         // ASSET into a credit balance, and BuildLiabilityClearingGl being balanced by construction meant
         // the gl_unbalanced 422 below could never catch it. So: CAP the receivable credit at the account's
-        // real carrying balance and route the EXCESS to Cash/Bank — which is exactly the pre-B1b treatment
-        // for the uncovered portion. Metered across the whole remittance by the splitter (the P0-1 lesson:
+        // real carrying balance. Metered across the whole remittance by the splitter (the P0-1 lesson:
         // never re-read an immutable balance per iteration).
+        //
+        // The uncovered EXCESS used to be routed to Cash/Bank, as the pre-B1b code did. That books a bank
+        // outflow that never happened (the EMI was withheld from pay; the loan was never lent through the
+        // ledger), so the remittance is now REFUSED with the shortfall named (loan_receivable_shortfall).
+        // Only a component that is not an employer loan/advance (a third-party garnishment routed to
+        // DED:LOAN) is a genuine cash payment and still credits Cash/Bank.
         var loanReceivableAccount    = GlAccountResolver.AccountLabel("LOAN_RECEIVABLE", glCtx);
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var loanContraByCode = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -4894,6 +4935,25 @@ public partial class PayrollController : ControllerBase
                 g == RemitGroups.Loan ? LoanContraFor : null);
             if (Math.Abs(dr - cr) > 0.01m)
                 return UnprocessableEntity(new { error = "gl_unbalanced", group = g, message = "Statutory remittance GL is not balanced.", totalDebits = dr, totalCredits = cr });
+
+            // A loan / advance instalment the receivable cannot cover is REFUSED, never sent to Cash/Bank:
+            // the cash left (or never left) at disbursement, so crediting the bank for the uncovered part
+            // books an outflow that never happened. Nothing from this request has been saved, so the whole
+            // request (every group) is refused together. Finance posts or reclasses the missing receivable,
+            // then remits.
+            if (g == RemitGroups.Loan && receivableSplitter.UncoveredByReceivable > 0m)
+            {
+                var shortfall = receivableSplitter.UncoveredByReceivable;
+                return UnprocessableEntity(new
+                {
+                    error = "loan_receivable_shortfall",
+                    group = g,
+                    shortfall,
+                    message = $"The loan / advance instalments withheld ({cr:N2}) exceed what the loan and advance receivable accounts " +
+                              $"hold by {shortfall:N2}. Remitting would credit Cash/Bank for money that never left the bank. " +
+                              "Nothing was posted. Record the missing disbursement (or reclassify the receivable), then remit again.",
+                });
+            }
 
             _db.FinanceGlEntries.AddRange(lines);
             // POD-B1b-FIX (P0-2) — surface the cap-and-route-excess split explicitly: how much of the LOAN

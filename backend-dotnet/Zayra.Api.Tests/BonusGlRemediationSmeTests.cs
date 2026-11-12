@@ -457,7 +457,7 @@ public class BonusGlRemediationSmeTests
     /// balance that BuildLiabilityClearingGl's balanced-by-construction 422 could never catch.
     /// </summary>
     [Fact]
-    public async Task B1_P0_2_LoanWithNoDisbursementGl_CreditsCashAndNeverDrivesTheReceivableIntoCredit()
+    public async Task B1_P0_2_LoanWithNoDisbursementGl_IsRefused_NothingPostedAndNoCashCredited()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -469,19 +469,21 @@ public class BonusGlRemediationSmeTests
 
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
-        (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        var refused = (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        Json(refused.Value).Should().Contain("loan_receivable_shortfall").And.Contain("2000",
+            "the refusal names the uncovered amount so finance can reclass the receivable");
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "accrual + remittance must balance");
-        Cr(gl, "1400").Should().Be(0m,
-            "nothing may be credited to a receivable that was never debited at disbursement");
+        AssertBalanced(gl, "the accrual alone must still balance");
+        gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).Should().BeEmpty(
+            "a refused remittance posts nothing");
+        Cr(gl, "1000").Should().Be(0m,
+            "the uncovered withholding must NEVER be credited to Cash/Bank: no bank outflow happened");
         Asset(gl, "1400").Should().Be(0m).And.BeGreaterOrEqualTo(0m,
             "an ASSET must never carry a credit balance");
-        Cr(gl, "1000").Should().Be(2_000m,
-            "the uncovered withholding falls back to the exact pre-B1b treatment: Cash/Bank");
-        Liability(gl, "2107").Should().Be(0m, "the loan-deduction control account still clears to zero");
+        Liability(gl, "2107").Should().Be(2_000m, "the withheld EMI stays open in the loan-deduction control account");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
@@ -507,6 +509,10 @@ public class BonusGlRemediationSmeTests
         var gl = await Ledger(db, tid);
         AssertBalanced(gl, "disbursement + accrual + remittance must balance");
         Cr(gl, "1400").Should().Be(2_000m, "the EMI relieves the receivable it was actually lent against");
+        var coveredRemit = gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).ToList();
+        Dr(coveredRemit, "2107").Should().Be(2_000m, "a covered EMI posts DR 2107 …");
+        Cr(coveredRemit, "1400").Should().Be(2_000m, "… / CR 1400 exactly, with no leg to Cash/Bank");
+        Cr(coveredRemit, "1000").Should().Be(0m);
         Asset(gl, "1400").Should().Be(0m, "…amortising it to exactly zero");
         Cr(gl, "1000").Should().Be(2_000m,
             "cash left the bank ONCE, at disbursement — an EMI withheld from pay is not a second outflow");
@@ -520,7 +526,7 @@ public class BonusGlRemediationSmeTests
     /// The split therefore has to happen inside a single line or 1400 goes negative anyway.
     /// </summary>
     [Fact]
-    public async Task B3_P0_2_MixedPopulation_SplitsOneAggregateAccrualLineBetweenReceivableAndCash()
+    public async Task B3_P0_2_MixedPopulation_AggregateEmiExceedingTheReceivable_IsRefusedWithTheShortfall()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -534,22 +540,18 @@ public class BonusGlRemediationSmeTests
 
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
-        (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+        var refused = (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        Json(refused.Value).Should().Contain("loan_receivable_shortfall").And.Contain("800");
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "the split journal must stay balanced by construction");
-
-        var remit = gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).ToList();
-        remit.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount).Should().Be(2_000m,
-            "the whole withholding still clears the 2107 control account");
-        Cr(remit, "1400").Should().Be(1_200m, "capped at the receivable's REAL carrying balance");
-        Cr(remit, "1000").Should().Be(800m, "the uncovered 800 is a genuine cash payout — pre-B1b behaviour");
-
-        Asset(gl, "1400").Should().Be(0m).And.BeGreaterOrEqualTo(0m,
-            "pre-fix the whole 2,000 hit 1400 and left the asset 800 in CREDIT");
-        Liability(gl, "2107").Should().Be(0m);
+        AssertBalanced(gl, "disbursement + accrual must balance");
+        gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).Should().BeEmpty(
+            "the whole remittance is refused: nothing is cleared, nothing is paid");
+        Cr(gl, "1000").Should().Be(1_200m, "only the real disbursement credits cash; the uncovered 800 is not a bank outflow");
+        Asset(gl, "1400").Should().Be(1_200m, "the receivable is untouched by a refused remittance");
+        Liability(gl, "2107").Should().Be(2_000m);
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
@@ -561,7 +563,7 @@ public class BonusGlRemediationSmeTests
     /// so the operational outstanding (2,000) is double the amount ever booked to 1400 (1,000).
     /// </summary>
     [Fact]
-    public async Task B4_P0_2_SecondRemittanceOnceTheReceivableIsExhausted_GoesEntirelyToCash()
+    public async Task B4_P0_2_SecondRemittanceOnceTheReceivableIsExhausted_IsRefused()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -585,17 +587,16 @@ public class BonusGlRemediationSmeTests
         var payrollJuly = Payroll(db, tid);
         await Lock(db, payrollJuly, july.Id);
         (await payrollJuly.RemitStatutory(july.Id, new RemitStatutoryRequest("LOAN", "EMI-2"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<UnprocessableEntityObjectResult>("the receivable is exhausted: the second instalment has nothing to relieve");
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "two runs of accruals + remittances must balance");
+        AssertBalanced(gl, "two runs of accruals + one remittance must balance");
         Cr(gl, "1400").Should().Be(1_000m,
             "the SECOND instalment must not credit 1400 again — the receivable was already exhausted");
-        Asset(gl, "1400").Should().Be(0m).And.BeGreaterOrEqualTo(0m,
-            "pre-fix the second remittance drove the asset to a 1,000 CREDIT balance");
-        Cr(gl, "1000").Should().Be(2_000m, "1,000 disbursed + 1,000 genuinely paid out in month 2");
-        Liability(gl, "2107").Should().Be(0m, "both control-account accruals clear");
+        Asset(gl, "1400").Should().Be(0m).And.BeGreaterOrEqualTo(0m);
+        Cr(gl, "1000").Should().Be(1_000m, "only the 1,000 disbursement left the bank; the refused month-2 remittance is no outflow");
+        Liability(gl, "2107").Should().Be(1_000m, "month 2's withheld EMI stays open until the receivable is reclassed");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
@@ -608,7 +609,7 @@ public class BonusGlRemediationSmeTests
     /// ever driven into credit) still holds, which is what this test locks down.
     /// </summary>
     [Fact]
-    public async Task B5_P0_2_ChartOfAccountsRemapAfterDisbursement_FallsBackToCash_AndStillNeverCreditsAReceivableItCannotSee()
+    public async Task B5_P0_2_ChartOfAccountsRemapAfterDisbursement_IsRefused_AndNeverCreditsAReceivableItCannotSee()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -644,7 +645,7 @@ public class BonusGlRemediationSmeTests
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<UnprocessableEntityObjectResult>("the new label's receivable is empty, so nothing can be relieved");
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
@@ -655,7 +656,7 @@ public class BonusGlRemediationSmeTests
         Asset(gl, "1400").Should().Be(1_500m,
             "the old-label receivable is left standing for a manual reclass — documented residual, " +
             "not a sign violation");
-        Cr(gl, "1000").Should().Be(1_500m + 1_500m, "disbursement, plus the uncovered EMI as cash");
+        Cr(gl, "1000").Should().Be(1_500m, "only the disbursement: the uncovered EMI is no bank outflow");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
@@ -1722,8 +1723,8 @@ public class BonusGlRemediationSmeTests
         var emp = await Emp(db, tid, co.Id, "E001");
         var run = await Run(db, tid, co.Id, 2026, 6);
 
-        // 4dp instalment, partially covered by a real disbursement so the split produces BOTH legs.
-        await Loan(db, tid, co, emp, "LN-1", outstanding: 5_000m, installment: 333.3333m, disbursedToGl: 100m);
+        // 4dp instalment, fully covered by a real disbursement: the credit leg must tie to the debit exactly.
+        await Loan(db, tid, co, emp, "LN-1", outstanding: 5_000m, installment: 333.3333m, disbursedToGl: 5_000m);
 
         await Lock(db, Payroll(db, tid), run.Id);
         var payroll = Payroll(db, tid);
@@ -1739,9 +1740,9 @@ public class BonusGlRemediationSmeTests
         var cr = remit.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
         cr.Should().Be(dr, "Σ(split) == the line amount EXACTLY — no rounding on the credit leg");
         dr.Should().Be(333.3333m, "the debit leg posts the stored 4dp accrual verbatim");
-        Cr(remit, "1400").Should().Be(100m, "capped at what the receivable actually holds");
-        Cr(remit, "1000").Should().Be(233.3333m, "and the uncovered excess is an exact cash payout");
-        Asset(await Ledger(db, tid), "1400").Should().Be(0m);
+        Cr(remit, "1400").Should().Be(333.3333m, "the whole 4dp instalment relieves the receivable, to the last digit");
+        Cr(remit, "1000").Should().Be(0m, "and nothing is credited to Cash/Bank");
+        Asset(await Ledger(db, tid), "1400").Should().Be(5_000m - 333.3333m);
     }
 
     /// <summary>

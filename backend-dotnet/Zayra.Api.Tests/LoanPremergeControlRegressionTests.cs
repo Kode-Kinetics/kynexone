@@ -150,7 +150,7 @@ public class LoanPremergeControlRegressionTests
         await using var h = await Fixture.Create();
         var prior = h.Loan(h.PriorCompany.Id);
         var run = new PayrollRun { TenantId = h.Tid, CompanyId = h.Company.Id, Year = 2026, Month = 1, Status = "Locked" };
-        var batch = new PayrollPaymentBatch { TenantId = h.Tid, PayrollRunId = run.Id, BatchNumber = "TRANSFER-SETTLEMENT", WpsStatus = WpsStatuses.Accepted };
+        var batch = new PayrollPaymentBatch { TenantId = h.Tid, PayrollRunId = run.Id, BatchNumber = "TRANSFER-SETTLEMENT", WpsStatus = WpsStatuses.Accepted, TotalAmount = 1000 };
         var offboarding = new EmployeeOffboarding { TenantId = h.Tid, EmployeeId = h.Employee.Id, Status = "InProgress", LastWorkingDay = new(2026, 1, 31) };
         var settlement = new EmployeeFinalSettlement { TenantId = h.Tid, CompanyId = h.Company.Id, EmployeeId = h.Employee.Id,
             OffboardingId = offboarding.Id, PayrollRunId = run.Id, Currency = "AED", Status = FinalSettlementStatuses.Disbursing };

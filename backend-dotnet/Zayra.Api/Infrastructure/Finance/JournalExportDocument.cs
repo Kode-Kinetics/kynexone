@@ -12,7 +12,7 @@ namespace Zayra.Api.Infrastructure.Finance;
 /// <c>Period</c> carries the accounting month. Locking a July run on 3 August gives every July line an
 /// EntryDate of 2026-08-03, and QuickBooks' TRNS date / Oracle's ACCOUNTING_DATE / SAP's BUDAT all derive
 /// the posting period from that date, so July payroll would land in August with a perfectly balanced file.
-/// This is EntryDate when it falls inside Period, and period-end otherwise.
+/// This is EntryDate when it falls inside Period, and period-end otherwise; the payroll accrual is always period-end.
 /// </param>
 /// <param name="SystemPostedDate">The raw <c>EntryDate</c>, carried separately so nothing is lost.</param>
 public sealed record JournalExportLine(
