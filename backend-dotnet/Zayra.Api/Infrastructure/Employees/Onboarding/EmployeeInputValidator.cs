@@ -142,6 +142,7 @@ public static class EmployeeInputValidator
         }
         if (request.ConfirmationDate is { } cd && joining is { } jj && cd < jj) Err("confirmationDate", EmployeeFieldErrors.ConfirmationBeforeJoining);
         if (request.NoticePeriodDays is { } np && (np < 0 || np > 365)) Err("noticePeriodDays", EmployeeFieldErrors.InvalidFormat);
+        if (request.GosiFirstRegisteredOn is { } gosi && (gosi > today || gosi.Year < 1950)) Err("gosiFirstRegisteredOn", EmployeeFieldErrors.InvalidFormat);
 
         // ── contact ───────────────────────────────────────────────────────────────────────────────────
         var mobile = request.MobileNumber;

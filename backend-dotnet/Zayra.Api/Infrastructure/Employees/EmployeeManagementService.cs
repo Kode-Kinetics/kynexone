@@ -218,6 +218,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
         // rationale as the work email below: it is resolved once the legal entity is final.
         await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
+        // A hire that states no notice period gets the company's default (country rule notice_period_days). Create only: nobody is back-filled.
+        employee.NoticePeriodDays ??= await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, employee.CountryCode, cancellationToken);
         // PROBATION vs THE COMPANY'S OWN MAXIMUM: advisory 409 until acknowledged; the override is audited after the save.
         var probationFinding = await ProbationRuleGate.CheckAsync(_db, tenantId, employee.CompanyId,
             employee.ProbationStartDate ?? DateOnly.FromDateTime(employee.JoiningDate), employee.ProbationEndDate, cancellationToken);
@@ -1755,7 +1757,12 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
         // Saudi / NonSaudi follows the recorded nationality (Qiwa, the GOSI classification and the bank export read this column). It was only ever written by
         // the CSV import and self-service, so a person created through the form had it blank. Never guessed: a GCC national or an unrecognised value stays as it was.
-        if (DeriveWorkerClass(employee.NationalityCode, employee.Nationality) is { } workerClass) employee.SaudiOrNonSaudi = workerClass;
+        var workerClass = DeriveWorkerClass(employee.NationalityCode, employee.Nationality);
+        if (workerClass is not null) employee.SaudiOrNonSaudi = workerClass;
+        // F02: the GOSI first-registration date is STATED AT HIRE for a Saudi national (create and the draft autosave), and nowhere else: a person who has
+        // started work keeps what is on file, and changing it for them stays on the approval-gated change path. Never inferred; ignored for anyone not Saudi.
+        if (employee.ActivatedAtUtc is null && (employee.Id == 0 || string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)))
+            employee.GosiFirstRegisteredOn = workerClass == "Saudi" ? request.GosiFirstRegisteredOn : null;
         employee.MaritalStatus = Clean(request.MaritalStatus);
         employee.PersonalEmail = Clean(request.PersonalEmail);
         employee.WorkEmail = Clean(request.WorkEmail);
