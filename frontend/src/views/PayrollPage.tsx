@@ -2635,11 +2635,12 @@ function PayslipsTab() {
 
 // ── Bank / WPS Files Tab ────────────────────────────────────────────────────────
 
-function BankWpsTab() {
+function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
-  const [runId, setRunId] = useState('');
+  // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
+  const [runId, setRunId] = useState(selectedRunId ?? '');
   const [batches, setBatches] = useState<PayrollPaymentBatch[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<PayrollPaymentBatch | null>(null);
   const [records, setRecords] = useState<PayrollPaymentRecord[]>([]);
@@ -2651,6 +2652,7 @@ function BankWpsTab() {
   currentRunRef.current = runId;
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
+  useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2807,7 +2809,11 @@ function BankWpsTab() {
                   {records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">No records.</td></tr>}
                   {records.map(r => (
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                      <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">Emp #{r.employeeId}</td>
+                      <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
+                        {r.employeeName
+                          ? <>{r.employeeName}{r.employeeCode && <span className="ms-1.5 text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                          : t('Emp #{id}', { id: r.employeeId })}
+                      </td>
                       <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">Missing IBAN</span>}</td>
                       <td className="px-4 py-2 text-xs text-slate-400">{r.wpsReference}</td>
@@ -4013,7 +4019,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab />;
-      case 'bank-wps':        return <BankWpsTab />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} />;
       case 'payment-tracking': return <PaymentTrackingTab />;
       case 'reports':         return <ReportsTab />;
       case 'eosb':            return <EOSBTab />;

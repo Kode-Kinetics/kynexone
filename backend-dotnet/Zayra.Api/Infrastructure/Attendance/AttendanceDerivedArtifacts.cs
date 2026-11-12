@@ -252,7 +252,24 @@ public static class AttendanceDerivedArtifacts
     /// check, which recomputes it from the punches instead of trusting the minutes a record was given.
     /// </summary>
     public static (int LateMinutes, int EarlyExitMinutes) LateAndEarlyExit(DateTime? firstInUtc, DateTime? lastOutUtc, DateOnly date,
-        TimeOnly? shiftStartTime, TimeOnly? shiftEndTime, TimeZoneInfo tz, AttendancePolicy policy)
+        TimeOnly? shiftStartTime, TimeOnly? shiftEndTime, TimeZoneInfo tz, AttendancePolicy policy, bool restDay = false)
+    {
+        // A rest day has no required hours: there is no start to be late for and no end to leave early from. Work on it is
+        // paid as overtime (or a compensatory day) and never produces a late or early-exit deduction.
+        if (restDay) return (0, 0);
+        var (shiftStart, shiftEnd) = ShiftWindowUtc(date, shiftStartTime, shiftEndTime, tz, policy);
+        var late = firstInUtc is null ? 0 : Math.Max(0, (int)(firstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
+        var early = lastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - lastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
+        return (late, early);
+    }
+
+    /// <summary>
+    /// The UTC start and end of the day's shift in the tenant's zone: the shift's own times (an overnight shift ends the next
+    /// calendar day) or, with no shift, the default start plus the policy's working day and break. The one definition behind
+    /// the late / early-exit minutes and behind "has this day ended yet" (<see cref="DayHasEnded"/>).
+    /// </summary>
+    public static (DateTime StartUtc, DateTime EndUtc) ShiftWindowUtc(DateOnly date, TimeOnly? shiftStartTime, TimeOnly? shiftEndTime,
+        TimeZoneInfo tz, AttendancePolicy policy)
     {
         var startLocalTime = shiftStartTime ?? AttendanceWorkDate.DefaultShiftStart;
         // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
@@ -270,9 +287,36 @@ public static class AttendanceDerivedArtifacts
         {
             shiftEnd = shiftStart.AddMinutes(policy.StandardWorkMinutes + policy.BreakMinutes);
         }
-        var late = firstInUtc is null ? 0 : Math.Max(0, (int)(firstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
-        var early = lastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - lastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
-        return (late, early);
+        return (shiftStart, shiftEnd);
+    }
+
+    /// <summary>
+    /// Whether the work day has finished at <paramref name="nowUtc"/>: the shift's end (in the tenant's zone) has passed. A
+    /// day that has not ended — today before the shift's end, or any later day — cannot be called Absent: nobody has yet
+    /// failed to turn up, so processing leaves it pending instead of raising a loss-of-pay deduction for it.
+    /// </summary>
+    public static bool DayHasEnded(DateTime nowUtc, DateOnly date, TimeOnly? shiftStartTime, TimeOnly? shiftEndTime,
+        TimeZoneInfo tz, AttendancePolicy policy) =>
+        nowUtc >= ShiftWindowUtc(date, shiftStartTime, shiftEndTime, tz, policy).EndUtc;
+
+    /// <summary>
+    /// Withdraws what an earlier run derived for a day that had not ended: the Absent record, its legacy row and its pending
+    /// absence deduction. Only a record that is still exactly what the processor wrote (Absent, no punches, no correction)
+    /// and whose impacts payroll has not consumed is touched; anything else is left as it is.
+    /// </summary>
+    public static async Task<bool> RetractPrematureAbsenceAsync(ZayraDbContext db, Guid tenantId, AttendanceDailyRecord daily, CancellationToken ct)
+    {
+        if (daily.Status != "Absent" || daily.ManualCorrectionStatus != "None" || daily.FirstInUtc is not null || daily.LastOutUtc is not null)
+            return false;
+        var consumed = await db.AttendancePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.EmployeeId == daily.EmployeeId
+            && x.WorkDate == daily.WorkDate && x.Status == ProcessedStatus, ct);
+        if (consumed) return false;
+        await ReplacePendingAsync(db, tenantId, daily, ct);
+        var legacy = await ScopedBypass.NullableTenantWide(db.AttendanceRecords, tenantId, LegacyRecordJustification)
+            .FirstOrDefaultAsync(x => x.EmployeeId == daily.EmployeeId && x.WorkDate == daily.WorkDate, ct);
+        if (legacy is not null) db.AttendanceRecords.Remove(legacy);
+        db.AttendanceDailyRecords.Remove(daily);
+        return true;
     }
 
     /// <summary>The deductions held on a half-pair day until the pair is complete.</summary>

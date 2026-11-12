@@ -63,6 +63,7 @@ import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
 import { attendanceBulk } from './attendanceBulk';
 import { attendanceDashboard } from './attendanceDashboard';
+import { demoCompliance } from './demoCompliance';
 import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
 import { dailyD } from './dailyD';
@@ -95,6 +96,7 @@ const en: Dict = {
   ...dailyA.en,
   ...attendanceBulk.en,
   ...attendanceDashboard.en,
+  ...demoCompliance.en,
   ...dailyB.en,
   ...dailyC.en,
   ...dailyD.en,
@@ -1655,6 +1657,7 @@ const ar: Dict = {
   ...dailyA.ar,
   ...attendanceBulk.ar,
   ...attendanceDashboard.ar,
+  ...demoCompliance.ar,
   ...dailyB.ar,
   ...dailyC.ar,
   ...dailyD.ar,

@@ -127,7 +127,11 @@ public sealed record NitaqatStanding(
     // One of NitaqatBandingMethods. Which regime produced the floors above.
     string  BandingMethod,
     // NitaqatBandingMethods.Explain(BandingMethod), rendered for the reader.
-    string  BandingMethodNote);
+    string  BandingMethodNote,
+    // True when every threshold behind the band is verified and the activity is a real MHRSD activity. When false the
+    // Saudization screen shows the percentage only: no band, colour, floor or distance. The band above is still
+    // computed (callers that read it keep working); it is the screen that declines to state it.
+    bool    ThresholdsVerified = true);
 
 public sealed record NitaqatStandingResponse(
     bool Ok,

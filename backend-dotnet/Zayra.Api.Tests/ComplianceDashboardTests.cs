@@ -41,8 +41,8 @@ public class ComplianceDashboardTests
         using var db = MakeDb();
         await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
 
-        // Employee 1: ready (has GOSI ref + salary)
-        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA123456"));
+        // Employee 1: ready (has GOSI ref + salary + a recorded GOSI registration date, so the run knows the cohort)
+        db.Employees.Add(WithCohort(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA123456")));
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
         // Employee 2: blocked (missing GOSI ref)
         db.Employees.Add(MakeEmployee(TenantA, 2, nationality: "Saudi", gosiRef: ""));
@@ -103,6 +103,7 @@ public class ComplianceDashboardTests
 
         // A payroll run is required for the IBAN check to trigger.
         db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Locked" });
+        db.Employees.AddRange(MakeEmployee(TenantA, 1, "Saudi", "SA1"), MakeEmployee(TenantA, 2, "Saudi", "SA2"));
         db.EmployeePayrollProfiles.AddRange(
             new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "SA4420000001234567891234" },
             new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 2, Iban = "INVALID_IBAN" });
@@ -202,7 +203,8 @@ public class ComplianceDashboardTests
         using var db = MakeDb();
         await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
 
-        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA9999"));
+        // Clean means the run has nothing to flag, which for a Saudi includes a recorded GOSI registration date (the cohort).
+        db.Employees.Add(WithCohort(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA9999")));
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
         db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "SA4420000001234567891234" });
         db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Locked" });
@@ -373,7 +375,7 @@ public class ComplianceDashboardTests
         using var db = MakeDb();
         await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
 
-        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001"));
+        db.Employees.Add(WithCohort(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001")));
         db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
         await db.SaveChangesAsync();
 
@@ -533,7 +535,116 @@ public class ComplianceDashboardTests
         Assert.DoesNotContain("2 employee is", copy);
     }
 
+    // ── Readiness uses the payroll run's population and verdicts ──────────────
+
+    [Fact]
+    public async Task WpsSection_MissingIban_IgnoresDraftAndLeftEmployees_TheRunNeverPaysThem()
+    {
+        using var db = MakeDb();
+        db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Locked" });
+        var draft = MakeEmployee(TenantA, 2, "Saudi", "SA2"); draft.Status = "Draft";
+        var left = MakeEmployee(TenantA, 3, "Saudi", "SA3"); left.Status = "Terminated";
+        var removed = MakeEmployee(TenantA, 4, "Saudi", "SA4"); removed.IsDeleted = true;
+        db.Employees.AddRange(MakeEmployee(TenantA, 1, "Saudi", "SA1"), draft, left, removed);
+        db.EmployeePayrollProfiles.AddRange(
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "SA4420000001234567891234" },
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 2, Iban = "" },
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 3, Iban = "" },
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 4, Iban = "" });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(0, dash.Wps.MissingIbanCount);
+        Assert.DoesNotContain(dash.ActionItems, a => a.Title.Contains("IBAN"));
+    }
+
+    [Fact]
+    public async Task WpsSection_MissingIban_StillCountsAnActiveEmployeeWithoutAUsableIban()
+    {
+        using var db = MakeDb();
+        db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Locked" });
+        var draft = MakeEmployee(TenantA, 2, "Saudi", "SA2"); draft.Status = "Draft";
+        db.Employees.AddRange(MakeEmployee(TenantA, 1, "Saudi", "SA1"), draft);
+        db.EmployeePayrollProfiles.AddRange(
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "" },
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 2, Iban = "" });
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(1, dash.Wps.MissingIbanCount);
+    }
+
+    [Fact]
+    public async Task GosiSection_ASaudiWithoutARecordedCohort_IsNotReady_AsTheRunFlagsThem()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001"));
+        db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(0, dash.Gosi.ReadyCount);
+        Assert.Equal(1, dash.Gosi.BlockedCount);
+        Assert.Equal(0.0, dash.Gosi.ReadinessPercent);
+        Assert.Contains("GOSI_COHORT_NOT_RECORDED", dash.Gosi.BlockedEmployees.Single().BlockingIssueCodes);
+    }
+
+    [Fact]
+    public async Task GosiSection_ASaudiWithARecordedCohort_IsReady_Unchanged()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+        db.Employees.Add(WithCohort(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001")));
+        db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(1, dash.Gosi.ReadyCount);
+        Assert.Equal(100.0, dash.Gosi.ReadinessPercent);
+    }
+
+    [Fact]
+    public async Task GosiSection_ANonSaudiNeedsNoCohort_AndStaysReady_Unchanged()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+        db.Employees.Add(MakeEmployee(TenantA, 1, nationality: "Indian", gosiRef: "NS001"));
+        db.EmployeeSalaryStructures.Add(MakeSalary(TenantA, 1, 10_000m));
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(1, dash.Gosi.ReadyCount);
+        Assert.Equal(0, dash.Gosi.BlockedCount);
+    }
+
+    [Fact]
+    public async Task GosiSection_DraftEmployeesAreNotInThePopulation_Unchanged()
+    {
+        using var db = MakeDb();
+        await GosiRuleSeeder.SeedDefaultsAsync(db, NullLogger.Instance);
+        var draft = MakeEmployee(TenantA, 2, nationality: "Saudi", gosiRef: ""); draft.Status = "Draft";
+        db.Employees.AddRange(WithCohort(MakeEmployee(TenantA, 1, nationality: "Saudi", gosiRef: "SA001")), draft);
+        db.EmployeeSalaryStructures.AddRange(MakeSalary(TenantA, 1, 10_000m), MakeSalary(TenantA, 2, 10_000m));
+        await db.SaveChangesAsync();
+
+        var dash = await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None);
+
+        Assert.Equal(1, dash.Gosi.ReadyCount + dash.Gosi.BlockedCount);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static Employee WithCohort(Employee e)
+    {
+        e.GosiFirstRegisteredOn = new DateOnly(2020, 1, 1);
+        return e;
+    }
 
     private static Employee MakeEmployee(Guid tenantId, int id, string nationality, string gosiRef) =>
         new()

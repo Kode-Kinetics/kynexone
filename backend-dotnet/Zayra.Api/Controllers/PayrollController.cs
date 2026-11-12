@@ -5433,14 +5433,24 @@ public partial class PayrollController : ControllerBase
         var d4Confirmations = await _db.BankPaymentConfirmations.AsNoTracking()
             .Where(c => c.TenantId == tenantId && c.PaymentBatchId == id)
             .ToListAsync(cancellationToken);
+        // Names for the screen (it used to show "Emp #226"). Read through the caller's own company scope, so an employee the
+        // caller may not see is listed by id only and no name is disclosed.
+        var recordEmployeeIds = records.Select(r => r.EmployeeId).Distinct().ToList();
+        var names = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && recordEmployeeIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.FullName, e.EmployeeCode })
+            .ToDictionaryAsync(e => e.Id, cancellationToken);
         return Ok(records.Select(r =>
         {
             var latest = d4Confirmations.Where(c => c.PaymentRecordId == r.Id)
                 .OrderByDescending(c => c.ImportedAtUtc).FirstOrDefault();
+            names.TryGetValue(r.EmployeeId, out var who);
             return new
             {
                 r.Id,
                 r.EmployeeId,
+                employeeName = who?.FullName,
+                employeeCode = who?.EmployeeCode,
                 r.Amount,
                 r.Status,
                 r.WpsReference,

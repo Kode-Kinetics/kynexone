@@ -715,7 +715,12 @@ public sealed class NitaqatCalculationService
             DisagreesWithQiwa: qiwaBand is not null
                 && !string.Equals(qiwaBand, band, StringComparison.OrdinalIgnoreCase),
             BandingMethod: ctx.BandingMethod,
-            BandingMethodNote: NitaqatBandingMethods.Explain(ctx.BandingMethod));
+            BandingMethodNote: NitaqatBandingMethods.Explain(ctx.BandingMethod),
+            // The screen states a band only when every threshold behind it is verified and the activity is a real MHRSD
+            // one. The built-in illustrative activity is a demo fixture: no band computed from it is a real band, whatever
+            // its rows are marked.
+            ThresholdsVerified: ctx.Thresholds.All(t => t.IsVerified)
+                && !string.Equals(ctx.Activity.Code, NitaqatGridImportService.IllustrativeActivityCode, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

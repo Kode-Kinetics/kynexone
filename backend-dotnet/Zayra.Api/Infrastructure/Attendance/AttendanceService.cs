@@ -1028,9 +1028,8 @@ public partial class AttendanceService : IAttendanceService
                     done = false;
                     // Re-checked inside the day's lock: a payroll period locked while the run was going is not rewritten.
                     if (await IsLocked(tenantId, employee.Id, day, ct)) return;
-                    await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                    done = await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                     await _db.SaveChangesAsync(ct);
-                    done = true;
                 }, ct);
                 _db.ChangeTracker.Clear();
                 if (!done) continue;
@@ -1110,9 +1109,8 @@ public partial class AttendanceService : IAttendanceService
                 done = false;
                 // Re-checked inside the day's lock: a payroll period locked while the job was going is not rewritten.
                 if (await IsLocked(tenantId, employee.Id, day, ct)) return;
-                await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
+                done = await ProcessEmployeeDay(tenantId, employee, day, policy, context, ct);
                 await _db.SaveChangesAsync(ct);
-                done = true;
             }, ct);
             if (done) days++;
         }
@@ -1687,7 +1685,8 @@ public partial class AttendanceService : IAttendanceService
         return await insights.OrderByDescending(x => x.CreatedAtUtc).Take(25).ToListAsync(ct);
     }
 
-    private async Task ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)
+    /// <returns>False when the day was left unprocessed because it has not ended (see <see cref="AttendanceDerivedArtifacts.DayHasEnded"/>).</returns>
+    private async Task<bool> ProcessEmployeeDay(Guid tenantId, Employee employee, DateOnly date, AttendancePolicy policy, RequestContext context, CancellationToken ct)
     {
         // The work day's punch window (shift-aware), from the ONE helper the correction validation uses too.
         var window = await WorkDayWindowAsync(tenantId, employee.Id, date, ct);
@@ -1708,13 +1707,11 @@ public partial class AttendanceService : IAttendanceService
             if (events.Count > 0) RaiseImportConflict(tenantId, daily, events);
             var (_, keptAbsenceMinutes) = await DayBaselineAsync(tenantId, employee, date, policy, ct);
             await UpsertImpacts(tenantId, daily, keptAbsenceMinutes, ct);
-            return;
+            return true;
         }
+        var isNewRecord = daily is null;
         if (daily is null)
-        {
             daily = new AttendanceDailyRecord { TenantId = tenantId, EmployeeId = employee.Id, EmployeeName = employee.FullName, Department = employee.Department, Branch = employee.Branch, WorkDate = date };
-            _db.AttendanceDailyRecords.Add(daily);
-        }
         // The first-in is only ever an In (or a direction-less Unknown) punch. It used to fall back to the day's first
         // event of ANY direction, so a day with nothing but an Out punch had first-in == last-out: MissingPunch false,
         // the policy break applied, status "Absent", an absence deduction raised and no missing-punch exception for
@@ -1743,7 +1740,11 @@ public partial class AttendanceService : IAttendanceService
             .FirstOrDefaultAsync(ct);
 
         (daily.LateMinutes, daily.EarlyExitMinutes) = AttendanceDerivedArtifacts.LateAndEarlyExit(
-            daily.FirstInUtc, daily.LastOutUtc, date, shift?.StartTime, shift?.EndTime, tz, policy);
+            daily.FirstInUtc, daily.LastOutUtc, date, shift?.StartTime, shift?.EndTime, tz, policy, restDay: isRestDay);
+        // A day that has not ended (today before the shift's end, or a later day) with no punch is not Absent: nobody has
+        // failed to turn up yet. Leave it unprocessed (no record, no deduction) unless it is leave, a holiday or a rest day,
+        // which carry no deduction and are recorded as before.
+        var dayHasEnded = AttendanceDerivedArtifacts.DayHasEnded(_clock.GetUtcNow().UtcDateTime, date, shift?.StartTime, shift?.EndTime, tz, policy);
 
         // KSA Labour Law Art. 98 — during Ramadan the actual working hours for Muslims are reduced to
         // 6 hours a day, and Art. 98 cuts HOURS, not wages: the monthly salary is unchanged. So the
@@ -1784,6 +1785,15 @@ public partial class AttendanceService : IAttendanceService
             daily.MissingPunch = false;
             daily.LateMinutes = daily.EarlyExitMinutes = daily.UndertimeMinutes = 0;
         }
+        else if (!hasPunch && daily.TotalWorkedMinutes == 0 && !dayHasEnded)
+        {
+            // An earlier run (before this rule) may have written Absent for today or a later day: withdraw it so no loss of
+            // pay reaches payroll. A new day simply is not written.
+            // Anything else already on the day is left exactly as stored (the fields set above are not written back).
+            if (!isNewRecord && !await AttendanceDerivedArtifacts.RetractPrematureAbsenceAsync(_db, tenantId, daily, ct))
+                _db.Entry(daily).State = EntityState.Detached;
+            return false;
+        }
         else
         {
             // Half a pair (In-only, or Out-only) is "Present" with MissingPunch: attended, hours unknown, raised for review.
@@ -1794,10 +1804,12 @@ public partial class AttendanceService : IAttendanceService
         }
         daily.ProcessedAtUtc = DateTime.UtcNow;
         daily.UpdatedAtUtc = DateTime.UtcNow;
+        if (isNewRecord) _db.AttendanceDailyRecords.Add(daily);
         foreach (var raw in events) raw.IsProcessed = true;
         await UpsertLegacyRecord(tenantId, employee.CompanyId, daily, ct);
         await UpsertImpacts(tenantId, daily, absenceMinutes, ct);
         await UpsertExceptions(tenantId, daily, ct);
+        return true;
     }
 
     /// <summary>
