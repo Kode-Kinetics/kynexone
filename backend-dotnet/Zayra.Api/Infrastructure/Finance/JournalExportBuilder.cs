@@ -424,6 +424,7 @@ public static class JournalExportBuilder
     public static string ExportReference(FinanceGlEntry e)
     {
         if (e.SourceModule != FinalSettlementGlDescriptions.SourceModule || !int.TryParse(e.SourceEntityRef, out _)) return e.SourceEntityRef;
+        if (e.EventType == GlEventTypes.LeaveProvisionAccrual) return $"LEAVE-{e.Period}";
         return e.EventType == GlEventTypes.EosbProvisionAccrual
             ? $"EOSB-{e.Period}"
             : $"SETTLEMENT-{e.SourceEntityId.ToString("N")[..12].ToUpperInvariant()}";

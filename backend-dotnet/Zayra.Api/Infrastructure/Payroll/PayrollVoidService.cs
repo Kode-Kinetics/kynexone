@@ -563,6 +563,13 @@ public sealed class PayrollVoidService
             .Where(x => x.PayrollRunId == runId)
             .ToListAsync(ct);
         if (eosbSnapshots.Count > 0) _db.EosbProvisionSnapshots.RemoveRange(eosbSnapshots);
+        // The annual-leave provision snapshots go the same way: the contras above reverse its lines, and the month can be measured again.
+        var leaveSnapshots = await ScopedBypass.TenantWide(_db.LeaveProvisionSnapshots, tenantId,
+                "Run void is a system correction over the whole run: every company's leave provision snapshot for " +
+                "this run must go with the reversed provision lines, whatever the caller's company claims.")
+            .Where(x => x.PayrollRunId == runId)
+            .ToListAsync(ct);
+        if (leaveSnapshots.Count > 0) _db.LeaveProvisionSnapshots.RemoveRange(leaveSnapshots);
         var glReversed = contras.Count;
         // POD-C3 — the sub-ledger is written in the SAME unit of work as the 1420 debit it explains, so
         // the aggregate and the attribution can never disagree.
