@@ -1466,12 +1466,14 @@ public partial class PayrollController : ControllerBase
                     : currencyMismatch ? "gl_currency_mismatch"
                     : readiness.EmptySidedEntryIds.Count > 0 ? "gl_invalid_entry"
                     : companyOff ? "gl_company_unbalanced"
+                    : readiness.UncostedRequiredEntryIds.Count > 0 && readiness.Difference <= 0.01m ? PayrollCostStamper.RequiredCode
                     : "gl_unbalanced";
                 var message = error switch
                 {
                     "gl_mapping_missing" => "Payroll GL contains unmapped accounts. Complete the company GL mappings before locking.",
                     "gl_currency_mismatch" => "Payroll GL must be denominated solely in the legal entity's company currency before locking.",
                     "gl_invalid_entry" => "Payroll GL contains an entry with neither a debit nor a credit account.",
+                    PayrollCostStamper.RequiredCode => "A posting account that requires a cost centre received a journal line with none (for example the annual leave provision expense for an employee who resolves to no cost centre). Give that employee a cost centre, or set the account's cost-centre rule to Optional, then lock again.",
                     "gl_company_unbalanced" => "Payroll GL balances in total but not for each legal entity: " +
                         string.Join("; ", readiness.CompanyBalances.Where(c => c.Difference > 0.01m)
                             .Select(c => $"{(c.CompanyId is Guid cid ? $"company {cid}" : "lines with no company")} has debits {c.Debits:0.00} and credits {c.Credits:0.00}")) +
@@ -6706,7 +6708,10 @@ public partial class PayrollController : ControllerBase
         {
             var accountMasters = await PayrollCostStamper.LoadAccountMastersAsync(_db, tenantId, run.CompanyId!.Value, ct);
             var extra = problems.Select(p => $"problem:{p.DriverKey}:{p.Kind}")
-                .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" });
+                .Concat(new[] { $"rounding:{(roundingBlock is null ? "ok" : "blocked")}", $"eosb:{eosb.Refusal?.Code ?? "ok"}" })
+                // The annual-leave provision's switch and its opening catch-up count are sealed (amounts are not: they follow the live
+                // balances). Added only when the switch is on, so a company that never switched it on keeps its hash byte for byte.
+                .Concat(leave.On ? new[] { $"leave:on:catchup={leave.CatchUpEmployees}" } : Array.Empty<string>());
             // The leave provision lines are left out of the approval fingerprint: their amounts follow the live leave balances, which move
             // whenever a leave request is approved or accrues, and a balance change between Approve and Lock is not a cost-centre or
             // posting-rule decision. The cost-centre resolution, the accounts and the mappings they post through ARE still sealed.
@@ -8244,6 +8249,10 @@ public partial class PayrollController : ControllerBase
         // (It is a PER-EMPLOYEE positional sub-ledger, not ControlAccountBalance.AvailableForRelief: that
         // clamp is for receivables — on a credit-balance LIABILITY it is always 0, and a tenant-wide pool
         // would let one employee's settlement relieve another employee's provision.)
+        // Two settlements (or a settlement and a Lock) for the same company must not read the provision sub-ledger at the same moment: take the
+        // company's advisory lock BEFORE reading it, as Lock does. Released at commit or rollback.
+        if (s.CompanyId is Guid settlementLockCompany && _db.Database.IsRelational())
+            await Infrastructure.Finance.CostAccountingGuards.AcquireCompanyLockAsync(_db, tenantId, settlementLockCompany, cancellationToken);
         var provisionCursor = await EosbProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
         var (provisionPosition, provisionTaken) =
             provisionCursor.Take(s.EmployeeId, s.CompanyId, s.GratuityAmount);
@@ -8889,7 +8898,9 @@ public partial class PayrollController : ControllerBase
         var encashment = await LeaveEncashmentCalculator.ComputeAsync(
             _db, tenantId, employee.Id, companyId, lastDay, cashOutBase, ct,
             statutoryAnnualLeaveCashOut: exitRules.LeaveCashOutOnExit,
-            basisLabel: LeaveCashOutRate.LabelFor(exitRules.LeaveCashOutBasis));
+            basisLabel: LeaveCashOutRate.LabelFor(exitRules.LeaveCashOutBasis),
+            // A day carried into a later year's row is paid once, exactly as the monthly provision counts it.
+            netCarriedForward: true);
         warnings.AddRange(encashment.Warnings);
 
         // ── K1: THE NOTICE RULES DEPEND ON WHO TERMINATED (Art. 75/76) ───────────────────────────────

@@ -11,8 +11,9 @@ namespace Zayra.Api.Tests;
 /// A carried-over leave balance must be provided ONCE. The product has no year-end rollover job yet, so a customer (or a
 /// future rollover) can leave last year's row open while this year's row carries the same days in
 /// <c>CarriedForward</c>. The final-settlement calculator sums <c>Available</c> over every year's row, so in that
-/// shape it counts the days twice. The provision asks the SAME calculator with <c>netCarriedForward: true</c>; the
-/// settlement keeps the default (<c>false</c>) so its behaviour is untouched and the double count is reported, not hidden.
+/// shape it counts the days twice. CTO decision 2026-11-12: final settlement must not pay a carried day twice, so BOTH the provision
+/// and the settlement ask the calculator with <c>netCarriedForward: true</c> (see <c>FinalSettlement_CountsCarriedForwardDaysOnce_…</c>
+/// for the settlement-level proof). <c>false</c> remains only as the raw per-row sum.
 /// </summary>
 public class LeaveProvisionCarryForwardTests
 {
@@ -63,7 +64,7 @@ public class LeaveProvisionCarryForwardTests
             statutoryAnnualLeaveCashOut: true, netCarriedForward: net);
 
     [Fact]
-    public async Task AnUnclosedPriorYearRow_PlusTheSameDaysCarriedForward_IsCountedOnce_WhenNetting_AndTwiceByDefault()
+    public async Task AnUnclosedPriorYearRow_PlusTheSameDaysCarriedForward_IsCountedOnce_WhenNetting_AndTheRawSumStillDoublesIt()
     {
         var (db, conn) = NewDb();
         await using var _ = conn; await using var __ = db;
@@ -71,13 +72,13 @@ public class LeaveProvisionCarryForwardTests
         var w = await SeedAsync(db, (2025, 21m, 6m, 0m, 0m), (2026, 5m, 0m, 15m, 0m));
 
         var provision = await ComputeAsync(db, w, net: true);
-        var settlement = await ComputeAsync(db, w, net: false);
+        var rawSum = await ComputeAsync(db, w, net: false);
 
         provision.TotalDays.Should().Be(20m, "15 carried + 5 accrued, each day once");
         provision.TotalAmount.Should().Be(20m * Day);
         provision.Lines.Select(l => (l.Year, l.EncashableDays)).Should().Equal((2026, 20m));
-        settlement.TotalDays.Should().Be(35m,
-            "the default path is the settlement's and is deliberately unchanged: it sums every year's Available, so the 15 carried days count in both rows");
+        rawSum.TotalDays.Should().Be(35m,
+            "netCarriedForward:false is the raw per-row sum (no caller uses it any more): the 15 carried days count in both rows");
     }
 
     [Fact]

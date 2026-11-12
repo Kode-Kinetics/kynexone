@@ -430,6 +430,109 @@ public class LeaveProvisionAccrualTests
         (await db.LeaveProvisionSnapshots.Select(s => s.Period).Distinct().ToListAsync()).Should().Equal("2026-06");
     }
 
+    // ── 6b. A void must not strand a provision a settlement already consumed ───
+
+    [Fact]
+    public async Task Void_IsRefused_WhenALaterSettlementAlreadyConsumedTheLeaveProvision_AndGoesThroughOnceItIsCancelled()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await LockMonthAsync(db, fx, 2026, 6);
+        await SetBalanceAsync(db, fx, "A", accrued: 12.25m, used: 3m);
+        var jul = await LockMonthAsync(db, fx, 2026, 7);
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 3_825m, encashmentDays: 12.75m);
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var voided = await Payroll(db, fx.TenantId).VoidRun(jul, new PayrollDecisionRequest("wrong July"), CancellationToken.None);
+
+        var refused = voided.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        var body = JsonSerializer.Serialize(refused.Value);
+        body.Should().Contain("provision_consumed_by_settlement").And.Contain("cancel the final settlement").And.Contain("Employee A");
+        db.ChangeTracker.Clear();
+        (await LeaveLinesAsync(db, jul)).Should().OnlyContain(l => !l.IsReversed, "a refused void writes nothing");
+        (await ProvisionBalanceAsync(db, fx.TenantId)).Should().Be(4_200m, "2330 is not pushed into debit");
+
+        (await Payroll(db, fx.TenantId).CancelFinalSettlement(s.Id, new PayrollReasonRequest("entered in error"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await Payroll(db, fx.TenantId).VoidRun(jul, new PayrollDecisionRequest("wrong July"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+    }
+
+    // ── 6c. Settlement counts a carried-forward day once ───────────────────────
+
+    [Fact]
+    public async Task FinalSettlement_CountsCarriedForwardDaysOnce_SoItAgreesWithTheProvision()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        // A: last year's row still shows 15 (21 granted, 6 used); this year's row carries those 15 forward plus 5 accrued.
+        db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = fx.TenantId, EmployeeId = fx.Emp["A"].Id, EmployeeName = "Employee A", LeaveTypeId = fx.AnnualTypeId,
+            LeaveTypeName = "Annual leave", Year = 2025, Accrued = 21m, Used = 6m,
+        });
+        var current = await db.EmployeeLeaveBalances.SingleAsync(b => b.TenantId == fx.TenantId && b.EmployeeId == fx.Emp["A"].Id && b.Year == 2026);
+        current.Accrued = 5m; current.CarriedForward = 15m;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        await LockMonthAsync(db, fx, 2026, 6);
+        var emp = fx.Emp["A"];
+        db.EmployeeOffboardings.Add(new EmployeeOffboarding
+        {
+            TenantId = fx.TenantId, EmployeeId = emp.Id, EmployeeCode = emp.EmployeeCode, EmployeeName = emp.FullName,
+            SeparationType = "Termination", Status = "InProgress", NoticeDate = new DateOnly(2026, 5, 31), NoticePeriodDays = 30,
+            LastWorkingDay = new DateOnly(2026, 6, 30),
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Payroll(db, fx.TenantId).FinalSettlement(new FinalSettlementRequest(emp.Id, new DateOnly(2026, 6, 30), 0, "Termination"), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var settlement = await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync(x => x.EmployeeId == emp.Id);
+        var snapshot = await db.LeaveProvisionSnapshots.AsNoTracking().SingleAsync(x => x.EmployeeId == emp.Id);
+        (settlement.LeaveEncashmentDays, settlement.LeaveEncashmentAmount).Should().Be((20m, 6_000m), "15 carried + 5 accrued, not 35 days");
+        (snapshot.Days, snapshot.Obligation).Should().Be((settlement.LeaveEncashmentDays, settlement.LeaveEncashmentAmount));
+    }
+
+    // ── 6d. A replacement run measures its own month, and keys the measurement on the pay period ──
+
+    [Fact]
+    public async Task ReplacementRun_IsMeasured_EvenWhenALaterMonthIsAlreadyMeasured_AndTheSnapshotKeepsThePayPeriod()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        var jun = await LockMonthAsync(db, fx, 2026, 6);
+        await LockMonthAsync(db, fx, 2026, 7);
+        (await Payroll(db, fx.TenantId).VoidRun(jun, new PayrollDecisionRequest("wrong June"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        // The corrected June is a Replacement whose journal books into July (the pay period stays June).
+        var created = await Payroll(db, fx.TenantId).CreateRun(
+            new CreatePayrollRunRequest(2026, 6, fx.Company.Id, PayrollRunTypes.Replacement, jun, GlPostingPeriod: "2026-07"), CancellationToken.None);
+        var replacement = (created as CreatedResult)?.Value.Should().BeOfType<PayrollRun>().Subject
+            ?? throw new Xunit.Sdk.XunitException("Replacement not created: " + JsonSerializer.Serialize((created as ObjectResult)?.Value));
+        db.ChangeTracker.Clear();
+        (await Payroll(db, fx.TenantId).Process(replacement.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await db.PayrollRuns.FirstAsync(r => r.Id == replacement.Id)).Status = "Approved";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var locked = await Payroll(db, fx.TenantId).Lock(replacement.Id, CancellationToken.None);
+        locked.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((locked as ObjectResult)?.Value));
+        db.ChangeTracker.Clear();
+
+        var snapshots = await db.LeaveProvisionSnapshots.AsNoTracking().Where(s => s.PayrollRunId == replacement.Id).ToListAsync();
+        snapshots.Should().HaveCount(3, "a later month's measurement must not stop the replacement of an earlier month");
+        snapshots.Should().OnlyContain(s => s.Period == "2026-06", "the measurement is keyed on the pay period, not the GL posting period");
+        var lines = await LeaveLinesAsync(db, replacement.Id);
+        lines.Should().NotBeEmpty().And.OnlyContain(l => l.Period == "2026-07", "the journal itself posts into the GL period");
+        (await ProvisionBalanceAsync(db, fx.TenantId)).Should().Be(7_350m);
+    }
+
     // ── 7. Closed period ─────────────────────────────────────────────────────────
 
     [Fact]

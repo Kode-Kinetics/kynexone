@@ -343,6 +343,37 @@ public class EosbProvisionAccrualTests
         (await db.EosbProvisionSnapshots.Select(s => s.Period).ToListAsync()).Should().Equal("2026-06");
     }
 
+    // ── 5b. A void must not strand a provision a settlement already consumed ───────
+
+    [Fact]
+    public async Task Void_IsRefused_WhenALaterSettlementAlreadyConsumedTheProvisionTheRunCarries()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await LockMonthAsync(db, fx, 2026, 6);
+        var jul = await LockMonthAsync(db, fx, 2026, 7);
+        var provided = Art84(Joined, July, 10_000m);
+        var s = await SeedPendingSettlementAsync(db, fx, Art84(Joined, new DateOnly(2026, 9, 15), 10_000m), "Termination", Guid.NewGuid());
+        await ApproveSettlementAsync(db, fx, s);
+
+        var voided = await Payroll(db, fx.TenantId).VoidRun(jul, new PayrollDecisionRequest("wrong July"), CancellationToken.None);
+
+        var refused = voided.Should().BeOfType<UnprocessableEntityObjectResult>().Subject;
+        var body = JsonSerializer.Serialize(refused.Value);
+        body.Should().Contain("provision_consumed_by_settlement").And.Contain("cancel the final settlement", because: "the operator is told what to do first");
+        body.Should().Contain(fx.Employee.FullName);
+        db.ChangeTracker.Clear();
+        (await ProvisionLinesAsync(db, jul)).Should().OnlyContain(l => !l.IsReversed, "a refused void writes nothing");
+        (await ProvisionBalanceAsync(db, fx.TenantId)).Should().Be(0m, "the settlement consumed all of it and nothing was reversed on top");
+        provided.Should().BePositive();
+
+        // Once the settlement is cancelled the void goes through.
+        (await Payroll(db, fx.TenantId).CancelFinalSettlement(s.Id, new PayrollReasonRequest("entered in error"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        (await Payroll(db, fx.TenantId).VoidRun(jul, new PayrollDecisionRequest("wrong July"), CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+    }
+
     // ── 6. Lock retried: never provides twice ──────────────────────────────────────
 
     [Fact]
