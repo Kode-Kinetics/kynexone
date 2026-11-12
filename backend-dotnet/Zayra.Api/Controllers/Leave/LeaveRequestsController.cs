@@ -73,13 +73,15 @@ public class LeaveRequestsController : ControllerBase
             .Take(pageSize)
             .ToListAsync(ct);
 
-        return Ok(new PagedResult<LeaveRequest>(items, total, page, pageSize));
+        // The attachment key is the handle to a medical document: only the leave's employee and HR see it.
+        var shown = items.Select(i => LeaveFileKeyExposure.ForReader(_db, i, User, scope)).ToList();
+        return Ok(new PagedResult<LeaveRequest>(shown, total, page, pageSize));
     }
 
     /// <summary>The most pending requests one queue read examines; <c>truncated</c> says when there were more.</summary>
     public const int QueueScanCap = 1000;
 
-    private static readonly string[] QueueStatuses = ["Submitted", "PendingManagerApproval", "PendingHRApproval", "CancellationRequested"];
+    private static readonly string[] QueueStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.All;
 
     private sealed record QueueScan(List<LeaveRequest> Rows, int Total, bool Cut, DataScope Scope,
         Dictionary<Guid, LeaveCancellationRequest> Cancellations);
@@ -245,7 +247,7 @@ public class LeaveRequestsController : ControllerBase
             };
         }
 
-        return Ok(new { request, approvals, statutoryHistory, statutory, cancellation });
+        return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope), approvals, statutoryHistory, statutory, cancellation });
     }
 
     /// <summary>
@@ -632,12 +634,14 @@ public class LeaveRequestsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/withdraw")]
-    public async Task<IActionResult> Withdraw(Guid id, [FromBody] WithdrawLeaveRequest req, CancellationToken ct)
+    // The web client posts no content at all (axios sends nothing when no data is given); the mobile app posts {}.
+    // The default [FromBody] binding answers an empty body with 400/415, so an empty one is allowed and means "no reason".
+    public async Task<IActionResult> Withdraw(Guid id, [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] WithdrawLeaveRequest? req, CancellationToken ct)
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
 
-        var leaveRequest = await _db.LeaveRequests
+        var leaveRequest = await _db.LeaveRequests.AsNoTracking()
             .FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (leaveRequest is null) return NotFound();
 
@@ -648,64 +652,28 @@ public class LeaveRequestsController : ControllerBase
             if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
         }
 
+        // The fast path; LeaveService repeats this check under the employee's leave lock, so a final approval that
+        // commits between this read and the write cannot be overwritten.
         var withdrawable = new[] { "Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval" };
         if (!withdrawable.Contains(leaveRequest.Status))
             return BadRequest(new { message = "Only unapproved requests can be withdrawn." });
 
         var employeeName = User.Identity?.Name ?? this.GetUserId()?.ToString() ?? "Employee";
 
-        leaveRequest.Status = "Withdrawn";
-        leaveRequest.CancellationReason = req.Reason ?? string.Empty;
-        leaveRequest.CancelledAtUtc = DateTime.UtcNow;
-
-        // A request may span calendar years. Release the exact reservations recorded during
-        // submission rather than subtracting the aggregate from the start-year balance.
-        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
-            .Where(t => t.TenantId == tenantId && t.EmployeeId == leaveRequest.EmployeeId
-                && t.LeaveTypeId == leaveRequest.LeaveTypeId && t.Reference == leaveRequest.Id.ToString()
-                && t.TransactionType == "Pending")
-            .ToListAsync(ct);
-        foreach (var reservation in reservations)
+        // Whoever was deciding it is told it is gone; read before the withdrawal closes the pending step.
+        var deciders = await PendingDecidersAsync(tenantId.Value, id, leaveRequest.EmployeeId, ct);
+        try
         {
-            var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
-                b.TenantId == tenantId && b.EmployeeId == leaveRequest.EmployeeId
-                && b.LeaveTypeId == leaveRequest.LeaveTypeId && b.Year == reservation.Year, ct);
-            if (balance is null) continue;
-            var before = balance.Available;
-            balance.Pending = Math.Max(0, balance.Pending - reservation.Amount);
-            balance.UpdatedAtUtc = DateTime.UtcNow;
-            _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
-            {
-                TenantId = tenantId.Value,
-                CompanyId = leaveRequest.CompanyId,
-                EmployeeId = leaveRequest.EmployeeId,
-                LeaveTypeId = leaveRequest.LeaveTypeId,
-                Year = reservation.Year,
-                TransactionType = "Reversed",
-                Amount = reservation.Amount,
-                BalanceBefore = before,
-                BalanceAfter = balance.Available,
-                Reference = leaveRequest.Id.ToString(),
-                Reason = "Leave request withdrawn",
-                PerformedByName = employeeName
-            });
+            var result = await _leaveService.WithdrawRequestAsync(tenantId.Value, id, employeeName, req?.Reason ?? string.Empty, ct);
+            await _notifications.NotifyEachAsync(tenantId.Value,
+                [.. await EmployeeLoginsAsync(tenantId.Value, result.EmployeeId, ct), .. deciders],
+                "Leave Withdrawn",
+                $"{result.EmployeeName}'s {result.LeaveTypeName} request has been withdrawn.",
+                "LeaveRequest", result.Id.ToString(), ct);
+            return Ok(result);
         }
-
-        var projection = await _db.ApprovalRequests
-            .FirstOrDefaultAsync(a => a.TenantId == tenantId && a.EntityName == nameof(LeaveRequest)
-                && a.EntityId == leaveRequest.Id.ToString() && a.Status == "Pending", ct);
-        if (projection is not null)
-        {
-            projection.Status = "Cancelled";
-            projection.CompletedAtUtc = DateTime.UtcNow;
-        }
-        var pendingApprovals = await _db.LeaveApprovals
-            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == id && a.Decision == "Pending")
-            .ToListAsync(ct);
-        foreach (var approval in pendingApprovals) approval.Decision = "Cancelled";
-
-        await _db.SaveChangesAsync(ct);
-        return Ok(leaveRequest);
+        catch (LeaveDecisionConflictException ex) { return Conflict(new { error = "invalid_leave_state", message = ex.Message }); }
+        catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
 
     [HttpPost("{id:guid}/delegate")]

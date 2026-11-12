@@ -24,6 +24,13 @@ public interface ILeaveService
     Task<LeaveRequest> ApproveRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string? notes, CancellationToken ct = default);
     Task<LeaveRequest> RejectRequestAsync(Guid tenantId, Guid requestId, Guid approverId, string approverName, string reason, CancellationToken ct = default);
     Task<LeaveRequest> CancelRequestAsync(Guid tenantId, Guid requestId, string cancelledByName, string reason, CancellationToken ct = default);
+    /// <summary>
+    /// Withdraws an UNAPPROVED request (Draft, Submitted, PendingManagerApproval, PendingHRApproval) on the employee's behalf
+    /// or HR's: under the employee's leave lock, releases the reservations recorded at submission, closes the pending approval
+    /// rows and the Approval Center projection, and writes the audit row, in one transaction. A request that was decided
+    /// since the caller read it is refused with <see cref="LeaveDecisionConflictException"/>.
+    /// </summary>
+    Task<LeaveRequest> WithdrawRequestAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct = default);
     /// <summary>Approves a pending cancellation of an approved leave: cancels the leave and records the decision in one transaction.</summary>
     Task<LeaveRequest> ApproveCancellationAsync(Guid tenantId, Guid requestId, string reviewerName, string notes, CancellationToken ct = default);
     /// <summary>Refuses a pending cancellation of an approved leave: the leave stays Approved, the refusal is recorded.</summary>

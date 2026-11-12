@@ -336,7 +336,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
 
             case "pending_approvals":
             {
-                var statuses = new[] { "Submitted", "PendingManagerApproval", "PendingHRApproval" };
+                var statuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests;
                 var leaveQ = _db.LeaveRequests.Where(r => r.TenantId == tenantId && statuses.Contains(r.Status));
                 var otQ = _db.OvertimeRequests.Where(r => r.TenantId == tenantId && r.Status.StartsWith("Pending"));
                 if (scopeIds != null)
@@ -399,7 +399,7 @@ public sealed class AiAdvisoryService : IAiAdvisoryService
 
             case "pending_hr_actions":
             {
-                var approvalStatuses = new[] { "Submitted", "Pending", "PendingManagerApproval", "PendingHRApproval" };
+                var approvalStatuses = Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests;
                 var leaveQ = _db.LeaveRequests.Where(r => r.TenantId == tenantId && approvalStatuses.Contains(r.Status));
                 var correctionQ = _db.AttendanceRegularizationRequests.Where(r => r.TenantId == tenantId && r.Status == "Submitted");
                 var docQ = _db.EmployeeDocuments.Where(d => d.TenantId == tenantId && !d.IsDeleted && d.ApprovalStatus == "Pending");

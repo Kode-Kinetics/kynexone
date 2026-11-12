@@ -662,7 +662,7 @@ public class ReportsController : ControllerBase
 
     private async Task<object> RunPendingLeave(Guid tid, IReadOnlyCollection<int>? employeeIds, CancellationToken ct)
     {
-        var q = _db.LeaveRequests.Where(x => x.TenantId == tid && (x.Status == "Submitted" || x.Status == "Pending"));
+        var q = _db.LeaveRequests.Where(x => x.TenantId == tid && Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.NewRequests.Contains(x.Status));
         if (employeeIds is not null) q = q.Where(x => employeeIds.Contains(x.EmployeeId));
         return await q
             .Select(x => new { x.EmployeeId, x.EmployeeName, x.LeaveTypeName, x.StartDate, x.EndDate, x.TotalDays, x.Status, x.CreatedAtUtc })
