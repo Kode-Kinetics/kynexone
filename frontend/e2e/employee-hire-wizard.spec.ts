@@ -277,6 +277,62 @@ test.describe('person, pickers and validation (desktop)', () => {
     expect(api.creates[0].body.salaryBreakdown).toMatchObject({ basicSalary: 4500, otherAllowance: 0 });
   });
 
+  test('the notice period shows the company default, is editable, and is sent as shown', async ({ page }) => {
+    const api = await bootHire(page, { noticeDefault: 60 });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    const notice = page.getByLabel('Notice period (days)');
+    await expect(notice).toHaveValue('60');
+    await expect(page.locator('#hire-noticePeriodDays-hint')).toContainText('The company default is 60 days');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.noticePeriodDays).toBe(60);
+  });
+
+  test('a changed notice period is sent as typed, not as the company default', async ({ page }) => {
+    const api = await bootHire(page, { noticeDefault: 60 });
+    await basics(page, { start: '2026-11-01' });
+    await next(page); await next(page);
+    await page.getByLabel('Notice period (days)').fill('30');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.noticePeriodDays).toBe(30);
+  });
+
+  test('the first GOSI registration date is asked of a Saudi national only, names its schedule, and is sent', async ({ page }) => {
+    const api = await bootHire(page);
+    await basics(page, { start: '2026-11-01' });
+    await next(page);
+    const box = page.getByRole('combobox', { name: /Nationality/ });
+    await box.fill('sau');
+    await page.getByRole('listbox').getByRole('option').first().click();
+    await next(page);
+    const gosi = page.getByLabel('First GOSI registration date');
+    await expect(gosi).toBeVisible();
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('3 July 2024');
+    await gosi.fill('2025-02-01');
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('new-entrant GOSI schedule');
+    await gosi.fill('2020-02-01');
+    await expect(page.locator('#hire-gosiFirstRegisteredOn-hint')).toContainText('existing GOSI schedule');
+    await next(page);
+    await saveDraft(page);
+    await expect(page.getByTestId('saved-indicator')).toBeVisible();
+    expect(api.creates[0].body.gosiFirstRegisteredOn).toBe('2020-02-01');
+  });
+
+  test('an expat is not asked for a GOSI registration date', async ({ page }) => {
+    await bootHire(page);
+    await basics(page, { start: '2026-11-01' });
+    await next(page);
+    const box = page.getByRole('combobox', { name: /Nationality/ });
+    await box.fill('pakis');
+    await page.getByRole('listbox').getByRole('option').first().click();
+    await next(page);
+    await expect(page.getByLabel('First GOSI registration date')).toHaveCount(0);
+  });
+
   test('AC26/G08: a server warning opens an acknowledge dialog; a short reason is refused; the retry reuses the key', async ({ page }) => {
     const api = await bootHire(page, { warnFirstCreate: true });
     await basics(page, { start: '2026-01-05' });
