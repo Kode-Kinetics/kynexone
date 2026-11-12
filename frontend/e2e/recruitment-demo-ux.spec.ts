@@ -116,9 +116,9 @@ for (const locale of ['en', 'ar'] as const) {
       const { posts } = await boot(page, { locale });
       await openDrawer(page);
       await page.getByRole('button', { name: L.offer, exact: true }).click();
-      await page.getByLabel('Start date').fill('2027-01-15');
-      await page.getByLabel('Basic salary').fill('4500');
-      await page.getByRole('button', { name: 'Generate Offer Letter' }).click();
+      await page.getByLabel(/^Start date|تاريخ البدء|تاريخ المباشرة/).fill('2027-01-15');
+      await page.getByLabel(/^Basic salary|الراتب الأساسي/).fill('4500');
+      await page.getByRole('button', { name: /Generate Offer Letter|إنشاء خطاب العرض/ }).click();
       await expect(page).toHaveURL(/\/recruitment\/offers\/offer-9/);
       await expect(page.getByRole('dialog')).toHaveCount(0);
       expect(posts.some(p => p.path === '/api/recruitment/applications/app-1/offer')).toBe(true);
@@ -155,17 +155,17 @@ for (const locale of ['en', 'ar'] as const) {
 
     test('5 placeholders are Saudi-appropriate', async ({ page }) => {
       await boot(page, { locale });
-      await openTab(page, /^Talent Pool|^قاعدة المواهب/);
+      await openTab(page, /^Talent Pool|^قاعدة المواهب|^مجمع المواهب/);
       await page.getByRole('button', { name: /Add (to )?(Talent|Candidate)|إضافة/ }).first().click();
-      await expect(page.getByLabel('Phone')).toHaveAttribute('placeholder', '+966 50 000 0000');
-      await expect(page.getByLabel('Nationality')).toHaveAttribute('placeholder', locale === 'en' ? 'For example: Saudi' : 'مثال: سعودي');
+      await expect(page.getByLabel(/^Phone|الهاتف|الجوال/)).toHaveAttribute('placeholder', '+966 50 000 0000');
+      await expect(page.getByLabel(/^Nationality|الجنسية/)).toHaveAttribute('placeholder', locale === 'en' ? 'For example: Saudi' : 'مثال: سعودي');
       await expect(page.locator('body')).not.toContainText(/UAE|\+971/);
       await shot(page, 'candidate-form', locale);
     });
 
     test('7 onboarding picks a hired candidate or an employee instead of asking for ids', async ({ page }) => {
       const { posts } = await boot(page, { locale, hired: [app({ id: 'app-h', stage: 'Hired', status: 'Hired', candidateName: 'Nora Alharbi' })] });
-      await openTab(page, /^Onboarding|^التهيئة|^الانضمام/);
+      await openTab(page, /^Onboarding|^التهيئة|^الانضمام|^الاستقبال/);
       await expect(page.getByPlaceholder('Employee ID')).toHaveCount(0);
       await expect(page.getByPlaceholder('Application ID')).toHaveCount(0);
       await expect(page.locator('select').filter({ has: page.locator('option', { hasText: 'Nora Alharbi' }) })).toHaveCount(1);

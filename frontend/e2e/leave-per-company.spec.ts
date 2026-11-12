@@ -76,7 +76,7 @@ test('the old /leave?tab=policies&companyId= address opens that company\'s polic
   // Only Beta's types (and the unassigned legacy one) are offered.
   const typeSelect = dialog.locator('select').filter({ has: page.locator('option', { hasText: 'Select…' }) });
   await expect(typeSelect.locator('option')).toHaveText(['Select…', 'Annual B', 'Exam legacy']);
-  await dialog.getByPlaceholder('e.g. UAE Annual Leave — Full-Time').fill('Beta extra');
+  await dialog.getByPlaceholder('For example: UAE Annual Leave — Full-Time').fill('Beta extra');
   await typeSelect.selectOption('annual-b');
   await dialog.getByRole('button', { name: /Create|Save/ }).last().click();
   await expect.poll(() => (writes.find(w => w.path === '/api/leave/policies')?.body as { companyId?: string } | undefined)?.companyId).toBe(B.id);
