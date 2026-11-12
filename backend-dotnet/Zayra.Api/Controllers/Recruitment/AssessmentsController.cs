@@ -141,6 +141,7 @@ public class AssessmentsController : ControllerBase
         var assessment = new CandidateAssessment
         {
             TenantId = tid,
+            CompanyId = app.CompanyId,
             ApplicationId = req.ApplicationId,
             CandidateId = app.CandidateId,
             TemplateId = req.TemplateId,

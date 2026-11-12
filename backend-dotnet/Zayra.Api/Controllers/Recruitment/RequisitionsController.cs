@@ -73,9 +73,15 @@ public class RequisitionsController : ControllerBase
             ? await _db.Designations.FirstOrDefaultAsync(d => d.Id == req.DesignationId.Value && d.TenantId == tenantId, ct)
             : null;
 
+        // The requisition belongs to the company that owns its department; a department-less request names its company
+        // (req.CompanyId), or leaves it to the write guard, which resolves a one-company actor and refuses an ambiguous group one.
+        if (req.CompanyId is Guid named && dept?.CompanyId is Guid owner && named != owner)
+            return BadRequest(new { message = "The department belongs to a different company than the one named." });
+
         var r = new ManpowerRequisition
         {
             TenantId = tenantId,
+            CompanyId = dept?.CompanyId ?? req.CompanyId,
             RequisitionNumber = number,
             DepartmentId = req.DepartmentId,
             DepartmentName = dept?.NameEn ?? req.DepartmentName,
@@ -188,7 +194,7 @@ public class RequisitionsController : ControllerBase
             {
                 var started = await _approvals.CreateRequestAsync(tenantId, new CreateApprovalRequest(
                     route.WorkflowId, "ManpowerRequisition", id.ToString(),
-                    $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}"), Context(), ct);
+                    $"Manpower Requisition {r.RequisitionNumber} — {r.DesignationTitle} × {r.HeadCount}", CompanyId: r.CompanyId), Context(), ct);
                 approvalId = started.Id;
             }
         }
@@ -321,6 +327,7 @@ public record CreateRequisitionRequest(
     Guid? DepartmentId, string DepartmentName, Guid? DesignationId, string DesignationTitle,
     int HeadCount, string EmploymentType, string Priority, string Justification,
     string RequiredSkills, int? MinExperienceYears, int? MaxExperienceYears,
-    decimal? BudgetFrom, decimal? BudgetTo, DateOnly? TargetJoiningDate, string RequestedByName);
+    decimal? BudgetFrom, decimal? BudgetTo, DateOnly? TargetJoiningDate, string RequestedByName,
+    Guid? CompanyId = null);
 
 public record DecisionRequest(string? Reason, string? Comments);

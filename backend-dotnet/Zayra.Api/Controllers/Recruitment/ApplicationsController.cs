@@ -219,6 +219,7 @@ public class ApplicationsController : ControllerBase
         var interview = new InterviewSchedule
         {
             TenantId = tenantId,
+            CompanyId = app.CompanyId,
             ApplicationId = id,
             InterviewType = req.InterviewType,
             InterviewerNames = req.InterviewerNames,
