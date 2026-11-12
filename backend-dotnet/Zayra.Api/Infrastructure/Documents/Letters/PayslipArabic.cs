@@ -60,6 +60,16 @@ public static class PayslipArabic
         ["Other Allowances"] = "بدلات أخرى",
         ["Other Deductions"] = "استقطاعات أخرى",
         ["Arrears"] = "متأخرات",
+        // The lines Process itemises under their persisted names (PayslipItemiser). Names that carry a note in
+        // brackets (overtime hours and rate, loss-of-pay days and rate, tax rate) keep it: see ItemName.
+        ["Overtime"] = "العمل الإضافي",
+        ["Late/early attendance deduction"] = "خصم التأخير والخروج المبكر",
+        ["Loss of Pay"] = "خصم أيام الغياب",
+        ["Leave deduction"] = "خصم الإجازة",
+        ["Loan instalment"] = "قسط قرض",
+        ["Salary advance repayment"] = "سداد السلفة",
+        ["Fixed deduction"] = "استقطاع ثابت",
+        ["Income tax"] = "ضريبة الدخل",
         ["Net Pay"] = "صافي الراتب",
     };
 
