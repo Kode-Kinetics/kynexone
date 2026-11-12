@@ -11620,6 +11620,15 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("grade");
 
+                    b.Property<string>("IdNumber")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("id_number");
+
+                    b.Property<byte[]>("IdNumberEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("id_number_enc");
+
                     b.Property<string>("IqamaNumber")
                         .IsRequired()
                         .HasColumnType("text")
@@ -11848,6 +11857,8 @@ namespace Zayra.Api.Migrations
                             t.HasCheckConstraint("ck_employee_drafts_civil_id_enc_shape", "civil_id_enc IS NULL OR (octet_length(civil_id_enc) BETWEEN 30 AND 1024 AND get_byte(civil_id_enc, 0) IN (1, 2) AND get_byte(civil_id_enc, 1) > 0)");
 
                             t.HasCheckConstraint("ck_employee_drafts_emirates_id_enc_shape", "emirates_id_enc IS NULL OR (octet_length(emirates_id_enc) BETWEEN 30 AND 1024 AND get_byte(emirates_id_enc, 0) IN (1, 2) AND get_byte(emirates_id_enc, 1) > 0)");
+
+                            t.HasCheckConstraint("ck_employee_drafts_id_number_enc_shape", "id_number_enc IS NULL OR (octet_length(id_number_enc) BETWEEN 30 AND 1024 AND get_byte(id_number_enc, 0) IN (1, 2) AND get_byte(id_number_enc, 1) > 0)");
 
                             t.HasCheckConstraint("ck_employee_drafts_iqama_number_enc_shape", "iqama_number_enc IS NULL OR (octet_length(iqama_number_enc) BETWEEN 30 AND 1024 AND get_byte(iqama_number_enc, 0) IN (1, 2) AND get_byte(iqama_number_enc, 1) > 0)");
 

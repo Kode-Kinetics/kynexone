@@ -15,6 +15,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Application.Recruitment;
@@ -3384,6 +3385,8 @@ public class EmployeesController : ControllerBase
         if (await DraftManagerRefusalAsync(RequireTenant(), request.ManagerEmployeeId, cancellationToken) is { } managerRefusal)
             return managerRefusal;
         var draft = ApplyDraft(new EmployeeDraft { TenantId = RequireTenant(), CreatedByUserId = GetUserId() }, request);
+        if (await DraftIdentityRefusalAsync(draft.TenantId, draft, request, cancellationToken) is { } identityRefusal)
+            return identityRefusal;
         draft.ProfileCompletenessScore = CalculateCompleteness(draft, 0);
         _db.EmployeeDrafts.Add(draft);
         await _db.SaveChangesAsync(cancellationToken);
@@ -3410,6 +3413,9 @@ public class EmployeesController : ControllerBase
                 return managerRefusal;
             var priorDraftWorkEmail = draft.WorkEmail;
             ApplyDraft(draft, request);
+            // Nothing is saved on a refusal (the change is not committed), so the editor does not become a maker of the hire.
+            if (await DraftIdentityRefusalAsync(tenantId, draft, request, ct) is { } identityRefusal)
+                return identityRefusal;
             // Every editor who sets the draft's work email is a setter of the hire's address (WorkEmailSetterRule).
             if (!string.IsNullOrWhiteSpace(draft.WorkEmail)
                 && !string.Equals(AuthService.Normalize(draft.WorkEmail), AuthService.Normalize(priorDraftWorkEmail ?? string.Empty), StringComparison.Ordinal))
@@ -6224,6 +6230,44 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
+    /// The identity numbers a draft edit carries (National ID, Iqama) are held to the rules an employee write applies
+    /// (<see cref="IdentityNumberRules"/>: ten digits, the class prefix, the check digit, agreement with the nationality),
+    /// for a draft that lands in a Saudi company. A passing number is stored as ASCII digits. Only a value the request
+    /// itself supplied is checked, so saving a placement fix never trips over an older number. Returns the refusal, or null.
+    /// </summary>
+    private async Task<ObjectResult?> DraftIdentityRefusalAsync(Guid tenantId, EmployeeDraft draft, EmployeeDraftRequest request, CancellationToken ct)
+    {
+        var supplied = new List<(string Field, string Kind, string Value)>();
+        if (!string.IsNullOrWhiteSpace(request.IdNumber)) supplied.Add(("idNumber", IdentityKinds.IdNumber, request.IdNumber));
+        if (!string.IsNullOrWhiteSpace(request.IqamaNumber)) supplied.Add(("iqamaNumber", IdentityKinds.IqamaNumber, request.IqamaNumber));
+        if (supplied.Count == 0) return null;
+
+        var placement = await ResolveDraftPlacementAsync(tenantId, draft, new List<EmployeeDraftActivationProblem>(), ct);
+        var country = HomeJurisdiction.DeriveEmployeeCountry(draft.CountryCode, placement.CompanyCountryCode);
+        var nationality = NationalityCatalog.TryResolve(draft.Nationality)?.Class;
+        var errors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (field, kind, value) in supplied)
+        {
+            var normalised = IdentityNumberRules.NormalizeDigits(value);
+            if (country == "SA")
+            {
+                var check = IdentityNumberRules.Check(value, kind, nationality);
+                if (check.HardErrors.Count > 0) { errors[field] = [.. check.HardErrors]; continue; }
+                normalised = check.Normalised;
+            }
+            if (kind == IdentityKinds.IdNumber) draft.IdNumber = normalised;
+            else draft.IqamaNumber = normalised;
+        }
+        if (errors.Count == 0) return null;
+        return UnprocessableEntity(new
+        {
+            error = "invalid_identity",
+            message = "The identity number is not valid. The draft was not saved.",
+            errors,
+        });
+    }
+
+    /// <summary>
     /// A draft's manager must be a live employee of this tenant that the caller can see: the same rule
     /// every other manager write enforces (<see cref="EmployeeChangeApplier.ValidateManagerChangeAsync"/>).
     /// The draft has no employee id yet, so self-management and reporting cycles cannot arise.
@@ -6673,6 +6717,10 @@ public class EmployeesController : ControllerBase
         ResidencyIssueDate = draft.ResidencyIssueDate,
         WorkPermitIssueDate = draft.WorkPermitIssueDate,
         IqamaNumber = draft.IqamaNumber,
+        // The Saudi National ID, with its type: the wage file and Qiwa read a primary ID through IdType + IdNumber
+        // (the self-service profile sets the pair the same way).
+        IdNumber = draft.IdNumber,
+        IdType = string.IsNullOrWhiteSpace(draft.IdNumber) ? string.Empty : "NationalId",
         BorderNumber = draft.BorderNumber,
         MuqeemNumber = draft.MuqeemNumber,
         GosiReference = draft.GosiReference,
@@ -6818,6 +6866,7 @@ public class EmployeesController : ControllerBase
         draft.ResidencyIssueDate = request.ResidencyIssueDate ?? draft.ResidencyIssueDate;
         draft.WorkPermitIssueDate = request.WorkPermitIssueDate ?? draft.WorkPermitIssueDate;
         draft.IqamaNumber = request.IqamaNumber ?? draft.IqamaNumber;
+        draft.IdNumber = request.IdNumber ?? draft.IdNumber;
         draft.BorderNumber = request.BorderNumber ?? draft.BorderNumber;
         draft.MuqeemNumber = request.MuqeemNumber ?? draft.MuqeemNumber;
         draft.GosiReference = request.GosiReference ?? draft.GosiReference;
@@ -7251,7 +7300,7 @@ public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, J
 public record GroupCountDto(string Name, int Count);
 public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int NewJoiners, int Exits, int ProbationEmployees, IReadOnlyCollection<GroupCountDto> DepartmentHeadcount, IReadOnlyCollection<GroupCountDto> BranchHeadcount, IReadOnlyCollection<GroupCountDto> NationalityMix, IReadOnlyCollection<GroupCountDto> GenderMix, int ContractExpiringSoon, int VisaOrPassportExpiringSoon, int MissingDocumentsOrIncompleteProfiles);
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);
-public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate, string? BorderNumber = null, bool? ProbationWaived = null);
+public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate, string? BorderNumber = null, bool? ProbationWaived = null, string? IdNumber = null);
 public record EmployeeDocumentUploadRequest(string DocumentType, bool IsRequired, DateOnly? ExpiryDate, IFormFile File);
 public record EmployeeDocumentUploadForm(
     [Required, MaxLength(80)] string DocumentType,
