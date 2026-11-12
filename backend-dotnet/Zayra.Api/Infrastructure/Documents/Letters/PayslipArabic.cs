@@ -87,7 +87,9 @@ public static class PayslipArabic
         foreach (var (en, ar) in Exact)
         {
             if (trimmed.StartsWith(en + " (", StringComparison.OrdinalIgnoreCase))
-                return ar + trimmed[en.Length..];
+                // The note is Latin text with digits, brackets and "×": left in the right-to-left run its brackets and numbers
+                // reorder ("d × 1,000.00/d) 1.00"). A left-to-right isolate (U+2066..U+2069) keeps it reading as written.
+                return ar + " \u2066" + trimmed[(en.Length + 1)..] + "\u2069";
         }
         const string arrearsPrefix = "Arrears — ";
         if (trimmed.StartsWith(arrearsPrefix, StringComparison.OrdinalIgnoreCase))

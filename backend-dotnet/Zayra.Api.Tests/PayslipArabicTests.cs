@@ -36,7 +36,7 @@ public class PayslipArabicTests
 
     [Fact]
     public void AProrationNote_IsKept_AfterTheArabicName()
-        => PayslipArabic.ItemName("Basic Salary (prorated 15/31 days)", null).Should().Be("الراتب الأساسي (prorated 15/31 days)");
+        => PayslipArabic.ItemName("Basic Salary (prorated 15/31 days)", null).Should().Be("الراتب الأساسي \u2066(prorated 15/31 days)\u2069");
 
     [Theory]
     [InlineData(1, "يناير")] [InlineData(2, "فبراير")] [InlineData(3, "مارس")] [InlineData(4, "أبريل")]

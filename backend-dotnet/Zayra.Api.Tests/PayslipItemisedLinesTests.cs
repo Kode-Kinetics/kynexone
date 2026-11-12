@@ -26,6 +26,8 @@ using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Payroll;
+using UglyToad.PdfPig;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Tests;
@@ -211,14 +213,14 @@ public class PayslipItemisedLinesTests
     // ── 1b. Arabic labels ─────────────────────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData(OtName, "العمل الإضافي (5.00 h × (62.50 + 62.50 × 0.50)/h)")]
+    [InlineData(OtName, "العمل الإضافي \u2066(5.00 h × (62.50 + 62.50 × 0.50)/h)\u2069")]
     [InlineData("Late/early attendance deduction", "خصم التأخير والخروج المبكر")]
-    [InlineData(LopName, "خصم أيام الغياب (1.00 d × 1,000.00/d)")]
+    [InlineData(LopName, "خصم أيام الغياب \u2066(1.00 d × 1,000.00/d)\u2069")]
     [InlineData("Leave deduction", "خصم الإجازة")]
     [InlineData("Loan instalment", "قسط قرض")]
     [InlineData("Salary advance repayment", "سداد السلفة")]
     [InlineData("Fixed deduction", "استقطاع ثابت")]
-    [InlineData("Income tax (5%)", "ضريبة الدخل (5%)")]
+    [InlineData("Income tax (5%)", "ضريبة الدخل \u2066(5%)\u2069")]
     [InlineData("Other allowances", "بدلات أخرى")]
     public void New_fixed_lines_have_Arabic_labels(string english, string arabic)
         => PayslipArabic.ItemName(english, null).Should().Be(arabic);
@@ -251,6 +253,37 @@ public class PayslipItemisedLinesTests
         var pdf = await Pdf(db, f, bulk);
 
         pdf.Department.Should().Be("Administration", "a payslip shows the department the employee had in that pay period");
+    }
+
+    // ── Rendered page (set PAYSLIP_SAMPLE_DIR to keep the PDFs for a visual check) ─────────────────
+
+    [Theory]
+    [InlineData("en")]
+    [InlineData("bilingual")]
+    [InlineData("ar")]
+    public async Task The_rendered_page_carries_the_itemised_lines_in_every_locale(string locale)
+    {
+        var (db, conn) = CreateDb(); using var _ = conn;
+        var f = Seed(db, Guid.NewGuid());
+        var data = (await SinglePdf(db, f)) with { Branding = new PayslipBrandingConfig(Locale: locale) };
+
+        var pdf = await new LetterService().GeneratePayslipPdfAsync(data);
+
+        var dir = Environment.GetEnvironmentVariable("PAYSLIP_SAMPLE_DIR");
+        if (!string.IsNullOrWhiteSpace(dir))
+        {
+            Directory.CreateDirectory(dir);
+            await File.WriteAllBytesAsync(Path.Combine(dir, $"itemised-{locale}.pdf"), pdf);
+        }
+        using var document = PdfDocument.Open(pdf);
+        var text = string.Concat(document.GetPages().Select(p => p.Text)).Replace(" ", string.Empty);
+        if (locale != "ar")
+        {
+            // The bilingual page prints "English / Arabic", so only the English half is contiguous with its own words.
+            text.Should().Contain("Overtime").And.Contain("Late/earlyattendancededuction").And.Contain("LossofPay").And.Contain("Loaninstalment");
+            text.Should().NotContain("OtherDeductions");
+        }
+        text.Should().Contain("1,406.25").And.Contain("1,000.00").And.Contain("937.50");
     }
 
     // ── Harness ───────────────────────────────────────────────────────────────────────────────────
