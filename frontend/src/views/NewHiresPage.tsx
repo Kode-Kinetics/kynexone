@@ -17,6 +17,7 @@ import {
 import { notActivatableFromError, probationOverLimitFromError } from '../api/employees';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { establishmentBlockFromError, type EstablishmentBlockedPayload } from '../api/establishment';
+import { DraftIdentityFix } from '../components/DraftIdentityFix';
 import { DraftPlacementFix } from '../components/DraftPlacementFix';
 import { EstablishmentBlockedModal } from '../components/EstablishmentBlockedModal';
 import { Modal } from '../components/Modal';
@@ -28,6 +29,7 @@ import {
   DRAFT_FILTERS,
   approveDisabledReason,
   canDecideDraft,
+  draftIdentityFixKind,
   draftRequestFailureReason,
   draftStatusChip,
   isClosedDraftError,
@@ -82,6 +84,8 @@ export function NewHiresPage() {
   const [reason, setReason] = useState('');
   const [decisionError, setDecisionError] = useState('');
   const [deciding, setDeciding] = useState<'approve' | 'reject' | 'withdraw' | null>(null);
+  // The draft whose government ID was just saved here: its editor is now one of its makers and cannot activate it.
+  const [identitySavedFor, setIdentitySavedFor] = useState<string | null>(null);
   const [establishmentBlock, setEstablishmentBlock] = useState<{ block: EstablishmentBlockedPayload; name: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -121,6 +125,7 @@ export function NewHiresPage() {
   const openReview = (row: EmployeeDraftListItem) => {
     setSelected(row);
     setReview(null);
+    setIdentitySavedFor(null);
     setReason('');
     setDecisionError('');
     void loadReview(row.id);
@@ -243,6 +248,8 @@ export function NewHiresPage() {
     p.key === 'legalEntity' ? ['department', 'branch'] as const
       : p.key === 'department' || p.key === 'designation' || p.key === 'branch' ? [p.key] as const
       : [])));
+  // The government ID the activation policy asks for (National ID for a Saudi hire, Iqama otherwise) is entered here.
+  const identityKind = draftIdentityFixKind(check?.problems ?? []);
   const canWithdraw = !!summary && isOpenDraft(summary.status) && summary.isMine;
 
   return (
@@ -563,6 +570,23 @@ export function NewHiresPage() {
                 isMaker={review.summary.isMine}
                 onSaved={() => { void loadReview(review.summary.id); void load(); }}
               />
+            )}
+
+            {review && check && identityKind && isOpenDraft(review.summary.status) && (
+              <DraftIdentityFix
+                key={`${review.summary.id}:${identityKind}`}
+                draftId={review.summary.id}
+                kind={identityKind}
+                current={(identityKind === 'nationalId' ? review.draft.idNumber : review.draft.iqamaNumber) ?? ''}
+                isMaker={review.summary.isMine}
+                canEdit={hasPermission('employees.write')}
+                onSaved={() => { setIdentitySavedFor(review.summary.id); void loadReview(review.summary.id); void load(); }}
+              />
+            )}
+            {review && !identityKind && identitySavedFor === review.summary.id && (
+              <p role="status" data-testid="draft-identity-saved" className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+                {t('Government ID saved. You edited this hire, so a different HR approver has to activate it.')}
+              </p>
             )}
 
             {isOpenDraft(summary.status) && !summary.canApprove && (

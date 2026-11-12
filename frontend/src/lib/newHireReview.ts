@@ -4,6 +4,8 @@
  * data scope, closed drafts, activation readiness), and these helpers only decide what to offer.
  */
 
+import { normalizeDigits, validateIdNumber } from './hire/saudiId';
+
 export type DraftTone = 'amber' | 'emerald' | 'rose' | 'slate';
 
 const STATUS: Record<string, { label: string; tone: DraftTone }> = {
@@ -92,6 +94,51 @@ export function approveDisabledReason(
   if (problemCount === null) return 'Checking whether this hire can be activated…';
   if (problemCount > 0)
     return `Fix the ${problemCount === 1 ? 'problem' : `${problemCount} problems`} above before approving. Activation would be refused.`;
+  return null;
+}
+
+export type DraftIdentityKind = 'nationalId' | 'iqama';
+
+/**
+ * Which government ID the review can collect, from the activation problems the server found. The server's policy
+ * decides: a Saudi hire is blocked on `IdNumber` (the National ID), a non-Saudi hire on `IqamaNumber`.
+ */
+export function draftIdentityFixKind(problems: ReadonlyArray<{ key: string }>): DraftIdentityKind | null {
+  if (problems.some((p) => p.key === 'IdNumber')) return 'nationalId';
+  if (problems.some((p) => p.key === 'IqamaNumber')) return 'iqama';
+  return null;
+}
+
+/**
+ * The same rules the server applies to the draft (and to an employee): ten digits, the class prefix, the check digit.
+ * Returns the English message key, or null when the number is acceptable.
+ */
+export function draftIdentityError(kind: DraftIdentityKind, raw: string): string | null {
+  const check = validateIdNumber(kind, raw);
+  if (check === 'ok') return null;
+  if (check === 'checksum') return 'This ID number is not valid. Check the digits.';
+  return kind === 'nationalId'
+    ? 'National ID must be 10 digits starting with 1.'
+    : 'Iqama number must be 10 digits starting with 2.';
+}
+
+/** The draft-update body for one identity number: ASCII digits, trimmed. */
+export function draftIdentityPayload(kind: DraftIdentityKind, raw: string): { idNumber: string } | { iqamaNumber: string } {
+  const digits = normalizeDigits(raw);
+  return kind === 'nationalId' ? { idNumber: digits } : { iqamaNumber: digits };
+}
+
+/**
+ * The server's own verdict on the number (422 invalid_identity, field codes as the employee form returns them), as an
+ * English message key; null when the failure was something else.
+ */
+export function draftIdentityServerError(kind: DraftIdentityKind, err: unknown): string | null {
+  const body = (err as { response?: { status?: number; data?: { error?: string; errors?: Record<string, string[]> } } } | null)?.response;
+  if (body?.status !== 422 || body.data?.error !== 'invalid_identity') return null;
+  const codes = Object.values(body.data.errors ?? {}).flat();
+  if (codes.includes('id_prefix_nationality_mismatch')) return 'This ID number does not match the nationality.';
+  if (codes.includes('id_checksum_invalid')) return 'This ID number is not valid. Check the digits.';
+  if (codes.includes('id_format_invalid')) return draftIdentityError(kind, '') as string;
   return null;
 }
 

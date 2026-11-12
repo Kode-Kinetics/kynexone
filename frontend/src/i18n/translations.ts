@@ -51,6 +51,7 @@ import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
 import { orgRowRemoval } from './orgRowRemoval';
 import { designationAccess } from './designationAccess';
+import { draftIdentity } from './draftIdentity';
 import { peopleDeadEnds } from './peopleDeadEnds';
 import { designMigration } from './designMigration';
 import { setupRollout } from './setupRollout';
@@ -106,6 +107,7 @@ const en: Dict = {
   ...setupSections.en,
   ...orgRowRemoval.en,
   ...designationAccess.en,
+  ...draftIdentity.en,
   ...designMigration.en,
   ...setupRollout.en,
   ...peopleDeadEnds.en,
@@ -1665,6 +1667,7 @@ const ar: Dict = {
   ...setupSections.ar,
   ...orgRowRemoval.ar,
   ...designationAccess.ar,
+  ...draftIdentity.ar,
   ...designMigration.ar,
   ...setupRollout.ar,
   ...peopleDeadEnds.ar,
