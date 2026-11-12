@@ -1740,7 +1740,7 @@ public partial class AttendanceService : IAttendanceService
             .FirstOrDefaultAsync(ct);
 
         (daily.LateMinutes, daily.EarlyExitMinutes) = AttendanceDerivedArtifacts.LateAndEarlyExit(
-            daily.FirstInUtc, daily.LastOutUtc, date, shift?.StartTime, shift?.EndTime, tz, policy);
+            daily.FirstInUtc, daily.LastOutUtc, date, shift?.StartTime, shift?.EndTime, tz, policy, restDay: isRestDay);
         // A day that has not ended (today before the shift's end, or a later day) with no punch is not Absent: nobody has
         // failed to turn up yet. Leave it unprocessed (no record, no deduction) unless it is leave, a holiday or a rest day,
         // which carry no deduction and are recorded as before.

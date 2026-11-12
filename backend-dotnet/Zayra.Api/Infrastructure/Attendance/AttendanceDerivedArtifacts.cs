@@ -252,8 +252,11 @@ public static class AttendanceDerivedArtifacts
     /// check, which recomputes it from the punches instead of trusting the minutes a record was given.
     /// </summary>
     public static (int LateMinutes, int EarlyExitMinutes) LateAndEarlyExit(DateTime? firstInUtc, DateTime? lastOutUtc, DateOnly date,
-        TimeOnly? shiftStartTime, TimeOnly? shiftEndTime, TimeZoneInfo tz, AttendancePolicy policy)
+        TimeOnly? shiftStartTime, TimeOnly? shiftEndTime, TimeZoneInfo tz, AttendancePolicy policy, bool restDay = false)
     {
+        // A rest day has no required hours: there is no start to be late for and no end to leave early from. Work on it is
+        // paid as overtime (or a compensatory day) and never produces a late or early-exit deduction.
+        if (restDay) return (0, 0);
         var (shiftStart, shiftEnd) = ShiftWindowUtc(date, shiftStartTime, shiftEndTime, tz, policy);
         var late = firstInUtc is null ? 0 : Math.Max(0, (int)(firstInUtc.Value - shiftStart).TotalMinutes - policy.GraceMinutes);
         var early = lastOutUtc is null ? 0 : Math.Max(0, (int)(shiftEnd - lastOutUtc.Value).TotalMinutes - policy.EarlyExitThresholdMinutes);
