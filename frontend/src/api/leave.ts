@@ -434,7 +434,16 @@ export const leaveBalancesApi = {
     client.get<LeaveBalanceTransaction[]>('/api/leave/balances/transactions', { params: { employeeId, leaveTypeId, year } }).then(r => r.data),
   accrue: () =>
     client.post('/api/leave/balances/accrue').then(r => r.data),
+  /**
+   * Creates this year's balances from the configured leave policies (monthly policies accrued month by month up to
+   * today; front-loaded policies granted in full). Idempotent: a second run changes nothing.
+   */
+  openYear: (year?: number) =>
+    client.post<OpenYearResult>('/api/leave/balances/open-year', { year }).then(r => r.data),
 };
+
+/** What one "open the year" run created. */
+export interface OpenYearResult { year: number; balancesCreated: number; accrualEntries: number; allocationEntries: number }
 
 /** The server's KsaStatutoryLeaveKind names. */
 export type StatutoryLeaveKindName =

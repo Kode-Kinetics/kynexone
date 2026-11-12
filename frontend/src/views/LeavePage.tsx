@@ -378,6 +378,12 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
   const [adjustModal, setAdjustModal] = useState<EmployeeLeaveBalance | null>(null);
   const [adjAmount, setAdjAmount] = useState('');
   const [adjReason, setAdjReason] = useState('');
+  // Balances come from the leave policies and nothing schedules that, so a company that went live without imported balances
+  // has none. The server limits this to the current year and to leave.policy_manage; offer it on that basis.
+  const { hasPermission } = useAuth();
+  const canOpenYear = !selfEmployeeId && year === new Date().getFullYear() && hasPermission('leave.policy_manage');
+  const [openingYear, setOpeningYear] = useState(false);
+  const [openYearNote, setOpenYearNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 balances as all of them.
   const list = usePagedList<EmployeeLeaveBalance>((page, pageSize) =>
@@ -395,6 +401,25 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
   };
 
+  const openYear = async () => {
+    setOpeningYear(true);
+    setOpenYearNote(null);
+    try {
+      const r = await leaveBalancesApi.openYear(year);
+      setOpenYearNote({
+        tone: 'ok',
+        text: r.balancesCreated > 0
+          ? t('{count, plural, one {Created # balance} other {Created # balances}} for {year} from the leave policies.', { count: r.balancesCreated, year: String(year) })
+          : t('No new balances were created for {year}. Balances come from active leave policies, so check that each leave type has an active policy and that employees have a joining date.', { year: String(year) }),
+      });
+      load();
+    } catch (e) {
+      setOpenYearNote({ tone: 'error', text: t(requestFailureReason(e)) });
+    } finally {
+      setOpeningYear(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -410,11 +435,27 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
         <p className="ms-auto text-sm text-slate-400">{balanceCount} balance{balanceCount !== 1 ? 's' : ''}</p>
       </div>
 
+      {openYearNote && (
+        <p role={openYearNote.tone === 'error' ? 'alert' : 'status'} data-testid="open-year-note"
+          className={`rounded-lg px-4 py-3 text-sm ${openYearNote.tone === 'error' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
+          {openYearNote.text}
+        </p>
+      )}
       {list.error != null && <LoadFailure what="Leave balances" error={list.error} />}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && balances.length === 0 ? null : balances.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <BarChart2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No balance records found</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No balance records found')}</p>
+          {canOpenYear && (
+            <div className="mt-3 max-w-md space-y-3" data-testid="open-year-balances">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t('Leave balances are created from the leave policies. Create {year} balances for every employee now: monthly policies are credited month by month up to today, and yearly policies grant their full entitlement. Balances that already exist are not changed.', { year: String(year) })}
+              </p>
+              <button type="button" className={btn.primary} onClick={() => void openYear()} disabled={openingYear}>
+                {openingYear ? t('Creating balances…') : t("Create this year's balances from the leave policies")}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

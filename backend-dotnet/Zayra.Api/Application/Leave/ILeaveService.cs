@@ -2,11 +2,21 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Application.Leave;
 
+/// <summary>What one "open the year" run changed.</summary>
+public sealed record LeaveYearOpenResult(int Year, int BalancesCreated, int AccrualEntries, int AllocationEntries);
+
 public interface ILeaveService
 {
     // Balance engine
     Task<EmployeeLeaveBalance> GetOrCreateBalanceAsync(Guid tenantId, int employeeId, Guid leaveTypeId, int year, CancellationToken ct = default);
     Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default);
+    /// <summary>
+    /// Gets a leave year going for the tenant (within the caller's company scope) from the configured leave policies:
+    /// a monthly policy is accrued for every month of the year so far, a front-loaded ("Yearly") policy grants its
+    /// whole entitlement. Idempotent: every grant is guarded by its own ledger entry, and a balance that already
+    /// holds a figure (imported or entered by hand) is left alone.
+    /// </summary>
+    Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default);
     Task<decimal> CalculateWorkingDaysAsync(Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct = default);
     /// <summary>
     /// As above, but with the employee's employing company so the tenant's configured rest days are
