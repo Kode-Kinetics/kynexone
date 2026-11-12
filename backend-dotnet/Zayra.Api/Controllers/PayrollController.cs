@@ -4773,8 +4773,22 @@ public partial class PayrollController : ControllerBase
     {
         if (!HasPermission("payroll.export")) return Forbid();
 
+        // ONE remittance per group, even under concurrent requests. The "already remitted" probe below and
+        // the insert it guards used to run with no transaction and no lock, so two simultaneous "Remit GOSI"
+        // calls both passed the probe and both posted DR 2101/2106 / CR Cash/Bank — a double payment that
+        // still balanced, so nothing flagged it. The whole remit now runs in one transaction that first
+        // takes FOR UPDATE on the payroll_runs row (the same row lock Lock, Void and settle take): the second
+        // caller waits, then sees the committed remittance and gets the 409. It also serialises a remit
+        // against a concurrent void of the same run.
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        return await InRunRowLockTransactionAsync(
+            () => RemitStatutoryCoreAsync(id, tenantId, req, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult> RemitStatutoryCoreAsync(Guid id, Guid tenantId, RemitStatutoryRequest req, CancellationToken cancellationToken)
+    {
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status != "Locked")
             return BadRequest(new { error = "run_not_locked", message = "Only a Locked run can be remitted." });
