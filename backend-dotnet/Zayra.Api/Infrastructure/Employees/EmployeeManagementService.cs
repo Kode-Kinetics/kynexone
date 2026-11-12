@@ -1534,7 +1534,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         return doc;
     }
 
-    public async Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken, bool includeLeaveSupportingDocuments = true)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -1553,6 +1553,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         // verified (the rule verify and reject enforce: ScanStatuses.IsServable).
         query = query.Where(x => x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.Clean
                                  || x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.NotScannedTrustedSource);
+        // A leave's supporting document (a sick note) follows the leave rule, so it is queued only for the leave administrators.
+        if (!includeLeaveSupportingDocuments)
+            query = query.Where(x => x.d.DocumentType.Trim().ToLower() != Zayra.Api.Infrastructure.Leave.LeaveSupportingDocuments.Lowered);
         if (!includeProtected)
         {
             // A protected document is verifiable only with employees.sensitive. Whether one is protected depends on its type or its category

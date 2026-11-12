@@ -317,7 +317,8 @@ public class LeaveRequestsController : ControllerBase
         if (req.AttachmentDocumentId is { } attachmentDocumentId)
         {
             var key = await _db.EmployeeDocuments.AsNoTracking()
-                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted)
+                .Where(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.Id == attachmentDocumentId && !d.IsDeleted
+                    && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()))
                 .Select(d => d.StorageUrl).FirstOrDefaultAsync(ct);
             if (string.IsNullOrWhiteSpace(key))
                 return BadRequest(new { message = "The attachment was not found among the employee's documents." });
@@ -327,7 +328,8 @@ public class LeaveRequestsController : ControllerBase
         {
             var candidate = req.AttachmentPath.Trim();
             var owned = candidate.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
-                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted, ct);
+                .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted
+                    && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()), ct);
             if (!owned)
                 return BadRequest(new { message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
             attachmentPath = candidate;

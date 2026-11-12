@@ -35,6 +35,7 @@ using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Common;
@@ -3527,6 +3528,11 @@ public class EmployeesController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
 
+        // A leave's supporting document follows the leave rule; anyone else is told nothing exists.
+        if (LeaveSupportingDocuments.IsSupportingDocument(document.DocumentType)
+            && !LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), document.EmployeeId))
+            return NotFound();
+
         // Identity and payroll files contain the same protected facts masked on the employee record.
         if (EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
             && !User.HasPermission("employees.sensitive"))
@@ -4441,6 +4447,9 @@ public class EmployeesController : ControllerBase
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var docs = await employeeManagement.GetDocumentsAsync(RequireTenant(), id, cancellationToken);
+        // A leave's supporting document (a sick note) follows the leave rule: the employee and HR, not every reader of the record.
+        if (!LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), id))
+            docs = docs.Where(document => !LeaveSupportingDocuments.IsSupportingDocument(document.DocumentType)).ToList();
         return Ok(docs.Select(document => EmployeeDocumentDto.Project(document, CanViewSensitive())).ToList());
     }
 
@@ -4449,6 +4458,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
@@ -4470,7 +4480,8 @@ public class EmployeesController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var visible = await ResolveVisibleEmployeeIdsAsync(cancellationToken);
-        return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken));
+        return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken,
+            includeLeaveSupportingDocuments: LeaveSupportingDocuments.IsLeaveAdministrator(User)));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
@@ -4478,6 +4489,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
@@ -4493,6 +4505,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
@@ -4509,6 +4522,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -7073,6 +7087,17 @@ public class EmployeesController : ControllerBase
     // PrivilegedMfaPolicy counts, so a name-based grant would also have shown IBANs to a user MFA never covered.
     private bool CanEditSensitive() => User.HasPermission("employees.sensitive");
     private bool CanViewSensitive() => User.HasPermission("employees.sensitive");
+
+    /// <summary>True when the document is a leave's supporting document the caller may not see (the leave rule): the action then answers 404.</summary>
+    private async Task<bool> LeaveNoteHiddenAsync(int employeeId, Guid documentId, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var type = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .Select(x => x.DocumentType).FirstOrDefaultAsync(cancellationToken);
+        return LeaveSupportingDocuments.IsSupportingDocument(type)
+            && !LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), employeeId);
+    }
     private ObjectResult SensitiveDocumentRefusal(SensitiveDocumentAccessException ex) =>
         StatusCode(403, new { code = "employees_sensitive_required", message = ex.Message });
     /// <summary>One addressed notice per recipient; nobody named means nothing is sent, never a workspace-wide
