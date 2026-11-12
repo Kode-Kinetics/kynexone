@@ -1400,7 +1400,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
     companyId: existing?.companyId ?? defaultCompanyId,
     name: existing?.name ?? '',
     leaveTypeId: existing?.leaveTypeId ?? '',
-    countryCode: existing?.countryCode ?? 'UAE',
+    countryCode: existing?.countryCode ?? 'KSA',
     departmentName: existing?.departmentName ?? '',
     grade: existing?.grade ?? '',
     employmentType: existing?.employmentType ?? '',
@@ -1761,7 +1761,7 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
 // ── Holiday Calendar Tab ──────────────────────────────────────────────────────
 
 const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', holidayType: 'National', isRecurring: false, isOptional: false };
-const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
+const BLANK_CAL_FORM = { name: '', countryCode: 'KSA', calendarYear: new Date().getFullYear() };
 
 export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, companyId }: LeaveEditorProps & {
   /** Show this company's calendars beside the workspace-wide ones (not other companies'), and create new ones for it. */
