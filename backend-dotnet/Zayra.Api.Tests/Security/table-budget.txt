@@ -217,6 +217,8 @@ LeaveModificationRequests
 LeavePayrollImpacts
 LeavePolicies
 LeavePolicyEligibilities
+# Annual-leave provision witness (AddLeaveProvisioning): per employee per month, the unused days x day rate the Lock journal's movement was measured on
+LeaveProvisionSnapshots
 LeaveRequestDates
 LeaveRequests
 LeaveTypes
