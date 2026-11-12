@@ -22,6 +22,8 @@ export interface ManpowerRequisition {
   targetJoiningDate: string | null;
   status: string;
   requestedByName: string;
+  /** Who raised it; the API refuses that person's own decision. */
+  requestedByUserId?: string | null;
   rejectionReason: string;
   createdAtUtc: string;
   submittedAtUtc: string | null;

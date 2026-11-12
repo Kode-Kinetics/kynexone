@@ -437,8 +437,18 @@ public static class JournalExportBuilder
     public static DateOnly DeriveAccountingDate(FinanceGlEntry e)
     {
         if (!TryParsePeriod(e.Period, out var start, out var end)) return e.EntryDate;
+        // Everything posted as part of a payroll period's Lock (the accrual, the bonus / settlement payable
+        // clearings inside it, the EOSB provision movement) is a month-end journal: it recognises the month's
+        // cost and liabilities whatever day the run happened to be locked, so it always carries the last day of
+        // its period. (A November run locked on 12 November exported as 2026-11-12 and read as a mid-month
+        // document.) Payment, remittance, reversal and contra journals are dated by when they actually
+        // happened, so they keep the rule below.
+        if (IsPayrollLockJournal(e)) return end;
         return e.EntryDate >= start && e.EntryDate <= end ? e.EntryDate : end;
     }
+
+    private static bool IsPayrollLockJournal(FinanceGlEntry e) =>
+        e.SourceModule == "Payroll" && GlEventTypes.IsPayrollLockEvent(e.EventType);
 
     public static bool TryParsePeriod(string? period, out DateOnly start, out DateOnly end)
     {

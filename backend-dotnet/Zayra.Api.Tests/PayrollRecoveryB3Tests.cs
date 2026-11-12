@@ -316,6 +316,16 @@ public class PayrollRecoveryB3Tests
             InstallmentAmount = 500m, TotalRepaid = 0m, ApprovedInstallments = 1,
         };
         db.EmployeeLoans.AddRange(loanA, loanB);
+        // Both loans really were lent through the ledger (cash left at disbursement), so the receivable holds
+        // what the payroll EMI will relieve; a loan with no disbursement GL has its remittance refused.
+        foreach (var (loan, amount) in new[] { (loanA, 6_000m), (loanB, 500m) })
+            db.FinanceGlEntries.Add(new FinanceGlEntry
+            {
+                TenantId = tid, CompanyId = companyId, SourceModule = "Loan", SourceEntityId = Guid.NewGuid(),
+                SourceEntityRef = loan.LoanNumber, EventType = "Disbursement",
+                DebitAccount = "1400 - Employee Loans Receivable", CreditAccount = "1000 - Cash/Bank",
+                Amount = amount, Currency = "SAR", EntryDate = new DateOnly(2026, 5, 1), Period = "2026-05",
+            });
         await db.SaveChangesAsync();
         db.LoanInstallments.Add(new LoanInstallment
         {

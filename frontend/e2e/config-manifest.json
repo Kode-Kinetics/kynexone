@@ -41,9 +41,17 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.demo-r1-fe.config.ts": {
+      "disposition": "manual",
+      "reason": "Route-mocked demo round 1 front-end fixes (F5 readiness Arabic, F6 leave balance, F7 offer deadline, F10 channel); its spec is also collected by the root chromium project on PRs, this config is the focused local run."
+    },
     "playwright.demo-seed.config.ts": {
       "disposition": "manual",
       "reason": "Seeds the Masar demo tenant on demand (npm run seed:demo-masar); a tool, not a test suite."
+    },
+    "playwright.draft-identity.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked new-hire government ID review spec (e2e/new-hire-draft-identity.spec.ts); also collected by the root chromium project on PRs, this config is the focused fast run."
     },
     "playwright.email-manual.config.ts": {
       "disposition": "manual",
@@ -129,13 +137,17 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
-    "playwright.leave-floor-warnings.config.ts": {
-      "disposition": "nightly",
-      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
-    },
     "playwright.leave-cancellation.config.ts": {
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked leave-cancellation approvals spec (e2e/leave-cancellation-approvals.spec.ts); also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
+    "playwright.leave-demo-setup.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked leave open-year, apply-with-attachment and leave-type Arabic specs (e2e/leave-open-year, leave-apply-attachment, leave-type-arabic); also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
+    "playwright.leave-floor-warnings.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
     "playwright.leave-per-company.config.ts": {
       "disposition": "nightly",
@@ -177,17 +189,21 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.recruitment-demo.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked recruitment drawer, offers, interviews and onboarding display spec (e2e/recruitment-demo-ux.spec.ts) at desktop and phone, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.renewals.config.ts": {
+      "disposition": "nightly",
+      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.salary-allowances.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
     "playwright.screen-contract.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked per-screen contract suite (Screen Standard 8g); assertions a screen does not meet yet are test.fixme with the cause in the title, executed nightly with the other route-mocked suites."
-    },
-    "playwright.salary-allowances.config.ts": {
-      "disposition": "nightly",
-      "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
     "playwright.setup-consolidation.config.ts": {
       "disposition": "nightly",

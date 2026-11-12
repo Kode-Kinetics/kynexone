@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { instantToLocalInput, localInputToInstant } from '../src/lib/localDateTime';
+import { endOfLocalDayInstant, instantToLocalInput, localInputToInstant } from '../src/lib/localDateTime';
 
 /**
  * A datetime-local input holds a WALL time ("2026-11-20T10:00") with no zone. Posted as it stands, the server reads it as UTC, so a
@@ -78,4 +78,37 @@ test.describe('recruitment never posts a bare datetime-local value', () => {
       expect(src, `${f} posts a datetime-local value`).toMatch(/toISOString\(\)|localInputToInstant\(/);
     }
   });
+});
+
+// Demo R1 F7: a date-only offer deadline is the END of that day where the person sits, not 00:00Z.
+test.describe('a date-only deadline is the end of that day', () => {
+  let saved: string | undefined;
+  test.beforeEach(() => { saved = process.env.TZ; });
+  test.afterEach(() => { if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved; });
+
+  const CASES: Array<[zone: string, date: string, utc: string]> = [
+    ['Asia/Riyadh', '2026-12-15', '2026-12-15T20:59:59.000Z'],
+    ['America/New_York', '2026-12-15', '2026-12-16T04:59:59.000Z'],
+    ['UTC', '2026-12-15', '2026-12-15T23:59:59.000Z'],
+    ['Asia/Tokyo', '2026-12-15', '2026-12-15T14:59:59.000Z'],
+  ];
+  for (const [zone, date, utc] of CASES) {
+    test(`${zone}: ${date} ends at ${utc}, still the same day on the wall clock`, () => {
+      process.env.TZ = zone;
+      expect(endOfLocalDayInstant(date)).toBe(utc);
+      expect(instantToLocalInput(utc)).toBe(`${date}T23:59`);
+    });
+  }
+
+  test('blank, malformed or impossible dates send nothing', () => {
+    process.env.TZ = 'Asia/Riyadh';
+    for (const bad of ['', '  ', '15/12/2026', '2026-12-15T10:00', '2026-02-31', null, undefined]) expect(endOfLocalDayInstant(bad)).toBe('');
+  });
+});
+
+test('F7: the Recruitment offer form sends its date-only deadline as the end of that day, and the register and Send dialog show it as a date', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.resolve(process.cwd(), ...p), 'utf8');
+  expect(read('src', 'views', 'RecruitmentPage.tsx')).toContain('endOfLocalDayInstant(offerForm.responseDeadline)');
+  expect(read('src', 'components', 'recruitment', 'OfferSendDialog.tsx')).toContain('f.date(offer.responseDeadline)');
+  expect(read('src', 'components', 'recruitment', 'OfferHistoryRegister.tsx')).toContain('f.date(row.responseDeadline)');
 });

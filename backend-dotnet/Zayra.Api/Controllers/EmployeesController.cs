@@ -3731,6 +3731,8 @@ public class EmployeesController : ControllerBase
             }
 
             var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
+            // A hire that states no notice period gets the company's default, as the form's create does (drafts carry no notice field).
+            employee.NoticePeriodDays ??= await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, employee.CountryCode, ct);
             employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
             employee.ActivatedAtUtc = approvedAtUtc;
 
@@ -6661,7 +6663,18 @@ public class EmployeesController : ControllerBase
 
     /// <summary>The employee record a draft becomes (without its code, which is allocated under the
     /// tenant lock). Shared by approval and the review screen's activation check.</summary>
-    private static Employee EmployeeFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc) => new()
+    private static Employee EmployeeFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc)
+    {
+        var employee = EmployeeFieldsFromDraft(draft, tenantId, placement, approvedAtUtc);
+        // The derived fields the Add-Employee form stamps (nationality code/state, Saudi / NonSaudi, primary ID type, contract start): the same helpers, so an
+        // offer-path hire is classified exactly like a form hire.
+        DraftHireDerivation.ApplyNationality(employee);
+        employee.IdType = DraftHireDerivation.PrimaryIdType(employee);
+        employee.ContractStartDate = DraftHireDerivation.ContractStart(employee.ContractType, draft.ContractStartDate, employee.JoiningDate);
+        return employee;
+    }
+
+    private static Employee EmployeeFieldsFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc) => new()
     {
         TenantId = tenantId,
         CompanyId = placement.CompanyId,
@@ -6695,7 +6708,6 @@ public class EmployeesController : ControllerBase
         Grade = placement.GradeCode,
         GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,
-        ContractStartDate = draft.ContractStartDate,
         ContractEndDate = draft.ContractEndDate,
         ProbationEndDate = draft.ProbationWaived ? null : draft.ProbationEndDate,
         ProbationWaived = draft.ProbationWaived,
@@ -6717,10 +6729,8 @@ public class EmployeesController : ControllerBase
         ResidencyIssueDate = draft.ResidencyIssueDate,
         WorkPermitIssueDate = draft.WorkPermitIssueDate,
         IqamaNumber = draft.IqamaNumber,
-        // The Saudi National ID, with its type: the wage file and Qiwa read a primary ID through IdType + IdNumber
-        // (the self-service profile sets the pair the same way).
+        // The Saudi National ID; its type (and an Iqama's) is set by DraftHireDerivation.PrimaryIdType in EmployeeFromDraft.
         IdNumber = draft.IdNumber,
-        IdType = string.IsNullOrWhiteSpace(draft.IdNumber) ? string.Empty : "NationalId",
         BorderNumber = draft.BorderNumber,
         MuqeemNumber = draft.MuqeemNumber,
         GosiReference = draft.GosiReference,
