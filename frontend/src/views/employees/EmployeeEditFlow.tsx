@@ -23,7 +23,9 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { employeeWorkspaceHref, type EmployeeSection } from '../../lib/peopleRoutes';
 import { EMPLOYEE_EDIT_STEPS, EmployeeCreatePanel, EmployeeCreateProgress, EmployeeCreateReview } from '../../components/EmployeeCreateWizard';
 import { WorkEmailField } from '../../components/employeeAccess/WorkEmailField';
-import { SalaryStructureSelect } from '../../components/SalaryStructureSelect';
+import { useStaleSalaryStructure } from '../../hooks/useStaleSalaryStructure';
+import { gradeForCode, monthlyPayFromDraft, todaysPayAlsoChecked } from '../../lib/gradePayRange';
+import { EditGradePayNotice } from './EditGradePayNotice';
 import { employeeEditStep, hasCostCentrePatch, useEmployeeEditDraft, type CostCentreIntent } from './useEmployeeEditDraft';
 import { useEditCostCentre } from './useEditCostCentre';
 import { EmployeeEditCostCentreField, type EditCostCentreAlert } from './EmployeeEditCostCentreField';
@@ -36,7 +38,7 @@ import { useCashAllowanceCatalog } from '../../hooks/useCashAllowanceCatalog';
 import { ALLOWANCES_KEY, REDUCTION_REFERENCE_KEY } from '../../lib/employeeEditDraft';
 import { SalaryReductionNotice } from '../../components/payroll/SalaryReductionNotice';
 import { formatAmount } from '../../lib/hire/money';
-import { describeLines, encodeValue, lineName, parseDecimal, type AllowanceDraftLine } from '../../lib/salaryAllowances';
+import { describeLines, encodeValue, lineName, parseDecimal, shownLines, type AllowanceDraftLine } from '../../lib/salaryAllowances';
 
 function stepForSection(section: EmployeeSection, panel?: string) {
   if (section === 'employment' || section === 'access-onboarding') return 1;
@@ -90,15 +92,15 @@ export function EmployeeEditFlow({
   const [costCenters, setCostCenters] = useState<CostCenterDto[]>([]);
   const [employees, setEmployees] = useState<EmployeeListItem[]>([]);
   const { lists: referenceLists } = useEmployeeReferenceLists();
-  // The employee's current structure is retired / superseded / another company's: a salary change on it would be
-  // refused (422), so it is blocked here with the reason. Edits that do not touch the salary package still save.
-  const [structureInvalid, setStructureInvalid] = useState(false);
+  // The structure follows the grade (HR does not pick one). A current structure that is no longer valid would make the server
+  // refuse a salary change, so the edit then puts the package on the grade's own structure instead (useEmployeeEditDraft).
+  const currentStructureStale = useStaleSalaryStructure(employee.companyId, employee.salaryBreakdown?.salaryStructureCode, canSeeSensitive && canWrite);
   const formatValue = useMemo(
     () => (key: string, value: string) => (isReferenceKey(key) ? referenceLabel(referenceLists[key], value, locale) : value),
     [referenceLists, locale],
   );
   // The monthly cash allowances (ALW_*): drawn by their own editor on the Salary step. Untouched, nothing about them is sent.
-  const { catalog: allowanceCatalog, retry: retryAllowanceCatalog } = useCashAllowanceCatalog({ enabled: canSeeSensitive && canWrite });
+  const { catalog: allowanceCatalog, retry: retryAllowanceCatalog } = useCashAllowanceCatalog({ companyId: employee.companyId, enabled: canSeeSensitive && canWrite });
   const salaryCurrency = employee.salaryBreakdown?.currency || employee.payrollProfile?.salaryCurrency || '';
   const describeAllowanceChange = useCallback((before: readonly AllowanceDraftLine[], after: readonly AllowanceDraftLine[], basic: number | undefined) => {
     const choices = allowanceCatalog.status === 'ready' ? allowanceCatalog.choices : [];
@@ -112,8 +114,23 @@ export function EmployeeEditFlow({
     const say = (lines: readonly AllowanceDraftLine[]) => describeLines(lines, basic, words);
     return t('From {before} to {after}', { before: say(before), after: say(after) });
   }, [allowanceCatalog, locale, salaryCurrency, t]);
-  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved, formatValue, describeAllowanceChange });
-  const salaryBlockedByStructure = structureInvalid && draft.salaryPackageChanged;
+  const draft = useEmployeeEditDraft({ employee, canWrite, canSeeSensitive, initialStep: stepForSection(section, panel), onSaved, formatValue, describeAllowanceChange, currentStructureStale });
+  // The grade the pay is judged against (the new one when the edit changes it), its range, and the monthly pay as edited.
+  const gradeChanged = draft.changedKeys.includes('grade');
+  const salaryShown = draft.fields.some((field) => field.key === 'salaryBreakdown.basicSalary');
+  const payGradeCode = (draft.form.grade ?? '').trim();
+  const payGrade = gradeForCode(allGrades.filter((item) => item.isActive), payGradeCode, employee.companyId);
+  const monthlyPay = monthlyPayFromDraft(draft.form, shownLines(draft.allowanceBaseline, draft.allowanceEdit));
+  const showGradePay = salaryShown && !!payGradeCode && (gradeChanged || draft.salaryPackageChanged);
+  // The grade moves now: an edited package not in force today leaves today's pay (the current record) to be judged too, as the server does.
+  const recordDate = employee.salaryBreakdown ? (draft.original['salaryBreakdown.effectiveDate'] ?? '').slice(0, 10) : '';
+  const todaysPay = todaysPayAlsoChecked({
+    gradeChanged, payEdited: draft.salaryPackageChanged, packageDate: (draft.form['salaryBreakdown.effectiveDate'] ?? '').trim(),
+    recordDate, today: new Date().toISOString().slice(0, 10),
+  }) ? { amount: monthlyPayFromDraft(draft.original, draft.allowanceBaseline), from: recordDate } : undefined;
+  const gradePayNotice = (compact: boolean) => <EditGradePayNotice fromCode={(draft.original.grade ?? '').trim()} grade={payGrade} gradeCode={payGradeCode}
+    gradeChanged={gradeChanged} payEdited={draft.salaryPackageChanged} monthlyPay={monthlyPay} todaysPay={todaysPay}
+    currency={draft.form['salaryBreakdown.currency'] || salaryCurrency} compact={compact} />;
   const viewHref = employeeWorkspaceHref(employee.id, { section, panel, returnTo });
 
   useEffect(() => {
@@ -255,10 +272,11 @@ export function EmployeeEditFlow({
           {!canWrite && <p className="mb-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">{t('You have view-only access to this employee record.')}</p>}
           {draft.unavailableKeys.length > 0 && <p role="alert" className="mb-4 rounded-lg bg-amber-50 px-3 py-2.5 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Some edited fields are no longer available. Revert the changes or reopen the employee record.')}</p>}
           {draft.notice && <p role="alert" className="mb-4 rounded-lg bg-red-50 px-3 py-2.5 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{t(draft.notice)}</p>}
-          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) goToStep(draft.step + 1); else if (!salaryBlockedByStructure) submitSave(); }}>
+          <form noValidate aria-busy={draft.saving} onSubmit={event => { event.preventDefault(); if (draft.step < 5) goToStep(draft.step + 1); else submitSave(); }}>
             {EMPLOYEE_EDIT_STEPS.slice(0, 5).map((stepLabel, index) => (
               <EmployeeCreatePanel key={stepLabel.label} steps={EMPLOYEE_EDIT_STEPS} step={index} activeStep={draft.step}>
                 {draft.fields.some(field => employeeEditStep(field) === index && field.sensitive) && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Fields marked Approval are submitted for authorization before they take effect.')}</p>}
+                {index === 3 && showGradePay && <div className="mb-4">{gradePayNotice(false)}</div>}
                 <fieldset disabled={!canWrite || draft.saving} className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                   {draft.fields.filter(field => !field.hidden && employeeEditStep(field) === index).map(field => {
                     if (field.key === 'workEmail') return <WorkEmailField
@@ -310,16 +328,6 @@ export function EmployeeEditFlow({
                         <select id="edit-field-grade" value={draft.form.grade ?? ''} onChange={event => draft.setField('grade', event.target.value)} className="select mt-1.5 w-full"><option value="">{t('Select')}</option>{options.map(option => <option key={option} value={option}>{option}</option>)}</select>
                       </label>;
                     }
-                    if (field.key === 'salaryBreakdown.salaryStructureCode') return <SalaryStructureSelect
-                      key={field.key}
-                      id="edit-field-salaryBreakdown.salaryStructureCode"
-                      companyId={employee.companyId}
-                      value={draft.form[field.key] ?? ''}
-                      currentCode={employee.salaryBreakdown?.salaryStructureCode}
-                      onChange={(value) => draft.setField(field.key, value)}
-                      onInvalidSelectionChange={setStructureInvalid}
-                      labelSuffix={<>{field.sensitive && <span aria-hidden="true" className="rounded bg-amber-100 px-1.5 py-0.5 text-caption font-semibold uppercase text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">{t('Approval')}</span>}{draft.changedKeys.includes(field.key) && <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-sapphire" title={t('Modified')} />}</>}
-                    />;
                     if (field.key === 'costCenter') return <EmployeeEditCostCentreField
                       key={field.key}
                       cc={cc}
@@ -367,7 +375,7 @@ export function EmployeeEditFlow({
             ))}
             <EmployeeCreatePanel steps={EMPLOYEE_EDIT_STEPS} step={5} activeStep={draft.step}>
               <p className="mb-4 text-sm text-slate-600 dark:text-slate-300">{changeCount ? t('{count} fields changed. Review the before and after values before saving.', { count: changeCount }) : t('No changes yet. You can return to any section to update it.')}</p>
-              {salaryBlockedByStructure && <p role="alert" className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('This salary structure is no longer valid for this employee. Choose another structure, or the default, before saving salary changes.')}</p>}
+              {showGradePay && gradePayNotice(true)}
               {draft.salaryPackageChanged && <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">{t('Salary changes take effect on {date}, after approval.', { date: draft.salaryEffectiveDate })}</p>}
               <EmployeeCreateReview sections={reviewSections} onEdit={draft.setStep} readOnly={!canWrite} busy={draft.saving} />
             </EmployeeCreatePanel>
@@ -376,7 +384,7 @@ export function EmployeeEditFlow({
               <div className="flex items-center gap-2">
                 {draft.step > 0 && <button type="button" onClick={() => goToStep(draft.step - 1)} disabled={draft.saving} className="btn-secondary"><ArrowLeft className="h-4 w-4 rtl:rotate-180" />{t('Back')}</button>}
                 {draft.step < 5 ? <button type="submit" disabled={draft.saving} className="btn-primary">{t('Next: {step}', { step: t(EMPLOYEE_EDIT_STEPS[draft.step + 1].label) })}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button>
-                  : <button type="submit" disabled={draft.saving || changeCount === 0 || draft.unavailableKeys.length > 0 || salaryBlockedByStructure} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
+                  : <button type="submit" disabled={draft.saving || changeCount === 0 || draft.unavailableKeys.length > 0} className="btn-primary disabled:opacity-50">{draft.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{t(draft.saving ? 'Saving...' : 'Save changes')}</button>}
               </div>
             </footer>
           </form>

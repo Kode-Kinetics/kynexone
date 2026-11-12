@@ -190,8 +190,10 @@ export const SALARY_BREAKDOWN_EDIT_FIELDS: EmployeeEditField[] = [
   { key: 'mobileAllowance', label: 'Mobile allowance', type: 'number' },
   { key: 'otherAllowance', label: 'Other allowance', type: 'number' },
   { key: 'fixedDeduction', label: 'Fixed deduction', type: 'number' },
-  // Rendered as a choice of the company's active structures (SalaryStructureSelect), never free text.
-  { key: 'salaryStructureCode', label: 'Salary structure', type: 'select' },
+  // Not chosen by HR: the structure follows the grade (the grade is the one master for pay). Kept, hidden, so an edit
+  // carries the employee's current code forward; the edit sends blank (the grade's own structure) when the grade changes
+  // or the current structure is no longer valid (useEmployeeEditDraft).
+  { key: 'salaryStructureCode', label: 'Salary structure', type: 'select', hidden: true },
 ].map((field) => ({ ...field, type: field.type as FieldInputType | undefined, key: `salaryBreakdown.${field.key}`, section: 'Salary', sensitive: true }));
 
 // Passport is common to every GCC jurisdiction.

@@ -444,6 +444,26 @@ test.describe('Employee profile and Edit employee', () => {
     await expect(items.nth(1)).toContainText(car.nameEn);
   });
 
+  test('with no allowance defined in Benefits by grade, Edit says where to add them instead of a button that cannot work', async ({ page }) => {
+    await bootEmployeeWorkspaceFixture(page, { permissions: [...permissions, 'entitlements.manage'], disabledFeatures: [] });
+    await page.route('**/api/entitlements/matrix*', route => route.fulfill({ json: { ...matrix, components: [] } }));
+    await page.goto('/people/901/edit?section=pay-benefits&panel=salary');
+    const section = page.getByTestId('employee-edit-flow').getByTestId('salary-allowances');
+    await expect(section.getByTestId('salary-allowances-none-defined')).toContainText('No monthly allowance has been added in Benefits by grade yet.');
+    await expect(section.getByRole('link', { name: /^Add allowances in Benefits by grade/ })).toHaveAttribute('href', '/benefits/by-grade');
+    await expect(section.getByRole('button', { name: 'Add an allowance' })).toHaveCount(0);
+  });
+
+  test('without the right to set up benefits, the same section says who can add them', async ({ page }) => {
+    await bootEmployeeWorkspaceFixture(page, { permissions, disabledFeatures: [] });
+    await page.route('**/api/entitlements/matrix*', route => route.fulfill({ json: { ...matrix, components: [] } }));
+    await page.goto('/people/901/edit?section=pay-benefits&panel=salary');
+    const section = page.getByTestId('employee-edit-flow').getByTestId('salary-allowances');
+    await expect(section.getByTestId('salary-allowances-none-defined')).toContainText('Ask an administrator to add them in Benefits by grade.');
+    await expect(section.getByRole('link', { name: /Benefits by grade/ })).toHaveCount(0);
+    await expect(section.getByRole('button', { name: 'Add an allowance' })).toHaveCount(0);
+  });
+
   test('a basic-only edit sends no allowances, so the server carries them forward', async ({ page }) => {
     const fixture = await bootEmployeeWorkspaceFixture(page, { permissions, disabledFeatures: [] });
     await withMatrix(page);

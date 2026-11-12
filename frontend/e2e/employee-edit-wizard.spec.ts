@@ -21,7 +21,7 @@ const initialEmployee = {
 const stepNames = ['Profile', 'Employment', 'Payroll', 'Salary', 'Identity', 'Review'];
 const salaryBreakdown = { basicSalary: 7000, housingAllowance: 2000, transportAllowance: 300, foodAllowance: 100, mobileAllowance: 50, otherAllowance: 25, fixedDeduction: 10, currency: 'SAR', effectiveDate: '2026-10-01', salaryStructureCode: 'PACKAGE-TEST' };
 type EditBody = { effectiveDate: string; changes: Record<string, unknown> };
-interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean; designations?: unknown[] }
+interface BootOptions { readOnly?: boolean; noSensitive?: boolean; customRole?: boolean; approval?: boolean; failFirstSave?: boolean; catalogResponse?: Promise<unknown>; structuredSalary?: boolean; salaryStructureCode?: string; legacySalaryWithNullPackage?: boolean; documentUploadStatus?: number; contractGap?: boolean; designations?: unknown[]; seniorGrade?: boolean; structuresForbidden?: boolean }
 
 async function boot(page: Page, options: BootOptions = {}) {
   let employee = { ...initialEmployee, ...(options.structuredSalary ? { salaryBreakdown: { ...salaryBreakdown, ...(options.salaryStructureCode ? { salaryStructureCode: options.salaryStructureCode } : {}) } } : options.legacySalaryWithNullPackage ? { salary: 7500, salaryBreakdown: null } : {}) };
@@ -34,6 +34,8 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (message.type() !== 'error') return;
     // The retry fixture deliberately returns one 503; all other browser errors fail the case.
     if ((options.failFirstSave || options.documentUploadStatus === 503) && /Failed to load resource.*503/.test(message.text())) return;
+    // The forbidden-structures fixture: the 403 on the structure list and the server's 422 for the refused structure are the point of the case.
+    if (options.structuresForbidden && /Failed to load resource.*(403|422)/.test(message.text())) return;
     errors.push(`console: ${message.text()}`);
   });
   await page.addInitScript(() => {
@@ -59,8 +61,12 @@ async function boot(page: Page, options: BootOptions = {}) {
     if (path === '/api/branches') return reply(paged([{ id: 'edit-branch', companyId: company.id, nameEn: 'Riyadh', code: 'RYD', isActive: true }]));
     if (path === '/api/departments') return reply(paged([{ id: 'edit-department', nameEn: 'Operations', code: 'OPS', isActive: true }]));
     if (path === '/api/designations') return reply(paged(options.designations ?? [{ id: 'edit-designation', titleEn: 'Specialist', code: 'SPEC', isActive: true }]));
-    if (path === '/api/grades') return reply(paged([{ id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true }]));
+    if (path === '/api/grades') return reply(paged([
+      { id: 'edit-grade', name: 'Professional', code: 'G5', minSalary: 5000, maxSalary: 15000, currency: 'SAR', isActive: true },
+      ...(options.seniorGrade ? [{ id: 'edit-grade-senior', name: 'Senior', code: 'G7', minSalary: 20000, maxSalary: 30000, currency: 'SAR', isActive: true }] : []),
+    ]));
     if (path === '/api/organization/cost-centers') return reply(paged([]));
+    if (path === '/api/payroll/salary-structures' && options.structuresForbidden) return reply({ message: 'Forbidden.' }, 403);
     if (path === '/api/payroll/salary-structures') return reply([
       { id: 'structure-company', companyId: company.id, code: 'OPS-BAND', name: 'Operations band', isActive: true },
       { id: 'structure-package', companyId: company.id, code: 'PACKAGE-TEST', name: 'Package test', isActive: true },
@@ -80,6 +86,8 @@ async function boot(page: Page, options: BootOptions = {}) {
       writes.push({ method: request.method(), body });
       if (options.readOnly) return reply({ message: 'Read-only fixture must never receive an employee mutation.' }, 403);
       if (options.failFirstSave && writes.length === 1) return reply({ message: 'Temporary save failure. Please try again.' }, 503);
+      const sentStructure = (body.changes.salaryBreakdown as { salaryStructureCode?: string } | undefined)?.salaryStructureCode;
+      if (sentStructure === 'OPS-OLD') return reply({ error: 'inactive_salary_structure', code: 'inactive_salary_structure', salaryStructureCode: 'OPS-OLD', message: 'Salary structure OPS-OLD is inactive.' }, 422);
       if (options.approval) {
         const sensitiveFields = Object.keys(body.changes).filter(key => ['salary', 'salaryBreakdown'].includes(key));
         const immediate = Object.fromEntries(Object.entries(body.changes).filter(([key]) => !sensitiveFields.includes(key)));
@@ -222,11 +230,8 @@ test('structured salary edits preserve the complete package and persist resumed 
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
   await expect(dialog.getByRole('spinbutton', { name: /^Basic salary/ })).toHaveValue('7000');
   await expect(dialog.getByRole('spinbutton', { name: /^Housing allowance/ })).toHaveValue('2000');
-  // The structure is a choice of the company's active (or group-wide) structures, never free text; retired ones and
-  // other companies' are not offered.
-  const structure = dialog.getByRole('combobox', { name: /^Salary structure/ });
-  await expect(structure).toHaveValue('PACKAGE-TEST');
-  await expect(structure.locator('option')).toHaveText(['Default for the grade', 'Group standard (GROUP-STD) — all companies', 'Operations band (OPS-BAND)', 'Package test (PACKAGE-TEST)']);
+  // HR does not pick a salary structure: it follows the grade. The current one is carried forward (see the write below).
+  await expect(dialog.getByRole('combobox', { name: /^Salary structure/ })).toHaveCount(0);
   await expect(dialog.getByRole('textbox', { name: /Salary structure/ })).toHaveCount(0);
   await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
   await dialog.getByRole('spinbutton', { name: /^Housing allowance/ }).fill('2500');
@@ -247,41 +252,85 @@ test('structured salary edits preserve the complete package and persist resumed 
   expect(errors).toEqual([]);
 });
 
-test('choosing another salary structure sends its code with the complete package, and no free-text reference exists', async ({ page }) => {
-  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, approval: true });
+test('a grade change shows the new grade’s range on the Salary step, and the package goes on the new grade’s structure', async ({ page }, info) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, approval: true, seniorGrade: true });
   await dialog.getByRole('button', { name: /^Step 3: Payroll/ }).click();
   await expect(dialog.getByRole('textbox', { name: /^Salary structure reference/ })).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  await dialog.getByRole('combobox', { name: /^Grade/ }).selectOption('G7');
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
-  await dialog.getByRole('combobox', { name: /^Salary structure/ }).selectOption('OPS-BAND');
+  const notice = dialog.getByTestId('edit-grade-pay');
+  await expect(notice).toContainText('Grade changes from Professional to G7.');
+  await expect(notice).toContainText('The pay below is the current pay. It stays as it is unless you change it.');
+  // 7,000 + 2,000 + 300 + 100 + 50 + 25 = 9,475 a month: below G7's 20,000 to 30,000, said before saving.
+  await expect(notice.getByRole('alert')).toContainText('G7 salary range: SAR 20,000.00 to SAR 30,000.00 a month.');
+  await expect(notice.getByRole('alert')).toContainText('is below this range. Change the pay before saving, or the grade change will be refused.');
+  await evidence(page, info, 'grade-change-salary-step');
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(dialog.getByTestId('edit-grade-pay-review')).toContainText('is below this range');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('20000');
+  await expect(notice).toContainText('is inside this range.');
+  await expect(notice).not.toContainText('The pay below is the current pay');
+  await expect(notice.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(dialog.getByTestId('edit-grade-pay-review')).toHaveCount(0);
+  await evidence(page, info, 'grade-change-salary-review');
   await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(writes).toHaveLength(1);
-  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, salaryStructureCode: 'OPS-BAND' } });
+  // Blank structure = the new grade's own (the server resolves it); the old grade's structure is not carried over.
+  expect(writes[0].body.changes).toEqual({ grade: 'G7', salaryBreakdown: { ...salaryBreakdown, basicSalary: 20000, salaryStructureCode: '' } });
   expect(errors).toEqual([]);
 });
 
-test('a retired current salary structure is flagged, blocks a salary change until another is chosen, and never blocks other edits', async ({ page }) => {
+test('a retired current salary structure never blocks a salary change: the package goes on the grade’s own structure', async ({ page }) => {
   const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD', approval: true });
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
-  const structure = dialog.getByRole('combobox', { name: /^Salary structure/ });
-  await expect(structure).toHaveValue('OPS-OLD');
-  await expect(structure.locator('option:checked')).toHaveText('Retired band (OPS-OLD) — not valid any more, choose another');
+  await expect(dialog.getByRole('combobox', { name: /^Salary structure/ })).toHaveCount(0);
   await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
   const save = dialog.getByRole('button', { name: 'Save changes', exact: true });
-  await expect(dialog.getByRole('alert').filter({ hasText: 'no longer valid for this employee' })).toBeVisible();
-  await expect(save).toBeDisabled();
-  expect(writes).toHaveLength(0);
-  // Choosing a valid structure clears the block and sends it with the package.
-  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
-  await structure.selectOption('OPS-BAND');
-  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
   await expect(save).toBeEnabled();
   await save.click();
   await expect(dialog).toHaveCount(0);
   expect(writes).toHaveLength(1);
-  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: 'OPS-BAND' } });
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: '' } });
+  expect(errors).toEqual([]);
+});
+
+test('without access to the structure list, a refused retired structure is retried once on the grade’s own', async ({ page }) => {
+  const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD', approval: true, structuresForbidden: true });
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('8000');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toHaveLength(2);
+  expect(writes[0].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: 'OPS-OLD' } });
+  expect(writes[1].body.changes).toEqual({ salaryBreakdown: { ...salaryBreakdown, basicSalary: 8000, salaryStructureCode: '' } });
+  expect(errors).toEqual([]);
+});
+
+test('a grade change with new pay that starts later is also judged against today’s pay', async ({ page }, info) => {
+  const { dialog, errors } = await boot(page, { structuredSalary: true, approval: true, seniorGrade: true });
+  await dialog.getByRole('button', { name: /^Step 2: Employment/ }).click();
+  await dialog.getByRole('combobox', { name: /^Grade/ }).selectOption('G7');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByRole('spinbutton', { name: /^Basic salary/ }).fill('20000');
+  const notice = dialog.getByTestId('edit-grade-pay');
+  await expect(notice).toContainText('is inside this range.');
+  await expect(notice.getByTestId('edit-grade-pay-today')).toHaveCount(0);
+  // Dated after today: the grade moves now, so today's 9,475 is judged too, and it is below G7's range.
+  const later = new Date(Date.now() + 40 * 86_400_000).toISOString().slice(0, 10);
+  await dialog.getByLabel(/^Effective date/).fill(later);
+  await expect(notice.getByTestId('edit-grade-pay-today')).toContainText('today’s pay of SAR 9,475.00, which is outside this range. Date the new pay from 2026-10-01 to today');
+  await evidence(page, info, 'grade-change-future-pay');
+  await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
+  await expect(dialog.getByTestId('edit-grade-pay-review')).toContainText('today’s pay of SAR 9,475.00');
+  await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
+  await dialog.getByLabel(/^Effective date/).fill(new Date().toISOString().slice(0, 10));
+  await expect(notice.getByTestId('edit-grade-pay-today')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -289,7 +338,7 @@ test('an edit that does not touch the salary saves even when the current structu
   const { dialog, writes, errors } = await boot(page, { structuredSalary: true, salaryStructureCode: 'OPS-OLD' });
   await dialog.getByRole('textbox', { name: /^Preferred name/ }).fill('Alex M');
   await dialog.getByRole('button', { name: /^Step 4: Salary/ }).click();
-  await expect(dialog.getByRole('combobox', { name: /^Salary structure/ })).toHaveValue('OPS-OLD');
+  await expect(dialog.getByRole('combobox', { name: /^Salary structure/ })).toHaveCount(0);
   await dialog.getByRole('button', { name: /^Step 6: Review/ }).click();
   await dialog.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect(dialog).toHaveCount(0);
