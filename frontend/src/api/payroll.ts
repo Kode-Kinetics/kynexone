@@ -376,6 +376,9 @@ export interface PayrollPaymentRecord {
   id: string;
   paymentBatchId: string;
   employeeId: number;
+  /** Server-resolved; absent from an older server or when the employee is outside the caller's company scope. */
+  employeeName?: string;
+  employeeCode?: string;
   amount: number;
   iban: string;
   status: string;
