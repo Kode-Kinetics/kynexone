@@ -45,6 +45,8 @@ import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { essApi } from '../api/ess';
+import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
@@ -378,6 +380,12 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
   const [adjustModal, setAdjustModal] = useState<EmployeeLeaveBalance | null>(null);
   const [adjAmount, setAdjAmount] = useState('');
   const [adjReason, setAdjReason] = useState('');
+  // Balances come from the leave policies and nothing schedules that, so a company that went live without imported balances
+  // has none. The server limits this to the current year and to leave.policy_manage; offer it on that basis.
+  const { hasPermission } = useAuth();
+  const canOpenYear = !selfEmployeeId && year === new Date().getFullYear() && hasPermission('leave.policy_manage');
+  const [openingYear, setOpeningYear] = useState(false);
+  const [openYearNote, setOpenYearNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 balances as all of them.
   const list = usePagedList<EmployeeLeaveBalance>((page, pageSize) =>
@@ -395,6 +403,25 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
   };
 
+  const openYear = async () => {
+    setOpeningYear(true);
+    setOpenYearNote(null);
+    try {
+      const r = await leaveBalancesApi.openYear(year);
+      setOpenYearNote({
+        tone: 'ok',
+        text: r.balancesCreated > 0
+          ? t('{count, plural, one {Created # balance} other {Created # balances}} for {year} from the leave policies.', { count: r.balancesCreated, year: String(year) })
+          : t('No new balances were created for {year}. Balances come from active leave policies, so check that each leave type has an active policy and that employees have a joining date.', { year: String(year) }),
+      });
+      load();
+    } catch (e) {
+      setOpenYearNote({ tone: 'error', text: t(requestFailureReason(e)) });
+    } finally {
+      setOpeningYear(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -410,11 +437,27 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
         <p className="ms-auto text-sm text-slate-400">{balanceCount} balance{balanceCount !== 1 ? 's' : ''}</p>
       </div>
 
+      {openYearNote && (
+        <p role={openYearNote.tone === 'error' ? 'alert' : 'status'} data-testid="open-year-note"
+          className={`rounded-lg px-4 py-3 text-sm ${openYearNote.tone === 'error' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
+          {openYearNote.text}
+        </p>
+      )}
       {list.error != null && <LoadFailure what="Leave balances" error={list.error} />}
       {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && balances.length === 0 ? null : balances.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <BarChart2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No balance records found</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No balance records found')}</p>
+          {canOpenYear && (
+            <div className="mt-3 max-w-md space-y-3" data-testid="open-year-balances">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t('Leave balances are created from the leave policies. Create {year} balances for every employee now: monthly policies are credited month by month up to today, and yearly policies grant their full entitlement. Balances that already exist are not changed.', { year: String(year) })}
+              </p>
+              <button type="button" className={btn.primary} onClick={() => void openYear()} disabled={openingYear}>
+                {openingYear ? t('Creating balances…') : t("Create this year's balances from the leave policies")}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -494,8 +537,13 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
 
 // ── Apply Leave Tab ───────────────────────────────────────────────────────────
 
+const LEAVE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const LEAVE_ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
+
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
   const { t } = useLocale();
+  const { user } = useAuth();
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [pickedEmployee, setPickedEmployee] = useState<SelectedEmployee | null>(null);
   const [delegatePicked, setDelegatePicked] = useState<SelectedEmployee | null>(null);
@@ -558,8 +606,23 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
     if (!form.employeeId || !form.leaveTypeId || !form.startDate || !form.endDate) {
       setError('Employee ID, Leave Type, and dates are required.'); return;
     }
+    if (selectedType?.requiresAttachment && !attachment) {
+      setError(t('Add a supporting document. This leave type needs one.')); return;
+    }
+    if (attachment && attachment.size > LEAVE_ATTACHMENT_MAX_BYTES) {
+      setError(t('The file is larger than 10 MB.')); return;
+    }
     setSaving(true); setError('');
     try {
+      // The document goes up first (onto the employee's own file) and the request then cites it by id, so nothing is
+      // created if the upload fails. The server refuses a leave type that requires a document without one.
+      let attachmentDocumentId: string | undefined;
+      if (selectedType?.requiresAttachment && attachment) {
+        const ownRecord = user?.employeeId != null && user.employeeId === Number(form.employeeId);
+        attachmentDocumentId = ownRecord
+          ? (await essApi.uploadDocument(attachment, 'Leave Attachment')).id
+          : (await employeesApi.uploadDocument(Number(form.employeeId), { documentType: 'Leave Attachment', isRequired: false }, attachment)).id;
+      }
       await leaveRequestsApi.create({
         employeeId: Number(form.employeeId), employeeName: form.employeeName,
         departmentName: form.departmentName, designationTitle: form.designationTitle,
@@ -570,7 +633,9 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         delegateEmployeeName: form.delegateEmployeeName,
         statutoryEventDate: isDeclarableLeave(applyKind) && form.statutoryEventDate ? form.statutoryEventDate : undefined,
         separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
+        attachmentDocumentId,
       });
+      setAttachment(null);
       setSuccess(true);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
@@ -684,9 +749,18 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           )}
 
           {selectedType?.requiresAttachment && (
-            <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-white/20">
-              This leave type requires a supporting document. Upload after submission via the request detail.
-            </div>
+            <Field label={t('Supporting document (required)')} info={t('This leave type needs a supporting document, for example a medical certificate. It is saved on the employee\'s file and sent with the request.')}>
+              <input
+                type="file"
+                accept={LEAVE_ATTACHMENT_ACCEPT}
+                data-testid="leave-apply-attachment"
+                className={inp}
+                onChange={e => setAttachment(e.target.files?.[0] ?? null)}
+              />
+              <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
+                {attachment ? attachment.name : t('A PDF or a photo, up to 10 MB.')}
+              </p>
+            </Field>
           )}
 
           <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
@@ -1142,7 +1216,7 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name (English) *"><input className={inp} value={form.nameEn} onChange={e => set('nameEn', e.target.value)} /></Field>
-          <Field label="Name (Arabic)"><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} onSuggest={(s) => set('nameAr', s)} /></div></Field>
+          <Field label="Name (Arabic)"><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => set('nameAr', s)} /></div></Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Max Consecutive Days (0=unlimited)"><input type="number" min={0} className={inp} value={form.maxConsecutiveDays} onChange={e => set('maxConsecutiveDays', Number(e.target.value))} /></Field>

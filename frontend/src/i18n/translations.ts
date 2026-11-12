@@ -70,6 +70,7 @@ import { dailyE } from './dailyE';
 import { onboardingP2 } from './onboardingP2';
 import { onboardingP4 } from './onboardingP4';
 import { uxFoundation } from './uxFoundation';
+import { leaveOpenYear } from './leaveOpenYear';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -98,6 +99,7 @@ const en: Dict = {
   ...dailyC.en,
   ...dailyD.en,
   ...dailyE.en,
+  ...leaveOpenYear.en,
   ...companyWizard.en,
   ...companyWizardRules.en,
   ...setupDataEntry.en,
@@ -1657,6 +1659,7 @@ const ar: Dict = {
   ...dailyC.ar,
   ...dailyD.ar,
   ...dailyE.ar,
+  ...leaveOpenYear.ar,
   ...companyWizard.ar,
   ...companyWizardRules.ar,
   ...setupDataEntry.ar,
