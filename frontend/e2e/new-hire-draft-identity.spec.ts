@@ -63,7 +63,7 @@ async function open(page: Page, opts: Opts = {}) {
     }
     if (request.method() !== 'GET') return json({});
     if (pathname === '/api/auth/me') return json({
-      id: 'hr-1', tenantId: 't1', email: 'hr@evostel.com', fullName: 'Hana HR', roles: ['HR Manager'], accountType: 'Group', isGroupScope: true, companies: [],
+      id: 'hr-1', tenantId: 't1', email: 'hr@example.com', fullName: 'Hana HR', roles: ['HR Manager'], accountType: 'Group', isGroupScope: true, companies: [],
       permissions: ['employees.read', 'employees.approve', ...(opts.canWrite === false ? [] : ['employees.write'])],
     });
     if (pathname === '/api/employees/drafts') return json({

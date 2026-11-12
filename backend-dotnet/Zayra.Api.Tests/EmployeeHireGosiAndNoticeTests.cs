@@ -130,6 +130,19 @@ public sealed class EmployeeHireGosiAndNoticeTests
     }
 
     [Fact]
+    public async Task DraftAutosave_WithANationalityThatResolvesToNoClass_KeepsTheStoredDate()
+    {
+        await using var db = _fx.CreateDb();
+        var (tenantId, company) = await SeedAsync(db);
+        var created = await Service(db).CreateAsync(tenantId, Hire("Draft Saudi 2", "SA", company.Id) with { GosiFirstRegisteredOn = new DateOnly(2025, 3, 1) }, Ctx(tenantId), default);
+
+        // A save whose nationality is unreadable decides nothing about the class, so it must not wipe the GOSI date.
+        await Service(db).UpdateAsync(tenantId, created.Id, Hire("Draft Saudi 2", "SA", company.Id) with
+            { EmployeeCode = created.EmployeeCode, NationalityCode = null, Nationality = "Unrecognised Place", GosiFirstRegisteredOn = null }, Ctx(tenantId), default);
+        (await db.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id)).GosiFirstRegisteredOn.Should().Be(new DateOnly(2025, 3, 1));
+    }
+
+    [Fact]
     public async Task AnEmployeeWhoHasStartedWork_IsNotChangedByThisDoor()
     {
         // The edit path stays approval-gated. Even if the service is handed a date for an employee who is no longer a draft, it is not written.

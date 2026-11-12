@@ -1764,7 +1764,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         if (workerClass is not null) employee.SaudiOrNonSaudi = workerClass;
         // F02: the GOSI first-registration date is STATED AT HIRE for a Saudi national (create and the draft autosave), and nowhere else: a person who has
         // started work keeps what is on file, and changing it for them stays on the approval-gated change path. Never inferred; ignored for anyone not Saudi.
-        if (employee.ActivatedAtUtc is null && (employee.Id == 0 || string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)))
+        // A nationality that does not resolve to a class (GCC, unrecognised, blank) decides nothing, so the stored date stays.
+        if (workerClass is not null && employee.ActivatedAtUtc is null
+            && (employee.Id == 0 || string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)))
             employee.GosiFirstRegisteredOn = workerClass == "Saudi" ? request.GosiFirstRegisteredOn : null;
         employee.MaritalStatus = Clean(request.MaritalStatus);
         employee.PersonalEmail = Clean(request.PersonalEmail);

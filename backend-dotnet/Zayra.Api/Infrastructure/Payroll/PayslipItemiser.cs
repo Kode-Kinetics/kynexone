@@ -26,6 +26,8 @@ public static class PayslipItemiser
         "OTHER_ALLOWANCES",
     };
 
+    private static readonly System.Text.RegularExpressions.Regex TrailingWorking = new(@"\s*\(.*\d.*\)\s*$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public static List<PayslipLineItem> Build(
         PayrollSlip slip,
         string basicLabel,
@@ -35,6 +37,10 @@ public static class PayslipItemiser
         bool canSeeSalary)
     {
         decimal Show(decimal amount) => canSeeSalary ? amount : 0m;
+        // A persisted name carries its working ("Overtime (5.00 h × (62.50 + ...)/h)", "Loss of Pay (2.00 d × 266.67/d)",
+        // "Income tax (5%)"): rates are pay data, so a caller who may not see amounts sees the bare name.
+        string Name(string name) => canSeeSalary ? name : TrailingWorking.Replace(name ?? string.Empty, string.Empty);
+        basicLabel = Name(basicLabel);
         var items = new List<PayslipLineItem>();
 
         // ── Earnings ────────────────────────────────────────────────────────────────────────────
@@ -52,7 +58,7 @@ public static class PayslipItemiser
         if (earningLines.Sum(r => r.Amount) > bucket) earningLines.Clear();   // rows claim more than the bucket holds: print the bucket
         var otherAllowances = bucket - earningLines.Sum(r => r.Amount);
         if (otherAllowances > 0) items.Add(new("Other Allowances", Show(otherAllowances), "Earning"));
-        foreach (var r in earningLines) items.Add(new(r.ComponentName, Show(r.Amount), "Earning"));
+        foreach (var r in earningLines) items.Add(new(Name(r.ComponentName), Show(r.Amount), "Earning"));
 
         foreach (var a in arrearsLines)
             items.Add(new($"Arrears — {PayrollArrearsComponents.Label(a.ComponentCode)} ({a.CoveredYear}-{a.CoveredMonth:D2})", Show(a.Amount), "Earning"));
@@ -66,7 +72,7 @@ public static class PayslipItemiser
         bool IsRecovery(PayrollDeduction d) => d.Source == PayrollRecoveryComponents.RecoverySource || d.ComponentCode == PayrollRecoveryComponents.ReceivableRecovery;
 
         var statutory = employeeRows.Where(IsStatutoryEmployee).ToList();
-        foreach (var line in statutory) items.Add(new(line.ComponentName, Show(line.Amount), "Deduction"));
+        foreach (var line in statutory) items.Add(new(Name(line.ComponentName), Show(line.Amount), "Deduction"));
 
         var recoveryTotal = employeeRows.Where(IsRecovery).Sum(d => d.Amount);
         if (recoveryTotal > 0) items.Add(new(PayrollRecoveryComponents.ReceivableRecoveryName, Show(recoveryTotal), "Deduction"));
@@ -75,7 +81,7 @@ public static class PayslipItemiser
         var deductionLines = employeeRows.Where(d => !IsStatutoryEmployee(d) && !IsRecovery(d)).ToList();
         if (deductionLines.Sum(d => d.Amount) > remaining) deductionLines.Clear();
         var otherDeductions = remaining - deductionLines.Sum(d => d.Amount);
-        foreach (var d in deductionLines) items.Add(new(d.ComponentName, Show(d.Amount), "Deduction"));
+        foreach (var d in deductionLines) items.Add(new(Name(d.ComponentName), Show(d.Amount), "Deduction"));
         if (otherDeductions > 0) items.Add(new("Other Deductions", Show(otherDeductions), "Deduction"));
 
         items.Add(new("Net Pay", Show(slip.NetSalary), "Net"));

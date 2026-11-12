@@ -204,9 +204,15 @@ public class PayslipItemisedLinesTests
 
         var pdf = await Pdf(db, f, bulk, canSeeSalary: false);
 
-        pdf.Items.Should().Contain(i => i.Name == OtName && i.Type == "Earning");
+        // The rate working in a line's name ("5.00 h × (62.50 + ...)/h", "1.00 d × 1,000.00/d") is pay data too: masked, it goes.
+        pdf.Items.Should().Contain(i => i.Name == "Overtime" && i.Type == "Earning");
+        pdf.Items.Should().Contain(i => i.Name == "Loss of Pay");
         pdf.Items.Should().Contain(i => i.Name == "Late/early attendance deduction");
         pdf.Items.Should().Contain(i => i.Name == "Loan instalment");
+        pdf.Items.Should().Contain(i => i.Name == "GOSI Annuities (Employee)", "a label that carries no figure keeps its brackets");
+        // The arrears line keeps its covered month ("(2026-10)"): a period, not a rate.
+        pdf.Items.Should().NotContain(i => i.Name.Contains('×') || i.Name.Contains("/d)") || i.Name.Contains("/h)") || i.Name.Contains('%'),
+            "no rate or day count survives the mask");
         pdf.Items.Should().OnlyContain(i => i.Amount == 0m, "masking applies to every line, new or old");
     }
 
