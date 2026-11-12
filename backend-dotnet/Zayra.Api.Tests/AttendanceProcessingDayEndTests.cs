@@ -175,6 +175,40 @@ public class AttendanceProcessingDayEndTests
     }
 
     [Fact]
+    public async Task ARetraction_AlsoRemovesTheExceptionRaisedForThatDay_AndOnlyThat()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedAsync(db);
+        var daily = new AttendanceDailyRecord { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, Status = "Absent" };
+        db.AttendanceDailyRecords.Add(daily);
+        db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenant, EmployeeId = emp, DailyRecordId = daily.Id, WorkDate = Thu12, ExceptionType = "Absent", Details = "premature" });
+        db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenant, EmployeeId = emp, DailyRecordId = Guid.NewGuid(), WorkDate = new DateOnly(2026, 11, 11), ExceptionType = "LateArrival", Details = "another day" });
+        await db.SaveChangesAsync();
+
+        await ProcessAsync(db, tenant, emp, Thu12, Thu12, RiyadhToUtc(Thu12, 7, 37));
+
+        (await db.AttendanceDailyRecords.AnyAsync()).Should().BeFalse();
+        (await db.AttendanceExceptions.SingleAsync()).Details.Should().Be("another day", "the other day's exception is untouched");
+    }
+
+    [Fact]
+    public async Task AConsumedAbsentDay_KeepsItsExceptionToo()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedAsync(db);
+        var daily = new AttendanceDailyRecord { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, Status = "Absent" };
+        db.AttendanceDailyRecords.Add(daily);
+        db.AttendanceExceptions.Add(new AttendanceException { TenantId = tenant, EmployeeId = emp, DailyRecordId = daily.Id, WorkDate = Thu12, ExceptionType = "Absent", Details = "x" });
+        db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact
+            { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, ImpactType = AttendanceImpactTypes.AbsenceDeduction, Minutes = 480, Status = "Processed" });
+        await db.SaveChangesAsync();
+
+        await ProcessAsync(db, tenant, emp, Thu12, Thu12, RiyadhToUtc(Thu12, 7, 37));
+
+        (await db.AttendanceExceptions.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
     public async Task AnAbsentDayPayrollAlreadyConsumed_IsNeverRetracted()
     {
         await using var db = CreateDb();
@@ -188,6 +222,32 @@ public class AttendanceProcessingDayEndTests
 
         (await db.AttendanceDailyRecords.CountAsync()).Should().Be(1, "what a payroll run consumed is not rewritten");
         (await db.AttendancePayrollImpacts.CountAsync(x => x.Status == "Processed")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ARetraction_AbortsWhenPayrollConsumesTheImpactAfterTheCheck_NothingIsRemoved()
+    {
+        await using var db = CreateDb();
+        var (tenant, emp) = await SeedAsync(db);
+        db.AttendanceDailyRecords.Add(new AttendanceDailyRecord { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, Status = "Absent" });
+        db.AttendanceRecords.Add(new AttendanceRecord { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, Status = "Absent" });
+        db.AttendancePayrollImpacts.Add(new AttendancePayrollImpact
+            { TenantId = tenant, EmployeeId = emp, WorkDate = Thu12, ImpactType = AttendanceImpactTypes.AbsenceDeduction, Minutes = 480 });
+        await db.SaveChangesAsync();
+        var daily = await db.AttendanceDailyRecords.SingleAsync();
+
+        // The "already consumed" check has passed; payroll now stamps the impact Processed (it takes no attendance-day lock).
+        var retracted = await AttendanceDerivedArtifacts.RetractPrematureAbsenceAsync(db, tenant, daily, default, async () =>
+        {
+            (await db.AttendancePayrollImpacts.SingleAsync()).Status = "Processed";
+            await db.SaveChangesAsync();
+        });
+        await db.SaveChangesAsync();
+
+        retracted.Should().BeFalse();
+        (await db.AttendanceDailyRecords.CountAsync()).Should().Be(1, "a paid deduction never loses the attendance record behind it");
+        (await db.AttendanceRecords.CountAsync()).Should().Be(1);
+        (await db.AttendancePayrollImpacts.SingleAsync()).Status.Should().Be("Processed");
     }
 
     private sealed class FixedClock(DateTime utcNow) : TimeProvider

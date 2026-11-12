@@ -638,6 +638,48 @@ public class ComplianceDashboardTests
         Assert.Equal(1, dash.Gosi.ReadyCount + dash.Gosi.BlockedCount);
     }
 
+    // ── The WPS population includes the notice-period leavers the run still pays ─────────────
+
+    private static DateOnly Today => DateOnly.FromDateTime(DateTime.UtcNow);
+    private static DateOnly PeriodStart => new(Today.Year, Today.Month, 1);
+
+    private static async Task<int> MissingIbanWithLeaverAsync(Action<ZayraDbContext> arrange)
+    {
+        using var db = MakeDb();
+        db.PayrollRuns.Add(new PayrollRun { TenantId = TenantA, Year = 2026, Month = 5, Status = "Locked" });
+        var leaver = MakeEmployee(TenantA, 2, "Saudi", "SA2"); leaver.Status = "Offboarded";
+        db.Employees.AddRange(MakeEmployee(TenantA, 1, "Saudi", "SA1"), leaver);
+        db.EmployeePayrollProfiles.AddRange(
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 1, Iban = "SA4420000001234567891234" },
+            new EmployeePayrollProfile { TenantId = TenantA, EmployeeId = 2, Iban = "" });
+        arrange(db);
+        await db.SaveChangesAsync();
+        return (await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(TenantA, CancellationToken.None)).Wps.MissingIbanCount;
+    }
+
+    private static void Offboarding(ZayraDbContext db, DateOnly lastWorkingDay, string status = "InProgress") =>
+        db.EmployeeOffboardings.Add(new EmployeeOffboarding { TenantId = TenantA, EmployeeId = 2, LastWorkingDay = lastWorkingDay, Status = status });
+
+    [Fact]
+    public async Task WpsSection_MissingIban_CountsANoticePeriodLeaverTheRunStillPays() =>
+        Assert.Equal(1, await MissingIbanWithLeaverAsync(db => Offboarding(db, PeriodStart.AddMonths(1).AddDays(-1))));
+
+    [Fact]
+    public async Task WpsSection_MissingIban_IgnoresALeaverWhoLeftBeforeThePeriod() =>
+        Assert.Equal(0, await MissingIbanWithLeaverAsync(db => Offboarding(db, PeriodStart.AddDays(-3))));
+
+    [Fact]
+    public async Task WpsSection_MissingIban_IgnoresACancelledOffboarding() =>
+        Assert.Equal(0, await MissingIbanWithLeaverAsync(db => Offboarding(db, PeriodStart.AddMonths(1).AddDays(-1), "Cancelled")));
+
+    [Fact]
+    public async Task WpsSection_MissingIban_IgnoresALeaverWhoseFinalWageMonthIsAlreadyPaid() =>
+        Assert.Equal(0, await MissingIbanWithLeaverAsync(db =>
+        {
+            Offboarding(db, PeriodStart.AddMonths(1).AddDays(-1));
+            db.PayrollSlips.Add(new PayrollSlip { TenantId = TenantA, EmployeeId = 2, IsFinalWageMonth = true, Status = "Locked" });
+        }));
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static Employee WithCohort(Employee e)

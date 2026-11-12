@@ -134,11 +134,15 @@ public sealed class SaudiComplianceDashboardService
             if (lastRun.Status != "Locked" && lastRun.Status != "Paid")
                 issues.Add($"Latest payroll run ({lastRunPeriod}) is not yet approved/locked.");
 
-            // The payroll run's population: active, undeleted employees. A Draft, left or removed employee is never paid by
-            // the run, so a missing IBAN on their profile is not a WPS problem (it used to count them: 46 "missing" with 9
-            // active employees who all had one).
+            // The payroll run's population: active, undeleted employees PLUS the notice-period leavers the run still pays
+            // through their last working day (the run's own rule, PayrollRunProcessor.PayableLeaverIdsAsync). A Draft,
+            // already-left or removed employee is never paid by the run, so a missing IBAN on their profile is not a WPS
+            // problem (it used to count them: 46 "missing" with 9 active employees who all had one).
+            var today = DateOnly.FromDateTime(DateTime.UtcNow);
+            var periodStart = new DateOnly(today.Year, today.Month, 1);
+            var leaverIds = (await PayrollRunProcessor.PayableLeaverIdsAsync(_db, tenantId, periodStart, periodStart.AddMonths(1).AddDays(-1), ct)).ToList();
             var activeIds = _db.Employees.AsNoTracking()
-                .Where(e => e.TenantId == tenantId && !e.IsDeleted && e.Status == "Active")
+                .Where(e => e.TenantId == tenantId && !e.IsDeleted && (e.Status == "Active" || leaverIds.Contains(e.Id)))
                 .Select(e => e.Id);
             var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
                 .Where(p => p.TenantId == tenantId && !p.IsDeleted && activeIds.Contains(p.EmployeeId))
