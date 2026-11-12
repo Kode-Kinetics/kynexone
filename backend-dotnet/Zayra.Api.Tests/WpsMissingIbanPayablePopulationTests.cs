@@ -49,4 +49,31 @@ public class WpsMissingIbanPayablePopulationTests
 
         Assert.Equal(1, await MissingIbanAsync(db));
     }
+
+    [Fact]
+    public async Task APayableEmployeeWithNoPayrollProfileAtAll_IsCounted_AndListedWithAClearReason()
+    {
+        using var db = MakeDb();
+        db.PayrollRuns.Add(new PayrollRun { TenantId = Tenant, Year = 2026, Month = 5, Status = "Locked" });
+        db.Employees.AddRange(Emp(1, DateTime.UtcNow.Date.AddYears(-1)), Emp(2, DateTime.UtcNow.Date.AddYears(-1)));
+        db.EmployeePayrollProfiles.Add(new EmployeePayrollProfile { TenantId = Tenant, EmployeeId = 1, Iban = "SA4420000001234567891234" });
+        await db.SaveChangesAsync();
+
+        var wps = (await new SaudiComplianceDashboardService(db, TestReconciliation.For(db)).BuildAsync(Tenant, CancellationToken.None)).Wps;
+
+        Assert.Equal(1, wps.MissingIbanCount);
+        Assert.Contains(wps.BlockingIssues, i => i.Contains("no payroll bank profile", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ANotYetPayableEmployeeWithNoPayrollProfile_IsNotCounted()
+    {
+        using var db = MakeDb();
+        var nextMonth = DateTime.UtcNow.Date.AddMonths(1);
+        db.PayrollRuns.Add(new PayrollRun { TenantId = Tenant, Year = 2026, Month = 5, Status = "Locked" });
+        db.Employees.Add(Emp(1, new DateTime(nextMonth.Year, nextMonth.Month, 1, 0, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
+
+        Assert.Equal(0, await MissingIbanAsync(db));
+    }
 }

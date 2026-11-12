@@ -150,9 +150,19 @@ public sealed class SaudiComplianceDashboardService
             var profiles = await _db.EmployeePayrollProfiles.AsNoTracking()
                 .Where(p => p.TenantId == tenantId && !p.IsDeleted && activeIds.Contains(p.EmployeeId))
                 .ToListAsync(ct);
-            missingIbanCount = profiles.Count(p => !IbanValidator.IsValid(p.Iban));
+            var invalidIbanCount = profiles.Count(p => !IbanValidator.IsValid(p.Iban));
+            // Someone the run would pay but who has no payroll bank profile at all cannot be paid by bank or WPS either: they count as missing an IBAN
+            // (the figure must agree with what payroll can actually pay), and are named separately in the one issue below.
+            var withProfile = profiles.Select(p => p.EmployeeId).ToHashSet();
+            var noProfileCount = await activeIds.CountAsync(id => !withProfile.Contains(id), ct);
+            missingIbanCount = invalidIbanCount + noProfileCount;
             if (missingIbanCount > 0)
-                issues.Add($"{Plural(missingIbanCount, "employee has", "employees have")} a missing or invalid IBAN for WPS payment.");
+            {
+                var parts = new List<string>();
+                if (invalidIbanCount > 0) parts.Add($"{Plural(invalidIbanCount, "employee has", "employees have")} a missing or invalid IBAN for WPS payment");
+                if (noProfileCount > 0) parts.Add($"{Plural(noProfileCount, "employee has", "employees have")} no payroll bank profile, so cannot be paid by bank or WPS");
+                issues.Add(string.Join("; ", parts) + ".");
+            }
         }
 
         // WPS export history from SIF file batches.
