@@ -434,7 +434,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           const existingTotal = ((await (await runsFetch).json()) as { total: number }).total;
 
           const existingCards = content(admin.page)
-            .locator('[role="button"]').filter({ hasText: /^[A-Z][a-z]{2} \d{4}/ });
+            .locator('[role="button"]').filter({ hasText: /^[A-Z][a-z]{2,8} \d{4}/ });
           await expect(
             existingCards, 'the Payroll Runs list must render every run the API returned',
           ).toHaveCount(existingTotal);

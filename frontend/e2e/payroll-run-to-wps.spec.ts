@@ -193,7 +193,7 @@ test.describe('Payroll — run to WPS file', () => {
         // Assertion in its own right: the list renders every run the server returned.
         const existingCards = content(admin)
           .locator('[role="button"]')
-          .filter({ hasText: /^[A-Z][a-z]{2} \d{4}/ });
+          .filter({ hasText: /^[A-Z][a-z]{2,8} \d{4}/ });
         await expect(
           existingCards,
           'the Payroll Runs list must render every run the API returned',

@@ -419,6 +419,7 @@ for (const locale of ['en', 'ar'] as const) {
       const table = await page.getByRole('table').boundingBox();
       expect(table!.y, 'grid top').toBeLessThan(768 * 0.5);
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows.first()).toBeVisible();
       let visible = 0;
       for (let i = 0; i < await rows.count(); i++) { const b = await rows.nth(i).boundingBox(); if (b && b.y + b.height <= 768) visible++; }
       expect(visible, 'benefit rows visible without scrolling').toBeGreaterThanOrEqual(5);
@@ -428,6 +429,7 @@ for (const locale of ['en', 'ar'] as const) {
     test('every value cell shows it can be edited: a pencil on a value, "+ Set value" on an empty one, no per-cell provenance text', async ({ page }) => {
       const { errors } = await boot(page, locale);
       const cells = page.locator('button[data-cell]');
+      await expect(cells.first()).toBeVisible(); // count() does not wait for the matrix request to render
       const count = await cells.count();
       expect(count).toBe(groupMatrix.grades.length * groupMatrix.components.length);
       for (let i = 0; i < count; i++) {
@@ -451,6 +453,7 @@ for (const locale of ['en', 'ar'] as const) {
     test('a row has at most one chip, and its actions are in a menu with targets of at least 24 px', async ({ page }) => {
       const { errors } = await boot(page, locale, { matrix: undefined });
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows.first()).toBeVisible();
       for (let i = 0; i < await rows.count(); i++) expect(await rows.nth(i).getByTestId('row-chip').count()).toBeLessThanOrEqual(1);
       const trigger = rowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
       const box = await trigger.boundingBox();
@@ -470,6 +473,7 @@ for (const locale of ['en', 'ar'] as const) {
       const chip = page.getByRole('button', { name: say(locale, 'Needs a value ({count})', { count: new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size }), exact: true });
       await expect(chip).toHaveAttribute('aria-pressed', 'false');
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows.first()).toBeVisible();
       const before = await rows.count();
       await chip.click();
       await expect(chip).toHaveAttribute('aria-pressed', 'true');
