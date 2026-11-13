@@ -178,7 +178,15 @@ const openJournal = async (page: Page) => {
   await page.getByLabel('Select payroll run for GL journal').selectOption('run-nov');
   await page.getByRole('button', { name: /Generate Journal|إنشاء/ }).click();
 };
-const card = (page: Page, text: string) => page.locator('[role="button"]', { hasText: text }).first();
+// Run cards show the month as the viewer's locale spells it ("November 2026", "نوفمبر 2026"), so match any of them.
+const MONTHS: Record<string, string> = { Oct: 'Oct(?:ober)?|أكتوبر', Nov: 'Nov(?:ember)?|نوفمبر' };
+const card = (page: Page, text: string) => {
+  const [mon, year] = text.split(' ');
+  return page.locator('[role="button"]', { hasText: new RegExp(`(?:${MONTHS[mon] ?? mon}) ${year}`) }).first();
+};
+// The void button's label is translated; the selects are found by the run they offer, not by their (translated) label.
+const voidButton = 'button[aria-label="Void run"], button[aria-label="إلغاء المسير"]';
+const runSelect = (page: Page) => page.locator('select:has(option[value="run-nov"])').first();
 
 // ═════════════════════════════ M3: the GL Journal tab for a posted run ═════════════════════════════
 
@@ -238,7 +246,7 @@ test('a server that predates the journals list still shows the journal it always
 
 test('Arabic: journal titles, cost-centre and debit/credit labels, right to left', async ({ page }, info) => {
   await boot(page, { locale: 'ar' }, 'gl-journal');
-  await page.locator('select[aria-label="Select payroll run for GL journal"]').selectOption('run-nov');
+  await page.getByTestId('cc-lock-run-select').selectOption('run-nov');
   await page.locator('button.bg-sapphire').first().click();
   await expect(tid(page, 'gl-posted-journals')).toBeVisible();
   await expect(tid(page, 'gl-journal-accrual')).toContainText('قيد استحقاق الرواتب');
@@ -255,7 +263,7 @@ test('Arabic: journal titles, cost-centre and debit/credit labels, right to left
 
 test('void of a paid and remitted run: the server\'s elections become choices with reference fields, then the void is resent', async ({ page }, info) => {
   const { writes, state } = await boot(page, { voidNeedsElections: true });
-  await card(page, 'Nov 2026').locator('button[aria-label="Void run"]').click();
+  await card(page, 'Nov 2026').locator(voidButton).click();
   await page.getByLabel('Reason', { exact: true }).fill('Posted against the wrong month');
   await tid(page, 'void-run-submit').click();
 
@@ -289,7 +297,7 @@ test('void of a paid and remitted run: the server\'s elections become choices wi
 
 test('a void that needs no election goes straight through', async ({ page }) => {
   const { writes, state } = await boot(page, {});
-  await card(page, 'Nov 2026').locator('button[aria-label="Void run"]').click();
+  await card(page, 'Nov 2026').locator(voidButton).click();
   await page.getByLabel('Reason', { exact: true }).fill('Duplicate run');
   await tid(page, 'void-run-submit').click();
   await expect.poll(() => state.voided).toBe(true);
@@ -298,7 +306,7 @@ test('a void that needs no election goes straight through', async ({ page }) => 
 
 test('Arabic: the elections, choices and reference field', async ({ page }, info) => {
   await boot(page, { locale: 'ar', voidNeedsElections: true });
-  await card(page, 'Nov 2026').locator('button[aria-label="Void run"]').click();
+  await card(page, 'Nov 2026').locator(voidButton).click();
   await page.locator('textarea').fill('خطأ في الشهر');
   await tid(page, 'void-run-submit').click();
   await expect(tid(page, 'void-elections')).toBeVisible();
@@ -343,7 +351,7 @@ test('payment tracking with payroll.export keeps the settle action', async ({ pa
 
 test('Arabic: the permission message', async ({ page }, info) => {
   await boot(page, { locale: 'ar', canExport: false }, 'bank-wps');
-  await page.locator('select[aria-label="Select payroll run"]').selectOption('run-nov');
+  await runSelect(page).selectOption('run-nov');
   await expect(page.getByText('ليس لديك صلاحية إنشاء دفعات الرواتب — اطلب ذلك من مسؤول النظام.').first()).toBeVisible();
   await shot(page, info, 'glui-ar-bank-no-export');
 });
