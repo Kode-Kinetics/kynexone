@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Controllers;
+using Zayra.Api.Controllers.Finance;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
@@ -772,17 +773,15 @@ public class LeaveProvisionAccrualTests
         (await LeaveLinesAsync(db, sep)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
     }
 
-    [Fact]
-    public async Task ARehiredEmployee_WhoseOnlySettlementClosedAnEarlierServicePeriod_IsProvidedForAgain()
+    /// <summary>A is settled (last working day 15 Sep, paid) and rehired from 1 November with the same employee id; 2 new days by the
+    /// November month end (2 x 300 = 600).</summary>
+    private async Task<Fixture> SettleThenRehireAAsync(ZayraDbContext db)
     {
-        var (db, conn) = NewDb();
-        await using var _ = conn; await using var __ = db;
         var fx = await ThreeMonthsAsync(db);
         var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 2_775m, encashmentDays: 9.25m);
         (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
         var settled = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.Id);
         settled.Status = FinalSettlementStatuses.Paid;
-        // Rehired from 1 November (the rehire keeps the employee id and restarts JoiningDate); 2 new days by the November month end.
         var a = await db.Employees.SingleAsync(e => e.Id == fx.Emp["A"].Id);
         a.OriginalJoiningDate = DateOnly.FromDateTime(a.JoiningDate);
         a.JoiningDate = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -790,6 +789,15 @@ public class LeaveProvisionAccrualTests
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         await SetBalanceAsync(db, fx, "A", accrued: 2m, used: 0m);
+        return fx;
+    }
+
+    [Fact]
+    public async Task ARehiredEmployee_WhoseOnlySettlementClosedAnEarlierServicePeriod_IsProvidedForAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SettleThenRehireAAsync(db);
 
         var nov = await LockMonthAsync(db, fx, 2026, 11);
 
@@ -818,6 +826,58 @@ public class LeaveProvisionAccrualTests
         var oct = await LockMonthAsync(db, fx, 2026, 10);
 
         (await LeaveLinesAsync(db, oct)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
+    }
+
+    // ── The provision panel follows the same service-period rule ────────────────
+
+    private static async Task<JsonElement> LeavePanelAsync(ZayraDbContext db, Fixture fx)
+    {
+        var ctrl = new GlAdjustmentsController(db)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext { User = User(fx.TenantId, Guid.NewGuid(), "finance", "finance.gl.read") },
+            },
+        };
+        var result = await ctrl.GetLeaveProvision(fx.Company.Id, CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((result as ObjectResult)?.Value));
+        return JsonSerializer.SerializeToElement(((OkObjectResult)result).Value);
+    }
+
+    private static JsonElement? PanelRow(JsonElement panel, Employee employee) =>
+        panel.GetProperty("employees").EnumerateArray()
+            .Cast<JsonElement?>()
+            .FirstOrDefault(e => e!.Value.GetProperty("employeeId").GetInt32() == employee.Id);
+
+    [Fact]
+    public async Task ThePanel_ShowsARehiredEmployee_WhoseOnlySettlementClosedAnEarlierServicePeriod()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SettleThenRehireAAsync(db);
+        await LockMonthAsync(db, fx, 2026, 11);
+
+        var row = PanelRow(await LeavePanelAsync(db, fx), fx.Emp["A"]);
+
+        row.Should().NotBeNull("the settlement closed the earlier service period; the panel shows the new one");
+        row!.Value.GetProperty("lastMeasuredPeriod").GetString().Should().Be("2026-11");
+        row.Value.GetProperty("obligation").GetDecimal().Should().Be(600m);
+        row.Value.GetProperty("provisionCarried").GetDecimal().Should().Be(600m);
+    }
+
+    [Fact]
+    public async Task ThePanel_StillHidesALeaverSettledInTheCurrentServicePeriod()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ThreeMonthsAsync(db);
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 2_775m, encashmentDays: 9.25m);
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var panel = await LeavePanelAsync(db, fx);
+
+        PanelRow(panel, fx.Emp["A"]).Should().BeNull("A's settlement (last working day 15 Sep) is inside the service that began 1 Jan 2024");
+        PanelRow(panel, fx.Emp["C"]).Should().NotBeNull();
     }
 
     // ── A remap of LEAVE_PROVISION between months ───────────────────────────────

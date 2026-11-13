@@ -204,22 +204,31 @@ public class GlAdjustmentsController : ControllerBase
         var snapshots = await _db.LeaveProvisionSnapshots.AsNoTracking()
             .Where(x => x.TenantId == tid && x.CompanyId == cid)
             .ToListAsync(ct);
-        // A leaver whose settlement is approved has had their provision consumed and released: their last measurement is history, not a
-        // figure still provided for.
-        var settledIds = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tid.Value,
+        // A leaver whose settlement for the CURRENT service period is approved has had their provision consumed and released: their
+        // last measurement is history, not a figure still provided for. A settlement whose last working day is before the current
+        // joining date closed an earlier period of a rehired employee (same employee id, JoiningDate restarted) and does not hide them.
+        var settledThrough = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tid.Value,
                     "company scope authorised above; a leaver settled under any entity no longer carries a provision")
                 .AsNoTracking()
                 .Where(s => (s.Status == FinalSettlementStatuses.Approved || s.Status == FinalSettlementStatuses.Disbursing || s.Status == FinalSettlementStatuses.Paid))
-                .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+                .Select(s => new { s.EmployeeId, s.LastWorkingDay })
+                .ToListAsync(ct))
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Max(s => s.LastWorkingDay));
+        var measuredIds = snapshots.Select(x => x.EmployeeId).Distinct().ToList();
+        var people = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tid && measuredIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.JoiningDate })
+            .ToDictionaryAsync(e => e.Id, ct);
+        bool SettledInCurrentService(int employeeId) =>
+            settledThrough.TryGetValue(employeeId, out var lastWorkingDay)
+            // No employee row to compare against: hidden, as every settled leaver was before.
+            && (!people.TryGetValue(employeeId, out var person) || lastWorkingDay >= DateOnly.FromDateTime(person.JoiningDate));
         var latest = snapshots.GroupBy(x => x.EmployeeId)
             .Select(g => g.OrderByDescending(x => x.Period, StringComparer.Ordinal).First())
-            .Where(x => !settledIds.Contains(x.EmployeeId))
+            .Where(x => !SettledInCurrentService(x.EmployeeId))
             .ToList();
         var employeeIds = latest.Select(x => x.EmployeeId).ToList();
-        var people = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tid && employeeIds.Contains(e.Id))
-            .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
-            .ToDictionaryAsync(e => e.Id, ct);
         var positions = await LeaveProvisionLedger.LoadPositionsAsync(_db, tid.Value, employeeIds, ct);
         var employees = latest
             .Select(x => new
