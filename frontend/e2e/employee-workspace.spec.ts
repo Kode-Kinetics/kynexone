@@ -74,8 +74,9 @@ async function bootNavigationFixture(page: Page, options: { locale?: 'en' | 'ar'
 }
 
 async function makeDirty(page: Page, value = 'Retain navigation draft') {
-  const input = page.getByPlaceholder('Task title', { exact: true });
-  if (!await input.isVisible()) await page.getByRole('button', { name: 'Checklist Templates', exact: true }).click();
+  // The checklist form is translated, so the Arabic fixture renders these two labels in Arabic.
+  const input = page.getByPlaceholder(/^(Task title|عنوان المهمة)$/);
+  if (!await input.isVisible()) await page.getByRole('button', { name: /^(Checklist Templates|قوالب قوائم المهام)$/ }).click();
   await input.fill(value);
   return input;
 }
