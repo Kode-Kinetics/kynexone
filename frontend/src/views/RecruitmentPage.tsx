@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import {
   Plus, ChevronLeft, Users, Briefcase, ClipboardList, UserPlus,
   CheckCircle, Clock, XCircle, ChevronRight, X, Star, Send,
@@ -58,16 +58,21 @@ import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useCompany } from '../contexts/CompanyContext';
 import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
+import { enumLabel } from '../i18n/enumLabel';
+import { EmployeeSearchSelect, type EmployeeSelection } from '../components/EmployeeSearchSelect';
 import { useConfirm } from '../components/ui/useConfirm';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval } from '../components/setup/OrgRowActions';
 import { msg } from '../i18n/translations';
 import { useOfferLetterT } from '../i18n/offerLetter';
 import { useOfferLifecycleT } from '../i18n/offerLifecycle';
+import { raisedByViewer } from '../lib/requisitionDecision';
+import { endOfLocalDayInstant, localInputToInstant } from '../lib/localDateTime';
 import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFormDraft, retainPolicyFormDraft, type PolicyFormDraftBundle, type PolicyTemplateTaskForm } from '../lib/policyFormDrafts';
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
-  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction, applicationStageChanges,
 } from '../lib/recruitmentJourney';
 
 // ── Offer approval ────────────────────────────────────────────────────────────
@@ -82,6 +87,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
   onChanged: () => void;
   onContext?: (context: OfferApprovalContext | null) => void;
 }) {
+  const t = useT();
   const [data, setData] = useState<{ offer: OfferLetter; approvals: OfferApproval[]; approval: OfferApprovalContext } | null>(null);
   const [options, setOptions] = useState<OfferApproverOption[] | null>(null);
   const [approverId, setApproverId] = useState('');
@@ -117,7 +123,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
 
   const requestApproval = async () => {
     const approver = options?.find(o => o.userId === approverId);
-    if (!approver) { setError('Choose who approves this offer.'); return; }
+    if (!approver) { setError(t('Choose who approves this offer.')); return; }
     setBusy(true); setError('');
     try {
       await offersApi.requestApproval(offerId, { expectedVersion: offer.version, approverUserId: approver.userId, approverName: approver.name });
@@ -128,7 +134,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
 
   const decide = async (decision: 'Approved' | 'Rejected') => {
     if (!context.myPendingStepId) return;
-    if (decision === 'Rejected' && !comment.trim()) { setError('Say why you are rejecting this offer.'); return; }
+    if (decision === 'Rejected' && !comment.trim()) { setError(t('Say why you are rejecting this offer.')); return; }
     setBusy(true); setError('');
     try {
       await offersApi.decideApproval(offerId, context.myPendingStepId, { expectedVersion: offer.version, decision, comments: comment.trim() || undefined });
@@ -139,7 +145,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
 
   return (
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
-      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Approval</p>
+      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Approval')}</p>
       {next
         ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
         : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
@@ -147,37 +153,37 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
         <ul className="space-y-1">
           {approvals.map(a => (
             <li key={a.id} className="flex items-center justify-between gap-2 text-xs text-slate-600 dark:text-slate-400">
-              <span>{a.stepOrder}. {a.approverName || 'Approver'}{a.comments ? ` · ${a.comments}` : ''}</span>
-              <span className="font-medium">{a.status}</span>
+              <span>{a.stepOrder}. {a.approverName || t('Approver')}{a.comments ? ` · ${a.comments}` : ''}</span>
+              <span className="font-medium">{enumLabel(t, 'Status', a.status)}</span>
             </li>
           ))}
         </ul>
       )}
       {context.myPendingStepId && offer.status === 'PendingApproval' && (
         <div className="space-y-2">
-          <textarea aria-label="Approval comment" rows={2} value={comment} onChange={e => setComment(e.target.value)}
-            placeholder="Comment (required to reject)"
+          <textarea aria-label={t('Approval comment')} rows={2} value={comment} onChange={e => setComment(e.target.value)}
+            placeholder={t('Comment (required to reject)')}
             className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-white/10 dark:bg-white/5" />
           <div className="flex gap-2">
             <button type="button" disabled={busy} onClick={() => decide('Approved')}
-              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">Approve offer</button>
+              className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">{t('Approve offer')}</button>
             <button type="button" disabled={busy} onClick={() => decide('Rejected')}
-              className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">Reject offer</button>
+              className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400">{t('Reject offer')}</button>
           </div>
         </div>
       )}
       {showRequest && options !== null && (
         options.length === 0
-          ? <p className="text-xs text-slate-500 dark:text-slate-400">No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.</p>
+          ? <p className="text-xs text-slate-500 dark:text-slate-400">{t('No one else can approve this offer yet: it needs an active HR Manager or Admin who did not write it.')}</p>
           : (
             <div className="flex flex-wrap items-center gap-2">
-              <select aria-label="Offer approver" value={approverId} onChange={e => setApproverId(e.target.value)}
+              <select aria-label={t('Offer approver')} value={approverId} onChange={e => setApproverId(e.target.value)}
                 className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
-                <option value="">Choose approver…</option>
+                <option value="">{t('Choose approver…')}</option>
                 {options.map(o => <option key={o.userId} value={o.userId}>{o.name || o.email}</option>)}
               </select>
               <button type="button" disabled={busy || !approverId} onClick={requestApproval}
-                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">Request approval</button>
+                className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">{t('Request approval')}</button>
             </div>
           )
       )}
@@ -188,11 +194,17 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function ago(utc: string) {
+function ago(utc: string, t: (key: string, params?: Record<string, string | number>) => string) {
   const d = Math.floor((Date.now() - new Date(utc).getTime()) / 86400000);
-  if (d === 0) return 'Today';
-  if (d === 1) return 'Yesterday';
-  return `${d}d ago`;
+  if (d === 0) return t('Today');
+  if (d === 1) return t('Yesterday');
+  return t('{count, plural, one {# day ago} other {# days ago}}', { count: d });
+}
+
+/** A status chip whose label is a dictionary key (the tone helpers below return keys, not words). */
+function ToneChip(props: React.ComponentProps<typeof StatusChip>) {
+  const t = useT();
+  return <StatusChip {...props} label={t(props.label)} />;
 }
 
 function fmt(n: number | null | undefined) {
@@ -218,21 +230,21 @@ const STAGE_COLORS: Record<string, string> = {
 
 const reqStatusTone = (s: string) => {
   switch (s) {
-    case 'Approved': return { label: 'Approved', tone: 'emerald' as const };
-    case 'Rejected': return { label: 'Rejected', tone: 'rose' as const };
+    case 'Approved': return { label: msg('Approved'), tone: 'emerald' as const };
+    case 'Rejected': return { label: msg('Rejected'), tone: 'rose' as const };
     case 'Submitted':
-    case 'PendingApproval': return { label: 'Pending', tone: 'amber' as const };
-    case 'Converted': return { label: 'Converted', tone: 'blue' as const };
+    case 'PendingApproval': return { label: msg('Pending'), tone: 'amber' as const };
+    case 'Converted': return { label: msg('Converted'), tone: 'blue' as const };
     default: return { label: s, tone: 'slate' as const };
   }
 };
 
 const openingStatusTone = (s: string) => {
   switch (s) {
-    case 'Open': return { label: 'Open', tone: 'emerald' as const };
-    case 'InProgress': return { label: 'In Progress', tone: 'blue' as const };
-    case 'OnHold': return { label: 'On Hold', tone: 'amber' as const };
-    case 'Closed': return { label: 'Closed', tone: 'slate' as const };
+    case 'Open': return { label: msg('Open'), tone: 'emerald' as const };
+    case 'InProgress': return { label: msg('In Progress'), tone: 'blue' as const };
+    case 'OnHold': return { label: msg('On Hold'), tone: 'amber' as const };
+    case 'Closed': return { label: msg('Closed'), tone: 'slate' as const };
     default: return { label: s, tone: 'slate' as const };
   }
 };
@@ -259,19 +271,27 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
 
 /** A list that failed to load says so, instead of rendering as "No … found". */
 function LoadFailure({ what, error }: { what: string; error: unknown }) {
-  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+  const t = useT();
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{t('{what} could not be loaded. {requestFailureReason}', { what, requestFailureReason: requestFailureReason(error) })}</p>;
 }
 
 /** "340 tasks", from the server total rather than the rows on screen. */
-function ListCount({ loading, total, shown, noun }: { loading: boolean; total: number | null; shown: number; noun: string }) {
+const COUNT_KEYS = {
+  interview: msg('{count, plural, one {# interview} other {# interviews}}'),
+  assessment: msg('{count, plural, one {# assessment} other {# assessments}}'),
+  task: msg('{count, plural, one {# task} other {# tasks}}'),
+} as const;
+function ListCount({ loading, total, shown, noun }: { loading: boolean; total: number | null; shown: number; noun: keyof typeof COUNT_KEYS }) {
+  const t = useT();
   if (loading) return null;
   const n = total ?? shown;
-  return <span className="text-sm text-slate-500 dark:text-slate-400">{n.toLocaleString('en-US')} {noun}{n === 1 ? '' : 's'}</span>;
+  return <span className="text-sm text-slate-500 dark:text-slate-400">{t(COUNT_KEYS[noun], { count: n })}</span>;
 }
 
 // ── Overview Tab ───────────────────────────────────────────────────────────────
 
 function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
+  const t = useT();
   const [stats, setStats] = useState<RecruitmentStats | null>(null);
   const [reqStats, setReqStats] = useState<RequisitionStats | null>(null);
   const [recentOpenings, setRecentOpenings] = useState<JobOpening[]>([]);
@@ -286,25 +306,25 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiCard label="Open Positions" value={stats?.openPositions ?? '—'} icon={Briefcase} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Active Applications" value={stats?.activeApplications ?? '—'} icon={Users} color="bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20" />
-        <KpiCard label="Offers Pending" value={stats?.offersPending ?? '—'} icon={FileText} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-        <KpiCard label="Hired This Month" value={stats?.hiredThisMonth ?? '—'} icon={CheckCircle} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+        <KpiCard label={t('Open Positions')} value={stats?.openPositions ?? '—'} icon={Briefcase} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+        <KpiCard label={t('Active Applications')} value={stats?.activeApplications ?? '—'} icon={Users} color="bg-emeraldZ/10 text-emeraldZ dark:bg-emeraldZ/20" />
+        <KpiCard label={t('Offers Pending')} value={stats?.offersPending ?? '—'} icon={FileText} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+        <KpiCard label={t('Hired This Month')} value={stats?.hiredThisMonth ?? '—'} icon={CheckCircle} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Requisition summary */}
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Requisition Pipeline</h3>
-            <button type="button" onClick={() => onNavigate('requisitions')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Requisition Pipeline')}</h3>
+            <button type="button" onClick={() => onNavigate('requisitions')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('View all')}</button>
           </div>
           <div className="space-y-3">
             {[
-              { label: 'Draft', val: reqStats?.draft ?? 0, color: 'bg-slate-200 dark:bg-slate-700' },
-              { label: 'Pending Approval', val: reqStats?.pending ?? 0, color: 'bg-amber-400' },
-              { label: 'Approved', val: reqStats?.approved ?? 0, color: 'bg-emeraldZ' },
-              { label: 'Converted to Openings', val: reqStats?.converted ?? 0, color: 'bg-sapphire' },
+              { label: t('Draft'), val: reqStats?.draft ?? 0, color: 'bg-slate-200 dark:bg-slate-700' },
+              { label: t('Pending Approval'), val: reqStats?.pending ?? 0, color: 'bg-amber-400' },
+              { label: t('Approved'), val: reqStats?.approved ?? 0, color: 'bg-emeraldZ' },
+              { label: t('Converted to Openings'), val: reqStats?.converted ?? 0, color: 'bg-sapphire' },
             ].map(row => (
               <div key={row.label} className="flex items-center gap-3">
                 <div className={`h-2 w-2 shrink-0 rounded-full ${row.color}`} />
@@ -318,18 +338,18 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         {/* Active openings */}
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Active Job Openings</h3>
-            <button type="button" onClick={() => onNavigate('openings')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Active Job Openings')}</h3>
+            <button type="button" onClick={() => onNavigate('openings')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('View all')}</button>
           </div>
-          {recentOpenings.length === 0 && <p className="text-sm text-slate-400 dark:text-slate-500">No open positions yet.</p>}
+          {recentOpenings.length === 0 && <p className="text-sm text-slate-400 dark:text-slate-500">{t('No open positions yet.')}</p>}
           <div className="space-y-3">
             {recentOpenings.map(o => (
               <div key={o.id} className="flex items-center justify-between">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{o.title}</p>
-                  <p className="text-xs text-slate-400 dark:text-slate-500">{o.departmentName} · {o.activeApplications ?? 0} applicants</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">{t('{departmentName} · {value} applicants', { departmentName: o.departmentName, value: o.activeApplications ?? 0 })}</p>
                 </div>
-                <span className="ms-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{o.remaining ?? o.headCount - o.filledCount} left</span>
+                <span className="ms-3 shrink-0 text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{value} left', { value: o.remaining ?? o.headCount - o.filledCount })}</span>
               </div>
             ))}
           </div>
@@ -344,6 +364,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
 interface CreateReqModalProps { onClose: () => void; onSaved: () => void; }
 
 function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     departmentName: '', designationTitle: '', headCount: 1, employmentType: 'Full-Time',
@@ -367,7 +388,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 
   const save = async () => {
     if (!form.departmentName || !form.designationTitle || !form.justification) {
-      setError('Department, Designation and Justification are required.');
+      setError(t('Department, Designation and Justification are required.'));
       return;
     }
     setSaving(true);
@@ -390,7 +411,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
       });
       onSaved();
     } catch {
-      setError('Failed to create requisition.');
+      setError(t('Failed to create requisition.'));
       setSaving(false);
     }
   };
@@ -399,37 +420,37 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">New Manpower Requisition</h3>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <h3 className="font-semibold text-slate-900 dark:text-white">{t('New Manpower Requisition')}</h3>
+          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Department *</label>
-                <input className="input w-full" placeholder="e.g. Engineering" value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Department *')}</label>
+                <input className="input w-full" placeholder={t('For example: Engineering')} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Designation *</label>
-                <input className="input w-full" placeholder="e.g. Software Engineer" value={form.designationTitle} onChange={e => set('designationTitle', e.target.value)} />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Designation *')}</label>
+                <input className="input w-full" placeholder={t('For example: Software Engineer')} value={form.designationTitle} onChange={e => set('designationTitle', e.target.value)} />
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Head Count</label>
-                <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label="Head count" />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Head Count')}</label>
+                <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label={t('Head count')} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Type</label>
-                <select className="select w-full" value={form.employmentType} onChange={e => set('employmentType', e.target.value)} aria-label="Employment type">
-                  {['Full-Time', 'Part-Time', 'Contract', 'Internship'].map(t => <option key={t}>{t}</option>)}
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Type')}</label>
+                <select className="select w-full" value={form.employmentType} onChange={e => set('employmentType', e.target.value)} aria-label={t('Employment type')}>
+                  {[msg('Full-Time'), msg('Part-Time'), msg('Contract'), msg('Internship')].map(o => <option value={o} key={o}>{t(o)}</option>)}
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Priority</label>
-                <select className="select w-full" value={form.priority} onChange={e => set('priority', e.target.value)} aria-label="Priority">
-                  {['Low', 'Medium', 'High', 'Critical'].map(p => <option key={p}>{p}</option>)}
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Priority')}</label>
+                <select className="select w-full" value={form.priority} onChange={e => set('priority', e.target.value)} aria-label={t('Priority')}>
+                  {[msg('Low'), msg('Medium'), msg('High'), msg('Critical')].map(p => <option value={p} key={p}>{t(p)}</option>)}
                 </select>
               </div>
             </div>
@@ -443,38 +464,38 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
             )}
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Justification *</label>
-              <textarea className="input w-full resize-none" rows={3} placeholder="Business need and justification…" value={form.justification} onChange={e => set('justification', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Justification *')}</label>
+              <textarea className="input w-full resize-none" rows={3} placeholder={t('Business need and justification…')} value={form.justification} onChange={e => set('justification', e.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Required Skills</label>
-              <textarea className="input w-full resize-none" rows={2} placeholder="e.g. React, TypeScript, Node.js…" value={form.requiredSkills} onChange={e => set('requiredSkills', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Required Skills')}</label>
+              <textarea className="input w-full resize-none" rows={2} placeholder={t('For example: customer service, Excel, Arabic and English')} value={form.requiredSkills} onChange={e => set('requiredSkills', e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Budget Range ({currencyCode}/mo)</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Budget Range ({currencyCode}/mo)', { currencyCode })}</label>
                 <div className="flex items-center gap-1">
-                  <input className="input w-full" type="number" placeholder="From" value={form.budgetFrom} onChange={e => set('budgetFrom', e.target.value)} aria-label="Budget from" />
+                  <input className="input w-full" type="number" placeholder={t('From')} value={form.budgetFrom} onChange={e => set('budgetFrom', e.target.value)} aria-label={t('Budget from')} />
                   <span className="text-slate-400">–</span>
-                  <input className="input w-full" type="number" placeholder="To" value={form.budgetTo} onChange={e => set('budgetTo', e.target.value)} aria-label="Budget to" />
+                  <input className="input w-full" type="number" placeholder={t('To')} value={form.budgetTo} onChange={e => set('budgetTo', e.target.value)} aria-label={t('Budget to')} />
                 </div>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Target Join Date</label>
-                <input type="date" className="input w-full" value={form.targetJoiningDate} onChange={e => set('targetJoiningDate', e.target.value)} aria-label="Target joining date" />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Target Join Date')}</label>
+                <input type="date" className="input w-full" value={form.targetJoiningDate} onChange={e => set('targetJoiningDate', e.target.value)} aria-label={t('Target joining date')} />
               </div>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Requested By</label>
-              <input className="input w-full" placeholder="Your name" value={form.requestedByName} onChange={e => set('requestedByName', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Requested By')}</label>
+              <input className="input w-full" placeholder={t('Your name')} value={form.requestedByName} onChange={e => set('requestedByName', e.target.value)} />
             </div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
         </div>
 
         <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Create Requisition'}</button>
+          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Create Requisition')}</button>
         </div>
       </div>
     </div>,
@@ -487,7 +508,7 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerRequisition) => void }) {
   // Approving or rejecting a requisition is `recruitment.approve` on the API (RequisitionsController).
   // A Recruiter holds recruitment.read/write only, so these buttons only ever returned 403 for them.
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canDecide = hasPermission('recruitment.approve');
   const t = useT();
   const { ask, dialog: confirmDialog } = useConfirm();
@@ -534,58 +555,58 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
     <div>
       {confirmDialog}
       <div className="mb-4 flex items-center gap-3">
-        <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label="Filter by status">
-          <option value="">All Statuses</option>
-          {['Draft', 'Submitted', 'PendingApproval', 'Approved', 'Rejected', 'Converted'].map(s => <option key={s}>{s}</option>)}
+        <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label={t('Filter by status')}>
+          <option value="">{t('All Statuses')}</option>
+          {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{t(s)}</option>)}
         </select>
-        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{total} requisitions</span>
+        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} requisitions', { total })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-3.5 w-3.5" />New Requisition
+          <Plus className="h-3.5 w-3.5" />{t('New Requisition')}
         </button>
       </div>
 
-      {list.error != null && <LoadFailure what="Requisitions" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Requisitions')} error={list.error} />}
       <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-white/10">
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
             <tr>
-              {['Number', 'Position', 'Department', 'Count', 'Priority', 'Status', 'Actions'].map(h => (
+              {[t('Number'), t('Position'), t('Department'), t('Count'), t('Priority'), t('Status'), t('Actions')].map(h => (
                 <th key={h} className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No requisitions found.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{t('No requisitions found.')}</td></tr>}
             {!loading && items.map(r => (
               <tr key={r.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3 font-mono text-xs text-slate-600 dark:text-slate-400">{r.requisitionNumber}</td>
                 <td className="px-4 py-3">
                   <p className="font-medium text-slate-800 dark:text-slate-200">{r.designationTitle}</p>
-                  <p className="text-xs text-slate-400 dark:text-slate-500">{ago(r.createdAtUtc)}</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">{ago(r.createdAtUtc, t)}</p>
                 </td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{r.departmentName}</td>
                 <td className="px-4 py-3 text-center font-semibold text-slate-800 dark:text-slate-200">{r.headCount}</td>
                 <td className="px-4 py-3">
-                  <span className={`rounded-lg px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{r.priority}</span>
+                  <span className={`rounded-lg px-2 py-0.5 text-xs font-medium ${PRIORITY_COLORS[r.priority] ?? ''}`}>{t(r.priority)}</span>
                 </td>
-                <td className="px-4 py-3"><StatusChip {...reqStatusTone(r.status)} /></td>
+                <td className="px-4 py-3"><ToneChip {...reqStatusTone(r.status)} /></td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1">
                     {r.status === 'Draft' && (
                       <button type="button" disabled={acting === r.id} onClick={() => submit(r.id)} className="rounded-lg bg-sapphire/10 px-2.5 py-1 text-xs font-medium text-sapphire hover:bg-sapphire/20 disabled:opacity-50 dark:bg-sapphire/20 dark:text-cyanAccent">
-                        Submit
+                        {t('Submit')}
                       </button>
                     )}
                     {canDecide && (r.status === 'Submitted' || r.status === 'PendingApproval') && (
                       <>
-                        <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">Approve</button>
-                        <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">Reject</button>
+                        {!raisedByViewer(r, user?.id) && <button type="button" disabled={acting === r.id} onClick={() => approve(r.id)} className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-500/10 dark:text-emerald-400">{t('Approve')}</button>}
+                        <button type="button" disabled={acting === r.id} onClick={() => reject(r.id)} className="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-100 disabled:opacity-50 dark:bg-rose-500/10 dark:text-rose-400">{t('Reject')}</button>
                       </>
                     )}
                     {r.status === 'Approved' && (
                       <button type="button" onClick={() => onCreateOpening(r)} className="rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400">
-                        Open Job
+                        {t('Open Job')}
                       </button>
                     )}
                   </div>
@@ -594,7 +615,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
             ))}
           </tbody>
         </table>
-        <ListWindowFooter shown={items.length} total={list.total} noun="requisitions" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+        <ListWindowFooter shown={items.length} total={list.total} noun="requisitions" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} requisitions', { shown: items.length, total: list.total ?? items.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       </div>
 
       {createOpen && <CreateReqModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
@@ -607,6 +628,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
 function CreateOpeningModal({ requisition, onClose, onSaved }: {
   requisition: ManpowerRequisition | null; onClose: () => void; onSaved: () => void;
 }) {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
     title: requisition?.designationTitle ?? '',
@@ -623,7 +645,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   const generateWithAi = async () => {
-    if (!form.title.trim()) { setError('Enter a job title first, then generate.'); return; }
+    if (!form.title.trim()) { setError(t('Enter a job title first, then generate.')); return; }
     setAiBusy(true); setError('');
     try {
       const r = await recruitmentAiApi.jobDescription({
@@ -636,12 +658,12 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
         responsibilities: r.responsibilities.length ? r.responsibilities.join('\n') : f.responsibilities,
         requirements: r.requirements.length ? r.requirements.join('\n') : f.requirements,
       }));
-    } catch { setError('Could not generate a description. You can still type it in.'); }
+    } catch { setError(t('Could not generate a description. You can still type it in.')); }
     finally { setAiBusy(false); }
   };
 
   const save = async () => {
-    if (!form.title || !form.departmentName) { setError('Title and Department are required.'); return; }
+    if (!form.title || !form.departmentName) { setError(t('Title and Department are required.')); return; }
     setSaving(true); setError('');
     try {
       await openingsApi.create({
@@ -655,77 +677,77 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
         location: form.location, assignedHrName: form.assignedHrName,
       });
       onSaved();
-    } catch (e) { setError(apiErrorReason(e, 'Failed to create opening.')); setSaving(false); }
+    } catch (e) { setError(apiErrorReason(e, t('Failed to create opening.'))); setSaving(false); }
   };
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">New Job Opening{requisition ? ` from ${requisition.requisitionNumber}` : ''}</h3>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <h3 className="font-semibold text-slate-900 dark:text-white">{requisition ? t('New Job Opening from {number}', { number: requisition.requisitionNumber }) : t('New Job Opening')}</h3>
+          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Job Title *</label>
-              <input className="input w-full" placeholder="e.g. Senior Software Engineer" aria-label="Job title" value={form.title} onChange={e => set('title', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job Title *')}</label>
+              <input className="input w-full" placeholder={t('For example: Senior Software Engineer')} aria-label={t('Job title')} value={form.title} onChange={e => set('title', e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Department *</label>
-                <input className="input w-full" placeholder="e.g. Engineering" aria-label="Department" value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Department *')}</label>
+                <input className="input w-full" placeholder={t('For example: Engineering')} aria-label={t('Department')} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Head Count</label>
-                <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label="Head count" />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Head Count')}</label>
+                <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label={t('Head count')} />
               </div>
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">Job Description</label>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job Description')}</label>
                 <button type="button" onClick={generateWithAi} disabled={aiBusy}
                   className="flex items-center gap-1 rounded-lg border border-sapphire/30 px-2 py-0.5 text-caption font-medium text-sapphire transition hover:bg-sapphire/10 disabled:opacity-50 dark:border-cyanAccent/30 dark:text-cyanAccent">
                   <Wand2 className="h-3 w-3" />
-                  {aiBusy ? 'Generating…' : 'Generate with AI'}
+                  {aiBusy ? t('Generating…') : t('Generate with AI')}
                 </button>
               </div>
-              <textarea className="input w-full resize-none" rows={3} placeholder="Describe the role and responsibilities…" aria-label="Job description" value={form.description} onChange={e => set('description', e.target.value)} />
+              <textarea className="input w-full resize-none" rows={3} placeholder={t('Describe the role and responsibilities…')} aria-label={t('Job description')} value={form.description} onChange={e => set('description', e.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Responsibilities (one per line)</label>
-              <textarea className="input w-full resize-none" rows={2} placeholder="Auto-filled by AI, or type your own…" aria-label="Responsibilities" value={form.responsibilities} onChange={e => set('responsibilities', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Responsibilities (one per line)')}</label>
+              <textarea className="input w-full resize-none" rows={2} placeholder={t('Auto-filled by AI, or type your own…')} aria-label={t('Responsibilities')} value={form.responsibilities} onChange={e => set('responsibilities', e.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Requirements (one per line)</label>
-              <textarea className="input w-full resize-none" rows={3} placeholder="5+ years of experience&#10;Strong TypeScript skills…" value={form.requirements} onChange={e => set('requirements', e.target.value)} />
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Requirements (one per line)')}</label>
+              <textarea className="input w-full resize-none" rows={3} placeholder={t('5+ years of experience\nBachelor’s degree in a relevant field…')} value={form.requirements} onChange={e => set('requirements', e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary From ({currencyCode})</label>
-                <input type="number" className="input w-full" value={form.salaryFrom} onChange={e => set('salaryFrom', e.target.value)} aria-label="Salary from" />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Salary From ({currencyCode})', { currencyCode })}</label>
+                <input type="number" className="input w-full" value={form.salaryFrom} onChange={e => set('salaryFrom', e.target.value)} aria-label={t('Salary from')} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Salary To ({currencyCode})</label>
-                <input type="number" className="input w-full" value={form.salaryTo} onChange={e => set('salaryTo', e.target.value)} aria-label="Salary to" />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Salary To ({currencyCode})', { currencyCode })}</label>
+                <input type="number" className="input w-full" value={form.salaryTo} onChange={e => set('salaryTo', e.target.value)} aria-label={t('Salary to')} />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Location</label>
-                <input className="input w-full" placeholder="e.g. Dubai, UAE" aria-label="Location" value={form.location} onChange={e => set('location', e.target.value)} />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Location')}</label>
+                <input className="input w-full" placeholder={t('For example: Riyadh, Saudi Arabia')} aria-label={t('Location')} value={form.location} onChange={e => set('location', e.target.value)} />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Assigned HR</label>
-                <input className="input w-full" placeholder="HR name" aria-label="Assigned HR name" value={form.assignedHrName} onChange={e => set('assignedHrName', e.target.value)} />
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Assigned HR')}</label>
+                <input className="input w-full" placeholder={t('HR name')} aria-label={t('Assigned HR name')} value={form.assignedHrName} onChange={e => set('assignedHrName', e.target.value)} />
               </div>
             </div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
         </div>
         <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Create Opening'}</button>
+          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className="btn-primary text-sm" onClick={save} disabled={saving}>{saving ? t('Saving…') : t('Create Opening')}</button>
         </div>
       </div>
     </div>,
@@ -736,6 +758,7 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
 // ── AI Tools modal (screen candidates + interview questions) ───────────────────
 
 function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onClose: () => void }) {
+  const t = useT();
   const [openingId, setOpeningId] = useState(openings[0]?.id ?? '');
   const [mode, setMode] = useState<'screen' | 'questions'>('screen');
   const [busy, setBusy] = useState(false);
@@ -744,12 +767,12 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
   const [questions, setQuestions] = useState<import('../api/recruitment').InterviewQuestionsResult | null>(null);
 
   const run = async () => {
-    if (!openingId) { setError('Select a job opening first.'); return; }
+    if (!openingId) { setError(t('Select a job opening first.')); return; }
     setBusy(true); setError('');
     try {
       if (mode === 'screen') { setScreen(await recruitmentAiApi.screen(openingId)); }
       else { setQuestions(await recruitmentAiApi.interviewQuestions({ openingId })); }
-    } catch { setError('Could not run the AI tool. Try again.'); }
+    } catch { setError(t('Could not run the AI tool. Try again.')); }
     finally { setBusy(false); }
   };
 
@@ -763,17 +786,17 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
       <div className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
           <div>
-            <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white"><Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> Recruitment AI Tools</h3>
-            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Advisory only — AI assists, it never auto-rejects or hires.</p>
+            <h3 className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white"><Sparkles className="h-4 w-4 text-sapphire dark:text-cyanAccent" /> {t('Recruitment AI Tools')}</h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t('Advisory only — AI assists, it never auto-rejects or hires.')}</p>
           </div>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[220px] flex-1">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Job opening</label>
-              <select className="select w-full" value={openingId} onChange={e => { setOpeningId(e.target.value); setScreen(null); setQuestions(null); }} aria-label="Job opening">
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job opening')}</label>
+              <select className="select w-full" value={openingId} onChange={e => { setOpeningId(e.target.value); setScreen(null); setQuestions(null); }} aria-label={t('Job opening')}>
                 {openings.map(o => <option key={o.id} value={o.id}>{o.title}</option>)}
               </select>
             </div>
@@ -781,12 +804,12 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
               {(['screen', 'questions'] as const).map(m => (
                 <button key={m} type="button" onClick={() => setMode(m)}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${mode === m ? 'bg-sapphire text-white dark:bg-cyanAccent/80' : 'text-slate-500 dark:text-slate-400'}`}>
-                  {m === 'screen' ? 'Screen candidates' : 'Interview questions'}
+                  {m === 'screen' ? t('Screen candidates') : t('Interview questions')}
                 </button>
               ))}
             </div>
             <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={run} disabled={busy}>
-              <Wand2 className="h-3.5 w-3.5" />{busy ? 'Thinking…' : 'Run'}
+              <Wand2 className="h-3.5 w-3.5" />{busy ? t('Thinking…') : t('Run')}
             </button>
           </div>
 
@@ -799,13 +822,13 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
                 {screen.notes.map((n, i) => <span key={i} className="text-xs text-amber-600 dark:text-amber-400">{n}</span>)}
               </div>
               {screen.ranked.length === 0 ? (
-                <p className="text-sm text-slate-400">No active candidates to screen for this opening.</p>
+                <p className="text-sm text-slate-400">{t('No active candidates to screen for this opening.')}</p>
               ) : screen.ranked.map((c, i) => (
                 <div key={c.candidateId} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
                   <div className="flex items-center gap-3">
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
                     <span className="font-medium text-slate-800 dark:text-slate-200">{c.name}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${recTone(c.recommendation)}`}>{c.recommendation}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${recTone(c.recommendation)}`}>{t(c.recommendation)}</span>
                     <div className="ms-auto flex items-center gap-2">
                       <div className="h-1.5 w-24 rounded-full bg-slate-200 dark:bg-white/10"><div className="h-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${c.score}%` }} /></div>
                       <span className="w-9 text-end text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
@@ -844,6 +867,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   requisitionToOpen: ManpowerRequisition | null;
   onOpeningCreated: () => void;
 }) {
+  const t = useT();
   const { currencyCode } = useTenantSettings();
   const [items, setItems] = useState<JobOpening[]>([]);
   const [loading, setLoading] = useState(true);
@@ -861,10 +885,10 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <p className="text-sm text-slate-500 dark:text-slate-400">{items.length} opening{items.length !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# opening} other {# openings}}', { count: items.length })}</p>
         <div className="ms-auto flex flex-wrap items-center gap-2">
           <ImportExportToolbar
-            entityName="Job Openings"
+            entityName={t('Job Openings')}
             onExport={jobOpeningsImportExport.export}
             onDownloadTemplate={jobOpeningsImportExport.template}
             onImport={async (csv) => {
@@ -874,10 +898,10 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             }}
           />
           <button type="button" className="btn-secondary flex items-center gap-1.5 text-sm" onClick={() => setAiOpen(true)} disabled={items.length === 0}>
-            <Sparkles className="h-3.5 w-3.5" />AI Tools
+            <Sparkles className="h-3.5 w-3.5" />{t('AI Tools')}
           </button>
           <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="h-3.5 w-3.5" />New Opening
+            <Plus className="h-3.5 w-3.5" />{t('New Opening')}
           </button>
         </div>
       </div>
@@ -897,20 +921,20 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
                 <p className="truncate font-semibold text-slate-800 group-hover:text-sapphire dark:text-white dark:group-hover:text-cyanAccent">{o.title}</p>
                 <p className="text-xs text-slate-400 dark:text-slate-500">{o.jobCode}</p>
               </div>
-              <StatusChip {...openingStatusTone(o.status)} />
+              <ToneChip {...openingStatusTone(o.status)} />
             </div>
             <div className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
               <p>{o.departmentName}</p>
-              {o.salaryFrom && <p>{currencyCode} {fmt(o.salaryFrom)}–{fmt(o.salaryTo)}/mo</p>}
+              {o.salaryFrom && <p>{t('{currencyCode} {salaryFrom}–{salaryTo}/mo', { currencyCode, salaryFrom: fmt(o.salaryFrom), salaryTo: fmt(o.salaryTo) })}</p>}
               {o.location && <p>{o.location}</p>}
             </div>
             <div className="flex items-center justify-between border-t border-slate-100 pt-3 dark:border-white/[0.06]">
               <div className="flex items-center gap-3 text-xs">
                 <span className="font-semibold text-sapphire dark:text-cyanAccent">{o.activeApplications ?? 0}</span>
-                <span className="text-slate-400">applicants</span>
+                <span className="text-slate-400">{t('Applicants')}</span>
               </div>
               <div className="flex items-center gap-1 text-xs text-slate-400">
-                <span>{o.headCount - o.filledCount} position{o.headCount - o.filledCount !== 1 ? 's' : ''} left</span>
+                <span>{t('{count, plural, one {# position left} other {# positions left}}', { count: o.headCount - o.filledCount })}</span>
                 <ChevronRight className="h-3.5 w-3.5" />
               </div>
             </div>
@@ -934,6 +958,8 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
 // ── Application Detail Drawer ──────────────────────────────────────────────────
 
 function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: () => void; onRefresh: () => void }) {
+  const t = useT();
+  const f = useFormat();
   const navigationGuard = useNavigationGuard();
   const offerT = useOfferLifecycleT();
   const [templateId, setTemplateId] = useState('');
@@ -946,7 +972,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
-  useNavigationBlocker({ id: `application-drawer-${id}`, when: !!(offerForm.startDate || offerForm.basicSalary || noteText || rejectReason || interviewForm.scheduledAt), message: 'This application has unsaved changes. Discard them and leave?', onDiscard: () => {} });
+  useNavigationBlocker({ id: `application-drawer-${id}`, when: !!(offerForm.startDate || offerForm.basicSalary || noteText || rejectReason || interviewForm.scheduledAt), message: t('This application has unsaved changes. Discard them and leave?'), onDiscard: () => {} });
 
   const load = () => {
     applicationsApi.get(id).then(setDetail).catch(() => {});
@@ -985,7 +1011,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
       await applicationsApi.scheduleInterview(id, {
         interviewType: interviewForm.interviewType,
         interviewerNames: interviewForm.interviewerNames,
-        scheduledAt: interviewForm.scheduledAt,
+        // The input holds the browser's wall time with no zone; the server needs the instant it names.
+        scheduledAt: localInputToInstant(interviewForm.scheduledAt),
         durationMinutes: interviewForm.durationMinutes,
         mode: interviewForm.mode,
         meetingLink: interviewForm.meetingLink,
@@ -1012,13 +1039,16 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         otherAllowances: Number(offerForm.otherAllowances) || 0,
         probationMonths: offerForm.probationMonths,
       });
-      setOfferForm({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 });
+      // The guard reads the form as of the last render: commit the cleared form first, or it still sees
+      // the saved values as unsaved changes and asks whether to discard them.
+      flushSync(() => setOfferForm({ departmentId: '', designationId: '', startDate: '', basicSalary: '', housingAllowance: '', transportAllowance: '', otherAllowances: '', probationMonths: 3 }));
       navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { notifyApiError(e); }
     finally { setActing(''); }
   };
 
   const offer = detail.offer as OfferLetter | null;
+  const stageChanges = applicationStageChanges(detail.events);
 
   // Authenticated offer preview: fetch the PDF via the axios client (bearer token attached),
   // then open the blob. The old `<a href=.../html>` sent no token (401) and served executable
@@ -1035,7 +1065,9 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
     finally { setActing(''); }
   };
 
-  return (
+  // Portalled to <body>: inside <main> the drawer shares the page's stacking context, which sits under the
+  // sticky top bar, so its header (name + close) was hidden behind it.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex">
       <div className="flex-1 bg-black/40" onClick={() => navigationGuard.run('application-close', onClose)} />
       <div className="flex h-full w-full max-w-lg flex-col overflow-hidden border-s border-slate-200 bg-white dark:border-white/10 dark:bg-surface">
@@ -1046,14 +1078,14 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             <p className="text-xs text-slate-500 dark:text-slate-400">{app.jobTitle}</p>
             <div className="mt-2 flex items-center gap-2">
               <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold text-white" style={{ backgroundColor: STAGE_COLORS[app.stage] ?? '#64748b' }}>
-                {app.stage}
+                {enumLabel(t, 'RecruitmentStage', app.stage)}
               </span>
               {app.status !== 'Active' && (
                 <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{app.status}</span>
               )}
             </div>
           </div>
-          <button type="button" aria-label="Close" onClick={() => navigationGuard.run('application-close', onClose)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <button type="button" aria-label={t('Close')} onClick={() => navigationGuard.run('application-close', onClose)} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
 
         {/* Stage advance/reject actions */}
@@ -1062,7 +1094,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             {nextStage && (
               <button type="button" disabled={!!acting} onClick={doAdvance}
                 className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
-                <ArrowRight className="h-3.5 w-3.5" />Move to {nextStage}
+                <ArrowRight className="h-3.5 w-3.5" />{t('Move to {nextStage}', { nextStage })}
               </button>
             )}
             {!nextStage && app.stage === 'Offer' && (
@@ -1072,8 +1104,8 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               </button>
             )}
             <div className="flex items-center gap-1.5 rounded-lg border border-rose-200 px-2 py-1 dark:border-rose-500/30">
-              <input className="w-28 bg-transparent text-xs text-slate-600 outline-none placeholder:text-slate-400 dark:text-slate-300" placeholder="Reject reason…" value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
-              <button type="button" disabled={!rejectReason.trim() || !!acting} onClick={doReject} className="text-xs font-medium text-rose-500 hover:text-rose-600 disabled:opacity-40">Reject</button>
+              <input className="w-28 bg-transparent text-xs text-slate-600 outline-none placeholder:text-slate-400 dark:text-slate-300" placeholder={t('Reject reason…')} value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
+              <button type="button" disabled={!rejectReason.trim() || !!acting} onClick={doReject} className="text-xs font-medium text-rose-500 hover:text-rose-600 disabled:opacity-40">{t('Reject')}</button>
             </div>
           </div>
         )}
@@ -1082,21 +1114,21 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         {detail.candidate && (
           <div className="border-b border-slate-100 px-5 py-3 dark:border-white/[0.06]">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <div><span className="text-slate-400">Email </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.email}</span></div>
-              <div><span className="text-slate-400">Phone </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.phone || '—'}</span></div>
-              <div><span className="text-slate-400">Experience </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.totalExperienceYears}y</span></div>
-              <div><span className="text-slate-400">Source </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.source}</span></div>
+              <div><span className="text-slate-400">{t('Email')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.email}</span></div>
+              <div><span className="text-slate-400">{t('Phone')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.phone || '—'}</span></div>
+              <div><span className="text-slate-400">{t('Experience')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.totalExperienceYears}y</span></div>
+              <div><span className="text-slate-400">{t('Source')} </span><span className="text-slate-700 dark:text-slate-300">{t(detail.candidate.source)}</span></div>
             </div>
           </div>
         )}
 
         {/* Sub-tabs */}
         <div className="flex gap-1 border-b border-slate-200 px-5 dark:border-white/[0.06]">
-          {(['timeline', 'interviews', 'offer'] as const).map(t => (
-            <button key={t} type="button" onClick={() => setTab(t)}
-              className={`py-2.5 text-xs font-medium capitalize transition ${tab === t ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
-              {t}
-              {t === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-caption dark:bg-white/10">{detail.interviews.length}</span>}
+          {([['timeline', 'Timeline'], ['interviews', 'Interviews'], ['offer', 'Offer']] as const).map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setTab(key)}
+              className={`px-2 py-2.5 text-xs font-medium transition first:ps-0 ${tab === key ? 'border-b-2 border-sapphire text-sapphire dark:border-cyanAccent dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>
+              {t(label)}
+              {key === 'interviews' && detail.interviews.length > 0 && <span className="ms-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-caption dark:bg-white/10">{detail.interviews.length}</span>}
             </button>
           ))}
         </div>
@@ -1107,24 +1139,36 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
           {tab === 'timeline' && (
             <div>
               <div className="space-y-3">
-                {detail.events.map(ev => (
-                  <div key={ev.id} className="flex gap-3">
-                    <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sapphire" />
-                    <div className="flex-1">
-                      <div className="flex items-baseline justify-between">
-                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{ev.eventType.replace(/([A-Z])/g, ' $1').trim()}</p>
-                        <p className="text-caption text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc)}</p>
+                {detail.events.map(ev => {
+                  const change = stageChanges.get(ev.id);
+                  // "Advanced application stage." is the API's default note: the from → to line says it better.
+                  const note = change && ev.notes === 'Advanced application stage.' ? '' : ev.notes;
+                  return (
+                    <div key={ev.id} className="flex gap-3">
+                      <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sapphire" />
+                      <div className="flex-1">
+                        <div className="flex items-baseline justify-between">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{enumLabel(t, 'RecruitmentEvent', ev.eventType)}</p>
+                          <p className="text-caption text-slate-400 dark:text-slate-500">{ago(ev.createdAtUtc, t)}</p>
+                        </div>
+                        {change && (
+                          <p className="mt-0.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                            <bdi>{enumLabel(t, 'RecruitmentStage', change.from)}</bdi>{' '}
+                            <span className="inline-block rtl:-scale-x-100">→</span>{' '}
+                            <bdi>{enumLabel(t, 'RecruitmentStage', change.to)}</bdi>
+                          </p>
+                        )}
+                        {note && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{note}</p>}
+                        {ev.performedByName && <p className="text-caption text-slate-400">{t('By {performedByName}', { performedByName: ev.performedByName })}</p>}
                       </div>
-                      {ev.notes && <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{ev.notes}</p>}
-                      {ev.performedByName && <p className="text-caption text-slate-400">by {ev.performedByName}</p>}
                     </div>
-                  </div>
-                ))}
-                {detail.events.length === 0 && <p className="text-xs text-slate-400 dark:text-slate-500">No events yet.</p>}
+                  );
+                })}
+                {detail.events.length === 0 && <p className="text-xs text-slate-400 dark:text-slate-500">{t('No events yet.')}</p>}
               </div>
               <div className="mt-4 flex gap-2">
-                <input className="input flex-1" placeholder="Add a note…" value={noteText} onChange={e => setNoteText(e.target.value)} />
-                <button type="button" disabled={!noteText.trim() || acting === 'note'} onClick={doNote} className="btn-secondary text-xs">Add</button>
+                <input className="input flex-1" placeholder={t('Add a note…')} value={noteText} onChange={e => setNoteText(e.target.value)} />
+                <button type="button" disabled={!noteText.trim() || acting === 'note'} onClick={doNote} className="btn-secondary text-xs">{t('Add')}</button>
               </div>
             </div>
           )}
@@ -1135,17 +1179,17 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               {detail.interviews.map(iv => (
                 <div key={iv.id} className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
                   <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{iv.interviewType}</p>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'}`}>{iv.status}</span>
+                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{t(iv.interviewType)}</p>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10 dark:text-blue-400'}`}>{enumLabel(t, 'Status', iv.status)}</span>
                   </div>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{new Date(iv.scheduledAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} · {iv.mode}</p>
-                  {iv.interviewerNames && <p className="text-xs text-slate-400">With: {iv.interviewerNames}</p>}
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{f.dateTime(iv.scheduledAt)} · {t(iv.mode)}</p>
+                  {iv.interviewerNames && <p className="text-xs text-slate-400">{t('With: {interviewerNames}', { interviewerNames: iv.interviewerNames })}</p>}
                   {iv.overallRating && (
                     <div className="mt-2 flex items-center gap-1">
                       {Array.from({ length: 5 }, (_, i) => (
                         <Star key={i} className={`h-3.5 w-3.5 ${i < iv.overallRating! ? 'fill-amber-400 text-amber-400' : 'text-slate-200 dark:text-slate-700'}`} />
                       ))}
-                      <span className="ms-1 text-xs font-medium text-slate-600 dark:text-slate-400">{iv.recommendation}</span>
+                      <span className="ms-1 text-xs font-medium text-slate-600 dark:text-slate-400">{t(iv.recommendation)}</span>
                     </div>
                   )}
                   {iv.feedbackNotes && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{iv.feedbackNotes}</p>}
@@ -1155,24 +1199,24 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               {/* Schedule new interview */}
               {app.status === 'Active' && (
                 <div className="rounded-lg border border-dashed border-slate-200 p-4 dark:border-white/10">
-                  <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">Schedule Interview</p>
+                  <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">{t('Schedule Interview')}</p>
                   <div className="space-y-2">
-                    <select className="select w-full" value={interviewForm.interviewType} onChange={e => setInterviewForm(f => ({ ...f, interviewType: e.target.value }))} aria-label="Interview type">
-                      {['HR Screening', 'Technical', 'Manager', 'Panel', 'Final'].map(t => <option key={t}>{t}</option>)}
+                    <select className="select w-full" value={interviewForm.interviewType} onChange={e => setInterviewForm(f => ({ ...f, interviewType: e.target.value }))} aria-label={t('Interview type')}>
+                      {[msg('HR Screening'), msg('Technical'), msg('Manager'), msg('Panel'), msg('Final')].map(o => <option value={o} key={o}>{t(o)}</option>)}
                     </select>
-                    <input className="input w-full" placeholder="Interviewer names" value={interviewForm.interviewerNames} onChange={e => setInterviewForm(f => ({ ...f, interviewerNames: e.target.value }))} />
+                    <input className="input w-full" placeholder={t('Interviewer names')} value={interviewForm.interviewerNames} onChange={e => setInterviewForm(f => ({ ...f, interviewerNames: e.target.value }))} />
                     <div className="grid grid-cols-2 gap-2">
-                      <input type="datetime-local" className="input w-full" value={interviewForm.scheduledAt} onChange={e => setInterviewForm(f => ({ ...f, scheduledAt: e.target.value }))} aria-label="Scheduled at" />
-                      <select className="select w-full" value={interviewForm.mode} onChange={e => setInterviewForm(f => ({ ...f, mode: e.target.value }))} aria-label="Interview mode">
-                        {['Video', 'InPerson', 'Phone'].map(m => <option key={m}>{m}</option>)}
+                      <input type="datetime-local" className="input w-full" value={interviewForm.scheduledAt} onChange={e => setInterviewForm(f => ({ ...f, scheduledAt: e.target.value }))} aria-label={t('Scheduled at')} />
+                      <select className="select w-full" value={interviewForm.mode} onChange={e => setInterviewForm(f => ({ ...f, mode: e.target.value }))} aria-label={t('Interview mode')}>
+                        {[msg('Video'), msg('InPerson'), msg('Phone')].map(m => <option value={m} key={m}>{t(m)}</option>)}
                       </select>
                     </div>
                     {interviewForm.mode === 'Video' && (
-                      <input className="input w-full" placeholder="Meeting link" value={interviewForm.meetingLink} onChange={e => setInterviewForm(f => ({ ...f, meetingLink: e.target.value }))} />
+                      <input className="input w-full" placeholder={t('Meeting link')} value={interviewForm.meetingLink} onChange={e => setInterviewForm(f => ({ ...f, meetingLink: e.target.value }))} />
                     )}
                     <button type="button" disabled={acting === 'interview' || !interviewForm.scheduledAt} onClick={doScheduleInterview}
                       className="btn-primary w-full text-xs">
-                      {acting === 'interview' ? 'Scheduling…' : 'Schedule Interview'}
+                      {acting === 'interview' ? t('Scheduling…') : t('Schedule Interview')}
                     </button>
                   </div>
                 </div>
@@ -1186,21 +1230,21 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               {offer ? (
                 <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
                   <div className="mb-3 flex items-center justify-between">
-                    <p className="text-sm font-semibold text-slate-800 dark:text-white">Offer Letter</p>
+                    <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Offer Letter')}</p>
                     <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
                   </div>
                   <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400">
-                    <div className="flex justify-between"><span>Basic Salary</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>
-                    <div className="flex justify-between"><span>Housing</span><span>{currencyCode} {fmt(offer.housingAllowance)}</span></div>
-                    <div className="flex justify-between"><span>Transport</span><span>{currencyCode} {fmt(offer.transportAllowance)}</span></div>
+                    <div className="flex justify-between"><span>{t('Basic Salary')}</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>
+                    <div className="flex justify-between"><span>{t('Housing')}</span><span>{currencyCode} {fmt(offer.housingAllowance)}</span></div>
+                    <div className="flex justify-between"><span>{t('Transport')}</span><span>{currencyCode} {fmt(offer.transportAllowance)}</span></div>
                     <div className="flex justify-between border-t border-slate-100 pt-1 font-semibold text-slate-800 dark:border-white/10 dark:text-white">
-                      <span>Gross Total</span><span>{currencyCode} {fmt(offer.grossSalary)}</span>
+                      <span>{t('Gross Total')}</span><span>{currencyCode} {fmt(offer.grossSalary)}</span>
                     </div>
                   </div>
                   <div className="mt-3 flex gap-2">
                     <button type="button" disabled={acting === 'preview'} onClick={downloadOffer}
                       className="flex items-center gap-1 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-50 dark:bg-white/10 dark:text-slate-300">
-                      <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? 'Opening…' : 'Preview'}
+                      <FileText className="h-3.5 w-3.5" />{acting === 'preview' ? t('Opening…') : t('Preview')}
                     </button>
                     <button type="button" className="btn-primary" onClick={() => navigationGuard.push(offerWorkspacePath(offer.id))}>{offerT('Open offer')}</button>
                   </div>
@@ -1210,7 +1254,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
               ) : (
                 app.stage === 'Offer' && app.status === 'Active' ? (
                   <div className="rounded-lg border border-dashed border-slate-200 p-4 dark:border-white/10">
-                    <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">Generate Offer Letter</p>
+                    <p className="mb-3 text-xs font-semibold text-slate-700 dark:text-slate-300">{t('Generate Offer Letter')}</p>
                     <div className="space-y-2">
                       <OfferTemplateSelect value={templateId} onChange={setTemplateId} />
                       <OfferPlacementFields
@@ -1219,36 +1263,38 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                         value={{ departmentId: offerForm.departmentId, designationId: offerForm.designationId }}
                         onChange={v => setOfferForm(f => ({ ...f, ...v }))}
                       />
-                      <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label="Start date" />
+                      <input type="date" className="input w-full" value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} aria-label={t('Start date')} />
                       <div className="grid grid-cols-2 gap-2">
-                        <input type="number" className="input w-full" placeholder={`Basic Salary (${currencyCode})`} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label="Basic salary" />
-                        <input type="number" className="input w-full" placeholder="Housing Allowance" value={offerForm.housingAllowance} onChange={e => setOfferForm(f => ({ ...f, housingAllowance: e.target.value }))} aria-label="Housing allowance" />
+                        <input type="number" className="input w-full" placeholder={t('Basic Salary ({currencyCode})', { currencyCode })} value={offerForm.basicSalary} onChange={e => setOfferForm(f => ({ ...f, basicSalary: e.target.value }))} aria-label={t('Basic salary')} />
+                        <input type="number" className="input w-full" placeholder={t('Housing Allowance')} value={offerForm.housingAllowance} onChange={e => setOfferForm(f => ({ ...f, housingAllowance: e.target.value }))} aria-label={t('Housing allowance')} />
                       </div>
                       <div className="grid grid-cols-2 gap-2">
-                        <input type="number" className="input w-full" placeholder="Transport Allowance" value={offerForm.transportAllowance} onChange={e => setOfferForm(f => ({ ...f, transportAllowance: e.target.value }))} aria-label="Transport allowance" />
-                        <input type="number" className="input w-full" placeholder="Other Allowances" value={offerForm.otherAllowances} onChange={e => setOfferForm(f => ({ ...f, otherAllowances: e.target.value }))} aria-label="Other allowances" />
+                        <input type="number" className="input w-full" placeholder={t('Transport Allowance')} value={offerForm.transportAllowance} onChange={e => setOfferForm(f => ({ ...f, transportAllowance: e.target.value }))} aria-label={t('Transport allowance')} />
+                        <input type="number" className="input w-full" placeholder={t('Other Allowances')} value={offerForm.otherAllowances} onChange={e => setOfferForm(f => ({ ...f, otherAllowances: e.target.value }))} aria-label={t('Other allowances')} />
                       </div>
                       <button type="button" disabled={acting === 'offer' || !offerForm.startDate || !offerForm.basicSalary} onClick={doGenerateOffer}
                         className="btn-primary w-full text-xs">
-                        {acting === 'offer' ? 'Generating…' : 'Generate Offer Letter'}
+                        {acting === 'offer' ? t('Generating…') : t('Generate Offer Letter')}
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <p className="text-xs text-slate-400 dark:text-slate-500">No offer letter yet. Advance application to Offer stage first.</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500">{t('No offer letter yet. Advance application to Offer stage first.')}</p>
                 )
               )}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 // ── Pipeline (Kanban) View ─────────────────────────────────────────────────────
 
 function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => void }) {
+  const t = useT();
   const [kanban, setKanban] = useState<KanbanStage[]>([]);
   const [rejected, setRejected] = useState<JobApplication[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1289,14 +1335,14 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
       {/* Breadcrumb header */}
       <div className="mb-4 flex items-center gap-3">
         <button type="button" onClick={onBack} className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200">
-          <ChevronLeft className="h-4 w-4" />Job Openings
+          <ChevronLeft className="h-4 w-4" />{t('Job Openings')}
         </button>
         <span className="text-slate-300 dark:text-slate-600">/</span>
         <span className="text-sm font-semibold text-slate-800 dark:text-slate-200">{opening.title}</span>
-        <StatusChip {...openingStatusTone(opening.status)} />
-        <span className="ms-auto text-xs text-slate-400 dark:text-slate-500">{totalActive} active</span>
+        <ToneChip {...openingStatusTone(opening.status)} />
+        <span className="ms-auto text-xs text-slate-400 dark:text-slate-500">{t('{totalActive} active', { totalActive })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={openAddModal}>
-          <UserPlus className="h-3.5 w-3.5" />Add Candidate
+          <UserPlus className="h-3.5 w-3.5" />{t('Add Candidate')}
         </button>
       </div>
 
@@ -1321,11 +1367,11 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
                   >
                     <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{app.candidateName}</p>
                     <p className="mt-0.5 text-caption text-slate-400 dark:text-slate-500">{app.candidateEmail}</p>
-                    <p className="mt-1.5 text-caption text-slate-400 dark:text-slate-500">{ago(app.stageChangedAtUtc ?? app.appliedAtUtc)}</p>
+                    <p className="mt-1.5 text-caption text-slate-400 dark:text-slate-500">{ago(app.stageChangedAtUtc ?? app.appliedAtUtc, t)}</p>
                   </button>
                 ))}
                 {col.applications.length === 0 && (
-                  <p className="py-4 text-center text-caption text-slate-300 dark:text-slate-700">No candidates</p>
+                  <p className="py-4 text-center text-caption text-slate-300 dark:text-slate-700">{t('No candidates')}</p>
                 )}
               </div>
             </div>
@@ -1336,7 +1382,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
             <div className="flex w-44 shrink-0 flex-col gap-2">
               <div className="flex items-center gap-2 px-1">
                 <div className="h-2.5 w-2.5 rounded-full bg-rose-400" />
-                <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">Rejected</p>
+                <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{t('Rejected')}</p>
                 <span className="ms-auto rounded-full bg-slate-100 px-1.5 py-0.5 text-caption font-medium text-slate-500 dark:bg-white/10">{rejected.length}</span>
               </div>
               <div className="flex flex-col gap-2 rounded-xl border border-rose-100 bg-rose-50/50 p-2 dark:border-rose-500/10 dark:bg-rose-500/[0.03]" style={{ minHeight: 60 }}>
@@ -1357,17 +1403,17 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-96 rounded-2xl border border-slate-200 bg-white p-6 shadow-e3 dark:border-white/10 dark:bg-surface">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Add Candidate to Pipeline</h3>
-              <button type="button" aria-label="Close" onClick={() => setAddModalOpen(false)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Add Candidate to Pipeline')}</h3>
+              <button type="button" aria-label={t('Close')} onClick={() => setAddModalOpen(false)} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
             </div>
-            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Select Candidate</label>
-            <select className="select w-full" value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)} aria-label="Select candidate">
+            <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Select Candidate')}</label>
+            <select className="select w-full" value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)} aria-label={t('Select candidate')}>
               {candidates.map(c => <option key={c.id} value={c.id}>{c.fullName || `${c.firstName} ${c.lastName}`} — {c.currentJobTitle}</option>)}
             </select>
-            {candidates.length === 0 && <p className="mt-2 text-xs text-rose-500">No candidates in talent pool. Add candidates first.</p>}
+            {candidates.length === 0 && <p className="mt-2 text-xs text-rose-500">{t('No candidates in talent pool. Add candidates first.')}</p>}
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" className="btn-secondary text-sm" onClick={() => setAddModalOpen(false)}>Cancel</button>
-              <button type="button" className="btn-primary text-sm" disabled={adding || !selectedCandidateId} onClick={addCandidate}>{adding ? 'Adding…' : 'Add to Pipeline'}</button>
+              <button type="button" className="btn-secondary text-sm" onClick={() => setAddModalOpen(false)}>{t('Cancel')}</button>
+              <button type="button" className="btn-primary text-sm" disabled={adding || !selectedCandidateId} onClick={addCandidate}>{adding ? t('Adding…') : t('Add to Pipeline')}</button>
             </div>
           </div>
         </div>
@@ -1387,6 +1433,7 @@ function PipelineView({ opening, onBack }: { opening: JobOpening; onBack: () => 
 // ── Add Candidate Modal ────────────────────────────────────────────────────────
 
 function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const t = useT();
   const [form, setForm] = useState({
     firstName: '', lastName: '', email: '', phone: '', currentJobTitle: '',
     currentCompany: '', totalExperienceYears: 0, educationLevel: 'Bachelor',
@@ -1397,14 +1444,14 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
   const set = (k: keyof typeof form, v: string | number) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!form.firstName || !form.email) { setError('First name and email are required.'); return; }
+    if (!form.firstName || !form.email) { setError(t('First name and email are required.')); return; }
     setSaving(true); setError('');
     try {
       await candidatesApi.create({ ...form });
       onSaved();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to add candidate.');
+      setError(msg ?? t('Failed to add candidate.'));
       setSaving(false);
     }
   };
@@ -1413,46 +1460,46 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-e3 max-h-[90vh] dark:border-white/10 dark:bg-surface">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-white/10">
-          <h3 className="font-semibold text-slate-900 dark:text-white">Add to Talent Pool</h3>
-          <button type="button" aria-label="Close" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
+          <h3 className="font-semibold text-slate-900 dark:text-white">{t('Add to Talent Pool')}</h3>
+          <button type="button" aria-label={t('Close')} onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"><X className="h-4 w-4" /></button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">First Name *</label><input className="input w-full" placeholder="First name" aria-label="First name" value={form.firstName} onChange={e => set('firstName', e.target.value)} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Last Name</label><input className="input w-full" placeholder="Last name" aria-label="Last name" value={form.lastName} onChange={e => set('lastName', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('First Name *')}</label><input className="input w-full" placeholder={t('First name')} aria-label={t('First name')} value={form.firstName} onChange={e => set('firstName', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Last Name')}</label><input className="input w-full" placeholder={t('Last name')} aria-label={t('Last name')} value={form.lastName} onChange={e => set('lastName', e.target.value)} /></div>
             </div>
-            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Email *</label><input type="email" className="input w-full" placeholder="email@example.com" value={form.email} onChange={e => set('email', e.target.value)} /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Phone</label><input className="input field-ltr w-full" placeholder="+971 50 000 0000" aria-label="Phone" value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Experience (years)</label><input type="number" className="input w-full" min={0} value={form.totalExperienceYears} onChange={e => set('totalExperienceYears', Number(e.target.value))} aria-label="Experience years" /></div>
+            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Email *')}</label><input type="email" className="input w-full" placeholder="email@example.com" value={form.email} onChange={e => set('email', e.target.value)} /></div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Phone')}</label><input className="input field-ltr w-full" placeholder="+966 50 000 0000" aria-label={t('Phone')} value={form.phone} onChange={e => set('phone', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Experience (years)')}</label><input type="number" className="input w-full" min={0} value={form.totalExperienceYears} onChange={e => set('totalExperienceYears', Number(e.target.value))} aria-label={t('Experience years')} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Current Title</label><input className="input w-full" placeholder="e.g. Senior Developer" aria-label="Current job title" value={form.currentJobTitle} onChange={e => set('currentJobTitle', e.target.value)} /></div>
-              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Current Company</label><input className="input w-full" placeholder="Company name" aria-label="Current company" value={form.currentCompany} onChange={e => set('currentCompany', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Current Title')}</label><input className="input w-full" placeholder={t('For example: Senior Developer')} aria-label={t('Current job title')} value={form.currentJobTitle} onChange={e => set('currentJobTitle', e.target.value)} /></div>
+              <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Current Company')}</label><input className="input w-full" placeholder={t('Company name')} aria-label={t('Current company')} value={form.currentCompany} onChange={e => set('currentCompany', e.target.value)} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Education</label>
-                <select className="select w-full" value={form.educationLevel} onChange={e => set('educationLevel', e.target.value)} aria-label="Education level">
-                  {['High School', 'Diploma', 'Bachelor', 'Master', 'PhD'].map(l => <option key={l}>{l}</option>)}
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Education')}</label>
+                <select className="select w-full" value={form.educationLevel} onChange={e => set('educationLevel', e.target.value)} aria-label={t('Education level')}>
+                  {[msg('High School'), msg('Diploma'), msg('Bachelor'), msg('Master'), msg('PhD')].map(l => <option value={l} key={l}>{t(l)}</option>)}
                 </select>
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Source</label>
-                <select className="select w-full" value={form.source} onChange={e => set('source', e.target.value)} aria-label="Source">
-                  {['Direct', 'LinkedIn', 'Referral', 'JobBoard', 'Walk-In', 'Agency'].map(s => <option key={s}>{s}</option>)}
+                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Source')}</label>
+                <select className="select w-full" value={form.source} onChange={e => set('source', e.target.value)} aria-label={t('Source')}>
+                  {[msg('Direct'), msg('LinkedIn'), msg('Referral'), msg('JobBoard'), msg('Walk-In'), msg('Agency')].map(s => <option value={s} key={s}>{t(s)}</option>)}
                 </select>
               </div>
             </div>
-            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Nationality</label><input className="input w-full" placeholder="e.g. UAE" aria-label="Nationality" value={form.nationality} onChange={e => set('nationality', e.target.value)} /></div>
-            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Resume / CV URL <span className="text-slate-400 font-normal">(LinkedIn, Google Drive, etc.)</span></label><input type="url" className="input w-full" placeholder="https://…" value={form.resumeUrl} onChange={e => set('resumeUrl', e.target.value)} /></div>
+            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Nationality')}</label><input className="input w-full" placeholder={t('For example: Saudi')} aria-label={t('Nationality')} value={form.nationality} onChange={e => set('nationality', e.target.value)} /></div>
+            <div><label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Resume / CV URL')} <span className="text-slate-400 font-normal">{t('(LinkedIn, Google Drive, etc.)')}</span></label><input type="url" className="input w-full" placeholder="https://…" value={form.resumeUrl} onChange={e => set('resumeUrl', e.target.value)} /></div>
             {error && <p className="text-xs text-rose-500">{error}</p>}
           </div>
         </div>
         <div className="flex shrink-0 justify-end gap-2 border-t border-slate-100 px-6 py-4 dark:border-white/10">
-          <button type="button" className="btn-secondary text-sm" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn-primary text-sm" disabled={saving} onClick={save}>{saving ? 'Adding…' : 'Add Candidate'}</button>
+          <button type="button" className="btn-secondary text-sm" onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className="btn-primary text-sm" disabled={saving} onClick={save}>{saving ? t('Adding…') : t('Add Candidate')}</button>
         </div>
       </div>
     </div>,
@@ -1463,6 +1510,7 @@ function AddCandidateModal({ onClose, onSaved }: { onClose: () => void; onSaved:
 // ── Candidates Tab ─────────────────────────────────────────────────────────────
 
 function CandidatesTab() {
+  const t = useT();
   const [search, setSearch] = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1488,10 +1536,10 @@ function CandidatesTab() {
   return (
     <div>
       <div className="mb-4 flex items-center gap-3">
-        <input className="input w-72" placeholder="Search name, email, title…" value={search} onChange={e => onSearch(e.target.value)} />
-        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{total} candidates</span>
+        <input className="input w-72" placeholder={t('Search name, email, title…')} value={search} onChange={e => onSearch(e.target.value)} />
+        <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} candidates', { total })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-3.5 w-3.5" />Add Candidate
+          <Plus className="h-3.5 w-3.5" />{t('Add Candidate')}
         </button>
       </div>
 
@@ -1499,14 +1547,14 @@ function CandidatesTab() {
         <table className="min-w-full text-sm">
           <thead className="border-b border-slate-200 bg-slate-50 dark:border-white/10 dark:bg-white/[0.03]">
             <tr>
-              {['Name', 'Title / Company', 'Experience', 'Education', 'Source', 'CV', 'Applied'].map(h => (
+              {[t('Name'), t('Title / Company'), t('Experience'), t('Education'), t('Source'), 'CV', t('Applied')].map(h => (
                 <th key={h} className="px-4 py-3 text-start text-xs font-semibold text-slate-500 dark:text-slate-400">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.06]">
             {loading && <tr><td colSpan={7} className="py-10 text-center"><div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>}
-            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">No candidates yet. Add your first candidate to the talent pool.</td></tr>}
+            {!loading && list.error == null && items.length === 0 && <tr><td colSpan={7} className="py-10 text-center text-sm text-slate-400 dark:text-slate-500">{t('No candidates yet. Add your first candidate to the talent pool.')}</td></tr>}
             {!loading && items.map(c => (
               <tr key={c.id} className="hover:bg-slate-50/60 dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3">
@@ -1518,14 +1566,14 @@ function CandidatesTab() {
                   <p className="text-xs text-slate-400 dark:text-slate-500">{c.currentCompany || ''}</p>
                 </td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.totalExperienceYears}y</td>
-                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel || '—'}</td>
+                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel ? t(c.educationLevel) : '—'}</td>
                 <td className="px-4 py-3">
-                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{c.source}</span>
+                  <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{t(c.source)}</span>
                 </td>
                 <td className="px-4 py-3">
                   {c.resumeUrl ? (
                     <a href={c.resumeUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs font-medium text-sapphire hover:underline dark:text-cyanAccent">
-                      <FileText className="h-3.5 w-3.5" />View CV
+                      <FileText className="h-3.5 w-3.5" />{t('View CV')}
                     </a>
                   ) : <span className="text-xs text-slate-300 dark:text-slate-600">—</span>}
                 </td>
@@ -1534,9 +1582,9 @@ function CandidatesTab() {
             ))}
           </tbody>
         </table>
-        <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+        <ListWindowFooter shown={items.length} total={list.total} noun="candidates" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} candidates', { shown: items.length, total: list.total ?? items.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       </div>
-      {list.error != null && <LoadFailure what="Candidates" error={list.error} />}
+      {list.error != null && <LoadFailure what={t('Candidates')} error={list.error} />}
 
       {addOpen && <AddCandidateModal onClose={() => setAddOpen(false)} onSaved={() => { setAddOpen(false); load(); }} />}
     </div>
@@ -1546,6 +1594,7 @@ function CandidatesTab() {
 // ── Workforce Planning Tab ────────────────────────────────────────────────────
 
 function WorkforcePlanningTab() {
+  const t = useT();
   const [summary, setSummary] = useState<{ totalPlans: number; totalGap: number; totalBudget: number; approved: number } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({ planName: '', planYear: new Date().getFullYear(), departmentName: '', currentHeadcount: 0, plannedHeadcount: 0, budgetAllocated: 0, currencyCode: 'USD', notes: '' });
@@ -1578,8 +1627,8 @@ function WorkforcePlanningTab() {
       {/* Department establishment (budget & headcount) — read-only here; edited in Company Setup */}
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Department Headcount &amp; Budget</h3>
-          <span className="text-xs text-slate-400">Set in Company Setup → Headcount &amp; Budget</span>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t('Department Headcount & Budget')}</h3>
+          <span className="text-xs text-slate-400">{t('Set in Company Setup → Headcount & Budget')}</span>
         </div>
         <EstablishmentPanel readOnly />
       </div>
@@ -1587,10 +1636,10 @@ function WorkforcePlanningTab() {
       {summary && (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           {[
-            { label: 'Total Plans', value: summary.totalPlans, color: 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20' },
-            { label: 'Approved', value: summary.approved, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400' },
-            { label: 'Total Headcount Gap', value: summary.totalGap, color: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
-            { label: 'Budget Allocated', value: `${summary.totalBudget.toLocaleString()}`, color: 'bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400' },
+            { label: t('Total Plans'), value: summary.totalPlans, color: 'bg-sapphire/10 text-sapphire dark:bg-sapphire/20' },
+            { label: t('Approved'), value: summary.approved, color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400' },
+            { label: t('Total Headcount Gap'), value: summary.totalGap, color: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
+            { label: t('Budget Allocated'), value: `${summary.totalBudget.toLocaleString()}`, color: 'bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400' },
           ].map(k => (
             <div key={k.label} className="surface flex items-center gap-3 p-4">
               <div className={`h-8 w-8 shrink-0 rounded-lg grid place-items-center ${k.color}`}>
@@ -1604,47 +1653,47 @@ function WorkforcePlanningTab() {
 
       <div className="surface p-5">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Workforce Plans</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Workforce Plans')}</h3>
           <button type="button" onClick={() => setShowCreate(true)} className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90">
-            <Plus className="h-3.5 w-3.5" /> New Plan
+            <Plus className="h-3.5 w-3.5" /> {t('New Plan')}
           </button>
         </div>
 
         {showCreate && (
           <div className="mb-4 rounded-xl border border-slate-200 dark:border-white/10 p-4 space-y-3 bg-slate-50 dark:bg-white/[0.03]">
-            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Workforce Plan</h4>
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('New Workforce Plan')}</h4>
             <div className="grid grid-cols-2 gap-3">
-              {[['planName', 'Plan Name', 'text'], ['planYear', 'Year', 'number'], ['departmentName', 'Department', 'text']].map(([k, l, t]) => (
+              {[['planName', t('Plan Name'), 'text'], ['planYear', t('Year'), 'number'], ['departmentName', t('Department'), 'text']].map(([k, l, inputType]) => (
                 <div key={k}>
                   <label htmlFor={`wfp-${k}`} className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{l}</label>
-                  <input id={`wfp-${k}`} type={t} title={l as string} value={(form as Record<string, unknown>)[k] as string} onChange={e => setForm(f => ({ ...f, [k]: t === 'number' ? Number(e.target.value) : e.target.value }))}
+                  <input id={`wfp-${k}`} type={inputType} title={l as string} value={(form as Record<string, unknown>)[k] as string} onChange={e => setForm(f => ({ ...f, [k]: inputType === 'number' ? Number(e.target.value) : e.target.value }))}
                     className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-900 dark:text-white" />
                 </div>
               ))}
-              {[['currentHeadcount', 'Current HC', 'number'], ['plannedHeadcount', 'Planned HC', 'number'], ['budgetAllocated', 'Budget', 'number']].map(([k, l, t]) => (
+              {[['currentHeadcount', t('Current HC'), 'number'], ['plannedHeadcount', t('Planned HC'), 'number'], ['budgetAllocated', t('Budget'), 'number']].map(([k, l, inputType]) => (
                 <div key={k}>
                   <label htmlFor={`wfp-${k}`} className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">{l}</label>
-                  <input id={`wfp-${k}`} type={t} title={l as string} value={(form as Record<string, unknown>)[k] as number} onChange={e => setForm(f => ({ ...f, [k]: Number(e.target.value) }))}
+                  <input id={`wfp-${k}`} type={inputType} title={l as string} value={(form as Record<string, unknown>)[k] as number} onChange={e => setForm(f => ({ ...f, [k]: Number(e.target.value) }))}
                     className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-900 dark:text-white" />
                 </div>
               ))}
             </div>
             <div className="flex items-center gap-2 pt-1">
-              <button type="button" onClick={save} disabled={saving} className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">{saving ? 'Saving…' : 'Create Plan'}</button>
-              <button type="button" onClick={() => setShowCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+              <button type="button" onClick={save} disabled={saving} className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">{saving ? t('Saving…') : t('Create Plan')}</button>
+              <button type="button" onClick={() => setShowCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
             </div>
           </div>
         )}
 
-        {list.error != null && <LoadFailure what="Workforce plans" error={list.error} />}
-        {list.loading ? <p className="py-8 text-center text-sm text-slate-400">Loading…</p> : list.error != null && plans.length === 0 ? null : plans.length === 0 ? (
-          <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No workforce plans found. Create the first plan.</p>
+        {list.error != null && <LoadFailure what={t('Workforce plans')} error={list.error} />}
+        {list.loading ? <p className="py-8 text-center text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && plans.length === 0 ? null : plans.length === 0 ? (
+          <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No workforce plans found. Create the first plan.')}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-white/10">
-                  {['Code', 'Name', 'Year', 'Department', 'Gap', 'Budget', 'Status'].map(h => (
+                  {[t('Code'), t('Name'), t('Year'), t('Department'), t('Gap'), t('Budget'), t('Status')].map(h => (
                     <th key={h} className="pb-2 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                   ))}
                 </tr>
@@ -1659,7 +1708,7 @@ function WorkforcePlanningTab() {
                     <td className="py-2.5 pe-3 font-semibold text-slate-900 dark:text-white">{p.gapCount > 0 ? `+${p.gapCount}` : p.gapCount}</td>
                     <td className="py-2.5 pe-3 text-slate-500 dark:text-slate-400">{p.currencyCode} {p.budgetAllocated.toLocaleString()}</td>
                     <td className="py-2.5">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? ''}`}>{p.status}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[p.status] ?? ''}`}>{enumLabel(t, 'Status', p.status)}</span>
                     </td>
                   </tr>
                 ))}
@@ -1667,7 +1716,7 @@ function WorkforcePlanningTab() {
             </table>
           </div>
         )}
-        <ListWindowFooter shown={plans.length} total={list.total} noun="plans" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+        <ListWindowFooter shown={plans.length} total={list.total} noun="plans" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} plans', { shown: plans.length, total: list.total ?? plans.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       </div>
     </div>
   );
@@ -1676,6 +1725,8 @@ function WorkforcePlanningTab() {
 // ── Interviews Tab ────────────────────────────────────────────────────────────
 
 function InterviewsTab() {
+  const t = useT();
+  const f = useFormat();
   const [statusFilter, setStatusFilter] = useState('');
   const [showSchedule, setShowSchedule] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1704,20 +1755,23 @@ function InterviewsTab() {
   };
 
   useEffect(() => { load(); }, [statusFilter]);
+  // The interview list carries only an application id: the candidate and job come from the application list.
+  useEffect(() => { void loadApps(); }, []);
+  const applicationById = new Map(applications.map(a => [a.id, a]));
 
   const openSchedule = () => { loadApps(); setShowSchedule(true); };
 
   const submitSchedule = async () => {
     if (!schedForm.applicationId || !schedForm.interviewerNames || !schedForm.scheduledAt) {
-      setSchedError('Application, interviewers and scheduled date/time are required.'); return;
+      setSchedError(t('Application, interviewers and scheduled date/time are required.')); return;
     }
     setSchedSaving(true); setSchedError('');
     try {
-      await interviewsApi.schedule({ ...schedForm, durationMinutes: Number(schedForm.durationMinutes) });
+      await interviewsApi.schedule({ ...schedForm, scheduledAt: localInputToInstant(schedForm.scheduledAt), durationMinutes: Number(schedForm.durationMinutes) });
       setShowSchedule(false);
       setSchedForm({ applicationId: '', interviewType: 'Technical', interviewerNames: '', scheduledAt: '', durationMinutes: 60, mode: 'Video', meetingLink: '', location: '' });
       load();
-    } catch { setSchedError('Failed to schedule interview.'); }
+    } catch { setSchedError(t('Failed to schedule interview.')); }
     finally { setSchedSaving(false); }
   };
 
@@ -1729,9 +1783,9 @@ function InterviewsTab() {
   const completeInterview = async (id: string) => {
     const rating = Number(completionForm.overallRating);
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-      setCompletionError('Overall rating must be between 1 and 5.'); return;
+      setCompletionError(t('Overall rating must be between 1 and 5.')); return;
     }
-    if (!completionForm.recommendation) { setCompletionError('Recommendation is required.'); return; }
+    if (!completionForm.recommendation) { setCompletionError(t('Recommendation is required.')); return; }
     setCompletionSaving(true); setCompletionError('');
     try {
       await interviewsApi.complete(id, {
@@ -1743,7 +1797,7 @@ function InterviewsTab() {
       setCompletionForm({ overallRating: 4, recommendation: 'Hire', feedbackNotes: '' });
       load();
     } catch (e) {
-      setCompletionError('Failed to complete interview.');
+      setCompletionError(t('Failed to complete interview.'));
       notifyApiError(e);
     } finally {
       setCompletionSaving(false);
@@ -1761,126 +1815,135 @@ function InterviewsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select title="Filter by interview status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+        <select title={t('Filter by interview status')} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
-          <option value="">All Statuses</option>
-          {['Scheduled', 'Completed', 'Cancelled', 'NoShow'].map(s => <option key={s}>{s}</option>)}
+          <option value="">{t('All Statuses')}</option>
+          {[msg('Scheduled'), msg('Completed'), msg('Cancelled'), msg('NoShow')].map(s => <option value={s} key={s}>{t(s)}</option>)}
         </select>
         <ListCount loading={loading} total={list.total} shown={interviews.length} noun="interview" />
         <button type="button" onClick={openSchedule} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-          <Calendar className="h-3.5 w-3.5" />Schedule Interview
+          <Calendar className="h-3.5 w-3.5" />{t('Schedule Interview')}
         </button>
       </div>
 
       {showSchedule && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">Schedule New Interview</h4>
-            <button type="button" aria-label="Close" title="Close" onClick={() => setShowSchedule(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Schedule New Interview')}</h4>
+            <button type="button" aria-label={t('Close')} title={t('Close')} onClick={() => setShowSchedule(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Application *</label>
-              <select title="Select application" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Application *')}</label>
+              <select title={t('Select application')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.applicationId} onChange={e => setSchedForm(f => ({ ...f, applicationId: e.target.value }))}>
-                <option value="">— Select candidate/application —</option>
+                <option value="">{t('— Select candidate/application —')}</option>
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle} ({a.stage})</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Interview Type</label>
-              <select title="Interview type" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Interview Type')}</label>
+              <select title={t('Interview type')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.interviewType} onChange={e => setSchedForm(f => ({ ...f, interviewType: e.target.value }))}>
-                {['Technical', 'HR', 'Culture Fit', 'Final', 'Panel'].map(t => <option key={t}>{t}</option>)}
+                {[msg('Technical'), 'HR', msg('Culture Fit'), msg('Final'), msg('Panel')].map(o => <option value={o} key={o}>{t(o)}</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Mode</label>
-              <select title="Interview mode" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Mode')}</label>
+              <select title={t('Interview mode')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.mode} onChange={e => setSchedForm(f => ({ ...f, mode: e.target.value }))}>
-                {['Video', 'InPerson', 'Phone'].map(m => <option key={m}>{m}</option>)}
+                {[msg('Video'), msg('InPerson'), msg('Phone')].map(m => <option value={m} key={m}>{t(m)}</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Interviewer(s) *</label>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Interviewer(s) *')}</label>
               <input className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                placeholder="e.g. Sarah Ahmed, John Doe" value={schedForm.interviewerNames} onChange={e => setSchedForm(f => ({ ...f, interviewerNames: e.target.value }))} />
+                placeholder={t('For example: Sarah Ahmed, John Doe')} value={schedForm.interviewerNames} onChange={e => setSchedForm(f => ({ ...f, interviewerNames: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Duration (minutes)</label>
-              <input type="number" min={15} step={15} title="Duration in minutes" placeholder="60" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Duration (minutes)')}</label>
+              <input type="number" min={15} step={15} title={t('Duration in minutes')} placeholder="60" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.durationMinutes} onChange={e => setSchedForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Date & Time *</label>
-              <input type="datetime-local" title="Interview date and time" placeholder="Select date and time" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Date & Time *')}</label>
+              <input type="datetime-local" title={t('Interview date and time')} placeholder={t('Select date and time')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={schedForm.scheduledAt} onChange={e => setSchedForm(f => ({ ...f, scheduledAt: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Meeting Link</label>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Meeting Link')}</label>
               <input type="url" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 placeholder="https://meet.google.com/…" value={schedForm.meetingLink} onChange={e => setSchedForm(f => ({ ...f, meetingLink: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Location</label>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Location')}</label>
               <input className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                placeholder="Office / Room" value={schedForm.location} onChange={e => setSchedForm(f => ({ ...f, location: e.target.value }))} />
+                placeholder={t('Office / Room')} value={schedForm.location} onChange={e => setSchedForm(f => ({ ...f, location: e.target.value }))} />
             </div>
           </div>
           {schedError && <p className="text-xs text-rose-500">{schedError}</p>}
           <div className="flex items-center gap-2 pt-1">
             <button type="button" onClick={submitSchedule} disabled={schedSaving}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-              {schedSaving ? 'Scheduling…' : 'Schedule'}
+              {schedSaving ? t('Scheduling…') : t('Schedule')}
             </button>
-            <button type="button" onClick={() => setShowSchedule(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => setShowSchedule(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
           </div>
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Interviews" error={list.error} />}
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && interviews.length === 0 ? null : interviews.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No interviews found. Schedule the first one above.</p>
+      {list.error != null && <LoadFailure what={t('Interviews')} error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && interviews.length === 0 ? null : interviews.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No interviews found. Schedule the first one above.')}</p>
       ) : (
         <div className="space-y-2">
           {interviews.map(iv => (
             <div key={iv.id} className="surface p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
+                  {applicationById.get(iv.applicationId) && (
+                    <p className="mb-1 truncate text-sm font-semibold text-slate-900 dark:text-white">
+                      <bdi>{applicationById.get(iv.applicationId)!.candidateName}</bdi>
+                      <span className="font-normal text-slate-500 dark:text-slate-400"> · <bdi>{applicationById.get(iv.applicationId)!.jobTitle}</bdi></span>
+                    </p>
+                  )}
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-sm font-semibold text-slate-900 dark:text-white">{iv.interviewType}</span>
-                    <span className="text-xs text-slate-400">{MODE_ICON[iv.mode] ?? '🗓'} {iv.mode}</span>
+                    <span className="text-sm font-semibold text-slate-900 dark:text-white">{t(iv.interviewType)}</span>
+                    <span className="text-xs text-slate-400">{MODE_ICON[iv.mode] ?? '🗓'} {t(iv.mode)}</span>
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                       iv.status === 'Completed' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' :
                       iv.status === 'Cancelled' ? 'bg-rose-50 text-rose-700' : 'bg-blue-50 text-blue-700'
-                    }`}>{iv.status}</span>
+                    }`}>{enumLabel(t, 'Status', iv.status)}</span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    {new Date(iv.scheduledAt).toLocaleString()} · {iv.durationMinutes}min
+                    {t('{dateTime} · {durationMinutes}min', { dateTime: f.dateTime(iv.scheduledAt), durationMinutes: iv.durationMinutes })}
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Interviewers: {iv.interviewerNames}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t('Interviewers: {interviewerNames}', { interviewerNames: iv.interviewerNames })}</p>
                   {iv.recommendation && (
                     <p className={`text-xs font-medium mt-1 ${RECOMMENDATION_COLORS[iv.recommendation] ?? ''}`}>
-                      Recommendation: {iv.recommendation}
+                      {t('Recommendation: {recommendation}', { recommendation: iv.recommendation })}
                     </p>
+                  )}
+                  {iv.feedbackNotes && (
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300"><span className="font-medium">{t('Feedback notes')}:</span> {iv.feedbackNotes}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {iv.overallRating && (
                     <div className="text-end">
                       <p className="text-lg font-semibold text-slate-900 dark:text-white">{iv.overallRating}/5</p>
-                      <p className="text-xs text-slate-400">Rating</p>
+                      <p className="text-xs text-slate-400">{t('Rating')}</p>
                     </div>
                   )}
                   {iv.status === 'Scheduled' && (
                     <>
                       <button type="button" onClick={() => { setCompletionError(''); setCompletingId(iv.id); }}
                         className="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
-                        Complete
+                        {t('Complete')}
                       </button>
                       <button type="button" onClick={() => cancelInterview(iv.id)} disabled={cancelling === iv.id}
                         className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10">
-                        {cancelling === iv.id ? '…' : 'Cancel'}
+                        {cancelling === iv.id ? '…' : t('Cancel')}
                       </button>
                     </>
                   )}
@@ -1888,29 +1951,29 @@ function InterviewsTab() {
               </div>
               {completingId === iv.id && (
                 <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/5">
-                  <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">Complete Interview & Record Outcome</p>
+                  <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Complete Interview & Record Outcome')}</p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                      Overall rating
-                      <select aria-label="Interview overall rating" value={completionForm.overallRating}
+                      {t('Overall rating')}
+                      <select aria-label={t('Interview overall rating')} value={completionForm.overallRating}
                         onChange={e => setCompletionForm(f => ({ ...f, overallRating: Number(e.target.value) }))}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
                         {[1, 2, 3, 4, 5].map(r => <option key={r} value={r}>{r} / 5</option>)}
                       </select>
                     </label>
                     <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                      Recommendation
-                      <select aria-label="Interview recommendation" value={completionForm.recommendation}
+                      {t('Recommendation')}
+                      <select aria-label={t('Interview recommendation')} value={completionForm.recommendation}
                         onChange={e => setCompletionForm(f => ({ ...f, recommendation: e.target.value }))}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
-                        {['StrongHire', 'Hire', 'Hold', 'Reject'].map(r => <option key={r} value={r}>{r.replace(/([A-Z])/g, ' $1').trim()}</option>)}
+                        {[msg('StrongHire'), msg('Hire'), msg('Hold'), msg('Reject')].map(r => <option key={r} value={r}>{t(r)}</option>)}
                       </select>
                     </label>
                     <label className="sm:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
-                      Feedback notes
-                      <textarea aria-label="Interview feedback notes" rows={2} value={completionForm.feedbackNotes}
+                      {t('Feedback notes')}
+                      <textarea aria-label={t('Interview feedback notes')} rows={2} value={completionForm.feedbackNotes}
                         onChange={e => setCompletionForm(f => ({ ...f, feedbackNotes: e.target.value }))}
-                        placeholder="Strengths, concerns, and hiring rationale…"
+                        placeholder={t('Strengths, concerns, and hiring rationale…')}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5" />
                     </label>
                   </div>
@@ -1918,10 +1981,10 @@ function InterviewsTab() {
                   <div className="mt-2 flex gap-2">
                     <button type="button" disabled={completionSaving} onClick={() => completeInterview(iv.id)}
                       className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                      {completionSaving ? 'Saving…' : 'Complete Interview'}
+                      {completionSaving ? t('Saving…') : t('Complete Interview')}
                     </button>
                     <button type="button" onClick={() => setCompletingId(null)}
-                      className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+                      className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
                   </div>
                 </div>
               )}
@@ -1929,7 +1992,7 @@ function InterviewsTab() {
           ))}
         </div>
       )}
-      <ListWindowFooter shown={interviews.length} total={list.total} noun="interviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={interviews.length} total={list.total} noun="interviews" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} interviews', { shown: interviews.length, total: list.total ?? interviews.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
     </div>
   );
 }
@@ -1937,6 +2000,7 @@ function InterviewsTab() {
 // ── Assessments Tab ───────────────────────────────────────────────────────────
 
 function AssessmentsTab() {
+  const t = useT();
   const [statusFilter, setStatusFilter] = useState('');
   const [showAssign, setShowAssign] = useState(false);
   const [applications, setApplications] = useState<JobApplication[]>([]);
@@ -1977,9 +2041,9 @@ function AssessmentsTab() {
     const title = templateForm.title.trim();
     const durationMinutes = Number(templateForm.durationMinutes);
     const passingScore = Number(templateForm.passingScore);
-    if (!code || !title) { setTemplateError('Code and title are required.'); return; }
-    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) { setTemplateError('Duration must be at least 1 minute.'); return; }
-    if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) { setTemplateError('Passing score must be between 0 and 100.'); return; }
+    if (!code || !title) { setTemplateError(t('Code and title are required.')); return; }
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) { setTemplateError(t('Duration must be at least 1 minute.')); return; }
+    if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) { setTemplateError(t('Passing score must be between 0 and 100.')); return; }
     setTemplateSaving(true); setTemplateError('');
     try {
       const created = await assessmentsApi.createTemplate({
@@ -2001,7 +2065,7 @@ function AssessmentsTab() {
       setShowTemplateCreate(false);
       setShowAssign(true);
     } catch (e) {
-      setTemplateError('Failed to create assessment template.');
+      setTemplateError(t('Failed to create assessment template.'));
       notifyApiError(e);
     } finally {
       setTemplateSaving(false);
@@ -2009,14 +2073,14 @@ function AssessmentsTab() {
   };
 
   const submitAssign = async () => {
-    if (!assignForm.applicationId || !assignForm.templateId) { setAssignError('Application and template are required.'); return; }
+    if (!assignForm.applicationId || !assignForm.templateId) { setAssignError(t('Application and template are required.')); return; }
     setAssignSaving(true); setAssignError('');
     try {
       await assessmentsApi.send({ ...assignForm, expiryDays: Number(assignForm.expiryDays) });
       setShowAssign(false);
       setAssignForm({ applicationId: '', templateId: '', expiryDays: 7 });
       load();
-    } catch { setAssignError('Failed to assign assessment.'); }
+    } catch { setAssignError(t('Failed to assign assessment.')); }
     finally { setAssignSaving(false); }
   };
 
@@ -2024,7 +2088,7 @@ function AssessmentsTab() {
     // Raw marks when the template has a question bank, a percentage when it does not.
     const score = parseAssessmentScore(scoreInput[a.id], a.totalMarks);
     if (score == null) {
-      setScoreError(s => ({ ...s, [a.id]: `Enter a whole number from 0 to ${assessmentScoreMax(a.totalMarks)}.` }));
+      setScoreError(s => ({ ...s, [a.id]: t('Enter a whole number from 0 to {max}.', { max: assessmentScoreMax(a.totalMarks) }) }));
       return;
     }
     setScoreError(s => ({ ...s, [a.id]: '' }));
@@ -2042,19 +2106,19 @@ function AssessmentsTab() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <select title="Filter by assessment status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+        <select title={t('Filter by assessment status')} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
-          <option value="">All Statuses</option>
-          {['Pending', 'Sent', 'InProgress', 'Completed', 'Expired'].map(s => <option key={s}>{s}</option>)}
+          <option value="">{t('All Statuses')}</option>
+          {[msg('Pending'), msg('Sent'), msg('InProgress'), msg('Completed'), msg('Expired')].map(s => <option value={s} key={s}>{t(s)}</option>)}
         </select>
         <ListCount loading={loading} total={list.total} shown={assessments.length} noun="assessment" />
         <div className="ms-auto flex items-center gap-2">
           <button type="button" onClick={() => { setTemplateError(''); setShowTemplateCreate(v => !v); }}
             className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10">
-            <Plus className="h-3.5 w-3.5" />New Template
+            <Plus className="h-3.5 w-3.5" />{t('New Template')}
           </button>
           <button type="button" onClick={openAssign} className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-            <ClipboardList className="h-3.5 w-3.5" />Assign Assessment
+            <ClipboardList className="h-3.5 w-3.5" />{t('Assign Assessment')}
           </button>
         </div>
       </div>
@@ -2063,65 +2127,65 @@ function AssessmentsTab() {
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <h4 className="text-sm font-semibold text-slate-800 dark:text-white">Create Assessment Template</h4>
-              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Create a reusable assessment before assigning it to a candidate.</p>
+              <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Create Assessment Template')}</h4>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t('Create a reusable assessment before assigning it to a candidate.')}</p>
             </div>
-            <button type="button" aria-label="Close template form" title="Close" onClick={() => setShowTemplateCreate(false)} className="text-slate-400 hover:text-slate-600">
+            <button type="button" aria-label={t('Close template form')} title={t('Close')} onClick={() => setShowTemplateCreate(false)} className="text-slate-400 hover:text-slate-600">
               <X className="h-4 w-4" />
             </button>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Code *
-              <input aria-label="Assessment template code" value={templateForm.code} onChange={e => setTemplateForm(f => ({ ...f, code: e.target.value }))}
-                placeholder="e.g. INT-TECH-01" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+              {t('Code *')}
+              <input aria-label={t('Assessment template code')} value={templateForm.code} onChange={e => setTemplateForm(f => ({ ...f, code: e.target.value }))}
+                placeholder="INT-TECH-01" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Title *
-              <input aria-label="Assessment template title" value={templateForm.title} onChange={e => setTemplateForm(f => ({ ...f, title: e.target.value }))}
-                placeholder="e.g. Integration Engineering Assessment" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+              {t('Title *')}
+              <input aria-label={t('Assessment template title')} value={templateForm.title} onChange={e => setTemplateForm(f => ({ ...f, title: e.target.value }))}
+                placeholder={t('For example: Integration Engineering Assessment')} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Type
-              <select aria-label="Assessment type" value={templateForm.assessmentType} onChange={e => setTemplateForm(f => ({ ...f, assessmentType: e.target.value }))}
+              {t('Type')}
+              <select aria-label={t('Assessment type')} value={templateForm.assessmentType} onChange={e => setTemplateForm(f => ({ ...f, assessmentType: e.target.value }))}
                 className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200">
-                {['Technical', 'Aptitude', 'Behavioral', 'Language', 'Other'].map(x => <option key={x} value={x}>{x}</option>)}
+                {[msg('Technical'), msg('Aptitude'), msg('Behavioral'), msg('Language'), msg('Other')].map(x => <option key={x} value={x}>{t(x)}</option>)}
               </select>
             </label>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Audience
-              <input aria-label="Assessment audience" value={templateForm.audience} onChange={e => setTemplateForm(f => ({ ...f, audience: e.target.value }))}
-                placeholder="e.g. Engineering" className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+              {t('Audience')}
+              <input aria-label={t('Assessment audience')} value={templateForm.audience} onChange={e => setTemplateForm(f => ({ ...f, audience: e.target.value }))}
+                placeholder={t('For example: Engineering')} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Duration (minutes)
-              <input aria-label="Assessment duration in minutes" type="number" min={1} value={templateForm.durationMinutes}
+              {t('Duration (minutes)')}
+              <input aria-label={t('Assessment duration in minutes')} type="number" min={1} value={templateForm.durationMinutes}
                 onChange={e => setTemplateForm(f => ({ ...f, durationMinutes: Number(e.target.value) }))}
                 className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-              Passing score (%)
-              <input aria-label="Assessment passing score" type="number" min={0} max={100} value={templateForm.passingScore}
+              {t('Passing score (%)')}
+              <input aria-label={t('Assessment passing score')} type="number" min={0} max={100} value={templateForm.passingScore}
                 onChange={e => setTemplateForm(f => ({ ...f, passingScore: Number(e.target.value) }))}
                 className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="md:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
-              Description
-              <textarea aria-label="Assessment template description" value={templateForm.description} onChange={e => setTemplateForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="What this assessment measures…" rows={2} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
+              {t('Description')}
+              <textarea aria-label={t('Assessment template description')} value={templateForm.description} onChange={e => setTemplateForm(f => ({ ...f, description: e.target.value }))}
+                placeholder={t('What this assessment measures…')} rows={2} className="mt-1 w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-2 text-sm text-slate-800 dark:text-slate-200" />
             </label>
             <label className="md:col-span-2 flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
               <input type="checkbox" checked={templateForm.isRandomized} onChange={e => setTemplateForm(f => ({ ...f, isRandomized: e.target.checked }))} />
-              Randomize questions when supported by the template
+              {t('Randomize questions when supported by the template')}
             </label>
           </div>
           {templateError && <p className="text-xs text-rose-500">{templateError}</p>}
           <div className="flex items-center gap-2">
             <button type="button" onClick={createTemplate} disabled={templateSaving}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">
-              {templateSaving ? 'Creating…' : 'Create Template'}
+              {templateSaving ? t('Creating…') : t('Create Template')}
             </button>
-            <button type="button" onClick={() => setShowTemplateCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => setShowTemplateCreate(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
           </div>
         </div>
       )}
@@ -2129,29 +2193,29 @@ function AssessmentsTab() {
       {showAssign && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">Assign Assessment</h4>
-            <button type="button" aria-label="Close" title="Close" onClick={() => setShowAssign(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Assign Assessment')}</h4>
+            <button type="button" aria-label={t('Close')} title={t('Close')} onClick={() => setShowAssign(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Application *</label>
-              <select title="Select application" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Application *')}</label>
+              <select title={t('Select application')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={assignForm.applicationId} onChange={e => setAssignForm(f => ({ ...f, applicationId: e.target.value }))}>
-                <option value="">— Select candidate —</option>
+                <option value="">{t('— Select candidate —')}</option>
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Assessment Template *</label>
-              <select title="Select template" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Assessment Template *')}</label>
+              <select title={t('Select template')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={assignForm.templateId} onChange={e => setAssignForm(f => ({ ...f, templateId: e.target.value }))}>
-                <option value="">— Select template —</option>
-                {templates.map(t => <option key={t.id} value={t.id}>{t.title} ({t.assessmentType}, {t.durationMinutes}min)</option>)}
+                <option value="">{t('— Select template —')}</option>
+                {templates.map(t => <option key={t.id} value={t.id}>{t.title} ({t.assessmentType}, {t.durationMinutes} min)</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Expires in (days)</label>
-              <input type="number" min={1} max={30} title="Expiry days" placeholder="7" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Expires in (days)')}</label>
+              <input type="number" min={1} max={30} title={t('Expiry days')} placeholder="7" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={assignForm.expiryDays} onChange={e => setAssignForm(f => ({ ...f, expiryDays: Number(e.target.value) }))} />
             </div>
           </div>
@@ -2159,22 +2223,22 @@ function AssessmentsTab() {
           <div className="flex items-center gap-2 pt-1">
             <button type="button" onClick={submitAssign} disabled={assignSaving}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-              {assignSaving ? 'Sending…' : 'Send Assessment'}
+              {assignSaving ? t('Sending…') : t('Send Assessment')}
             </button>
-            <button type="button" onClick={() => setShowAssign(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => setShowAssign(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
           </div>
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Assessments" error={list.error} />}
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No assessments found. Assign one above.</p>
+      {list.error != null && <LoadFailure what={t('Assessments')} error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && assessments.length === 0 ? null : assessments.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No assessments found. Assign one above.')}</p>
       ) : (
         <div className="surface overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-white/10">
-                {['Assessment', 'Status', 'Sent', 'Expires', 'Score', 'Result', 'Actions'].map(h => (
+                {[t('Assessment'), t('Status'), t('Sent'), t('Expires'), t('Score'), t('Result'), t('Actions')].map(h => (
                   <th key={h} className="p-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
@@ -2184,14 +2248,14 @@ function AssessmentsTab() {
                 <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.02]">
                   <td className="p-3 font-medium text-slate-800 dark:text-slate-200">{a.templateName}</td>
                   <td className="p-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[a.status] ?? ''}`}>{a.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[a.status] ?? ''}`}>{enumLabel(t, 'Status', a.status)}</span>
                   </td>
                   <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.sentAtUtc ? new Date(a.sentAtUtc).toLocaleDateString() : '—'}</td>
                   <td className="p-3 text-xs text-slate-500 dark:text-slate-400">{a.expiresAtUtc ? new Date(a.expiresAtUtc).toLocaleDateString() : '—'}</td>
                   <td className="p-3 font-semibold text-slate-900 dark:text-white">{a.scorePercentage != null ? `${a.scorePercentage.toFixed(0)}%` : '—'}</td>
                   <td className="p-3">
-                    {a.passed === true && <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">✓ Passed</span>}
-                    {a.passed === false && <span className="text-xs font-medium text-rose-600 dark:text-rose-400">✗ Failed</span>}
+                    {a.passed === true && <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">{t('✓ Passed')}</span>}
+                    {a.passed === false && <span className="text-xs font-medium text-rose-600 dark:text-rose-400">{t('✗ Failed')}</span>}
                     {a.passed == null && <span className="text-xs text-slate-400">—</span>}
                   </td>
                   <td className="p-3">
@@ -2205,7 +2269,7 @@ function AssessmentsTab() {
                             value={scoreInput[a.id] ?? ''} onChange={e => setScoreInput(s => ({ ...s, [a.id]: e.target.value }))} />
                           <button type="button" onClick={() => recordResult(a)} disabled={recording === a.id}
                             className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                            {recording === a.id ? '…' : 'Record result'}
+                            {recording === a.id ? '…' : t('Record result')}
                           </button>
                         </div>
                         {scoreError[a.id] && <p className="mt-1 text-xs text-rose-500">{scoreError[a.id]}</p>}
@@ -2218,7 +2282,7 @@ function AssessmentsTab() {
           </table>
         </div>
       )}
-      <ListWindowFooter shown={assessments.length} total={list.total} noun="assessments" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={assessments.length} total={list.total} noun="assessments" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} assessments', { shown: assessments.length, total: list.total ?? assessments.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
     </div>
   );
 }
@@ -2226,6 +2290,7 @@ function AssessmentsTab() {
 // ── Offers Tab ────────────────────────────────────────────────────────────────
 
 function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = {}) {
+  const t = useT();
   const letterT = useOfferLetterT();
   const offerT = useOfferLifecycleT();
   const { companyVersion, selectedCompanyId } = useCompany();
@@ -2245,7 +2310,7 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
   const [offerForm, setOfferForm] = useState(emptyOfferForm);
   const [offerSaving, setOfferSaving] = useState(false);
   const [offerError, setOfferError] = useState('');
-  useNavigationBlocker({ id: 'offer-create', when: showCreate && JSON.stringify(offerForm) !== JSON.stringify(emptyOfferForm), message: 'This offer has unsaved changes. Discard them and leave?', onDiscard: () => { setShowCreate(false); setOfferForm(emptyOfferForm); } });
+  useNavigationBlocker({ id: 'offer-create', when: showCreate && JSON.stringify(offerForm) !== JSON.stringify(emptyOfferForm), message: t('This offer has unsaved changes. Discard them and leave?'), onDiscard: () => { setShowCreate(false); setOfferForm(emptyOfferForm); } });
 
   const openCreate = async () => {
     try { setApplications(await applicationsApi.listAll()); } catch {}
@@ -2254,12 +2319,14 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
 
   const submitOffer = async () => {
     if (!offerForm.applicationId || !offerForm.designationId || !offerForm.startDate) {
-      setOfferError('Application, designation and start date are required.'); return;
+      setOfferError(t('Application, designation and start date are required.')); return;
     }
     setOfferSaving(true); setOfferError('');
     try {
       const created = await offersApi.create({
         ...offerForm,
+        // A date with no time means the end of that day where the person sits, not 00:00Z (03:00 in Riyadh on the day itself).
+        responseDeadline: endOfLocalDayInstant(offerForm.responseDeadline) || undefined,
         expectedApplicationVersion: applications.find(a => a.id === offerForm.applicationId)!.version,
         templateId: templateId || undefined,
         departmentId: offerForm.departmentId || undefined,
@@ -2267,8 +2334,8 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
         transportAllowance: Number(offerForm.transportAllowance), otherAllowances: Number(offerForm.otherAllowances),
         probationMonths: Number(offerForm.probationMonths),
       });
-      setShowCreate(false);
-      setOfferForm(emptyOfferForm);
+      // Commit the cleared form before navigating (see ApplicationDrawer.doGenerateOffer).
+      flushSync(() => { setShowCreate(false); setOfferForm(emptyOfferForm); });
       navigationGuard.push(offerWorkspacePath(created.id));
     } catch (e) { setOfferError(offerCreationFailure(e)); }
     finally { setOfferSaving(false); }
@@ -2282,23 +2349,23 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
         <button type="button" className="btn-secondary" onClick={() => navigationGuard.run('offer-designer', () => setShowDesigner(true))}>{letterT('Letter designer')}</button>
         {hasRole('Admin') && <button type="button" className="btn-secondary" disabled={!selectedCompanyId} title={!selectedCompanyId ? offerT('Select a company to manage offer settings.') : undefined} onClick={() => setSettingsOpen(true)}>{offerT('Offer settings')}</button>}
         <button type="button" onClick={openCreate} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-          <FileText className="h-3.5 w-3.5" />Create Offer
+          <FileText className="h-3.5 w-3.5" />{t('Create Offer')}
         </button>
       </div>
 
       {showCreate && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Offer Letter</h4>
-            <button type="button" aria-label="Close" title="Close" onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('New Offer Letter')}</h4>
+            <button type="button" aria-label={t('Close')} title={t('Close')} onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
           </div>
           <OfferTemplateSelect value={templateId} onChange={setTemplateId} />
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Application *</label>
-              <select title="Select application" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Application *')}</label>
+              <select title={t('Select application')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={offerForm.applicationId} onChange={e => setOfferForm(f => ({ ...f, applicationId: e.target.value }))}>
-                <option value="">— Select candidate —</option>
+                <option value="">{t('— Select candidate —')}</option>
                 {applications.map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
               </select>
             </div>
@@ -2311,16 +2378,16 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Start Date *</label>
-              <input type="date" title="Start date" placeholder="Start date" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Start Date *')}</label>
+              <input type="date" title={t('Start date')} placeholder={t('Start date')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={offerForm.startDate} onChange={e => setOfferForm(f => ({ ...f, startDate: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Response Deadline</label>
-              <input type="date" title="Response deadline" placeholder="Response deadline" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Response Deadline')}</label>
+              <input type="date" title={t('Response deadline')} placeholder={t('Response deadline')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={offerForm.responseDeadline} onChange={e => setOfferForm(f => ({ ...f, responseDeadline: e.target.value }))} />
             </div>
-            {[['basicSalary', 'Basic Salary'], ['housingAllowance', 'Housing Allowance'], ['transportAllowance', 'Transport Allowance'], ['otherAllowances', 'Other Allowances']].map(([k, l]) => (
+            {[['basicSalary', t('Basic Salary')], ['housingAllowance', t('Housing Allowance')], ['transportAllowance', t('Transport Allowance')], ['otherAllowances', t('Other Allowances')]].map(([k, l]) => (
               <div key={k}>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{l} ({currencyCode})</label>
                 <input type="number" min={0} title={l} placeholder="0" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
@@ -2328,8 +2395,8 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
               </div>
             ))}
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Probation (months)</label>
-              <input type="number" min={0} max={12} title="Probation months" placeholder="3" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Probation (months)')}</label>
+              <input type="number" min={0} max={12} title={t('Probation months')} placeholder="3" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={offerForm.probationMonths} onChange={e => setOfferForm(f => ({ ...f, probationMonths: Number(e.target.value) }))} />
             </div>
           </div>
@@ -2337,9 +2404,9 @@ function OffersTab({ initialDesigner = false }: { initialDesigner?: boolean } = 
           <div className="flex items-center gap-2 pt-1">
             <button type="button" onClick={submitOffer} disabled={offerSaving}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-              {offerSaving ? 'Creating…' : 'Create Offer'}
+              {offerSaving ? t('Creating…') : t('Create Offer')}
             </button>
-            <button type="button" onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => navigationGuard.run('offer-create-close', () => setShowCreate(false))} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
           </div>
         </div>
       )}
@@ -2383,6 +2450,18 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
     return () => onDirtyChange?.(false);
   }, [checklistForm, templateForm, onDirtyChange]);
   const [generateForm, setGenerateForm] = useState({ employeeId: '', applicationId: '', startDate: '' });
+  // Tasks are generated for a person picked from the records, not for an id someone has to copy.
+  const [generateEmployee, setGenerateEmployee] = useState<EmployeeSelection | null>(null);
+  const [hiredApplications, setHiredApplications] = useState<JobApplication[] | null>(null);
+  const [hiredApplicationsFailed, setHiredApplicationsFailed] = useState(false);
+  useEffect(() => {
+    if (configurationOnly) return;
+    let active = true;
+    applicationsApi.listAll({ status: 'Hired' })
+      .then(items => { if (active) setHiredApplications(items); })
+      .catch(() => { if (active) { setHiredApplications([]); setHiredApplicationsFailed(true); } });
+    return () => { active = false; };
+  }, [configurationOnly]);
   const [taskForm, setTaskForm] = useState({
     taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false,
   });
@@ -2475,7 +2554,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   const createChecklist = async () => {
     if (!canWriteTemplates || (policyBundle && !policyScopeWritable)) return;
-    if (!checklistForm.code || !checklistForm.name) { setTaskError('Checklist code and name are required.'); return; }
+    if (!checklistForm.code || !checklistForm.name) { setTaskError(t('Checklist code and name are required.')); return; }
     setTemplateSaving(true); setTaskError('');
     try {
       const created = await onboardingApi.createChecklist(checklistForm);
@@ -2488,7 +2567,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   const saveTemplateTask = async () => {
     if (!canWriteTemplates) return;
-    if (!selectedChecklistId || !templateForm.taskTitle) { setTaskError('Select a checklist and enter a template task title.'); return; }
+    if (!selectedChecklistId || !templateForm.taskTitle) { setTaskError(t('Select a checklist and enter a template task title.')); return; }
     if (activePolicyTask && (!policyScopeWritable || policyProblem || templatesLoadedFor !== selectedChecklistId)) { setTaskError(t(policyProblem ?? 'This policy draft cannot be saved in the current template scope.')); return; }
     if (activePolicyTask && policyBundle) {
       const currentDraft = readPolicyFormDraft(localStorage, policyBundle)?.tasks.find(task => task.id === activePolicyTask.id);
@@ -2520,7 +2599,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 
   const generateFromChecklist = async () => {
     if (!selectedChecklistId || (!generateForm.employeeId && !generateForm.applicationId)) {
-      setTaskError('Select a checklist and provide an employee or application ID.');
+      setTaskError(t('Select a checklist and choose an employee or a hired candidate.'));
       return;
     }
     setTemplateSaving(true); setTaskError('');
@@ -2532,20 +2611,21 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         startDate: generateForm.startDate || undefined,
       });
       setGenerateForm({ employeeId: '', applicationId: '', startDate: '' });
+      setGenerateEmployee(null);
       load();
     } catch (e) { notifyApiError(e); }
     finally { setTemplateSaving(false); }
   };
 
   const submitTask = async () => {
-    if (!taskForm.taskTitle) { setTaskError('Task title is required.'); return; }
+    if (!taskForm.taskTitle) { setTaskError(t('Task title is required.')); return; }
     setTaskSaving(true); setTaskError('');
     try {
       await onboardingApi.createTask({ ...taskForm });
       setShowAdd(false);
       setTaskForm({ taskTitle: '', taskDescription: '', category: 'General', assignedToName: '', dueDate: '', isMandatory: false });
       load();
-    } catch { setTaskError('Failed to create task.'); }
+    } catch { setTaskError(t('Failed to create task.')); }
     finally { setTaskSaving(false); }
   };
 
@@ -2572,17 +2652,17 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
       {summary && (
         <div className="surface p-4">
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Overall Onboarding Progress</p>
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Overall Onboarding Progress')}</p>
             <p className="text-sm font-semibold text-slate-900 dark:text-white">{summary.completionPct.toFixed(0)}%</p>
           </div>
           <div className="h-2 rounded-full bg-slate-200 dark:bg-white/10">
             <div className="h-2 rounded-full bg-sapphire transition-all" style={{ width: `${summary.completionPct}%` }} />
           </div>
           <div className="mt-3 flex gap-4 text-xs text-slate-500 dark:text-slate-400">
-            <span>Total: <strong>{summary.total}</strong></span>
-            <span className="text-amber-600">Pending: <strong>{summary.pending}</strong></span>
-            <span className="text-emerald-600">Done: <strong>{summary.completed}</strong></span>
-            <span className="text-rose-600">Blocked: <strong>{summary.blocked}</strong></span>
+            <span>{t('Total')}: <strong>{summary.total}</strong></span>
+            <span className="text-amber-600">{t('Pending')}: <strong>{summary.pending}</strong></span>
+            <span className="text-emerald-600">{t('Done')}: <strong>{summary.completed}</strong></span>
+            <span className="text-rose-600">{t('Blocked')}: <strong>{summary.blocked}</strong></span>
           </div>
         </div>
       )}
@@ -2601,9 +2681,9 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           {policyNotice && <p role="status" className="text-sm text-emerald-800 dark:text-emerald-200">{policyNotice}</p>}
         </section>}
         <div className="flex flex-wrap items-center gap-3">
-          <select aria-label="Onboarding checklist" title="Onboarding checklist" value={selectedChecklistId} disabled={templateSaving} onChange={e => { setSelectedChecklistId(e.target.value); if (activePolicyTask) changeTemplateForm({ checklistId: e.target.value, applicabilityConfirmed: false, overwriteConfirmed: false }); }}
+          <select aria-label={t('Onboarding checklist')} title={t('Onboarding checklist')} value={selectedChecklistId} disabled={templateSaving} onChange={e => { setSelectedChecklistId(e.target.value); if (activePolicyTask) changeTemplateForm({ checklistId: e.target.value, applicabilityConfirmed: false, overwriteConfirmed: false }); }}
             className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
-            <option value="">Select checklist</option>
+            <option value="">{t('Select checklist')}</option>
             {checklists.filter(c => c.isActive || showOffChecklists || c.id === selectedChecklistId).map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}{c.isActive ? '' : ` (${t('Off')})`}</option>)}
           </select>
           {configurationOnly && <ShowTurnedOffToggle checked={showOffChecklists} onChange={setShowOffChecklists} count={checklists.filter(c => !c.isActive).length} />}
@@ -2619,13 +2699,13 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           {checklistRemoval.confirmDialog}
           {selectedChecklistId && (
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              {templateTasks.length} template tasks
+              {t('{length} template tasks', { length: templateTasks.length })}
             </span>
           )}
           {configurationOnly ? (
             <button type="button" onClick={() => setShowTemplate(v => !v)}
               className="ms-auto flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5">
-              <ClipboardList className="h-3.5 w-3.5" />Checklist Templates
+              <ClipboardList className="h-3.5 w-3.5" />{t('Checklist Templates')}
             </button>
           ) : <ModuleSettingsLink className="ms-auto" sections={['onboardingChecklists']} label={msg('Onboarding settings')} />}
         </div>
@@ -2633,17 +2713,31 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         {!configurationOnly && (
           <div className="mt-4 space-y-2">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Generate tasks from the selected checklist')}</p>
-            <div className="grid grid-cols-3 gap-2">
-              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Employee ID"
-                value={generateForm.employeeId} onChange={e => setGenerateForm(f => ({ ...f, employeeId: e.target.value }))} />
-              <input className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Application ID"
-                value={generateForm.applicationId} onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))} />
-              <input type="date" title="Start date" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
-                value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Employee (optional)')}</span>
+                <EmployeeSearchSelect value={generateEmployee} placeholder={t('Search by name or code…')}
+                  onChange={emp => { setGenerateEmployee(emp); setGenerateForm(f => ({ ...f, employeeId: emp?.publicId ?? '' })); }} />
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Hired application (optional)')}</span>
+                <select className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  disabled={hiredApplications === null} value={generateForm.applicationId}
+                  onChange={e => setGenerateForm(f => ({ ...f, applicationId: e.target.value }))}>
+                  <option value="">{hiredApplications && hiredApplications.length === 0 && !hiredApplicationsFailed ? t('Nobody has been hired yet') : t('Choose a hired candidate…')}</option>
+                  {(hiredApplications ?? []).map(a => <option key={a.id} value={a.id}>{a.candidateName} — {a.jobTitle}</option>)}
+                </select>
+                {hiredApplicationsFailed && <span role="alert" className="mt-1 block text-xs text-rose-500">{t('The hired candidates could not be loaded.')}</span>}
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Start date')}</span>
+                <input type="date" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                  value={generateForm.startDate} onChange={e => setGenerateForm(f => ({ ...f, startDate: e.target.value }))} />
+              </label>
             </div>
             <button type="button" onClick={generateFromChecklist} disabled={templateSaving || !selectedChecklistId}
               className="rounded-lg border border-emerald-200 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/30 dark:text-emerald-400">
-              Generate Tasks From Checklist
+              {t('Generate Tasks From Checklist')}
             </button>
           </div>
         )}
@@ -2651,43 +2745,43 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
         {showTemplate && (
           <div className="mt-4 grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-800 dark:text-white">Checklist Setup</p>
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Checklist Setup')}</p>
               <div className="grid grid-cols-2 gap-2">
-                <input aria-label="Checklist code" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Code"
+                <input aria-label={t('Checklist code')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Code')}
                   value={checklistForm.code} onChange={e => setChecklistForm(f => ({ ...f, code: e.target.value }))} />
-                <input aria-label="Checklist name" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Name"
+                <input aria-label={t('Checklist name')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Name')}
                   value={checklistForm.name} onChange={e => setChecklistForm(f => ({ ...f, name: e.target.value }))} />
-                <select aria-label="Applicable to" title="Applicable to" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <select aria-label={t('Applicable to')} title={t('Applicable to')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={checklistForm.applicableTo} onChange={e => setChecklistForm(f => ({ ...f, applicableTo: e.target.value }))}>
-                  {['All', 'ByDepartment', 'ByRole'].map(v => <option key={v}>{v}</option>)}
+                  {[msg('All'), msg('ByDepartment'), msg('ByRole')].map(v => <option value={v} key={v}>{t(v)}</option>)}
                 </select>
-                <input aria-label="Department" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Department"
+                <input aria-label={t('Department')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Department')}
                   value={checklistForm.departmentName} onChange={e => setChecklistForm(f => ({ ...f, departmentName: e.target.value }))} />
-                <input aria-label="Checklist description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                <input aria-label={t('Checklist description')} className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Description')}
                   value={checklistForm.description} onChange={e => setChecklistForm(f => ({ ...f, description: e.target.value }))} />
               </div>
               <button type="button" onClick={createChecklist} disabled={templateSaving || !canWriteTemplates || (!!policyBundle && !policyScopeWritable)}
                 className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-                {templateSaving ? 'Saving…' : 'Create Checklist'}
+                {templateSaving ? t('Saving…') : t('Create Checklist')}
               </button>
             </div>
 
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-slate-800 dark:text-white">Template Tasks</p>
+              <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Template Tasks')}</p>
               <div className="grid grid-cols-2 gap-2">
-                <input aria-label="Task title" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Task title"
+                <input aria-label={t('Task title')} className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Task title')}
                   value={templateForm.taskTitle} onChange={e => changeTemplateForm({ taskTitle: e.target.value })} />
-                <select aria-label="Template category" title="Template category" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <select aria-label={t('Template category')} title={t('Template category')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.category} onChange={e => changeTemplateForm({ category: e.target.value })}>
-                  {['General', 'Document', 'IT', 'Training', 'Policy', 'Access'].map(c => <option key={c}>{c}</option>)}
+                  {[msg('General'), msg('Document'), 'IT', msg('Training'), msg('Policy'), msg('Access')].map(c => <option value={c} key={c}>{t(c)}</option>)}
                 </select>
-                <input aria-label="Owner" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Owner"
+                <input aria-label={t('Owner')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Owner')}
                   value={templateForm.assignedToName} onChange={e => changeTemplateForm({ assignedToName: e.target.value })} />
-                <input aria-label="Due offset days" type="number" title="Due offset days" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <input aria-label={t('Due offset days')} type="number" title={t('Due offset days')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.dueOffsetDays} onChange={e => changeTemplateForm({ dueOffsetDays: e.target.value === '' ? '' : Number(e.target.value) })} />
-                <input aria-label="Order" type="number" title="Order" className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+                <input aria-label={t('Order')} type="number" title={t('Order')} className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                   value={templateForm.orderIndex} onChange={e => changeTemplateForm({ orderIndex: Number(e.target.value) })} />
-                <input aria-label="Task description" className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder="Description"
+                <input aria-label={t('Task description')} className="col-span-2 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200" placeholder={t('Description')}
                   value={templateForm.taskDescription} onChange={e => changeTemplateForm({ taskDescription: e.target.value })} />
               </div>
               {activePolicyTask && <div className="space-y-2 text-xs">
@@ -2702,11 +2796,11 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
                 {activePolicyTask ? <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">{t('Mandatory')}<select title={t('Mandatory task')} className="input" value={templateForm.isMandatory === null ? '' : templateForm.isMandatory ? 'Required' : 'Optional'} onChange={event => changeTemplateForm({ isMandatory: event.target.value === '' ? null : event.target.value === 'Required' })}><option value="">{t('Not specified — choose')}</option><option value="Required">{t('Required')}</option><option value="Optional">{t('Optional')}</option></select></label> : <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
                   <input type="checkbox" className="h-4 w-4 rounded border-slate-300 text-sapphire"
                     checked={templateForm.isMandatory ?? false} onChange={e => changeTemplateForm({ isMandatory: e.target.checked })} />
-                  Mandatory
+                  {t('Mandatory')}
                 </label>}
                 <button type="button" onClick={saveTemplateTask} disabled={templateSaving || !selectedChecklistId || !canWriteTemplates || (!!activePolicyTask && (!policyScopeWritable || !!policyProblem || templatesLoadedFor !== selectedChecklistId))}
                   className="rounded-lg bg-sapphire px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-                  {templateSaving ? 'Saving…' : 'Save Template Task'}
+                  {templateSaving ? t('Saving…') : t('Save Template Task')}
                 </button>
               </div>
               {templateTasks.length > 0 && (
@@ -2726,93 +2820,93 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
       </div>
 
       {!configurationOnly && <><div className="flex items-center gap-3">
-        <select title="Filter by task status" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+        <select title={t('Filter by task status')} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           className="rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
-          <option value="">All Statuses</option>
-          {['Pending', 'InProgress', 'Completed', 'Blocked', 'Skipped'].map(s => <option key={s}>{s}</option>)}
+          <option value="">{t('All Statuses')}</option>
+          {[msg('Pending'), msg('InProgress'), msg('Completed'), msg('Blocked'), msg('Skipped')].map(s => <option value={s} key={s}>{t(s)}</option>)}
         </select>
         <ListCount loading={loading} total={list.total} shown={tasks.length} noun="task" />
         <button type="button" onClick={() => setShowAdd(true)} className="ms-auto flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-sm font-medium text-white hover:bg-sapphire/90">
-          <Plus className="h-3.5 w-3.5" />Add Task
+          <Plus className="h-3.5 w-3.5" />{t('Add Task')}
         </button>
       </div>
 
       {showAdd && (
         <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/[0.03] p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">New Onboarding Task</h4>
-            <button type="button" aria-label="Close" title="Close" onClick={() => setShowAdd(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
+            <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{t('New Onboarding Task')}</h4>
+            <button type="button" aria-label={t('Close')} title={t('Close')} onClick={() => setShowAdd(false)} className="text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></button>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Task Title *</label>
-              <input placeholder="e.g. Complete employment contract" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Task Title *')}</label>
+              <input placeholder={t('For example: Complete employment contract')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={taskForm.taskTitle} onChange={e => setTaskForm(f => ({ ...f, taskTitle: e.target.value }))} />
             </div>
             <div className="col-span-2">
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Description</label>
-              <input placeholder="Optional details" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Description')}</label>
+              <input placeholder={t('Optional details')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={taskForm.taskDescription} onChange={e => setTaskForm(f => ({ ...f, taskDescription: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Category</label>
-              <select title="Category" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Category')}</label>
+              <select title={t('Category')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={taskForm.category} onChange={e => setTaskForm(f => ({ ...f, category: e.target.value }))}>
-                {['General', 'Document', 'IT', 'Training', 'Policy', 'Access'].map(c => <option key={c}>{c}</option>)}
+                {[msg('General'), msg('Document'), 'IT', msg('Training'), msg('Policy'), msg('Access')].map(c => <option value={c} key={c}>{t(c)}</option>)}
               </select>
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Assigned To</label>
-              <input placeholder="Name of responsible person" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Assigned To')}</label>
+              <input placeholder={t('Name of responsible person')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={taskForm.assignedToName} onChange={e => setTaskForm(f => ({ ...f, assignedToName: e.target.value }))} />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Due Date</label>
-              <input type="date" title="Due date" placeholder="Due date" className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Due Date')}</label>
+              <input type="date" title={t('Due date')} placeholder={t('Due date')} className="w-full rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200"
                 value={taskForm.dueDate} onChange={e => setTaskForm(f => ({ ...f, dueDate: e.target.value }))} />
             </div>
             <div className="flex items-center gap-2 pt-4">
               <input type="checkbox" id="ob-mandatory" className="h-4 w-4 rounded border-slate-300 text-sapphire"
                 checked={taskForm.isMandatory} onChange={e => setTaskForm(f => ({ ...f, isMandatory: e.target.checked }))} />
-              <label htmlFor="ob-mandatory" className="text-xs font-medium text-slate-600 dark:text-slate-400">Mandatory task</label>
+              <label htmlFor="ob-mandatory" className="text-xs font-medium text-slate-600 dark:text-slate-400">{t('Mandatory task')}</label>
             </div>
           </div>
           {taskError && <p className="text-xs text-rose-500">{taskError}</p>}
           <div className="flex items-center gap-2 pt-1">
             <button type="button" onClick={submitTask} disabled={taskSaving}
               className="rounded-lg bg-sapphire px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50 hover:bg-sapphire/90">
-              {taskSaving ? 'Creating…' : 'Create Task'}
+              {taskSaving ? t('Creating…') : t('Create Task')}
             </button>
-            <button type="button" onClick={() => setShowAdd(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">Cancel</button>
+            <button type="button" onClick={() => setShowAdd(false)} className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400">{t('Cancel')}</button>
           </div>
         </div>
       )}
 
-      {list.error != null && <LoadFailure what="Onboarding tasks" error={list.error} />}
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading…</p> : list.error != null && tasks.length === 0 ? null : tasks.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No onboarding tasks found. Add the first task above.</p>
+      {list.error != null && <LoadFailure what={t('Onboarding tasks')} error={list.error} />}
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading…')}</p> : list.error != null && tasks.length === 0 ? null : tasks.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No onboarding tasks found. Add the first task above.')}</p>
       ) : (
         <div className="space-y-2">
-          {tasks.map(t => (
-            <div key={t.id} className="surface flex items-center gap-4 p-3">
-              <span className="text-lg shrink-0">{CATEGORY_ICONS[t.category] ?? '✅'}</span>
+          {tasks.map(task => (
+            <div key={task.id} className="surface flex items-center gap-4 p-3">
+              <span className="text-lg shrink-0">{CATEGORY_ICONS[task.category] ?? '✅'}</span>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 dark:text-white">{t.taskTitle}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{t.category} · {t.assignedToName || 'Unassigned'}{t.dueDate ? ` · Due: ${t.dueDate}` : ''}</p>
+                <p className="text-sm font-medium text-slate-900 dark:text-white">{task.taskTitle}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">{task.category} · {task.assignedToName || t('Unassigned')}{task.dueDate ? ` · ${t('Due: {date}', { date: task.dueDate })}` : ''}</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                {t.isMandatory && <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Required</span>}
-                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[t.status] ?? ''}`}>{t.status}</span>
-                {t.status !== 'Completed' && (
-                  <button type="button" onClick={() => updateStatus(t.id, 'Completed')} disabled={updatingStatus === t.id}
+                {task.isMandatory && <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">{t('Required')}</span>}
+                <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[task.status] ?? ''}`}>{enumLabel(t, 'Status', task.status)}</span>
+                {task.status !== 'Completed' && (
+                  <button type="button" onClick={() => updateStatus(task.id, 'Completed')} disabled={updatingStatus === task.id}
                     className="rounded-lg bg-emerald-600 px-2 py-0.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                    {updatingStatus === t.id ? '…' : '✓ Done'}
+                    {updatingStatus === task.id ? '…' : `✓ ${t('Done')}`}
                   </button>
                 )}
-                {t.status === 'Pending' && (
-                  <button type="button" onClick={() => updateStatus(t.id, 'InProgress')} disabled={updatingStatus === t.id}
+                {task.status === 'Pending' && (
+                  <button type="button" onClick={() => updateStatus(task.id, 'InProgress')} disabled={updatingStatus === task.id}
                     className="rounded-lg border border-blue-200 px-2 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:border-blue-500/30 dark:text-blue-400">
-                    Start
+                    {t('Start')}
                   </button>
                 )}
               </div>
@@ -2820,7 +2914,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           ))}
         </div>
       )}
-      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} /></>}
+      <ListWindowFooter shown={tasks.length} total={list.total} noun="tasks" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} tasks', { shown: tasks.length, total: list.total ?? tasks.length }), loadMore: t('Load more'), loading: t('Loading…') }} /></>}
     </div>
   );
 }
@@ -2828,6 +2922,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
 // ── Reports Tab ───────────────────────────────────────────────────────────────
 
 function ReportsTab() {
+  const t = useT();
   const [pipeline, setPipeline] = useState<{ byStage: { stage: string; count: number }[]; hiredThisMonth: number } | null>(null);
   const [timeToHire, setTimeToHire] = useState<{ hiredCount: number; avgDaysToHire: number } | null>(null);
   const [source, setSource] = useState<{ candidatesBySource: { source: string; total: number }[]; hiredBySource: { source: string; hired: number }[] } | null>(null);
@@ -2842,22 +2937,22 @@ function ReportsTab() {
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="surface p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Hired This Month</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">{t('Hired This Month')}</p>
           <p className="text-3xl font-semibold text-slate-900 dark:text-white">{pipeline?.hiredThisMonth ?? '—'}</p>
         </div>
         <div className="surface p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Avg. Time to Hire</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">{t('Avg. Time to Hire')}</p>
           <p className="text-3xl font-semibold text-slate-900 dark:text-white">{timeToHire ? `${timeToHire.avgDaysToHire}d` : '—'}</p>
         </div>
         <div className="surface p-5">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">Total Hired (YTD)</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">{t('Total Hired (YTD)')}</p>
           <p className="text-3xl font-semibold text-slate-900 dark:text-white">{timeToHire?.hiredCount ?? '—'}</p>
         </div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="surface p-5">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-white mb-4">Pipeline by Stage</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-white mb-4">{t('Pipeline by Stage')}</h3>
           {pipeline?.byStage.map(s => (
             <div key={s.stage} className="flex items-center gap-3 mb-2">
               <span className="w-24 shrink-0 text-xs text-slate-500 dark:text-slate-400">{s.stage}</span>
@@ -2867,22 +2962,22 @@ function ReportsTab() {
               <span className="shrink-0 text-xs font-semibold text-slate-900 dark:text-white w-8 text-end">{s.count}</span>
             </div>
           ))}
-          {!pipeline?.byStage.length && <p className="text-sm text-slate-400">No pipeline data.</p>}
+          {!pipeline?.byStage.length && <p className="text-sm text-slate-400">{t('No pipeline data.')}</p>}
         </div>
 
         <div className="surface p-5">
-          <h3 className="text-sm font-semibold text-slate-800 dark:text-white mb-4">Source Effectiveness</h3>
+          <h3 className="text-sm font-semibold text-slate-800 dark:text-white mb-4">{t('Source Effectiveness')}</h3>
           {source?.candidatesBySource.map(s => {
             const hired = source.hiredBySource.find(h => h.source === s.source)?.hired ?? 0;
             const rate = s.total > 0 ? (hired / s.total * 100).toFixed(0) : '0';
             return (
-              <div key={s.source} className="flex items-center justify-between mb-2 text-sm">
-                <span className="text-slate-600 dark:text-slate-400">{s.source}</span>
-                <span className="text-xs text-slate-500 dark:text-slate-400">{s.total} candidates · {hired} hired ({rate}%)</span>
+              <div key={t(s.source)} className="flex items-center justify-between mb-2 text-sm">
+                <span className="text-slate-600 dark:text-slate-400">{t(s.source)}</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">{t('{total} candidates · {hired} hired ({rate}%)', { total: s.total, hired, rate })}</span>
               </div>
             );
           })}
-          {!source?.candidatesBySource.length && <p className="text-sm text-slate-400">No source data.</p>}
+          {!source?.candidatesBySource.length && <p className="text-sm text-slate-400">{t('No source data.')}</p>}
         </div>
       </div>
     </div>
@@ -2892,6 +2987,7 @@ function ReportsTab() {
 // ── Recruitment AI Insights Tab ───────────────────────────────────────────────
 
 function RecruitmentAITab() {
+  const t = useT();
   const [insights, setInsights] = useState<{ type: string; severity: string; title: string; description: string; isAdvisory: boolean }[]>([]);
   const [loading, setLoading] = useState(true);
   const [genTime, setGenTime] = useState<string | null>(null);
@@ -2913,12 +3009,12 @@ function RecruitmentAITab() {
     <div className="space-y-4">
       <div className="rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-500/20 dark:bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-400">
         <Lightbulb className="inline h-3.5 w-3.5 me-1.5" />
-        All insights are <strong>advisory only</strong>. Final hiring and staffing decisions remain with authorized HR personnel.
-        {genTime && <span className="ms-2 opacity-60">Generated: {new Date(genTime).toLocaleString()}</span>}
+        {t('All insights are advisory only. Final hiring and staffing decisions remain with authorized HR personnel.')}
+        {genTime && <span className="ms-2 opacity-60">{t('Generated: {toLocaleString}', { toLocaleString: new Date(genTime).toLocaleString() })}</span>}
       </div>
 
-      {loading ? <p className="text-center text-sm text-slate-400 py-8">Loading AI insights…</p> : insights.length === 0 ? (
-        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">No insights generated yet.</p>
+      {loading ? <p className="text-center text-sm text-slate-400 py-8">{t('Loading AI insights…')}</p> : insights.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">{t('No insights generated yet.')}</p>
       ) : (
         <div className="space-y-3">
           {insights.map((ins, i) => (
@@ -2955,17 +3051,17 @@ export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { 
   const [requisitionToOpen, setRequisitionToOpen] = useState<ManpowerRequisition | null>(null);
 
   const tabs: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    { id: 'overview', label: 'Overview', icon: ClipboardList },
-    { id: 'workforce', label: 'Workforce Planning', icon: Target },
-    { id: 'requisitions', label: 'Requisitions', icon: AlertCircle },
-    { id: 'openings', label: 'Job Openings', icon: Briefcase },
-    { id: 'candidates', label: 'Talent Pool', icon: Users },
-    { id: 'interviews', label: 'Interviews', icon: Calendar },
-    { id: 'assessments', label: 'Assessments', icon: BookOpen },
-    { id: 'offers', label: 'Offers', icon: Award },
-    { id: 'onboarding', label: 'Onboarding', icon: UserPlus },
-    { id: 'reports', label: 'Reports', icon: BarChart3 },
-    { id: 'ai', label: 'Insights', icon: Lightbulb },
+    { id: 'overview', label: t('Overview'), icon: ClipboardList },
+    { id: 'workforce', label: t('Workforce Planning'), icon: Target },
+    { id: 'requisitions', label: t('Requisitions'), icon: AlertCircle },
+    { id: 'openings', label: t('Job Openings'), icon: Briefcase },
+    { id: 'candidates', label: t('Talent Pool'), icon: Users },
+    { id: 'interviews', label: t('Interviews'), icon: Calendar },
+    { id: 'assessments', label: t('Assessments'), icon: BookOpen },
+    { id: 'offers', label: t('Offers'), icon: Award },
+    { id: 'onboarding', label: t('Onboarding'), icon: UserPlus },
+    { id: 'reports', label: t('Reports'), icon: BarChart3 },
+    { id: 'ai', label: t('Insights'), icon: Lightbulb },
   ];
 
   const handleCreateOpening = (req: ManpowerRequisition) => {
@@ -2978,7 +3074,7 @@ export function RecruitmentPage({ initialTab, initialOfferDesigner = false }: { 
       <div>
         <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{t('Recruitment & Requisitions')}</h1>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Manage manpower requisitions, job openings, and candidate pipeline end-to-end.
+          {t('Manage manpower requisitions, job openings, and candidate pipeline end-to-end.')}
         </p>
       </div>
 

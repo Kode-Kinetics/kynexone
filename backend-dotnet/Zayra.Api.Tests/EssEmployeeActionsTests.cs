@@ -651,6 +651,73 @@ public class EssEmployeeActionsTests
         (await SeededRoleBundles.PermissionsOfAsync(db, tenantId, "HR Officer")).Should().Contain(new[] { "overtime.write", "leave.write" });
     }
 
+    // ── Leave that needs a supporting document ───────────────────────────────
+
+    private static async Task<(LeaveType Sick, EmployeeDocument Mine, EmployeeDocument Theirs)> SickWithDocumentsAsync(World w)
+    {
+        var sick = new LeaveType { TenantId = w.TenantId, Code = "SICK", NameEn = "Sick Leave", Category = "Sick", IsPaid = true, IsActive = true, RequiresAttachment = true };
+        w.Db.LeaveTypes.Add(sick);
+        w.Db.EmployeeLeaveBalances.Add(new EmployeeLeaveBalance
+        {
+            TenantId = w.TenantId, EmployeeId = w.Me.Id, EmployeeName = w.Me.FullName, LeaveTypeId = sick.Id, LeaveTypeName = sick.NameEn,
+            Year = DateTime.UtcNow.Year, Entitled = 30m,
+        });
+        EmployeeDocument Doc(Employee e, string key) => new()
+        {
+            TenantId = w.TenantId, CompanyId = e.CompanyId, EmployeeId = e.Id, DocumentType = "Leave Attachment", FileName = "note.pdf",
+            ContentType = "application/pdf", StorageUrl = key, ApprovalStatus = "Pending",
+        };
+        var mine = Doc(w.Me, $"{w.TenantId}/mine.pdf");
+        var theirs = Doc(w.Colleague, $"{w.TenantId}/theirs.pdf");
+        w.Db.EmployeeDocuments.AddRange(mine, theirs);
+        await w.Db.SaveChangesAsync();
+        return (sick, mine, theirs);
+    }
+
+    [Fact]
+    public async Task LeaveThatNeedsADocument_CanBeSubmittedFromSelfService_WithTheEmployeesOwnUploadedDocument()
+    {
+        var w = await SeedAsync();
+        var (sick, mine, _) = await SickWithDocumentsAsync(w);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(3);
+
+        var refused = await Ess(w).LeaveRequest(new Zayra.Api.Controllers.ESSLeaveRequestDto(sick.Id, day, day, "Full", "Flu"), CancellationToken.None);
+        refused.Result.Should().BeOfType<BadRequestObjectResult>("without the document the request is still refused");
+
+        var created = await Ess(w).LeaveRequest(new Zayra.Api.Controllers.ESSLeaveRequestDto(sick.Id, day, day, "Full", "Flu") { AttachmentDocumentId = mine.Id }, CancellationToken.None);
+
+        var saved = created.Result.Should().BeOfType<CreatedResult>().Subject.Value.Should().BeOfType<LeaveRequest>().Subject;
+        saved.AttachmentPath.Should().Be(mine.StorageUrl, "the key is resolved on the server, never taken from the browser");
+    }
+
+    [Fact]
+    public async Task LeaveThatNeedsADocument_RefusesAColleaguesDocument_AndCreatesNothing()
+    {
+        var w = await SeedAsync();
+        var (sick, _, theirs) = await SickWithDocumentsAsync(w);
+        var day = DateOnly.FromDateTime(DateTime.UtcNow).AddDays(3);
+
+        var result = await Ess(w).LeaveRequest(new Zayra.Api.Controllers.ESSLeaveRequestDto(sick.Id, day, day, "Full", "Flu") { AttachmentDocumentId = theirs.Id }, CancellationToken.None);
+
+        result.Result.Should().BeOfType<BadRequestObjectResult>();
+        (await w.Db.LeaveRequests.CountAsync(r => r.LeaveTypeId == sick.Id)).Should().Be(0);
+    }
+
+    // ── A year with no balance ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task AYearWithNoBalanceRow_SaysSo_AndNamesTheLeaveTypeAndTheYear_NotJustInsufficient()
+    {
+        var w = await SeedAsync();
+        var farYear = DateTime.UtcNow.Year + 3;
+        var day = new DateOnly(farYear, 1, 12);
+
+        var result = await Ess(w).LeaveRequest(new Zayra.Api.Controllers.ESSLeaveRequestDto(w.Annual.Id, day, day, "Full", "Trip"), CancellationToken.None);
+
+        var message = result.Result.Should().BeOfType<BadRequestObjectResult>().Subject.Value!.ToString()!;
+        message.Should().Contain(farYear.ToString()).And.Contain("Annual Leave").And.Contain("not been set up");
+    }
+
     // ── Stubs ────────────────────────────────────────────────────────────────
 
     private sealed class NoStorage : IDocumentStorage

@@ -258,6 +258,15 @@ public static class EosbProvisionLedger
             .ToList();
     }
 
+    /// <summary>
+    /// What an employee still carries: Σ (accrued − consumed) over EVERY position of theirs (company or unattributed), clamped ONCE, so a chart
+    /// remap between months cannot make the carried figure exceed what the ledger holds and repeat the monthly release.
+    /// </summary>
+    public static decimal CarriedFor(IEnumerable<EosbProvisionPosition> positions, int employeeId, Guid? companyId)
+        => Math.Max(0m, Math.Round(positions
+            .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
+            .Sum(p => p.Accrued - p.Consumed), 2));
+
     /// <summary>Convenience single-employee load, returning a cursor ready to <c>Take</c> from.</summary>
     public static async Task<EosbProvisionCursor> LoadCursorAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, CancellationToken ct)

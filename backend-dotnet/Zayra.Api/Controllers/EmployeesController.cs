@@ -15,6 +15,7 @@ using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Employees;
+using Zayra.Api.Application.Employees.Onboarding;
 using Zayra.Api.Application.Organization;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Application.Recruitment;
@@ -35,6 +36,7 @@ using Zayra.Api.Infrastructure.Localization;
 using Zayra.Api.Infrastructure.Jobs;
 using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Models;
 
 using Zayra.Api.Infrastructure.Common;
@@ -3383,6 +3385,8 @@ public class EmployeesController : ControllerBase
         if (await DraftManagerRefusalAsync(RequireTenant(), request.ManagerEmployeeId, cancellationToken) is { } managerRefusal)
             return managerRefusal;
         var draft = ApplyDraft(new EmployeeDraft { TenantId = RequireTenant(), CreatedByUserId = GetUserId() }, request);
+        if (await DraftIdentityRefusalAsync(draft.TenantId, draft, request, cancellationToken) is { } identityRefusal)
+            return identityRefusal;
         draft.ProfileCompletenessScore = CalculateCompleteness(draft, 0);
         _db.EmployeeDrafts.Add(draft);
         await _db.SaveChangesAsync(cancellationToken);
@@ -3409,6 +3413,9 @@ public class EmployeesController : ControllerBase
                 return managerRefusal;
             var priorDraftWorkEmail = draft.WorkEmail;
             ApplyDraft(draft, request);
+            // Nothing is saved on a refusal (the change is not committed), so the editor does not become a maker of the hire.
+            if (await DraftIdentityRefusalAsync(tenantId, draft, request, ct) is { } identityRefusal)
+                return identityRefusal;
             // Every editor who sets the draft's work email is a setter of the hire's address (WorkEmailSetterRule).
             if (!string.IsNullOrWhiteSpace(draft.WorkEmail)
                 && !string.Equals(AuthService.Normalize(draft.WorkEmail), AuthService.Normalize(priorDraftWorkEmail ?? string.Empty), StringComparison.Ordinal))
@@ -3526,6 +3533,11 @@ public class EmployeesController : ControllerBase
                 "A draft's documents carry no company until activation; access is decided below by employee or draft scope.")
             .FirstOrDefaultAsync(x => x.Id == documentId && !x.IsDeleted, cancellationToken);
         if (document is null) return NotFound();
+
+        // A leave's supporting document follows the leave rule; anyone else is told nothing exists.
+        if (LeaveSupportingDocuments.IsSupportingDocument(document.DocumentType)
+            && !LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), document.EmployeeId))
+            return NotFound();
 
         // Identity and payroll files contain the same protected facts masked on the employee record.
         if (EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
@@ -3719,6 +3731,8 @@ public class EmployeesController : ControllerBase
             }
 
             var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
+            // A hire that states no notice period gets the company's default, as the form's create does (drafts carry no notice field).
+            employee.NoticePeriodDays ??= await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, employee.CountryCode, ct);
             employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
             employee.ActivatedAtUtc = approvedAtUtc;
 
@@ -4441,6 +4455,9 @@ public class EmployeesController : ControllerBase
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
         var docs = await employeeManagement.GetDocumentsAsync(RequireTenant(), id, cancellationToken);
+        // A leave's supporting document (a sick note) follows the leave rule: the employee and HR, not every reader of the record.
+        if (!LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), id))
+            docs = docs.Where(document => !LeaveSupportingDocuments.IsSupportingDocument(document.DocumentType)).ToList();
         return Ok(docs.Select(document => EmployeeDocumentDto.Project(document, CanViewSensitive())).ToList());
     }
 
@@ -4449,6 +4466,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> UpdateEmployeeDocument(int id, Guid docId, [FromBody] UpdateDocumentMetadataRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.UpdateDocumentAsync(RequireTenant(), id, docId, request, Context(), cancellationToken);
@@ -4470,7 +4488,8 @@ public class EmployeesController : ControllerBase
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
         var visible = await ResolveVisibleEmployeeIdsAsync(cancellationToken);
-        return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken));
+        return Ok(await employeeManagement.PendingDocumentsAsync(RequireTenant(), visible, CanViewSensitive(), page, pageSize, cancellationToken,
+            includeLeaveSupportingDocuments: LeaveSupportingDocuments.IsLeaveAdministrator(User)));
     }
 
     [HttpPost("{id:int}/documents/{docId:guid}/verify")]
@@ -4478,6 +4497,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> VerifyEmployeeDocument(int id, Guid docId, [FromBody] DocumentVerifyRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.VerifyDocumentAsync(RequireTenant(), id, docId, request.Notes, Context(), cancellationToken);
@@ -4493,6 +4513,7 @@ public class EmployeesController : ControllerBase
     public async Task<ActionResult<EmployeeDocumentDto>> RejectEmployeeDocument(int id, Guid docId, [FromBody] DocumentRejectRequest request, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             var doc = await employeeManagement.RejectDocumentAsync(RequireTenant(), id, docId, request.Reason, Context(), cancellationToken);
@@ -4509,6 +4530,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> ArchiveEmployeeDocument(int id, Guid docId, [FromServices] IEmployeeManagementService employeeManagement, CancellationToken cancellationToken)
     {
         if (!await CanAccessEmployeeAsync(id, cancellationToken)) return Forbid();
+        if (await LeaveNoteHiddenAsync(id, docId, cancellationToken)) return NotFound();
         try
         {
             return await employeeManagement.ArchiveDocumentAsync(RequireTenant(), id, docId, Context(), cancellationToken) ? NoContent() : NotFound();
@@ -6210,6 +6232,44 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
+    /// The identity numbers a draft edit carries (National ID, Iqama) are held to the rules an employee write applies
+    /// (<see cref="IdentityNumberRules"/>: ten digits, the class prefix, the check digit, agreement with the nationality),
+    /// for a draft that lands in a Saudi company. A passing number is stored as ASCII digits. Only a value the request
+    /// itself supplied is checked, so saving a placement fix never trips over an older number. Returns the refusal, or null.
+    /// </summary>
+    private async Task<ObjectResult?> DraftIdentityRefusalAsync(Guid tenantId, EmployeeDraft draft, EmployeeDraftRequest request, CancellationToken ct)
+    {
+        var supplied = new List<(string Field, string Kind, string Value)>();
+        if (!string.IsNullOrWhiteSpace(request.IdNumber)) supplied.Add(("idNumber", IdentityKinds.IdNumber, request.IdNumber));
+        if (!string.IsNullOrWhiteSpace(request.IqamaNumber)) supplied.Add(("iqamaNumber", IdentityKinds.IqamaNumber, request.IqamaNumber));
+        if (supplied.Count == 0) return null;
+
+        var placement = await ResolveDraftPlacementAsync(tenantId, draft, new List<EmployeeDraftActivationProblem>(), ct);
+        var country = HomeJurisdiction.DeriveEmployeeCountry(draft.CountryCode, placement.CompanyCountryCode);
+        var nationality = NationalityCatalog.TryResolve(draft.Nationality)?.Class;
+        var errors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (field, kind, value) in supplied)
+        {
+            var normalised = IdentityNumberRules.NormalizeDigits(value);
+            if (country == "SA")
+            {
+                var check = IdentityNumberRules.Check(value, kind, nationality);
+                if (check.HardErrors.Count > 0) { errors[field] = [.. check.HardErrors]; continue; }
+                normalised = check.Normalised;
+            }
+            if (kind == IdentityKinds.IdNumber) draft.IdNumber = normalised;
+            else draft.IqamaNumber = normalised;
+        }
+        if (errors.Count == 0) return null;
+        return UnprocessableEntity(new
+        {
+            error = "invalid_identity",
+            message = "The identity number is not valid. The draft was not saved.",
+            errors,
+        });
+    }
+
+    /// <summary>
     /// A draft's manager must be a live employee of this tenant that the caller can see: the same rule
     /// every other manager write enforces (<see cref="EmployeeChangeApplier.ValidateManagerChangeAsync"/>).
     /// The draft has no employee id yet, so self-management and reporting cycles cannot arise.
@@ -6603,7 +6663,18 @@ public class EmployeesController : ControllerBase
 
     /// <summary>The employee record a draft becomes (without its code, which is allocated under the
     /// tenant lock). Shared by approval and the review screen's activation check.</summary>
-    private static Employee EmployeeFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc) => new()
+    private static Employee EmployeeFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc)
+    {
+        var employee = EmployeeFieldsFromDraft(draft, tenantId, placement, approvedAtUtc);
+        // The derived fields the Add-Employee form stamps (nationality code/state, Saudi / NonSaudi, primary ID type, contract start): the same helpers, so an
+        // offer-path hire is classified exactly like a form hire.
+        DraftHireDerivation.ApplyNationality(employee);
+        employee.IdType = DraftHireDerivation.PrimaryIdType(employee);
+        employee.ContractStartDate = DraftHireDerivation.ContractStart(employee.ContractType, draft.ContractStartDate, employee.JoiningDate);
+        return employee;
+    }
+
+    private static Employee EmployeeFieldsFromDraft(EmployeeDraft draft, Guid tenantId, DraftPlacement placement, DateTime approvedAtUtc) => new()
     {
         TenantId = tenantId,
         CompanyId = placement.CompanyId,
@@ -6637,7 +6708,6 @@ public class EmployeesController : ControllerBase
         Grade = placement.GradeCode,
         GradeId = placement.GradeId,
         CostCenter = draft.CostCenter,
-        ContractStartDate = draft.ContractStartDate,
         ContractEndDate = draft.ContractEndDate,
         ProbationEndDate = draft.ProbationWaived ? null : draft.ProbationEndDate,
         ProbationWaived = draft.ProbationWaived,
@@ -6659,6 +6729,8 @@ public class EmployeesController : ControllerBase
         ResidencyIssueDate = draft.ResidencyIssueDate,
         WorkPermitIssueDate = draft.WorkPermitIssueDate,
         IqamaNumber = draft.IqamaNumber,
+        // The Saudi National ID; its type (and an Iqama's) is set by DraftHireDerivation.PrimaryIdType in EmployeeFromDraft.
+        IdNumber = draft.IdNumber,
         BorderNumber = draft.BorderNumber,
         MuqeemNumber = draft.MuqeemNumber,
         GosiReference = draft.GosiReference,
@@ -6804,6 +6876,7 @@ public class EmployeesController : ControllerBase
         draft.ResidencyIssueDate = request.ResidencyIssueDate ?? draft.ResidencyIssueDate;
         draft.WorkPermitIssueDate = request.WorkPermitIssueDate ?? draft.WorkPermitIssueDate;
         draft.IqamaNumber = request.IqamaNumber ?? draft.IqamaNumber;
+        draft.IdNumber = request.IdNumber ?? draft.IdNumber;
         draft.BorderNumber = request.BorderNumber ?? draft.BorderNumber;
         draft.MuqeemNumber = request.MuqeemNumber ?? draft.MuqeemNumber;
         draft.GosiReference = request.GosiReference ?? draft.GosiReference;
@@ -7073,6 +7146,17 @@ public class EmployeesController : ControllerBase
     // PrivilegedMfaPolicy counts, so a name-based grant would also have shown IBANs to a user MFA never covered.
     private bool CanEditSensitive() => User.HasPermission("employees.sensitive");
     private bool CanViewSensitive() => User.HasPermission("employees.sensitive");
+
+    /// <summary>True when the document is a leave's supporting document the caller may not see (the leave rule): the action then answers 404.</summary>
+    private async Task<bool> LeaveNoteHiddenAsync(int employeeId, Guid documentId, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var type = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Id == documentId && x.EmployeeId == employeeId && !x.IsDeleted)
+            .Select(x => x.DocumentType).FirstOrDefaultAsync(cancellationToken);
+        return LeaveSupportingDocuments.IsSupportingDocument(type)
+            && !LeaveSupportingDocuments.MayRead(User, await GetCallerEmployeeId(cancellationToken), employeeId);
+    }
     private ObjectResult SensitiveDocumentRefusal(SensitiveDocumentAccessException ex) =>
         StatusCode(403, new { code = "employees_sensitive_required", message = ex.Message });
     /// <summary>One addressed notice per recipient; nobody named means nothing is sent, never a workspace-wide
@@ -7226,7 +7310,7 @@ public record EmployeeUpdateRequest(DateOnly EffectiveDate, Dictionary<string, J
 public record GroupCountDto(string Name, int Count);
 public record EmployeeReportsDto(int TotalHeadcount, int ActiveEmployees, int NewJoiners, int Exits, int ProbationEmployees, IReadOnlyCollection<GroupCountDto> DepartmentHeadcount, IReadOnlyCollection<GroupCountDto> BranchHeadcount, IReadOnlyCollection<GroupCountDto> NationalityMix, IReadOnlyCollection<GroupCountDto> GenderMix, int ContractExpiringSoon, int VisaOrPassportExpiringSoon, int MissingDocumentsOrIncompleteProfiles);
 public record EmployeeAiResponseDto(string Answer, IReadOnlyCollection<EmployeeListItemDto> Employees);
-public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate, string? BorderNumber = null, bool? ProbationWaived = null);
+public record EmployeeDraftRequest(string? CurrentStep, string? EnglishName, string? ArabicName, string? PersonalEmail, string? WorkEmail, string? Phone, string? Gender, DateOnly? DateOfBirth, string? MaritalStatus, string? EmergencyContactName, string? EmergencyContactPhone, string? Nationality, string? CountryCode, string? Department, string? Designation, string? Branch, string? WorkLocation, int? ManagerEmployeeId, DateTime? JoiningDate, string? ContractType, string? Grade, string? CostCenter, DateOnly? ContractStartDate, DateOnly? ContractEndDate, DateOnly? ProbationEndDate, string? PayrollProfileCode, decimal? Salary, string? BankName, string? BankIban, string? WpsBankDetails, string? ShiftPolicyCode, string? LeavePolicyCode, string? SponsorName, DateOnly? PassportIssueDate, string? PassportNumber, DateOnly? PassportExpiryDate, DateOnly? VisaIssueDate, string? VisaNumber, DateOnly? VisaExpiryDate, string? IqamaNumber, string? MuqeemNumber, string? GosiReference, string? QiwaContractNumber, string? EmiratesId, string? LaborCardNumber, string? VisaFileNumber, string? Qid, string? WorkPermitNumber, DateOnly? WorkPermitIssueDate, string? CivilId, string? ResidencyNumber, DateOnly? ResidencyIssueDate, string? BorderNumber = null, bool? ProbationWaived = null, string? IdNumber = null);
 public record EmployeeDocumentUploadRequest(string DocumentType, bool IsRequired, DateOnly? ExpiryDate, IFormFile File);
 public record EmployeeDocumentUploadForm(
     [Required, MaxLength(80)] string DocumentType,

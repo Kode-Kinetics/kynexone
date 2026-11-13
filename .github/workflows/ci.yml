@@ -941,7 +941,9 @@ jobs:
     services:
       postgres:
         # Services start before steps can configure Docker; use the same official image via its cache.
-        image: mirror.gcr.io/library/postgres:16-alpine
+        # Pinned to the patch level the byte-diff baseline was last proven on: 16.16 (2026-11-12) writes per-column
+        # `SET (pg_attver=…)` options whose values differ between two dumps of the same schema. Bump deliberately.
+        image: mirror.gcr.io/library/postgres:16.15-alpine
         env:
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: postgres

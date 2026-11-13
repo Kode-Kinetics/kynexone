@@ -50,6 +50,7 @@ public static class EncryptedFieldCatalog
         F<EmployeeDraft>(nameof(EmployeeDraft.WpsBankDetails), false),
         F<EmployeeDraft>(nameof(EmployeeDraft.PassportNumber), false),
         F<EmployeeDraft>(nameof(EmployeeDraft.IqamaNumber), false),
+        F<EmployeeDraft>(nameof(EmployeeDraft.IdNumber), false),
         F<EmployeeDraft>(nameof(EmployeeDraft.BorderNumber), false),
         F<EmployeeDraft>(nameof(EmployeeDraft.EmiratesId), false),
         F<EmployeeDraft>(nameof(EmployeeDraft.Qid), false),

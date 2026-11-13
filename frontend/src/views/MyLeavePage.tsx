@@ -2,7 +2,8 @@
 
 import { useConfirm } from '../components/ui/useConfirm';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { essActionsApi, type EssBalance } from '@/src/api/ess';
+import { essActionsApi, essApi, type EssBalance } from '@/src/api/ess';
+import { leaveBalanceTotal } from '@/src/lib/leaveBalanceDisplay';
 import { leaveRequestsApi, type LeaveRequest, type LeaveType } from '@/src/api/leave';
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
@@ -11,6 +12,9 @@ import { canCancelLeave, cancellationHolders, leaveStatus } from '@/src/lib/essS
 import { isDeclarableLeave, isSaudiStatutoryLeave } from '@/src/lib/ksaStatutoryLeave';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
 import { requestFailureReason } from '@/src/lib/requestFailure';
+
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
 
 const blankForm = { leaveTypeId: '', startDate: '', endDate: '', halfDay: false, reason: '', statutoryEventDate: '', separateEventReason: '' };
 
@@ -31,6 +35,7 @@ export function MyLeavePage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [form, setForm] = useState(blankForm);
   const [submitting, setSubmitting] = useState(false);
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   // Who now holds each pending cancellation of approved leave (request id -> names), from the leave detail.
@@ -73,6 +78,8 @@ export function MyLeavePage() {
     const ty = types.find((x) => x.id === id);
     return ty ? typeName(ty) : stored;
   };
+  // The half-day box only shows for a single day on a type that allows it; a tick left over from before must not travel with the request.
+  const halfDayShown = !!selectedType?.isHalfDayAllowed && !!form.startDate && form.startDate === form.endDate;
   const sorted = useMemo(() => [...requests].sort((a, b) => b.startDate.localeCompare(a.startDate)), [requests]);
   const set = <K extends keyof typeof blankForm>(k: K, v: (typeof blankForm)[K]) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -91,18 +98,32 @@ export function MyLeavePage() {
       setNotice({ tone: 'error', text: t('This leave type needs a reason.') });
       return;
     }
+    if (selectedType?.requiresAttachment && !attachment) {
+      setNotice({ tone: 'error', text: t('Add a supporting document. This leave type needs one.') });
+      return;
+    }
+    if (attachment && attachment.size > MAX_ATTACHMENT_BYTES) {
+      setNotice({ tone: 'error', text: t('The file is larger than 10 MB.') });
+      return;
+    }
     setSubmitting(true);
     try {
+      // The document goes up first; the request then cites it by id, so nothing is created if the upload fails.
+      const attachmentDocumentId = selectedType?.requiresAttachment && attachment
+        ? (await essApi.uploadDocument(attachment, 'Leave Attachment')).id
+        : undefined;
       await essActionsApi.applyLeave({
         leaveTypeId: form.leaveTypeId,
         startDate: form.startDate,
         endDate: form.endDate,
-        dayType: form.halfDay ? 'Half' : 'Full',
+        dayType: halfDayShown && form.halfDay ? 'Half' : 'Full',
+        attachmentDocumentId,
         reason: form.reason.trim(),
         statutoryEventDate: declarable && form.statutoryEventDate ? form.statutoryEventDate : undefined,
         separateEventReason: declarable && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
       });
       setForm(blankForm);
+      setAttachment(null);
       setNotice({ tone: 'ok', text: t('Your leave request was sent for approval.') });
       await load();
     } catch (err) {
@@ -143,7 +164,7 @@ export function MyLeavePage() {
               <EssEmpty text={t('No leave balances have been set up for you yet. Ask HR if you expected to see one.')} />
             ) : (
               <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {balances.map((b) => (
+                {balances.map((b) => { const total = leaveBalanceTotal(b); return (
                   <li key={b.leaveTypeId} className="rounded-xl bg-slate-50 p-3 dark:bg-white/[0.03]">
                     <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">{typeNameById(b.leaveTypeId, b.leaveTypeName)}</p>
                     {b.statutoryEntitlementDays != null ? (
@@ -155,14 +176,16 @@ export function MyLeavePage() {
                       </>
                     ) : (
                       <p className="mt-1 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                        {fillTemplate(t('{available} of {entitled} days available'), { available: b.available, entitled: b.entitled })}
+                        {total != null
+                          ? fillTemplate(t('{available} of {entitled} days available'), { available: b.available, entitled: total })
+                          : fillTemplate(t('{available} days available'), { available: b.available })}
                       </p>
                     )}
                     {b.pending > 0 && (
                       <p className="text-caption text-amber-700 dark:text-amber-300">{fillTemplate(t('{days} days waiting for approval'), { days: b.pending })}</p>
                     )}
                   </li>
-                ))}
+                ); })}
               </ul>
             )}
           </EssCard>
@@ -191,7 +214,7 @@ export function MyLeavePage() {
                       <input type="date" className={essInput} value={form.endDate} min={form.startDate || undefined} onChange={(e) => set('endDate', e.target.value)} />
                     </EssField>
                   </div>
-                  {selectedType?.isHalfDayAllowed && form.startDate && form.startDate === form.endDate && (
+                  {halfDayShown && (
                     <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                       <input type="checkbox" checked={form.halfDay} onChange={(e) => set('halfDay', e.target.checked)} className="rounded" />
                       {t('Half a day only')}
@@ -212,7 +235,18 @@ export function MyLeavePage() {
                     </>
                   )}
                   {selectedType?.requiresAttachment && (
-                    <p className="text-caption text-slate-500 dark:text-slate-400">{t('This leave type needs a supporting document. HR will ask you for it.')}</p>
+                    <EssField label={t('Supporting document (required)')}>
+                      <input
+                        type="file"
+                        accept={ATTACHMENT_ACCEPT}
+                        data-testid="my-leave-attachment"
+                        className={essInput}
+                        onChange={(e) => setAttachment(e.target.files?.[0] ?? null)}
+                      />
+                      <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
+                        {attachment ? attachment.name : t('A PDF or a photo, up to 10 MB.')}
+                      </p>
+                    </EssField>
                   )}
                   <button type="submit" disabled={submitting} className={`${essPrimaryButton} w-full`}>
                     {submitting ? t('Sending…') : t('Send for approval')}

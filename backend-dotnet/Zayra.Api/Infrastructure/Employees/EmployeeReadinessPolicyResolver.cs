@@ -143,7 +143,8 @@ public sealed class EmployeeReadinessPolicyResolver : IEmployeeReadinessPolicyRe
             if (gccSetting.WpsEnabled)
                 AddToggle(new ReadinessRequirement("BankIban", "payroll", true, "activate", "gcc-setting", iso2));
             if (gccSetting.VisaTrackingEnabled)
-                AddToggle(new ReadinessRequirement("VisaExpiryDate", "identity", false, "pay", "gcc-setting", iso2));
+                // A residence visa is held by a non-GCC expatriate only (as in the code floor): never asked of a national, nor of a GCC national.
+                AddToggle(new ReadinessRequirement("VisaExpiryDate", "identity", false, "pay", "gcc-setting", iso2, null, new AppliesWhen(NonGccExpatOnly: true)));
             if (added) sources.Add("gcc-setting");
         }
 

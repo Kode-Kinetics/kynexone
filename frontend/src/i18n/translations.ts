@@ -1,10 +1,17 @@
 import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
+import { launchPayroll } from './launchPayroll';
+import { launchLeave } from './launchLeave';
+import { launchCompliance } from './launchCompliance';
+import { launchAttendance } from './launchAttendance';
+import { launchRecruitment } from './launchRecruitment';
+import { launchNewHires } from './launchNewHires';
 import { essWorkspace } from './essWorkspace';
 import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
+import { demoFixes } from './demoFixes';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
@@ -13,6 +20,7 @@ import { costCentres } from './costCentres';
 import { employeeCostCentreEdit } from './employeeCostCentreEdit';
 import { payrollCostCentres } from './payrollCostCentres';
 import { glErp } from './glErp';
+import { payrollGlUi } from './payrollGlUi';
 import { statutoryRules } from './statutoryRules';
 import { glApiKeys } from './glApiKeys';
 import { signInSecurity } from './signInSecurity';
@@ -26,9 +34,11 @@ import { compensation } from './compensation';
 import { learning } from './learning';
 import { succession } from './succession';
 import { glEosb } from './glEosb';
+import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
 import { deadEnds } from './deadEnds';
+import { recruitmentDemo } from './recruitmentDemo';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
 import { policyBinder } from './policyBinder';
@@ -50,6 +60,7 @@ import { setupReview } from './setupReview';
 import { setupSections } from './setupSections';
 import { orgRowRemoval } from './orgRowRemoval';
 import { designationAccess } from './designationAccess';
+import { draftIdentity } from './draftIdentity';
 import { peopleDeadEnds } from './peopleDeadEnds';
 import { designMigration } from './designMigration';
 import { setupRollout } from './setupRollout';
@@ -62,6 +73,7 @@ import { companyStructure } from './companyStructure';
 import { dailyA } from './dailyA';
 import { attendanceBulk } from './attendanceBulk';
 import { attendanceDashboard } from './attendanceDashboard';
+import { demoCompliance } from './demoCompliance';
 import { dailyB } from './dailyB';
 import { dailyC } from './dailyC';
 import { dailyD } from './dailyD';
@@ -69,6 +81,7 @@ import { dailyE } from './dailyE';
 import { onboardingP2 } from './onboardingP2';
 import { onboardingP4 } from './onboardingP4';
 import { uxFoundation } from './uxFoundation';
+import { leaveOpenYear } from './leaveOpenYear';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -84,7 +97,13 @@ type Dict = Record<string, string>;
 
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
-  // First, so any key another module already translates keeps its existing wording.
+  // Launch rehearsal wording (payroll, leave, compliance, attendance, recruitment, new hires). First, so any key another module already translates keeps its existing wording.
+  ...launchPayroll.en,
+  ...launchLeave.en,
+  ...launchCompliance.en,
+  ...launchAttendance.en,
+  ...launchRecruitment.en,
+  ...launchNewHires.en,
   ...benefitPlanForm.en,
   // Create-company wizard (./companyWizard). First, so an existing app-wide entry for the same key wins.
   ...removalSafety.en,
@@ -93,10 +112,12 @@ const en: Dict = {
   ...dailyA.en,
   ...attendanceBulk.en,
   ...attendanceDashboard.en,
+  ...demoCompliance.en,
   ...dailyB.en,
   ...dailyC.en,
   ...dailyD.en,
   ...dailyE.en,
+  ...leaveOpenYear.en,
   ...companyWizard.en,
   ...companyWizardRules.en,
   ...setupDataEntry.en,
@@ -105,6 +126,7 @@ const en: Dict = {
   ...setupSections.en,
   ...orgRowRemoval.en,
   ...designationAccess.en,
+  ...draftIdentity.en,
   ...designMigration.en,
   ...setupRollout.en,
   ...peopleDeadEnds.en,
@@ -1522,7 +1544,10 @@ const en: Dict = {
   'First day': 'First day',
   'Last day': 'Last day',
   'Half a day only': 'Half a day only',
-  'This leave type needs a supporting document. HR will ask you for it.': 'This leave type needs a supporting document. HR will ask you for it.',
+  'Supporting document (required)': 'Supporting document (required)',
+  'A PDF or a photo, up to 10 MB.': 'A PDF or a photo, up to 10 MB.',
+  'Add a supporting document. This leave type needs one.': 'Add a supporting document. This leave type needs one.',
+  'The file is larger than 10 MB.': 'The file is larger than 10 MB.',
   'Choose the leave type and the first and last day.': 'Choose the leave type and the first and last day.',
   'The last day cannot be before the first day.': 'The last day cannot be before the first day.',
   'This leave type needs a reason.': 'This leave type needs a reason.',
@@ -1597,6 +1622,7 @@ const en: Dict = {
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...hireWizard.en,
+  ...demoFixes.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
   ...onboardingP4.en,
@@ -1608,6 +1634,7 @@ const en: Dict = {
   ...employeeCostCentreEdit.en,
   ...payrollCostCentres.en,
   ...glErp.en,
+  ...payrollGlUi.en,
   ...statutoryRules.en,
   ...glApiKeys.en,
   // Sign-in security and the trust-this-browser choice — see ./signInSecurity.
@@ -1625,9 +1652,11 @@ const en: Dict = {
   // Engagement surveys — see ./engagement.
   ...engagement.en,
   ...glEosb.en,
+  ...glLeaveProvision.en,
   ...belowMinimum.en,
   ...loanBatchApprover.en,
   ...deadEnds.en,
+  ...recruitmentDemo.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
 
@@ -1641,6 +1670,12 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...launchPayroll.ar,
+  ...launchLeave.ar,
+  ...launchCompliance.ar,
+  ...launchAttendance.ar,
+  ...launchRecruitment.ar,
+  ...launchNewHires.ar,
   ...benefitPlanForm.ar,
   ...removalSafety.ar,
   ...companyStructure.ar,
@@ -1648,10 +1683,12 @@ const ar: Dict = {
   ...dailyA.ar,
   ...attendanceBulk.ar,
   ...attendanceDashboard.ar,
+  ...demoCompliance.ar,
   ...dailyB.ar,
   ...dailyC.ar,
   ...dailyD.ar,
   ...dailyE.ar,
+  ...leaveOpenYear.ar,
   ...companyWizard.ar,
   ...companyWizardRules.ar,
   ...setupDataEntry.ar,
@@ -1660,6 +1697,7 @@ const ar: Dict = {
   ...setupSections.ar,
   ...orgRowRemoval.ar,
   ...designationAccess.ar,
+  ...draftIdentity.ar,
   ...designMigration.ar,
   ...setupRollout.ar,
   ...peopleDeadEnds.ar,
@@ -3077,7 +3115,10 @@ const ar: Dict = {
   'First day': 'اليوم الأول',
   'Last day': 'اليوم الأخير',
   'Half a day only': 'نصف يوم فقط',
-  'This leave type needs a supporting document. HR will ask you for it.': 'يتطلب هذا النوع من الإجازات مستنداً داعماً، وستطلبه منك الموارد البشرية.',
+  'Supporting document (required)': 'المستند الداعم (مطلوب)',
+  'A PDF or a photo, up to 10 MB.': 'ملف PDF أو صورة، حتى 10 ميجابايت.',
+  'Add a supporting document. This leave type needs one.': 'أضف مستنداً داعماً، فهذا النوع من الإجازات يتطلبه.',
+  'The file is larger than 10 MB.': 'حجم الملف أكبر من 10 ميجابايت.',
   'Choose the leave type and the first and last day.': 'اختر نوع الإجازة واليوم الأول واليوم الأخير.',
   'The last day cannot be before the first day.': 'لا يمكن أن يكون اليوم الأخير قبل اليوم الأول.',
   'This leave type needs a reason.': 'يتطلب هذا النوع من الإجازات ذكر السبب.',
@@ -3152,6 +3193,7 @@ const ar: Dict = {
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...hireWizard.ar,
+  ...demoFixes.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,
   ...onboardingP4.ar,
@@ -3162,6 +3204,7 @@ const ar: Dict = {
   ...employeeCostCentreEdit.ar,
   ...payrollCostCentres.ar,
   ...glErp.ar,
+  ...payrollGlUi.ar,
   ...statutoryRules.ar,
   ...glApiKeys.ar,
   ...signInSecurity.ar,
@@ -3174,9 +3217,11 @@ const ar: Dict = {
   ...compensation.ar,
   ...engagement.ar,
   ...glEosb.ar,
+  ...glLeaveProvision.ar,
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
   ...deadEnds.ar,
+  ...recruitmentDemo.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,
 

@@ -46,6 +46,9 @@ type Mock = {
   overview?: unknown;
   /** The reconciliation the server returns for the run (e2e/fixtures/recon-*.json). */
   recon?: unknown;
+  /** Payment batches the server lists (all runs), and the records of any batch. */
+  batches?: unknown[];
+  records?: unknown[];
 };
 
 async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark' } = {}) {
@@ -63,7 +66,12 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
     if (p === '/api/auth/me') return json(USER);
     if (p === '/api/payroll/companies') return json([COMPANY]);
     if (p === '/api/payroll/runs' && req.method() === 'GET') return json({ items: runs, total: runs.length, page: Number(new URL(req.url()).searchParams.get('page') ?? 1), pageSize: 100 });
-    if (p === '/api/payroll/payment-batches') return json([]);
+    if (p === '/api/payroll/payment-batches') {
+      const runFilter = new URL(req.url()).searchParams.get('runId');
+      const all = (opts.batches ?? []) as { payrollRunId: string }[];
+      return json(runFilter ? all.filter((b) => b.payrollRunId === runFilter) : all);
+    }
+    if (/^\/api\/payroll\/payment-batches\/[^/]+\/records$/.test(p)) return json(opts.records ?? []);
     if (p === '/api/payroll/overview') return json(opts.overview ?? { year: 2026, month: 10, totalCompanies: 0, totalActiveEmployees: 0, totalGrossPayroll: 0, totalNetPayroll: 0, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] });
     if (p === '/api/payroll/readiness') return json({ year: 2026, month: 10, companyId: null, completionPercent: 100, isReadyForProcessing: true, totalActiveEmployees: 40, employeesWithSalary: 40, salaryCoveragePercent: 100, validationErrors: 0, payrollRunStatus: null, steps: [] });
     if (p === '/api/payroll/reports/summary') return json({ totalRuns: 1, lockedRuns: 1, totalEmployeesPaid: 40, totalGrossYtd: 0, totalNetYtd: 0 });
@@ -206,6 +214,50 @@ test.describe('payroll run pipeline', () => {
     await open(page, `/payroll?tab=runs&run=${RUN_APPROVED}`, { runs: RUNS.map((r) => ({ ...r, companyId: 'c-unknown' })) });
     await expect(page.getByTestId('pipeline-next-action')).toBeDisabled();
     await expect(page.getByTestId('pipeline-next-reason')).toContainText('currency');
+  });
+});
+
+test.describe('Bank / WPS tab opened from the pipeline', () => {
+  const BATCH = {
+    id: 'b1111111-1111-4111-8111-111111111111', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0001', paymentMethod: 'WPS',
+    totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'NotGenerated', wpsStatusChangedAtUtc: null,
+    wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
+  };
+  const RECORD = {
+    id: 'r1', paymentBatchId: BATCH.id, employeeId: 226, employeeName: 'Layla Al-Harbi', employeeCode: 'EMP-0226',
+    amount: 9000, iban: 'SA03****0000', status: 'Pending', wpsReference: 'WPS-EMP-0226-202609',
+  };
+
+  test('"Open Bank / WPS" lands on the run the pipeline was showing, with its batch listed', async ({ page }) => {
+    await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
+    await expect(page.getByTestId('pipeline-next-action')).toHaveText('Open Bank / WPS');
+    await page.getByTestId('pipeline-next-action').click();
+    await expect(page.getByRole('tab', { name: 'Bank / WPS Files', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
+    await expect(page.getByText('No batches yet.')).toHaveCount(0);
+    await expect(page.getByText(BATCH.batchNumber)).toBeVisible();
+  });
+
+  test('a deep link to the Bank / WPS tab preselects the run too', async ({ page }) => {
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
+    await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
+    await expect(page.getByText(BATCH.batchNumber)).toBeVisible();
+  });
+
+  test('payment records show the employee name, not a bare id', async ({ page }) => {
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
+    await page.getByText(BATCH.batchNumber).click();
+    const row = page.getByRole('row', { name: /WPS-EMP-0226-202609/ });
+    await expect(row).toContainText('Layla Al-Harbi');
+    await expect(row).not.toContainText('Emp #226');
+    if (process.env.SHOT_DIR) await page.screenshot({ path: `${process.env.SHOT_DIR}/bank-wps-names.png`, fullPage: true });
+  });
+
+  test('a record from an older server with no name still shows the id', async ({ page }) => {
+    const { employeeName: _n, employeeCode: _c, ...bare } = RECORD;
+    await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [bare] });
+    await page.getByText(BATCH.batchNumber).click();
+    await expect(page.getByRole('row', { name: /WPS-EMP-0226-202609/ })).toContainText('Emp #226');
   });
 });
 

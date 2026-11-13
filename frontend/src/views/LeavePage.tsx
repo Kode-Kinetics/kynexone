@@ -45,18 +45,23 @@ import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { essApi } from '../api/ess';
+import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
-import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { EnumLabel, enumLabel, type EnumName } from '../components/EnumLabel';
 import { describeApiError } from '../lib/apiError';
 import { useEmployeeReferenceLists } from '../hooks/useReferenceLists';
 import { referenceLabel, referenceOptions, sameReferenceValue, type ReferenceValue } from '../lib/referenceLists';
 import { msg } from '../i18n/translations';
 import { OrgRowActions, ShowTurnedOffToggle, useOrgRowRemoval, useOrgWriteAccess } from '../components/setup/OrgRowActions';
 import { ModuleSettingsLink } from '../components/setup/ModuleSettingsLink';
+import { grantedDays } from '../lib/leaveBalanceDisplay';
 import { CompanyCell, CompanyFilterSelect, CompanySelectField, UNASSIGNED_FILTER, UnassignedCompanyNotice, filterByCompany, useOrgCompanies } from '../components/setup/OrgCompanyControls';
+import { useT } from '../hooks/useT';
+import { useFormat } from '../hooks/useFormat';
 // ── Leave import/export helpers ───────────────────────────────────────────────
 
 const leaveTypesImportExport = {
@@ -180,21 +185,22 @@ function GroupContextBar({
   branchId: string;
   onBranchChange: (id: string) => void;
 }) {
+  const t = useT();
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border border-sapphire/20 bg-sapphire/5 px-4 py-2.5 dark:border-cyanAccent/20 dark:bg-cyanAccent/5">
       <div className="flex items-center gap-1.5 text-xs font-medium text-sapphire dark:text-cyanAccent">
         <Building2 className="h-3.5 w-3.5" />
-        <span>Group</span>
+        <span>{t('Group')}</span>
       </div>
       <ChevronRight className="h-3.5 w-3.5 text-slate-300 dark:text-white/20" />
       <select
-        title="Filter by company"
-        aria-label="Filter by company"
+        title={t('Filter by company')}
+        aria-label={t('Filter by company')}
         className={`${sel} w-52 !border-sapphire/30 !bg-white dark:!bg-white/10`}
         value={companyId}
         onChange={e => { onCompanyChange(e.target.value); onBranchChange(''); }}
       >
-        <option value="">All Group Companies</option>
+        <option value="">{t('All Group Companies')}</option>
         {companies.map(c => (
           <option key={c.id} value={c.id}>{c.legalNameEn || c.tradeName}</option>
         ))}
@@ -206,13 +212,13 @@ function GroupContextBar({
             <GitBranch className="h-3.5 w-3.5" />
           </div>
           <select
-            title="Filter by branch"
-            aria-label="Filter by branch"
+            title={t('Filter by branch')}
+            aria-label={t('Filter by branch')}
             className={`${sel} w-44 !border-sapphire/30 !bg-white dark:!bg-white/10`}
             value={branchId}
             onChange={e => onBranchChange(e.target.value)}
           >
-            <option value="">All Branches</option>
+            <option value="">{t('All Branches')}</option>
             {branches.map(b => (
               <option key={b.id} value={b.id}>{b.nameEn}</option>
             ))}
@@ -225,15 +231,15 @@ function GroupContextBar({
           className="ms-1 text-xs text-slate-400 underline hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
           onClick={() => { onCompanyChange(''); onBranchChange(''); }}
         >
-          Clear
+          {t('Clear')}
         </button>
       )}
       <span className="ms-auto text-caption text-slate-400 dark:text-slate-500">
         {companyId
           ? (branchId
-            ? branches.find(b => b.id === branchId)?.nameEn ?? 'Branch'
-            : companies.find(c => c.id === companyId)?.legalNameEn ?? 'Company')
-          : `${companies.length} compan${companies.length !== 1 ? 'ies' : 'y'} in group`}
+            ? branches.find(b => b.id === branchId)?.nameEn ?? t('Branch')
+            : companies.find(c => c.id === companyId)?.legalNameEn ?? t('Company'))
+          : t('{count, plural, one {# company in group} other {# companies in group}}', { count: companies.length })}
       </span>
     </div>
   );
@@ -243,10 +249,12 @@ function GroupContextBar({
 
 /** A list that failed to load says so, instead of rendering as "No … records". */
 function LoadFailure({ what, error }: { what: string; error: unknown }) {
-  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{what} could not be loaded. {requestFailureReason(error)}</p>;
+  const t = useT();
+  return <p role="alert" className="text-sm text-rose-600 dark:text-rose-400">{t('{what} could not be loaded. {requestFailureReason}', { what, requestFailureReason: requestFailureReason(error) })}</p>;
 }
 
 function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab) => void; groupFilter?: GroupFilter }) {
+  const t = useT();
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
   const [pending, setPending] = useState<LeaveAwaitingDecision[]>([]);
@@ -280,22 +288,22 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="On Leave Today" value={dash?.onLeaveToday ?? (onLeaveLoaded ? onLeave.length : '—')} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
-        <KpiCard label="Pending Approvals" value={dash?.pendingApprovals ?? (pendingLoaded ? (pendingTotal ?? pending.length) : '—')} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
-        <KpiCard label="Unauthorized Absences" value={dash?.unauthorizedAbsences ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
-        <KpiCard label="Pending Encashments" value={dash?.pendingEncashments ?? '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
+        <KpiCard label={t('On Leave Today')} value={dash?.onLeaveToday ?? (onLeaveLoaded ? onLeave.length : '—')} icon={Users} color="bg-sapphire/10 text-sapphire dark:bg-sapphire/20" />
+        <KpiCard label={t('Pending Approvals')} value={dash?.pendingApprovals ?? (pendingLoaded ? (pendingTotal ?? pending.length) : '—')} icon={Clock} color="bg-amber-100 text-amber-600 dark:bg-amber-500/20 dark:text-amber-400" />
+        <KpiCard label={t('Unauthorized Absences')} value={dash?.unauthorizedAbsences ?? '—'} icon={AlertTriangle} color="bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400" />
+        <KpiCard label={t('Pending Encashments')} value={dash?.pendingEncashments ?? '—'} icon={TrendingUp} color="bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">On Leave Today</h3>
-            <button type="button" onClick={() => onNavigate('calendar')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">Calendar</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('On Leave Today')}</h3>
+            <button type="button" onClick={() => onNavigate('calendar')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('Calendar')}</button>
           </div>
           {!onLeaveLoaded ? (
-            <p className="text-sm text-slate-400">Loading…</p>
+            <p className="text-sm text-slate-400">{t('Loading…')}</p>
           ) : onLeave.length === 0 ? (
-            <p className="text-sm text-slate-400">No employees on leave today.</p>
+            <p className="text-sm text-slate-400">{t('No employees on leave today.')}</p>
           ) : (
             // A real list of employee records, so marked up as one. Every other module renders its
             // records as a <table>; Leave was the only one building record lists out of anonymous
@@ -308,7 +316,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{e.employeeName}</p>
                     <p className="text-xs text-slate-400">{e.departmentName} · {e.leaveTypeName}</p>
                   </div>
-                  <span className="text-xs tabular-nums text-slate-400">{e.totalDays}d</span>
+                  <span className="text-xs tabular-nums text-slate-400">{t('{days}d', { days: e.totalDays })}</span>
                 </li>
               ))}
             </ul>
@@ -317,13 +325,13 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
 
         <div className="surface p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Pending Approvals</h3>
-            <button type="button" onClick={() => onNavigate('approvals')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">View all</button>
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">{t('Pending Approvals')}</h3>
+            <button type="button" onClick={() => onNavigate('approvals')} className="text-xs text-sapphire hover:underline dark:text-cyanAccent">{t('View all')}</button>
           </div>
           {!pendingLoaded ? (
-            <p className="text-sm text-slate-400">Loading…</p>
+            <p className="text-sm text-slate-400">{t('Loading…')}</p>
           ) : pending.length === 0 ? (
-            <p className="text-sm text-slate-400">No pending approvals.</p>
+            <p className="text-sm text-slate-400">{t('No pending approvals.')}</p>
           ) : (
             <ul className="space-y-3">
               {pending.map(r => (
@@ -332,7 +340,7 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
                     <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
                     <p className="text-xs text-slate-400">{r.leaveTypeName} · {fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
                   </div>
-                  <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{r.totalDays}d</span>
+                  <span className="shrink-0 text-xs font-semibold text-amber-600 dark:text-amber-400">{t('{days}d', { days: r.totalDays })}</span>
                 </li>
               ))}
             </ul>
@@ -340,17 +348,17 @@ function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab)
         </div>
 
         <div className="surface p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Quick Actions</h3>
+          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Quick Actions')}</h3>
           <div className="space-y-2">
             {([
-              ['Apply for Leave', 'apply', Plus],
-              ['Pending Approvals', 'approvals', CheckCircle],
-              ['Team Calendar', 'calendar', Calendar],
-              ['Leave Balance', 'balance', BarChart2],
-              ['Absence Regularization', 'absences', RefreshCw],
-              ['Leave Insights', 'ai-insights', Zap],
-            ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, t, Icon]) => (
-              <button key={t} type="button" onClick={() => onNavigate(t)}
+              [t('Apply for Leave'), 'apply', Plus],
+              [t('Pending Approvals'), 'approvals', CheckCircle],
+              [t('Team Calendar'), 'calendar', Calendar],
+              [t('Leave Balance'), 'balance', BarChart2],
+              [t('Absence Regularization'), 'absences', RefreshCw],
+              [t('Leave Insights'), 'ai-insights', Zap],
+            ] as [string, Tab, React.ComponentType<{ className?: string }>][]).map(([label, tabKey, Icon]) => (
+              <button key={tabKey} type="button" onClick={() => onNavigate(tabKey)}
                 className="flex w-full items-center gap-3 rounded-lg p-2.5 text-start hover:bg-slate-50 dark:hover:bg-white/5">
                 <Icon className="h-4 w-4 shrink-0 text-sapphire dark:text-cyanAccent" />
                 <span className="text-sm text-slate-700 dark:text-slate-300">{label}</span>
@@ -378,6 +386,12 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
   const [adjustModal, setAdjustModal] = useState<EmployeeLeaveBalance | null>(null);
   const [adjAmount, setAdjAmount] = useState('');
   const [adjReason, setAdjReason] = useState('');
+  // Balances come from the leave policies and nothing schedules that, so a company that went live without imported balances
+  // has none. The server limits this to the current year and to leave.policy_manage; offer it on that basis.
+  const { hasPermission } = useAuth();
+  const canOpenYear = !selfEmployeeId && year === new Date().getFullYear() && hasPermission('leave.policy_manage');
+  const [openingYear, setOpeningYear] = useState(false);
+  const [openYearNote, setOpenYearNote] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
 
   // One page at a time with the server's total: this used to show the first 50 balances as all of them.
   const list = usePagedList<EmployeeLeaveBalance>((page, pageSize) =>
@@ -392,7 +406,26 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
     try {
       await leaveBalancesApi.adjust({ employeeId: adjustModal.employeeId, leaveTypeId: adjustModal.leaveTypeId, year, amount: Number(adjAmount), reason: adjReason });
       setAdjustModal(null); setAdjAmount(''); setAdjReason(''); load();
-    } catch (e) { notifyApiError(e, 'Adjustment failed.'); }
+    } catch (e) { notifyApiError(e, t('Adjustment failed.')); }
+  };
+
+  const openYear = async () => {
+    setOpeningYear(true);
+    setOpenYearNote(null);
+    try {
+      const r = await leaveBalancesApi.openYear(year);
+      setOpenYearNote({
+        tone: 'ok',
+        text: r.balancesCreated > 0
+          ? t('{count, plural, one {Created # balance} other {Created # balances}} for {year} from the leave policies.', { count: r.balancesCreated, year: String(year) })
+          : t('No new balances were created for {year}. Balances come from active leave policies, so check that each leave type has an active policy and that employees have a joining date.', { year: String(year) }),
+      });
+      load();
+    } catch (e) {
+      setOpenYearNote({ tone: 'error', text: t(requestFailureReason(e)) });
+    } finally {
+      setOpeningYear(false);
+    }
   };
 
   return (
@@ -400,21 +433,37 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
       <div className="flex flex-wrap items-center gap-3">
         {!selfEmployeeId && (
           <div className="w-64">
-            <EmployeePicker value={balancePickedEmp} onChange={emp => { setBalancePickedEmp(emp); if (emp) setEmpId(String(emp.id)); }} placeholder="Search employee…" />
+            <EmployeePicker value={balancePickedEmp} onChange={emp => { setBalancePickedEmp(emp); if (emp) setEmpId(String(emp.id)); }} placeholder={t('Search employee…')} />
           </div>
         )}
         <select className={`${sel} w-32`} value={year} onChange={e => setYear(Number(e.target.value))}>
           {[year - 1, year, year + 1].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
-        {!selfEmployeeId && <button type="button" className={btn.primary} onClick={load}>Search</button>}
-        <p className="ms-auto text-sm text-slate-400">{balanceCount} balance{balanceCount !== 1 ? 's' : ''}</p>
+        {!selfEmployeeId && <button type="button" className={btn.primary} onClick={load}>{t('Search')}</button>}
+        <p className="ms-auto text-sm text-slate-400">{t('{count, plural, one {# balance} other {# balances}}', { count: balanceCount })}</p>
       </div>
 
-      {list.error != null && <LoadFailure what="Leave balances" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && balances.length === 0 ? null : balances.length === 0 ? (
+      {openYearNote && (
+        <p role={openYearNote.tone === 'error' ? 'alert' : 'status'} data-testid="open-year-note"
+          className={`rounded-lg px-4 py-3 text-sm ${openYearNote.tone === 'error' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-300'}`}>
+          {openYearNote.text}
+        </p>
+      )}
+      {list.error != null && <LoadFailure what={t('Leave balances')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && balances.length === 0 ? null : balances.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <BarChart2 className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No balance records found</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No balance records found')}</p>
+          {canOpenYear && (
+            <div className="mt-3 max-w-md space-y-3" data-testid="open-year-balances">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t('Leave balances are created from the leave policies. Create {year} balances for every employee now: monthly policies are credited month by month up to today, and yearly policies grant their full entitlement. Balances that already exist are not changed.', { year: String(year) })}
+              </p>
+              <button type="button" className={btn.primary} onClick={() => void openYear()} disabled={openingYear}>
+                {openingYear ? t('Creating balances…') : t("Create this year's balances from the leave policies")}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -426,8 +475,8 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
             const available = b.available;
             // `granted` is max(entitled, accrued) — the bar has a denominator even for a tenant whose
             // figure lives in `accrued` with `entitled` at zero, which `entitled` alone did not.
-            const grantedDays = b.granted ?? Math.max(b.entitled, b.accrued);
-            const pct = grantedDays > 0 ? Math.min(100, (b.used / grantedDays) * 100) : 0;
+            const granted = grantedDays(b);
+            const pct = granted > 0 ? Math.min(100, (b.used / granted) * 100) : 0;
             return (
               <div key={b.id} className="surface p-5">
                 <div className="mb-3 flex items-start justify-between gap-2">
@@ -435,7 +484,7 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{b.leaveTypeName}</p>
                     <p className="text-xs text-slate-400">{b.employeeName} · {b.year}</p>
                   </div>
-                  <button type="button" className={btn.sm} onClick={() => { setAdjustModal(b); setAdjAmount('0'); setAdjReason(''); }}>Adjust</button>
+                  <button type="button" className={btn.sm} onClick={() => { setAdjustModal(b); setAdjAmount('0'); setAdjReason(''); }}>{t('Adjust')}</button>
                 </div>
                 {b.statutoryEntitlementDays != null ? (
                   // Saudi statutory event leave is granted by law per event, not drawn from this
@@ -452,15 +501,15 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
                 )}
                 <div className="grid grid-cols-3 gap-2 text-center">
                   {[
-                    { label: 'Entitled', val: b.entitled },
-                    { label: 'Used', val: b.used },
-                    { label: 'Available', val: b.statutoryEntitlementDays != null ? '—' : available },
-                    { label: 'Pending', val: b.pending },
-                    { label: 'Carried Fwd', val: b.carriedForward },
-                    { label: 'Encashed', val: b.encashed },
+                    { label: t('Entitled'), val: granted },
+                    { label: t('Used'), val: b.used },
+                    { label: t('Available'), val: b.statutoryEntitlementDays != null ? '—' : available },
+                    { label: t('Pending'), val: b.pending },
+                    { label: t('Carried Fwd'), val: b.carriedForward },
+                    { label: t('Encashed'), val: b.encashed },
                   ].map(x => (
                     <div key={x.label} className="rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-white/5">
-                      <p className={`text-base font-semibold tabular-nums ${x.label === 'Available' ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{x.val}</p>
+                      <p className={`text-base font-semibold tabular-nums ${x.label === t('Available') ? 'text-sapphire dark:text-cyanAccent' : 'text-slate-700 dark:text-slate-300'}`}>{x.val}</p>
                       <p className="text-caption text-slate-400">{x.label}</p>
                     </div>
                   ))}
@@ -470,20 +519,20 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
           })}
         </div>
       )}
-      <ListWindowFooter shown={balances.length} total={list.total} noun="balances" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={balances.length} total={list.total} noun="balances" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} balances', { shown: balances.length, total: list.total ?? balances.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
 
       {adjustModal && (
-        <Modal title={`Adjust Balance — ${adjustModal.leaveTypeName} (${adjustModal.employeeName})`} onClose={() => setAdjustModal(null)}>
+        <Modal title={t('Adjust Balance — {leaveTypeName} ({employeeName})', { leaveTypeName: adjustModal.leaveTypeName, employeeName: adjustModal.employeeName })} onClose={() => setAdjustModal(null)}>
           <div className="space-y-4">
-            <Field label="Adjustment Amount (use negative to deduct)">
+            <Field label={t('Adjustment Amount (use negative to deduct)')}>
               <input type="number" step="0.5" className={inp} value={adjAmount} onChange={e => setAdjAmount(e.target.value)} />
             </Field>
-            <Field label="Reason (required for audit trail) *">
-              <textarea className={inp} rows={3} value={adjReason} onChange={e => setAdjReason(e.target.value)} placeholder="State the reason for this balance adjustment…" />
+            <Field label={t('Reason (required for audit trail) *')}>
+              <textarea className={inp} rows={3} value={adjReason} onChange={e => setAdjReason(e.target.value)} placeholder={t('State the reason for this balance adjustment…')} />
             </Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setAdjustModal(null)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={adjust}>Apply Adjustment</button>
+              <button type="button" className={btn.ghost} onClick={() => setAdjustModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={adjust}>{t('Apply Adjustment')}</button>
             </div>
           </div>
         </Modal>
@@ -494,8 +543,13 @@ function BalanceTab({ selfEmployeeId, groupFilter = {} }: { selfEmployeeId?: num
 
 // ── Apply Leave Tab ───────────────────────────────────────────────────────────
 
+const LEAVE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const LEAVE_ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
+
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
   const { t } = useLocale();
+  const { user } = useAuth();
+  const [attachment, setAttachment] = useState<File | null>(null);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [pickedEmployee, setPickedEmployee] = useState<SelectedEmployee | null>(null);
   const [delegatePicked, setDelegatePicked] = useState<SelectedEmployee | null>(null);
@@ -556,10 +610,25 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 
   const submit = async () => {
     if (!form.employeeId || !form.leaveTypeId || !form.startDate || !form.endDate) {
-      setError('Employee ID, Leave Type, and dates are required.'); return;
+      setError(t('Employee ID, Leave Type, and dates are required.')); return;
+    }
+    if (selectedType?.requiresAttachment && !attachment) {
+      setError(t('Add a supporting document. This leave type needs one.')); return;
+    }
+    if (attachment && attachment.size > LEAVE_ATTACHMENT_MAX_BYTES) {
+      setError(t('The file is larger than 10 MB.')); return;
     }
     setSaving(true); setError('');
     try {
+      // The document goes up first (onto the employee's own file) and the request then cites it by id, so nothing is
+      // created if the upload fails. The server refuses a leave type that requires a document without one.
+      let attachmentDocumentId: string | undefined;
+      if (selectedType?.requiresAttachment && attachment) {
+        const ownRecord = user?.employeeId != null && user.employeeId === Number(form.employeeId);
+        attachmentDocumentId = ownRecord
+          ? (await essApi.uploadDocument(attachment, 'Leave Attachment')).id
+          : (await employeesApi.uploadDocument(Number(form.employeeId), { documentType: 'Leave Attachment', isRequired: false }, attachment)).id;
+      }
       await leaveRequestsApi.create({
         employeeId: Number(form.employeeId), employeeName: form.employeeName,
         departmentName: form.departmentName, designationTitle: form.designationTitle,
@@ -570,11 +639,13 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
         delegateEmployeeName: form.delegateEmployeeName,
         statutoryEventDate: isDeclarableLeave(applyKind) && form.statutoryEventDate ? form.statutoryEventDate : undefined,
         separateEventReason: isDeclarableLeave(applyKind) && form.separateEventReason.trim() ? form.separateEventReason.trim() : undefined,
+        attachmentDocumentId,
       });
+      setAttachment(null);
       setSuccess(true);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? 'Failed to submit request.');
+      setError(msg ?? t('Failed to submit request.'));
     }
     setSaving(false);
   };
@@ -582,33 +653,33 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
   if (success) return (
     <div className="surface flex flex-col items-center py-20 text-center">
       <CheckCircle className="mb-3 h-12 w-12 text-emerald-500" />
-      <p className="text-lg font-semibold text-slate-800 dark:text-white">Leave Request Submitted</p>
-      <p className="mt-1 text-sm text-slate-400">Your request is pending manager approval.</p>
-      <button type="button" className={`mt-6 ${btn.primary}`} onClick={() => { setSuccess(false); setForm(f => ({ ...f, startDate: '', endDate: '', reason: '' })); }}>Apply Another</button>
+      <p className="text-lg font-semibold text-slate-800 dark:text-white">{t('Leave Request Submitted')}</p>
+      <p className="mt-1 text-sm text-slate-400">{t('Your request is pending manager approval.')}</p>
+      <button type="button" className={`mt-6 ${btn.primary}`} onClick={() => { setSuccess(false); setForm(f => ({ ...f, startDate: '', endDate: '', reason: '' })); }}>{t('Apply Another')}</button>
     </div>
   );
 
   return (
     <div className="max-w-2xl space-y-5">
       <div className="surface p-5">
-        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Employee</p>
+        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Employee')}</p>
         {isEmployee ? (
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            Applying on behalf of: <span className="font-medium text-slate-800 dark:text-white">{form.employeeName || `Employee #${form.employeeId}`}</span>
+            {t('Applying on behalf of')}: <span className="font-medium text-slate-800 dark:text-white" dir="auto">{form.employeeName || t('Employee #{id}', { id: form.employeeId })}</span>
           </p>
         ) : (
           <div className="space-y-3">
             <EmployeePicker
-              label="Employee *"
+              label={t('Employee *')}
               required
               value={pickedEmployee}
               onChange={setPickedEmployee}
-              placeholder="Search by name or employee code…"
+              placeholder={t('Search by name or employee code…')}
             />
             {pickedEmployee && (
               <div className="grid grid-cols-2 gap-3 text-xs text-slate-500 dark:text-slate-400">
-                <div><span className="font-medium">Department:</span> {pickedEmployee.department || '—'}</div>
-                <div><span className="font-medium">Designation:</span> {pickedEmployee.designation || '—'}</div>
+                <div><span className="font-medium">{t('Department')}:</span> {pickedEmployee.department || '—'}</div>
+                <div><span className="font-medium">{t('Designation')}:</span> {pickedEmployee.designation || '—'}</div>
               </div>
             )}
           </div>
@@ -616,12 +687,12 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
       </div>
 
       <div className="surface p-5">
-        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Leave Details</p>
+        <p className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Leave Details')}</p>
         <div className="space-y-4">
-          <Field label="Leave Type *" info="The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow." infoKey="leave.leave_type">
+          <Field label={t('Leave Type *')} info={t('The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow.')} infoKey="leave.leave_type">
             <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
-              <option value="">Select leave type…</option>
-              {leaveTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}{!t.isPaid ? ' (Unpaid)' : ''}</option>)}
+              <option value="">{t('Select leave type…')}</option>
+              {leaveTypes.map(lt => <option key={lt.id} value={lt.id}>{lt.nameEn}{!lt.isPaid ? ` (${t('Unpaid')})` : ''}</option>)}
             </select>
           </Field>
 
@@ -636,39 +707,39 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           {balance !== null && balance.statutoryEntitlementDays == null && (
             <div className={`rounded-lg border p-3 ${available !== null && available < requestedDays ? 'border-rose-200 bg-rose-50 dark:border-rose-500/20 dark:bg-rose-500/10' : 'border-emerald-200 bg-emerald-50 dark:border-emerald-500/20 dark:bg-emerald-500/10'}`}>
               <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Available Balance</span>
-                <span className={`text-lg font-semibold tabular-nums ${available !== null && available < requestedDays ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>{available?.toFixed(2)} days</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{t('Available Balance')}</span>
+                <span className={`text-lg font-semibold tabular-nums ${available !== null && available < requestedDays ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>{t('{value} days', { value: available?.toFixed(2) })}</span>
               </div>
               {selectedType && !selectedType.isPaid && (
-                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">⚠ This is unpaid leave — payroll deduction will apply.</p>
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">{t('⚠ This is unpaid leave — payroll deduction will apply.')}</p>
               )}
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Start Date *" info="First day of leave (inclusive). Must be on or before the end date." infoKey="leave.start_date"><input type="date" className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
-            <Field label="End Date *" info="Last day of leave (inclusive). Total days are calculated automatically from the policy and day type." infoKey="leave.end_date"><input type="date" className={inp} value={form.endDate} onChange={e => set('endDate', e.target.value)} /></Field>
+            <Field label={t('Start Date *')} info={t('First day of leave (inclusive). Must be on or before the end date.')} infoKey="leave.start_date"><input type="date" className={inp} value={form.startDate} onChange={e => set('startDate', e.target.value)} /></Field>
+            <Field label={t('End Date *')} info={t('Last day of leave (inclusive). Total days are calculated automatically from the policy and day type.')} infoKey="leave.end_date"><input type="date" className={inp} value={form.endDate} onChange={e => set('endDate', e.target.value)} /></Field>
           </div>
 
           {requestedDays > 0 && (
             <div className="rounded-lg bg-slate-50 px-4 py-3 dark:bg-white/5">
-              <p className="text-sm text-slate-600 dark:text-slate-400">Duration: <strong className="text-slate-900 dark:text-white">{requestedDays} calendar day{requestedDays !== 1 ? 's' : ''}</strong> (exact working days per policy calculated server-side)</p>
+              <p className="text-sm text-slate-600 dark:text-slate-400">{t('Duration')}: <strong className="text-slate-900 dark:text-white">{t('{count, plural, one {# calendar day} other {# calendar days}}', { count: requestedDays })}</strong> ({t('Exact working days per policy are calculated server-side')})</p>
             </div>
           )}
 
-          <Field label="Day Type" info="Full day, half day or hourly leave. Half day and hourly count as partial days against the balance." infoKey="leave.day_type">
+          <Field label={t('Day Type')} info={t('Full day, half day or hourly leave. Half day and hourly count as partial days against the balance.')} infoKey="leave.day_type">
             <select className={sel} value={form.dayType} onChange={e => set('dayType', e.target.value)}>
-              <option value="Full">Full Day</option>
-              {selectedType?.isHalfDayAllowed && <><option value="Half-AM">Half Day (Morning)</option><option value="Half-PM">Half Day (Afternoon)</option></>}
-              {selectedType?.isHourlyAllowed && <option value="Hourly">Hourly</option>}
+              <option value="Full">{t('Full Day')}</option>
+              {selectedType?.isHalfDayAllowed && <><option value="Half-AM">{t('Half Day (Morning)')}</option><option value="Half-PM">{t('Half Day (Afternoon)')}</option></>}
+              {selectedType?.isHourlyAllowed && <option value="Hourly">{t('Hourly')}</option>}
             </select>
           </Field>
           {form.dayType === 'Hourly' && (
-            <Field label="Hours Requested"><input type="number" step="0.5" min="1" max="8" className={inp} value={form.hoursRequested} onChange={e => set('hoursRequested', e.target.value)} /></Field>
+            <Field label={t('Hours Requested')}><input type="number" step="0.5" min="1" max="8" className={inp} value={form.hoursRequested} onChange={e => set('hoursRequested', e.target.value)} /></Field>
           )}
 
-          <Field label={`Reason${selectedType?.requiresReason ? ' *' : ''}`}>
-            <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? 'Reason is required for this leave type…' : 'Optional reason…'} />
+          <Field label={`${t('Reason')}${selectedType?.requiresReason ? ' *' : ''}`}>
+            <textarea className={inp} rows={3} value={form.reason} onChange={e => set('reason', e.target.value)} placeholder={selectedType?.requiresReason ? t('Reason is required for this leave type…') : t('Optional reason…')} />
           </Field>
 
           {isDeclarableLeave(applyKind) && (
@@ -684,31 +755,40 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
           )}
 
           {selectedType?.requiresAttachment && (
-            <div className="rounded-lg border border-dashed border-slate-300 p-4 text-center text-sm text-slate-400 dark:border-white/20">
-              This leave type requires a supporting document. Upload after submission via the request detail.
-            </div>
+            <Field label={t('Supporting document (required)')} info={t('This leave type needs a supporting document, for example a medical certificate. It is saved on the employee\'s file and sent with the request.')}>
+              <input
+                type="file"
+                accept={LEAVE_ATTACHMENT_ACCEPT}
+                data-testid="leave-apply-attachment"
+                className={inp}
+                onChange={e => setAttachment(e.target.files?.[0] ?? null)}
+              />
+              <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">
+                {attachment ? attachment.name : t('A PDF or a photo, up to 10 MB.')}
+              </p>
+            </Field>
           )}
 
           <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
             <input type="checkbox" checked={form.isEmergency} onChange={e => set('isEmergency', e.target.checked)} className="rounded" />
-            Emergency leave request
+            {t('Emergency leave request')}
           </label>
         </div>
       </div>
 
       <div className="surface p-5">
-        <p className="mb-1 text-sm font-semibold text-slate-800 dark:text-white">Delegation (optional)</p>
-        <p className="mb-3 text-xs text-slate-400">Assign a colleague to handle responsibilities during your absence.</p>
+        <p className="mb-1 text-sm font-semibold text-slate-800 dark:text-white">{t('Delegation (optional)')}</p>
+        <p className="mb-3 text-xs text-slate-400">{t('Assign a colleague to handle responsibilities during your absence.')}</p>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Delegate Employee">
-            <EmployeePicker value={delegatePicked} onChange={setDelegatePicked} placeholder="Search delegate employee…" />
+          <Field label={t('Delegate Employee')}>
+            <EmployeePicker value={delegatePicked} onChange={setDelegatePicked} placeholder={t('Search delegate employee…')} />
           </Field>
-          <Field label="Delegate Name"><input className={inp} value={form.delegateEmployeeName} onChange={e => set('delegateEmployeeName', e.target.value)} /></Field>
+          <Field label={t('Delegate Name')}><input className={inp} value={form.delegateEmployeeName} onChange={e => set('delegateEmployeeName', e.target.value)} /></Field>
         </div>
       </div>
 
       {error && <p className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">{error}</p>}
-      <button type="button" className={btn.primary} onClick={submit} disabled={saving}>{saving ? 'Submitting…' : 'Submit Leave Request'}</button>
+      <button type="button" className={btn.primary} onClick={submit} disabled={saving}>{saving ? t('Submitting…') : t('Submit Leave Request')}</button>
     </div>
   );
 }
@@ -757,15 +837,15 @@ function MyRequestsTab() {
       {confirmDialog}
       <div className="flex flex-wrap items-center gap-3">
         <select className={`${sel} w-56`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-          <option value="">All Statuses</option>
+          <option value="">{t('All Statuses')}</option>
           {['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval', 'Approved', 'CancellationRequested', 'Rejected', 'Cancelled', 'Withdrawn', 'PayrollProcessed'].map(s => (
-            <option key={s} value={s}>{s.replace(/([A-Z])/g, ' $1').trim()}</option>
+            <option key={s} value={s}>{enumLabel(t, 'LeaveRequestStatus', s)}</option>
           ))}
         </select>
-        <p className="text-sm text-slate-400">{requestCount} request{requestCount !== 1 ? 's' : ''}</p>
+        <p className="text-sm text-slate-400">{t('{count, plural, one {# request} other {# requests}}', { count: requestCount })}</p>
         <div className="ms-auto">
           <ImportExportToolbar
-            entityName="Leave Requests"
+            entityName={t('Leave Requests')}
             onExport={leaveRequestsImportExport.export}
             onDownloadTemplate={leaveRequestsImportExport.template}
             onImport={leaveRequestsImportExport.import}
@@ -773,11 +853,11 @@ function MyRequestsTab() {
         </div>
       </div>
 
-      {list.error != null && <LoadFailure what="Leave requests" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
+      {list.error != null && <LoadFailure what={t('Leave requests')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <FileText className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No leave requests</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No leave requests')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -789,8 +869,8 @@ function MyRequestsTab() {
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.leaveTypeName}</p>
                     {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
-                  <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</p>
-                  {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">Rejected: {r.rejectionReason}</p>}
+                  <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</p>
+                  {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{t('Rejected: {rejectionReason}', { rejectionReason: r.rejectionReason })}</p>}
                   {r.reason && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{r.reason}</p>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -801,7 +881,7 @@ function MyRequestsTab() {
                     </button>
                   )}
                   {r.status === 'Approved' && (
-                    <button type="button" className={btn.sm} onClick={() => { setCancelModal(r); setCancelReason(''); }}>Cancel</button>
+                    <button type="button" className={btn.sm} onClick={() => { setCancelModal(r); setCancelReason(''); }}>{t('Cancel')}</button>
                   )}
                 </div>
               </div>
@@ -809,18 +889,18 @@ function MyRequestsTab() {
           ))}
         </div>
       )}
-      <ListWindowFooter shown={requests.length} total={list.total} noun="requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={requests.length} total={list.total} noun="requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} requests', { shown: requests.length, total: list.total ?? requests.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
 
       {cancelModal && (
-        <Modal title="Cancel Leave Request" onClose={() => setCancelModal(null)}>
+        <Modal title={t('Cancel Leave Request')} onClose={() => setCancelModal(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-400">Cancelling approved leave requires manager review.</p>
-            <Field label="Cancellation Reason *">
+            <p className="text-sm text-slate-600 dark:text-slate-400">{t('Cancelling approved leave requires manager review.')}</p>
+            <Field label={t('Cancellation Reason *')}>
               <textarea className={inp} rows={3} value={cancelReason} onChange={e => setCancelReason(e.target.value)} />
             </Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setCancelModal(null)}>Back</button>
-              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={cancel} disabled={isBusy(`cancel:${cancelModal.id}`)} aria-busy={isBusy(`cancel:${cancelModal.id}`) || undefined}>Request Cancellation</button>
+              <button type="button" className={btn.ghost} onClick={() => setCancelModal(null)}>{t('Back')}</button>
+              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={cancel} disabled={isBusy(`cancel:${cancelModal.id}`)} aria-busy={isBusy(`cancel:${cancelModal.id}`) || undefined}>{t('Request Cancellation')}</button>
             </div>
           </div>
         </Modal>
@@ -930,18 +1010,18 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   return (
     <div className="space-y-4">
-      {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{requests.length} pending approval{requests.length !== 1 ? 's' : ''}</p>}
+      {loadError == null && <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# pending approval} other {# pending approvals}}', { count: requests.length })}</p>}
       {loadError == null && queueCut && (
         <p role="status" data-testid="leave-queue-cut" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
           {t('Showing the first {shown} of {total} pending requests. Narrow by company or branch to see the rest.', { shown: (1000).toLocaleString(locale), total: queueTotal.toLocaleString(locale) })}
         </p>
       )}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : loadError != null ? (
-        <LoadFailure what="Pending approvals" error={loadError} />
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : loadError != null ? (
+        <LoadFailure what={t('Pending approvals')} error={loadError} />
       ) : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <CheckCircle className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No pending approvals</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No pending approvals')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -957,7 +1037,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   <div className="mt-2 flex flex-wrap items-center gap-3">
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-slate-300">{r.leaveTypeName}</span>
                     <span className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</span>
-                    <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays} day{r.totalDays !== 1 ? 's' : ''}</span>
+                    <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</span>
                     {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
                   </div>
                   {r.kind === 'Cancellation'
@@ -971,9 +1051,9 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   {r.kind === 'Cancellation'
                     ? <LeaveCancellationActions item={r} busy={cancellation.busyId === r.id} onApprove={cancellation.approve} onKeep={cancellation.keep} />
                     : <>
-                        <p className="text-xs text-slate-400">Submitted {fmtDate(r.submittedAtUtc)}</p>
+                        <p className="text-xs text-slate-400">{t('Submitted {submittedAtUtc}', { submittedAtUtc: fmtDate(r.submittedAtUtc) })}</p>
                         {canDecide && <div className="flex gap-2">
-                          <button type="button" className={`${btn.ghost} disabled:opacity-50`} onClick={() => { setRejectModal(r); setRejectReason(''); }} disabled={isBusy(`decide:${r.id}`)}>Reject</button>
+                          <button type="button" className={`${btn.ghost} disabled:opacity-50`} onClick={() => { setRejectModal(r); setRejectReason(''); }} disabled={isBusy(`decide:${r.id}`)}>{t('Reject')}</button>
                           <button type="button" className={`${btn.primary} disabled:opacity-50`} onClick={() => void approve(r.id)} disabled={isBusy(`decide:${r.id}`)} aria-busy={isBusy(`decide:${r.id}`) || undefined}>
                             {isBusy(`decide:${r.id}`) ? t('Approving…') : t('Approve')}
                           </button>
@@ -987,14 +1067,14 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       )}
       <WaitingOnOthers groupFilter={groupFilter} reloadKey={requests.length} />
       {rejectModal && (
-        <Modal title={`Reject Leave — ${rejectModal.employeeName}`} onClose={() => setRejectModal(null)}>
+        <Modal title={t('Reject Leave — {employeeName}', { employeeName: rejectModal.employeeName })} onClose={() => setRejectModal(null)}>
           <div className="space-y-4">
-            <Field label="Rejection Reason *">
-              <textarea className={inp} rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Provide a clear reason for rejection…" />
+            <Field label={t('Rejection Reason *')}>
+              <textarea className={inp} rows={3} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder={t('Provide a clear reason for rejection…')} />
             </Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setRejectModal(null)}>Cancel</button>
-              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={reject} disabled={isBusy(`decide:${rejectModal.id}`)} aria-busy={isBusy(`decide:${rejectModal.id}`) || undefined}>Reject Request</button>
+              <button type="button" className={btn.ghost} onClick={() => setRejectModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={reject} disabled={isBusy(`decide:${rejectModal.id}`)} aria-busy={isBusy(`decide:${rejectModal.id}`) || undefined}>{t('Reject Request')}</button>
             </div>
           </div>
         </Modal>
@@ -1007,6 +1087,8 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Calendar Tab ──────────────────────────────────────────────────────────────
 
 function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const t = useT();
+  const fx = useFormat();
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth());
   const [calYear, setCalYear] = useState(today.getFullYear());
@@ -1031,7 +1113,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
       .catch(() => {});
   }, [month, calYear, dept, groupFilter.companyId, groupFilter.branchId]);
 
-  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DAYS = [msg('Sun'), msg('Mon'), msg('Tue'), msg('Wed'), msg('Thu'), msg('Fri'), msg('Sat')];
   const startPad = firstDay.getDay();
   const totalCells = startPad + lastDay.getDate();
   const cells = Array.from({ length: Math.ceil(totalCells / 7) * 7 }, (_, i) => {
@@ -1047,15 +1129,15 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month - 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>‹ Prev</button>
-        <p className="text-sm font-semibold text-slate-800 dark:text-white">{new Date(calYear, month).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</p>
-        <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month + 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>Next ›</button>
-        <input className={`${inp} w-48`} placeholder="Filter by department…" value={dept} onChange={e => setDept(e.target.value)} />
+        <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month - 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>{t('‹ Prev')}</button>
+        <p className="text-sm font-semibold text-slate-800 dark:text-white">{fx.date(new Date(calYear, month, 15), 'monthYear')}</p>
+        <button type="button" className={btn.ghost} onClick={() => { const d = new Date(calYear, month + 1); setMonth(d.getMonth()); setCalYear(d.getFullYear()); }}>{t('Next ›')}</button>
+        <input className={`${inp} w-48`} placeholder={t('Filter by department…')} value={dept} onChange={e => setDept(e.target.value)} />
       </div>
 
       <div className="surface overflow-hidden">
         <div className="grid grid-cols-7 border-b border-slate-100 dark:border-white/5">
-          {DAYS.map(d => <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400">{d}</div>)}
+          {DAYS.map(d => <div key={d} className="py-2 text-center text-xs font-semibold text-slate-400">{t(d)}</div>)}
         </div>
         <div className="grid grid-cols-7">
           {cells.map((day, i) => {
@@ -1070,7 +1152,7 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                       {dayEntries.slice(0, 3).map((e, j) => (
                         <div key={j} className="truncate rounded px-1 py-0.5 text-caption font-medium text-white" style={{ backgroundColor: e.colorCode || '#2F6BFF' }}>{e.employeeName.split(' ')[0]}</div>
                       ))}
-                      {dayEntries.length > 3 && <p className="text-caption text-slate-400">+{dayEntries.length - 3} more</p>}
+                      {dayEntries.length > 3 && <p className="text-caption text-slate-400">{t('+{value} more', { value: dayEntries.length - 3 })}</p>}
                     </div>
                   </>
                 )}
@@ -1082,12 +1164,12 @@ function CalendarTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
       {entries.length > 0 && (
         <div className="surface p-4">
-          <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">Approved leaves this month:</p>
+          <p className="mb-2 text-xs font-semibold text-slate-500 dark:text-slate-400">{t('Approved leaves this month')}:</p>
           <div className="flex flex-wrap gap-3">
             {entries.filter(e => e.status === 'Approved').slice(0, 12).map((e, i) => (
               <div key={i} className="flex items-center gap-1.5">
                 <LeaveColorDot color={e.colorCode || '#2F6BFF'} />
-                <span className="text-xs text-slate-600 dark:text-slate-300">{e.employeeName} ({e.leaveTypeName}, {e.totalDays}d)</span>
+                <span className="text-xs text-slate-600 dark:text-slate-300">{e.employeeName} ({e.leaveTypeName}, {t('{days}d', { days: e.totalDays })})</span>
               </div>
             ))}
           </div>
@@ -1110,7 +1192,7 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
   const set = (k: keyof typeof form, v: string | number | boolean) => setForm(f => ({ ...f, [k]: v }));
 
   const save = async () => {
-    if (!form.code || !form.nameEn) { setError('Code and English name are required.'); return; }
+    if (!form.code || !form.nameEn) { setError(t('Code and English name are required.')); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     setSaving(true); setError('');
     try {
@@ -1121,7 +1203,7 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
   };
 
   return (
-    <Modal title={existing ? t('Edit leave type') : 'New Leave Type'} onClose={onClose}>
+    <Modal title={existing ? t('Edit leave type') : t('New Leave Type')} onClose={onClose}>
       <div className="space-y-4">
         {!existing && (org.options.length > 1 || lockCompany) && (
           <Field label={t('Company')}>
@@ -1130,35 +1212,35 @@ function CreateLeaveTypeModal({ onClose, onSaved, defaultCompanyId = '', lockCom
           </Field>
         )}
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Code *">
-            <input className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder="e.g. ANNUAL" disabled={!!existing} />
+          <Field label={t('Code *')}>
+            <input className={inp} value={form.code} onChange={e => set('code', e.target.value)} placeholder={t('For example: ANNUAL')} disabled={!!existing} />
             {existing && <p className="mt-1 text-caption text-slate-500 dark:text-slate-400">{t('The code is fixed once a leave type is created, because balances and requests refer to it.')}</p>}
           </Field>
-          <Field label="Category">
+          <Field label={t('Category')}>
             <select className={sel} value={form.category} onChange={e => set('category', e.target.value)}>
-              {['Annual', 'Sick', 'Emergency', 'Unpaid', 'Maternity', 'Paternity', 'Marriage', 'Bereavement', 'Hajj', 'Study', 'Compensatory', 'WFH', 'Custom'].map(c => <option key={c}>{c}</option>)}
+              {[msg('Annual'), msg('Sick'), msg('Emergency'), msg('Unpaid'), msg('Maternity'), msg('Paternity'), msg('Marriage'), msg('Bereavement'), msg('Hajj'), msg('Study'), msg('Compensatory'), 'WFH', msg('Custom')].map(c => <option value={c} key={c}>{t(c)}</option>)}
             </select>
           </Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Name (English) *"><input className={inp} value={form.nameEn} onChange={e => set('nameEn', e.target.value)} /></Field>
-          <Field label="Name (Arabic)"><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} onSuggest={(s) => set('nameAr', s)} /></div></Field>
+          <Field label={t('Name (English) *')}><input className={inp} value={form.nameEn} onChange={e => set('nameEn', e.target.value)} /></Field>
+          <Field label={t('Name (Arabic)')}><div className="flex items-stretch gap-1.5"><input className={`${inp} flex-1`} dir="rtl" value={form.nameAr} onChange={e => set('nameAr', e.target.value)} /><TransliterateButton source={form.nameEn} kind="organization-label" onSuggest={(s) => set('nameAr', s)} /></div></Field>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Max Consecutive Days (0=unlimited)"><input type="number" min={0} className={inp} value={form.maxConsecutiveDays} onChange={e => set('maxConsecutiveDays', Number(e.target.value))} /></Field>
-          <Field label="Colour"><input type="color" className="h-10 w-full rounded-lg border border-slate-200 dark:border-white/10" value={form.colorCode} onChange={e => set('colorCode', e.target.value)} /></Field>
+          <Field label={t('Max Consecutive Days (0=unlimited)')}><input type="number" min={0} className={inp} value={form.maxConsecutiveDays} onChange={e => set('maxConsecutiveDays', Number(e.target.value))} /></Field>
+          <Field label={t('Colour')}><input type="color" className="h-10 w-full rounded-lg border border-slate-200 dark:border-white/10" value={form.colorCode} onChange={e => set('colorCode', e.target.value)} /></Field>
         </div>
         <div className="grid grid-cols-2 gap-2">
-          {([['isPaid', 'Paid Leave'], ['isHalfDayAllowed', 'Half-Day Allowed'], ['isHourlyAllowed', 'Hourly Allowed'], ['requiresAttachment', 'Requires Attachment'], ['requiresReason', 'Requires Reason']] as [keyof typeof form, string][]).map(([k, l]) => (
+          {([['isPaid', msg('Paid Leave')], ['isHalfDayAllowed', msg('Half-Day Allowed')], ['isHourlyAllowed', msg('Hourly Allowed')], ['requiresAttachment', msg('Requires Attachment')], ['requiresReason', msg('Requires Reason')]] as [keyof typeof form, string][]).map(([k, l]) => (
             <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-              <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
+              <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{t(l)}
             </label>
           ))}
         </div>
         {error && <p className="text-xs text-rose-500">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? 'Saving…' : existing ? t('Save changes') : 'Create Leave Type'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={btn.primary} onClick={save} disabled={saving}>{saving ? t('Saving…') : existing ? t('Save changes') : t('Create Leave Type')}</button>
         </div>
       </div>
     </Modal>
@@ -1200,6 +1282,7 @@ export interface LeaveCompanyScopeProps {
 }
 
 export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, companyId, initialCompanyFilter = '' }: LeaveEditorProps & LeaveCompanyScopeProps = {}) {
+  const t = useT();
   const { t: tr } = useLocale();
   const org = useOrgCompanies();
   const [companyFilter, setCompanyFilter] = useState(initialCompanyFilter);
@@ -1246,17 +1329,17 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
       <div className="flex flex-wrap items-center justify-end gap-2">
         {!companyId && <div className="me-auto"><CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} /></div>}
         {!embedded && <ImportExportToolbar
-          entityName="Leave Types"
+          entityName={t('Leave Types')}
           onExport={leaveTypesImportExport.export}
           onDownloadTemplate={leaveTypesImportExport.template}
           onImport={leaveTypesImportExport.import}
         />}
         <ShowTurnedOffToggle checked={showOff} onChange={setShowOff} count={turnedOffCount} />
-        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Leave Type</button>
+        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('New Leave Type')}</button>
       </div>
       {removal.notice}
       {removal.confirmDialog}
-      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">Loading…</p>) : loadError != null ? <LoadFailure what="Leave types" error={loadError} /> : (
+      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">{t('Loading…')}</p>) : loadError != null ? <LoadFailure what={t('Leave types')} error={loadError} /> : (
         <div className={embedded ? 'grid gap-3' : 'grid gap-4 md:grid-cols-2 xl:grid-cols-3'}>
           {shown.map(t => (
             <div key={t.id} className={`surface p-4 ${t.isActive ? '' : 'opacity-70'}`} data-testid="leave-type-card">
@@ -1275,12 +1358,12 @@ export function LeaveTypesTab({ onDirtyChange, embedded = false, onSaved, compan
               {!t.isActive && <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400" data-testid="leave-type-off">{tr('Off')}</p>}
               <div className="flex flex-wrap gap-1.5">
                 <span className="rounded bg-slate-100 px-2 py-0.5 text-caption font-medium text-slate-600 dark:bg-white/10 dark:text-slate-400">{t.category}</span>
-                <span className={`rounded px-2 py-0.5 text-caption font-medium ${t.isPaid ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'}`}>{t.isPaid ? 'Paid' : 'Unpaid'}</span>
-                {t.isHalfDayAllowed && <span className="rounded bg-blue-50 px-2 py-0.5 text-caption font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">Half-Day</span>}
-                {t.isHourlyAllowed && <span className="rounded bg-purple-50 px-2 py-0.5 text-caption font-medium text-purple-600 dark:bg-purple-500/10 dark:text-purple-400">Hourly</span>}
-                {t.requiresAttachment && <span className="rounded bg-amber-50 px-2 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Attachment Req.</span>}
+                <span className={`rounded px-2 py-0.5 text-caption font-medium ${t.isPaid ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'}`}>{t.isPaid ? tr('Paid') : tr('Unpaid')}</span>
+                {t.isHalfDayAllowed && <span className="rounded bg-blue-50 px-2 py-0.5 text-caption font-medium text-blue-600 dark:bg-blue-500/10 dark:text-blue-400">{tr('Half-Day')}</span>}
+                {t.isHourlyAllowed && <span className="rounded bg-purple-50 px-2 py-0.5 text-caption font-medium text-purple-600 dark:bg-purple-500/10 dark:text-purple-400">{tr('Hourly')}</span>}
+                {t.requiresAttachment && <span className="rounded bg-amber-50 px-2 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">{tr('Attachment Req.')}</span>}
               </div>
-              <p className="mt-2 text-xs text-slate-400">Code: {t.code}{t.maxConsecutiveDays > 0 ? ` · Max ${t.maxConsecutiveDays}d consecutive` : ''}</p>
+              <p className="mt-2 text-xs text-slate-400">{tr('Code')}: <bdi>{t.code}</bdi>{t.maxConsecutiveDays > 0 ? ` · ${tr('Max {days} days consecutive', { days: t.maxConsecutiveDays })}` : ''}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-slate-500 dark:text-slate-400">{tr('Company')}:</span>
                 <CompanyCell name={org.nameOf(t.companyId)} />
@@ -1317,7 +1400,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
     companyId: existing?.companyId ?? defaultCompanyId,
     name: existing?.name ?? '',
     leaveTypeId: existing?.leaveTypeId ?? '',
-    countryCode: existing?.countryCode ?? 'UAE',
+    countryCode: existing?.countryCode ?? 'KSA',
     departmentName: existing?.departmentName ?? '',
     grade: existing?.grade ?? '',
     employmentType: existing?.employmentType ?? '',
@@ -1403,7 +1486,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
     && !(form.weekendsIncluded && form.publicHolidaysIncluded);
 
   const save = async () => {
-    if (!form.name || !form.leaveTypeId) { setError('Name and Leave Type are required.'); return; }
+    if (!form.name || !form.leaveTypeId) { setError(t('Name and Leave Type are required.')); return; }
     if (form.encashmentAllowed && !(form.encashmentMaxDays > 0)) { setError(t('Enter the maximum days per encashment, or untick Encashment Allowed.')); return; }
     if (!form.companyId && org.options.length > 1) { setError(t('Choose the company this belongs to.')); return; }
     if (!readyToSave(stillOpen, floorAck, floorReason)) { setError(t('Tick the box and give a reason to save below the legal minimum.')); return; }
@@ -1427,7 +1510,7 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
   };
 
   return (
-    <Modal title={isEdit ? 'Edit Leave Policy' : 'New Leave Policy'} onClose={onClose} wide>
+    <Modal title={isEdit ? t('Edit Leave Policy') : t('New Leave Policy')} onClose={onClose} wide>
       <div className="space-y-4">
         {(org.options.length > 1 || !!existing?.companyId || lockCompany) && (
           <Field label={t('Company')}>
@@ -1436,22 +1519,22 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
           </Field>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Policy Name *"><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. UAE Annual Leave — Full-Time" /></Field>
-          <Field label="Leave Type *" info="The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow." infoKey="leave.leave_type">
+          <Field label={t('Policy Name *')}><input className={inp} value={form.name} onChange={e => set('name', e.target.value)} placeholder={t('For example: Saudi Annual Leave — Full-Time')} /></Field>
+          <Field label={t('Leave Type *')} info={t('The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow.')} infoKey="leave.leave_type">
             <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
-              <option value="">Select…</option>
+              <option value="">{t('Select…')}</option>
               {leaveTypes.filter(lt => !form.companyId || !lt.companyId || lt.companyId === form.companyId).map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
             </select>
           </Field>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Country">
+          <Field label={t('Country')}>
             <select className={sel} value={form.countryCode} onChange={e => set('countryCode', e.target.value)}>
-              {['UAE', 'KSA', 'QAT', 'KWT', 'BHR', 'OMN', 'OTHER'].map(c => <option key={c}>{c}</option>)}
+              {[msg('UAE'), msg('KSA'), msg('QAT'), msg('KWT'), msg('BHR'), msg('OMN'), msg('OTHER')].map(c => <option key={c} value={c}>{t(c)}</option>)}
             </select>
           </Field>
-          <Field label="Department (blank=all)"><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} /></Field>
-          <Field label="Grade (blank=all)"><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} /></Field>
+          <Field label={t('Department (blank=all)')}><input className={inp} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} /></Field>
+          <Field label={t('Grade (blank=all)')}><input className={inp} value={form.grade} onChange={e => set('grade', e.target.value)} /></Field>
         </div>
         <fieldset className="min-w-0">
           <legend className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Employment Type')} <span className="font-normal text-slate-500 dark:text-slate-400">· {t('Tick one or more, or All')}</span></legend>
@@ -1468,10 +1551,10 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
           </div>
         </fieldset>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Contract Type"><input className={inp} value={form.contractType} onChange={e => set('contractType', e.target.value)} placeholder="All" /></Field>
-          <Field label="Gender">
+          <Field label={t('Contract Type')}><input className={inp} value={form.contractType} onChange={e => set('contractType', e.target.value)} placeholder={t('All')} /></Field>
+          <Field label={t('Gender')}>
             <select className={sel} value={form.gender} onChange={e => set('gender', e.target.value)}>
-              <option value="">All</option><option>Male</option><option>Female</option>
+              <option value="">{t('All')}</option><option value="Male">{t('Male')}</option><option value="Female">{t('Female')}</option>
             </select>
           </Field>
           <Field label={t('Nationality')} info={t('Locals are employees whose nationality is the country of their company (Saudi for a Saudi company). Create one policy for locals and one for expats to give them different notice, days or encashment. An employee with no nationality on file matches only an All policy.')}>
@@ -1484,12 +1567,12 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
         </div>
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Entitlement &amp; Accrual</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Entitlement & Accrual')}</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Field label="Annual Days"><input type="number" step="0.5" className={inp} value={form.annualEntitlementDays} onChange={e => set('annualEntitlementDays', Number(e.target.value))} /></Field>
-            <Field label="Accrual Method">
+            <Field label={t('Annual Days')}><input type="number" step="0.5" className={inp} value={form.annualEntitlementDays} onChange={e => set('annualEntitlementDays', Number(e.target.value))} /></Field>
+            <Field label={t('Accrual Method')}>
               <select className={sel} value={form.accrualMethod} onChange={e => set('accrualMethod', e.target.value)}>
-                {['Monthly', 'Yearly', 'Prorated'].map(m => <option key={m}>{m}</option>)}
+                {[msg('Monthly'), msg('Yearly'), msg('Prorated')].map(m => <option value={m} key={m}>{t(m)}</option>)}
               </select>
             </Field>
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={form.accrualMethod !== 'Monthly'} checked={form.proratePartialMonths} onChange={e => set('proratePartialMonths', e.target.checked)} />{t('Prorate partial months by calendar days employed')}</label>
@@ -1522,17 +1605,17 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
         </div>
 
         <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Request Rules</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{t('Request Rules')}</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <Field label="Min Days/Request"><input type="number" step="0.5" className={inp} value={form.minimumDaysPerRequest} onChange={e => set('minimumDaysPerRequest', Number(e.target.value))} /></Field>
-            <Field label="Max Days/Request (0=unlimited)"><input type="number" step="0.5" className={inp} value={form.maximumDaysPerRequest} onChange={e => set('maximumDaysPerRequest', Number(e.target.value))} /></Field>
-            <Field label="Notice Required (days)"><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
+            <Field label={t('Min Days/Request')}><input type="number" step="0.5" className={inp} value={form.minimumDaysPerRequest} onChange={e => set('minimumDaysPerRequest', Number(e.target.value))} /></Field>
+            <Field label={t('Max Days/Request (0=unlimited)')}><input type="number" step="0.5" className={inp} value={form.maximumDaysPerRequest} onChange={e => set('maximumDaysPerRequest', Number(e.target.value))} /></Field>
+            <Field label={t('Notice Required (days)')}><input type="number" className={inp} value={form.noticeRequiredDays} onChange={e => set('noticeRequiredDays', Number(e.target.value))} /></Field>
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            {([['weekendsIncluded', 'Count Weekends'], ['publicHolidaysIncluded', 'Count Public Holidays'], ['encashmentAllowed', 'Encashment Allowed'],
-               ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', 'Hajj: allow before 2 years or more than once']] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
+            {([['weekendsIncluded', msg('Count Weekends')], ['publicHolidaysIncluded', msg('Count Public Holidays')], ['encashmentAllowed', msg('Encashment Allowed')],
+               ...(statutoryKind === 'Hajj' ? [['allowsHajjBeyondStatutoryEligibility', msg('Hajj: allow before 2 years or more than once')]] : [])] as [keyof typeof form, string][]).map(([k, l]) => (
               <label key={k} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{l}
+                <input type="checkbox" checked={form[k] as boolean} onChange={e => set(k, e.target.checked)} className="rounded" />{t(l)}
               </label>
             ))}
           </div>
@@ -1553,22 +1636,22 @@ function PolicyModal({ leaveTypes, employmentTypeValues, existing, onClose, onSa
         <BelowMinimumPanel checks={floorChecks} stored={storedAcks} acknowledged={floorAck} onAcknowledged={setFloorAck} reason={floorReason} onReason={setFloorReason} />
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Payroll Impact">
+          <Field label={t('Payroll Impact')}>
             <select className={sel} value={form.payrollImpact} onChange={e => set('payrollImpact', e.target.value)}>
-              {['Full', 'Half', 'None', 'Custom'].map(p => <option key={p}>{p}</option>)}
+              {[msg('Full'), msg('Half'), msg('None'), msg('Custom')].map(p => <option value={p} key={p}>{t(p)}</option>)}
             </select>
           </Field>
-          <Field label="Status">
+          <Field label={t('Status')}>
             <select className={sel} value={form.status} onChange={e => set('status', e.target.value)}>
-              {['Draft', 'Active', 'Inactive'].map(s => <option key={s}>{s}</option>)}
+              {[msg('Draft'), msg('Active'), msg('Inactive')].map(s => <option value={s} key={s}>{t(s)}</option>)}
             </select>
           </Field>
         </div>
 
         {error && <p ref={errorRef} role="alert" tabIndex={-1} className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className={btn.ghost} onClick={onClose}>Cancel</button>
-          <button type="button" className={`${btn.primary} !bg-blue-600 hover:!bg-blue-700`} onClick={save} disabled={saving}>{saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Policy'}</button>
+          <button type="button" className={btn.ghost} onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className={`${btn.primary} !bg-blue-600 hover:!bg-blue-700`} onClick={save} disabled={saving}>{saving ? t('Saving…') : isEdit ? t('Save Changes') : t('Create Policy')}</button>
         </div>
       </div>
     </Modal>
@@ -1620,18 +1703,18 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
       <div className="flex flex-wrap items-center gap-3">
         {!companyId && <CompanyFilterSelect value={companyFilter} onChange={setCompanyFilter} options={org.options} hasUnassigned={unassignedCount > 0} />}
         <select className={`${sel} w-40`} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-          <option value="">All</option>
-          {['Draft', 'Active', 'Inactive', 'Archived'].map(s => <option key={s}>{s}</option>)}
+          <option value="">{t('All')}</option>
+          {[msg('Draft'), msg('Active'), msg('Inactive'), msg('Archived')].map(s => <option value={s} key={s}>{t(s)}</option>)}
         </select>
-        <p className="flex-1 text-sm text-slate-400">{shown.length} polic{shown.length !== 1 ? 'ies' : 'y'}</p>
-        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> New Policy</button>
+        <p className="flex-1 text-sm text-slate-400">{t('{count, plural, one {# policy} other {# policies}}', { count: shown.length })}</p>
+        <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('New Policy')}</button>
       </div>
 
-      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">Loading…</p>) : shown.length === 0 ? (
+      {loading ? (embedded ? <EmbeddedSkeleton /> : <p className="text-sm text-slate-400">{t('Loading…')}</p>) : shown.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Settings className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No policies configured</p>
-          <p className="text-xs text-slate-400">GCC leave rules are configurable — not hardcoded.</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No policies configured')}</p>
+          <p className="text-xs text-slate-400">{t('GCC leave rules are configurable — not hardcoded.')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -1640,27 +1723,27 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
               <div className={embedded ? 'min-w-[14rem] flex-1' : 'min-w-0 flex-1'}>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{p.name}</p>
                 <p className="mt-0.5 text-xs text-slate-400">
-                  {typeName(p.leaveTypeId)} · {p.countryCode} · {p.annualEntitlementDays}d/yr · {p.accrualMethod}
-                  {p.departmentName ? ` · ${p.departmentName}` : ' · All depts'}
-                  {p.grade ? ` · Grade ${p.grade}` : ''}
+                  {typeName(p.leaveTypeId)} · {p.countryCode} · {t('{days} days/yr', { days: p.annualEntitlementDays })} · {p.accrualMethod}
+                  {p.departmentName ? ` · ${p.departmentName}` : ` · ${t('All departments')}`}
+                  {p.grade ? ` · ${t('Grade {grade}', { grade: p.grade })}` : ''}
                   {p.employmentType ? ` · ${employmentTypesLabel(referenceLists.employmentType, p.employmentType, locale)}` : ''}
                 </p>
                 <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs"><CompanyCell name={org.nameOf(p.companyId)} /></p>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Encashment ✓</span>}
-                  {p.weekendsIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">Wknd incl.</span>}
-                  {p.publicHolidaysIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">PH incl.</span>}
-                  <span className={`rounded px-1.5 py-0.5 text-caption font-medium ${p.payrollImpact === 'None' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'}`}>Payroll: {p.payrollImpact}</span>
+                  {p.encashmentAllowed && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption font-medium text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">{t('Encashment ✓')}</span>}
+                  {p.weekendsIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">{t('Wknd incl.')}</span>}
+                  {p.publicHolidaysIncluded && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">{t('PH incl.')}</span>}
+                  <span className={`rounded px-1.5 py-0.5 text-caption font-medium ${p.payrollImpact === 'None' ? 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400'}`}>{t('Payroll: {payrollImpact}', { payrollImpact: p.payrollImpact })}</span>
                   <StatusBadge status={p.status} />
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <button type="button" className={btn.ghost} onClick={() => setEditPolicy(p)}>
-                  <Settings className="h-3.5 w-3.5" /> Edit
+                  <Settings className="h-3.5 w-3.5" /> {t('Edit')}
                 </button>
                 {p.status !== 'Archived' && (
                   <button type="button" className={embedded ? btn.ghost : btn.danger} onClick={() => archive(p.id, p.name)}>
-                    <X className="h-3.5 w-3.5" /> Archive
+                    <X className="h-3.5 w-3.5" /> {t('Archive')}
                   </button>
                 )}
               </div>
@@ -1678,7 +1761,7 @@ export function PoliciesTab({ onDirtyChange, embedded = false, onSaved, companyI
 // ── Holiday Calendar Tab ──────────────────────────────────────────────────────
 
 const BLANK_HOLIDAY_FORM = { nameEn: '', nameAr: '', date: '', hijriDate: '', holidayType: 'National', isRecurring: false, isOptional: false };
-const BLANK_CAL_FORM = { name: '', countryCode: 'UAE', calendarYear: new Date().getFullYear() };
+const BLANK_CAL_FORM = { name: '', countryCode: 'KSA', calendarYear: new Date().getFullYear() };
 
 export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, companyId }: LeaveEditorProps & {
   /** Show this company's calendars beside the workspace-wide ones (not other companies'), and create new ones for it. */
@@ -1842,12 +1925,12 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
         {/* ── Calendars list ── */}
         <div className="surface p-4">
           <div className="mb-3 flex items-center justify-between">
-            <p className="text-sm font-semibold text-slate-800 dark:text-white">Calendars</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Calendars')}</p>
             <button type="button" className={btn.sm} aria-label={t('New holiday calendar')} onClick={() => { setCalForm({ ...BLANK_CAL_FORM }); setCalModal('create'); }}>
               <Plus className="h-3 w-3" aria-hidden="true" />{embedded && t('New calendar')}
             </button>
           </div>
-          {shownCalendars.length === 0 ? <p className="text-xs text-slate-400">No calendars yet.</p> : (
+          {shownCalendars.length === 0 ? <p className="text-xs text-slate-400">{t('No calendars yet.')}</p> : (
             <div className="space-y-2">
               {shownCalendars.map(c => (
                 <div key={c.id}
@@ -1857,10 +1940,10 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
                     <p className="text-xs text-slate-400">{c.countryCode} · {c.calendarYear}{companyId && <> · {c.companyId ? t('This company') : t('All companies')}</>}</p>
                   </button>
                   <div className={`ms-1 flex shrink-0 items-center gap-1 ${embedded ? '' : 'opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100'}`}>
-                    <button type="button" title="Edit calendar" className="rounded p-1 text-slate-400 hover:text-sapphire dark:hover:text-cyanAccent" onClick={() => { setSelected(c); openEditCal(c); }}>
+                    <button type="button" title={t('Edit calendar')} className="rounded p-1 text-slate-400 hover:text-sapphire dark:hover:text-cyanAccent" onClick={() => { setSelected(c); openEditCal(c); }}>
                       <Settings className="h-3 w-3" />
                     </button>
-                    <button type="button" title="Delete calendar" className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => { setSelected(c); delCal(c); }}>
+                    <button type="button" title={t('Delete calendar')} className="rounded p-1 text-slate-400 hover:text-rose-500" onClick={() => { setSelected(c); delCal(c); }}>
                       <Trash2 className="h-3 w-3" />
                     </button>
                   </div>
@@ -1874,13 +1957,13 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
         <div className={`surface p-4 ${embedded ? '' : 'col-span-2'}`}>
           {!selected ? (
             <div className="flex h-full min-h-[200px] items-center justify-center">
-              <p className="text-sm text-slate-400">Select a calendar to view holidays</p>
+              <p className="text-sm text-slate-400">{t('Select a calendar to view holidays')}</p>
             </div>
           ) : (
             <>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-slate-800 dark:text-white">{selected.name} — {holidays.length} holidays</p>
-                <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={openAddHoliday}><Plus className="h-4 w-4" /> Add Holiday</button>
+                <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('{name} — {length} holidays', { name: selected.name, length: holidays.length })}</p>
+                <button type="button" className={embedded ? btn.ghost : btn.primary} onClick={openAddHoliday}><Plus className="h-4 w-4" /> {t('Add Holiday')}</button>
               </div>
               <div className="divide-y divide-slate-100 dark:divide-white/5">
                 {holidays.map(h => (
@@ -1890,9 +1973,9 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
                       {h.nameAr && <p className="text-xs text-slate-400" dir="rtl">{h.nameAr}</p>}
                       <div className="mt-0.5 flex items-center gap-2">
                         <span className="text-xs text-slate-400">{fmtDate(h.date)}</span>
-                        {h.hijriDate && <span className="text-xs text-slate-400">({h.hijriDate} Hijri)</span>}
+                        {h.hijriDate && <span className="text-xs text-slate-400">{t('({hijriDate} Hijri)', { hijriDate: h.hijriDate })}</span>}
                         <span className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-500 dark:bg-white/10">{h.holidayType}</span>
-                        {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Optional</span>}
+                        {h.isOptional && <span className="rounded bg-amber-50 px-1.5 py-0.5 text-caption text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">{t('Optional')}</span>}
                         {/* The "Recurring" badge is gone with the checkbox: it was the visible half
                             of the promise. A holiday marked recurring on a legacy row still never
                             rolled forward, so showing the badge would keep asserting it. */}
@@ -1900,10 +1983,10 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <button type="button" className={btn.ghost} onClick={() => openEditHoliday(h)}>
-                        <Settings className="h-3.5 w-3.5" /> Edit
+                        <Settings className="h-3.5 w-3.5" /> {t('Edit')}
                       </button>
                       <button type="button" className={embedded ? btn.ghost : btn.danger} onClick={() => delHoliday(h)}>
-                        <X className="h-3.5 w-3.5" /> Remove
+                        <X className="h-3.5 w-3.5" /> {t('Remove')}
                       </button>
                     </div>
                   </div>
@@ -1916,13 +1999,13 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
 
       {blackouts.length > 0 && (
         <div className="surface p-4">
-          <p className="mb-3 text-sm font-semibold text-slate-800 dark:text-white">Blackout / Critical Dates</p>
+          <p className="mb-3 text-sm font-semibold text-slate-800 dark:text-white">{t('Blackout / Critical Dates')}</p>
           <div className="divide-y divide-slate-100 dark:divide-white/5">
             {blackouts.map(b => (
               <div key={b.id} className="flex items-center justify-between py-3">
                 <div>
                   <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{b.nameEn}</p>
-                  <p className="text-xs text-slate-400">{fmtDate(b.startDate)} – {fmtDate(b.endDate)} · {b.isCompanyWide ? 'Company-wide' : b.departmentName || 'All'}</p>
+                  <p className="text-xs text-slate-400">{fmtDate(b.startDate)} – {fmtDate(b.endDate)} · {b.isCompanyWide ? t('Company-wide') : b.departmentName || t('All')}</p>
                 </div>
                 <span className="text-xs text-slate-400">{b.reason}</span>
               </div>
@@ -1933,25 +2016,25 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
 
       {/* ── Calendar modal (create / edit) ── */}
       {calModal !== 'none' && (
-        <Modal title={calModal === 'edit' ? 'Edit Calendar' : 'New Holiday Calendar'} onClose={() => setCalModal('none')}>
+        <Modal title={calModal === 'edit' ? t('Edit Calendar') : t('New Holiday Calendar')} onClose={() => setCalModal('none')}>
           <div className="space-y-4">
-            <Field label="Calendar Name *">
-              <input className={inp} value={calForm.name} onChange={e => setCalForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. UAE Public Holidays 2026" />
+            <Field label={t('Calendar Name *')}>
+              <input className={inp} value={calForm.name} onChange={e => setCalForm(f => ({ ...f, name: e.target.value }))} placeholder={t('For example: Saudi Public Holidays 2026')} />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Country">
+              <Field label={t('Country')}>
                 <select className={sel} value={calForm.countryCode} onChange={e => setCalForm(f => ({ ...f, countryCode: e.target.value }))}>
-                  {['UAE', 'KSA', 'QAT', 'KWT', 'BHR', 'OMN'].map(c => <option key={c}>{c}</option>)}
+                  {[msg('UAE'), msg('KSA'), msg('QAT'), msg('KWT'), msg('BHR'), msg('OMN')].map(c => <option key={c} value={c}>{t(c)}</option>)}
                 </select>
               </Field>
-              <Field label="Year">
-                <input type="number" className={inp} value={calForm.calendarYear} onChange={e => setCalForm(f => ({ ...f, calendarYear: Number(e.target.value) }))} title="Calendar year" placeholder="2026" />
+              <Field label={t('Year')}>
+                <input type="number" className={inp} value={calForm.calendarYear} onChange={e => setCalForm(f => ({ ...f, calendarYear: Number(e.target.value) }))} title={t('Calendar year')} placeholder="2026" />
               </Field>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setCalModal('none')}>Cancel</button>
+              <button type="button" className={btn.ghost} onClick={() => setCalModal('none')}>{t('Cancel')}</button>
               <button type="button" className={btn.primary} onClick={saveCal}>
-                {calModal === 'edit' ? 'Save Changes' : 'Create'}
+                {calModal === 'edit' ? t('Save Changes') : t('Create')}
               </button>
             </div>
           </div>
@@ -1960,13 +2043,13 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
 
       {/* ── Holiday modal (add / edit) ── */}
       {holidayModal !== 'none' && (
-        <Modal title={holidayModal === 'edit' ? 'Edit Holiday' : 'Add Public Holiday'} onClose={() => { setHolidayModal('none'); setEditingHoliday(null); }}>
+        <Modal title={holidayModal === 'edit' ? t('Edit Holiday') : t('Add Public Holiday')} onClose={() => { setHolidayModal('none'); setEditingHoliday(null); }}>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Name (English) *">
-                <input className={inp} value={holidayForm.nameEn} onChange={e => setHolidayForm(f => ({ ...f, nameEn: e.target.value }))} placeholder="e.g. National Day" />
+              <Field label={t('Name (English) *')}>
+                <input className={inp} value={holidayForm.nameEn} onChange={e => setHolidayForm(f => ({ ...f, nameEn: e.target.value }))} placeholder={t('For example: National Day')} />
               </Field>
-              <Field label="Name (Arabic)">
+              <Field label={t('Name (Arabic)')}>
                 <div className="flex items-stretch gap-1.5">
                   <input className={`${inp} flex-1`} dir="rtl" value={holidayForm.nameAr}
                     onChange={e => setHolidayForm(f => ({ ...f, nameAr: e.target.value }))} />
@@ -1975,16 +2058,16 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Date *">
-                <input type="date" className={inp} value={holidayForm.date} onChange={e => setHolidayForm(f => ({ ...f, date: e.target.value }))} title="Holiday date" />
+              <Field label={t('Date *')}>
+                <input type="date" className={inp} value={holidayForm.date} onChange={e => setHolidayForm(f => ({ ...f, date: e.target.value }))} title={t('Holiday date')} />
               </Field>
-              <Field label="Hijri Date (optional)">
-                <input className={inp} value={holidayForm.hijriDate} onChange={e => setHolidayForm(f => ({ ...f, hijriDate: e.target.value }))} placeholder="e.g. 1 Muharram 1448" />
+              <Field label={t('Hijri Date (optional)')}>
+                <input className={inp} value={holidayForm.hijriDate} onChange={e => setHolidayForm(f => ({ ...f, hijriDate: e.target.value }))} placeholder={t('For example: 1 Muharram 1448')} />
               </Field>
             </div>
-            <Field label="Holiday Type">
+            <Field label={t('Holiday Type')}>
               <select className={sel} value={holidayForm.holidayType} onChange={e => setHolidayForm(f => ({ ...f, holidayType: e.target.value }))}>
-                {['National', 'Religious', 'Eid', 'Company', 'Islamic'].map(ht => <option key={ht}>{ht}</option>)}
+                {[msg('National'), msg('Religious'), msg('Eid'), msg('Company'), msg('Islamic')].map(ht => <option value={ht} key={ht}>{t(ht)}</option>)}
               </select>
             </Field>
             <div className="flex gap-4">
@@ -1996,13 +2079,13 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
                   (holiday_recurrence_not_implemented). */}
               <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
                 <input type="checkbox" checked={holidayForm.isOptional} onChange={e => setHolidayForm(f => ({ ...f, isOptional: e.target.checked }))} className="rounded" />
-                Optional
+                {t('Optional')}
               </label>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => { setHolidayModal('none'); setEditingHoliday(null); }}>Cancel</button>
+              <button type="button" className={btn.ghost} onClick={() => { setHolidayModal('none'); setEditingHoliday(null); }}>{t('Cancel')}</button>
               <button type="button" className={btn.primary} onClick={saveHoliday}>
-                {holidayModal === 'edit' ? 'Save Changes' : 'Add Holiday'}
+                {holidayModal === 'edit' ? t('Save Changes') : t('Add Holiday')}
               </button>
             </div>
           </div>
@@ -2106,14 +2189,14 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
     <div className="space-y-4">
       {confirmDialog}
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-slate-400">{loading ? '' : `${encashmentCount} encashment request${encashmentCount !== 1 ? 's' : ''}`}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Request Encashment</button>
+        <p className="text-sm text-slate-400">{loading ? '' : t('{count, plural, one {# encashment request} other {# encashment requests}}', { count: encashmentCount })}</p>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('Request Encashment')}</button>
       </div>
-      {list.error != null && <LoadFailure what="Encashment requests" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
+      {list.error != null && <LoadFailure what={t('Encashment requests')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && requests.length === 0 ? null : requests.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <TrendingUp className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No encashment requests</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No encashment requests')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -2121,69 +2204,69 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             <div key={r.id} className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.employeeName}</p>
-                <p className="text-xs text-slate-400">{r.leaveTypeName} · {r.year} · {r.daysToEncash} days</p>
+                <p className="text-xs text-slate-400">{t('{leaveTypeName} · {year} · {daysToEncash} days', { leaveTypeName: r.leaveTypeName, year: r.year, daysToEncash: r.daysToEncash })}</p>
                 <p className="mt-1 text-sm font-semibold text-emerald-600 dark:text-emerald-400">{currencyCode} {fmtAmt(r.totalAmount)}</p>
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={r.status} />
                 {r.status === 'Pending' && canHrApprove && (
                   <div className="flex gap-2">
-                    <button type="button" className={`${btn.primary} disabled:opacity-50`} onClick={() => void hrApprove(r.id)} disabled={isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined}>HR Approve</button>
-                    <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void reject(r.id)} disabled={isBusy(`row:${r.id}`)}>Reject</button>
+                    <button type="button" className={`${btn.primary} disabled:opacity-50`} onClick={() => void hrApprove(r.id)} disabled={isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined}>{t('HR Approve')}</button>
+                    <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void reject(r.id)} disabled={isBusy(`row:${r.id}`)}>{t('Reject')}</button>
                   </div>
                 )}
                 {r.status === 'HRApproved' && canPayrollApprove && (
                   <div className="flex items-center gap-2">
                     <select
-                      aria-label={`Target payroll run for ${r.employeeName}`}
+                      aria-label={t('Target payroll run for {employeeName}', { employeeName: r.employeeName })}
                       className={sel}
                       value={selectedRun[r.id] ?? ''}
                       onChange={e => setSelectedRun(s => ({ ...s, [r.id]: e.target.value }))}
                     >
-                      <option value="">Select open payroll run…</option>
+                      <option value="">{t('Select open payroll run…')}</option>
                       {payrollRuns.filter(run => !r.companyId || run.companyId === r.companyId).map(run => (
                         <option key={run.id} value={run.id}>
-                          {run.year}-{String(run.month).padStart(2, '0')} · {run.runType ?? 'Regular'}
+                          {run.year}-{String(run.month).padStart(2, '0')} · {run.runType ?? t('Regular')}
                         </option>
                       ))}
                     </select>
                     <button type="button" className={`${btn.primary} disabled:opacity-50`} disabled={!selectedRun[r.id] || isBusy(`row:${r.id}`)} aria-busy={isBusy(`row:${r.id}`) || undefined} onClick={() => void payrollApprove(r.id)}>
-                      Payroll Approve
+                      {t('Payroll Approve')}
                     </button>
                   </div>
                 )}
                 {r.status === 'PayrollApproved' && canVoid && (
-                  <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void voidEncashment(r.id)} disabled={isBusy(`row:${r.id}`)}>Void</button>
+                  <button type="button" className={`${btn.danger} disabled:opacity-50`} onClick={() => void voidEncashment(r.id)} disabled={isBusy(`row:${r.id}`)}>{t('Void')}</button>
                 )}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={requests.length} total={list.total} noun="encashment requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={requests.length} total={list.total} noun="encashment requests" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} encashment requests', { shown: requests.length, total: list.total ?? requests.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {showCreate && (
-        <Modal title="Leave Encashment Request" onClose={() => setShowCreate(false)}>
+        <Modal title={t('Leave Encashment Request')} onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
-            <EmployeePicker label="Employee *" required value={encashPickedEmp} onChange={setEncashPickedEmp} placeholder="Search employee…" />
-            <Field label="Leave Type *" info="The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow." infoKey="leave.leave_type">
+            <EmployeePicker label={t('Employee *')} required value={encashPickedEmp} onChange={setEncashPickedEmp} placeholder={t('Search employee…')} />
+            <Field label={t('Leave Type *')} info={t('The category of leave (annual, sick, etc.). Determines the balance used, whether a reason or attachment is required, and the approval flow.')} infoKey="leave.leave_type">
               <select className={sel} value={form.leaveTypeId} onChange={e => set('leaveTypeId', e.target.value)}>
-                <option value="">Select…</option>
+                <option value="">{t('Select…')}</option>
                 {leaveTypes.map(t => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
               </select>
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Year"><input type="number" className={inp} value={form.year} onChange={e => set('year', Number(e.target.value))} /></Field>
-              <Field label="Days to Encash *"><input type="number" step="0.5" className={inp} value={form.daysToEncash} onChange={e => set('daysToEncash', e.target.value)} /></Field>
+              <Field label={t('Year')}><input type="number" className={inp} value={form.year} onChange={e => set('year', Number(e.target.value))} /></Field>
+              <Field label={t('Days to Encash *')}><input type="number" step="0.5" className={inp} value={form.daysToEncash} onChange={e => set('daysToEncash', e.target.value)} /></Field>
             </div>
             <div className="rounded-lg bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
               <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
-                The payable amount is calculated securely from the employee's active basic salary and legal-entity rules.
+                {t('The payable amount is calculated securely from the employee\'s active basic salary and legal-entity rules.')}
               </p>
             </div>
-            <Field label="Reason"><textarea className={inp} rows={2} value={form.reason} onChange={e => set('reason', e.target.value)} /></Field>
+            <Field label={t('Reason')}><textarea className={inp} rows={2} value={form.reason} onChange={e => set('reason', e.target.value)} /></Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={create} disabled={saving}>{saving ? 'Submitting…' : 'Submit'}</button>
+              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={create} disabled={saving}>{saving ? t('Submitting…') : t('Submit')}</button>
             </div>
           </div>
         </Modal>
@@ -2195,6 +2278,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Comp-Off Tab ──────────────────────────────────────────────────────────────
 
 function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const t = useT();
   const [showCreate, setShowCreate] = useState(false);
   const [compOffPickedEmp, setCompOffPickedEmp] = useState<SelectedEmployee | null>(null);
   const [form, setForm] = useState({ employeeId: '', employeeName: '', workedDate: '', workType: 'HolidayWork', hoursWorked: '', daysEarned: '', expiryDate: '' });
@@ -2225,14 +2309,14 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-slate-400">{loading ? '' : `${creditCount} comp-off credit${creditCount !== 1 ? 's' : ''}`}</p>
-        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> Add Comp-Off Credit</button>
+        <p className="text-sm text-slate-400">{loading ? '' : t('{count, plural, one {# comp-off credit} other {# comp-off credits}}', { count: creditCount })}</p>
+        <button type="button" className={btn.primary} onClick={() => setShowCreate(true)}><Plus className="h-4 w-4" /> {t('Add Comp-Off Credit')}</button>
       </div>
-      {list.error != null && <LoadFailure what="Comp-off credits" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && credits.length === 0 ? null : credits.length === 0 ? (
+      {list.error != null && <LoadFailure what={t('Comp-off credits')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && credits.length === 0 ? null : credits.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Star className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No comp-off credits</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No comp-off credits')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -2240,38 +2324,38 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
             <div key={c.id} className="flex items-center justify-between px-5 py-4">
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{c.employeeName}</p>
-                <p className="text-xs text-slate-400">{c.workType} · {fmtDate(c.workedDate)} · {c.daysEarned}d earned</p>
-                {c.expiryDate && <p className="text-xs text-amber-600 dark:text-amber-400">Expires: {fmtDate(c.expiryDate)}</p>}
+                <p className="text-xs text-slate-400">{t('{workType} · {workedDate} · {daysEarned}d earned', { workType: c.workType, workedDate: fmtDate(c.workedDate), daysEarned: c.daysEarned })}</p>
+                {c.expiryDate && <p className="text-xs text-amber-600 dark:text-amber-400">{t('Expires: {expiryDate}', { expiryDate: fmtDate(c.expiryDate) })}</p>}
               </div>
               <div className="flex items-center gap-3">
                 <StatusBadge status={c.status} />
-                {c.status === 'Pending' && <button type="button" className={btn.primary} onClick={() => approve(c.id)}>Approve</button>}
+                {c.status === 'Pending' && <button type="button" className={btn.primary} onClick={() => approve(c.id)}>{t('Approve')}</button>}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={credits.length} total={list.total} noun="credits" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={credits.length} total={list.total} noun="credits" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} credits', { shown: credits.length, total: list.total ?? credits.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {showCreate && (
-        <Modal title="Create Comp-Off Credit" onClose={() => setShowCreate(false)}>
+        <Modal title={t('Create Comp-Off Credit')} onClose={() => setShowCreate(false)}>
           <div className="space-y-4">
-            <EmployeePicker label="Employee *" required value={compOffPickedEmp} onChange={setCompOffPickedEmp} placeholder="Search employee…" />
+            <EmployeePicker label={t('Employee *')} required value={compOffPickedEmp} onChange={setCompOffPickedEmp} placeholder={t('Search employee…')} />
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Worked Date *"><input type="date" className={inp} value={form.workedDate} onChange={e => set('workedDate', e.target.value)} /></Field>
-              <Field label="Work Type">
+              <Field label={t('Worked Date *')}><input type="date" className={inp} value={form.workedDate} onChange={e => set('workedDate', e.target.value)} /></Field>
+              <Field label={t('Work Type')}>
                 <select className={sel} value={form.workType} onChange={e => set('workType', e.target.value)}>
-                  {['Overtime', 'HolidayWork', 'WeekendWork'].map(t => <option key={t}>{t}</option>)}
+                  {[msg('Overtime'), msg('HolidayWork'), msg('WeekendWork')].map(o => <option value={o} key={o}>{t(o)}</option>)}
                 </select>
               </Field>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <Field label="Hours Worked"><input type="number" step="0.5" className={inp} value={form.hoursWorked} onChange={e => set('hoursWorked', e.target.value)} /></Field>
-              <Field label="Days Earned *"><input type="number" step="0.5" className={inp} value={form.daysEarned} onChange={e => set('daysEarned', e.target.value)} /></Field>
-              <Field label="Expiry Date"><input type="date" className={inp} value={form.expiryDate} onChange={e => set('expiryDate', e.target.value)} /></Field>
+              <Field label={t('Hours Worked')}><input type="number" step="0.5" className={inp} value={form.hoursWorked} onChange={e => set('hoursWorked', e.target.value)} /></Field>
+              <Field label={t('Days Earned *')}><input type="number" step="0.5" className={inp} value={form.daysEarned} onChange={e => set('daysEarned', e.target.value)} /></Field>
+              <Field label={t('Expiry Date')}><input type="date" className={inp} value={form.expiryDate} onChange={e => set('expiryDate', e.target.value)} /></Field>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={create} disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
+              <button type="button" className={btn.ghost} onClick={() => setShowCreate(false)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={create} disabled={saving}>{saving ? t('Saving…') : t('Create')}</button>
             </div>
           </div>
         </Modal>
@@ -2283,6 +2367,7 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Absences Tab ──────────────────────────────────────────────────────────────
 
 function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const t = useT();
   const [regModal, setRegModal] = useState<AbsenceRecord | null>(null);
   const [regReason, setRegReason] = useState('');
 
@@ -2301,12 +2386,12 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-slate-500 dark:text-slate-400">{absenceCount} absence record{absenceCount !== 1 ? 's' : ''}</p>
-      {list.error != null && <LoadFailure what="Absence records" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && absences.length === 0 ? null : absences.length === 0 ? (
+      <p className="text-sm text-slate-500 dark:text-slate-400">{t('{count, plural, one {# absence record} other {# absence records}}', { count: absenceCount })}</p>
+      {list.error != null && <LoadFailure what={t('Absence records')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && absences.length === 0 ? null : absences.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Shield className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No absence records</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No absence records')}</p>
         </div>
       ) : (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
@@ -2315,30 +2400,30 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               <div>
                 <p className="text-sm font-semibold text-slate-900 dark:text-white">{a.employeeName}</p>
                 <p className="text-xs text-slate-400">{a.departmentName} · {fmtDate(a.absenceDate)} · {a.absenceType}</p>
-                <p className={`mt-1 text-xs font-medium ${a.payrollImpact === 'Deduction' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`}>Payroll: {a.payrollImpact}</p>
+                <p className={`mt-1 text-xs font-medium ${a.payrollImpact === 'Deduction' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`}>{t('Payroll: {payrollImpact}', { payrollImpact: a.payrollImpact })}</p>
               </div>
               <div className="flex items-center gap-3">
                 {a.isRegularized ? (
-                  <span className="text-xs text-emerald-600 dark:text-emerald-400">Regularized</span>
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400">{t('Regularized')}</span>
                 ) : (
-                  <button type="button" className={btn.ghost} onClick={() => { setRegModal(a); setRegReason(''); }}>Regularize</button>
+                  <button type="button" className={btn.ghost} onClick={() => { setRegModal(a); setRegReason(''); }}>{t('Regularize')}</button>
                 )}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={absences.length} total={list.total} noun="absence records" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={absences.length} total={list.total} noun="absence records" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} absence records', { shown: absences.length, total: list.total ?? absences.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
       {regModal && (
-        <Modal title={`Regularize Absence — ${regModal.employeeName}`} onClose={() => setRegModal(null)}>
+        <Modal title={t('Regularize Absence — {employeeName}', { employeeName: regModal.employeeName })} onClose={() => setRegModal(null)}>
           <div className="space-y-4">
-            <p className="text-sm text-slate-600 dark:text-slate-400">Absence date: <strong className="text-slate-900 dark:text-white">{fmtDate(regModal.absenceDate)}</strong></p>
-            <Field label="Reason for Regularization *">
-              <textarea className={inp} rows={3} value={regReason} onChange={e => setRegReason(e.target.value)} placeholder="Explain why this absence should be regularized…" />
+            <p className="text-sm text-slate-600 dark:text-slate-400">{t('Absence date')}: <strong className="text-slate-900 dark:text-white">{fmtDate(regModal.absenceDate)}</strong></p>
+            <Field label={t('Reason for Regularization *')}>
+              <textarea className={inp} rows={3} value={regReason} onChange={e => setRegReason(e.target.value)} placeholder={t('Explain why this absence should be regularized…')} />
             </Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className={btn.ghost} onClick={() => setRegModal(null)}>Cancel</button>
-              <button type="button" className={btn.primary} onClick={regularize}>Submit Request</button>
+              <button type="button" className={btn.ghost} onClick={() => setRegModal(null)}>{t('Cancel')}</button>
+              <button type="button" className={btn.primary} onClick={regularize}>{t('Submit Request')}</button>
             </div>
           </div>
         </Modal>
@@ -2350,6 +2435,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Reports Tab ───────────────────────────────────────────────────────────────
 
 function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const t = useT();
   const [view, setView] = useState<'onleave' | 'sick'>('onleave');
   const [onLeave, setOnLeave] = useState<LeaveRequest[]>([]);
   const [sickTrend, setSickTrend] = useState<{ month: string; count: number; totalDays: number }[]>([]);
@@ -2362,14 +2448,14 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
   return (
     <div className="space-y-4">
       <div className="flex gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1 dark:border-white/10 dark:bg-white/[0.03]" style={{ width: 'fit-content' }}>
-        {([['onleave', 'On Leave Today'], ['sick', 'Sick Leave Trend']] as const).map(([v, l]) => (
+        {([['onleave', msg('On Leave Today')], ['sick', msg('Sick Leave Trend')]] as const).map(([v, l]) => (
           <button key={v} type="button" onClick={() => setView(v)} className={`rounded-lg px-4 py-1.5 text-sm font-medium transition ${view === v ? 'bg-white text-sapphire shadow-sm dark:bg-white/10 dark:text-cyanAccent' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'}`}>{l}</button>
         ))}
       </div>
 
       {view === 'onleave' && (
         <div className="surface divide-y divide-slate-100 dark:divide-white/5">
-          {onLeave.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">No employees on leave today</p> : onLeave.map((r, i) => (
+          {onLeave.length === 0 ? <p className="px-5 py-8 text-center text-sm text-slate-400">{t('No employees on leave today')}</p> : onLeave.map((r, i) => (
             <div key={i} className="flex items-center justify-between px-5 py-3">
               <div>
                 <p className="text-sm font-medium text-slate-800 dark:text-slate-200">{r.employeeName}</p>
@@ -2377,7 +2463,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
               </div>
               <div className="text-end">
                 <p className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</p>
-                <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{r.totalDays}d</p>
+                <p className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{days}d', { days: r.totalDays })}</p>
               </div>
             </div>
           ))}
@@ -2386,8 +2472,8 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 
       {view === 'sick' && (
         <div className="surface p-5">
-          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">Sick Leave — Last 12 Months</h3>
-          {sickTrend.length === 0 ? <p className="text-sm text-slate-400">No sick leave data.</p> : (
+          <h3 className="mb-4 text-sm font-semibold text-slate-800 dark:text-white">{t('Sick Leave — Last 12 Months')}</h3>
+          {sickTrend.length === 0 ? <p className="text-sm text-slate-400">{t('No sick leave data.')}</p> : (
             <div className="space-y-3">
               {sickTrend.map(m => (
                 <div key={m.month} className="flex items-center gap-4">
@@ -2395,7 +2481,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                   <div className="flex-1 rounded-full bg-slate-100 dark:bg-white/10">
                     <div className="h-2 rounded-full bg-amber-400" style={{ width: `${Math.min(100, (m.totalDays / Math.max(...sickTrend.map(x => x.totalDays), 1)) * 100)}%` }} />
                   </div>
-                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{m.totalDays}d / {m.count}</span>
+                  <span className="w-20 text-end text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">{t('{days}d', { days: m.totalDays })} / {m.count}</span>
                 </div>
               ))}
             </div>
@@ -2409,6 +2495,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── AI Insights Tab ───────────────────────────────────────────────────────────
 
 function AIInsightsTab() {
+  const t = useT();
   const [generating, setGenerating] = useState(false);
 
   // Newest first, one page at a time with the server's total (it used to be the first 25, unmarked).
@@ -2435,17 +2522,17 @@ function AIInsightsTab() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400">
-          <strong>Advisory only.</strong> Insights are for HR review and do not reject leave, penalize employees, or make final decisions.
+          <strong>{t('Advisory only.')}</strong> {t('Insights are for HR review and do not reject leave, penalize employees, or make final decisions.')}
         </div>
-        <button type="button" className={btn.primary} onClick={generate} disabled={generating}><Zap className="h-4 w-4" />{generating ? 'Generating…' : 'Generate Insights'}</button>
+        <button type="button" className={btn.primary} onClick={generate} disabled={generating}><Zap className="h-4 w-4" />{generating ? t('Generating…') : t('Generate Insights')}</button>
       </div>
 
-      {list.error != null && <LoadFailure what="Leave insights" error={list.error} />}
-      {loading ? <p className="text-sm text-slate-400">Loading…</p> : list.error != null && insights.length === 0 ? null : insights.length === 0 ? (
+      {list.error != null && <LoadFailure what={t('Leave insights')} error={list.error} />}
+      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : list.error != null && insights.length === 0 ? null : insights.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <Zap className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">No insights yet</p>
-          <p className="text-xs text-slate-400">Click Generate Insights to analyse leave patterns.</p>
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No insights yet')}</p>
+          <p className="text-xs text-slate-400">{t('Click Generate Insights to analyse leave patterns.')}</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -2462,13 +2549,13 @@ function AIInsightsTab() {
                   <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{ins.summary}</p>
                   <p className="mt-1 text-caption text-slate-400">{fmtDate(ins.createdAtUtc)}</p>
                 </div>
-                {!ins.isAcknowledged && <button type="button" className={btn.sm} onClick={() => ack(ins.id)}>Acknowledge</button>}
+                {!ins.isAcknowledged && <button type="button" className={btn.sm} onClick={() => ack(ins.id)}>{t('Acknowledge')}</button>}
               </div>
             </div>
           ))}
         </div>
       )}
-      <ListWindowFooter shown={insights.length} total={list.total} noun="insights" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} />
+      <ListWindowFooter shown={insights.length} total={list.total} noun="insights" loadingMore={list.loadingMore} onLoadMore={() => void list.loadMore()} labels={{ window: t('Showing {shown} of {total} insights', { shown: insights.length, total: list.total ?? insights.length }), loadMore: t('Load more'), loading: t('Loading…') }} />
     </div>
   );
 }
@@ -2551,10 +2638,10 @@ export function LeavePage() {
     });
 
   const subtitle = isAdmin
-    ? 'Manage leave across all group companies — policies, balances, workflows, encashment, comp-off, absence records, and insights.'
+    ? t('Manage leave across all group companies — policies, balances, workflows, encashment, comp-off, absence records, and insights.')
     : isManager
-    ? 'Approve team leave requests, track your team\'s balances, and manage absences.'
-    : 'Apply for leave, track your balance, and view your leave history.';
+    ? t('Approve team leave requests, track your team’s balances, and manage absences.')
+    : t('Apply for leave, track your balance, and view your leave history.');
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -2570,7 +2657,7 @@ export function LeavePage() {
             : isManager ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400'
             : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
           }`}>
-            {isAdmin ? 'Admin / HR' : isManager ? 'Manager' : 'Employee'}
+            {isAdmin ? t('Admin / HR') : isManager ? t('Manager') : t('Employee')}
           </span>
         </div>
       </div>
@@ -2591,7 +2678,7 @@ export function LeavePage() {
         activeId={tab}
         onChange={setTab}
         idPrefix="leave"
-        label="Leave and absence sections"
+        label={t('Leave and absence sections')}
       />
 
       <TabPanel idPrefix="leave" tabId={tab}>

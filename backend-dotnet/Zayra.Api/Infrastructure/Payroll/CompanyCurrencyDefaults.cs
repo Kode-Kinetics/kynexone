@@ -17,7 +17,7 @@ public static class CompanyCurrencyDefaults
     {
         typeof(EmployeePayrollProfile), typeof(OvertimeCalculation), typeof(OvertimeBudget), typeof(SalaryStructure),
         typeof(EmployeeSalaryStructure), typeof(PayrollGroup), typeof(BenefitPlan), typeof(PayrollPaymentBatch),
-        typeof(PayrollOpeningBalance), typeof(EosbProvisionSnapshot), typeof(GlAdjustmentRequest), typeof(FinanceGlEntry),
+        typeof(PayrollOpeningBalance), typeof(EosbProvisionSnapshot), typeof(LeaveProvisionSnapshot), typeof(GlAdjustmentRequest), typeof(FinanceGlEntry),
         typeof(Position), typeof(Grade), typeof(EmployeeFinalSettlement), typeof(EmployeeContract), typeof(WorkforcePlan),
     };
 

@@ -218,6 +218,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         // GOVERNING JURISDICTION — explicit countryCode wins, else the employing company's. Same ordering
         // rationale as the work email below: it is resolved once the legal entity is final.
         await DeriveEmployeeCountryAsync(employee, tenantId, cancellationToken);
+        // A hire that states no notice period gets the company's default (country rule notice_period_days). Create only: nobody is back-filled.
+        employee.NoticePeriodDays ??= await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, employee.CountryCode, cancellationToken);
         // PROBATION vs THE COMPANY'S OWN MAXIMUM: advisory 409 until acknowledged; the override is audited after the save.
         var probationFinding = await ProbationRuleGate.CheckAsync(_db, tenantId, employee.CompanyId,
             employee.ProbationStartDate ?? DateOnly.FromDateTime(employee.JoiningDate), employee.ProbationEndDate, cancellationToken);
@@ -1534,7 +1536,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         return doc;
     }
 
-    public async Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken)
+    public async Task<PendingDocumentsPage> PendingDocumentsAsync(Guid tenantId, IReadOnlyCollection<int>? visibleEmployeeIds, bool includeProtected, int page, int pageSize, CancellationToken cancellationToken, bool includeLeaveSupportingDocuments = true)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
@@ -1553,6 +1555,9 @@ public class EmployeeManagementService : IEmployeeManagementService
         // verified (the rule verify and reject enforce: ScanStatuses.IsServable).
         query = query.Where(x => x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.Clean
                                  || x.d.ScanStatus == Zayra.Api.Application.Employees.Ess.ScanStatuses.NotScannedTrustedSource);
+        // A leave's supporting document (a sick note) follows the leave rule, so it is queued only for the leave administrators.
+        if (!includeLeaveSupportingDocuments)
+            query = query.Where(x => x.d.DocumentType.Trim().ToLower() != Zayra.Api.Infrastructure.Leave.LeaveSupportingDocuments.Lowered);
         if (!includeProtected)
         {
             // A protected document is verifiable only with employees.sensitive. Whether one is protected depends on its type or its category
@@ -1753,6 +1758,16 @@ public class EmployeeManagementService : IEmployeeManagementService
                 employee.NationalityCode = null; employee.NationalityMappingState = NationalityMappingStates.Unset;
             }
         }
+        // Saudi / NonSaudi follows the recorded nationality (Qiwa, the GOSI classification and the bank export read this column). It was only ever written by
+        // the CSV import and self-service, so a person created through the form had it blank. Never guessed: a GCC national or an unrecognised value stays as it was.
+        var workerClass = DeriveWorkerClass(employee.NationalityCode, employee.Nationality);
+        if (workerClass is not null) employee.SaudiOrNonSaudi = workerClass;
+        // F02: the GOSI first-registration date is STATED AT HIRE for a Saudi national (create and the draft autosave), and nowhere else: a person who has
+        // started work keeps what is on file, and changing it for them stays on the approval-gated change path. Never inferred; ignored for anyone not Saudi.
+        // A nationality that does not resolve to a class (GCC, unrecognised, blank) decides nothing, so the stored date stays.
+        if (workerClass is not null && employee.ActivatedAtUtc is null
+            && (employee.Id == 0 || string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)))
+            employee.GosiFirstRegisteredOn = workerClass == "Saudi" ? request.GosiFirstRegisteredOn : null;
         employee.MaritalStatus = Clean(request.MaritalStatus);
         employee.PersonalEmail = Clean(request.PersonalEmail);
         employee.WorkEmail = Clean(request.WorkEmail);
@@ -1802,14 +1817,21 @@ public class EmployeeManagementService : IEmployeeManagementService
         employee.SecondLevelManagerEmployeeId = request.SecondLevelManagerEmployeeId;
         employee.EmploymentType = Clean(request.EmploymentType);
         employee.ContractType = Clean(request.ContractType);
+        var priorJoiningDate = employee.JoiningDate == default ? (DateOnly?)null : DateOnly.FromDateTime(employee.JoiningDate);
         employee.JoiningDate = UtcDate(request.JoiningDate)
             ?? (employee.JoiningDate == default ? DateTime.UtcNow.Date : DateTime.SpecifyKind(employee.JoiningDate.Date, DateTimeKind.Utc));
+        var joiningOn = DateOnly.FromDateTime(employee.JoiningDate);
         // "No probation" exception: no probation dates, and the employee counts as confirmed from the joining date.
         employee.ProbationWaived = request.ProbationWaived;
         employee.ConfirmationDate = request.ProbationWaived ? request.ConfirmationDate ?? DateOnly.FromDateTime(employee.JoiningDate) : request.ConfirmationDate;
-        employee.ProbationStartDate = request.ProbationWaived ? null : request.ProbationStartDate;
+        // Probation runs from the start date unless a start was stated; with no probation end there is no probation to start.
+        employee.ProbationStartDate = request.ProbationWaived ? null : request.ProbationStartDate ?? (request.ProbationEndDate is not null ? joiningOn : null);
         employee.ProbationEndDate = request.ProbationWaived ? null : request.ProbationEndDate;
         employee.ContractEndDate = request.ContractEndDate ?? (Zayra.Api.Application.Employees.Onboarding.ContractRules.IsFixedTerm(employee.ContractType) ? employee.ContractEndDate : null);   // CD26
+        // A contract starts on the start date (the form has no separate answer for it). A start HR set to another date is kept; one that only followed the
+        // previous start date moves with it. Notice period is NOT defaulted: it decides notice pay at exit, so it stays blank until stated.
+        if (!string.IsNullOrWhiteSpace(employee.ContractType) && (employee.ContractStartDate is null || employee.ContractStartDate == priorJoiningDate))
+            employee.ContractStartDate = joiningOn;
         employee.NoticePeriodDays = request.NoticePeriodDays;
         employee.WorkLocation = Clean(request.WorkLocation);
         employee.PayrollProfileCode = Clean(request.PayrollGroup);
@@ -2252,6 +2274,33 @@ public class EmployeeManagementService : IEmployeeManagementService
             record.UpdatedBy = context.UserId;
             ApplyKnownComplianceMirror(employee, record);
         }
+        // The primary government ID type follows the identity document the form recorded (it was blank for everyone created through the form).
+        if (PrimaryIdType(records.Where(r => !string.IsNullOrWhiteSpace(r.FieldValue)).Select(r => r.FieldKey), employee.IdType) is { } idType) employee.IdType = idType;
+    }
+
+    /// <summary>Saudi / NonSaudi for a recorded nationality (ISO code first, then the text), by the shared classifier that never guesses: Saudi only through
+    /// <c>SaudiNationality</c>, NonSaudi only for a recognised non-GCC country, null for a GCC national or anything unrecognised.</summary>
+    internal static string? DeriveWorkerClass(string? nationalityCode, string? nationality) =>
+        Zayra.Api.Infrastructure.Contracts.WorkerNationality.ClassOf(null, nationalityCode)
+        ?? Zayra.Api.Infrastructure.Contracts.WorkerNationality.ClassOf(null, nationality);
+
+    /// <summary>The <c>IdType</c> of a person from the identity record keys just saved. The primary document is the first non-passport identity record (the form puts the
+    /// Iqama or National ID first and the passport second); a passport is primary only when it is the only identity record, and never replaces a document already on file.</summary>
+    internal static string? PrimaryIdType(IEnumerable<string?> fieldKeys, string? current)
+    {
+        var kinds = fieldKeys.Select(k => Clean(k).ToLowerInvariant() switch
+        {
+            "id_number" or "national_id" => "NationalId",
+            "iqama_number" => "Iqama",
+            "border_number" => "BorderNumber",
+            "civil_id" => "CivilId",
+            "emirates_id" => "EmiratesId",
+            "qid" => "Qid",
+            "passport_number" => "Passport",
+            _ => null,
+        }).Where(k => k is not null).ToList();
+        if (kinds.Count == 0) return null;
+        return kinds.FirstOrDefault(k => k != "Passport") ?? (string.IsNullOrWhiteSpace(current) ? "Passport" : null);
     }
 
     /// <summary>

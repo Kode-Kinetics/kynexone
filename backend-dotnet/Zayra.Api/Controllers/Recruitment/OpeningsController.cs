@@ -85,12 +85,18 @@ public class OpeningsController : ControllerBase
         var userId = this.GetUserId();
         var code = await _svc.GenerateJobCodeAsync(tenantId, ct);
 
-        // Mark source requisition as Converted
+        // Mark source requisition as Converted. The opening belongs to the company that raised the requisition; a requisition
+        // outside the caller's company scope is not found, so an opening can never be linked to another company's requisition.
+        Guid? companyId = req.CompanyId;
         if (req.RequisitionId.HasValue)
         {
             var requisition = await _db.ManpowerRequisitions
                 .FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct);
-            if (requisition is not null && requisition.Status == "Approved")
+            if (requisition is null) return BadRequest(new { message = "Requisition not found." });
+            if (req.CompanyId is Guid named && requisition.CompanyId is Guid owner && named != owner)
+                return BadRequest(new { message = "The requisition belongs to a different company than the one named." });
+            companyId = requisition.CompanyId ?? req.CompanyId;
+            if (requisition.Status == "Approved")
             {
                 requisition.Status = "Converted";
                 await _db.SaveChangesAsync(ct);
@@ -100,6 +106,7 @@ public class OpeningsController : ControllerBase
         var j = new JobOpening
         {
             TenantId = tenantId,
+            CompanyId = companyId,
             JobCode = code,
             RequisitionId = req.RequisitionId,
             Title = req.Title,
@@ -235,6 +242,7 @@ public class OpeningsController : ControllerBase
             _db.JobOpenings.Add(new JobOpening
             {
                 TenantId = tenantId,
+                CompanyId = req.CompanyId,
                 JobCode = code,
                 Title = title,
                 DepartmentName = dept,
@@ -258,10 +266,10 @@ public class OpeningsController : ControllerBase
     }
 }
 
-public record ImportJobOpeningsRequest(string CsvContent);
+public record ImportJobOpeningsRequest(string CsvContent, Guid? CompanyId = null);
 
 public record CreateOpeningRequest(
     Guid? RequisitionId, string Title, string DepartmentName, string DesignationTitle,
     string EmploymentType, int HeadCount, string Description, string Requirements,
     string Responsibilities, decimal? SalaryFrom, decimal? SalaryTo,
-    string Location, string AssignedHrName);
+    string Location, string AssignedHrName, Guid? CompanyId = null);

@@ -5,7 +5,7 @@ import { RefreshCw } from 'lucide-react';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useTenantSettings } from '../../contexts/TenantSettingsContext';
 import { useAttendanceProcessJob } from '../../hooks/useAttendanceProcessJob';
-import { inclusiveDays, tenantToday } from '../../lib/attendanceBulkEntry';
+import { inclusiveDays, tenantYesterday } from '../../lib/attendanceBulkEntry';
 import { selectedIds, type Selection } from '../../lib/attendanceSelection';
 import { EmployeeMultiSelect } from './EmployeeMultiSelect';
 import { ProcessJobProgress } from './ProcessJobProgress';
@@ -28,8 +28,9 @@ interface Props {
 export function AttendanceProcessPanel({ blocked, onProcessed }: Props) {
   const { t } = useLocale();
   const { defaultTimezone } = useTenantSettings();
-  const [fromDate, setFromDate] = useState(() => tenantToday(defaultTimezone));
-  const [toDate, setToDate] = useState(() => tenantToday(defaultTimezone));
+  // Both ends default to yesterday in the company's zone: a day is only processed once it has ended.
+  const [fromDate, setFromDate] = useState(() => tenantYesterday(defaultTimezone));
+  const [toDate, setToDate] = useState(() => tenantYesterday(defaultTimezone));
   const [scope, setScope] = useState<'all' | 'selected'>('all');
   const [selection, setSelection] = useState<Selection>(new Map());
   const { poll, busy, start } = useAttendanceProcessJob(onProcessed);
@@ -61,6 +62,7 @@ export function AttendanceProcessPanel({ blocked, onProcessed }: Props) {
         {scope === 'selected' && (
           <EmployeeMultiSelect id="process" label={t('Employees to include')} selection={selection} onChange={setSelection} max={MAX_SELECTED} disabled={busy} />
         )}
+        <p className="text-xs text-slate-500 dark:text-slate-400">{t('The range ends yesterday (company time zone) by default: today and later days are processed once they have ended.')}</p>
         {!rangeOk && <p role="alert" className="text-xs text-rose-700 dark:text-rose-400">{t('Choose a valid date range: the end date cannot be before the start date.')}</p>}
         {needsPeople && <p className="text-xs text-slate-500">{t('Choose at least one employee.')}</p>}
         <button type="button" onClick={submit} disabled={!canStart} className="btn-primary w-full justify-center">{busy ? t('Processing attendance…') : t('Process Records')}</button>

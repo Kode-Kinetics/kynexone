@@ -62,7 +62,10 @@ public record EmployeeCreateRequest(
     // P3: the hire template the wizard applied; used only to raise the hire's onboarding checklist (the form already carries the defaults).
     Guid? HireTemplateId = null,
     // Exception: this hire has no probation. No probation dates are stored and the employee is confirmed from the joining date.
-    bool ProbationWaived = false);
+    bool ProbationWaived = false,
+    // F02: the date this Saudi person was first registered with GOSI, as read off their GOSI record. Stated at hire only (create and the draft autosave, never
+    // the edit path, which stays approval-gated); ignored for anyone who is not Saudi. Blank = Unknown, never inferred.
+    DateOnly? GosiFirstRegisteredOn = null);
 
 public record EmployeePayrollProfileRequest(
     string? BankName,
@@ -622,6 +625,7 @@ public record EmployeeDraftDto
     public string VisaNumber { get; init; } = string.Empty;
     public string VisaFileNumber { get; init; } = string.Empty;
     public string IqamaNumber { get; init; } = string.Empty;
+    public string IdNumber { get; init; } = string.Empty;
     public string BorderNumber { get; init; } = string.Empty;
     public string MuqeemNumber { get; init; } = string.Empty;
     public string GosiReference { get; init; } = string.Empty;
@@ -686,6 +690,7 @@ public record EmployeeDraftDto
         VisaNumber               = includeSensitive ? d.VisaNumber : string.Empty,
         VisaFileNumber           = includeSensitive ? d.VisaFileNumber : string.Empty,
         IqamaNumber              = includeSensitive ? d.IqamaNumber : string.Empty,
+        IdNumber                 = includeSensitive ? d.IdNumber : string.Empty,
         BorderNumber             = includeSensitive ? d.BorderNumber : string.Empty,
         MuqeemNumber             = includeSensitive ? d.MuqeemNumber : string.Empty,
         GosiReference            = includeSensitive ? d.GosiReference : string.Empty,

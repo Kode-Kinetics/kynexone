@@ -285,6 +285,12 @@ export interface VoidRunOptions {
   adjustmentPeriod?: string;
   /** The operator states that the ERP posting has been handled outside this product. */
   acknowledgeErpPosted?: boolean;
+  /** What happened to net pay that already left the bank: FundsRecalled (with a reference) or FundsDisbursed. */
+  settlementDisposition?: 'FundsRecalled' | 'FundsDisbursed';
+  settlementReference?: string;
+  /** The same for statutory remittances (GOSI, tax, loan deductions). */
+  remittanceDisposition?: 'FundsRecalled' | 'FundsDisbursed';
+  remittanceReference?: string;
 }
 
 function voidParams(o: VoidRunOptions): Record<string, string | boolean> {
@@ -292,6 +298,10 @@ function voidParams(o: VoidRunOptions): Record<string, string | boolean> {
   if (o.priorPeriodAdjustment) params.priorPeriodAdjustment = true;
   if (o.priorPeriodAdjustment && o.adjustmentPeriod) params.adjustmentPeriod = o.adjustmentPeriod;
   if (o.acknowledgeErpPosted) params.acknowledgeErpPosted = true;
+  if (o.settlementDisposition) params.settlementDisposition = o.settlementDisposition;
+  if (o.settlementDisposition === 'FundsRecalled' && o.settlementReference) params.settlementReference = o.settlementReference;
+  if (o.remittanceDisposition) params.remittanceDisposition = o.remittanceDisposition;
+  if (o.remittanceDisposition === 'FundsRecalled' && o.remittanceReference) params.remittanceReference = o.remittanceReference;
   return params;
 }
 
@@ -376,6 +386,9 @@ export interface PayrollPaymentRecord {
   id: string;
   paymentBatchId: string;
   employeeId: number;
+  /** Server-resolved; absent from an older server or when the employee is outside the caller's company scope. */
+  employeeName?: string;
+  employeeCode?: string;
   amount: number;
   iban: string;
   status: string;
@@ -402,6 +415,28 @@ export interface PayrollGLEntry {
   /** Cost accounting v1: the cost centre this line lands on; null for a balance-sheet or uncosted line. */
   costCentreCode?: string | null;
   costCentreName?: string | null;
+  /** The cost centre's ERP segment when it has one. */
+  costCentreErpCode?: string | null;
+}
+
+/** One journal the ledger holds for a posted run: the accrual, the net-pay settlement, a remittance, a void ... */
+export interface PostedGlJournal {
+  /** accrual | settlement | settlementReversal | remittance | remittanceReversal | reclass | void | other */
+  kind: string;
+  /** GOSI | TAX | LOAN for a remittance. */
+  group: string | null;
+  eventType: string;
+  period: string;
+  /** yyyy-MM-dd */
+  entryDate: string;
+  postedAtUtc: string;
+  postedByName: string;
+  isReversed: boolean;
+  hasCostCentres: boolean;
+  entries: PayrollGLEntry[];
+  totalDebits: number;
+  totalCredits: number;
+  isBalanced: boolean;
 }
 
 export interface PayrollGLJournal {
@@ -416,6 +451,11 @@ export interface PayrollGLJournal {
   isPosted?: boolean;
   /** Cost accounting v1: what Lock would refuse and warn about. Absent from a server that predates it. */
   costing?: JournalCosting;
+  /**
+   * Posted run: every journal the ledger holds for it, one per event, each balanced on its own. `entries` and the totals
+   * above are the accrual journal alone. Absent from a server that predates it and empty for a preview.
+   */
+  journals?: PostedGlJournal[];
 }
 
 export interface PayrollVarianceRow {

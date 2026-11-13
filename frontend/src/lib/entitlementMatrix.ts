@@ -295,6 +295,15 @@ export function savedFrom(drafts: Drafts, original: Drafts): SavedDrafts {
   return saved;
 }
 
+/**
+ * The date a publish starts from. Editing the grid as of a later date publishes from that date (an earlier one would sit under it);
+ * otherwise today. A date already chosen is kept while it is not before that floor. Never blank: the server refuses a publish without a date.
+ */
+export function defaultEffectiveFrom(current: string, view: { asOf: string; today: string }): string {
+  const floor = view.asOf > view.today ? view.asOf : view.today;
+  return current && current >= floor ? current : floor;
+}
+
 export function restoreDrafts(fresh: Drafts, saved: SavedDrafts | null | undefined): { drafts: Drafts; restored: number } {
   if (!saved) return { drafts: fresh, restored: 0 };
   const drafts = { ...fresh };

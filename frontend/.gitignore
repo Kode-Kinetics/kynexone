@@ -13,3 +13,6 @@ test-results/
 playwright-report/
 blob-report/
 .next-nightly-dev
+
+# Per-session dev build output (NEXT_DIST_DIR): never commit
+.next-claude*

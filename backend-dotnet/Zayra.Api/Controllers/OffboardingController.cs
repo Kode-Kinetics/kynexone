@@ -196,10 +196,13 @@ public class OffboardingController : ControllerBase
         if (req.RaiseBackfill)
         {
             var year = DateTime.UtcNow.Year;
-            var seq = await _db.ManpowerRequisitions.CountAsync(r => r.TenantId == tenantId, ct) + 1;
+            // Numbered per tenant: count every company's requisitions, not the ones the caller's company scope can see.
+            var seq = await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.ManpowerRequisitions, tenantId,
+                "Requisition numbers are unique per tenant: the next number must count every company's rows, not the caller's company only.").CountAsync(ct) + 1;
             var reqEntity = new ManpowerRequisition
             {
                 TenantId = tenantId,
+                CompanyId = emp.CompanyId,
                 RequisitionNumber = $"MRQ-{year}-{seq:0000}",
                 DepartmentId = emp.DepartmentId,
                 DepartmentName = emp.Department ?? string.Empty,

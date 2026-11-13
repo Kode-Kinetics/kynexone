@@ -217,21 +217,223 @@ public class LeaveService : ILeaveService
         return balance;
     }
 
+    public Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default)
+        => OpenYearBalancesAsync(tenantId, year, DateTime.UtcNow, ct);
+
+    /// <summary>
+    /// Gets a leave year going from the configured policies — the existing engine, run for the months it has not yet run.
+    ///
+    /// <para><b>Why this exists.</b> Balances only ever came from <see cref="AccrueMonthlyAsync(Guid, CancellationToken)"/>,
+    /// and nothing scheduled it and no screen called its endpoint, so a company that went live without imported balances had
+    /// none: every annual-leave request was refused with "no balance". A front-loaded ("Yearly") policy had no writer at all.</para>
+    ///
+    /// <para><b>What it does.</b> (1) Monthly policies: runs the monthly accrual for every month of the year up to
+    /// <paramref name="asOfUtc"/>; each month is guarded by its own ledger reference, so re-running, or running after the
+    /// scheduled job, posts nothing twice. (2) Yearly policies: grants the policy's own entitlement into
+    /// <see cref="EmployeeLeaveBalance.Entitled"/>, once, guarded by a ledger entry. Eligibility, the most specific policy,
+    /// the company's own leave types, joining and leaving dates and the KSA Art. 109 tier are the engine's, not re-decided here.</para>
+    ///
+    /// <para>A balance that already holds a figure for the year without the engine's own ledger entries (imported at cutover,
+    /// entered by hand) is the company's number for that year and is left alone: catching it up as well would double it.
+    /// Statutory event leave (maternity, Hajj, marriage…) of a KSA employee is not drawn from a balance, so none is created for it.</para>
+    /// </summary>
+    internal async Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, DateTime asOfUtc, CancellationToken ct = default)
+    {
+        const string YearlyReferencePrefix = "YEARLY-ENTITLEMENT-";
+        async Task<(int Balances, int Accruals, int Allocations)> CountsAsync()
+        {
+            var balances = await _db.EmployeeLeaveBalances.AsNoTracking().CountAsync(b => b.TenantId == tenantId && b.Year == year, ct);
+            var accruals = await _db.LeaveBalanceTransactions.AsNoTracking().CountAsync(t => t.TenantId == tenantId && t.Year == year && t.TransactionType == "Accrual", ct);
+            var allocations = await _db.LeaveBalanceTransactions.AsNoTracking().CountAsync(t => t.TenantId == tenantId && t.Year == year && t.TransactionType == "Allocation"
+                && t.Reference == YearlyReferencePrefix + year, ct);
+            return (balances, accruals, allocations);
+        }
+
+        var before = await CountsAsync();
+
+        // Balances already holding a figure that the engine did not post. Computed once, before any month runs.
+        var engineLedger = (await _db.LeaveBalanceTransactions.AsNoTracking()
+                .Where(t => t.TenantId == tenantId && t.Year == year
+                    && (t.TransactionType == "Accrual" || (t.TransactionType == "Allocation" && t.Reference == YearlyReferencePrefix + year)))
+                .Select(t => new { t.EmployeeId, t.LeaveTypeId })
+                .Distinct().ToListAsync(ct))
+            .Select(t => (t.EmployeeId, t.LeaveTypeId)).ToHashSet();
+        var established = (await _db.EmployeeLeaveBalances.AsNoTracking()
+                .Where(b => b.TenantId == tenantId && b.Year == year && (b.Entitled > 0m || b.Accrued > 0m))
+                .Select(b => new { b.EmployeeId, b.LeaveTypeId })
+                .ToListAsync(ct))
+            .Select(b => (b.EmployeeId, b.LeaveTypeId))
+            .Where(pair => !engineLedger.Contains(pair))
+            .ToHashSet();
+
+        var lastMonth = year < asOfUtc.Year ? 12 : year == asOfUtc.Year ? asOfUtc.Month : 0;
+        for (var month = 1; month <= lastMonth; month++)
+        {
+            // The current month accrues as of today (an employee joining later this month is not credited yet); a
+            // finished month accrues as of its last day.
+            var accrualMonth = year == asOfUtc.Year && month == asOfUtc.Month
+                ? asOfUtc
+                : new DateTime(year, month, DateTime.DaysInMonth(year, month), 0, 0, 0, DateTimeKind.Utc);
+            await AccrueMonthlyAsync(tenantId, accrualMonth, established, ct);
+        }
+
+        if (year <= asOfUtc.Year)
+            await RunSerializedAsync($"leave-open-year:{tenantId:N}:{year}",
+                () => FrontLoadYearlyCoreAsync(tenantId, year, asOfUtc, established, YearlyReferencePrefix + year, ct), ct);
+
+        var after = await CountsAsync();
+        return new LeaveYearOpenResult(year, after.Balances - before.Balances, after.Accruals - before.Accruals, after.Allocations - before.Allocations);
+    }
+
+    /// <summary>
+    /// Front-loaded ("Yearly") policies: the whole entitlement goes into <see cref="EmployeeLeaveBalance.Entitled"/> once for
+    /// the year, with an "Allocation" ledger entry carrying <paramref name="reference"/>. The employee must be eligible for the
+    /// policy and the policy must be the most specific one for them, exactly as for the monthly accrual.
+    /// </summary>
+    private async Task FrontLoadYearlyCoreAsync(Guid tenantId, int year, DateTime asOfUtc, IReadOnlySet<(int EmployeeId, Guid LeaveTypeId)> established,
+        string reference, CancellationToken ct)
+    {
+        var activePolicies = await _db.LeavePolicies
+            .Where(p => p.TenantId == tenantId && p.Status == "Active")
+            .ToListAsync(ct);
+        var yearlyPolicies = activePolicies.Where(p => p.AccrualMethod == "Yearly" && p.AnnualEntitlementDays > 0m).ToList();
+        if (yearlyPolicies.Count == 0) return;
+
+        var eligibilityRows = await _db.LeavePolicyEligibilities
+            .Where(e => e.TenantId == tenantId && e.IsActive)
+            .ToListAsync(ct);
+        var yearStart = new DateOnly(year, 1, 1);
+        var yearEnd = new DateOnly(year, 12, 31);
+        // This year the grant is "as of today" (someone joining later in the year has no balance yet); a finished year is as of its end.
+        var grantOn = year == asOfUtc.Year ? DateOnly.FromDateTime(asOfUtc) : yearEnd;
+        var employees = await _db.Employees
+            .Where(e => e.TenantId == tenantId && (e.Status == EmployeeStatuses.Active || e.Status == EmployeeStatuses.Offboarded))
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.JoiningDate, e.Status })
+            .ToListAsync(ct);
+        var offboardings = (await _db.EmployeeOffboardings.AsNoTracking()
+                .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay != default)
+                .Select(o => new { o.EmployeeId, o.LastWorkingDay, o.CreatedAtUtc })
+                .ToListAsync(ct))
+            .ToLookup(o => o.EmployeeId);
+        var companyCountries = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId)
+            .Select(c => new { c.Id, c.CountryCode })
+            .ToDictionaryAsync(c => c.Id, c => c.CountryCode, ct);
+        var referenceLists = await PolicyReferenceLists.LoadAsync(_db, tenantId, ct);
+        var types = (await _db.LeaveTypes.AsNoTracking()
+                .Where(t => t.TenantId == tenantId && t.IsActive)
+                .Select(t => new { t.Id, t.Code, t.NameEn, t.Category })
+                .ToListAsync(ct))
+            .ToDictionary(t => t.Id);
+        var typeIndex = await LeaveCompanyScope.TypeIndex.LoadAsync(_db, tenantId, ct);
+
+        foreach (var policy in yearlyPolicies)
+        {
+            if (!types.TryGetValue(policy.LeaveTypeId, out var type)) continue;
+            var policyIsAnnualLeave = string.Equals(type.Category, "Annual", StringComparison.OrdinalIgnoreCase)
+                || type.NameEn.Contains("Annual", StringComparison.OrdinalIgnoreCase);
+            foreach (var emp in employees)
+            {
+                var joinedOn = DateOnly.FromDateTime(emp.JoiningDate);
+                if (emp.JoiningDate == default || joinedOn > grantOn) continue;
+                var offboarding = offboardings[emp.Id]
+                    .Where(o => o.LastWorkingDay >= joinedOn)
+                    .OrderByDescending(o => o.CreatedAtUtc)
+                    .FirstOrDefault();
+                if (emp.Status == EmployeeStatuses.Offboarded && offboarding is null) continue;
+                if (offboarding is not null && offboarding.LastWorkingDay < yearStart) continue;
+                var employeeCountryCode = emp.CompanyId.HasValue && companyCountries.TryGetValue(emp.CompanyId.Value, out var companyCountry)
+                    ? companyCountry
+                    : string.Empty;
+                if (!typeIndex.Usable(policy.LeaveTypeId, emp.CompanyId)) continue;
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                    continue;
+                var resolvedPolicy = activePolicies
+                    .Where(p => p.LeaveTypeId == policy.LeaveTypeId
+                        && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
+                            emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
+                            emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                    .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
+                    .ThenByDescending(p => p.UpdatedAtUtc)
+                    .FirstOrDefault();
+                if (resolvedPolicy?.Id != policy.Id) continue;
+                // A KSA employee's statutory event leave (maternity, Hajj, marriage…) is not drawn from a balance.
+                if (KsaStatutorySpecialLeave.Classify(type.Code, type.NameEn, type.Category) is not null && IsKsaCountry(employeeCountryCode)) continue;
+                if (established.Contains((emp.Id, policy.LeaveTypeId))) continue;
+                if (await _db.LeaveBalanceTransactions.AsNoTracking().AnyAsync(t =>
+                        t.TenantId == tenantId && t.EmployeeId == emp.Id && t.LeaveTypeId == policy.LeaveTypeId
+                        && t.Year == year && t.TransactionType == "Allocation" && t.Reference == reference, ct))
+                    continue;
+
+                // The same Art. 109 floor the monthly engine applies to annual leave: raised to the statute unless an admin
+                // acknowledged (audited) a lower figure.
+                var days = policy.AnnualEntitlementDays;
+                var reason = "Yearly entitlement";
+                if (policyIsAnnualLeave && KsaLeaveFloorChecks.IsAcknowledgedBelowMinimum(policy, KsaLeaveFloorChecks.Annual))
+                {
+                    reason = $"Yearly entitlement (configured {policy.AnnualEntitlementDays:0.##} days/yr, below the KSA Art.109 minimum; acknowledged)";
+                }
+                else if (policyIsAnnualLeave
+                    && await ResolveKsaAnnualEntitlementAsync(employeeCountryCode, emp.JoiningDate, grantOn, ct) is decimal floorDays
+                    && floorDays > days)
+                {
+                    days = floorDays;
+                    reason = $"Yearly entitlement (KSA Art.109 statutory floor {floorDays:0.##} days/yr applied above the configured {policy.AnnualEntitlementDays:0.##})";
+                }
+
+                var balance = await GetOrCreateBalanceAsync(tenantId, emp.Id, policy.LeaveTypeId, year, ct);
+                balance.EmployeeName = emp.FullName;
+                var availableBefore = balance.Available;
+                balance.Entitled += days;
+                balance.UpdatedAtUtc = DateTime.UtcNow;
+                _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
+                {
+                    TenantId = tenantId,
+                    CompanyId = emp.CompanyId,
+                    EmployeeId = emp.Id,
+                    LeaveTypeId = policy.LeaveTypeId,
+                    Year = year,
+                    TransactionType = "Allocation",
+                    Amount = days,
+                    BalanceBefore = availableBefore,
+                    BalanceAfter = balance.Available,
+                    Reference = reference,
+                    Reason = reason,
+                    PerformedByName = "System"
+                });
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+    }
+
     public Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default)
         => AccrueMonthlyAsync(tenantId, DateTime.UtcNow, ct);
 
-    internal async Task AccrueMonthlyAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct = default)
+    internal Task AccrueMonthlyAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct = default)
+        => AccrueMonthlyAsync(tenantId, accrualMonth, null, ct);
+
+    /// <param name="established">
+    /// (employee, leave type) pairs whose balance for the year already holds a figure the engine did not post, which the
+    /// monthly credit must not be added to. Null for the scheduled/endpoint accrual, which has always credited every pair.
+    /// </param>
+    private Task AccrueMonthlyAsync(Guid tenantId, DateTime accrualMonth, IReadOnlySet<(int EmployeeId, Guid LeaveTypeId)>? established, CancellationToken ct)
+        => RunSerializedAsync($"leave-accrual:{tenantId:N}:{accrualMonth:yyyy-MM}",
+            () => AccrueMonthlyCoreAsync(tenantId, accrualMonth, established, ct), ct);
+
+    /// <summary>
+    /// The scheduler can overlap during deploys or manual replay. Serialize one tenant/period on PostgreSQL, inside the
+    /// execution strategy required by EnableRetryOnFailure. The filtered unique ledger index remains the permanent
+    /// invariant if a non-cooperating writer bypasses this service.
+    /// </summary>
+    private async Task RunSerializedAsync(string lockIdentity, Func<Task> work, CancellationToken ct)
     {
         if (!_db.Database.IsRelational())
         {
-            await AccrueMonthlyCoreAsync(tenantId, accrualMonth, ct);
+            await work();
             return;
         }
 
-        // The scheduler can overlap during deploys or manual replay. Serialize one tenant/month
-        // on PostgreSQL, inside the execution strategy required by EnableRetryOnFailure. The
-        // filtered unique ledger index remains the permanent invariant if a non-cooperating writer
-        // bypasses this service.
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
@@ -247,17 +449,16 @@ public class LeaveService : ILeaveService
                 ct);
             if (isPostgres)
             {
-                var lockIdentity = $"leave-accrual:{tenantId:N}:{accrualMonth:yyyy-MM}";
                 await _db.Database.ExecuteSqlInterpolatedAsync(
                     $"SELECT pg_advisory_xact_lock(hashtextextended({lockIdentity}, 0))", ct);
             }
 
-            await AccrueMonthlyCoreAsync(tenantId, accrualMonth, ct);
+            await work();
             await transaction.CommitAsync(ct);
         });
     }
 
-    private async Task AccrueMonthlyCoreAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct)
+    private async Task AccrueMonthlyCoreAsync(Guid tenantId, DateTime accrualMonth, IReadOnlySet<(int EmployeeId, Guid LeaveTypeId)>? established, CancellationToken ct)
     {
         var activePolicies = await _db.LeavePolicies
             .Where(p => p.TenantId == tenantId && p.Status == "Active")
@@ -348,6 +549,7 @@ public class LeaveService : ILeaveService
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
                 if (resolvedPolicy?.Id != policy.Id) continue;
+                if (established is not null && established.Contains((emp.Id, policy.LeaveTypeId))) continue;
                 if (await _db.LeaveBalanceTransactions.AsNoTracking().AnyAsync(t =>
                         t.TenantId == tenantId && t.EmployeeId == emp.Id && t.LeaveTypeId == policy.LeaveTypeId
                         && t.Year == currentYear && t.TransactionType == "Accrual" && t.Reference == accrualReference, ct))
@@ -923,7 +1125,14 @@ public class LeaveService : ILeaveService
         {
             foreach (var segment in yearSegments)
                 if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
-                    throw new InvalidOperationException($"Insufficient leave balance for {segment.Year}.");
+                {
+                    // "Insufficient" was the same sentence for "you have 2 days left" and "no balance exists for that year at all", and told the person nothing to do.
+                    var hasRow = await _db.EmployeeLeaveBalances.AsNoTracking().AnyAsync(b =>
+                        b.TenantId == tenantId && b.EmployeeId == request.EmployeeId && b.LeaveTypeId == request.LeaveTypeId && b.Year == segment.Year, ct);
+                    throw new InvalidOperationException(hasRow
+                        ? $"Insufficient leave balance for {segment.Year}."
+                        : $"Your {leaveType.NameEn} balance for {segment.Year} has not been set up yet. Ask HR to set up your {segment.Year} leave balance.");
+                }
         }
 
         request.TenantId = tenantId;
@@ -1019,7 +1228,7 @@ public class LeaveService : ILeaveService
         // unpaid-leave deduction behind a cancelled leave.
         var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
-        if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
+        if (!Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.IsNewRequest(request.Status))
             throw new InvalidOperationException($"Cannot approve a request with status '{request.Status}'.");
 
         await EnsureMakerCheckerAsync(request, approverId, ct);
@@ -1551,7 +1760,7 @@ public class LeaveService : ILeaveService
         // Serialised with cancellation under the employee's leave lock: both release the pending balance.
         var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
 
-        if (request.Status != "Submitted" && request.Status != "PendingManagerApproval" && request.Status != "PendingHRApproval")
+        if (!Zayra.Api.Application.Leave.LeaveAwaitingDecisionStatuses.IsNewRequest(request.Status))
             throw new InvalidOperationException($"Cannot reject a request with status '{request.Status}'.");
 
         await EnsureMakerCheckerAsync(request, approverId, ct);
@@ -1581,6 +1790,82 @@ public class LeaveService : ILeaveService
             Title = "Leave rejected",
             Body = $"Your {request.LeaveTypeName} request ({request.StartDate:dd MMM} – {request.EndDate:dd MMM}) was rejected: {reason}",
         });
+
+        await _db.SaveChangesAsync(ct);
+        return request;
+    }
+
+    /// <summary>The statuses an employee (or HR) may still withdraw: nobody has approved the request yet.</summary>
+    private static readonly string[] WithdrawableStatuses = ["Draft", "Submitted", "PendingManagerApproval", "PendingHRApproval"];
+
+    public async Task<LeaveRequest> WithdrawRequestAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct = default)
+    {
+        if (!_db.Database.IsRelational() || _db.Database.CurrentTransaction is not null)
+            return await WithdrawRequestCoreAsync(tenantId, requestId, withdrawnByName, reason, ct);
+
+        return await RunCancellationTransactionAsync(
+            retryCt => WithdrawRequestCoreAsync(tenantId, requestId, withdrawnByName, reason, retryCt),
+            retryCt => _db.LeaveRequests.AsNoTracking()
+                .AnyAsync(r => r.TenantId == tenantId && r.Id == requestId && r.Status == "Withdrawn", retryCt),
+            ct);
+    }
+
+    /// <summary>
+    /// Withdraw used to run in the controller: read the status, check it in memory, save "Withdrawn". A final approval
+    /// that committed in between was overwritten (a Withdrawn request still holding its Used days), two withdraws both
+    /// released the balance, and no audit row or notice was written. It now takes the same employee leave lock as
+    /// submission, approval and cancellation, and decides on the status read UNDER that lock.
+    /// </summary>
+    private async Task<LeaveRequest> WithdrawRequestCoreAsync(Guid tenantId, Guid requestId, string withdrawnByName, string reason, CancellationToken ct)
+    {
+        var request = await LockAndReloadRequestAsync(tenantId, requestId, ct);
+        if (!WithdrawableStatuses.Contains(request.Status))
+            throw new LeaveDecisionConflictException(
+                $"Only unapproved requests can be withdrawn (current: {request.Status}). The request was decided or changed before this withdrawal.");
+
+        var previousStatus = request.Status;
+        request.Status = "Withdrawn";
+        request.CancellationReason = reason;
+        request.CancelledAtUtc = DateTime.UtcNow;
+
+        // A request may span calendar years. Release the exact reservations recorded during submission rather than
+        // subtracting the aggregate from the start-year balance.
+        var reference = requestId.ToString();
+        var reservations = await _db.LeaveBalanceTransactions.AsNoTracking()
+            .Where(t => t.TenantId == tenantId && t.EmployeeId == request.EmployeeId
+                && t.LeaveTypeId == request.LeaveTypeId && t.Reference == reference && t.TransactionType == "Pending")
+            .ToListAsync(ct);
+        foreach (var reservation in reservations)
+        {
+            var balance = await _db.EmployeeLeaveBalances.FirstOrDefaultAsync(b =>
+                b.TenantId == tenantId && b.EmployeeId == request.EmployeeId
+                && b.LeaveTypeId == request.LeaveTypeId && b.Year == reservation.Year, ct);
+            if (balance is null) continue;
+            var before = balance.Available;
+            balance.Pending = Math.Max(0, balance.Pending - reservation.Amount);
+            balance.UpdatedAtUtc = DateTime.UtcNow;
+            _db.LeaveBalanceTransactions.Add(new LeaveBalanceTransaction
+            {
+                TenantId = tenantId, CompanyId = request.CompanyId, EmployeeId = request.EmployeeId,
+                LeaveTypeId = request.LeaveTypeId, Year = reservation.Year, TransactionType = "Reversed",
+                Amount = reservation.Amount, BalanceBefore = before, BalanceAfter = balance.Available,
+                Reference = reference, Reason = "Leave request withdrawn", PerformedByName = withdrawnByName
+            });
+        }
+
+        var projection = await _db.ApprovalRequests.FirstOrDefaultAsync(a => a.TenantId == tenantId
+            && a.EntityName == nameof(LeaveRequest) && a.EntityId == reference && a.Status == "Pending", ct);
+        if (projection is not null)
+        {
+            projection.Status = "Cancelled";
+            projection.CompletedAtUtc = DateTime.UtcNow;
+        }
+        var pendingApprovals = await _db.LeaveApprovals
+            .Where(a => a.TenantId == tenantId && a.LeaveRequestId == requestId && a.Decision == "Pending")
+            .ToListAsync(ct);
+        foreach (var approval in pendingApprovals) approval.Decision = "Cancelled";
+
+        await LogAuditAsync(tenantId, "LeaveRequest", reference, "Withdrawn", previousStatus, "Withdrawn", reason, withdrawnByName, ct);
 
         await _db.SaveChangesAsync(ct);
         return request;
@@ -1776,6 +2061,11 @@ public class LeaveService : ILeaveService
 
         if (request.Status == "Cancelled" || request.Status == "Withdrawn")
             throw new InvalidOperationException("Request is already cancelled or withdrawn.");
+        // A rejected request holds nothing: its reservation was released when it was rejected. Cancelling it released the
+        // same days AGAIN, from whatever other live requests of the employee were holding Pending, and rewrote history
+        // (Rejected -> Cancelled).
+        if (request.Status == "Rejected")
+            throw new InvalidOperationException("A rejected request cannot be cancelled. It was already closed when it was rejected.");
         // A leave awaiting a cancellation decision is decided through that decision (approve or reject the
         // cancellation request), never cancelled directly: a direct cancel would release the approved days
         // without the reviewer and leave the Pending cancellation row with nothing left to decide.

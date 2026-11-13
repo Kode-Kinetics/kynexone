@@ -70,7 +70,7 @@ internal static class OfferLifecycleTestData
         await using var db = fixture.CreateDb();
         var tenantId = await PostgresFixture.SeedMinimalTenant(db);
         var company = new Company { TenantId = tenantId, DefaultCurrency = "SAR" };
-        var opening = new JobOpening { TenantId = tenantId, Title = "Engineer", HeadCount = 3 };
+        var opening = new JobOpening { TenantId = tenantId, CompanyId = company.Id, Title = "Engineer", HeadCount = 3 };
         var candidate = new Candidate { TenantId = tenantId, CompanyId = company.Id,
             FirstName = "Test", LastName = "Candidate", Email = "candidate@example.invalid" };
         var application = new JobApplication { TenantId = tenantId, CompanyId = company.Id,

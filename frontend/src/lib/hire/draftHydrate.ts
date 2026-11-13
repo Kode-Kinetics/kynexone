@@ -86,7 +86,7 @@ export function formFromEmployee(d: EmployeeDetail, ctx: HydrateContext): HireFo
     workEmail: work, arabicName: text(d.arabicName), preferredName: text(d.preferredName), gender: text(d.gender), maritalStatus: text(d.maritalStatus),
     nationalityCode: nationalityOf(d, ctx.countryOptions), dob: day(d.dateOfBirth), mobileCountry, mobileNational, personalEmail: text(d.personalEmail),
     employmentType: text(d.employmentType), contractType: text(d.contractType),
-    contractEndDate: day((d as { contractEndDate?: string }).contractEndDate), probationEndDate: day(d.probationEndDate), probationWaived: d.probationWaived === true, workLocation: text(d.workLocation),
+    contractEndDate: day((d as { contractEndDate?: string }).contractEndDate), probationEndDate: day(d.probationEndDate), probationWaived: d.probationWaived === true, noticePeriodDays: typeof d.noticePeriodDays === 'number' ? String(d.noticePeriodDays) : '', gosiFirstRegisteredOn: day(d.gosiFirstRegisteredOn), workLocation: text(d.workLocation),
     iban: text(d.payrollProfile?.iban) || text(d.bankIban), molId: text(d.payrollProfile?.molId),
     basic: amount(d.salaryBreakdown?.basicSalary), housing: amount(d.salaryBreakdown?.housingAllowance), transport: amount(d.salaryBreakdown?.transportAllowance), other: amount(d.salaryBreakdown?.otherAllowance),
     // The lines already staged with this draft's package are kept as the person's own, so saving again sends them rather than filling from the grade.

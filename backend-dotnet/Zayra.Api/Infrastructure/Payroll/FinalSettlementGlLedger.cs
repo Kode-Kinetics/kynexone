@@ -97,7 +97,9 @@ public static class FinalSettlementGlLedger
         string period, GlResolutionContext gl, Guid? postedBy, string postedByName,
         decimal provisionConsumed = 0m, string? provisionAccount = null,
         IReadOnlyList<(string Account, decimal Amount)>? provisionReleases = null,
-        Guid? costCentreId = null)
+        Guid? costCentreId = null,
+        decimal leaveProvisionConsumed = 0m, string? leaveProvisionAccount = null,
+        IReadOnlyList<(string Account, decimal Amount)>? leaveProvisionReleases = null)
     {
         var entries = new List<FinanceGlEntry>();
         var costed = gl.CostAccountingEnabled;
@@ -141,6 +143,8 @@ public static class FinalSettlementGlLedger
 
         // ── DEBITS: one per earning component, on the component's OWN expense account ────────────────
         var gratuityRelief = Math.Min(Math.Max(0m, provisionConsumed), settlement.GratuityAmount);
+        // The annual-leave provision relieves the leave encashment the same way: it was expensed when it was provided.
+        var leaveRelief = Math.Min(Math.Max(0m, leaveProvisionConsumed), settlement.LeaveEncashmentAmount);
         foreach (var grp in lines
                      .Where(l => l.LineType == FinalSettlementLineTypes.Earning && l.Amount > 0m)
                      .GroupBy(l => l.ComponentCode, StringComparer.Ordinal)
@@ -160,6 +164,20 @@ public static class FinalSettlementGlLedger
                 entries.Add(Line(provisionAccount!, string.Empty, relieved,
                     $"{FinalSettlementGlDescriptions.ProvisionReliefPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
                     GlEventTypes.EosbProvisionConsumption, employeeRef));
+                amount = Math.Round(amount - relieved, 2);
+                if (amount <= 0m) continue;
+            }
+
+            // The annual-leave provision SEAM: whatever has already been PROVIDED for this employee's leave relieves the 2330 liability, and
+            // only the difference between the encashment and the provision is expensed now (to 5111), so the cost of the leave is
+            // recognised once. With no provision the relief is 0 and this is the single debit to 5111 it always was.
+            if (grp.Key == FinalSettlementComponents.LeaveEncashment && leaveRelief > 0m
+                && !string.IsNullOrWhiteSpace(leaveProvisionAccount))
+            {
+                var relieved = Math.Min(leaveRelief, amount);
+                entries.Add(Line(leaveProvisionAccount!, string.Empty, relieved,
+                    $"{FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
+                    GlEventTypes.LeaveProvisionConsumption, employeeRef));
                 amount = Math.Round(amount - relieved, 2);
                 if (amount <= 0m) continue;
             }
@@ -186,6 +204,23 @@ public static class FinalSettlementGlLedger
                 entries.Add(Line(string.Empty, ExpenseLabel(ExpenseDriverFor(FinalSettlementComponents.Gratuity)), amount,
                     $"{FinalSettlementGlDescriptions.ProvisionReleasePrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
                     GlEventTypes.EosbProvisionConsumption, employeeRef, costCentreId, ExpenseDriverFor(FinalSettlementComponents.Gratuity)));
+            }
+
+        // ── Release whatever annual-leave provision is LEFT for this leaver ────────────────────────────
+        // Days taken (or capped by policy) since the last month end leave part of 2330 that nothing will ever consume. It is
+        // derecognised here, with the leaver: DR the provision's STORED account / CR 5115, a reduction of the provision expense.
+        // Both lines carry the consumption tag and the employee ref, so the sub-ledger reads the position as fully used and a
+        // cancellation of this settlement re-opens it through the same contra as the consumption.
+        if (leaveProvisionReleases is not null)
+            foreach (var (account, released) in leaveProvisionReleases.Where(r => r.Amount > 0m && !string.IsNullOrWhiteSpace(r.Account)))
+            {
+                var amount = Math.Round(released, 2);
+                entries.Add(Line(account, string.Empty, amount,
+                    $"{FinalSettlementGlDescriptions.LeaveProvisionReleasePrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
+                    GlEventTypes.LeaveProvisionConsumption, employeeRef));
+                entries.Add(Line(string.Empty, ExpenseLabel(LeaveProvisioningRateKeys.ExpenseDriverKey), amount,
+                    $"{FinalSettlementGlDescriptions.LeaveProvisionReleasePrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
+                    GlEventTypes.LeaveProvisionConsumption, employeeRef, costCentreId, LeaveProvisioningRateKeys.ExpenseDriverKey));
             }
 
         // ── CREDIT: the payable, at the GROSS of the earning lines ───────────────────────────────────

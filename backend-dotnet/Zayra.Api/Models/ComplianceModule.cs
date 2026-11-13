@@ -137,10 +137,12 @@ public class ComplianceRequirement : ITenantOwned
 
 // ── Compliance Renewal ─────────────────────────────────────────────────────────
 
-public class ComplianceRenewal : ITenantOwned
+public class ComplianceRenewal : ITenantOwned, ICompanyScopedOperational
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid TenantId { get; set; }
+    /// <summary>Legal-entity scope. Stamped from the employee's company on create; backfilled by migration.</summary>
+    public Guid? CompanyId { get; set; }
     public Guid EmployeeId { get; set; }
     public string EmployeeName { get; set; } = string.Empty;
     public string DocumentType { get; set; } = string.Empty;       // Visa/Passport/Iqama/WorkPermit/Contract

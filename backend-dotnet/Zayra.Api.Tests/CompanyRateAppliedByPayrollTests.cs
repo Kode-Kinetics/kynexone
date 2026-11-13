@@ -30,6 +30,8 @@ public class CompanyRateAppliedByPayrollTests
         ProrationRateKeys.ArrearsMaxLookback, ProrationRateKeys.ProratedComponents,
         // POD-C2 — read at every payroll Lock (PayrollController.BuildEosbProvisionAsync).
         EosbProvisioningRateKeys.Mode,
+        // Read at every payroll Lock alongside the EOSB switch (the monthly annual-leave provision).
+        LeaveProvisioningRateKeys.Mode,
         // Read by readiness (the pay-stage Iqama window) and by the Saudi wage / bank file (the employee ID).
         BorderNumberRule.GraceDaysRateKey, BorderNumberRule.UseAsWageFileIdRateKey,
     };
@@ -97,7 +99,7 @@ public class CompanyRateAppliedByPayrollTests
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var ok = (await Rates(db, Guid.NewGuid()).ListRateRegistry(default)).Should().BeOfType<OkObjectResult>().Subject;
         var items = Items(ok.Value!);
-        items.Should().HaveCount(16);
+        items.Should().HaveCount(17);
         foreach (var i in items)
         {
             var key = (string)Prop(i, "RateKey")!;

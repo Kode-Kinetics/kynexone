@@ -114,9 +114,15 @@ async function openTab(page: Page, label: string): Promise<void> {
  * only ("Sep 2026"), never on the status, because the status is exactly what this journey changes
  * underneath the option label.
  */
+/** Payroll shows the month in full ("November 2026"); the spec keys periods by the API's short form ("Nov 2026"). */
+const periodText = (period: string): RegExp => {
+  const [mon, year] = period.split(' ');
+  return new RegExp(`\\b${mon}[a-z]* ${year}(?!\\d)`);
+};
+
 async function selectRun(page: Page, ariaLabel: string, period: string): Promise<string> {
   const picker = content(page).locator(`select[aria-label="${ariaLabel}"]`);
-  const option = picker.locator('option', { hasText: period });
+  const option = picker.locator('option', { hasText: periodText(period) });
   await expect(option, `run picker "${ariaLabel}" must offer exactly one ${period} run`).toHaveCount(1);
   const runId = await option.getAttribute('value');
   expect(runId, `the ${period} option must carry a run id`).toMatch(
@@ -128,7 +134,7 @@ async function selectRun(page: Page, ariaLabel: string, period: string): Promise
 
 /** The Runs-tab card for a period (a div[role="button"] that opens the run's slip register). */
 const runCard = (page: Page, period: string): Locator =>
-  content(page).locator('[role="button"]').filter({ hasText: period }).first();
+  content(page).locator('[role="button"]').filter({ hasText: periodText(period) }).first();
 
 /** The Approvals-tab detail card for the selected run — where its status badge lives. */
 const approvalCard = (page: Page): Locator =>
@@ -193,7 +199,7 @@ test.describe('Payroll — run to WPS file', () => {
         // Assertion in its own right: the list renders every run the server returned.
         const existingCards = content(admin)
           .locator('[role="button"]')
-          .filter({ hasText: /^[A-Z][a-z]{2} \d{4}/ });
+          .filter({ hasText: /^[A-Z][a-z]{2,8} \d{4}/ });
         await expect(
           existingCards,
           'the Payroll Runs list must render every run the API returned',
@@ -206,7 +212,7 @@ test.describe('Payroll — run to WPS file', () => {
         // Take the first period with no run yet, so the spec is re-runnable and retry-safe.
         const taken = new Set(
           (await existingCards.allInnerTexts())
-            .map((label) => /^([A-Z][a-z]{2}) (\d{4})/.exec(label.trim()))
+            .map((label) => /^([A-Z][a-z]{2})[a-z]* (\d{4})/.exec(label.trim()))
             .filter((m): m is RegExpExecArray => m !== null)
             .map((m) => `${m[1]} ${m[2]}`),
         );
@@ -231,7 +237,7 @@ test.describe('Payroll — run to WPS file', () => {
 
         await content(admin).getByRole('button', { name: 'New Payroll Run' }).click();
         await content(admin).getByLabel('Year', { exact: true }).fill(yearLabel);
-        await content(admin).getByLabel('Month', { exact: true }).selectOption({ label: monthLabel });
+        await content(admin).getByLabel('Month', { exact: true }).selectOption({ value: String(MONTHS.indexOf(monthLabel) + 1) });
         await content(admin).getByRole('button', { name: 'Create Run' }).click();
         // The create modal stays open and shows its error when creation is rejected (a duplicate
         // period, for one), so its disappearance is the proof the run was actually created.
@@ -645,10 +651,12 @@ test.describe('Payroll — run to WPS file', () => {
 
         const filedCard = batchCard(admin, batchNumber);
         await expect(filedCard).toBeVisible({ timeout: 30_000 });
+        // The card badge shows the wage-file (WPS) status once one exists, so a filed batch
+        // reads "Generated"; older builds showed the batch status "File generated".
         await expect(
           filedCard,
-          'a batch with a generated wage file must read as File generated',
-        ).toContainText('File generated');
+          'a batch with a generated wage file must read as Generated',
+        ).toContainText(/(File generated|Generated)(?![a-z])/);
         await expect(
           filedCard,
           "the filed batch must still show the run's net-pay total",

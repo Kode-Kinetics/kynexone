@@ -50,7 +50,7 @@ public sealed class OfferDesign
     [
         new() { Kind = "heading", Text = "Offer of employment" },
         new() { Text = "{{issue_date}}\n\nDear {{candidate_name}},\n\nWe are pleased to offer you the position of {{job_title}} at {{company_name}}. We look forward to welcoming you to our team." },
-        new() { Kind = "table", Rows = [new("Department", "{{department}}"), new("Start date", "{{start_date}}"), new("Probation", "{{probation_months}} months")] },
+        new() { Kind = "table", Rows = [new("Department", "{{department}}"), new("Start date", "{{start_date}}"), new("Probation", "{{probation_period}}")] },
         new() { Kind = "heading", Text = "Your compensation", FontSize = 16 },
         new() { Kind = "table", Rows = [new("Basic salary", "{{currency}} {{basic_salary}}"), new("Housing allowance", "{{currency}} {{housing_allowance}}"), new("Transport allowance", "{{currency}} {{transport_allowance}}"), new("Other allowances", "{{currency}} {{other_allowances}}"), new("Gross monthly salary", "{{currency}} {{gross_salary}}")] },
         new() { Text = "Please confirm your acceptance by {{response_deadline}}. This offer is subject to the agreed employment terms and applicable company policies." },
@@ -85,7 +85,7 @@ public static class OfferLetterDesign
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     // Typed so an Employee can never be persisted as an offer design snapshot.
     public static string SerializeSnapshot(OfferDesignSnapshot snapshot) => JsonSerializer.Serialize(snapshot, Json);
-    public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "offer_reference"];
+    public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "probation_period", "offer_reference"];
     private static readonly Regex TokenPattern = new(@"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", RegexOptions.Compiled);
     private static readonly object FontGate = new();
     private static readonly HashSet<string> RegisteredFonts = [];
@@ -109,7 +109,7 @@ public static class OfferLetterDesign
         ["company_name"] = "Your organization", ["candidate_name"] = "Alex Morgan (sample)", ["job_title"] = "Finance Manager",
         ["department"] = "Finance", ["start_date"] = "01 January 2027", ["issue_date"] = "19 October 2026", ["response_deadline"] = "26 October 2026",
         ["basic_salary"] = "12,000.00", ["housing_allowance"] = "3,000.00", ["transport_allowance"] = "1,000.00", ["other_allowances"] = "0.00",
-        ["gross_salary"] = "16,000.00", ["currency"] = "SAR", ["probation_months"] = "3", ["offer_reference"] = "SAMPLE-001"
+        ["gross_salary"] = "16,000.00", ["currency"] = "SAR", ["probation_months"] = "3", ["probation_period"] = "3 months", ["offer_reference"] = "SAMPLE-001"
     };
 
     public static string Merge(string text, IReadOnlyDictionary<string, string> values) => TokenPattern.Replace(text, m =>
@@ -183,12 +183,30 @@ public static class OfferLetterDesign
         return bytes;
     }
 
+    private static readonly Regex MonthsPhrase = new(@"\{\{\s*probation_months\s*\}\}\s*months?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>Rewrites "{{probation_months}} months" to "{{probation_period}}" in every text and table cell of the design.</summary>
+    internal static void UseProbationPeriod(OfferDesign design)
+    {
+        foreach (var b in design.Blocks)
+        {
+            b.Text = MonthsPhrase.Replace(b.Text ?? "", "{{probation_period}}");
+            b.Rows = b.Rows.Select(r => r with { Value = MonthsPhrase.Replace(r.Value ?? "", "{{probation_period}}") }).ToList();
+        }
+    }
+
     public static async Task<OfferDesignSnapshot> SnapshotAsync(ZayraDbContext db, OfferLetter offer, OfferDesign design, Guid? templateId, int? version, CancellationToken ct)
     {
         Validate(design);
         var values = new Dictionary<string, string>(design.CustomFields);
-        var company = offer.CompanyId is { } cid ? await db.Companies.Where(x => x.Id == cid && x.TenantId == offer.TenantId).Select(x => x.LegalNameEn).FirstOrDefaultAsync(ct) : null;
-        company ??= await db.Tenants.Where(x => x.Id == offer.TenantId).Select(x => x.Name).FirstOrDefaultAsync(ct) ?? "";
+        var companyRow = offer.CompanyId is { } cid
+            ? await db.Companies.Where(x => x.Id == cid && x.TenantId == offer.TenantId).Select(x => new { x.LegalNameEn, x.CountryCode }).FirstOrDefaultAsync(ct)
+            : null;
+        var company = companyRow?.LegalNameEn ?? await db.Tenants.Where(x => x.Id == offer.TenantId).Select(x => x.Name).FirstOrDefaultAsync(ct) ?? "";
+        var probationPeriod = Zayra.Api.Infrastructure.Payroll.CompanyPayrollRules.ProbationPeriodText(companyRow?.CountryCode, offer.StartDate, offer.ProbationMonths);
+        // A design saved before {{probation_period}} existed says "{{probation_months}} months"; where the Saudi 180-day ceiling
+        // applies that would print "6 months" for a probation served as 180 days, so the letter states the period instead.
+        if (probationPeriod.EndsWith(" days", StringComparison.Ordinal)) UseProbationPeriod(design);
         string Money(decimal value) => value.ToString("N2", CultureInfo.InvariantCulture);
         values["company_name"] = company; values["candidate_name"] = offer.CandidateName;
         values["job_title"] = offer.OfferedJobTitle; values["department"] = offer.OfferedDepartment;
@@ -198,7 +216,7 @@ public static class OfferLetterDesign
         values["basic_salary"] = Money(offer.BasicSalary); values["housing_allowance"] = Money(offer.HousingAllowance);
         values["transport_allowance"] = Money(offer.TransportAllowance); values["other_allowances"] = Money(offer.OtherAllowances); values["gross_salary"] = Money(offer.GrossSalary);
         values["currency"] = await OfferRules.ResolveCurrencyAsync(db, offer.TenantId, offer.CompanyId, ct);
-        values["probation_months"] = offer.ProbationMonths.ToString(CultureInfo.InvariantCulture); values["offer_reference"] = offer.Id.ToString();
+        values["probation_months"] = offer.ProbationMonths.ToString(CultureInfo.InvariantCulture); values["probation_period"] = probationPeriod; values["offer_reference"] = offer.Id.ToString();
         var compensation = offer.CompensationSnapshotJson is null ? null
             : JsonSerializer.Deserialize<OfferCompensationSnapshot>(offer.CompensationSnapshotJson, OfferCompensation.Json);
         return new(design, values, templateId, version, compensation);

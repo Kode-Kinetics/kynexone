@@ -434,7 +434,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           const existingTotal = ((await (await runsFetch).json()) as { total: number }).total;
 
           const existingCards = content(admin.page)
-            .locator('[role="button"]').filter({ hasText: /^[A-Z][a-z]{2} \d{4}/ });
+            .locator('[role="button"]').filter({ hasText: /^[A-Z][a-z]{2,8} \d{4}/ });
           await expect(
             existingCards, 'the Payroll Runs list must render every run the API returned',
           ).toHaveCount(existingTotal);
@@ -951,7 +951,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           + "employee and a total equal to the run's net pay. The run stays Locked, the batch is not "
           + 'settled, and no payment record says paid.',
         record: { type: 'PayrollPaymentBatch', id: batchId },
-        mustShowOnScreen: 'File generated',
+        mustShowOnScreen: /(File generated|Generated)(?![a-z])/,
         act: async (ctx) => {
           const attempt = admin.page.waitForResponse(
             (r) => r.url().includes(`/api/payroll/payment-batches/${batchId}/wps-file`)
@@ -978,7 +978,7 @@ evidenceTest.describe('Evidence — one fully reconciled payroll story', () => {
           await openTab(admin.page, 'Bank / WPS Files');
           expect(await selectRun(admin.page, 'Select payroll run', period)).toBe(runId);
           const filed = batchCard(admin.page, batchNumber);
-          await expect(filed, 'a batch with a wage file must read as File Generated').toContainText('File generated');
+          await expect(filed, 'a batch with a wage file must read as File Generated').toContainText(/(File generated|Generated)(?![a-z])/);
           await expect(
             filed.getByRole('button', { name: 'Generate WPS/SIF' }),
             'a batch that already has a wage file must not offer to generate another',

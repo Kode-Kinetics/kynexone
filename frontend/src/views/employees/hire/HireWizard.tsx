@@ -22,7 +22,8 @@ import { stepOf, validateHire, type FieldIssue } from '@/src/lib/hire/hireValida
 import { draftLoadProblem, formFromEmployee, isResumable } from '@/src/lib/hire/draftHydrate';
 import type { SaBank } from '@/src/lib/hire/iban';
 import { countryOptionsFromApi, defaultIdType, type CountryOption } from '@/src/lib/hire/nationality';
-import { buildCreateRequest, newIdempotencyKey, type AcknowledgedWarning } from '@/src/lib/hire/payload';
+import { buildCreateRequest, newIdempotencyKey, parseAmount, type AcknowledgedWarning } from '@/src/lib/hire/payload';
+import { gradeFillFromMatrix } from '@/src/lib/hire/gradePackage';
 import { parseHireProblem, serverFieldIssue, type HireProblem, type ServerWarning } from '@/src/lib/hire/problem';
 import { serverFieldToForm } from '@/src/lib/hire/serverFields';
 import { ErrorSummary } from './fields/ErrorSummary';
@@ -181,6 +182,20 @@ export function HireWizard() {
     [today, company, companyCountry, designationGrade, costCentre.departmentCostCentreId, costCentre.canManage, draftOverrideId],
   );
   const allowanceCatalog = useCashAllowanceCatalog({ companyId: form.companyId, asOf: form.startDate });
+  // What the grade adds to a blank housing / transport / other allowance (the server fills the same). Shown, totalled and sent, never added unseen.
+  // The company's default notice period, pre-filled in the form and sent when the field is left blank (so the saved record equals what was shown).
+  const [hireDefaults, setHireDefaults] = useState<{ noticePeriodDays: number | null }>({ noticePeriodDays: null });
+  useEffect(() => {
+    if (!form.companyId) { setHireDefaults({ noticePeriodDays: null }); return; }
+    let live = true;
+    employeeHireApi.defaults(form.companyId).then(d => { if (live) setHireDefaults(d); });
+    return () => { live = false; };
+  }, [form.companyId]);
+  const basicTyped = parseAmount(form.basic);
+  const gradeFill = useMemo(
+    () => (allowanceCatalog.catalog.status === 'ready' && form.gradeId ? gradeFillFromMatrix(allowanceCatalog.catalog.matrix, form.gradeId, basicTyped) : {}),
+    [allowanceCatalog.catalog, form.gradeId, basicTyped],
+  );
   const issues = useMemo(() => {
     const local = validateHire(form, ctx, 'create');
     return [...local, ...serverIssues.filter(s => !local.some(l => l.field === s.field))];
@@ -260,8 +275,8 @@ export function HireWizard() {
   }, [step]);
 
   // ── autosave ────────────────────────────────────────────────────────────
-  const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft, hireTemplateId: undefined as string | undefined, costCentre: costCentreCtx });
-  latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft, hireTemplateId: applied?.template.id, costCentre: costCentreCtx };
+  const latest = useRef({ ctx, companyCountry, currency, emailDomain: undefined as string | undefined, acks, draft, hireTemplateId: undefined as string | undefined, costCentre: costCentreCtx, gradeFill, defaultNoticeDays: hireDefaults.noticePeriodDays });
+  latest.current = { ctx, companyCountry, currency, emailDomain: company?.emailDomain || undefined, acks, draft, hireTemplateId: applied?.template.id, costCentre: costCentreCtx, gradeFill, defaultNoticeDays: hireDefaults.noticePeriodDays };
   const problemHandler = useRef<(p: HireProblem) => void>(() => {});
   const autosave = useRef<ReturnType<typeof createAutosave<{ form: HireForm }>> | null>(null);
   if (!autosave.current) {
@@ -269,7 +284,7 @@ export function HireWizard() {
       delayMs: 1200,
       save: async ({ form: f }, base) => {
         const l = latest.current;
-        const sent = buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain, costCentre: l.costCentre }, { acknowledgedWarnings: l.acks, hireTemplateId: l.hireTemplateId });
+        const sent = buildCreateRequest(f, { companyCountry: l.companyCountry, currency: l.currency, emailDomain: l.emailDomain, costCentre: l.costCentre, gradeFill: l.gradeFill, defaultNoticeDays: l.defaultNoticeDays }, { acknowledgedWarnings: l.acks, hireTemplateId: l.hireTemplateId });
         const res = await employeeHireApi.saveDraft(l.draft!.id, base, sent);
         // B1: after EVERY save, whether the record now holds an override (the server's flag, else what was sent).
         setDraftOverrideId(prev => overrideAfterSave({ previous: prev, sentCostCenterId: sent.costCenterId, serverFlag: res.costCenterIsOverride, departmentCostCentreId: l.costCentre.departmentCostCentreId }));
@@ -367,7 +382,7 @@ export function HireWizard() {
     try {
       if (draft) return (await autosave.current!.flush()) ? draft.id : null;
       const all = extraAcks ?? acks;
-      const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined, costCentre: costCentreCtx }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined, hireTemplateId: applied?.template.id });
+      const body = buildCreateRequest(form, { companyCountry, currency, emailDomain: company?.emailDomain || undefined, costCentre: costCentreCtx, gradeFill, defaultNoticeDays: hireDefaults.noticePeriodDays }, { acknowledgedWarnings: all, duplicateOverrideReason: differentReason ?? undefined, hireTemplateId: applied?.template.id });
       const res = await employeeHireApi.create(body, keyRef.current);
       setDraftOverrideId(prev => overrideAfterSave({ previous: prev, sentCostCenterId: body.costCenterId, serverFlag: res.costCenterIsOverride, serverCostCenterId: res.costCenterId, departmentCostCentreId: costCentreCtx.departmentCostCentreId }));
       const version = res.updatedAtUtc ?? (res as { createdAtUtc?: string }).createdAtUtc ?? '';
@@ -380,7 +395,7 @@ export function HireWizard() {
       handleFailure(e);
       return null;
     } finally { busyRef.current = false; setBusy(false); }
-  }, [draft, form, companyCountry, currency, company, acks, differentReason, handleFailure, applied, costCentreCtx]);
+  }, [draft, form, companyCountry, currency, company, acks, differentReason, handleFailure, applied, costCentreCtx, gradeFill, hireDefaults]);
 
   const onSaveDraft = useCallback(async () => {
     const list = validateHire(form, ctx, 'draft');
@@ -429,7 +444,7 @@ export function HireWizard() {
   };
 
   // ── render ──────────────────────────────────────────────────────────────
-  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany, banks, allowanceCatalog, costCentre };
+  const stepProps: StepProps = { form, set, errorFor, blur, company, companyCountry, currency, lookups, today, singleCompany, banks, allowanceCatalog, gradeFill, hireDefaults, costCentre };
   const label = (s: number) => t(STEP_LABELS[s - 1]);
   const canOverride = hasPermission('employees.override_validation');
   const savedText = saveState === 'saving' || saveState === 'pending' ? t('Saving…') : saveState === 'saved' && savedAt ? t('Saved {time}', { time: clock(savedAt, zone, locale) }) : saveState === 'error' ? t('Not saved yet. It will retry on your next change.') : '';

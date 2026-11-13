@@ -216,13 +216,26 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
             DateTime.UtcNow);
     }
 
+    /// <summary>The primary government ID Qiwa is told about, read the way the wage file reads it: the recorded ID number (with its type) when there is one,
+    /// else the Iqama, else the Border Number (a person with no Iqama yet). An expatriate whose identity is held as an Iqama has no ID number, and is not
+    /// "missing" one. Empty when no identity is recorded at all.</summary>
+    public static (string Type, string Number) PrimaryIdentity(Employee emp)
+    {
+        if (!string.IsNullOrWhiteSpace(emp.IdNumber))
+            return (!string.IsNullOrWhiteSpace(emp.IdType) ? emp.IdType : "NationalId", emp.IdNumber);
+        if (!string.IsNullOrWhiteSpace(emp.IqamaNumber)) return ("Iqama", emp.IqamaNumber);
+        if (!string.IsNullOrWhiteSpace(emp.BorderNumber)) return ("BorderNumber", emp.BorderNumber);
+        return (string.Empty, string.Empty);
+    }
+
     /// <summary>Returns snake_case field names for all Qiwa-required fields that are empty on an employee.</summary>
     public static List<string> MissingQiwaFields(Employee emp)
     {
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(emp.SaudiOrNonSaudi))    missing.Add("saudi_or_non_saudi");
-        if (string.IsNullOrWhiteSpace(emp.IdType))             missing.Add("id_type");
-        if (string.IsNullOrWhiteSpace(emp.IdNumber))           missing.Add("id_number");
+        var identity = PrimaryIdentity(emp);
+        if (string.IsNullOrWhiteSpace(identity.Type))          missing.Add("id_type");
+        if (string.IsNullOrWhiteSpace(identity.Number))        missing.Add("id_number");
         if (string.IsNullOrWhiteSpace(emp.Nationality))        missing.Add("nationality");
         if (string.IsNullOrWhiteSpace(emp.OccupationCode))     missing.Add("occupation_code");
         if (string.IsNullOrWhiteSpace(emp.EstablishmentId))    missing.Add("establishment_id");

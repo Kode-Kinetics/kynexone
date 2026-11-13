@@ -78,7 +78,7 @@ public static class LeaveEncashmentCalculator
     public static async Task<LeaveEncashmentResult> ComputeAsync(
         ZayraDbContext db, Guid tenantId, int employeeId, Guid? companyId,
         DateOnly lastWorkingDay, decimal monthlyGross, CancellationToken ct,
-        bool statutoryAnnualLeaveCashOut = false, string basisLabel = DayRateBasis)
+        bool statutoryAnnualLeaveCashOut = false, string basisLabel = DayRateBasis, bool netCarriedForward = false)
     {
         var warnings = new List<string>();
         var dailyRate = monthlyGross > 0m ? Math.Round(monthlyGross / 30m, 6) : 0m;
@@ -89,6 +89,11 @@ public static class LeaveEncashmentCalculator
             .ToListAsync(ct);
         if (balances.Count == 0)
             return new LeaveEncashmentResult(Array.Empty<EncashableLeave>(), 0m, 0m, warnings);
+
+        // The monthly leave PROVISION passes netCarriedForward: a day carried into a later year's row is not also counted in the
+        // earlier row that still shows it. A final settlement keeps the default (false), which sums every row as it always did.
+        var netted = netCarriedForward ? NetCarriedForward(balances) : new Dictionary<Guid, decimal>();
+        decimal AvailableOf(EmployeeLeaveBalance b) => Math.Round(b.Available - netted.GetValueOrDefault(b.Id), 2);
 
         var typeIds = balances.Select(b => b.LeaveTypeId).Distinct().ToList();
         var leaveTypes = await db.LeaveTypes.AsNoTracking()
@@ -139,7 +144,7 @@ public static class LeaveEncashmentCalculator
                 && IsAnnualType(annualType);
             if (isStatutoryAnnual && (!policyByType.TryGetValue(b.LeaveTypeId, out var annualPolicy) || !annualPolicy.EncashmentAllowed))
             {
-                var statutoryDays = Math.Round(b.Available, 2);
+                var statutoryDays = AvailableOf(b);
                 if (statutoryDays > 0m)
                     lines.Add(new EncashableLeave(
                         b.Id, b.LeaveTypeId, typeName, b.Year,
@@ -149,8 +154,8 @@ public static class LeaveEncashmentCalculator
 
             if (!policyByType.TryGetValue(b.LeaveTypeId, out var policy))
             {
-                if (b.Available > 0m)
-                    warnings.Add($"Leave type '{typeName}' has {b.Available:N2} day(s) of balance but NO leave " +
+                if (AvailableOf(b) > 0m)
+                    warnings.Add($"Leave type '{typeName}' has {AvailableOf(b):N2} day(s) of balance but NO leave " +
                                  "policy for this legal entity, so nothing is encashed for it. Configure a leave " +
                                  "policy with encashmentAllowed before settling, or add the amount as an explicit " +
                                  "other-dues line.");
@@ -162,7 +167,7 @@ public static class LeaveEncashmentCalculator
             // THE shipped definition, unmodified: Entitled + Accrued + CarriedForward + ManualAdjustment
             // − Used − Pending − Encashed − Expired. Expired is inside `Available` (16ad1b3); subtracting
             // it again here under-paid the leaver. Do not net anything off this line — see class remarks.
-            var available = Math.Round(b.Available, 2);
+            var available = AvailableOf(b);
             if (available <= 0m) continue;
 
             var cap = policy.EncashmentMaxDays > 0m
@@ -184,5 +189,34 @@ public static class LeaveEncashmentCalculator
             Math.Round(lines.Sum(l => l.EncashableDays), 2),
             Math.Round(lines.Sum(l => l.Amount), 2),
             warnings);
+    }
+
+    /// <summary>
+    /// Per balance row, how many of its still-open days were carried into a LATER year's row (so they are counted there).
+    /// For each row that carries days forward, the most recent earlier rows of the same leave type give up that many open
+    /// days. A prior row already closed (Available 0) gives up nothing, and a prior leftover that was NOT carried
+    /// (CarriedForward 0 on the later row) is untouched, because the product keeps last year's unused days in last year's row.
+    /// </summary>
+    private static Dictionary<Guid, decimal> NetCarriedForward(IReadOnlyList<EmployeeLeaveBalance> balances)
+    {
+        var netted = new Dictionary<Guid, decimal>();
+        foreach (var type in balances.GroupBy(b => b.LeaveTypeId))
+        {
+            var byYear = type.OrderBy(b => b.Year).ToList();
+            foreach (var row in byYear.Where(b => b.CarriedForward > 0m))
+            {
+                var remaining = row.CarriedForward;
+                foreach (var prior in byYear.Where(p => p.Year < row.Year).OrderByDescending(p => p.Year))
+                {
+                    if (remaining <= 0m) break;
+                    var open = Math.Max(0m, prior.Available - netted.GetValueOrDefault(prior.Id));
+                    var take = Math.Min(remaining, open);
+                    if (take <= 0m) continue;
+                    netted[prior.Id] = netted.GetValueOrDefault(prior.Id) + take;
+                    remaining -= take;
+                }
+            }
+        }
+        return netted;
     }
 }

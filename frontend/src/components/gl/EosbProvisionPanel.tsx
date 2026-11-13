@@ -12,6 +12,7 @@ import {
 } from '../../api/financeGlAdjustments';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
+import { LeaveProvisionSection } from './LeaveProvisionSection';
 
 /**
  * Setup → GL & rates → End-of-service provision, for ONE company.
@@ -52,6 +53,7 @@ export function EosbProvisionPanel({
   return (
     <div className="space-y-4">
       <ProvisionSection companyId={companyId} companyName={companyName} currency={currency} canManage={canManage} canManageRates={canManageRates} />
+      <LeaveProvisionSection companyId={companyId} companyName={companyName} currency={currency} canManageRates={canManageRates} />
       <LegacyAbsenceSection companyId={companyId} currency={currency} canManage={canManage} />
     </div>
   );
@@ -287,7 +289,7 @@ function ProvisionSection({
   );
 }
 
-function Figure({ label, value, definition }: { label: string; value: string; definition: string }) {
+export function Figure({ label, value, definition }: { label: string; value: string; definition: string }) {
   return (
     <div className="rounded-lg border border-slate-200 p-3 dark:border-white/10">
       <dt className="text-[11px] font-semibold text-slate-500">{label}</dt>

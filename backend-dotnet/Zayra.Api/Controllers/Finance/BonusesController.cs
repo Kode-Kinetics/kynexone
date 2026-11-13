@@ -66,7 +66,8 @@ public class BonusesController : ControllerBase
         Guid.TryParse(User.FindFirst("tenant_id")?.Value, out var id) ? id : Guid.Empty;
     private Guid? GetUserId() =>
         Guid.TryParse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id) ? id : null;
-    private string GetUserName() => User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "Unknown";
+    // Issued tokens carry the display name as "name"; ClaimTypes.Name only exists when something maps it.
+    private string GetUserName() => User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? User.FindFirst("name")?.Value ?? "Unknown";
 
     // ── Bonus Types ───────────────────────────────────────────────────────────
 
@@ -1158,12 +1159,42 @@ public class BonusesController : ControllerBase
     public async Task<IActionResult> AuditReport([FromQuery] string? period, CancellationToken ct)
     {
         var tid = GetTenantId();
+        // COMPANY SCOPE. This report used to read every batch, every Bonus ledger row and the tenant-wide
+        // control-account balances with no company filter, so a caller scoped to one entity saw the other
+        // entities' batch totals, ledger volume and Bonus Payable balance. FinanceGlEntry carries no global
+        // company filter (CompanyId is a plain dimension), so the scope is applied here, the same way
+        // ListBatches scopes batches (a batch belongs to the companies of its lines).
+        var entityScope = this.GetEntityScope();
+        var scoped = !entityScope.IsGroupLevel;
+        var scopeCompanyIds = entityScope.AccessibleCompanyIds.ToList();
+
         var batchQuery = _db.BonusBatches.Where(x => x.TenantId == tid && !x.IsDeleted);
+        if (scoped)
+            batchQuery = batchQuery.Where(x => x.EmployeeCount == 0
+                || _db.EmployeeBonuses.Any(l => l.BonusBatchId == x.Id && !l.IsDeleted));
         if (!string.IsNullOrEmpty(period)) batchQuery = batchQuery.Where(x => x.PaymentPeriod == period);
 
-        var batches = await batchQuery.OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-        var glEntries = await _db.FinanceGlEntries
-            .Where(x => x.TenantId == tid && x.SourceModule == "Bonus").ToListAsync(ct);
+        var batches = await batchQuery.AsNoTracking().OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        if (scoped && batches.Count > 0)
+        {
+            // Totals show only the lines the caller may see (the line query is company-scoped), never the other
+            // entities' pay in a batch that spans companies.
+            var ids = batches.Select(b => b.Id).ToList();
+            var visible = (await _db.EmployeeBonuses.AsNoTracking()
+                    .Where(l => ids.Contains(l.BonusBatchId) && !l.IsDeleted)
+                    .Select(l => new { l.BonusBatchId, l.BonusAmount })
+                    .ToListAsync(ct))
+                .GroupBy(l => l.BonusBatchId)
+                .ToDictionary(g => g.Key, g => (Count: g.Count(), Net: g.Sum(l => l.BonusAmount)));
+            foreach (var b in batches)
+                if (visible.TryGetValue(b.Id, out var v) && v.Count < b.EmployeeCount)
+                { b.EmployeeCount = v.Count; b.TotalAmount = v.Net; }
+        }
+        var glQuery = _db.FinanceGlEntries
+            .Where(x => x.TenantId == tid && x.SourceModule == "Bonus");
+        if (scoped)
+            glQuery = glQuery.Where(x => x.CompanyId != null && scopeCompanyIds.Contains(x.CompanyId.Value));
+        var glEntries = await glQuery.ToListAsync(ct);
 
         var bonusSummary = await _db.EmployeeBonuses
             .Where(x => x.TenantId == tid && !x.IsDeleted)
@@ -1176,7 +1207,11 @@ public class BonusesController : ControllerBase
         // (P0-1's fingerprint); a CREDIT balance on a receivable means one was relieved without ever
         // being disbursed (P0-2's). Surfaced HERE because this report is where bonuses are reconciled —
         // otherwise the invariant is only ever asserted in tests and a live break is invisible.
-        var controlAccounts = await GlControlAccounts.CheckAsync(_db, tid, null, ct);
+        // These are TENANT-WIDE balances (the health of an account is a whole-ledger fact), so a
+        // company-scoped caller is not shown them: they would disclose the other entities' position.
+        var controlAccounts = scoped
+            ? new List<ControlAccountHealth>()
+            : (await GlControlAccounts.CheckAsync(_db, tid, null, ct)).ToList();
 
         return Ok(new
         {
@@ -1189,7 +1224,8 @@ public class BonusesController : ControllerBase
             PaidAmount = batches.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount),
             PendingPaymentAmount = batches.Where(x => x.Status == "Approved").Sum(x => x.TotalAmount),
             GlEntriesCount = glEntries.Count,
-            ControlAccountsHealthy = controlAccounts.All(a => a.IsHealthy),
+            ControlAccountsHealthy = scoped ? (bool?)null : controlAccounts.All(a => a.IsHealthy),
+            ControlAccountsWithheldForScope = scoped,
             ControlAccountViolations = controlAccounts.Where(a => !a.IsHealthy).Select(a => a.Violation).ToList(),
             ControlAccounts = controlAccounts.Select(a => new
             {

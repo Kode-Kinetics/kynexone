@@ -117,6 +117,72 @@ public class PaymentBatchScopeTests
         rows!.Cast<object>().Should().ContainSingle("the caller's own entity's records are theirs to read");
     }
 
+    [Fact]
+    public async Task PaymentRecords_NameTheEmployee_SoTheScreenNeverShowsABareId()
+    {
+        using var db = NewDb();
+        var tenantId = Guid.NewGuid();
+        var companyA = Guid.NewGuid();
+        var (batchId, _) = SeedBatch(db, tenantId, companyA);
+        db.Employees.Add(new Employee
+        {
+            Id = 1, TenantId = tenantId, CompanyId = companyA, EmployeeCode = "EMP-0001", FullName = "Layla Al-Harbi",
+            Status = EmployeeStatuses.Active, JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+        });
+        db.SaveChanges();
+
+        var result = await MakeCtrl(db, tenantId, companyA).PaymentRecords(batchId, default);
+
+        var row = JsonSerializer.SerializeToElement(result.Should().BeOfType<OkObjectResult>().Subject.Value)
+            .EnumerateArray().Single();
+        row.GetProperty("employeeName").GetString().Should().Be("Layla Al-Harbi");
+        row.GetProperty("employeeCode").GetString().Should().Be("EMP-0001");
+        row.GetProperty("EmployeeId").GetInt32().Should().Be(1, "the id stays for callers that key on it");
+        row.GetProperty("Amount").GetDecimal().Should().Be(50_000m, "the figures are unchanged");
+    }
+
+    [Fact]
+    public async Task PaymentRecords_ForAnEmployeeTheCallerCannotSee_CarryNoName()
+    {
+        var store = Guid.NewGuid().ToString();
+        var tenantId = Guid.NewGuid();
+        var companyA = Guid.NewGuid();
+        Guid batchId;
+        using (var seed = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options))
+        {
+            (batchId, _) = SeedBatch(seed, tenantId, companyA);
+            // Employee 1 belongs to another company of the tenant: the record is listed (it is on this batch), the name is not.
+            seed.Employees.Add(new Employee
+            {
+                Id = 1, TenantId = tenantId, CompanyId = Guid.NewGuid(), EmployeeCode = "EMP-0001", FullName = "Someone Else",
+                Status = EmployeeStatuses.Active, JoiningDate = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            });
+            seed.SaveChanges();
+        }
+        // The caller's own context, scoped to company A like a real request (the ambient company filter applies).
+        var claims = new List<Claim>
+        {
+            new("tenant_id", tenantId.ToString()), new(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+            new("permission", "payroll.export"),
+            new(EntityScopeContext.V2ClaimType, JsonSerializer.Serialize(new { v = 2, m = "companies", c = new[] { companyA.ToString() } })),
+        };
+        var httpCtx = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
+        using var db = new ZayraDbContext(new DbContextOptionsBuilder<ZayraDbContext>().UseInMemoryDatabase(store).Options,
+            new _PbHttpAccessor(httpCtx));
+        var rules = new StubRuleReader();
+        var ctrl = new PayrollController(db, new _PbUnrestrictedScope(), new _PbHttpAccessor(httpCtx), new _PbNullNotifications(),
+            new _PbPackResolver(rules), rules, new _PbNullLetterService(), new NullDocumentStorage(),
+            new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1))
+        { ControllerContext = new ControllerContext { HttpContext = httpCtx } };
+
+        var result = await ctrl.PaymentRecords(batchId, default);
+
+        var row = JsonSerializer.SerializeToElement(result.Should().BeOfType<OkObjectResult>().Subject.Value)
+            .EnumerateArray().Single();
+        row.GetProperty("employeeName").ValueKind.Should().Be(JsonValueKind.Null);
+        row.GetProperty("employeeCode").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
     // ── Cross company: denied, on every route ─────────────────────────────────────────────────────
 
     [Fact]

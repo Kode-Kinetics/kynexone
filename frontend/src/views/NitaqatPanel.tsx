@@ -7,12 +7,24 @@ import {
   Minus, RefreshCw, Settings2, ShieldAlert, TrendingDown, TrendingUp, UserPlus, Users,
 } from 'lucide-react';
 import {
-  bandLabel, bandStyle, nitaqatApi, NITAQAT_CURVE_METHOD,
+  bandStyle, nitaqatApi, NITAQAT_CURVE_METHOD,
   type NitaqatActivity, type NitaqatGridCoverage, type NitaqatHireImpact, type NitaqatStanding,
   type NitaqatStandingResponse, type NitaqatTrendResponse,
 } from '../api/nitaqat';
 import { companiesApi, type CompanyDto } from '../api/organization';
 import { isSaudiCompany } from '../lib/saudiCompany';
+import { useLocale } from '../contexts/LocaleContext';
+import { enumLabel } from '../i18n/enumLabel';
+import { useT } from '../hooks/useT';
+
+/** A Nitaqat band's name in the viewer's language (the API label is English). */
+function useBandName() {
+  const t = useT();
+  return (band: string | null | undefined) => (band ? enumLabel(t, 'NitaqatBand', band) : '—');
+}
+
+/** The configuration endpoint named in the setup instructions: a technical identifier, shown as written in every language. */
+const NITAQAT_CURVE_ENDPOINT = 'PUT /api/saudi-compliance/nitaqat/curve';
 
 const NitaqatTrendChart = dynamic(
   () => import('../components/charts/compliance/NitaqatTrendChart').then((m) => m.NitaqatTrendChart),
@@ -28,6 +40,7 @@ const NitaqatTrendChart = dynamic(
 // ─────────────────────────────────────────────────────────────────────────────
 
 function BandChip({ band, large = false }: { band: string; large?: boolean }) {
+  const bandName = useBandName();
   const s = bandStyle(band);
   return (
     <span
@@ -35,7 +48,7 @@ function BandChip({ band, large = false }: { band: string; large?: boolean }) {
         large ? 'px-3.5 py-1.5 text-base' : 'px-2.5 py-0.5 text-xs'
       }`}
     >
-      {bandLabel(band)}
+      {bandName(band)}
     </span>
   );
 }
@@ -65,6 +78,8 @@ function Stat({
 
 /** Where the establishment sits between the floor it is on and the one above. */
 function BandRail({ standing }: { standing: NitaqatStanding }) {
+  const t = useT();
+  const bandName = useBandName();
   const floor = standing.currentBandFloorPercent;
   const ceiling = standing.nextBandUp?.requiredPercent ?? 100;
   const span = Math.max(ceiling - floor, 0.01);
@@ -85,12 +100,12 @@ function BandRail({ standing }: { standing: NitaqatStanding }) {
       </div>
       <div className="mt-1 flex justify-between text-caption text-slate-500 dark:text-slate-400">
         <span>
-          {bandLabel(standing.band)} floor {floor.toFixed(2)}%
+          {t('{bandLabel} floor {value}%', { bandLabel: bandName(standing.band), value: floor.toFixed(2) })}
         </span>
         <span>
           {standing.nextBandUp
-            ? `${bandLabel(standing.nextBandUp.band)} at ${standing.nextBandUp.requiredPercent.toFixed(2)}%`
-            : 'Top band'}
+            ? t('{band} at {percent}%', { band: bandName(standing.nextBandUp.band), percent: standing.nextBandUp.requiredPercent.toFixed(2) })
+            : t('Top band')}
         </span>
       </div>
     </div>
@@ -105,6 +120,7 @@ function Refused({ refusal, coverage, onConfigure }: {
   coverage: NitaqatGridCoverage | null;
   onConfigure: () => void;
 }) {
+  const t = useT();
   // The refusal a real customer hits: they picked their actual economic activity and the
   // product has no band floors for it. Before, this rendered as a bare message with no way
   // forward, which reads as a broken screen rather than a missing configuration.
@@ -114,62 +130,51 @@ function Refused({ refusal, coverage, onConfigure }: {
     <div className="surface flex flex-col items-start gap-3 p-6">
       <div className="flex items-center gap-2">
         <ShieldAlert className="h-5 w-5 text-amber-500" />
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">No Nitaqat band is shown</h3>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('No Nitaqat band is shown')}</h3>
         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
           {refusal.reason}
         </code>
       </div>
       <p className="text-sm text-slate-600 dark:text-slate-300">{refusal.message}</p>
       <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-600 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-slate-300">
-        <span className="font-semibold">What to do: </span>
+        <span className="font-semibold">{t('What to do')}: </span>
         {refusal.remedy}
       </div>
 
       {thresholdsMissing && (
         <div className="w-full space-y-3 rounded-lg border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-500/25 dark:bg-amber-500/[0.07]">
           <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
-            Saudization banding needs configuring before it can answer
+            {t('Saudization banding needs configuring before it can answer')}
           </p>
           <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
-            Since 1&nbsp;December&nbsp;2021 MHRSD works out the band floor from a curve published
-            per economic activity, not from a fixed table. Those constants are published by the
-            Ministry and are deliberately <strong>not shipped with this product</strong>: they are
-            revised periodically, and a stale constant would produce a confident wrong answer about
-            whether you can issue a work visa.
+            {t('Since 1 December 2021 MHRSD works out the band floor from a curve published per economic activity, not from a fixed table. Those constants are published by the Ministry and are deliberately not shipped with this product: they are revised periodically, and a stale constant would produce a confident wrong answer about whether you can issue a work visa.')}
           </p>
           <ol className="list-decimal space-y-1 ps-5 text-sm text-amber-900/90 dark:text-amber-100/90">
             <li>
-              Download the current annex —{' '}
+              {t('Download the current annex —')}
               <a
                 href={MHRSD_ANNEX_URL}
                 target="_blank"
                 rel="noreferrer noopener"
                 className="font-medium underline underline-offset-2"
               >
-                MHRSD Nitaqat Mutawar procedural guide
-              </a>{' '}
-              (hrsd.gov.sa, free, no login).
+                {t('MHRSD Nitaqat Mutawar procedural guide')}
+              </a>{t('(hrsd.gov.sa, free, no login).')}
             </li>
-            <li>Find your establishment&apos;s economic activity in Annex&nbsp;1 and note its
-              four <em>m</em> and <em>c</em> values.</li>
+            <li>{t('Find your establishment’s economic activity in Annex 1 and note its four m and c values.')}</li>
             <li>
-              Ask your administrator or implementation consultant to load them — there is a
-              configuration endpoint for exactly this
-              (<code className="rounded bg-amber-100/70 px-1 py-0.5 text-caption dark:bg-amber-500/15">
-                PUT /api/saudi-compliance/nitaqat/curve
-              </code>), and it requires the compliance-write permission. Every load records where
-              the numbers came from, who loaded them, and whether they have been checked. There is
-              no self-service screen for this yet.
+              {t('Ask your administrator or implementation consultant to load them — there is a configuration endpoint for exactly this, and it requires the compliance-write permission. Every load records where the numbers came from, who loaded them, and whether they have been checked. There is no self-service screen for this yet.')}{' '}
+              <code dir="ltr" className="inline-block rounded bg-amber-100/70 px-1 py-0.5 text-caption dark:bg-amber-500/15">
+                {NITAQAT_CURVE_ENDPOINT}
+              </code>
             </li>
           </ol>
           <p className="text-sm text-amber-900/90 dark:text-amber-100/90">
-            You can also record the band Qiwa itself reports for your establishment — Qiwa is
-            authoritative and the dashboard will show it alongside our estimate.
+            {t('You can also record the band Qiwa itself reports for your establishment — Qiwa is authoritative and the dashboard will show it alongside our estimate.')}
           </p>
           {coverage && (
             <p className="text-xs text-amber-900/80 dark:text-amber-100/80">
-              {coverage.activitiesWithCompleteGrid} of {coverage.activitiesTotal} economic
-              activities currently have band floors loaded for this tenant.
+              {t('{activitiesWithCompleteGrid} of {activitiesTotal} economic activities currently have band floors loaded for this tenant.', { activitiesWithCompleteGrid: coverage.activitiesWithCompleteGrid, activitiesTotal: coverage.activitiesTotal })}
             </p>
           )}
         </div>
@@ -182,7 +187,7 @@ function Refused({ refusal, coverage, onConfigure }: {
           className="inline-flex items-center gap-2 rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90"
         >
           <Settings2 className="h-4 w-4" />
-          Set the economic activity
+          {t('Set the economic activity')}
         </button>
       )}
     </div>
@@ -195,6 +200,7 @@ function Refused({ refusal, coverage, onConfigure }: {
  * but a reader must not take it for the current regime's answer.
  */
 function BandingMethodNotice({ standing }: { standing: NitaqatStanding }) {
+  const t = useT();
   if (standing.bandingMethod === NITAQAT_CURVE_METHOD) return null;
 
   return (
@@ -202,20 +208,19 @@ function BandingMethodNotice({ standing }: { standing: NitaqatStanding }) {
       <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
       <div className="space-y-1">
         <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-          This band came from a manually loaded table, not the MHRSD curve
+          {t('This band came from a manually loaded table, not the MHRSD curve')}
         </p>
         <p className="text-sm text-slate-600 dark:text-slate-300">{standing.bandingMethodNote}</p>
         <p className="text-xs text-slate-500 dark:text-slate-400">
-          Load this activity&apos;s curve constants from the{' '}
+          {t('Load this activity\'s curve constants from the')}
           <a
             href={MHRSD_ANNEX_URL}
             target="_blank"
             rel="noreferrer noopener"
             className="underline underline-offset-2"
           >
-            current MHRSD annex
-          </a>{' '}
-          for an answer on the regime in force.
+            {t('Current MHRSD annex')}
+          </a>{t('For an answer on the regime in force.')}
         </p>
       </div>
     </div>
@@ -231,6 +236,8 @@ function SetupForm({
   companyId: string;
   onSaved: () => void;
 }) {
+  const t = useT();
+  const bandName = useBandName();
   const [activities, setActivities] = useState<NitaqatActivity[] | null>(null);
   const [activityCode, setActivityCode] = useState('');
   const [mhrsd, setMhrsd] = useState('');
@@ -252,15 +259,15 @@ function SetupForm({
   const grouped = useMemo(() => {
     const map = new Map<string, NitaqatActivity[]>();
     (activities ?? []).forEach((a) => {
-      const key = a.activityGroup || 'Other';
+      const key = a.activityGroup || t('Other');
       map.set(key, [...(map.get(key) ?? []), a]);
     });
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [activities]);
+  }, [activities, t]);
 
   const submit = async () => {
     if (!activityCode) {
-      setError('Choose an economic activity. Nitaqat targets are activity-specific.');
+      setError(t('Choose an economic activity. Nitaqat targets are activity-specific.'));
       return;
     }
     setSaving(true);
@@ -274,7 +281,7 @@ function SetupForm({
       });
       onSaved();
     } catch {
-      setError('Could not save. You may not have permission to change compliance settings.');
+      setError(t('Could not save. You may not have permission to change compliance settings.'));
     } finally {
       setSaving(false);
     }
@@ -287,27 +294,25 @@ function SetupForm({
       <div className="flex items-center gap-2">
         <Settings2 className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-          Nitaqat setup — {company?.tradeName || company?.legalNameEn || 'establishment'}
+          {t('Nitaqat setup — {name}', { name: company?.tradeName || company?.legalNameEn || t('Establishment') })}
         </h3>
       </div>
 
       <p className="text-sm text-slate-600 dark:text-slate-300">
-        The required Saudization percentage depends on the establishment&apos;s MHRSD economic activity
-        and its size tier. No band is computed until the activity is set, because a wrong band is
-        worse than no band.
+        {t('The required Saudization percentage depends on the establishment\'s MHRSD economic activity and its size tier. No band is computed until the activity is set, because a wrong band is worse than no band.')}
       </p>
 
       {activities === null ? (
         <div className="h-10 animate-pulse rounded-lg bg-slate-100 dark:bg-white/[0.06]" />
       ) : (
         <label className="block">
-          <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Economic activity</span>
+          <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t('Economic activity')}</span>
           <select
             value={activityCode}
             onChange={(e) => setActivityCode(e.target.value)}
             className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
           >
-            <option value="">Select…</option>
+            <option value="">{t('Select…')}</option>
             {grouped.map(([group, items]) => (
               <optgroup key={group} label={group}>
                 {items.map((a) => (
@@ -324,7 +329,7 @@ function SetupForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block">
           <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-            MHRSD establishment number <span className="text-slate-400">(optional)</span>
+            {t('MHRSD establishment number')} <span className="text-slate-400">{t('(optional)')}</span>
           </span>
           <input
             value={mhrsd}
@@ -335,17 +340,17 @@ function SetupForm({
         </label>
         <label className="block">
           <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
-            Band Qiwa reports <span className="text-slate-400">(optional)</span>
+            {t('Band Qiwa reports')} <span className="text-slate-400">{t('(optional)')}</span>
           </span>
           <select
             value={qiwaBand}
             onChange={(e) => setQiwaBand(e.target.value)}
             className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
           >
-            <option value="">Not recorded</option>
+            <option value="">{t('Not recorded')}</option>
             {['Platinum', 'HighGreen', 'MediumGreen', 'LowGreen', 'Red'].map((b) => (
               <option key={b} value={b}>
-                {bandLabel(b)}
+                {bandName(b)}
               </option>
             ))}
           </select>
@@ -364,7 +369,7 @@ function SetupForm({
         disabled={saving}
         className="rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90 disabled:opacity-60"
       >
-        {saving ? 'Saving…' : 'Save'}
+        {saving ? t('Saving…') : t('Save')}
       </button>
     </div>
   );
@@ -373,6 +378,8 @@ function SetupForm({
 // ── Scenario modelling ────────────────────────────────────────────────────────
 
 function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; companyId: string }) {
+  const t = useT();
+  const bandName = useBandName();
   const [nationality, setNationality] = useState('Indian');
   const [count, setCount] = useState(1);
   const [impact, setImpact] = useState<NitaqatHireImpact | null>(null);
@@ -387,7 +394,7 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
     try {
       setImpact(await nitaqatApi.hireImpact(nationality, count, companyId));
     } catch {
-      setError('Could not model that hire.');
+      setError(t('Could not model that hire.'));
     } finally {
       setBusy(false);
     }
@@ -397,32 +404,32 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
     <div className="surface p-5">
       <div className="mb-3 flex items-center gap-2">
         <UserPlus className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
-        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">Scenario modelling</h3>
+        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t('Scenario modelling')}</h3>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Stat
-          label="Saudi hires to next band"
+          label={t('Saudi hires to next band')}
           value={
             scenario.saudiHiresToNextBand === null
               ? standing.nextBandUp
-                ? 'Not reachable'
-                : 'Top band'
+                ? t('Not reachable')
+                : t('Top band')
               : `${scenario.saudiHiresToNextBand}`
           }
-          sub={scenario.nextBand ? `to reach ${bandLabel(scenario.nextBand)}` : 'already Platinum'}
+          sub={scenario.nextBand ? t('To reach {band}', { band: bandName(scenario.nextBand) }) : t('Already Platinum')}
           tone="good"
         />
         <Stat
-          label="Expat hires before downgrade"
+          label={t('Expat hires before downgrade')}
           value={scenario.expatHiresBeforeDowngrade === null ? '—' : `${scenario.expatHiresBeforeDowngrade}`}
-          sub={scenario.bandBelow ? `then drops to ${bandLabel(scenario.bandBelow)}` : 'no band below'}
+          sub={scenario.bandBelow ? t('Then drops to {band}', { band: bandName(scenario.bandBelow) }) : t('No band below')}
           tone={scenario.expatHiresBeforeDowngrade === 0 ? 'warn' : 'default'}
         />
         <Stat
-          label="Saudi leavers before downgrade"
+          label={t('Saudi leavers before downgrade')}
           value={scenario.saudiLeaversBeforeDowngrade === null ? '—' : `${scenario.saudiLeaversBeforeDowngrade}`}
-          sub="attrition is how most establishments fall"
+          sub={t('Attrition is how most establishments fall')}
           tone={
             scenario.saudiLeaversBeforeDowngrade !== null && scenario.saudiLeaversBeforeDowngrade <= 1
               ? 'warn'
@@ -439,20 +446,20 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
 
       <div className="mt-4 border-t border-slate-100 pt-4 dark:border-white/[0.07]">
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-          Model a pending hire
+          {t('Model a pending hire')}
         </p>
         <div className="flex flex-wrap items-end gap-2">
           <label className="min-w-0 flex-1">
-            <span className="sr-only">Nationality</span>
+            <span className="sr-only">{t('Nationality')}</span>
             <input
               value={nationality}
               onChange={(e) => setNationality(e.target.value)}
-              placeholder="Nationality"
+              placeholder={t('Nationality')}
               className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 dark:border-white/[0.1] dark:bg-surface dark:text-slate-100"
             />
           </label>
           <label className="w-24">
-            <span className="sr-only">Number of hires</span>
+            <span className="sr-only">{t('Number of hires')}</span>
             <input
               type="number"
               min={1}
@@ -467,7 +474,7 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
             disabled={busy}
             className="rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90 disabled:opacity-60"
           >
-            {busy ? 'Modelling…' : 'Model'}
+            {busy ? t('Modelling…') : t('Model')}
           </button>
         </div>
 
@@ -505,30 +512,30 @@ function ScenarioCard({ standing, companyId }: { standing: NitaqatStanding; comp
 // ── Working ───────────────────────────────────────────────────────────────────
 
 function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
+  const t = useT();
   return (
     <div className="surface p-5">
       <div className="mb-3 flex items-center gap-2">
         <Users className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
         <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-          Weighted headcount — how the percentage was reached
+          {t('Weighted headcount — how the percentage was reached')}
         </h3>
       </div>
 
       <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-        Nitaqat counts units, not heads. {standing.rawTotalHeadcount} employees resolve to{' '}
-        {standing.totalWeighted} weighted units, of which {standing.saudiWeighted} are Saudi.
+        {t('Nitaqat counts units, not heads. {rawTotalHeadcount} employees resolve to {totalWeighted} weighted units, of which {saudiWeighted} are Saudi.', { rawTotalHeadcount: standing.rawTotalHeadcount, totalWeighted: standing.totalWeighted, saudiWeighted: standing.saudiWeighted })}
       </p>
 
       <div className="-mx-2 overflow-x-auto">
         <table className="w-full min-w-[34rem] text-start text-sm">
           <thead>
             <tr className="border-b border-slate-100 text-caption uppercase tracking-wide text-slate-500 dark:border-white/[0.07] dark:text-slate-400">
-              <th scope="col" className="px-2 py-1.5 font-medium">Group</th>
-              <th scope="col" className="px-2 py-1.5 text-end font-medium">Heads</th>
-              <th scope="col" className="px-2 py-1.5 text-end font-medium">Saudi ea.</th>
-              <th scope="col" className="px-2 py-1.5 text-end font-medium">Total ea.</th>
-              <th scope="col" className="px-2 py-1.5 text-end font-medium">Saudi units</th>
-              <th scope="col" className="px-2 py-1.5 text-end font-medium">Total units</th>
+              <th scope="col" className="px-2 py-1.5 font-medium">{t('Group')}</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">{t('Heads')}</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">{t('Saudi ea.')}</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">{t('Total ea.')}</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">{t('Saudi units')}</th>
+              <th scope="col" className="px-2 py-1.5 text-end font-medium">{t('Total units')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
@@ -546,7 +553,7 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
                       title={b.sourceNote}
                       className="ms-1 rounded bg-amber-100 px-1.5 py-0.5 text-caption text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
                     >
-                      unverified
+                      {t('Unverified')}
                     </span>
                   )}
                 </td>
@@ -560,7 +567,7 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
           </tbody>
           <tfoot>
             <tr className="border-t border-slate-200 text-sm font-semibold dark:border-white/[0.1]">
-              <td className="px-2 py-2 text-slate-700 dark:text-slate-200">Total</td>
+              <td className="px-2 py-2 text-slate-700 dark:text-slate-200">{t('Total')}</td>
               <td className="px-2 py-2 text-end tabular-nums text-slate-700 dark:text-slate-200">{standing.rawTotalHeadcount}</td>
               <td colSpan={2} />
               <td className="px-2 py-2 text-end tabular-nums text-slate-800 dark:text-slate-100">{standing.saudiWeighted}</td>
@@ -576,6 +583,9 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 export function NitaqatPanel() {
+  const bandName = useBandName();
+  const { t, locale } = useLocale();
+  const isArabic = locale === 'ar';
   const [companies, setCompanies] = useState<CompanyDto[] | null>(null);
   const [companyId, setCompanyId] = useState<string>('');
   const [data, setData] = useState<NitaqatStandingResponse | null>(null);
@@ -618,11 +628,11 @@ export function NitaqatPanel() {
       setCoverage(grid);
       setShowSetup(standing.refusal?.reason === 'nitaqat_activity_not_configured' && companies.length > 0);
     } catch {
-      setError('Unable to load Saudization data. You may not have access or the module is not enabled.');
+      setError(t('Unable to load Saudization data. You may not have access or the module is not enabled.'));
     } finally {
       setLoading(false);
     }
-  }, [companyId, companies]);
+  }, [companyId, companies, t]);
 
   useEffect(() => {
     void load();
@@ -652,7 +662,7 @@ export function NitaqatPanel() {
           onClick={() => void load()}
           className="rounded-lg bg-sapphire px-4 py-2 text-sm font-medium text-white hover:bg-sapphire/90"
         >
-          Retry
+          {t('Retry')}
         </button>
       </div>
     );
@@ -663,10 +673,9 @@ export function NitaqatPanel() {
     return (
       <div className="surface flex flex-col items-center gap-3 p-10 text-center">
         <Building2 className="h-8 w-8 text-slate-400" />
-        <p className="text-sm font-medium text-slate-700 dark:text-slate-200">No Saudi establishment</p>
+        <p className="text-sm font-medium text-slate-700 dark:text-slate-200">{t('No Saudi establishment')}</p>
         <p className="max-w-md text-sm text-slate-500 dark:text-slate-400">
-          Nitaqat applies only to establishments registered with MHRSD in the Kingdom. Add a company
-          with country SA, or set the country on an existing company.
+          {t('Nitaqat applies only to establishments registered with MHRSD in the Kingdom. Add a company with country SA, or set the country on an existing company.')}
         </p>
       </div>
     );
@@ -674,7 +683,7 @@ export function NitaqatPanel() {
 
   const picker = companies.length > 1 && (
     <label className="flex items-center gap-2 text-sm">
-      <span className="text-slate-500 dark:text-slate-400">Establishment</span>
+      <span className="text-slate-500 dark:text-slate-400">{t('Establishment')}</span>
       <select
         value={companyId}
         onChange={(e) => setCompanyId(e.target.value)}
@@ -690,6 +699,9 @@ export function NitaqatPanel() {
   );
 
   const standing = data?.standing ?? null;
+  // A band is only shown when the thresholds behind it are verified for the activity (a server that does not say is
+  // treated as verified). Otherwise the percentage stays and the band, floor and distances are withheld.
+  const bandShown = standing?.thresholdsVerified !== false;
 
   return (
     <div className="space-y-4">
@@ -703,7 +715,7 @@ export function NitaqatPanel() {
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-white/[0.1] dark:text-slate-300 dark:hover:bg-white/[0.04]"
             >
               <Settings2 className="h-3.5 w-3.5" />
-              Setup
+              {t('Setup')}
             </button>
           )}
           <button
@@ -712,7 +724,7 @@ export function NitaqatPanel() {
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 dark:border-white/[0.1] dark:text-slate-300 dark:hover:bg-white/[0.04]"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            {t('Refresh')}
           </button>
         </div>
       </div>
@@ -736,7 +748,7 @@ export function NitaqatPanel() {
         />
       )}
 
-      {standing && <BandingMethodNotice standing={standing} />}
+      {standing && bandShown && <BandingMethodNotice standing={standing} />}
 
       {standing && (
         <>
@@ -745,26 +757,36 @@ export function NitaqatPanel() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2.5">
-                  <BandChip band={standing.band} large />
+                  {bandShown && <BandChip band={standing.band} large />}
                   <span className="text-2xl font-semibold tabular-nums text-slate-800 dark:text-slate-100">
                     {standing.achievedPercent.toFixed(2)}%
                   </span>
                 </div>
                 <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300">
-                  {standing.companyName} · {standing.activityNameEn} · {standing.sizeTierNameEn}
+                  {standing.companyName} · {isArabic && standing.activityNameAr ? standing.activityNameAr : standing.activityNameEn} · {standing.sizeTierNameEn}
                 </p>
               </div>
               <div className="text-end text-xs text-slate-500 dark:text-slate-400">
-                <p>As of {standing.asOf}</p>
+                <p>{t('As of {asOf}', { asOf: standing.asOf })}</p>
                 <p className="mt-0.5 tabular-nums">
-                  {standing.saudiWeighted} / {standing.totalWeighted} weighted units
+                  {t('{saudiWeighted} / {totalWeighted} weighted units', { saudiWeighted: standing.saudiWeighted, totalWeighted: standing.totalWeighted })}
                 </p>
               </div>
             </div>
 
-            <BandRail standing={standing} />
+            {!bandShown && (
+              <p
+                data-testid="nitaqat-band-withheld"
+                className="mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 dark:border-white/[0.1] dark:bg-white/[0.04] dark:text-slate-300"
+              >
+                <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{t('No band is shown: the MHRSD thresholds for this activity are not loaded or not verified.')}</span>
+              </p>
+            )}
 
-            <p
+            {bandShown && <BandRail standing={standing} />}
+
+            {bandShown && <p
               className={`mt-3 flex items-start gap-2 rounded-lg border px-3 py-2 text-sm ${
                 standing.restrictsServices
                   ? 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-800/60 dark:bg-rose-900/20 dark:text-rose-300'
@@ -777,26 +799,24 @@ export function NitaqatPanel() {
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               )}
               <span>{standing.consequenceSummary}</span>
-            </p>
+            </p>}
 
-            {standing.disagreesWithQiwa && (
+            {bandShown && standing.disagreesWithQiwa && (
               <p className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  Qiwa reports <strong>{bandLabel(standing.qiwaReportedBand)}</strong>
-                  {standing.qiwaReportedOn ? ` as at ${standing.qiwaReportedOn}` : ''}, which differs
-                  from this estimate. MHRSD computes the band from its own register over a rolling
-                  window and is authoritative — treat this figure as an early indicator only.
+                  {standing.qiwaReportedOn
+                    ? t('Qiwa reports {band} as at {date}, which differs from this estimate. MHRSD computes the band from its own register over a rolling window and is authoritative — treat this figure as an early indicator only.', { band: bandName(standing.qiwaReportedBand), date: standing.qiwaReportedOn })
+                    : t('Qiwa reports {band}, which differs from this estimate. MHRSD computes the band from its own register over a rolling window and is authoritative — treat this figure as an early indicator only.', { band: bandName(standing.qiwaReportedBand) })}
                 </span>
               </p>
             )}
 
-            {!standing.allInputsVerified && (
+            {bandShown && !standing.allInputsVerified && (
               <details className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                 <summary className="cursor-pointer font-medium">
                   <Info className="me-1 inline h-4 w-4" />
-                  {standing.unverifiedInputs.length} input
-                  {standing.unverifiedInputs.length === 1 ? '' : 's'} not yet verified against MHRSD
+                  {t('{count, plural, one {# input not yet verified against MHRSD} other {# inputs not yet verified against MHRSD}}', { count: standing.unverifiedInputs.length })}
                 </summary>
                 <ul className="mt-1.5 list-inside list-disc space-y-0.5 text-body-sm">
                   {standing.unverifiedInputs.map((u) => (
@@ -804,38 +824,37 @@ export function NitaqatPanel() {
                   ))}
                 </ul>
                 <p className="mt-1.5 text-body-sm">
-                  Confirm these against the published MHRSD Nitaqat table or the establishment&apos;s
-                  Qiwa record before acting on this band.
+                  {t('Confirm these against the published MHRSD Nitaqat table or the establishment\'s Qiwa record before acting on this band.')}
                 </p>
               </details>
             )}
           </div>
 
           {/* Distance, both ways */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          {bandShown && <div className="grid gap-4 sm:grid-cols-3">
             <Stat
-              label="Current band floor"
+              label={t('Current band floor')}
               value={`${standing.currentBandFloorPercent.toFixed(2)}%`}
-              sub={`${bandLabel(standing.band)} starts here`}
+              sub={t('{band} starts here', { band: bandName(standing.band) })}
             />
             <Stat
-              label="Next band up"
+              label={t('Next band up')}
               value={standing.nextBandUp ? `${standing.nextBandUp.requiredPercent.toFixed(2)}%` : '—'}
               sub={
                 standing.nextBandUp
-                  ? `${bandLabel(standing.nextBandUp.band)} · ${standing.nextBandUp.percentGap.toFixed(2)} pts away`
-                  : 'Already Platinum'
+                  ? `${bandName(standing.nextBandUp.band)} · ${t('{points} pts away', { points: standing.nextBandUp.percentGap.toFixed(2) })}`
+                  : t('Already Platinum')
               }
             />
             <Stat
-              label="Headroom above the floor"
-              value={`${(standing.achievedPercent - standing.currentBandFloorPercent).toFixed(2)} pts`}
-              sub={standing.bandBelow ? `then ${bandLabel(standing.bandBelow.band)}` : 'lowest band'}
+              label={t('Headroom above the floor')}
+              value={t('{points} pts', { points: (standing.achievedPercent - standing.currentBandFloorPercent).toFixed(2) })}
+              sub={standing.bandBelow ? t('Then {band}', { band: bandName(standing.bandBelow.band) }) : t('Lowest band')}
               tone={standing.achievedPercent - standing.currentBandFloorPercent < 2 ? 'warn' : 'default'}
             />
-          </div>
+          </div>}
 
-          <ScenarioCard standing={standing} companyId={standing.companyId} />
+          {bandShown && <ScenarioCard standing={standing} companyId={standing.companyId} />}
 
           {/* Trend */}
           <div className="surface p-5">
@@ -847,7 +866,7 @@ export function NitaqatPanel() {
                   <TrendingUp className="h-4 w-4 text-sapphire dark:text-cyanAccent" />
                 )}
                 <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-                  Saudization trend
+                  {t('Saudization trend')}
                 </h3>
               </div>
               {trend?.changePercentagePoints != null && (
@@ -859,26 +878,25 @@ export function NitaqatPanel() {
                   }`}
                 >
                   {trend.changePercentagePoints > 0 ? '+' : ''}
-                  {trend.changePercentagePoints.toFixed(2)} pts
+                  {t('{points} pts', { points: trend.changePercentagePoints.toFixed(2) })}
                 </span>
               )}
             </div>
 
             {!trend || trend.points.length < 2 ? (
               <p className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-                Not enough history yet. A trend point is recorded each day this screen is opened, so
-                the line builds from today.
+                {t('Not enough history yet. A trend point is recorded each day this screen is opened, so the line builds from today.')}
               </p>
             ) : (
               <>
                 <div className="h-56">
                   <NitaqatTrendChart
                     points={trend.points}
-                    floor={standing.currentBandFloorPercent}
-                    nextFloor={standing.nextBandUp?.requiredPercent ?? null}
+                    floor={bandShown ? standing.currentBandFloorPercent : null}
+                    nextFloor={bandShown ? standing.nextBandUp?.requiredPercent ?? null : null}
                   />
                 </div>
-                {trend.projectedBandWarning && (
+                {bandShown && trend.projectedBandWarning && (
                   <p className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{trend.projectedBandWarning}</span>

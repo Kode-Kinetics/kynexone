@@ -107,6 +107,15 @@ export function tenantToday(timeZone: string, now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
+/**
+ * The company's yesterday: the last day that has certainly ended. The default end of the processing range, because
+ * processing today (before the shift) or a later day would otherwise mark people Absent for a day that has not happened.
+ */
+export function tenantYesterday(timeZone: string, now: Date = new Date()): string {
+  const [y, m, d] = tenantToday(timeZone, now).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
 export interface BulkEntryResultShape {
   requested: number;
   created: number;
