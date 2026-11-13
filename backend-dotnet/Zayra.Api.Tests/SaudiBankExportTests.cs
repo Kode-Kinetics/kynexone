@@ -276,6 +276,20 @@ public class SaudiBankExportTests
     }
 
     [Fact]
+    public async Task Validate_ANationalIdWithNoRecordedType_IsRead_AsTheWpsFileReadsIt()
+    {
+        var (db, tenant, _, batch, svc) = await Arrange();
+        var saudi = db.Employees.Single(e => e.TenantId == tenant && e.IdNumber == "1012345678");
+        saudi.IdType = string.Empty;   // an imported record with the National ID column filled and no type
+        await db.SaveChangesAsync();
+
+        var v = (await svc.ValidateAsync(tenant, batch, SaudiBankExportTestData.Request(), default)).Value!;
+
+        v.Errors.Should().NotContain(e => e.Code == "mol_id_missing");
+        v.CanExport.Should().BeTrue(string.Join("; ", v.Errors.Select(e => e.Code)));
+    }
+
+    [Fact]
     public async Task Validate_WithoutAddressSource_BlocksEveryRow_NeverDefaults()
     {
         var (_, tenant, _, batch, svc) = await Arrange(new NoEmployeeAddressSource());

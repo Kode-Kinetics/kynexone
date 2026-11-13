@@ -224,22 +224,29 @@ public static class WpsSifValidator
             }
             else
             {
-                if (string.IsNullOrWhiteSpace(emp.IdNumber))
+                // The ONE wage-file ID resolution, shared with the WPS register writer and the Saudi bank export: the National ID or
+                // the Iqama (IdNumber or IqamaNumber), else the Border Number inside the company's window.
+                var wageFileId = Zayra.Api.Infrastructure.Employees.WageFileGovernmentId.Resolve(emp, borderNumberIds);
+                switch (wageFileId.Outcome)
                 {
-                    // KSA: a new arrival inside the border-number window has no Iqama yet. Per the company's
-                    // setting the Border Number is written as the ID (a warning naming them), or they are held.
-                    if (borderNumberIds is not null && borderNumberIds.TryGetValue(empId, out var border))
-                    {
-                        if (border.Allowed)
-                            warnings.Add(EmpWarning(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberUsedAsIdCode, empId, empCode,
-                                $"Employee {empCode} has no Iqama yet; their Border Number is written as the employee ID in this file."));
-                        else
-                            errors.Add(EmpError(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberNotAllowedAsIdCode, empId, empCode,
-                                $"Employee {empCode} has no Iqama yet and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates."));
-                    }
-                    else
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Conflict:
+                        errors.Add(EmpError("EMPLOYEE_ID_CONFLICT", empId, empCode,
+                            $"Employee {empCode} has a National ID and an Iqama number that differ. Correct the identity record before exporting."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberUsed:
+                        // KSA: a new arrival inside the border-number window has no Iqama yet; per the company's setting the Border Number is
+                        // written as the ID (a warning naming them), or they are held.
+                        warnings.Add(EmpWarning(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberUsedAsIdCode, empId, empCode,
+                            $"Employee {empCode} has no Iqama yet; their Border Number is written as the employee ID in this file."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.BorderNumberNotAllowed:
+                        errors.Add(EmpError(Zayra.Api.Infrastructure.Employees.BorderNumberRule.BorderNumberNotAllowedAsIdCode, empId, empCode,
+                            $"Employee {empCode} has no Iqama yet and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates."));
+                        break;
+                    case Zayra.Api.Infrastructure.Employees.WageFileIdOutcome.Missing:
                         errors.Add(EmpError("MISSING_ID_NUMBER", empId, empCode,
                             $"Employee {empCode} is missing a government ID number required for WPS regulatory reporting."));
+                        break;
                 }
 
                 // A row that could never have been payable (never activated, or fully closed out) is a

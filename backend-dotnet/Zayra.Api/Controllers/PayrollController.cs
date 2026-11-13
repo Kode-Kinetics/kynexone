@@ -3329,9 +3329,9 @@ public partial class PayrollController : ControllerBase
     private static string KsaWageFileEmployeeId(
         Employee? emp, IReadOnlyDictionary<int, Zayra.Api.Infrastructure.Employees.BorderNumberRule.WageFileBorderId> borderIds)
     {
+        // The same resolution WpsSifValidator checks, so the register carries exactly the ID that was validated.
         if (emp is null) return string.Empty;
-        if (!string.IsNullOrWhiteSpace(emp.IdNumber)) return emp.IdNumber;
-        return borderIds.TryGetValue(emp.Id, out var b) && b.Allowed ? b.BorderNumber : string.Empty;
+        return Zayra.Api.Infrastructure.Employees.WageFileGovernmentId.Resolve(emp, borderIds).Value ?? string.Empty;
     }
 
     /// <summary>

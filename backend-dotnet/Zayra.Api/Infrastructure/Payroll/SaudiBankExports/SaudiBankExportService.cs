@@ -568,28 +568,25 @@ public sealed partial class SaudiBankExportService
                     Err("bank_account_changed", "approved bank account differs from the payment-batch snapshot; reconcile the batch before exporting.", "employeeAccountNumber");
             }
 
-            var idCandidates = new[]
-                {
-                    GovernmentIdTypes.IsNationalIdOrIqama(emp.IdType) ? emp.IdNumber : null,
-                    emp.IqamaNumber,
-                }
-                .Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToList();
-            if (idCandidates.Count > 1) Err("employee_id_conflict", "national ID/Iqama differs between identity fields.", "employeeId");
-            if (idCandidates.Count == 0 && borderIds.TryGetValue(emp.Id, out var borderId))
+            // The ONE wage-file ID resolution, shared with the WPS validator and the WPS register writer.
+            var wageFileId = WageFileGovernmentId.Resolve(emp, borderIds);
+            switch (wageFileId.Outcome)
             {
-                if (borderId.Allowed)
-                {
-                    idCandidates.Add(borderId.BorderNumber);
+                case WageFileIdOutcome.Conflict:
+                    Err("employee_id_conflict", "national ID/Iqama differs between identity fields.", "employeeId");
+                    break;
+                case WageFileIdOutcome.BorderNumberUsed:
                     warnings.Add(new(BorderNumberRule.BorderNumberUsedAsIdCode,
                         $"{label}: no Iqama yet; the Border Number is written as the employee ID."));
-                }
-                else
+                    break;
+                case WageFileIdOutcome.BorderNumberNotAllowed:
                     Err(BorderNumberRule.BorderNumberNotAllowedAsIdCode,
                         "no Iqama yet, and this company does not use the Border Number as the wage-file employee ID. Record the Iqama, or turn the setting on under Company rates.", "employeeId");
+                    break;
             }
 
             var ksaRow = new KsaWageFileRow(
-                rec.EmployeeId, label, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp), idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
+                rec.EmployeeId, label, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp), wageFileId.Value, NullIfEmpty(rec.Iban),
                 SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions,
@@ -601,7 +598,7 @@ public sealed partial class SaudiBankExportService
             addresses.TryGetValue(rec.EmployeeId, out var addr);
             var hasAddr = addresses.ContainsKey(rec.EmployeeId);
             rows.Add(new AnbPaymentInput(
-                rec.EmployeeId, label, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
+                rec.EmployeeId, label, wageFileId.Value, NullIfEmpty(rec.Iban),
                 slip.NetSalary, slip.BasicSalary, slip.HousingAllowance, other, slip.Deductions,
                 SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
