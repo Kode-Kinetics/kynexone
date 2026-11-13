@@ -117,7 +117,7 @@ async function openTab(page: Page, label: string): Promise<void> {
 /** Payroll shows the month in full ("November 2026"); the spec keys periods by the API's short form ("Nov 2026"). */
 const periodText = (period: string): RegExp => {
   const [mon, year] = period.split(' ');
-  return new RegExp(`\\b${mon}[a-z]* ${year}\\b`);
+  return new RegExp(`\\b${mon}[a-z]* ${year}(?!\\d)`);
 };
 
 async function selectRun(page: Page, ariaLabel: string, period: string): Promise<string> {

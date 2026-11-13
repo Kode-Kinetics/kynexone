@@ -456,6 +456,8 @@ for (const locale of ['en', 'ar'] as const) {
       await expect(rows.first()).toBeVisible();
       for (let i = 0; i < await rows.count(); i++) expect(await rows.nth(i).getByTestId('row-chip').count()).toBeLessThanOrEqual(1);
       const trigger = rowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
+      // "+ Set value" only renders once the viewer's manage permission has loaded, which the row menu's actions also need.
+      await expect(page.getByTestId('cell-set-value').first()).toBeVisible();
       const box = await trigger.boundingBox();
       expect(box!.width).toBeGreaterThanOrEqual(24);
       expect(box!.height).toBeGreaterThanOrEqual(24);
