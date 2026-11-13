@@ -875,13 +875,23 @@ public sealed partial class MigrationImportController : ControllerBase
         return created ? "created" : "updated";
     }
 
+    /// <summary>
+    /// The currency of an imported money row: the column when the file states one, otherwise the currency of the company that employs the
+    /// person. Never a literal, and refused (the row is skipped with the reason) when neither is known.
+    /// </summary>
+    private async Task<string> ResolveRowCurrencyAsync(Dictionary<string, string> row, string column, Employee employee, CancellationToken ct)
+    {
+        var stated = Val(row, column).Trim();
+        return stated.Length > 0 ? stated.ToUpperInvariant() : await Zayra.Api.Infrastructure.Payroll.EmployeeCompanyCurrency.ResolveAsync(_db, employee, ct);
+    }
+
     private async Task<string> UpsertBenefitsEnrollmentAsync(Dictionary<string, string> row, Guid tenantId, SectionResult result, CancellationToken ct)
     {
         var employee = await Employee(row, tenantId, ct);
         var planCode = Require(row, "PlanCode").Trim();
         var effectiveDate = DateReq(row, "EffectiveDate");
         var endDate = DateOnlyNullable(row, "EndDate");
-        var currency = Val(row, "Currency", "AED");
+        var currency = await ResolveRowCurrencyAsync(row, "Currency", employee, ct);
         var employeeContribution = Dec(row, "EmployeeContribution");
         var employerContribution = Dec(row, "EmployerContribution");
         result.BenefitsEnrollmentHistory.Add(new BenefitEnrollmentHistoryLedgerRow(Require(row, "EmployeeCode"), planCode, Require(row, "PlanName"), Require(row, "CoverageTier"), effectiveDate, endDate, employeeContribution, employerContribution, currency, Val(row, "Status", "Active"), Val(row, "SourceSystem"), Val(row, "SourceRecordId")));
@@ -1065,7 +1075,7 @@ public sealed partial class MigrationImportController : ControllerBase
         item.StartDate = DateReq(row, "StartDate");
         item.EndDate = DateOnlyNullable(row, "EndDate");
         item.BasicSalary = Dec(row, "BasicSalary");
-        item.CurrencyCode = Val(row, "CurrencyCode", "AED");
+        item.CurrencyCode = await ResolveRowCurrencyAsync(row, "CurrencyCode", employee, ct);
         item.FileUrl = Val(row, "FileUrl");
         item.Version = Int(row, "Version", 1);
         item.CreatedByUserId = UserId();

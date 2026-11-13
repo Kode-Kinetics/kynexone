@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { electionOptions, electionsComplete, readRequiredElections } from '../src/lib/voidElections';
+import { electionOptions, electionsComplete, readErpPostedRefusal, readRequiredElections } from '../src/lib/voidElections';
 
 // The void endpoint refuses (HTTP 422) a run whose net pay or statutory remittance already left the bank until the operator
 // STATES what happened to that cash. This is the body the server actually sends (PayrollController.VoidRun +
@@ -73,4 +73,19 @@ test('the options sent with the resubmitted void are exactly what was chosen; a 
     settlementDisposition: 'FundsRecalled', settlementReference: 'RCL-NET-1', remittanceDisposition: 'FundsDisbursed',
   });
   expect(electionOptions({})).toEqual({});
+});
+
+// A run whose journal the ERP already holds is refused (HTTP 422, error "erp_already_posted") until the operator acknowledges they
+// will raise the correcting document in the ERP as well. The server sends the reference in `detail`.
+test('reads the erp_already_posted refusal and the reference the ERP holds', () => {
+  const err = { response: { status: 422, data: { error: 'erp_already_posted', message: 'POSTED in the ERP', detail: { erpPostingStatus: 'Posted', erpPostingReference: 'SAP-1900001' } } } };
+  expect(readErpPostedRefusal(err)).toEqual({ reference: 'SAP-1900001' });
+  expect(readErpPostedRefusal({ response: { status: 422, data: { error: 'erp_already_posted', detail: { erpPostingStatus: 'Posted', erpPostingReference: null } } } })).toEqual({ reference: null });
+});
+
+test('any other refusal is not the ERP acknowledgement', () => {
+  expect(readErpPostedRefusal({ response: { status: 422, data: { error: 'remittance_disposition_required' } } })).toBeNull();
+  expect(readErpPostedRefusal({ response: { status: 500, data: { error: 'erp_already_posted' } } })).toBeNull();
+  expect(readErpPostedRefusal(new Error('network'))).toBeNull();
+  expect(readErpPostedRefusal(null)).toBeNull();
 });

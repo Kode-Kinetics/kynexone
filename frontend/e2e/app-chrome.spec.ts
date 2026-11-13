@@ -8,7 +8,7 @@ const SHOTS = process.env.APP_CHROME_SHOTS_DIR;
 
 /** Found in English on the Arabic Setup page and sidebar by the design review (decisions item 11). */
 const LISTED_ENGLISH = [
-  'Group Overview', 'Insights & Reports', 'Tax Policies', 'GOSI Filing', 'Parallel Run Variance', 'Home',
+  'Group Overview', 'Insights & Reports', 'Tax Policies', 'GOSI Reconciliation', 'Parallel Run Variance', 'Home',
   'Import CSV', 'Template', 'Export', 'Importing…', 'Checking…',
 ];
 

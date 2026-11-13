@@ -41,7 +41,8 @@ public static class GosiStatutoryValues
         var k = ruleKey.Trim().ToLowerInvariant();
         if (!k.StartsWith("gosi.", StringComparison.Ordinal)) return false;
         return k.EndsWith("_rate", StringComparison.Ordinal)
-            || k.StartsWith("gosi.covered_wage_", StringComparison.Ordinal);
+            || k.StartsWith("gosi.covered_wage_", StringComparison.Ordinal)
+            || k == Infrastructure.CountryPack.Ksa.GosiRounding.RuleKey;
     }
 
     /// <summary>

@@ -117,7 +117,8 @@ public class GlJournalExportsController : ControllerBase
         // Appended after ct so positional callers keep compiling; MVC binds by name.
         [FromQuery] bool includePreviouslyConfirmed = false, [FromQuery] Guid? replacesExportId = null,
         [FromQuery(Name = "options")] Dictionary<string, string>? options = null,
-        [FromQuery] bool acknowledgeUncostedRequired = false)
+        [FromQuery] bool acknowledgeUncostedRequired = false,
+        [FromQuery] bool acknowledgeOtherFormatLive = false)
     {
         if (!CanExport()) return Forbid();
         var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
@@ -189,6 +190,25 @@ public class GlJournalExportsController : ControllerBase
                             + "that result or export again at group level first; until then the same rows would be in two files.",
                 }), false);
 
+            // C7: ONE live file per scope. A file in ANOTHER format over the same unconfirmed rows is a second thing someone could send, and
+            // only the confirmation step (after the ERP has booked both) used to notice. Refused until the operator records the ERP result of
+            // the file already waiting (confirm or reject it), or states they know (acknowledgeOtherFormatLive): the other file is then left
+            // exactly as it is, because it may already be at the ERP, and the acknowledgement is audited.
+            var otherFormatLive = scopeLive
+                .Where(x => !string.Equals(x.FormatKey, build!.Formatter.Key, StringComparison.Ordinal) && x.Currency == build.Document.Currency)
+                .ToList();
+            if (otherFormatLive.Count > 0 && !acknowledgeOtherFormatLive)
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.OtherFormatLive,
+                    code = JournalExportErrors.OtherFormatLive,
+                    message = $"A {otherFormatLive[0].FormatKey} export of this period ({otherFormatLive[0].FileName}) is still waiting for your ERP's result and covers the same ledger rows. "
+                            + "Exporting them in another format as well would give you two files to send, and your ERP would book them twice. "
+                            + "Record whether your ERP posted or refused that file first (or reject it), then export again.",
+                    messageAr = "يوجد ملف تصدير آخر لهذه الفترة ما زال بانتظار نتيجة نظام ERP ويغطي البنود نفسها. تصديرها بصيغة أخرى يعني ملفين للإرسال وقد يرحّلهما النظام مرتين. سجّل أولًا ما إذا كان نظام ERP قد رحّل ذلك الملف أو رفضه (أو ارفضه)، ثم صدّر مجددًا.",
+                    liveExports = otherFormatLive.Select(x => new { exportId = x.Id, format = x.FormatKey, fileName = x.FileName, exportedAtUtc = x.ExportedAtUtc, status = x.Status }).ToList(),
+                }), false);
+
             // An export with some journals already decided is ERP evidence: superseding it would strand those outcomes and
             // re-send its undecided journals, which the ERP may already hold. Its confirmed journals are excluded from any
             // new export; the rest must be recorded first.
@@ -205,6 +225,13 @@ public class GlJournalExportsController : ControllerBase
                 }), false);
 
             var export = _exports.Persist(tid.Value, filter, build!, this.GetUserId(), UserName(), priorLive);
+
+            if (otherFormatLive.Count > 0)
+                WriteAudit("finance.gl.journal_export.other_format_acknowledged", "GlJournalExport", export.Id.ToString(), companyId, new
+                {
+                    period, format = export.FormatKey,
+                    otherFormatLive = otherFormatLive.Select(x => new { x.Id, x.FormatKey, x.FileName }).ToList(),
+                });
 
             var stamp = await ErpPostingEvidence.StampAsync(
                 _db, tid.Value, build!.Document.Lines.Select(l => l.EntryId).Distinct().ToList(),

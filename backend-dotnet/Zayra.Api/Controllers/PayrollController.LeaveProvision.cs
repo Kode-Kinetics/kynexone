@@ -54,6 +54,16 @@ public partial class PayrollController
         var employeeIds = earnings.Select(e => e.EmployeeId).Where(id => id > 0).Distinct().ToList();
         if (employeeIds.Count == 0) return LeaveProvisionBuild.None();
 
+        // M6 — see PayrollController.EosbProvision: the opening-balance route applies in the company's go-live PERIOD, to every pay group in it.
+        var routeRow = await new CompanyRatePolicyResolver(_db).ResolveAsync(tenantId, companyId, ProvisionCatchUpRoute.Key, periodEnd, ct);
+        var earliestMeasured = ProvisionCatchUpRoute.IsOpeningBalance(routeRow?.RateValue)
+            ? await ScopedBypass.TenantWide(_db.LeaveProvisionSnapshots, tenantId,
+                    "Leave provision go-live: the first period this company was ever measured decides which period is its opening catch-up.")
+                .Where(x => x.CompanyId == companyId).OrderBy(x => x.Period).Select(x => x.Period).FirstOrDefaultAsync(ct)
+            : null;
+        var openingRouteOn = ProvisionCatchUpRoute.AppliesToPeriod(routeRow?.RateValue, routeRow?.EffectiveFrom, payPeriod, earliestMeasured);
+        var periodStart = new DateOnly(run.Year, run.Month, 1);
+
         // A leaver whose settlement accrual has posted: the provision was consumed and released with them.
         var settled = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
                     "Leave provision: a leaver settled under ANY legal entity has had their provision consumed; " +
@@ -119,7 +129,8 @@ public partial class PayrollController
                 employee.Id, employee.EmployeeCode, encashment.TotalDays,
                 dayRateBase > 0m ? Math.Round(dayRateBase / 30m, 6) : 0m, rules.LeaveCashOutBasis,
                 encashment.TotalAmount, carried, IsCatchUp: history.Count == 0,
-                CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
+                CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null,
+                OpeningRoute: openingRouteOn && history.Count == 0 && DateOnly.FromDateTime(employee.JoiningDate) < periodStart));
         }
 
         if (obligations.Count == 0) return new LeaveProvisionBuild(new List<FinanceGlEntry>(), new List<LeaveProvisionSnapshot>(), 0, unmeasured, On: true);
@@ -128,7 +139,8 @@ public partial class PayrollController
             GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ExpenseDriverKey, glCtx),
             GlAccountResolver.AccountLabel(LeaveProvisioningRateKeys.ProvisionDriverKey, glCtx),
             obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow),
-            costPlan.Enabled ? new LeaveCostContext(glCtx) : null, payPeriod);
+            costPlan.Enabled ? new LeaveCostContext(glCtx) : null, payPeriod,
+            openingRouteOn ? GlAccountResolver.AccountLabel(ProvisionCatchUpRoute.EquityDriverKey, glCtx) : null);
         return new LeaveProvisionBuild(lines, snapshots, snapshots.Count(s => s.IsCatchUp), unmeasured, On: true);
     }
 }

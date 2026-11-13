@@ -3,13 +3,15 @@ import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useAuth } from '../../contexts/AuthContext';
 import { saudiBankExportsApi } from '../../api/saudiBankExports';
+import { bankFileProductionAllowed } from '../../lib/payrollPaymentAccess';
 
 // The server allow-list, not a browser flag, owns activation. Old APIs, denied requests and
 // failed probes keep this additive feature hidden without disrupting existing payroll.
 const Panel = dynamic(() => import('./SaudiBankExportPanel').then(m => m.SaudiBankExportPanel));
 export function SaudiBankExportGate({ batchId, employeeIds }: { batchId: string; employeeIds: number[] }) {
   const { hasPermission } = useAuth();
-  const permitted = hasPermission('payroll.export');
+  // The Payroll Manager prepares the file (payroll.payment_batch.manage); payroll.export keeps working.
+  const permitted = bankFileProductionAllowed(hasPermission);
   const [enabledFor, setEnabledFor] = useState<string | null>(null);
   useEffect(() => {
     setEnabledFor(null);

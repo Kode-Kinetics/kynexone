@@ -478,4 +478,53 @@ public class SaudiBankExportTests
         ctrl.Formats().Should().BeOfType<ForbidResult>();
         (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
     }
+
+    // The Payroll Manager prepares the bank file (payroll.payment_batch.manage); payroll.export keeps working as before. The whole
+    // file-production flow opens to either key: availability, context, validate, preview, generate and download.
+    [Theory]
+    [InlineData("payroll.payment_batch.manage")]
+    [InlineData("payroll.export")]
+    public async Task Controller_BankFileProduction_OpensToThePaymentBatchKeyOrPayrollExport(string key)
+    {
+        var (db, tenant, company, batch, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, key);
+
+        ctrl.Formats().Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.GetSettings(company, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Availability(batch, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Context(batch, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Preview(batch, new CustomBankPreviewRequest(), default)).Should().NotBeOfType<ForbidResult>(key);
+        (await ctrl.Generate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Download(batch, default)).Should().BeOfType<FileContentResult>(key);
+    }
+
+    [Fact]
+    public async Task Controller_BankFileProduction_WithNeitherKey_IsForbidden()
+    {
+        var (db, tenant, company, batch, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, "payroll.read", "payroll.payment.settle", "payroll.wps_status.update");
+
+        ctrl.Formats().Should().BeOfType<ForbidResult>();
+        (await ctrl.GetSettings(company, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Availability(batch, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Context(batch, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Preview(batch, new CustomBankPreviewRequest(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Generate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Download(batch, default)).Should().BeOfType<ForbidResult>();
+        db.BankTransferFiles.Count().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Controller_ThePaymentBatchKeyAlone_OpensNothingElseInBankExports()
+    {
+        var (db, tenant, company, _, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, "payroll.payment_batch.manage");
+
+        (await ctrl.PutSettings(company, SaudiBankExportTestData.Settings(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.ListTemplates(company, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.GetTemplate(company, Guid.NewGuid(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.TemplateCatalog(default)).Should().BeOfType<ForbidResult>();
+    }
 }

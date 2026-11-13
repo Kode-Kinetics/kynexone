@@ -158,7 +158,9 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
         Guid tenantId, int? employeeId, int page, int pageSize,
         CancellationToken cancellationToken = default)
     {
-        var q = _db.QiwaSyncLogs.AsNoTracking().Where(l => l.TenantId == tenantId);
+        // Company scope follows the employee (the employee query carries the caller's company filter).
+        var q = _db.QiwaSyncLogs.AsNoTracking()
+            .Where(l => l.TenantId == tenantId && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId));
         if (employeeId.HasValue) q = q.Where(l => l.EmployeeId == employeeId.Value);
         return q.OrderByDescending(l => l.CreatedAtUtc)
                 .Skip((page - 1) * pageSize)
@@ -414,7 +416,9 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
 
     public async Task RetryDeadLetterAsync(Guid tenantId, Guid syncLogId, Guid triggeredBy, CancellationToken ct = default)
     {
-        var log = await _db.QiwaSyncLogs.FirstOrDefaultAsync(l => l.TenantId == tenantId && l.Id == syncLogId, ct)
+        // Company scope follows the employee, exactly as the sync-log list does (the employee query carries the caller's company filter).
+        var log = await _db.QiwaSyncLogs.FirstOrDefaultAsync(l => l.TenantId == tenantId && l.Id == syncLogId
+                && _db.Employees.Any(e => e.Id == l.EmployeeId && e.TenantId == tenantId), ct)
             ?? throw new InvalidOperationException($"Sync log {syncLogId} not found in this tenant.");
 
         log.Status           = QiwaSyncLogStatuses.Pending;

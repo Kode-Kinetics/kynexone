@@ -66,9 +66,11 @@ public class PlatformFeatureCatalogTests
         PlatformController.FeatureFlagCatalog.Single(f => f.Key == "recruitment").DefaultEnabled.Should().BeTrue();
         // Every switch is a real module or an opt-in: a NonModuleKeys entry (e.g. hijri_calendar) has no runtime
         // reader, so its switch did nothing and would now be shown ON while the tenant's real setting is off.
-        PlatformController.FeatureFlagCatalog.Should().OnlyContain(f => ModuleCatalog.TryGet(f.Key) != null || OptInFeatures.IsOptIn(f.Key));
+        PlatformController.FeatureFlagCatalog.Should().OnlyContain(f =>
+            ModuleCatalog.TryGet(f.Key) != null || OptInFeatures.IsOptIn(f.Key) || PlatformDefaultOnFeatures.IsDefaultOn(f.Key));
         // NonModuleKeys also lists every opt-in (tenant admins may not toggle them); only the readerless ones are barred.
-        PlatformController.FeatureFlagCatalog.Should().NotContain(f => ModuleCatalog.NonModuleKeys.ContainsKey(f.Key) && !OptInFeatures.IsOptIn(f.Key));
+        PlatformController.FeatureFlagCatalog.Should().NotContain(f =>
+            ModuleCatalog.NonModuleKeys.ContainsKey(f.Key) && !OptInFeatures.IsOptIn(f.Key) && !PlatformDefaultOnFeatures.IsDefaultOn(f.Key));
         PlatformController.FeatureFlagCatalog.Single(f => f.Key == FeatureKeys.Learning).DefaultEnabled.Should().BeFalse();
         PlatformController.FeatureFlagCatalog.Where(f => f.Category == "Rollout (opt-in)")
             .Should().OnlyContain(f => !f.DefaultEnabled);

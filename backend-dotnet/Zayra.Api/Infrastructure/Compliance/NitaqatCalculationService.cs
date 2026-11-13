@@ -409,7 +409,7 @@ public sealed class NitaqatCalculationService
                      && (e.Status == EmployeeStatuses.Active
                       || e.Status == EmployeeStatuses.Offboarded
                       || e.Status == EmployeeStatuses.Suspended))
-            .Select(e => new { e.Id, e.Nationality, e.EmploymentType, e.Salary })
+            .Select(e => new { e.Id, e.Nationality, e.NationalityCode, e.NationalityMappingState, e.EmploymentType, e.Salary })
             .ToListAsync(ct);
 
         var overrides = await _db.NitaqatEmployeeWeightOverrides
@@ -430,7 +430,7 @@ public sealed class NitaqatCalculationService
         {
             // Reuse the ONE nationality matcher. A second matcher is exactly the defect
             // that deadlocked payroll for GCC nationals (finding A4).
-            var cls = GosiCalculationService.DeriveClassification(e.Nationality);
+            var cls = GosiCalculationService.DeriveClassification(e.Nationality, e.NationalityCode, e.NationalityMappingState);
             var basis = NormaliseBasis(e.EmploymentType);
             var cat = ResolveCategory(e.Id, cls, e.Salary, floorFull, floorHalf, overrides);
 

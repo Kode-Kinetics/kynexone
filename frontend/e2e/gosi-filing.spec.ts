@@ -84,7 +84,7 @@ function emptyPeriod(runs: RunRow[]): PeriodRef {
 
 async function openPeriod(page: import('@playwright/test').Page, p: PeriodRef) {
   await page.goto('/gosi-filing');
-  await expect(page.getByRole('heading', { name: 'GOSI Filing & Variance' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('heading', { name: 'GOSI reconciliation report' })).toBeVisible({ timeout: 15_000 });
   // Year first: the page resets scope on either change, and the Year list is populated from the runs.
   await page.getByLabel('Year').selectOption(String(p.year));
   await page.getByLabel('Month').selectOption({ label: MONTHS[p.month - 1] });

@@ -253,7 +253,9 @@ public class AuthSeeder : IAuthSeeder
             "approvals.read", "approvals.decide", "reports.read", "notifications.read",
             // Phase 2 GL + non-statutory rates (NOT statutory_override / author_predicates — higher trust).
             "finance.gl.read", "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage",
-            "payroll.rates.read", "payroll.rates.manage"
+            "payroll.rates.read", "payroll.rates.manage",
+            // M2: prepares the bank file and nothing else. It confirms nothing and moves no cash: no WPS status, no settle, no remit.
+            "payroll.payment_batch.manage"
         }), 4, true, cancellationToken);
 
         // Level 5 — HR Officer: HR operations specialist
@@ -295,6 +297,9 @@ public class AuthSeeder : IAuthSeeder
             "dashboard.read", "employees.read", "payroll.read", "payroll.approve", "payroll.lock",
             "loans.read", "loans.approve", "approvals.read", "approvals.decide",
             "finance.gl.read", "payroll.rates.read", "finance.erp.confirm",
+            // M2: pays and confirms. WPS status, settle and remit; deliberately NOT payroll.payment_batch.manage, so no single built-in role
+            // both prepares the bank file and pays it.
+            "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
             // CMP: the default final step of a merit worksheet (HR Manager → Finance Approver) and the cycle approver.
             "compensation.read", "compensation.approve"
         }), 8, true, cancellationToken);
@@ -448,6 +453,11 @@ public class AuthSeeder : IAuthSeeder
             ("payroll.write", "Payroll", "Create and process payroll runs"),
             ("payroll.approve", "Payroll", "Approve payroll runs"),
             ("payroll.export", "Payroll", "Export payroll and WPS files"),
+            // M2: the payment actions, one narrow key per family (payroll.export still opens them all; see PaymentPermissions).
+            ("payroll.payment_batch.manage", "Payroll", "Create payment batches and generate or download their bank or WPS files"),
+            ("payroll.wps_status.update", "Payroll", "Record the WPS or bank file status (submitted, accepted, rejected) and attach bank evidence"),
+            ("payroll.payment.settle", "Payroll", "Settle net pay to the general ledger, record payments made outside the bank file, and reverse them"),
+            ("payroll.remit.manage", "Payroll", "Remit statutory and loan liabilities and reverse a remittance"),
             ("payroll.slips.read", "Payroll", "Read the payroll register and payslips (does not allow exporting payroll or WPS files)"),
             ("payroll.structure_manage", "Payroll", "Manage salary structures and components"),
             ("payroll.rules.manage", "Payroll", "Propose changes to a company's payroll rules (rest-day pay, leave payout, probation, absence base); a change that lowers pay is approved by a different payroll approver"),

@@ -62,6 +62,16 @@ public partial class PayrollController
         var employeeIds = earnings.Select(e => e.EmployeeId).Where(id => id > 0).Distinct().ToList();
         if (employeeIds.Count == 0) return EosbProvisionBuild.None();
 
+        // M6 — the opening-balance route, in the company's go-live PERIOD only (every pay group that locks in it), and only for people whose service
+        // began before that month. Everyone else, and every later period, is expense exactly as before. See ProvisionCatchUpRoute.AppliesToPeriod.
+        var routeRow = await new CompanyRatePolicyResolver(_db).ResolveAsync(tenantId, companyId, ProvisionCatchUpRoute.Key, periodEnd, ct);
+        var earliestMeasured = ProvisionCatchUpRoute.IsOpeningBalance(routeRow?.RateValue)
+            ? await ScopedBypass.TenantWide(_db.EosbProvisionSnapshots, tenantId,
+                    "EOSB provision go-live: the first period this company was ever measured decides which period is its opening catch-up.")
+                .Where(x => x.CompanyId == companyId).OrderBy(x => x.Period).Select(x => x.Period).FirstOrDefaultAsync(ct)
+            : null;
+        var openingRouteOn = ProvisionCatchUpRoute.AppliesToPeriod(routeRow?.RateValue, routeRow?.EffectiveFrom, payPeriod, earliestMeasured);
+
         var company = await _db.Companies.AsNoTracking()
             .FirstOrDefaultAsync(c => c.TenantId == tenantId && c.Id == companyId, ct);
         if (company is null)
@@ -153,7 +163,8 @@ public partial class PayrollController
                 IsCatchUp: history.Count == 0,
                 WageBase: result.AppliedWageBase > 0m ? result.AppliedWageBase : wageBasis.FallbackWage,
                 ServiceYears: (decimal)years, Rule: result.ApplicableRule,
-                CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null));
+                CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null,
+                OpeningRoute: openingRouteOn && history.Count == 0 && serviceStart < periodStart));
         }
 
         if (obligations.Count == 0) return EosbProvisionBuild.None();
@@ -162,7 +173,8 @@ public partial class PayrollController
             GlAccountResolver.AccountLabel(EosbProvisionExpenseDriver, glCtx),
             GlAccountResolver.AccountLabel(EosbProvisionLedger.ProvisionDriverKey, glCtx),
             obligations, postedBy, postedByName, DateOnly.FromDateTime(DateTime.UtcNow),
-            costPlan.Enabled ? new EosbCostContext(glCtx) : null, payPeriod);
+            costPlan.Enabled ? new EosbCostContext(glCtx) : null, payPeriod,
+            openingRouteOn ? GlAccountResolver.AccountLabel(ProvisionCatchUpRoute.EquityDriverKey, glCtx) : null);
         return new EosbProvisionBuild(lines, snapshots, null);
     }
 }

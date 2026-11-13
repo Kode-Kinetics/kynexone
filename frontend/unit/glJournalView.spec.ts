@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { costingNote, hasCostCentres, journalTitle } from '../src/lib/glJournalView';
+import { costingNote, erpAccountingDate, hasCostCentres, journalTitle } from '../src/lib/glJournalView';
 
 // The GL Journal tab for a posted run: one block per journal, titled by event; the cost-accounting note comes from what was
 // posted, not from the preview plan (always Off for a posted run).
@@ -34,4 +34,21 @@ test('a posted run reports cost centres from what was posted', () => {
   // A server that predates the field: never claim cost centres were absent.
   expect(costingNote({ isPosted: true, costing: { enabled: false } })).toBeNull();
   expect(costingNote({ isPosted: true })).toBeNull();
+});
+
+// The ERP accounting date of a journal is what the journal export sends (JournalExportBuilder.DeriveAccountingDate): a payroll
+// accrual is a month-end journal whatever day Lock ran; any other journal keeps the day it happened if that is inside its period.
+test('the accrual carries the last day of its period as the ERP accounting date, not the day Lock ran', () => {
+  expect(erpAccountingDate({ kind: 'accrual', period: '2026-11', entryDate: '2026-11-12' })).toBe('2026-11-30');
+  expect(erpAccountingDate({ kind: 'accrual', period: '2026-02', entryDate: '2026-03-03' })).toBe('2026-02-28');
+  expect(erpAccountingDate({ kind: 'accrual', period: '2028-02', entryDate: '2028-03-03' })).toBe('2028-02-29');
+});
+
+test('a payment or remittance keeps its own date when inside the period, else the period end', () => {
+  expect(erpAccountingDate({ kind: 'settlement', period: '2026-10', entryDate: '2026-10-28' })).toBe('2026-10-28');
+  expect(erpAccountingDate({ kind: 'remittance', period: '2026-10', entryDate: '2026-11-05' })).toBe('2026-10-31');
+});
+
+test('a period that cannot be read falls back to the entry date', () => {
+  expect(erpAccountingDate({ kind: 'accrual', period: '', entryDate: '2026-11-12' })).toBe('2026-11-12');
 });

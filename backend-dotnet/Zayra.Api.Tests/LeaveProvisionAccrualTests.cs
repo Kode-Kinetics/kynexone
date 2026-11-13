@@ -771,6 +771,60 @@ public class LeaveProvisionAccrualTests
 
         (await LeaveLinesAsync(db, sep)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
     }
+
+    // ── M6 go-live period: the opening-balance route is keyed on the PERIOD, not on "nothing measured yet" ─────────────
+
+    [Fact]
+    public async Task OpeningRoute_AppliesToEveryPayGroupLockingInTheGoLivePeriod_NotOnlyTheFirstToLock()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        db.CompanyRatePolicies.Add(new CompanyRatePolicy
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, RateKey = ProvisionCatchUpRoute.Key, RateCategory = "PayParameter",
+            RateValue = ProvisionCatchUpRoute.OpeningBalance, DataType = "string", Unit = "enum",
+            EffectiveFrom = new DateOnly(2026, 6, 1), Status = CompanyPolicyStatuses.Active,
+        });
+        // Another pay group of the same company locked June first and measured employee A.
+        var otherGroupRun = new PayrollRun
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, Year = 2026, Month = 6, Status = "Locked", RunType = PayrollRunTypes.OffCycle,
+        };
+        db.PayrollRuns.Add(otherGroupRun);
+        await db.SaveChangesAsync();
+        db.LeaveProvisionSnapshots.Add(new LeaveProvisionSnapshot
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, EmployeeId = fx.Emp["A"].Id, Period = "2026-06",
+            MeasuredAt = new DateOnly(2026, 6, 30), PayrollRunId = otherGroupRun.Id, Days = 10.5m, DailyRate = 300m, Basis = "Gross",
+            Obligation = 3_150m, CarriedBefore = 0m, Movement = 3_150m, IsCatchUp = true,
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var jun = await LockMonthAsync(db, fx, 2026, 6);
+
+        var lines = await LeaveLinesAsync(db, jun);
+        lines.Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString(), "A was measured by the other pay group");
+        lines.Where(l => l.CreditAccount == Provision).Should().ContainSingle().Which.Amount.Should().Be(4_200m);
+        lines.Should().ContainSingle(l => l.DebitAccount == "3900 - Opening Balance Equity" && l.Amount == 4_200m,
+            "C's first measurement in the go-live period is an opening balance, whichever run locks first");
+        lines.Should().NotContain(l => l.DebitAccount == Expense, "nothing is left to expense");
+    }
+
+    [Theory]
+    [InlineData("OpeningBalance", "2026-06-01", "2026-06", null, true)]        // the company's first ever run
+    [InlineData("OpeningBalance", "2026-06-01", "2026-06", "2026-06", true)]   // a second pay group in the same go-live period
+    [InlineData("OpeningBalance", "2026-06-01", "2026-07", "2026-06", false)]  // any later period is expense
+    [InlineData("OpeningBalance", "2026-12-01", "2026-12", "2026-10", true)]   // the route dated to a go-live chosen after earlier measurements
+    [InlineData("OpeningBalance", "2026-12-01", "2026-11", "2026-10", false)]
+    [InlineData("Expense", "2026-06-01", "2026-06", null, false)]
+    [InlineData(null, null, "2026-06", null, false)]
+    public void OpeningRoute_AppliesToThePeriod_ByTheGoLivePeriod(string? route, string? effective, string payPeriod, string? earliest, bool expected)
+    {
+        var from = effective is null ? (DateOnly?)null : DateOnly.Parse(effective);
+        ProvisionCatchUpRoute.AppliesToPeriod(route, from, payPeriod, earliest).Should().Be(expected);
+    }
 }
 
 // ── File-scoped doubles ───────────────────────────────────────────────────────

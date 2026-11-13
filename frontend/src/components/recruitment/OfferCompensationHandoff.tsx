@@ -7,10 +7,11 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useNavigationGuard } from '../../contexts/NavigationGuardContext';
 import { useNavigationBlocker } from '../../hooks/useNavigationBlocker';
 import { requestFailureReason } from '../../lib/requestFailure';
+import { defaultDispositions } from '../../lib/offerHandoffDefaults';
 export function OfferCompensationHandoff({ draftId, readOnly, refreshKey, onChanged, onBusy }: { draftId: string; readOnly: boolean; refreshKey?: string; onChanged: () => void; onBusy?: (busy: boolean) => void }) {
   const t = useOfferLifecycleT(); const { hasPermission } = useAuth(); const guard = useNavigationGuard(); const canRead = hasPermission('employees.sensitive') && (hasPermission('employees.write') || hasPermission('employees.approve')); const canWrite = !readOnly && hasPermission('employees.write');
   const [data, setData] = useState<Handoff | null>(null); const [rows, setRows] = useState<OfferCompensationDisposition[]>([]); const [baseline, setBaseline] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  const apply = (next: Handoff) => { setData(next); const complete = next.snapshot?.components.map(c => next.dispositions.find(d => d.code === c.code) ?? { code: c.code, action: '' }) ?? []; setRows(complete); setBaseline(JSON.stringify(complete)); };
+  const apply = (next: Handoff) => { setData(next); const complete = defaultDispositions(next.snapshot?.components ?? [], next.dispositions); setRows(complete); setBaseline(JSON.stringify(complete)); };
   const load = async () => { try { apply(await employeeDraftsApi.offerCompensation(draftId)); setError(''); } catch (e) { setError(requestFailureReason(e)); } };
   useEffect(() => { setData(null); if (canRead) void load(); }, [draftId, canRead, refreshKey]);
   useNavigationBlocker({ id: `offer-handoff-${draftId}`, when: JSON.stringify(rows) !== baseline && !!data, message: t('Unsaved offer changes. Discard them and leave?'), onDiscard: () => setBaseline(JSON.stringify(rows)) });

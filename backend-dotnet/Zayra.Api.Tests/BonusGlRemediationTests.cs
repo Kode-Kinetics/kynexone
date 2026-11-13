@@ -422,10 +422,10 @@ public class BonusGlRemediationTests
         JsonSerializer.Serialize(remit.Value).Should().Contain("loan_receivable_shortfall").And.Contain("700");
         var gl = await Ledger(db, tid);
         AssertBalanced(gl, "disbursement + accrual must balance");
-        Cr(gl, "1410").Should().Be(0m, "no remittance was posted, so the receivable is untouched");
-        Asset(gl, "1410").Should().Be(500m);
+        Cr(gl, "1410").Should().Be(500m, "Lock relieved the receivable by the 500 it carries, and no more");
+        Asset(gl, "1410").Should().Be(0m);
         Cr(gl, "1000").Should().Be(500m, "only the real disbursement credits cash");
-        Liability(gl, "2107").Should().Be(1_200m);
+        Liability(gl, "2107").Should().Be(700m, "only the uncovered 700 keeps the clearing path");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 

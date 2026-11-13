@@ -42,3 +42,21 @@ export function costingNote(journal: {
   }
   return costing.enabled ? null : 'off';
 }
+
+/**
+ * The ERP accounting date of a posted journal, as the journal export sends it (JournalExportBuilder.DeriveAccountingDate): the payroll
+ * accrual is a month-end journal whatever day Lock ran, so it carries the last day of its period; any other journal keeps the day it
+ * happened when that is inside its period, else the period end. yyyy-MM-dd; an unreadable period falls back to the entry date.
+ */
+export function erpAccountingDate(j: { kind: string; period: string; entryDate: string }): string {
+  const m = /^(\d{4})-(\d{2})$/.exec((j.period ?? '').trim());
+  if (!m) return j.entryDate;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12) return j.entryDate;
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const start = `${m[1]}-${m[2]}-01`;
+  const end = `${m[1]}-${m[2]}-${String(last).padStart(2, '0')}`;
+  if (j.kind === 'accrual') return end;
+  return j.entryDate >= start && j.entryDate <= end ? j.entryDate : end;
+}

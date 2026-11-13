@@ -106,7 +106,7 @@ export const navigationGroups: NavGroup[] = [
       // New-hire pay packages: the scoped view a Finance approver decides from (no blanket employees.sensitive).
       { label: 'Pay approvals', icon: WalletCards, path: '/pay-approvals', requiredPermissions: ['payroll.approve'] },
       { label: 'Saudi Compliance', icon: ShieldCheck, path: '/saudi-compliance', requiredPermissions: ['compliance.read', 'qiwa.read'] },
-      { label: 'GOSI Filing', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
+      { label: 'GOSI Reconciliation', icon: FileSpreadsheet, path: '/gosi-filing', requiredPermissions: ['payroll.read'] },
       // The one home for configuration: every module's settings, users and access, and the workspace (lib/setupModuleSections.ts).
       { label: 'Setup', icon: Settings2, path: '/setup', requiredPermissions: [...SETUP_ROUTE_PERMISSIONS], requiresSetupSection: true },
       // The other half of a go-live: reconciling a run against the register the OUTGOING system
@@ -159,7 +159,7 @@ export const navigationHints: Record<string, string> = {
   '/approvals': 'Everything waiting for your decision, oldest first.',
   '/pay-approvals': 'Pay packages waiting for your approval.',
   '/saudi-compliance': 'Saudization (Nitaqat), Qiwa and Mudad status for the company.',
-  '/gosi-filing': 'Prepare and check the monthly GOSI contribution filing.',
+  '/gosi-filing': 'Compare what payroll deducted for GOSI with what the rules expect, per employee. A reconciliation report, not a filing.',
   '/setup': 'Every setting in one place: company structure, leave, pay, users and access, and the workspace.',
   '/payroll/variance': 'Compare a payroll run with the previous system’s register for the same month.',
 };

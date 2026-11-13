@@ -86,6 +86,23 @@ public sealed record GlResolutionContext(
     public IReadOnlyList<SettlementPayableClearing> SettlementClearings { get; init; }
         = Array.Empty<SettlementPayableClearing>();
 
+    /// <summary>
+    /// How much of each loan / advance RECEIVABLE (keyed by driver key LOAN_RECEIVABLE / ADVANCE_RECEIVABLE) the Lock may relieve
+    /// directly with the run's LOAN_EMI / ADVANCE_EMI deductions: the account's <c>AvailableForRelief</c>, read once before posting.
+    /// Carried on the context for the same reason <see cref="BonusClearings"/> is (the builder's arity is unchanged). Empty by
+    /// default, which reproduces the pre-change journal exactly: every instalment credits the 2107 clearing liability.
+    /// </summary>
+    public IReadOnlyDictionary<string, decimal> LoanRecoveryBudgets { get; init; }
+        = new Dictionary<string, decimal>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Per employee, the part of the run's LOAN_EMI the loan receivable may take: bounded by each loan's OWN disbursement journal
+    /// (see <see cref="LoanReliefEligibility"/>), because the account is shared and an account-level budget alone would let a loan that
+    /// was never booked relieve another loan's debit. <c>null</c> (the default) means no per-loan bound, which reproduces the pre-change
+    /// journal for every caller that does not load it. Advances are not bounded by it.
+    /// </summary>
+    public IReadOnlyDictionary<int, decimal>? LoanRecoveryEligibleByEmployee { get; init; }
+
     /// <summary>POD-B1b — the legal entity this context was resolved for. Stamped onto every line the
     /// posting builders emit (a plain FinanceGlEntry dimension, never an amount or account change).</summary>
     public Guid? CompanyId { get; init; }

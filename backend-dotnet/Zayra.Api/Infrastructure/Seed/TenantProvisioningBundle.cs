@@ -3,9 +3,11 @@ using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.CountryPack;
 using Zayra.Api.Data;
+using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Models;
 using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Documents.Letters;
+using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Infrastructure.Recruitment;
 
 using Zayra.Api.Infrastructure.Leave;
@@ -60,8 +62,9 @@ public static class TenantProvisioningBundle
         var countryRules  = await InstallCountryPayrollRulesAsync(db, tenantId, ct);
         var (mdTypes, mdValues) = await InstallMasterDataAsync(db, tenantId, ct);
         var hrCategories  = await InstallHrRequestCategoriesAsync(db, tenantId, ct);
-        var attnPolicies  = await InstallDefaultAttendancePolicyAsync(db, tenantId, ct);
-        var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct, home);
+        var attnPolicies  = await InstallDefaultAttendancePolicyAsync(db, tenantId, home, ct);
+        var (leaveTypes, leavePolicies) = await InstallDefaultLeaveAsync(db, tenantId, ct, home,
+            newTenantKsaDefaults: KsaStatutorySpecialLeave.IsKsa(home));
         var apPolicies    = await InstallDefaultApprovalWorkflowsAsync(db, tenantId, ct);
         var notifs        = await InstallNotificationTemplatesAsync(db, tenantId, ct);
         var compliance    = await InstallComplianceProfilesAsync(db, tenantId, ct);
@@ -75,6 +78,8 @@ public static class TenantProvisioningBundle
         // renders its shell and cannot be used. Installed here as well as by TenantDefaultsBackfill
         // so a tenant created between deploys is usable immediately, not at the next restart.
         var letterTemplates = await InstallDefaultLetterTemplatesAsync(db, tenantId, ct);
+        // A Saudi tenant's payslip is bilingual from the first run; any other country is left to the tenant's own template choice.
+        await PayslipTemplateDefaults.EnsureSaudiBilingualDefaultAsync(db, tenantId, home, ct);
 
         await db.SaveChangesAsync(ct);
         return new ProvisionResult(countryRules, mdTypes, mdValues, hrCategories,
@@ -346,7 +351,11 @@ public static class TenantProvisioningBundle
 
     // ── 4. Default attendance policy (Program row 58 — always-on, not demo-gated) ──
 
-    private static async Task<int> InstallDefaultAttendancePolicyAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct)
+    /// <summary>The day a Saudi company starts at when no shift is assigned: 08:00 + 480 working minutes + a 60-minute break = 17:00.</summary>
+    internal static readonly TimeOnly KsaDefaultShiftStart = new(8, 0);
+
+    /// <param name="homeCountry">Canonical ISO-2 of the tenant's home jurisdiction (a Saudi tenant starts its day at 08:00).</param>
+    internal static async Task<int> InstallDefaultAttendancePolicyAsync(ZayraDbContext db, Guid tenantId, string homeCountry, CancellationToken ct)
     {
         // IgnoreQueryFilters is intentional: seeder read scoped by explicit tenantId; insert-if-absent, never touches another tenant.
         var exists = await db.AttendancePolicies.IgnoreQueryFilters().AsNoTracking()
@@ -358,6 +367,10 @@ public static class TenantProvisioningBundle
             GraceMinutes = 10, EarlyExitThresholdMinutes = 15,
             HalfDayThresholdMinutes = 240,
             StandardWorkMinutes = 480, BreakMinutes = 60,
+            // With no shift assigned, a Saudi office is judged against its real day (08:00-17:00), not a 09:00 start that
+            // made every 08:00-17:00 day an early exit. Other countries keep the null = 09:00 rule. A policy that already
+            // exists is never touched (the early return above), so no existing company changes.
+            DefaultShiftStart = string.Equals(homeCountry, "SA", StringComparison.OrdinalIgnoreCase) ? KsaDefaultShiftStart : null,
         });
         return 1;
     }
@@ -426,6 +439,75 @@ public static class TenantProvisioningBundle
         ("SICK", "Sick Leave", true, true, "Yearly"),
     };
 
+    /// <summary>One leave type of the KSA catalogue a NEW Saudi tenant is born with, and the default policy that goes with it.</summary>
+    internal sealed record KsaLeaveSeed(
+        string Code, string En, string Ar, string Category, bool Paid, int MaxConsecutiveDays, decimal EntitlementDays,
+        string PayrollImpact = "Full", string Gender = "");
+
+    /// <summary>
+    /// The leave types a new KSA tenant gets on top of ANNUAL and SICK (launch spec item 6). Codes and English names are chosen so
+    /// <see cref="KsaStatutorySpecialLeave.Classify"/> recognises each statutory one without a code change; days are the law's floor
+    /// (a company may grant more, never less). Each is an ordinary editable row. Attachments: sick leave requires a certificate from the
+    /// first day; the event leaves do NOT require one, because a missing scan must never block a statutory entitlement and nothing yet lets an
+    /// approver waive it with a reason. No religion field is collected (PDPL): the two iddah types are separate leave types the company
+    /// assigns, and the Ramadan hours rule stays manual.
+    /// </summary>
+    internal static readonly KsaLeaveSeed[] KsaLeaveCatalogue =
+    {
+        new("UNPAID", "Unpaid Leave", "إجازة بدون أجر", "Unpaid", Paid: false, MaxConsecutiveDays: 30, EntitlementDays: 0m, PayrollImpact: "Unpaid"),
+        new("MATERNITY", "Maternity Leave", "إجازة الوضع", "Maternity", Paid: true, MaxConsecutiveDays: 84, EntitlementDays: 84m, Gender: "Female"),
+        new("MATERNITY_EXT", "Maternity Extension - Unpaid", "تمديد إجازة الوضع بدون أجر", "Maternity Extension", Paid: false, MaxConsecutiveDays: 30, EntitlementDays: 0m, PayrollImpact: "Unpaid", Gender: "Female"),
+        new("PATERNITY", "Paternity - Birth of a Child", "إجازة المولود", "Paternity", Paid: true, MaxConsecutiveDays: 3, EntitlementDays: 3m, Gender: "Male"),
+        new("MARRIAGE", "Marriage Leave", "إجازة زواج", "Marriage", Paid: true, MaxConsecutiveDays: 5, EntitlementDays: 5m),
+        new("BEREAVEMENT", "Bereavement - Spouse, Parent, Child", "إجازة وفاة", "Bereavement", Paid: true, MaxConsecutiveDays: 5, EntitlementDays: 5m),
+        new("BEREAVEMENT_SIBLING", "Bereavement - Sibling", "إجازة وفاة أخ أو أخت", "Bereavement", Paid: true, MaxConsecutiveDays: 3, EntitlementDays: 3m),
+        new("HAJJ", "Hajj Leave", "إجازة الحج", "Hajj", Paid: true, MaxConsecutiveDays: 15, EntitlementDays: 10m),
+        new("EXAM", "Exam Leave", "إجازة اختبارات", "Exam", Paid: true, MaxConsecutiveDays: 0, EntitlementDays: 0m),
+        new("IDDAH", "Iddah - Muslim Widow", "إجازة العدة للمسلمة", "Iddah", Paid: true, MaxConsecutiveDays: 130, EntitlementDays: 130m, Gender: "Female"),
+        new("IDDAH_NON_MUSLIM", "Iddah - Non-Muslim Widow", "إجازة وفاة الزوج لغير المسلمة", "Iddah", Paid: true, MaxConsecutiveDays: 15, EntitlementDays: 15m, Gender: "Female"),
+    };
+
+    /// <summary>
+    /// Installs the KSA catalogue (insert-if-absent by code, then by (type, country)) for ONE company, or tenant-wide when
+    /// <paramref name="companyId"/> is null. Only reached for a NEW Saudi tenant; the boot backfill and every other country never call it.
+    /// </summary>
+    private static int InstallKsaLeaveCatalogue(
+        ZayraDbContext db, Guid tenantId, Dictionary<string, Guid> typeByCode, Guid? companyId,
+        ISet<(Guid LeaveTypeId, string Country)> existingPolicies, IReadOnlyList<string> countries)
+    {
+        var added = 0;
+        var sort = 100;
+        foreach (var seed in KsaLeaveCatalogue)
+        {
+            sort++;
+            if (!typeByCode.TryGetValue(seed.Code, out var typeId))
+            {
+                var type = new LeaveType
+                {
+                    TenantId = tenantId, CompanyId = companyId, Code = seed.Code, NameEn = seed.En, NameAr = seed.Ar, Category = seed.Category,
+                    IsPaid = seed.Paid, RequiresReason = true, IsActive = true, SortOrder = sort, MaxConsecutiveDays = seed.MaxConsecutiveDays,
+                };
+                db.LeaveTypes.Add(type);
+                typeByCode[seed.Code] = typeId = type.Id;
+            }
+            var calendar = KsaStatutorySpecialLeave.Classify(seed.Code, seed.En, seed.Category) is { } kind && KsaStatutorySpecialLeave.IsCalendarSpan(kind);
+            foreach (var country in countries)
+            {
+                if (!existingPolicies.Add((typeId, country))) continue;
+                db.LeavePolicies.Add(new LeavePolicy
+                {
+                    TenantId = tenantId, CompanyId = companyId, LeaveTypeId = typeId, CountryCode = country,
+                    Name = country.Length == 0 ? $"Default {seed.En}" : $"Default {seed.En} — {country}",
+                    AnnualEntitlementDays = seed.EntitlementDays, AccrualMethod = "Yearly", Gender = seed.Gender,
+                    WeekendsIncluded = calendar, PublicHolidaysIncluded = calendar, MinimumDaysPerRequest = 1,
+                    AppliesOnProbation = true, PayrollImpact = seed.PayrollImpact, Status = "Active",
+                });
+                added++;
+            }
+        }
+        return added;
+    }
+
     /// <summary>
     /// The countries a default policy set is planted for. The same six GCC states
     /// <see cref="ComplianceSeeds"/> already seeds a readiness profile for — the jurisdictions this
@@ -476,8 +558,13 @@ public static class TenantProvisioningBundle
     /// too — otherwise a customer in, say, Egypt would be provisioned six GCC policy sets and none
     /// for the country it actually operates in.</para>
     /// </summary>
+    /// <param name="newTenantKsaDefaults">
+    /// True only for a tenant being provisioned NOW with a Saudi home jurisdiction: it is born with the full KSA leave catalogue
+    /// (<see cref="KsaLeaveCatalogue"/>), a sick type that requires a certificate, and an annual policy that pro-rates a joiner's first month.
+    /// The boot backfill never passes it, so a tenant that already exists is never given or rewritten anything.
+    /// </param>
     internal static async Task<(int types, int policies)> InstallDefaultLeaveAsync(
-        ZayraDbContext db, Guid tenantId, CancellationToken ct, string? homeCountryCode = null)
+        ZayraDbContext db, Guid tenantId, CancellationToken ct, string? homeCountryCode = null, bool newTenantKsaDefaults = false)
     {
         // Leave types and policies belong to a company (owner decision 2026-10-23). A tenant that has companies gets the
         // statutory set installed per company, for that company's country; only a tenant with no company yet (the
@@ -498,7 +585,7 @@ public static class TenantProvisioningBundle
                 var country = CountryCodeStandard.NormalizeToIso2(company.CountryCode)
                               ?? HomeJurisdiction.Normalize(homeCountryCode)
                               ?? string.Empty;
-                var (t, p) = await InstallDefaultLeaveForCountryAsync(db, tenantId, company.Id, country, ct);
+                var (t, p) = await InstallDefaultLeaveForCountryAsync(db, tenantId, company.Id, country, ct, newTenantKsaDefaults);
                 types += t;
                 policies += p;
             }
@@ -513,6 +600,7 @@ public static class TenantProvisioningBundle
         var typeByCode = existingTypes.GroupBy(t => t.Code, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Id, StringComparer.OrdinalIgnoreCase);
 
+        var ksaDefaults = newTenantKsaDefaults && KsaStatutorySpecialLeave.IsKsa(homeCountryCode);
         int typesAdded = 0, sort = 0;
         foreach (var (code, en, ar, category, paid) in LeaveTypeSeeds)
         {
@@ -522,13 +610,22 @@ public static class TenantProvisioningBundle
             {
                 TenantId = tenantId, Code = code, NameEn = en, NameAr = ar, Category = category,
                 IsPaid = paid, RequiresReason = true, IsActive = true, SortOrder = sort,
+                RequiresAttachment = ksaDefaults && code == "SICK",
             };
             db.LeaveTypes.Add(lt);
             typeByCode[code] = lt.Id;
             typesAdded++;
         }
 
-        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, homeCountryCode);
+        var typesBefore = typeByCode.Count;
+        var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, homeCountryCode,
+            prorateAnnualForSaudi: ksaDefaults);
+        if (ksaDefaults)
+        {
+            var existing = await ExistingPolicyKeysAsync(db, tenantId, null, ct);
+            policiesAdded += InstallKsaLeaveCatalogue(db, tenantId, typeByCode, null, existing, [string.Empty, NeutralLeavePolicyCountry]);
+            typesAdded += typeByCode.Count - typesBefore;
+        }
         return (typesAdded, policiesAdded);
     }
 
@@ -601,7 +698,7 @@ public static class TenantProvisioningBundle
     /// so a company already served by one is not given a second, competing set.
     /// </summary>
     internal static async Task<(int types, int policies)> InstallDefaultLeaveForCountryAsync(
-        ZayraDbContext db, Guid tenantId, Guid companyId, string countryCode, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, Guid companyId, string countryCode, CancellationToken ct, bool newTenantKsaDefaults = false)
     {
         const string why = "Installing a company's leave defaults: the gap check must see the company's own leave types and the "
             + "unassigned legacy ones whatever company the caller selected, or it would re-insert existing codes.";
@@ -617,14 +714,23 @@ public static class TenantProvisioningBundle
             {
                 TenantId = tenantId, CompanyId = companyId, Code = code, NameEn = en, NameAr = ar, Category = category,
                 IsPaid = paid, RequiresReason = true, IsActive = true, SortOrder = sort,
+                RequiresAttachment = newTenantKsaDefaults && KsaStatutorySpecialLeave.IsKsa(countryCode) && code == "SICK",
             };
             db.LeaveTypes.Add(lt);
             typeByCode[code] = lt.Id;
             typesAdded++;
         }
         var country = NormalizeLeaveCountry(countryCode);
+        var ksaDefaults = newTenantKsaDefaults && KsaStatutorySpecialLeave.IsKsa(country);
         var policiesAdded = await InstallDefaultLeavePoliciesAsync(db, tenantId, typeByCode, ct, onlyCountries: [country], companyId: companyId,
-            onlyTypeCodes: missing);
+            onlyTypeCodes: missing, prorateAnnualForSaudi: ksaDefaults);
+        if (ksaDefaults)
+        {
+            var typesBefore = typeByCode.Count;
+            var existing = await ExistingPolicyKeysAsync(db, tenantId, companyId, ct);
+            policiesAdded += InstallKsaLeaveCatalogue(db, tenantId, typeByCode, companyId, existing, [country]);
+            typesAdded += typeByCode.Count - typesBefore;
+        }
         return (typesAdded, policiesAdded);
     }
 
@@ -648,6 +754,22 @@ public static class TenantProvisioningBundle
         return result;
     }
 
+    /// <summary>The (leave type, country) pairs that already have a policy for the company (or an unassigned legacy one), archived included.</summary>
+    private static async Task<HashSet<(Guid LeaveTypeId, string Country)>> ExistingPolicyKeysAsync(
+        ZayraDbContext db, Guid tenantId, Guid? companyId, CancellationToken ct)
+    {
+        const string why = "Seeding runs with no HTTP principal, so the company read filter would hide the policies the tenant already has; "
+            + "the tenant filter is re-applied by the helper and no other tenant is observable.";
+        // The installers above have staged rows on the context that a query cannot see yet, so read what is tracked as well.
+        var stored = (await ScopedBypass.TenantWide(db.LeavePolicies, tenantId, why).AsNoTracking()
+                .Where(p => p.CompanyId == companyId || p.CompanyId == null)
+                .Select(p => new { p.LeaveTypeId, p.CountryCode }).ToListAsync(ct))
+            .Select(x => (x.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(x.CountryCode) ?? (x.CountryCode ?? string.Empty).Trim().ToUpperInvariant()));
+        var staged = db.ChangeTracker.Entries<LeavePolicy>().Where(e => e.State == EntityState.Added && e.Entity.TenantId == tenantId)
+            .Select(e => (e.Entity.LeaveTypeId, Country: LeavePolicyScope.CountryIso2(e.Entity.CountryCode) ?? (e.Entity.CountryCode ?? string.Empty).Trim().ToUpperInvariant()));
+        return stored.Concat(staged).ToHashSet();
+    }
+
     /// <summary>
     /// Plants one default policy per seeded leave type, per country, for every (type, country) pair
     /// not covered yet — for <c>companyId</c> when given (the company's own policies and the
@@ -664,7 +786,7 @@ public static class TenantProvisioningBundle
     private static async Task<int> InstallDefaultLeavePoliciesAsync(
         ZayraDbContext db, Guid tenantId, IReadOnlyDictionary<string, Guid> typeByCode, CancellationToken ct,
         string? homeCountryCode = null, IReadOnlyList<string>? onlyCountries = null, Guid? companyId = null,
-        IReadOnlySet<string>? onlyTypeCodes = null)
+        IReadOnlySet<string>? onlyTypeCodes = null, bool prorateAnnualForSaudi = false)
     {
         const string why =
             "Seeding/backfill runs with no HTTP principal, so the company read filter resolves to an "
@@ -713,6 +835,10 @@ public static class TenantProvisioningBundle
                     CompanyId = companyId,
                     AnnualEntitlementDays = DefaultLeaveEntitlementDays(basis.TypeCode, country),
                     AccrualMethod = basis.AccrualMethod,
+                    // A new Saudi tenant's annual leave credits a joiner's first month by the days served (Art. 111 already speaks of
+                    // proportionate amounts); a full-month credit stays a company choice, and existing policies keep what they have.
+                    ProratePartialMonths = prorateAnnualForSaudi && basis.AccrualMethod == "Monthly"
+                        && (country.Length == 0 || country == NeutralLeavePolicyCountry),
                     WeekendsIncluded = basis.WeekendsIncluded,
                     PublicHolidaysIncluded = basis.PublicHolidaysIncluded,
                     MinimumDaysPerRequest = 1,

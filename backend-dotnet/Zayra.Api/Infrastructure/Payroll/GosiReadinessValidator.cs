@@ -51,7 +51,7 @@ public static class GosiReadinessValidator
         GosiContributionResult? calc = null;
         if (salary is { BasicSalary: > 0m })
             calc = await GosiCalculationService.CalculateAsync(
-                rules, employee.Nationality, salary.BasicSalary, salary.HousingAllowance,
+                rules, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee), salary.BasicSalary, salary.HousingAllowance,
                 periodDate, employee.GosiFirstRegisteredOn, ct);
         return (Validate(employee, salary?.BasicSalary, calc), calc);
     }
@@ -80,7 +80,7 @@ public static class GosiReadinessValidator
                 Message:     "Employee has no basic salary. GOSI contribution cannot be calculated without a contributory wage.",
                 IsBlocking:  true));
 
-        var classification = GosiCalculationService.DeriveClassification(employee.Nationality);
+        var classification = GosiCalculationService.DeriveClassification(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee));
 
         if (string.IsNullOrWhiteSpace(employee.Nationality))
             warnings.Add(new GosiReadinessIssue(
@@ -118,7 +118,7 @@ public static class GosiReadinessValidator
 
         if (classification == GosiClassifications.GCC)
         {
-            var home = GosiCalculationService.DeriveGccHomeState(employee.Nationality) ?? "GCC";
+            var home = GosiCalculationService.DeriveGccHomeState(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee)) ?? "GCC";
             if (computed is not null && computed.EmployeeTotal <= 0m)
                 blocking.Add(new GosiReadinessIssue(
                     Code:       PayrollValidationEngine.GosiGccSchemeNotConfigured,

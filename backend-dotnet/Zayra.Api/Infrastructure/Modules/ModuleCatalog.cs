@@ -564,6 +564,10 @@ public static class ModuleCatalog
                 + "they are given it, and lose when they leave it) is an opt-in feature, off for every tenant until the platform "
                 + "team switches it on. While it is off nothing is configured, applied or removed. Tenant Admin cannot switch it. "
                 + "See OptInFeatures.",
+            [FeatureKeys.SaudiBankExport] =
+                "The Saudi bank-instruction export (ANB Connect) is on for every Saudi company by default. Only the platform team can "
+                + "switch it off for a tenant, and Tenant Admin cannot. It owns no route: the bank-export endpoints read it. "
+                + "See PlatformDefaultOnFeatures.",
             ["demo_seed_version"] =
                 "Not a feature. The demo seeder stamps its version into this row; it is not a module.",
         };

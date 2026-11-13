@@ -589,7 +589,7 @@ public sealed partial class SaudiBankExportService
             }
 
             var ksaRow = new KsaWageFileRow(
-                rec.EmployeeId, label, emp.Nationality, idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
+                rec.EmployeeId, label, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp), idCandidates.Count == 1 ? idCandidates[0] : null, NullIfEmpty(rec.Iban),
                 SaudiBeneficiaryBic.Resolve(emp, profile),
                 NullIfEmpty(string.IsNullOrEmpty(emp.EnglishName) ? emp.FullName : emp.EnglishName),
                 slip.GrossSalary, slip.BasicSalary, slip.HousingAllowance, slip.NetSalary, slip.Deductions,

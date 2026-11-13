@@ -1745,6 +1745,17 @@ public class EmployeeManagementService : IEmployeeManagementService
         var natGiven = !string.IsNullOrWhiteSpace(request.NationalityCode) || !string.IsNullOrWhiteSpace(request.Nationality);
         if (natGiven || !string.Equals(employee.Status, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
         {
+            // A confirmed country whose Saudi / non-Saudi class contradicts the text beside it ("Saudi" with code IN) would store two opposite
+            // answers: the class below follows the code, the text says the reverse, and Qiwa, GOSI and the bank export read one or the other.
+            // Refused before anything is written. Only a clear contradiction counts: a GCC national or an unrecognised text decides nothing.
+            if (!string.IsNullOrWhiteSpace(request.NationalityCode) && !string.IsNullOrWhiteSpace(request.Nationality)
+                && Zayra.Api.Application.Employees.Onboarding.NationalityCatalog.FindByIso2(request.NationalityCode) is { } chosen
+                && Zayra.Api.Infrastructure.Contracts.WorkerNationality.ClassOf(null, chosen.Iso2) is { } codeClass
+                && Zayra.Api.Infrastructure.Contracts.WorkerNationality.ClassOf(null, request.Nationality) is { } textClass
+                && !string.Equals(codeClass, textClass, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    $"The nationality '{Clean(request.Nationality)}' and the selected country '{chosen.NameEn}' contradict each other " +
+                    $"({textClass} versus {codeClass}). Choose the matching country or correct the nationality before saving.");
             employee.Nationality = Clean(request.Nationality);
             if (!string.IsNullOrWhiteSpace(request.NationalityCode))
             {

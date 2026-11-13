@@ -1536,7 +1536,7 @@ public sealed class PayrollRunProcessor
                 EmployeeId:   Guid.Empty, // Employee PK is int; Guid field not used in pack calculations
                 CompanyId:    run.CompanyId ?? Guid.Empty,
                 Salary:       new SalaryBreakdown(priorBasic + statBasic, priorHousing + statHousing + gosiIncludedBonusTotal + gosiArrearsTotal, transport, otherAllowances),
-                Nationality:  e.Nationality ?? string.Empty,
+                Nationality:  Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(e) ?? string.Empty,
                 ContractType: e.ContractType ?? "Indefinite",
                 PeriodYear:   run.Year,
                 PeriodMonth:  run.Month)

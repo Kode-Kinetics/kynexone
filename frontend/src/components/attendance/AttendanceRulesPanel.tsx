@@ -145,6 +145,7 @@ export function AttendanceRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
                   <Value label={t('Half day below')} value={t('{n} min', { n: policy.halfDayThresholdMinutes })} />
                   <Value label={t('Working day')} value={t('{n} min', { n: policy.standardWorkMinutes })} />
                   <Value label={t('Unpaid break')} value={t('{n} min', { n: policy.breakMinutes })} />
+                  <Value label={t('Day starts at (no shift assigned)')} value={policy.defaultShiftStart ?? t('09:00 (standard)')} />
                 </dl>
                 <div className="mt-4 flex flex-wrap gap-2">
                   <button type="button" className="btn-secondary h-8 px-3 text-xs" onClick={() => { setNotice(null); setEditing(policy); }}>
@@ -266,6 +267,7 @@ function RuleEditor({ policy, lookups, onDirty, onCancel, onSaved }: {
         {field('standardWorkMinutes', t('Working day (minutes)'), t('The length of a full day, for example 480 for 8 hours. Also used for leave days and Ramadan hours.'), { numeric: true })}
         {field('breakMinutes', t('Unpaid break (minutes)'), t('Taken off the time between first in and last out.'), { numeric: true })}
         {field('halfDayThresholdMinutes', t('Half day below (minutes)'), t('A day worked for less than this is marked as a half day.'), { numeric: true })}
+        {field('defaultShiftStart', t('Day starts at, when no shift is assigned'), t('Late and early leaving are measured from this time, for the working day and break above. Leave empty for 09:00. A shift assigned to an employee always wins.'), { maxLength: 5 })}
       </div>
 
       <Callout>

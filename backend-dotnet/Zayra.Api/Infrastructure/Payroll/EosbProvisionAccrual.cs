@@ -44,7 +44,8 @@ public static class EosbProvisioningRateKeys
 /// <summary>One employee's measured obligation, ready for the planner.</summary>
 public sealed record EosbObligation(
     int EmployeeId, string EmployeeCode, decimal Obligation, decimal CarriedBefore, bool IsCatchUp,
-    decimal WageBase, decimal ServiceYears, string Rule, Guid? CostCentreId = null);
+    decimal WageBase, decimal ServiceYears, string Rule, Guid? CostCentreId = null,
+    bool OpeningRoute = false);
 
 /// <summary>Cost-accounting context for the planner: the expense side splits per cost centre and every line gets a posting key.</summary>
 public sealed record EosbCostContext(GlResolutionContext Gl);
@@ -66,17 +67,20 @@ public static class EosbProvisionPlanner
     public const string CatchUpLabel = "Opening EOSB provision (catch-up)";
     public const string MonthlyLabel = "Monthly EOSB provision movement";
     public const string ReleaseLabel = "EOSB provision reduced (obligation fell)";
+    public const string OpeningBalanceLabel = "Opening EOSB provision (catch-up) - opening balance";
 
     public static (List<FinanceGlEntry> Lines, List<EosbProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<EosbObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate, EosbCostContext? cost = null, string? snapshotPeriod = null)
+        Guid? postedBy, string postedByName, DateOnly entryDate, EosbCostContext? cost = null, string? snapshotPeriod = null,
+        string? openingBalanceAccount = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<EosbProvisionSnapshot>();
         // Per cost centre when costing is on (one bucket, key null, when it is off — the pre-cost-accounting lines exactly).
         // Keyed by cost centre id, Guid.Empty = no cost centre (a dictionary cannot hold a null key).
         var catchUpRise = new Dictionary<Guid, decimal>();
+        decimal openingRise = 0m;   // M6: the go-live catch-up of people already in service, booked to opening balance equity when the company chose that route
         var monthlyRise = new Dictionary<Guid, decimal>();
         var fall = new Dictionary<Guid, decimal>();
         var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -137,7 +141,8 @@ public static class EosbProvisionPlanner
             if (movement > 0m)
             {
                 lines.Add(Line(string.Empty, provisionAccount, movement, label, employeeRef));
-                if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
+                if (o.IsCatchUp && o.OpeningRoute && openingBalanceAccount is not null) openingRise += movement;
+                else if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
             }
             else
             {
@@ -146,6 +151,9 @@ public static class EosbProvisionPlanner
             }
         }
 
+        // Equity is not profit and loss: one line, no cost centre.
+        if (openingRise > 0m && openingBalanceAccount is not null)
+            lines.Add(Line(openingBalanceAccount, string.Empty, openingRise, OpeningBalanceLabel, period));
         foreach (var (key, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
             lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, CatchUpLabel, period, Real(key)));
         foreach (var (key, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))

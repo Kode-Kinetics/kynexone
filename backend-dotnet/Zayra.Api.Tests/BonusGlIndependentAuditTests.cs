@@ -777,12 +777,13 @@ public class BonusGlIndependentAuditTests
 
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
+        // Lock relieves the covered advance receivable itself, so the loan remittance has nothing left to clear.
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ConflictObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "disbursement + accrual + remittance must balance");
+        AssertBalanced(gl, "disbursement + accrual must balance");
         Asset(gl, "1410").Should().Be(0m,
             "the advance receivable must amortise to ZERO once the instalment is withheld from pay");
         Liability(gl, "2107").Should().Be(0m, "the loan-deduction control account clears");

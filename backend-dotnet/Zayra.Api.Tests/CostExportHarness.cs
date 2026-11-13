@@ -80,7 +80,8 @@ internal static class CostExportHarness
     public static async Task<IActionResult> CreateAsync(
         ZayraDbContext db, ClaimsPrincipal maker, string format = "generic-csv", string? currency = "SAR")
     {
-        var result = await Ctrl(db, maker).Create(Period, null, null, currency, false, false, format, default);
+        // These tests build several formats of one scope on purpose (to compare them), which the one-live-file guard (C7) otherwise refuses.
+        var result = await Ctrl(db, maker).Create(Period, null, null, currency, false, false, format, default, acknowledgeOtherFormatLive: true);
         db.ChangeTracker.Clear();
         return result;
     }

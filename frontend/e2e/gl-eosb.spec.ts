@@ -123,14 +123,14 @@ async function boot(page: Page, options: Options = {}) {
         companyId: 'co-sa',
         accounts: options.legacyEmpty ? [] : [
           { account: '2104 - Attendance Adjustment Payable', code: '2104', debits: 0, credits: 1200, balance: 1200,
-            suggestedTarget: '5008 - Attendance & Late Deductions (contra)', pendingRequestId: null },
+            suggestedTarget: '5008 - Absence, Late & Early Deductions (contra)', pendingRequestId: null },
           { account: '2105 - Leave Deduction Payable', code: '2105', debits: 0, credits: 300, balance: 300,
-            suggestedTarget: '5009 - Unpaid Leave & LOP Deductions (contra)', pendingRequestId: 'adj-leave' },
+            suggestedTarget: '5009 - Unpaid Leave Deductions (contra)', pendingRequestId: 'adj-leave' },
         ],
         unattributed: options.legacyEmpty ? [] : [{ account: '2104 - Attendance Adjustment Payable', code: '2104', balance: 50 }],
         requests: options.legacyEmpty ? [] : [adjustment({
           id: 'adj-leave', kind: 'LegacyAbsenceReclass', amount: 300, sourceAccount: '2105 - Leave Deduction Payable',
-          targetAccount: '5009 - Unpaid Leave & LOP Deductions (contra)', accountingDate: '2026-10-10', reportReference: null,
+          targetAccount: '5009 - Unpaid Leave Deductions (contra)', accountingDate: '2026-10-10', reportReference: null,
           reason: 'Not owed to anyone', requestedByName: 'Omar Maker', requestedByMe: true, canApprove: false,
         })],
       });
@@ -256,7 +256,7 @@ test('old 2104/2105 balances: a move is requested in plain words, and a closed p
   const s = await boot(page, { closedPeriod: true });
   const l = legacy(page);
   await expect(l.getByTestId('legacy-2104')).toContainText('still recorded as owed');
-  await expect(l.getByTestId('legacy-2104')).toContainText('Suggested destination: 5008 - Attendance & Late Deductions (contra)');
+  await expect(l.getByTestId('legacy-2104')).toContainText('Suggested destination: 5008 - Absence, Late & Early Deductions (contra)');
   await expect(l.getByTestId('legacy-2105')).toContainText('A move is waiting for approval');
   await expect(l.getByTestId('legacy-2105').getByRole('button')).toHaveCount(0);
   await expect(l.getByTestId('legacy-unattributed')).toContainText('without a company');

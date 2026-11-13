@@ -19,7 +19,7 @@ public sealed partial class FieldEncryptionWritePathRatchetTests
     private static readonly string[] Tables =
     [
         "employees", "employee_drafts", "employee_payroll_profiles", "payroll_payment_records", "sif_file_records",
-        "loan_disbursement_lines", "visa_records", "passport_records", "employee_dependents",
+        "loan_disbursement_lines", "visa_records", "passport_records", "employee_dependents", "employee_compliance_records",
     ];
 
     private static string PropertyAlternation => string.Join("|", EncryptedFieldCatalog.All.Select(f => f.Property).Distinct());

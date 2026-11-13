@@ -101,6 +101,17 @@ public static class StatutoryRuleSeeder
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
             "gosi.covered_wage_ceiling_sar", "45000", "decimal", eff16,
             "VERIFY: GOSI covered wage ceiling SAR 45,000 — confirm current ceiling"));
+        // The rule shipped with the half-up release, so every month processed before it was rounded half-even. HALF_EVEN from 2016 keeps
+        // those months (and a reopened or previewed one) exactly as processed; HALF_UP applies from the go-live month.
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "gosi.rounding_mode", "HALF_EVEN", "string", eff16,
+            "GOSI contribution rounding before the half-up go-live: HALF_EVEN (banker's), as every month before it was processed. "
+            + "A platform row, a company cannot set its own."));
+        list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,
+            "gosi.rounding_mode", "HALF_UP", "string", DateTime.SpecifyKind(Zayra.Api.Infrastructure.CountryPack.Ksa.GosiRounding.HalfUpEffectiveFrom.ToDateTime(TimeOnly.MinValue), DateTimeKind.Utc),
+            "GOSI contribution rounding to 2 decimals, per component per employee per side, from the go-live month: HALF_UP (away from zero) | "
+            + "HALF_EVEN (banker's). Differs only when wage x rate ends in exactly half a halala. Calibrate against a real GOSI invoice; "
+            + "a platform row, a company cannot set its own."));
         AddGosiNewEntrantSchedule(list);
         AddGosiMinimumContributoryWage(list, eff16);
         list.Add(Rule(CountryCodes.Saudi, Jurisdictions.KsaMainland,

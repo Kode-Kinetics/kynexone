@@ -65,6 +65,8 @@ interface BootOptions {
   screen?: 'journal' | 'periods';
   /** AM-21: finance.gl.read without the export permission. The API sends no `sample` or `lines`, and refuses the download. */
   readerOnly?: boolean;
+  /** C7: another format's file over the same rows still awaits the ERP, so a create is refused until acknowledgeOtherFormatLive=true. */
+  otherFormatLive?: boolean;
 }
 
 async function boot(page: Page, options: BootOptions = {}): Promise<State> {
@@ -117,6 +119,11 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     if (path === `${gl}/preview`) return reply(forViewer(manifest(null, 'Supplementary')));
     if (path === gl && request.method() === 'POST') {
       state.creates.push(url.search);
+      if (options.otherFormatLive && url.searchParams.get('acknowledgeOtherFormatLive') !== 'true') return reply({
+        error: 'other_format_export_live', code: 'other_format_export_live',
+        message: 'A generic-csv export of this period (journal-GROUP-2026-07-SAR-generic-csv-8A2D975A.csv) is still waiting for your ERP\'s result …',
+        liveExports: [{ exportId: 'exp-0', format: 'generic-csv', fileName: 'journal-GROUP-2026-07-SAR-generic-csv-8A2D975A.csv', status: 'Exported' }],
+      }, 409);
       if (state.doublePost) return reply({
         error: 'already_posted_to_erp',
         message: 'Nothing new to export: all 3 ledger row(s) in this scope are already confirmed as posted in your ERP. Exporting them again would post them twice. If the ERP reversed that journal, create a Replacement export for the confirmed export instead.',
@@ -448,4 +455,33 @@ test('AM-5: the GL Journal tab says when its runs or its journal could not be lo
   // The Payroll page has other readers of the run list, so only "at least one retry" is asserted for it.
   expect(calls.runs).toBeGreaterThanOrEqual(2);
   expect(calls.journal).toBe(2);
+});
+
+// C7: a second format over the same unconfirmed rows is refused with the file named, and one explicit button resends with the acknowledgement.
+test('another format while a file awaits the ERP: the live file is named and "Create anyway" resends with the acknowledgement', async ({ page }) => {
+  const state = await boot(page, { otherFormatLive: true });
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Create export file' }).click();
+
+  const notice = page.getByTestId('journal-export-other-format-live');
+  await expect(notice).toContainText('generic-csv');
+  await expect(notice).toContainText('journal-GROUP-2026-07-SAR-generic-csv-8A2D975A.csv');
+  await expect(page.getByTestId('journal-export-refusal')).toHaveCount(0);
+  expect(state.creates).toHaveLength(1);
+  expect(state.creates[0]).not.toContain('acknowledgeOtherFormatLive');
+
+  await page.getByTestId('journal-export-create-anyway').click();
+  await expect(page.getByTestId('journal-export-manifest').getByText(/File created:/)).toBeVisible();
+  expect(state.creates).toHaveLength(2);
+  expect(state.creates[1]).toContain('acknowledgeOtherFormatLive=true');
+  await expect(notice).toHaveCount(0);
+});
+
+test('Arabic: the other-format notice and its confirm button', async ({ page }) => {
+  await boot(page, { otherFormatLive: true, locale: 'ar' });
+  await page.getByLabel('الشهر المحاسبي').fill('2026-07');
+  await page.locator('button.btn-primary').last().click();
+  const notice = page.getByTestId('journal-export-other-format-live');
+  await expect(notice).toContainText('ما زال بانتظار نتيجة نظام تخطيط الموارد');
+  await expect(page.getByTestId('journal-export-create-anyway')).toContainText('أنشئ على أي حال');
 });

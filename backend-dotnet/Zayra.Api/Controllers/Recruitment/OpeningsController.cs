@@ -6,6 +6,7 @@ using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -103,6 +104,14 @@ public class OpeningsController : ControllerBase
             }
         }
 
+        // An opening starts from its requisition: placement, budget range and skills carry over unless the request states its own.
+        var requisitionForTerms = req.RequisitionId.HasValue
+            ? await _db.ManpowerRequisitions.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct)
+            : null;
+        var terms = OpeningTerms.Inherit(req, requisitionForTerms);
+        var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, terms.DepartmentId, terms.DesignationId, terms.GradeId, ct);
+        if (placementError is not null) return placementError;
+
         var j = new JobOpening
         {
             TenantId = tenantId,
@@ -110,15 +119,18 @@ public class OpeningsController : ControllerBase
             JobCode = code,
             RequisitionId = req.RequisitionId,
             Title = req.Title,
-            DepartmentName = req.DepartmentName,
-            DesignationTitle = req.DesignationTitle,
+            DepartmentId = terms.DepartmentId,
+            DepartmentName = catalogueDepartment?.NameEn ?? terms.DepartmentName,
+            DesignationId = terms.DesignationId,
+            DesignationTitle = catalogueDesignation?.TitleEn ?? terms.DesignationTitle,
+            GradeId = terms.GradeId,
             EmploymentType = req.EmploymentType,
             HeadCount = req.HeadCount,
             Description = req.Description,
-            Requirements = req.Requirements,
+            Requirements = terms.Requirements,
             Responsibilities = req.Responsibilities,
-            SalaryFrom = req.SalaryFrom,
-            SalaryTo = req.SalaryTo,
+            SalaryFrom = terms.SalaryFrom,
+            SalaryTo = terms.SalaryTo,
             Location = req.Location,
             Status = "Open",
             AssignedHrUserId = userId,
@@ -138,9 +150,17 @@ public class OpeningsController : ControllerBase
         var j = await _db.JobOpenings.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tenantId, ct);
         if (j is null) return NotFound();
 
+        // The same placement rules as Create: an id the request names must be an active record of this organisation.
+        var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, req.DepartmentId, req.DesignationId, req.GradeId, ct);
+        if (placementError is not null) return placementError;
+
         j.Title = req.Title;
-        j.DepartmentName = req.DepartmentName;
-        j.DesignationTitle = req.DesignationTitle;
+        // The opening's own placement (a recruitment record, not an employee's attribution): an id the request names replaces the stored one.
+        _db.Entry(j).CurrentValues.SetValues(new { DepartmentId = req.DepartmentId ?? j.DepartmentId, DesignationId = req.DesignationId ?? j.DesignationId, GradeId = req.GradeId ?? j.GradeId });
+        // A name is taken from the record, never typed: a newly named record names it, a kept record keeps its name, and free text only
+        // stands where there is no record at all.
+        j.DepartmentName = catalogueDepartment?.NameEn ?? (j.DepartmentId is null ? req.DepartmentName : j.DepartmentName);
+        j.DesignationTitle = catalogueDesignation?.TitleEn ?? (j.DesignationId is null ? req.DesignationTitle : j.DesignationTitle);
         j.EmploymentType = req.EmploymentType;
         j.HeadCount = req.HeadCount;
         j.Description = req.Description;
@@ -152,6 +172,13 @@ public class OpeningsController : ControllerBase
         j.AssignedHrName = req.AssignedHrName;
         await _db.SaveChangesAsync(ct);
         return Ok(j);
+    }
+
+    private async Task<(Department? Department, Designation? Designation, IActionResult? Error)> CataloguePlacementAsync(
+        Guid tenantId, Guid? departmentId, Guid? designationId, Guid? gradeId, CancellationToken ct)
+    {
+        var p = await RecruitmentPlacement.ResolveAsync(_db, tenantId, departmentId, designationId, gradeId, ct);
+        return (p.Department, p.Designation, p.Error is null ? null : BadRequest(new { message = p.Error }));
     }
 
     [HttpPost("{id:guid}/close")]
@@ -272,4 +299,5 @@ public record CreateOpeningRequest(
     Guid? RequisitionId, string Title, string DepartmentName, string DesignationTitle,
     string EmploymentType, int HeadCount, string Description, string Requirements,
     string Responsibilities, decimal? SalaryFrom, decimal? SalaryTo,
-    string Location, string AssignedHrName, Guid? CompanyId = null);
+    string Location, string AssignedHrName, Guid? CompanyId = null,
+    Guid? DepartmentId = null, Guid? DesignationId = null, Guid? GradeId = null);

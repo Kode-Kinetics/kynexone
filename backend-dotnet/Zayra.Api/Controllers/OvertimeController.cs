@@ -840,7 +840,10 @@ public class OvertimeController : ControllerBase
     public async Task<ActionResult<IReadOnlyCollection<OvertimePayrollImpact>>> PayrollReview(CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        return Ok(await _db.OvertimePayrollImpacts.AsNoTracking().Where(x => x.TenantId == tenantId && x.Status == "PendingPayroll").OrderBy(x => x.EmployeeId).ToListAsync(ct));
+        // Company scope follows the employee: the employee query carries the caller's company filter, so a one-company user sees only their own people's lines.
+        return Ok(await _db.OvertimePayrollImpacts.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.Status == "PendingPayroll" && _db.Employees.Any(e => e.Id == x.EmployeeId && e.TenantId == tenantId))
+            .OrderBy(x => x.EmployeeId).ToListAsync(ct));
     }
 
     [HttpGet("calculations")]
@@ -868,7 +871,9 @@ public class OvertimeController : ControllerBase
     public async Task<ActionResult<IReadOnlyCollection<OvertimeBudget>>> Budgets([FromQuery] int? year, CancellationToken ct = default)
     {
         var tenantId = RequireTenant();
-        var query = _db.OvertimeBudgets.AsNoTracking().Where(x => x.TenantId == tenantId);
+        // A budget belongs to its department's company; the department query carries the caller's company filter.
+        var query = _db.OvertimeBudgets.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && (x.DepartmentId == null || _db.Departments.Any(d => d.Id == x.DepartmentId && d.TenantId == tenantId)));
         if (year.HasValue) query = query.Where(x => x.Year == year.Value);
         return Ok(await query.OrderByDescending(x => x.Year).ThenByDescending(x => x.Month).ToListAsync(ct));
     }

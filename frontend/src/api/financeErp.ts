@@ -50,6 +50,21 @@ export interface JournalExportScope {
   includePreviouslyConfirmed?: boolean;
   replacesExportId?: string;
   options?: Record<string, string>;
+  /** C7: send anyway while a file in another format over the same rows still awaits the ERP's result (the server audits it). */
+  acknowledgeOtherFormatLive?: boolean;
+}
+
+/**
+ * The refusal for an export in a second format while another live file covers the same unconfirmed rows (HTTP 409, error
+ * other_format_export_live). Returns the live file the server names (first one), or null for any other error.
+ */
+export function readOtherFormatLive(err: unknown): { format: string; fileName: string } | null {
+  const response = (err as { response?: { status?: number; data?: unknown } } | null)?.response;
+  if (response?.status !== 409) return null;
+  const data = response.data as { error?: unknown; liveExports?: Array<{ format?: unknown; fileName?: unknown }> } | null;
+  if (data?.error !== 'other_format_export_live') return null;
+  const first = Array.isArray(data.liveExports) ? data.liveExports[0] : undefined;
+  return { format: typeof first?.format === 'string' ? first.format : '', fileName: typeof first?.fileName === 'string' ? first.fileName : '' };
 }
 
 export interface CompanyBalance {
@@ -191,6 +206,7 @@ function scopeParams(scope: JournalExportScope): Record<string, string | boolean
   if (scope.includeUnattributed) p.includeUnattributed = true;
   if (scope.includePreviouslyConfirmed) p.includePreviouslyConfirmed = true;
   if (scope.replacesExportId) p.replacesExportId = scope.replacesExportId;
+  if (scope.acknowledgeOtherFormatLive) p.acknowledgeOtherFormatLive = true;
   for (const [k, v] of Object.entries(scope.options ?? {})) if (v.trim()) p[`options[${k}]`] = v.trim();
   return p;
 }

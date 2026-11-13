@@ -27,6 +27,7 @@ import {
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
 import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
 
@@ -88,7 +89,7 @@ export type Copy = {
 };
 
 export const EN: Copy = {
-  title: 'Bank instruction file — ANB Connect CSV',
+  title: 'Payroll payment instruction file (bank format) — ANB Connect CSV',
   subtitle: 'Prepares the two ANB Connect payroll-payment CSV files (header.csv + body.csv) for this payment batch.',
   loading: 'Loading bank export details…',
   loadFailed: 'Could not load the bank export details for this batch.',
@@ -182,7 +183,7 @@ export const EN: Copy = {
 };
 
 export const AR: Copy = {
-  title: 'ملف تعليمات البنك — ANB Connect CSV',
+  title: 'ملف تعليمات دفع الرواتب (بصيغة البنك) — ANB Connect CSV',
   subtitle: 'يجهّز ملفي CSV الخاصين بدفع الرواتب عبر ANB Connect ‏(header.csv و body.csv) لدفعة الدفع هذه.',
   loading: 'جارٍ تحميل تفاصيل التصدير البنكي…',
   loadFailed: 'تعذّر تحميل تفاصيل التصدير البنكي لهذه الدفعة.',
@@ -820,7 +821,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
         {draftIsCustom && <Alert tone="info">{cc.notice}</Alert>}
         {formats.length === 0 && <Alert tone="error">{c.noFormats}</Alert>}
         {savedFormatUnsupported && <Alert tone="error">{c.unsupportedFormat(savedSettings?.formatId ?? '')}</Alert>}
-        {!hasPermission('payroll.export') && <Alert tone="info">{c.noExportPerm}</Alert>}
+        {!bankFileProductionAllowed(hasPermission) && <Alert tone="info">{c.noExportPerm}</Alert>}
 
         {/* Employer setup */}
         <SaudiBankSettingsForm c={c} idPrefix={uid} draft={draft} setField={setField}
@@ -828,8 +829,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
           canManage={hasPermission('payroll.structure_manage')} saving={busy === 'save'} otherBusy={busy !== null && busy !== 'save'}
           dirty={settingsDirty} onSubmit={onSave} />
 
-        {/* Custom bank templates: layout configured by the customer, approved by a second person */}
-        {ctx && (
+        {/* Custom bank templates: layout configured by the customer, approved by a second person. The template routes stay with
+            payroll.export, so the editor is not shown to someone who only prepares the file. */}
+        {ctx && bankTemplatesAllowed(hasPermission) && (
           <CustomBankTemplateEditor
             companyId={ctx.companyId}
             batchId={batchId}

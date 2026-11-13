@@ -47,7 +47,7 @@ public class FinanceLedgerWriterSweepTests
         // Lock accrual, settle, remit, bonus clearing, settlement discharge and their contras; four IsReversed flips
         // (outside-payment reversal, settlement reversal, remittance reversal, final-settlement cancel); the hand
         // erp-posting-status loop (4 entry stamps) plus three PayrollRun.ErpPostingStatus assignments.
-        ["Controllers/PayrollController.cs"] = (10, 4, 7, 15),   // C2: lines built with At(new FinanceGlEntry ...), one construction fewer
+        ["Controllers/PayrollController.cs"] = (10, 4, 7, 16),   // C2: lines built with At(new FinanceGlEntry ...), one construction fewer; +1: the loan recovery credit line (an Accrual INSERT, the same door as every accrual line)
         ["Infrastructure/Payroll/BonusCostSplit.cs"] = (0, 0, 0, 1),            // costed bonus accrual rows (inserts), BonusCostingPostgresTests + oracle
         ["Infrastructure/Payroll/EosbProvisionAccrual.cs"] = (0, 0, 0, 1),      // EOSB provision lines (inserts), inside the Lock journal
         ["Infrastructure/Payroll/LeaveProvisionAccrual.cs"] = (0, 0, 0, 1),     // annual-leave provision lines (inserts), inside the Lock journal

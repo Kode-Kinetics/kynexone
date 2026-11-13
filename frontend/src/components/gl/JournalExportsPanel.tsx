@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiErrorReason } from '../../api/client';
 import {
-  financeErpApi, saveJournalFile,
+  financeErpApi, readOtherFormatLive, saveJournalFile,
   type CompanyBalance, type JournalExportDetail, type JournalExportFormat, type JournalExportManifest,
   type JournalExportScope, type JournalExportSummary, type JournalOutcome,
 } from '../../api/financeErp';
@@ -52,11 +52,15 @@ function thisMonth(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-interface Refusal { message: string; byCompany: CompanyBalance[] }
+interface Refusal { message: string; byCompany: CompanyBalance[]; otherFormatLive?: { format: string; fileName: string } }
 
 function refusalOf(err: unknown, fallback: string): Refusal {
   const data = (err as { response?: { data?: { byCompany?: CompanyBalance[] } } })?.response?.data;
-  return { message: apiErrorReason(err, fallback), byCompany: Array.isArray(data?.byCompany) ? data!.byCompany : [] };
+  const other = readOtherFormatLive(err);
+  return {
+    message: apiErrorReason(err, fallback), byCompany: Array.isArray(data?.byCompany) ? data!.byCompany : [],
+    ...(other ? { otherFormatLive: other } : {}),
+  };
 }
 
 export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string }) {
@@ -107,11 +111,11 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const scope: JournalExportScope = { period, companyId: companyId || null, format: formatKey, options };
   const currencyOf = (m: { currency: string }) => m.currency || null;
 
-  const run = async (kind: 'preview' | 'create') => {
+  const run = async (kind: 'preview' | 'create', acknowledgeOtherFormatLive = false) => {
     setBusy(kind);
     setRefusal(null);
     try {
-      const result = kind === 'preview' ? await financeErpApi.preview(scope) : await financeErpApi.create(scope);
+      const result = kind === 'preview' ? await financeErpApi.preview(scope) : await financeErpApi.create(acknowledgeOtherFormatLive ? { ...scope, acknowledgeOtherFormatLive: true } : scope);
       setManifest(result);
       if (kind === 'create') { loadHistory(); if (result.exportId) setOpenId(result.exportId); }
     } catch (err) {
@@ -207,7 +211,18 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
         </button>
       </div>
 
-      {refusal && (
+      {refusal?.otherFormatLive && (
+        <div role="alert" className="space-y-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200" data-testid="journal-export-other-format-live">
+          <p>
+            {t("A {format} export of this period ({file}) is still waiting for your ERP's result and covers the same ledger rows. Sending them in another format as well would give your ERP two files and could post them twice.", { format: refusal.otherFormatLive.format, file: refusal.otherFormatLive.fileName })}
+          </p>
+          <p className="text-xs">{t('Record whether your ERP posted or refused that file first, or create the new file anyway.')}</p>
+          <button type="button" className="btn-secondary text-xs" data-testid="journal-export-create-anyway" disabled={!!busy} onClick={() => run('create', true)}>
+            {t('Create anyway — the other file is still awaiting ERP confirmation')}
+          </button>
+        </div>
+      )}
+      {refusal && !refusal.otherFormatLive && (
         <div role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300" data-testid="journal-export-refusal">
           <p>{refusal.message}</p>
           {refusal.byCompany.length > 0 && <CompanyTable rows={refusal.byCompany} currency={null} />}

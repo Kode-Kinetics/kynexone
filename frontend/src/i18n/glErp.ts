@@ -2,6 +2,11 @@
 // (components/gl/GlPeriodsPanel.tsx), the chart's ERP account code, and statutory-rule approvals (StatutoryRulesPanel.tsx). Keys already translated elsewhere (Company, Open, Closed, Try again, …) are
 // reused, not redefined here.
 const ar: Record<string, string> = {
+  "A {format} export of this period ({file}) is still waiting for your ERP's result and covers the same ledger rows. Sending them in another format as well would give your ERP two files and could post them twice.":
+    'يوجد ملف تصدير بصيغة {format} لهذه الفترة ({file}) ما زال بانتظار نتيجة نظام تخطيط الموارد ويغطي القيود نفسها. إرسالها بصيغة أخرى أيضًا يعني ملفين لنظامكم وقد تُرحَّل القيود مرتين.',
+  'Record whether your ERP posted or refused that file first, or create the new file anyway.':
+    'سجّل أولًا ما إذا كان نظام تخطيط الموارد قد رحّل ذلك الملف أو رفضه، أو أنشئ الملف الجديد على أي حال.',
+  'Create anyway — the other file is still awaiting ERP confirmation': 'أنشئ على أي حال — الملف الآخر ما زال بانتظار تأكيد النظام',
   'Send journal to your ERP': 'إرسال القيد إلى نظام تخطيط الموارد',
   'Create the posting file for a month, import it into your ERP, then record the ERP document number here. Rows your ERP already posted are never sent twice.':
     'أنشئ ملف الترحيل للشهر، واستورده إلى نظام تخطيط الموارد، ثم سجّل رقم المستند هنا. لا تُرسل القيود التي رحّلها النظام مرتين أبدًا.',

@@ -92,7 +92,17 @@ public static class LeaveEncashmentCalculator
 
         // The monthly leave PROVISION passes netCarriedForward: a day carried into a later year's row is not also counted in the
         // earlier row that still shows it. A final settlement keeps the default (false), which sums every row as it always did.
-        var netted = netCarriedForward ? NetCarriedForward(balances) : new Dictionary<Guid, decimal>();
+        // Days the year rollover has ALREADY closed out of an earlier row are not netted again: that row no longer shows them, so netting
+        // them would also take away any day a later cancellation returned to the closed year (and that the next rollover has not carried yet).
+        var closedOut = netCarriedForward
+            ? (await db.LeaveBalanceTransactions.AsNoTracking()
+                    .Where(t => t.TenantId == tenantId && t.EmployeeId == employeeId && t.TransactionType == Leave.LeaveService.CarryForwardOutTransaction)
+                    .Select(t => new { t.LeaveTypeId, t.Year, t.Amount })
+                    .ToListAsync(ct))
+                .GroupBy(t => (t.LeaveTypeId, t.Year))
+                .ToDictionary(g => g.Key, g => -g.Sum(t => t.Amount))
+            : new Dictionary<(Guid, int), decimal>();
+        var netted = netCarriedForward ? NetCarriedForward(balances, closedOut) : new Dictionary<Guid, decimal>();
         decimal AvailableOf(EmployeeLeaveBalance b) => Math.Round(b.Available - netted.GetValueOrDefault(b.Id), 2);
 
         var typeIds = balances.Select(b => b.LeaveTypeId).Distinct().ToList();
@@ -194,10 +204,12 @@ public static class LeaveEncashmentCalculator
     /// <summary>
     /// Per balance row, how many of its still-open days were carried into a LATER year's row (so they are counted there).
     /// For each row that carries days forward, the most recent earlier rows of the same leave type give up that many open
-    /// days. A prior row already closed (Available 0) gives up nothing, and a prior leftover that was NOT carried
+    /// days. A carry the year rollover already closed out of the prior row is not netted (that row no longer shows it, and a day returned
+    /// to it later is its own). A prior row already closed (Available 0) gives up nothing, and a prior leftover that was NOT carried
     /// (CarriedForward 0 on the later row) is untouched, because the product keeps last year's unused days in last year's row.
     /// </summary>
-    private static Dictionary<Guid, decimal> NetCarriedForward(IReadOnlyList<EmployeeLeaveBalance> balances)
+    private static Dictionary<Guid, decimal> NetCarriedForward(
+        IReadOnlyList<EmployeeLeaveBalance> balances, IReadOnlyDictionary<(Guid LeaveTypeId, int Year), decimal> closedOut)
     {
         var netted = new Dictionary<Guid, decimal>();
         foreach (var type in balances.GroupBy(b => b.LeaveTypeId))
@@ -205,7 +217,8 @@ public static class LeaveEncashmentCalculator
             var byYear = type.OrderBy(b => b.Year).ToList();
             foreach (var row in byYear.Where(b => b.CarriedForward > 0m))
             {
-                var remaining = row.CarriedForward;
+                // Only what the rollover did NOT close out of the previous year's row is still shown there (hand-entered or imported carries).
+                var remaining = row.CarriedForward - closedOut.GetValueOrDefault((row.LeaveTypeId, row.Year - 1));
                 foreach (var prior in byYear.Where(p => p.Year < row.Year).OrderByDescending(p => p.Year))
                 {
                     if (remaining <= 0m) break;

@@ -135,6 +135,14 @@ public class SaudiBankExportActivationTests
         return (db, tenant, company, batch);
     }
 
+    // Since 2026-11-10 a Saudi company is ON by default; "off" is the platform's per-tenant switch (or a company that is not Saudi).
+    private static async Task SwitchOffByPlatformAsync(ZayraDbContext db, Guid tenant)
+    {
+        db.TenantFeatureFlags.Add(new Zayra.Api.Models.TenantFeatureFlag
+        { TenantId = tenant, FeatureKey = Zayra.Api.Models.FeatureKeys.SaudiBankExport, IsEnabled = false });
+        await db.SaveChangesAsync();
+    }
+
     private static void AssertDisabled(IActionResult result)
     {
         var obj = result.Should().BeOfType<ObjectResult>().Subject;
@@ -147,9 +155,10 @@ public class SaudiBankExportActivationTests
     }
 
     [Fact]
-    public async Task Controller_DefaultOff_RejectsEveryBatchAction_EvenWithFullPermissions_AndWritesNothing()
+    public async Task Controller_PlatformSwitchedOff_RejectsEveryBatchAction_EvenWithFullPermissions_AndWritesNothing()
     {
         var (db, tenant, company, batch) = await SeedAsync();
+        await SwitchOffByPlatformAsync(db, tenant);
         var ctrl = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null,
             "payroll.export", "payroll.structure_manage");
 
@@ -206,9 +215,10 @@ public class SaudiBankExportActivationTests
     }
 
     [Fact]
-    public async Task Availability_DefaultOff_AuthorizedOwnBatch_ReturnsEnabledFalse_NotForbid()
+    public async Task Availability_PlatformSwitchedOff_AuthorizedOwnBatch_ReturnsEnabledFalse_NotForbid()
     {
         var (db, tenant, company, batch) = await SeedAsync();
+        await SwitchOffByPlatformAsync(db, tenant);
         var ctrl = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null, "payroll.export");
 
         var result = await ctrl.Availability(batch, default);
@@ -241,6 +251,9 @@ public class SaudiBankExportActivationTests
         var tenant = Guid.NewGuid();
         var companyA = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
         var companyB = await SaudiBankExportTestData.SeedCompanyAsync(db, tenant);
+        // Company B is not Saudi, so only the operator allow-list could open it (a Saudi company is on by default).
+        (await db.Companies.FindAsync(companyB))!.CountryCode = "AE";
+        await db.SaveChangesAsync();
         var svc = new SaudiBankExportService(db, new SaudiBankExportTestData.FakeAddresses());
         (await svc.SaveSettingsAsync(tenant, companyA, Guid.NewGuid(), SaudiBankExportTestData.Settings(), default))
             .Outcome.Should().Be(SaudiBankExportOutcome.Ok);
@@ -269,6 +282,7 @@ public class SaudiBankExportActivationTests
 
         // IConfiguration is resolved per-request in production, never cached on the controller; a fresh
         // controller instance with the switch OFF is this test's stand-in for "the very next request".
+        await SwitchOffByPlatformAsync(db, tenant);
         var disabledCtrl = SaudiBankExportTests.Ctrl(db, tenant, company, activationConfiguration: null, "payroll.export");
         AssertDisabled(await disabledCtrl.Download(batch, default));
 

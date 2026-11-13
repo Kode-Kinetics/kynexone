@@ -112,11 +112,17 @@ export function parseAssessmentScore(raw: string | undefined, totalMarks: number
  * in the order the API returns them (oldest first).
  */
 export function applicationStageChanges(
-  events: ReadonlyArray<{ id: string; eventType: string; stage: string }>,
+  events: ReadonlyArray<{ id: string; eventType: string; stage: string; fromStage?: string | null; toStage?: string | null }>,
 ): Map<string, { from: string; to: string }> {
   const changes = new Map<string, { from: string; to: string }>();
   let current: string = PIPELINE_STAGES[0];
   for (const event of events) {
+    // The API stores both stages on a stage move; older events carry only where they ended, so those are inferred.
+    if (event.eventType === 'StageAdvanced' && event.fromStage && event.toStage) {
+      changes.set(event.id, { from: event.fromStage, to: event.toStage });
+      current = event.toStage;
+      continue;
+    }
     if (!event.stage) continue;
     if (event.eventType === 'StageAdvanced' && event.stage !== current) changes.set(event.id, { from: current, to: event.stage });
     current = event.stage;
@@ -127,4 +133,18 @@ export function applicationStageChanges(
 /** An offer made before managed revisions existed has no revision number: it is the original. */
 export function offerRevisionLabel(revisionNumber: number | null | undefined): string {
   return revisionNumber == null ? 'Original' : String(revisionNumber);
+}
+
+/** How an offer approver appears in the picker: the name (the email when there is none) and, when known, the role. */
+export function approverOptionLabel(o: { name: string; email: string; role?: string | null }): string {
+  const who = o.name || o.email;
+  return o.role ? `${who} · ${o.role}` : who;
+}
+
+/** The API's refusal to move an application to Offer when nobody has interviewed or assessed the candidate and no reason was given. */
+export const OFFER_STAGE_NEEDS_EVALUATION = 'offer_stage_needs_evaluation';
+
+export function advanceNeedsOverrideReason(err: unknown): boolean {
+  const e = err as { response?: { data?: { error?: string } } } | null;
+  return e?.response?.data?.error === OFFER_STAGE_NEEDS_EVALUATION;
 }

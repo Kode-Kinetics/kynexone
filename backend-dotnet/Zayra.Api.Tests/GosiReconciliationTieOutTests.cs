@@ -175,6 +175,52 @@ public class GosiReconciliationTieOutTests
     }
 
     [Fact]
+    public async Task HalfUpRounding_12500_50_PayslipJournalAndReconciliationAgreeToTheHalala()
+    {
+        // L1.3 — covered wage 12,500.50 (basic 10,000.50 + housing 2,500). Annuities 9% = 1,125.045 rounds HALF-UP to
+        // 1,125.05 on each side (banker's gave 1,125.04). The payslip lines, the stored journal (2101 / 2106) and the
+        // reconciliation's recomputed "expected" all come from the one engine, so nothing may disagree by a halala.
+        var ruleReader = KsaRules();
+        var tenantId = await SeedTenantAsync();
+        var (_, saudiId, _, runId) = await SeedRunAsync(tenantId,
+            saudiBasic: 10_000.50m, saudiHousing: 2_500m, gosiBonusGross: 0m,
+            expatBasic: 0m, expatHousing: 0m, year: 2026, month: 11, includeExpat: false);
+
+        await using (var db = _fx.CreateDb())
+            Assert.IsType<OkObjectResult>(await BuildPayroll(db, tenantId, ruleReader).Process(runId, CancellationToken.None));
+
+        await using (var db = _fx.CreateDb())
+        {
+            var stat = await db.PayrollDeductions.AsNoTracking()
+                .Where(d => d.TenantId == tenantId && d.PayrollRunId == runId && d.EmployeeId == saudiId && d.Source == "Statutory")
+                .ToListAsync();
+            Assert.Equal(1_125.05m, stat.Single(d => d.ComponentCode == "GOSI-ANN-EE").Amount);
+            Assert.Equal(1_125.05m, stat.Single(d => d.ComponentCode == "GOSI-ANN-ER").Amount);
+            Assert.Equal(93.75m, stat.Single(d => d.ComponentCode == "GOSI-SANED-EE").Amount);
+            Assert.Equal(250.01m, stat.Single(d => d.ComponentCode == "GOSI-OH-ER").Amount);
+        }
+
+        await LockRunAsync(tenantId, runId, ruleReader);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var run = await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == runId);
+            var recon = await new GosiReconciliationService(db, KsaResolver(ruleReader))
+                .ReconcileAsync(tenantId, run, CancellationToken.None);
+
+            Assert.Equal(1_218.80m, recon.ActualEmployeeTotal);
+            Assert.Equal(1_468.81m, recon.ActualEmployerTotal);
+            Assert.Equal(1_218.80m, recon.ExpectedEmployeeTotal);
+            Assert.Equal(1_468.81m, recon.ExpectedEmployerTotal);
+            Assert.Equal(1_218.80m, recon.GlEmployeeLiability);   // the 2101 credit
+            Assert.Equal(1_468.81m, recon.GlEmployerLiability);   // the 2106 credits
+            Assert.Equal(0m, recon.GlEmployeeDelta);
+            Assert.Equal(0m, recon.GlEmployerDelta);
+            Assert.Equal(0, recon.VarianceCount);
+        }
+    }
+
+    [Fact]
     public async Task CeilingApplied_CoveredWageCappedAt45000_TiesOut()
     {
         var ruleReader = KsaRules();

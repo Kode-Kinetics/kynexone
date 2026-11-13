@@ -689,6 +689,15 @@ builder.Services.AddSingleton(Zayra.Api.Infrastructure.Employees.EffectiveChange
 builder.Services.AddScoped<Zayra.Api.Infrastructure.Employees.EffectiveChangeJobHandler>();
 builder.Services.AddHostedService<Zayra.Api.Infrastructure.Employees.EffectiveChangeScheduler>();
 
+// Scheduled leave accrual and year rollover: an hourly scheduler enqueues one `leave.accrual` job per tenant per TENANT-LOCAL month on
+// the F3 queue; the job accrues every completed month still missing, front-loads yearly policies and, from January, carries unused annual
+// leave into the new year and closes the old row. Idempotent by ledger entry. OFF by default (a deploy must not change balances silently); LeaveAccrual__Enabled=true switches it on, =false is the kill switch.
+var leaveAccrualOptions = builder.Configuration.GetSection(LeaveAccrualOptions.SectionName).Get<LeaveAccrualOptions>() ?? new LeaveAccrualOptions();
+builder.Services.AddSingleton(leaveAccrualOptions);
+builder.Services.AddSingleton(LeaveAccrualJobHandler.Descriptor);
+builder.Services.AddScoped<LeaveAccrualJobHandler>();
+builder.Services.AddHostedService<LeaveAccrualScheduler>();
+
 // Selfie attendance v2 (rule 7): selfie blobs are deleted 90 days after the punch's payroll month locks, at work date
 // + 120 days when no run locks it, 24 hours after an upload no punch used (at once when the employee has no open
 // consent), and 1 hour after an upload that never completed. The scheduler runs every 15 minutes, so a delete storage

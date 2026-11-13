@@ -33,6 +33,7 @@ import {
   draftIdentityFixKind,
   draftRequestFailureReason,
   draftStatusChip,
+  draftApprovalNotice,
   isClosedDraftError,
   isOpenDraft,
   nextDraftAction,
@@ -168,7 +169,7 @@ export function NewHiresPage() {
     setDecisionError('');
     try {
       const employee = await employeeDraftsApi.approve(selected.id);
-      setNotice({ text: t('{name} is now employee {code}.', { name: selected.name, code: employee.employeeCode }), employeeId: employee.id, name: selected.name });
+      setNotice({ text: draftApprovalNotice({ name: selected.name, employeeCode: employee.employeeCode, status: employee.status }, t), employeeId: employee.id, name: selected.name });
       setNoticeAccess(null);
       if (hasPermission('employees.access.issue')) {
         void employeeAccessApi.get(employee.id).then(setNoticeAccess).catch(() => setNoticeAccess(null));

@@ -9,6 +9,7 @@ using Zayra.Api.Application.WorkWeek;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Attendance;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Infrastructure.CountryPack;
 using Zayra.Api.Infrastructure.CountryPack.Ksa;
 using Zayra.Api.Infrastructure.Data;
@@ -18,7 +19,7 @@ using Zayra.Api.Models;
 
 namespace Zayra.Api.Infrastructure.Leave;
 
-public class LeaveService : ILeaveService
+public partial class LeaveService : ILeaveService
 {
     private readonly ZayraDbContext _db;
     private readonly IApprovalRouter _router;
@@ -30,11 +31,14 @@ public class LeaveService : ILeaveService
     /// or the two modules disagree about what one day of an employee's time is.
     /// </summary>
     private readonly KsaWorkingHoursBaselineService _workingHours;
+    /// <summary>The clock every "today" in this service reads. Optional like <c>workWeek</c>: hand-built callers get the system clock.</summary>
+    private readonly TimeProvider _clock;
 
-    public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null)
+    public LeaveService(ZayraDbContext db, IApprovalRouter router, IWorkWeekService? workWeek = null, TimeProvider? clock = null)
     {
         _db = db;
         _router = router;
+        _clock = clock ?? TimeProvider.System;
         // Optional so existing callers/tests keep working; DI always supplies the real one.
         _workWeek = workWeek ?? new WorkWeekService(db);
         // Constructed rather than injected for the same reason: this service is hand-constructed in
@@ -43,6 +47,17 @@ public class LeaveService : ILeaveService
         _rules = new StatutoryRuleReader(db);
         _workingHours = new KsaWorkingHoursBaselineService(_rules, new HijriDateService());
     }
+
+    /// <summary>
+    /// The tenant's calendar day now, by the rule attendance dates its punches with (<see cref="TenantClock"/>: a Saudi tenant is
+    /// on Asia/Riyadh, everyone else on their stored zone, UTC when none). Every "today" in this service reads it, never the
+    /// UTC date: a Riyadh tenant is a day ahead of UTC for three hours every night.
+    /// </summary>
+    private Task<DateOnly> TenantTodayAsync(Guid tenantId, CancellationToken ct)
+        => TenantClock.TodayForAsync(_db, tenantId, ct, _clock.GetUtcNow().UtcDateTime);
+
+    private async Task<DateTime> TenantTodayUtcMidnightAsync(Guid tenantId, CancellationToken ct)
+        => (await TenantTodayAsync(tenantId, ct)).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
     /// <summary>
     /// How many minutes this employee's working day is on <paramref name="on"/>: the tenant's
@@ -217,8 +232,8 @@ public class LeaveService : ILeaveService
         return balance;
     }
 
-    public Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default)
-        => OpenYearBalancesAsync(tenantId, year, DateTime.UtcNow, ct);
+    public async Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default)
+        => await OpenYearBalancesAsync(tenantId, year, await TenantTodayUtcMidnightAsync(tenantId, ct), ct);
 
     /// <summary>
     /// Gets a leave year going from the configured policies — the existing engine, run for the months it has not yet run.
@@ -239,7 +254,6 @@ public class LeaveService : ILeaveService
     /// </summary>
     internal async Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, DateTime asOfUtc, CancellationToken ct = default)
     {
-        const string YearlyReferencePrefix = "YEARLY-ENTITLEMENT-";
         async Task<(int Balances, int Accruals, int Allocations)> CountsAsync()
         {
             var balances = await _db.EmployeeLeaveBalances.AsNoTracking().CountAsync(b => b.TenantId == tenantId && b.Year == year, ct);
@@ -252,20 +266,7 @@ public class LeaveService : ILeaveService
         var before = await CountsAsync();
 
         // Balances already holding a figure that the engine did not post. Computed once, before any month runs.
-        var engineLedger = (await _db.LeaveBalanceTransactions.AsNoTracking()
-                .Where(t => t.TenantId == tenantId && t.Year == year
-                    && (t.TransactionType == "Accrual" || (t.TransactionType == "Allocation" && t.Reference == YearlyReferencePrefix + year)))
-                .Select(t => new { t.EmployeeId, t.LeaveTypeId })
-                .Distinct().ToListAsync(ct))
-            .Select(t => (t.EmployeeId, t.LeaveTypeId)).ToHashSet();
-        var established = (await _db.EmployeeLeaveBalances.AsNoTracking()
-                .Where(b => b.TenantId == tenantId && b.Year == year && (b.Entitled > 0m || b.Accrued > 0m))
-                .Select(b => new { b.EmployeeId, b.LeaveTypeId })
-                .ToListAsync(ct))
-            .Select(b => (b.EmployeeId, b.LeaveTypeId))
-            .Where(pair => !engineLedger.Contains(pair))
-            .ToHashSet();
-
+        var established = await EstablishedPairsAsync(tenantId, year, ct);
         var lastMonth = year < asOfUtc.Year ? 12 : year == asOfUtc.Year ? asOfUtc.Month : 0;
         for (var month = 1; month <= lastMonth; month++)
         {
@@ -308,7 +309,7 @@ public class LeaveService : ILeaveService
         var grantOn = year == asOfUtc.Year ? DateOnly.FromDateTime(asOfUtc) : yearEnd;
         var employees = await _db.Employees
             .Where(e => e.TenantId == tenantId && (e.Status == EmployeeStatuses.Active || e.Status == EmployeeStatuses.Offboarded))
-            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.JoiningDate, e.Status })
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.NationalityCode, e.NationalityMappingState, e.JoiningDate, e.Status })
             .ToListAsync(ct);
         var offboardings = (await _db.EmployeeOffboardings.AsNoTracking()
                 .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay != default)
@@ -346,13 +347,13 @@ public class LeaveService : ILeaveService
                     ? companyCountry
                     : string.Empty;
                 if (!typeIndex.Usable(policy.LeaveTypeId, emp.CompanyId)) continue;
-                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp.Nationality, emp.NationalityCode, emp.NationalityMappingState), referenceLists))
                     continue;
                 var resolvedPolicy = activePolicies
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
                             emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
-                            emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                            emp.ContractType, emp.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp.Nationality, emp.NationalityCode, emp.NationalityMappingState), referenceLists))
                     .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
@@ -407,8 +408,8 @@ public class LeaveService : ILeaveService
         await _db.SaveChangesAsync(ct);
     }
 
-    public Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default)
-        => AccrueMonthlyAsync(tenantId, DateTime.UtcNow, ct);
+    public async Task AccrueMonthlyAsync(Guid tenantId, CancellationToken ct = default)
+        => await AccrueMonthlyAsync(tenantId, await TenantTodayUtcMidnightAsync(tenantId, ct), ct);
 
     internal Task AccrueMonthlyAsync(Guid tenantId, DateTime accrualMonth, CancellationToken ct = default)
         => AccrueMonthlyAsync(tenantId, accrualMonth, null, ct);
@@ -473,7 +474,7 @@ public class LeaveService : ILeaveService
         var monthDays = DateTime.DaysInMonth(currentYear, accrualMonth.Month);
         var employees = await _db.Employees
             .Where(e => e.TenantId == tenantId && (e.Status == EmployeeStatuses.Active || e.Status == EmployeeStatuses.Offboarded))
-            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.JoiningDate, e.Status })
+            .Select(e => new { e.Id, e.FullName, e.CompanyId, e.BranchId, e.DepartmentId, e.GradeId, e.Department, e.Grade, e.EmploymentType, e.ContractType, e.Gender, e.Nationality, e.NationalityCode, e.NationalityMappingState, e.JoiningDate, e.Status })
             .ToListAsync(ct);
         // Offboarded means serving notice, not that employment has already ended. The
         // non-cancelled offboarding's last working day bounds this service period; a
@@ -534,7 +535,7 @@ public class LeaveService : ILeaveService
                     : string.Empty;
                 if (!typeIndex.Usable(policy.LeaveTypeId, emp.CompanyId))
                     continue;
-                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                if (!IsPolicyEligible(policy, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId, emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType, emp.ContractType, emp.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp.Nationality, emp.NationalityCode, emp.NationalityMappingState), referenceLists))
                     continue;
                 // Several active policies can overlap (for example a tenant default and a
                 // company-specific override). Accrue only the same most-specific policy that
@@ -544,7 +545,7 @@ public class LeaveService : ILeaveService
                     .Where(p => p.LeaveTypeId == policy.LeaveTypeId
                         && IsPolicyEligible(p, eligibilityRows, employeeCountryCode, emp.CompanyId, emp.BranchId,
                             emp.DepartmentId, emp.GradeId, emp.Department, emp.Grade, emp.EmploymentType,
-                            emp.ContractType, emp.Gender, emp.Nationality, referenceLists))
+                            emp.ContractType, emp.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp.Nationality, emp.NationalityCode, emp.NationalityMappingState), referenceLists))
                     .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, emp.DepartmentId, emp.GradeId))
                     .ThenByDescending(p => p.UpdatedAtUtc)
                     .FirstOrDefault();
@@ -1075,7 +1076,7 @@ public class LeaveService : ILeaveService
                 throw new InvalidOperationException($"This policy requires at least {effectivePolicy.MinimumDaysPerRequest} day(s) per request.");
             if ((!withinStatutory || AcknowledgedCap(effectivePolicy)) && effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
                 throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest:0.##} day(s) per request.");
-            var noticeDays = request.StartDate.DayNumber - DateOnly.FromDateTime(DateTime.UtcNow).DayNumber;
+            var noticeDays = request.StartDate.DayNumber - (await TenantTodayAsync(tenantId, ct)).DayNumber;
             // A policy that requires NO notice must not refuse a backdated request. The guard used
             // to read `NoticeRequiredDays > noticeDays` alone, and for a request that started
             // yesterday noticeDays is negative — so 0 > -1 held and the refusal read "This policy
@@ -1121,7 +1122,7 @@ public class LeaveService : ILeaveService
                         : string.Empty)
                     + $". Requested: {(isCalendar ? calendarDays : workingDays):0.##}{(isCalendar ? " calendar" : string.Empty)} day(s).");
         }
-        else
+        else if (!DrawsNoBalance(leaveType, effectivePolicy))
         {
             foreach (var segment in yearSegments)
                 if (!await HasSufficientBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Days, segment.Year, ct))
@@ -1306,9 +1307,17 @@ public class LeaveService : ILeaveService
         await SyncApprovalProjectionAsync(request, currentApproval, "Approved", approverId,
             notes ?? string.Empty, null, null, ct);
 
+        // A leave that draws on no balance (unpaid, per-event exam leave) is booked the way a statutory event is: the days it
+        // takes are granted with the Used they pay for, so the balance never reads negative and a cancellation takes them back.
+        var approvedType = await _db.LeaveTypes.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == request.LeaveTypeId && t.TenantId == tenantId, ct);
+        var approvedPolicy = request.PolicyId is { } approvedPolicyId
+            ? await _db.LeavePolicies.AsNoTracking().FirstOrDefaultAsync(x => x.Id == approvedPolicyId && x.TenantId == tenantId, ct)
+            : null;
+        var grantsOnApproval = statutoryGrant || (approvedType is not null && DrawsNoBalance(approvedType, approvedPolicy));
         foreach (var segment in await CalculateRequestYearSegmentsAsync(tenantId, request, request.PolicyId, ct))
         {
-            if (statutoryGrant)
+            if (grantsOnApproval)
             {
                 // A KSA statutory event leave draws on the statute, not on an accrued balance. The grant is
                 // booked HERE, with the Used it pays for — never at submission — so a request that is
@@ -1317,7 +1326,9 @@ public class LeaveService : ILeaveService
                 // to lift GRANTED by the shortfall; the transaction records that Entitled delta, which is
                 // exactly what a cancellation takes back.
                 var balance = await GetOrCreateBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, segment.Year, ct);
-                var shortfall = Math.Min(segment.Days, Math.Max(0m, -balance.Available));
+                var shortfall = statutoryGrant || !balance.NegativeAllowed
+                    ? Math.Min(segment.Days, Math.Max(0m, -balance.Available))
+                    : 0m;
                 var entitledDelta = shortfall > 0m ? balance.Granted + shortfall - balance.Entitled : 0m;
                 if (entitledDelta > 0m)
                     await ApplyLeaveBalanceAsync(tenantId, request.EmployeeId, request.LeaveTypeId, entitledDelta, segment.Year,
@@ -1399,6 +1410,15 @@ public class LeaveService : ILeaveService
         await _db.SaveChangesAsync(ct);
         return request;
     }
+
+    /// <summary>
+    /// Whether a leave type draws on no balance, so it must submit without a balance row: unpaid leave and per-event exam leave, when the
+    /// company has not given them an entitlement to spend. (KSA statutory event leave is decided separately, by the statute.) A paid
+    /// type, or an unpaid one the company gave a budget, still needs its balance: the budget is the company's own limit.
+    /// </summary>
+    internal static bool DrawsNoBalance(LeaveType type, LeavePolicy? policy)
+        => policy is not { AnnualEntitlementDays: > 0m }
+           && (!type.IsPaid || string.Equals(type.Category, "Exam", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// AN APPROVED LEAVE DAY IS NOT AN ABSENCE. Clears the loss-of-pay charge standing against any day
@@ -2152,8 +2172,8 @@ public class LeaveService : ILeaveService
 
     public async Task GenerateInsightsAsync(Guid tenantId, CancellationToken ct = default)
     {
-        var cutoff = DateOnly.FromDateTime(DateTime.UtcNow.AddDays(-90));
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = await TenantTodayAsync(tenantId, ct);
+        var cutoff = today.AddDays(-90);
 
         var sickLeaveTypes = await _db.LeaveTypes
             .Where(t => t.TenantId == tenantId && t.IsActive && (t.Category == "Sick" || t.NameEn.Contains("Sick")))
@@ -2677,7 +2697,7 @@ public class LeaveService : ILeaveService
             .Where(x => IsKsaCountry(x.CountryCode)).Select(x => x.Id).ToHashSet();
         if (saudiEmployees.Count == 0) return result;
 
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var today = await TenantTodayAsync(tenantId, ct);
         var figures = new Dictionary<Guid, decimal>();
         foreach (var t in await _db.LeaveTypes.AsNoTracking().Where(t => t.TenantId == tenantId && typeIds.Contains(t.Id)).ToListAsync(ct))
             if (KsaStatutorySpecialLeave.Classify(t.Code, t.NameEn, t.Category) is { } kind
@@ -3046,13 +3066,13 @@ public class LeaveService : ILeaveService
             var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
             if (requested is null)
                 throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
-            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, employee.Nationality, referenceLists))
+            if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee), referenceLists))
                 throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
             return requested;
         }
 
         return policies
-            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, employee.Nationality, referenceLists))
+            .Where(p => IsPolicyEligible(p, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee), referenceLists))
             .OrderByDescending(p => PolicySpecificity(p, eligibilityRows, employee.DepartmentId, employee.GradeId))
             .ThenByDescending(p => p.UpdatedAtUtc)
             .FirstOrDefault();

@@ -272,7 +272,7 @@ public static class AttendanceDerivedArtifacts
     public static (DateTime StartUtc, DateTime EndUtc) ShiftWindowUtc(DateOnly date, TimeOnly? shiftStartTime, TimeOnly? shiftEndTime,
         TimeZoneInfo tz, AttendancePolicy policy)
     {
-        var startLocalTime = shiftStartTime ?? AttendanceWorkDate.DefaultShiftStart;
+        var startLocalTime = shiftStartTime ?? policy.DefaultShiftStart ?? AttendanceWorkDate.DefaultShiftStart;
         // Local wall-clock shift start on this date (Unspecified kind → interpret in tenant tz).
         var startLocal = DateTime.SpecifyKind(date.ToDateTime(startLocalTime), DateTimeKind.Unspecified);
         var shiftStart = TimeZoneInfo.ConvertTimeToUtc(startLocal, tz);

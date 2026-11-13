@@ -49,7 +49,7 @@ test('every sidebar group and entry has Arabic, including the ones the design re
   expect(translate('ar', 'Group Overview')).toBe('نظرة على المجموعة');
   expect(translate('ar', 'Insights & Reports')).toBe('التحليلات والتقارير');
   expect(translate('ar', 'Tax Policies')).toBe('السياسات الضريبية');
-  expect(translate('ar', 'GOSI Filing')).toBe('ملفات التأمينات الاجتماعية');
+  expect(translate('ar', 'GOSI Reconciliation')).toBe('مطابقة التأمينات الاجتماعية');
   expect(translate('ar', 'Parallel Run Variance')).toBe('فروقات التشغيل الموازي');
   expect(translate('ar', 'Home')).toBe('الرئيسية');
 });

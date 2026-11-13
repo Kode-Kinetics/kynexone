@@ -8,8 +8,11 @@ export interface ManpowerRequisition {
   id: string;
   tenantId: string;
   requisitionNumber: string;
+  departmentId?: string | null;
   departmentName: string;
+  designationId?: string | null;
   designationTitle: string;
+  gradeId?: string | null;
   headCount: number;
   employmentType: string;
   priority: string;
@@ -35,8 +38,11 @@ export interface JobOpening {
   jobCode: string;
   requisitionId: string | null;
   title: string;
+  departmentId?: string | null;
   departmentName: string;
+  designationId?: string | null;
   designationTitle: string;
+  gradeId?: string | null;
   employmentType: string;
   headCount: number;
   filledCount: number;
@@ -97,6 +103,9 @@ export interface ApplicationEvent {
   id: string;
   eventType: string;
   stage: string;
+  /** Stored on a stage move; absent on older events (the screen then infers them). */
+  fromStage?: string | null;
+  toStage?: string | null;
   notes: string;
   performedByName: string;
   createdAtUtc: string;
@@ -105,6 +114,9 @@ export interface ApplicationEvent {
 export interface InterviewSchedule {
   id: string;
   applicationId: string;
+  /** Carried by the list so the screen needs no second lookup. */
+  candidateName?: string;
+  jobTitle?: string;
   interviewType: string;
   interviewerNames: string;
   scheduledAt: string;
@@ -181,7 +193,7 @@ export const requisitionsApi = {
     client.get<ManpowerRequisition>(`/api/recruitment/requisitions/${id}`).then(r => r.data),
 
   create: (body: {
-    departmentId?: string; departmentName: string; designationId?: string; designationTitle: string;
+    departmentId?: string; departmentName: string; designationId?: string; designationTitle: string; gradeId?: string;
     headCount: number; employmentType: string; priority: string; justification: string;
     requiredSkills: string; minExperienceYears?: number; maxExperienceYears?: number;
     budgetFrom?: number; budgetTo?: number; targetJoiningDate?: string; requestedByName: string;
@@ -211,7 +223,7 @@ export const openingsApi = {
     client.get<{ opening: JobOpening; stageCounts: { stage: string; count: number }[] }>(`/api/recruitment/openings/${id}`).then(r => r.data),
 
   create: (body: {
-    requisitionId?: string; title: string; departmentName: string; designationTitle: string;
+    requisitionId?: string; title: string; departmentId?: string; departmentName: string; designationId?: string; designationTitle: string; gradeId?: string;
     employmentType: string; headCount: number; description: string; requirements: string;
     responsibilities: string; salaryFrom?: number; salaryTo?: number; location: string; assignedHrName: string;
   }) => client.post<JobOpening>('/api/recruitment/openings', body).then(r => r.data),
@@ -333,6 +345,8 @@ export interface OfferApproverOption {
   userId: string;
   name: string;
   email: string;
+  /** The approving role(s) the person holds, so two people with similar names can be told apart. */
+  role?: string;
 }
 
 export interface OnboardingChecklist {
@@ -440,7 +454,11 @@ export const assessmentsApi = {
 };
 
 export interface OfferPlacementOption { id: string; name: string; code: string }
-export interface OfferPlacementOptions { departments: OfferPlacementOption[]; designations: OfferPlacementOption[] }
+/** A grade as the recruitment forms see it. The pay band is present only for callers allowed to see pay bands (not recruiters). */
+export interface OfferGradeOption extends OfferPlacementOption {
+  minSalary?: number | null; midSalary?: number | null; maxSalary?: number | null; currency?: string | null;
+}
+export interface OfferPlacementOptions { departments: OfferPlacementOption[]; designations: OfferPlacementOption[]; grades?: OfferGradeOption[] }
 
 export const offersApi = {
   list: (applicationId?: string, status?: string, page?: number, pageSize?: number) =>
@@ -537,8 +555,8 @@ export const applicationsApi = {
   apply: (jobOpeningId: string, candidateId: string, notes?: string) =>
     client.post<JobApplication>('/api/recruitment/applications', { jobOpeningId, candidateId, notes }).then(r => r.data),
 
-  advance: (id: string, expectedVersion: number, notes?: string) =>
-    client.post<JobApplication>(`/api/recruitment/applications/${id}/advance`, { expectedVersion, notes }).then(r => r.data),
+  advance: (id: string, expectedVersion: number, notes?: string, overrideReason?: string) =>
+    client.post<JobApplication>(`/api/recruitment/applications/${id}/advance`, { expectedVersion, notes, overrideReason }).then(r => r.data),
 
   reject: (id: string, expectedVersion: number, reason: string) =>
     client.post<JobApplication>(`/api/recruitment/applications/${id}/reject`, { expectedVersion, reason }).then(r => r.data),

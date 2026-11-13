@@ -136,8 +136,8 @@ public static class PayrollGlCatalog
         // → 5113: the credit reduces payroll cost, which is what an unpaid absence economically is.
         // 20261010120000_RouteAbsenceDeductionsToContraExpense moves existing tenants' untouched seeded
         // rows; balances already sitting in 2104/2105 are left for the accountant to reclassify.
-        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "5008", "Attendance & Late Deductions (contra)",  "Expense"),
-        new Driver("DED:LEAVE",             "Deduction — Leave",             "5009", "Unpaid Leave & LOP Deductions (contra)", "Expense"),
+        new Driver("DED:ATTENDANCE",        "Deduction — Attendance",        "5008", "Absence, Late & Early Deductions (contra)",  "Expense"),
+        new Driver("DED:LEAVE",             "Deduction — Leave",             "5009", "Unpaid Leave Deductions (contra)", "Expense"),
         new Driver("DED:FIXED_DEDUCTION",   "Deduction — Fixed",             "2103", "Fixed Deductions Payable",        "Liability"),
         new Driver("DED:OTHER",             "Deduction — Other",             "2199", "Other Deductions",                "Liability"),
         // POD-C3 — recovery of a prior void's ALREADY-DISBURSED net pay. It credits the 1420 ASSET the
@@ -200,6 +200,12 @@ public static class PayrollGlCatalog
         // free in every shipped chart. With provisioning off, a settlement expenses the whole encashment (5111).
         new Driver("LEAVE_PROVISION",         "Accrued Annual Leave Provision",   "2330", "Accrued Annual Leave Provision",   "Liability"),
         new Driver("LEAVE_PROVISION_EXPENSE", "Annual Leave Provision Expense",   "5115", "Annual Leave Provision Expense",   "Expense"),
+        // The approved write-off of an employee receivable (the loan balance a final settlement could not recover). Resolved only by
+        // explicit key from the write-off approval; 5114 sits beside 5115 and was free in every shipped chart.
+        new Driver("RECEIVABLE_WRITE_OFF_EXPENSE", "Employee Receivable Write-off Expense", "5114", "Employee Receivable Write-off Expense", "Expense"),
+        // M6 — where the go-live catch-up of the EOSB / leave provisions is debited when a company chooses the opening-balance route
+        // (payparameter.provision_catchup_route = OpeningBalance). Never used by default.
+        new Driver("OPENING_BALANCE_EQUITY",  "Opening Balance Equity",           "3900", "Opening Balance Equity",           "Equity"),
     };
 
     public static IReadOnlyDictionary<string, (string Code, string Name)> Defaults { get; } =
@@ -224,8 +230,8 @@ public static class PayrollGlCatalog
         Sys(tenantId, "DED:TAX",               "Deduction — Income Tax",        GlDriverCategories.Deduction, "CR", "Liability", "2102", "Income Tax Payable",               "Tax",       "Any",    null,               22),
         Sys(tenantId, "DED:LOAN",              "Deduction — Loans & Advances",  GlDriverCategories.Deduction, "CR", "Liability", "2107", "Loan & Advance Deductions Payable","Loan",      "Any",    null,               23),
         // Contra-expense, not a payable — see the catalog note above (no remittance path ever cleared 2104/2105).
-        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Expense",   "5008", "Attendance & Late Deductions (contra)", "Attendance","Any", null,          24),
-        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Expense",   "5009", "Unpaid Leave & LOP Deductions (contra)","Leave",     "Any", null,          25),
+        Sys(tenantId, "DED:ATTENDANCE",        "Deduction — Attendance",        GlDriverCategories.Deduction, "CR", "Expense",   "5008", "Absence, Late & Early Deductions (contra)", "Attendance","Any", null,          24),
+        Sys(tenantId, "DED:LEAVE",             "Deduction — Leave",             GlDriverCategories.Deduction, "CR", "Expense",   "5009", "Unpaid Leave Deductions (contra)","Leave",     "Any", null,          25),
         Sys(tenantId, "DED:FIXED_DEDUCTION",   "Deduction — Fixed",             GlDriverCategories.Deduction, "CR", "Liability", "2103", "Fixed Deductions Payable",         null,        "Exact",  "FIXED_DEDUCTION",  26),
         Sys(tenantId, "DED:OTHER",             "Deduction — Other",             GlDriverCategories.Deduction, "CR", "Liability", "2199", "Other Deductions",                 null,        "Any",    null,               98),
         // POD-C3 — Exact match on the RECEIVABLE_RECOVERY component code so it is selected ahead of the
@@ -276,6 +282,9 @@ public static class PayrollGlCatalog
         // settlement approval, never by component routing.
         Sys(tenantId, "LEAVE_PROVISION",         "Accrued Annual Leave Provision", GlDriverCategories.Balancing, "CR", "Liability", "2330", "Accrued Annual Leave Provision", null,      "Any",    null,               111),
         Sys(tenantId, "LEAVE_PROVISION_EXPENSE", "Annual Leave Provision Expense", GlDriverCategories.Balancing, "DR", "Expense",   "5115", "Annual Leave Provision Expense", null,      "Any",    null,               112),
+        // Balancing: resolved only by explicit key from the receivable write-off approval, never by routing.
+        Sys(tenantId, "RECEIVABLE_WRITE_OFF_EXPENSE", "Employee Receivable Write-off Expense", GlDriverCategories.Balancing, "DR", "Expense", "5114", "Employee Receivable Write-off Expense", null, "Any", null, 113),
+        Sys(tenantId, "OPENING_BALANCE_EQUITY",  "Opening Balance Equity",         GlDriverCategories.Balancing, "DR", "Equity",    "3900", "Opening Balance Equity",         null,      "Any",    null,               113),
         // Balancing: resolved only by explicit key from the Lock journal's rounding line, never by routing.
         Sys(tenantId, "ROUNDING",              "Payroll Rounding Differences",  GlDriverCategories.Balancing, "DR", "Expense",   "5199", "Payroll Rounding Differences",     null,        "Any",    null,               110),
     };
@@ -442,6 +451,8 @@ public static class GlEventTypes
     /// <summary>Approved move of a legacy 2104/2105 absence-deduction balance to its contra-expense
     /// (or a retained-earnings account chosen by the accountant).</summary>
     public const string LegacyAbsenceReclass = "LegacyAbsenceReclass";
+    /// <summary>Approved write-off of an employee receivable (a loan residual left after a final settlement): DR 5114 / CR 1420.</summary>
+    public const string ReceivableWriteOff = "ReceivableWriteOff";
     /// <summary>POD-C1: DR 2310 provision — the settlement CONSUMES what C2 provided for this employee.</summary>
     public const string EosbProvisionConsumption = "EosbProvisionConsumption";
     /// <summary>Contra of a consumption when the settlement that took it is cancelled (re-opens the
@@ -486,6 +497,10 @@ public static class PayrollGlDescriptions
 {
     public const string NetPayable      = "Net salaries payable";
     public const string DeductionPrefix = "Payroll deduction: ";
+    /// <summary>A loan / advance instalment credited straight to its receivable at Lock. A different prefix from
+    /// <see cref="DeductionPrefix"/> on purpose: the loan remittance clears the lines that carry the deduction prefix, and must never
+    /// pick up a line that already relieved the receivable.</summary>
+    public const string LoanRecoveryPrefix = "Payroll loan recovery: ";
     public const string EmployerStatutory = "Employer statutory contributions (social insurance)";
     /// <summary>The explicit sub-unit rounding line Lock books so the stored journal balances exactly.</summary>
     public const string Rounding        = "Payroll rounding difference";

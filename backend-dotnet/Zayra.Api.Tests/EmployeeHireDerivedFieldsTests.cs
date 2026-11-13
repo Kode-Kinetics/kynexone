@@ -89,6 +89,41 @@ public sealed class EmployeeHireDerivedFieldsTests
     }
 
     [Fact]
+    public async Task ANationalityTextOfOneClass_WithAConfirmedCountryOfTheOther_IsRefused_OnCreateAndOnUpdate()
+    {
+        await using var db = _fx.CreateDb();
+        var tenantId = await PostgresFixture.SeedMinimalTenant(db);
+        var service = Service(db);
+
+        var create = async () => await service.CreateAsync(tenantId, Wizard("Mismatch Hire", "IN") with { Nationality = "Saudi" }, Ctx(tenantId), default);
+        (await create.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("contradict");
+
+        var created = await service.CreateAsync(tenantId, Wizard("Update Hire", "IN", Record("passport_number", "Z1234567")), Ctx(tenantId), default);
+        var update = async () => await service.UpdateAsync(tenantId, created.Id,
+            Wizard("Update Hire", "IN", Record("passport_number", "Z1234567")) with { Nationality = "Saudi" }, Ctx(tenantId), default);
+        (await update.Should().ThrowAsync<InvalidOperationException>()).Which.Message.Should().Contain("contradict");
+
+        await using var verify = _fx.CreateDb();
+        var stored = await verify.Employees.AsNoTracking().SingleAsync(x => x.Id == created.Id);
+        stored.NationalityCode.Should().Be("IN");
+        stored.Nationality.Should().NotBe("Saudi");
+        stored.SaudiOrNonSaudi.Should().Be("NonSaudi");
+    }
+
+    [Theory]
+    [InlineData("Indian", "IN", "NonSaudi")]
+    [InlineData("Saudi", "SA", "Saudi")]
+    [InlineData("Kuwaiti", "KW", "")]        // GCC: no class, nothing to contradict
+    [InlineData("Something else", "IN", "NonSaudi")]   // unrecognised text decides nothing
+    public async Task ANationalityTextThatAgreesOrDecidesNothing_IsAccepted(string text, string code, string expectedClass)
+    {
+        var e = await CreateAsync(Wizard("Agreeing Hire", code) with { Nationality = text });
+
+        e.NationalityCode.Should().Be(code);
+        e.SaudiOrNonSaudi.Should().Be(expectedClass);
+    }
+
+    [Fact]
     public async Task GccNational_IsNotClassified_HrConfirms()
     {
         // GCC nationals have their own treatment in several Saudi rules; the existing classifier (WorkerNationality.ClassOf) never guesses them.

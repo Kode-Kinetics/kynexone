@@ -33,7 +33,8 @@ public static class LeaveProvisioningRateKeys
 /// <summary>One employee's measured unused-leave value, ready for the planner.</summary>
 public sealed record LeaveObligation(
     int EmployeeId, string EmployeeCode, decimal Days, decimal DailyRate, string Basis,
-    decimal Obligation, decimal CarriedBefore, bool IsCatchUp, Guid? CostCentreId = null);
+    decimal Obligation, decimal CarriedBefore, bool IsCatchUp, Guid? CostCentreId = null,
+    bool OpeningRoute = false);
 
 /// <summary>Cost-accounting context for the planner: the expense side splits per cost centre and every line gets a posting key.</summary>
 public sealed record LeaveCostContext(GlResolutionContext Gl);
@@ -48,17 +49,20 @@ public static class LeaveProvisionPlanner
     public const string CatchUpLabel = "Opening annual leave provision (catch-up)";
     public const string MonthlyLabel = "Monthly annual leave provision movement";
     public const string ReleaseLabel = "Annual leave provision reduced (unused leave value fell)";
+    public const string OpeningBalanceLabel = "Opening annual leave provision (catch-up) - opening balance";
 
     public static (List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<LeaveObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null, string? snapshotPeriod = null)
+        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null, string? snapshotPeriod = null,
+        string? openingBalanceAccount = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<LeaveProvisionSnapshot>();
         // Per cost centre when costing is on (one bucket, key null, when it is off). Keyed by cost centre id,
         // Guid.Empty = no cost centre (a dictionary cannot hold a null key).
         var catchUpRise = new Dictionary<Guid, decimal>();
+        decimal openingRise = 0m;   // M6: see ProvisionCatchUpRoute
         var monthlyRise = new Dictionary<Guid, decimal>();
         var fall = new Dictionary<Guid, decimal>();
         var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -119,7 +123,8 @@ public static class LeaveProvisionPlanner
             if (movement > 0m)
             {
                 lines.Add(Line(string.Empty, provisionAccount, movement, label, employeeRef));
-                if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
+                if (o.IsCatchUp && o.OpeningRoute && openingBalanceAccount is not null) openingRise += movement;
+                else if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
             }
             else
             {
@@ -128,6 +133,9 @@ public static class LeaveProvisionPlanner
             }
         }
 
+        // Equity is not profit and loss: one line, no cost centre.
+        if (openingRise > 0m && openingBalanceAccount is not null)
+            lines.Add(Line(openingBalanceAccount, string.Empty, openingRise, OpeningBalanceLabel, period));
         foreach (var (key, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
             lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, CatchUpLabel, period, Real(key)));
         foreach (var (key, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))

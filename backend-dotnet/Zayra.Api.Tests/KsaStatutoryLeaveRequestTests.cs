@@ -619,6 +619,7 @@ public class KsaStatutoryLeaveRequestTests
                     {
                         new Claim("tenant_id", f.TenantId.ToString()),
                         new Claim(ClaimTypes.NameIdentifier, f.Employee.UserAccountId!.Value.ToString()),
+                        new Claim("permission", "ess.write"),
                     }, "Test")),
                 },
             },
