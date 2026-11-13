@@ -196,7 +196,14 @@ public class LeaveProvisionPlannerTests
         var debits = lines.Where(l => l.SourceEntityRef == "1").ToList();
         debits.Should().OnlyContain(l => l.CreditAccount == "" && l.Description == LeaveProvisionPlanner.ReleaseLabel);
         debits.Select(l => (l.DebitAccount, l.Amount)).Should().Equal((Remapped, 500m), (Provision, 160m));
-        debits.Select(l => l.PostingKey).Should().OnlyHaveUniqueItems();
+        // With cost accounting on every line gets a posting key; the split debits must not collide.
+        var costed = new GlResolutionContext(
+            new Dictionary<string, (string, string)>(), new Dictionary<string, (string, string)>(), Array.Empty<GlDriverRow>())
+        { CompanyId = Company, CostAccountingEnabled = true, CostCentres = new Dictionary<Guid, GlCostCentreInfo>() };
+        var (costedLines, _) = LeaveProvisionPlanner.Build(Tenant, Company, Run, "2026-07", July, "SAR", Expense, Remapped,
+            new[] { new LeaveObligation(1, "A", 1m, 100m, "Gross", 100m, 760m, false, Holdings: held) }, null, "system", July,
+            new LeaveCostContext(costed));
+        costedLines.Where(l => l.SourceEntityRef == "1").Select(l => l.PostingKey).Should().OnlyContain(k => k != null).And.OnlyHaveUniqueItems();
         var heldPairs = held.Select(h => (h.Account, h.Balance)).ToList();
         CreditPosition(heldPairs, lines, Remapped).Should().Be(0m);
         CreditPosition(heldPairs, lines, Provision).Should().Be(140m);
