@@ -20,6 +20,9 @@ public sealed record LeaveProvisionPosition(
     public (int EmployeeId, Guid? CompanyId, string ProvisionAccount) Key => (EmployeeId, CompanyId, ProvisionAccount);
 }
 
+/// <summary>The provision one employee still carries on ONE stored account (credit positive). See <see cref="LeaveProvisionLedger.HoldingsFor"/>.</summary>
+public sealed record LeaveProvisionHolding(string Account, decimal Balance);
+
 /// <summary>
 /// A MUTABLE, single-call view over the immutable snapshot returned by <see cref="LeaveProvisionLedger.LoadPositionsAsync"/>,
 /// so a caller settling several employees against one snapshot can never hand the same position to two of them. Nothing is
@@ -143,6 +146,20 @@ public static class LeaveProvisionLedger
         => Math.Max(0m, Math.Round(positions
             .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
             .Sum(p => p.Accrued - p.Consumed), 2));
+
+    /// <summary>
+    /// What an employee's provision is carried ON: per stored account, Σ (accrued − consumed) over the same positions
+    /// <see cref="CarriedFor"/> reads (the company's and unattributed ones), unclamped and ordered by account label. A monthly fall
+    /// debits these accounts, so a remap of the provision account never relieves an account that was never credited. The sum of
+    /// the balances equals <see cref="CarriedFor"/> whenever that is positive.
+    /// </summary>
+    public static List<LeaveProvisionHolding> HoldingsFor(IEnumerable<LeaveProvisionPosition> positions, int employeeId, Guid? companyId)
+        => positions
+            .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
+            .GroupBy(p => p.ProvisionAccount, StringComparer.Ordinal)
+            .Select(g => new LeaveProvisionHolding(g.Key, Math.Round(g.Sum(p => p.Accrued - p.Consumed), 2)))
+            .OrderBy(h => h.Account, StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>Convenience single-employee load, returning a cursor ready to <c>Take</c> from.</summary>
     public static async Task<LeaveProvisionCursor> LoadCursorAsync(

@@ -16,7 +16,9 @@ namespace Zayra.Api.Controllers;
 /// <see cref="LeaveEncashmentCalculator"/>, the day rate from <see cref="LeaveCashOutRate"/> (the company's <c>leave_cashout_basis</c>
 /// rule divided by 30 — the EXIT basis, which is what will actually be paid, not the in-service encashment rate). The movement booked
 /// is that value minus what <see cref="LeaveProvisionLedger"/> already carries for the employee, so the ledger — never the snapshot
-/// table — is the balance. Leave taken lowers the next month's value, so the liability falls without a separate entry.</para>
+/// table — is the balance. Leave taken lowers the next month's value, so the liability falls without a separate entry. A rise credits
+/// the provision account mapped now; a fall debits the accounts that hold the employee's provision (see
+/// <see cref="LeaveProvisionPlanner"/>), so a remap between months never debits an account that was never credited.</para>
 ///
 /// <para><b>THE BALANCE IS READ AT LOCK.</b> The leave engine keeps a live balance per employee, type and year, not a month-end history,
 /// so the days are the balance on the day the run is locked. Lock a month promptly after it ends and the two are the same.</para>
@@ -24,7 +26,9 @@ namespace Zayra.Api.Controllers;
 /// <para><b>CARRIED-OVER DAYS COUNT ONCE.</b> The calculator is asked to net carried-forward days (see
 /// <see cref="LeaveEncashmentCalculator.ComputeAsync"/>); a final settlement keeps its own behaviour.</para>
 ///
-/// <para><b>WHO IS SKIPPED.</b> A leaver whose settlement is approved (its approval has already consumed and released the provision);
+/// <para><b>WHO IS SKIPPED.</b> A leaver whose settlement for the CURRENT service period is approved (its approval has already consumed
+/// and released the provision; a settlement whose last working day is before the current joining date closed an earlier period of a
+/// rehired employee and does not count);
 /// anyone already measured for this period or a later one; anyone with no salary record (no day rate can be derived — counted in the
 /// Lock audit as unmeasured rather than provided at zero).</para>
 /// </summary>
@@ -64,14 +68,18 @@ public partial class PayrollController
         var openingRouteOn = ProvisionCatchUpRoute.AppliesToPeriod(routeRow?.RateValue, routeRow?.EffectiveFrom, payPeriod, earliestMeasured);
         var periodStart = new DateOnly(run.Year, run.Month, 1);
 
-        // A leaver whose settlement accrual has posted: the provision was consumed and released with them.
-        var settled = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
+        // A leaver whose settlement accrual has posted: the provision was consumed and released with them. Only a settlement of the
+        // CURRENT service period counts (checked per employee below): a rehire keeps the employee id and restarts JoiningDate, and the
+        // settlement that closed the earlier period must not stop the new one being provided for.
+        var settledThrough = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
                     "Leave provision: a leaver settled under ANY legal entity has had their provision consumed; " +
                     "re-measuring them would re-provide a liability that has already been paid.")
                 .AsNoTracking()
                 .Where(s => employeeIds.Contains(s.EmployeeId) && SettlementStatusesThatConsumedProvision.Contains(s.Status))
-                .Select(s => s.EmployeeId).Distinct().ToListAsync(ct))
-            .ToHashSet();
+                .Select(s => new { s.EmployeeId, s.LastWorkingDay })
+                .ToListAsync(ct))
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Max(s => s.LastWorkingDay));
 
         var measured = await ScopedBypass.TenantWide(_db.LeaveProvisionSnapshots, tenantId,
                 "Leave provision: whether an employee was already measured must be answered across every legal " +
@@ -106,7 +114,9 @@ public partial class PayrollController
         var unmeasured = 0;
         foreach (var employee in employees.OrderBy(e => e.Id))
         {
-            if (settled.Contains(employee.Id)) continue;
+            // The settlement belongs to this service period when its last working day is on or after the current joining date.
+            if (settledThrough.TryGetValue(employee.Id, out var lastWorkingDay)
+                && lastWorkingDay >= DateOnly.FromDateTime(employee.JoiningDate)) continue;
             var history = measured.Where(m => m.EmployeeId == employee.Id).ToList();
             // A Replacement re-measures its OWN month even when a later month is already measured; every other run must not wind back.
             if (run.RunType == PayrollRunTypes.Replacement
@@ -130,7 +140,8 @@ public partial class PayrollController
                 dayRateBase > 0m ? Math.Round(dayRateBase / 30m, 6) : 0m, rules.LeaveCashOutBasis,
                 encashment.TotalAmount, carried, IsCatchUp: history.Count == 0,
                 CostCentreId: costPlan.Enabled && costPlan.Employees.TryGetValue(employee.Id, out var stamp) ? stamp.CostCenterId : null,
-                OpeningRoute: openingRouteOn && history.Count == 0 && DateOnly.FromDateTime(employee.JoiningDate) < periodStart));
+                OpeningRoute: openingRouteOn && history.Count == 0 && DateOnly.FromDateTime(employee.JoiningDate) < periodStart,
+                Holdings: LeaveProvisionLedger.HoldingsFor(positions, employee.Id, companyId)));
         }
 
         if (obligations.Count == 0) return new LeaveProvisionBuild(new List<FinanceGlEntry>(), new List<LeaveProvisionSnapshot>(), 0, unmeasured, On: true);

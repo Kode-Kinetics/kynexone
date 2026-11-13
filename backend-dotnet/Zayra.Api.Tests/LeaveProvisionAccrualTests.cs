@@ -772,6 +772,123 @@ public class LeaveProvisionAccrualTests
         (await LeaveLinesAsync(db, sep)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
     }
 
+    [Fact]
+    public async Task ARehiredEmployee_WhoseOnlySettlementClosedAnEarlierServicePeriod_IsProvidedForAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ThreeMonthsAsync(db);
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 2_775m, encashmentDays: 9.25m);
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+        var settled = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.Id);
+        settled.Status = FinalSettlementStatuses.Paid;
+        // Rehired from 1 November (the rehire keeps the employee id and restarts JoiningDate); 2 new days by the November month end.
+        var a = await db.Employees.SingleAsync(e => e.Id == fx.Emp["A"].Id);
+        a.OriginalJoiningDate = DateOnly.FromDateTime(a.JoiningDate);
+        a.JoiningDate = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
+        a.Status = "Active";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        await SetBalanceAsync(db, fx, "A", accrued: 2m, used: 0m);
+
+        var nov = await LockMonthAsync(db, fx, 2026, 11);
+
+        var aLines = (await LeaveLinesAsync(db, nov)).Where(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString()).ToList();
+        aLines.Should().ContainSingle("the settlement closed the EARLIER service period; the new one is provided for")
+            .Which.Should().Match<FinanceGlEntry>(l => l.CreditAccount == Provision && l.Amount == 600m);
+        (await db.LeaveProvisionSnapshots.AsNoTracking().SingleAsync(x => x.EmployeeId == fx.Emp["A"].Id && x.Period == "2026-11"))
+            .Obligation.Should().Be(600m);
+    }
+
+    [Fact]
+    public async Task ASettlementInsideTheCurrentServicePeriod_StillExcludesTheLeaver_EvenAfterARehireRecord()
+    {
+        // The settlement's last working day (15 Sep) is on or after the current joining date (1 Sep): it belongs to THIS period.
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ThreeMonthsAsync(db);
+        var a = await db.Employees.SingleAsync(e => e.Id == fx.Emp["A"].Id);
+        a.JoiningDate = new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 2_775m, encashmentDays: 9.25m);
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+        await SetBalanceAsync(db, fx, "A", accrued: 12.25m, used: 3m);
+
+        var oct = await LockMonthAsync(db, fx, 2026, 10);
+
+        (await LeaveLinesAsync(db, oct)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
+    }
+
+    // ── A remap of LEAVE_PROVISION between months ───────────────────────────────
+
+    private const string RemappedProvisionCode = "2331";
+
+    private static async Task RemapLeaveProvisionAsync(ZayraDbContext db, Fixture fx)
+    {
+        var account = new GlAccount
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, Code = RemappedProvisionCode, Name = "Leave Provision (remapped)", AccountType = "Liability",
+        };
+        db.GlAccounts.Add(account);
+        db.GlAccountMappings.Add(new GlAccountMapping
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, DriverKey = LeaveProvisioningRateKeys.ProvisionDriverKey, AccountId = account.Id,
+        });
+        await db.SaveChangesAsync();
+        // A tenant with a chart must hold every account its Lock posts to; the seeder never overwrites the remap.
+        await Zayra.Api.Infrastructure.Seed.GlDriverSeeder.SeedTenantDefaultsAsync(db, fx.TenantId, CancellationToken.None);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    /// <summary>CR − DR per account code over every leave-provision line, for one employee.</summary>
+    private static async Task<Dictionary<string, decimal>> ProvisionByAccountAsync(ZayraDbContext db, Fixture fx, string code)
+    {
+        var employeeRef = fx.Emp[code].Id.ToString();
+        var rows = await db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == fx.TenantId && x.SourceEntityRef == employeeRef
+                     && (x.EventType == GlEventTypes.LeaveProvisionAccrual || x.EventType == GlEventTypes.LeaveProvisionConsumption))
+            .ToListAsync();
+        return rows
+            .Select(r => string.IsNullOrEmpty(r.CreditAccount) ? (Account: r.DebitAccount, Amount: -r.Amount) : (Account: r.CreditAccount, r.Amount))
+            .GroupBy(r => r.Account[..4])
+            .ToDictionary(g => g.Key, g => g.Sum(r => r.Amount));
+    }
+
+    [Fact]
+    public async Task AFallAfterTheProvisionAccountIsRemapped_DebitsTheAccountHoldingTheProvision_AndARepeatMonthPostsNothing()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await LockMonthAsync(db, fx, 2026, 6);               // A: 3,150 credited to 2330; C: 4,200 to 2330
+        await RemapLeaveProvisionAsync(db, fx);              // LEAVE_PROVISION -> 2331 from here on
+        await SetBalanceAsync(db, fx, "A", accrued: 12.25m, used: 3m);   // A falls to 9.25 days -> 2,775
+        await SetBalanceAsync(db, fx, "C", accrued: 22.75m, used: 0m);   // C rises to 22.75 days -> 4,550
+
+        var jul = await LockMonthAsync(db, fx, 2026, 7);
+
+        var lines = await LeaveLinesAsync(db, jul);
+        var aLine = lines.Single(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
+        aLine.DebitAccount.Should().StartWith("2330", "the fall relieves the account that actually carries A's provision");
+        aLine.Amount.Should().Be(375m);
+        var cLine = lines.Single(l => l.SourceEntityRef == fx.Emp["C"].Id.ToString());
+        cLine.CreditAccount.Should().StartWith(RemappedProvisionCode, "a rise goes to the account mapped now");
+        cLine.Amount.Should().Be(350m);
+        lines.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(lines.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+
+        var aByAccount = await ProvisionByAccountAsync(db, fx, "A");
+        aByAccount.Should().Equal(new Dictionary<string, decimal> { ["2330"] = 2_775m });
+        aByAccount.Values.Should().OnlyContain(v => v >= 0m, "no account is driven below zero");
+
+        // August, nothing changed: the ledger reads exactly what is carried, so nothing posts again.
+        var aug = await LockMonthAsync(db, fx, 2026, 8);
+        (await LeaveLinesAsync(db, aug)).Should().BeEmpty();
+        (await ProvisionByAccountAsync(db, fx, "A")).Should().Equal(new Dictionary<string, decimal> { ["2330"] = 2_775m });
+        (await ProvisionByAccountAsync(db, fx, "C")).Should().Equal(new Dictionary<string, decimal> { ["2330"] = 4_200m, [RemappedProvisionCode] = 350m });
+    }
+
     // ── M6 go-live period: the opening-balance route is keyed on the PERIOD, not on "nothing measured yet" ─────────────
 
     [Fact]
