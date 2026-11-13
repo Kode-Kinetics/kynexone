@@ -270,8 +270,9 @@ public static class EmployeeChangeApplier
                 case "payrollGroup": profile.PayrollGroup = value.GetString()?.Trim() ?? string.Empty; break;
                 case "salaryStructureReference": profile.SalaryStructureReference = value.GetString()?.Trim() ?? string.Empty; break;
                 case "paymentMethod":
+                    // The payment method lives on the profile only. Employee.WpsBankDetails holds the approved Saudi bank-file
+                    // beneficiary details (ApprovedSaudiBeneficiaryDetails); copying the method's name over it wiped the BIC and addresses.
                     profile.PaymentMethod = value.GetString()?.Trim() ?? string.Empty;
-                    employee.WpsBankDetails = profile.PaymentMethod;
                     break;
             }
         }

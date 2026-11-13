@@ -54,6 +54,9 @@ public static class EmployeeChangeBaseline
     /// </summary>
     public const string AllowancePrefix = "allowances:";
 
+    /// <summary>The key a payment-method baseline carried while the method was mirrored onto <c>Employee.WpsBankDetails</c>.</summary>
+    private const string RetiredPaymentMethodMirror = EmployeePrefix + "paymentMethod";
+
     /// <summary>Reads row-backed salary data as well as the scalar/profile fields in the same baseline.</summary>
     public static async Task<IReadOnlyDictionary<string, string>?> CaptureAsync(
         ZayraDbContext db, Employee employee, EmployeePayrollProfile? profile, IEnumerable<string> keys, CancellationToken ct)
@@ -87,8 +90,8 @@ public static class EmployeeChangeBaseline
         var values = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var key in keys)
         {
-            // Payment method is mirrored onto the legacy employee column by the shared applier.
-            if (key == "paymentMethod") values[EmployeePrefix + key] = Canonical(employee.WpsBankDetails);
+            // The payment method is a profile column only (ProfileColumn). It used to be mirrored onto Employee.WpsBankDetails, which
+            // also holds the approved bank-file beneficiary details; see RetiredPaymentMethodMirror for baselines sealed before that.
             if (!EmployeeChangeApplier.PayrollProfileKeys.Contains(key))
             {
                 if (!TryReadEmployee(employee, key, out var value)) return null;
@@ -132,6 +135,9 @@ public static class EmployeeChangeBaseline
         return baseline.Keys.Union(current.Keys, StringComparer.Ordinal)
             // A baseline sealed before allowances were part of it has no allowance key: that is the old format, not a change (see AllowancePrefix).
             .Where(k => !(k.StartsWith(AllowancePrefix, StringComparison.Ordinal) && !baseline.ContainsKey(k)))
+            // A baseline sealed while the payment method was mirrored onto WpsBankDetails still carries that key; the column is no
+            // longer the payment method, so the key is the old format, not a change (the profile column is still compared).
+            .Where(k => !(k == RetiredPaymentMethodMirror && !current.ContainsKey(k)))
             .Where(k => !current.TryGetValue(k, out var now)
                         || !((baseline.TryGetValue(k, out var before) && string.Equals(before, now, StringComparison.Ordinal))
                              || (alsoExpected is not null && alsoExpected.TryGetValue(k, out var scheduled)
@@ -157,7 +163,6 @@ public static class EmployeeChangeBaseline
         try
         {
             if (EmployeeChangeApplier.Apply(employee, changes).Count > 0) return null;
-            if (changes.ContainsKey("paymentMethod")) employee.WpsBankDetails = ProfileText(changes, "paymentMethod", trim: true);
             var profile = new EmployeePayrollProfile
             {
                 BankName = employee.BankName,

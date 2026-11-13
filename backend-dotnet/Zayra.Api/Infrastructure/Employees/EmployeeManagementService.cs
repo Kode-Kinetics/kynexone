@@ -2054,7 +2054,8 @@ public class EmployeeManagementService : IEmployeeManagementService
         profile.UpdatedBy = context.UserId;
         employee.BankName = profile.BankName;
         employee.BankIban = profile.Iban;
-        employee.WpsBankDetails = profile.PaymentMethod;
+        // Employee.WpsBankDetails is NOT the payment method: it holds the approved Saudi bank-file beneficiary details
+        // (ApprovedSaudiBeneficiaryDetails), written only through its own approved change. The method stays on the profile.
     }
 
     /// <summary>Returns the gross of the package that will be STAGED (0 when there is none), so a hire can be refused up front when
