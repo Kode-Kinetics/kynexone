@@ -828,6 +828,68 @@ public class LeaveProvisionAccrualTests
         (await LeaveLinesAsync(db, oct)).Should().NotContain(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString());
     }
 
+    // ── A settlement consumes a provision split over two accounts ───────────────
+
+    /// <summary>June credits A's 3,150 to 2330; LEAVE_PROVISION is then remapped to 2331 and July's rise to 13 days (3,900) credits
+    /// the extra 750 to 2331. A now holds 3,150 on 2330 and 750 on 2331.</summary>
+    private async Task<Fixture> ProvisionSplitOverTwoAccountsAsync(ZayraDbContext db)
+    {
+        var fx = await SeedAsync(db);
+        await LockMonthAsync(db, fx, 2026, 6);
+        await RemapLeaveProvisionAsync(db, fx);
+        await SetBalanceAsync(db, fx, "A", accrued: 13m, used: 0m);
+        await LockMonthAsync(db, fx, 2026, 7);
+        (await ProvisionByAccountAsync(db, fx, "A")).Should().Equal(new Dictionary<string, decimal> { ["2330"] = 3_150m, [RemappedProvisionCode] = 750m });
+        return fx;
+    }
+
+    [Fact]
+    public async Task Settlement_ConsumesAProvisionSplitOverTwoAccounts_LargestFirst_AndExpensesNothingTheProvisionCovers()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ProvisionSplitOverTwoAccountsAsync(db);
+        // 12.75 days x 300 = 3,825 encashed against 3,900 provided over the two accounts.
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 3_825m, encashmentDays: 12.75m);
+
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var journal = await db.FinanceGlEntries.AsNoTracking().Where(x => x.SourceEntityId == s.Id).ToListAsync();
+        var relief = journal.Where(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix)).ToList();
+        relief.Should().OnlyContain(l => l.EventType == GlEventTypes.LeaveProvisionConsumption && l.CreditAccount == "");
+        relief.Select(l => (l.DebitAccount[..4], l.Amount)).Should().BeEquivalentTo(new[] { ("2330", 3_150m), (RemappedProvisionCode, 675m) },
+            "the largest holding is consumed first, then the next, each up to its own balance");
+        journal.Should().NotContain(l => l.DebitAccount.StartsWith("5111"), "the provision covers the whole encashment");
+        var release = journal.Where(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReleasePrefix)).ToList();
+        release.Where(l => l.DebitAccount != "").Select(l => (l.DebitAccount[..4], l.Amount)).Should().Equal((RemappedProvisionCode, 75m));
+        release.Single(l => l.CreditAccount != "").Amount.Should().Be(75m);
+        journal.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(journal.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+
+        (await ProvisionByAccountAsync(db, fx, "A")).Values.Should().OnlyContain(v => v == 0m, "both accounts are relieved to zero, neither below");
+        (await LeaveProvisionLedger.LoadPositionsAsync(db, fx.TenantId, new[] { fx.Emp["A"].Id }, default)).Sum(p => p.Remaining).Should().Be(0m);
+    }
+
+    [Fact]
+    public async Task Settlement_AboveAProvisionSplitOverTwoAccounts_ConsumesBoth_AndExpensesOnlyTheTrueShortfall()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ProvisionSplitOverTwoAccountsAsync(db);
+        // 14 days x 300 = 4,200 encashed against 3,900 provided: 300 is new expense.
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 4_200m, encashmentDays: 14m);
+
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var journal = await db.FinanceGlEntries.AsNoTracking().Where(x => x.SourceEntityId == s.Id).ToListAsync();
+        journal.Where(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix))
+            .Select(l => (l.DebitAccount[..4], l.Amount)).Should().BeEquivalentTo(new[] { ("2330", 3_150m), (RemappedProvisionCode, 750m) });
+        journal.Single(l => l.DebitAccount.StartsWith("5111")).Amount.Should().Be(300m, "only the part not provided on either account is expensed");
+        journal.Should().NotContain(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReleasePrefix));
+        journal.Single(l => l.CreditAccount.StartsWith("2320")).Amount.Should().Be(4_200m);
+        journal.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(journal.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+        (await ProvisionByAccountAsync(db, fx, "A")).Values.Should().OnlyContain(v => v == 0m);
+    }
+
     // ── The provision panel follows the same service-period rule ────────────────
 
     private static async Task<JsonElement> LeavePanelAsync(ZayraDbContext db, Fixture fx)
@@ -902,7 +964,7 @@ public class LeaveProvisionAccrualTests
         db.ChangeTracker.Clear();
     }
 
-    /// <summary>CR − DR per account code over every leave-provision line, for one employee.</summary>
+    /// <summary>CR − DR per provision account code (233x) over every leave-provision line, for one employee.</summary>
     private static async Task<Dictionary<string, decimal>> ProvisionByAccountAsync(ZayraDbContext db, Fixture fx, string code)
     {
         var employeeRef = fx.Emp[code].Id.ToString();
@@ -912,6 +974,7 @@ public class LeaveProvisionAccrualTests
             .ToListAsync();
         return rows
             .Select(r => string.IsNullOrEmpty(r.CreditAccount) ? (Account: r.DebitAccount, Amount: -r.Amount) : (Account: r.CreditAccount, r.Amount))
+            .Where(r => r.Account.StartsWith("233"))   // the provision side only (a release's 5115 credit also carries the employee ref)
             .GroupBy(r => r.Account[..4])
             .ToDictionary(g => g.Key, g => g.Sum(r => r.Amount));
     }

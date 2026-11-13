@@ -99,7 +99,8 @@ public static class FinalSettlementGlLedger
         IReadOnlyList<(string Account, decimal Amount)>? provisionReleases = null,
         Guid? costCentreId = null,
         decimal leaveProvisionConsumed = 0m, string? leaveProvisionAccount = null,
-        IReadOnlyList<(string Account, decimal Amount)>? leaveProvisionReleases = null)
+        IReadOnlyList<(string Account, decimal Amount)>? leaveProvisionReleases = null,
+        IReadOnlyList<(string Account, decimal Amount)>? leaveProvisionConsumptions = null)
     {
         var entries = new List<FinanceGlEntry>();
         var costed = gl.CostAccountingEnabled;
@@ -143,8 +144,16 @@ public static class FinalSettlementGlLedger
 
         // ── DEBITS: one per earning component, on the component's OWN expense account ────────────────
         var gratuityRelief = Math.Min(Math.Max(0m, provisionConsumed), settlement.GratuityAmount);
-        // The annual-leave provision relieves the leave encashment the same way: it was expensed when it was provided.
-        var leaveRelief = Math.Min(Math.Max(0m, leaveProvisionConsumed), settlement.LeaveEncashmentAmount);
+        // The annual-leave provision relieves the leave encashment the same way: it was expensed when it was provided. The relief may come
+        // from several STORED accounts (the provision account remapped between months); with none listed it is the single
+        // (leaveProvisionConsumed, leaveProvisionAccount) pair, as before.
+        var leaveReliefByAccount = leaveProvisionConsumptions is not null
+            ? leaveProvisionConsumptions.Where(c => c.Amount > 0m && !string.IsNullOrWhiteSpace(c.Account))
+                .Select(c => (c.Account, Amount: Math.Round(c.Amount, 2))).ToList()
+            : leaveProvisionConsumed > 0m && !string.IsNullOrWhiteSpace(leaveProvisionAccount)
+                ? new List<(string Account, decimal Amount)> { (leaveProvisionAccount!, leaveProvisionConsumed) }
+                : new List<(string Account, decimal Amount)>();
+        var leaveRelief = Math.Min(leaveReliefByAccount.Sum(c => c.Amount), settlement.LeaveEncashmentAmount);
         foreach (var grp in lines
                      .Where(l => l.LineType == FinalSettlementLineTypes.Earning && l.Amount > 0m)
                      .GroupBy(l => l.ComponentCode, StringComparer.Ordinal)
@@ -171,14 +180,19 @@ public static class FinalSettlementGlLedger
             // The annual-leave provision SEAM: whatever has already been PROVIDED for this employee's leave relieves the 2330 liability, and
             // only the difference between the encashment and the provision is expensed now (to 5111), so the cost of the leave is
             // recognised once. With no provision the relief is 0 and this is the single debit to 5111 it always was.
-            if (grp.Key == FinalSettlementComponents.LeaveEncashment && leaveRelief > 0m
-                && !string.IsNullOrWhiteSpace(leaveProvisionAccount))
+            if (grp.Key == FinalSettlementComponents.LeaveEncashment && leaveRelief > 0m)
             {
-                var relieved = Math.Min(leaveRelief, amount);
-                entries.Add(Line(leaveProvisionAccount!, string.Empty, relieved,
-                    $"{FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
-                    GlEventTypes.LeaveProvisionConsumption, employeeRef));
-                amount = Math.Round(amount - relieved, 2);
+                var reliefLeft = Math.Min(leaveRelief, amount);
+                foreach (var (account, held) in leaveReliefByAccount)
+                {
+                    if (reliefLeft <= 0m) break;
+                    var relieved = Math.Min(reliefLeft, held);
+                    entries.Add(Line(account, string.Empty, relieved,
+                        $"{FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix}{FinalSettlementGlDescriptions.SettlementRef(settlement.Id)}",
+                        GlEventTypes.LeaveProvisionConsumption, employeeRef));
+                    amount = Math.Round(amount - relieved, 2);
+                    reliefLeft = Math.Round(reliefLeft - relieved, 2);
+                }
                 if (amount <= 0m) continue;
             }
 

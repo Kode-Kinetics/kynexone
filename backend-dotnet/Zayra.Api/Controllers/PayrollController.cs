@@ -8453,9 +8453,12 @@ public partial class PayrollController : ControllerBase
         }
 
         // The annual-leave provision, consumed the same way: what was provided for this employee's leave relieves 2330 first, the rest of
-        // the encashment is expensed to 5111, and any provision left after the encashment is released back out of 5115.
+        // the encashment is expensed to 5111, and any provision left after the encashment is released back out of 5115. The provision
+        // may sit on more than one account (LEAVE_PROVISION remapped between months): every account that holds it is consumed, largest
+        // first and each up to its own balance, so only the true shortfall is expensed.
         var leaveCursor = await LeaveProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
-        var (leavePosition, leaveTaken) = leaveCursor.Take(s.EmployeeId, s.CompanyId, s.LeaveEncashmentAmount);
+        var leaveConsumptions = leaveCursor.TakeAcrossAccounts(s.EmployeeId, s.CompanyId, s.LeaveEncashmentAmount);
+        var leaveTaken = Math.Round(leaveConsumptions.Sum(c => c.Taken), 2);
         var leaveReleases = new List<(string Account, decimal Amount)>();
         while (leaveCursor.PositionFor(s.EmployeeId, s.CompanyId) is { } leaveLeftover)
         {
@@ -8486,7 +8489,8 @@ public partial class PayrollController : ControllerBase
         var (glLines, dr, cr) = FinalSettlementGlLedger.BuildAccrual(
             tenantId, s, lines, glPeriod, glCtx, actorId, GetUserName(),
             provisionTaken, provisionPosition?.ProvisionAccount, provisionReleases, settlementCostCentre,
-            leaveTaken, leavePosition?.ProvisionAccount, leaveReleases);
+            leaveProvisionReleases: leaveReleases,
+            leaveProvisionConsumptions: leaveConsumptions);
         if (Math.Abs(dr - cr) > 0.01m)
             return UnprocessableEntity(new
             {
@@ -8520,7 +8524,8 @@ public partial class PayrollController : ControllerBase
             glPeriod, totalDebits = dr, totalCredits = cr,
             provisionConsumed = provisionTaken, provisionAccount = provisionPosition?.ProvisionAccount,
             provisionReleased = provisionReleases.Sum(r => r.Amount),
-            leaveProvisionConsumed = leaveTaken, leaveProvisionAccount = leavePosition?.ProvisionAccount,
+            leaveProvisionConsumed = leaveTaken, leaveProvisionAccount = leaveConsumptions.Select(c => c.Account).FirstOrDefault(),
+            leaveProvisionConsumedByAccount = leaveConsumptions.Select(c => new { account = c.Account, amount = c.Taken }).ToList(),
             leaveProvisionReleased = leaveReleases.Sum(r => r.Amount),
             wageBaseDelta = s.WageBaseDeltaAmount,
             wageBaseAcknowledged = req.AcknowledgeWageBaseFloor,
