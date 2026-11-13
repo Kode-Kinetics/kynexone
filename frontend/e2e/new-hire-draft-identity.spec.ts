@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import fs from 'node:fs';
 import { saudiIqama, saudiNationalId } from './bootstrap/saudiIds';
+import { translate } from '../src/i18n/translations';
 
 /**
  * New hires review: a hire from an accepted offer for a Saudi company cannot activate without the government ID, and
@@ -9,6 +10,8 @@ import { saudiIqama, saudiNationalId } from './bootstrap/saudiIds';
  * request, the re-check that follows, and the maker-checker wording. The server's rules are the backend tests.
  */
 
+// The row action in either UI language, taken from the dictionary (the Arabic test opens the same review).
+const REVIEW = new RegExp(`^(?:${translate('en', 'Review and decide')}|${translate('ar', 'Review and decide')})$`);
 const SHOTS = process.env.DRAFT_IDENTITY_SHOTS ?? '';
 const NATIONAL_ID = saudiNationalId(21);
 const IQAMA = saudiIqama(22);
@@ -77,7 +80,7 @@ async function open(page: Page, opts: Opts = {}) {
   });
 
   await page.goto('/people/new-hires');
-  await page.getByRole('button', { name: 'Review and decide' }).first().click();
+  await page.getByRole('button', { name: REVIEW }).first().click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByTestId('draft-identity-fix')).toBeVisible();
   return { dialog, writes };
