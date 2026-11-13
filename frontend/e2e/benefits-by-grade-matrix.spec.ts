@@ -374,6 +374,9 @@ for (const locale of ['en', 'ar'] as const) {
     test('layout at 1366x768: one purpose line, the grid starts in the top half, and the toolbar is one row', async ({ page }) => {
       await page.setViewportSize({ width: 1366, height: 768 });
       const { errors } = await boot(page, locale);
+      // The heading is up before the matrix answers; measure the toolbar and grid only once every benefit row is in.
+      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows).toHaveCount(groupMatrix.components.length);
       // One purpose line (the screen's own), not the old paragraph, the scope sentence, the gap banner or the "outlined in amber" wording.
       await expect(page.locator('[data-purpose]')).toHaveCount(1);
       await expect(page.locator('[data-purpose]')).toHaveText(say(locale, 'Set what each grade receives, per company. Changes start on the date you choose when you publish.'));
@@ -391,7 +394,6 @@ for (const locale of ['en', 'ar'] as const) {
       // The grid starts in the top half of a 768 px screen and shows at least five benefit rows without scrolling.
       const table = await page.getByRole('table').boundingBox();
       expect(table!.y, 'grid top').toBeLessThan(768 * 0.5);
-      const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
       let visible = 0;
       for (let i = 0; i < await rows.count(); i++) { const b = await rows.nth(i).boundingBox(); if (b && b.y + b.height <= 768) visible++; }
       expect(visible, 'benefit rows visible without scrolling').toBeGreaterThanOrEqual(5);
@@ -401,8 +403,9 @@ for (const locale of ['en', 'ar'] as const) {
     test('every value cell shows it can be edited: a pencil on a value, "+ Set value" on an empty one, no per-cell provenance text', async ({ page }) => {
       const { errors } = await boot(page, locale);
       const cells = page.locator('button[data-cell]');
-      const count = await cells.count();
-      expect(count).toBe(groupMatrix.grades.length * groupMatrix.components.length);
+      // The heading renders before the matrix response lands, so count() alone can read 0: wait for the grid.
+      const count = groupMatrix.grades.length * groupMatrix.components.length;
+      await expect(cells).toHaveCount(count);
       for (let i = 0; i < count; i++) {
         const cell = cells.nth(i);
         const cue = await cell.locator('[data-testid="cell-pencil"], [data-testid="cell-set-value"]').count();
@@ -424,6 +427,7 @@ for (const locale of ['en', 'ar'] as const) {
     test('a row has at most one chip, and its actions are in a menu with targets of at least 24 px', async ({ page }) => {
       const { errors } = await boot(page, locale, { matrix: undefined });
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows).toHaveCount(groupMatrix.components.length);
       for (let i = 0; i < await rows.count(); i++) expect(await rows.nth(i).getByTestId('row-chip').count()).toBeLessThanOrEqual(1);
       const trigger = rowMenu(page, locale, benefitName(locale, 'PER_DIEM'));
       const box = await trigger.boundingBox();
@@ -443,10 +447,11 @@ for (const locale of ['en', 'ar'] as const) {
       const chip = page.getByRole('button', { name: say(locale, 'Needs a value ({count})', { count: new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size }), exact: true });
       await expect(chip).toHaveAttribute('aria-pressed', 'false');
       const rows = page.locator('tbody tr').filter({ has: page.locator('th[scope="row"]') });
+      await expect(rows).toHaveCount(groupMatrix.components.length);
       const before = await rows.count();
       await chip.click();
       await expect(chip).toHaveAttribute('aria-pressed', 'true');
-      expect(await rows.count()).toBeLessThan(before);
+      await expect(rows).not.toHaveCount(before);
       await expect(rows).toHaveCount(new Set(groupMatrix.gaps.map((g: any) => g.componentCode)).size);
       await chip.click();
       await expect(rows).toHaveCount(before);

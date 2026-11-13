@@ -75,14 +75,23 @@ jobs:
               playwright.renewals.config.ts
               playwright.ux-fixes.config.ts
               playwright.screen-contract.config.ts
-          # playwright.fixture.config.ts alone is ~1,300 tests (a desktop and a laptop pass over seventeen specs): split it
-          # with Playwright's own --shard so no test is dropped and each half fits the job limit.
-          - name: fixture-1of2
+          # playwright.fixture.config.ts alone is 1,284 tests (the same specs in four viewport projects: desktop, laptop, tablet,
+          # phone) on one worker, measured at ~4.2 s a test wall-clock for desktop/laptop and ~5.2 s for tablet/phone: ~95 minutes
+          # in all. Two halves were each cancelled at the 45 minute limit with 51 and 179 tests still to run. Four Playwright
+          # --shard quarters of 321 tests (one project each, 23-28 minutes of tests plus ~4 for install and build) fit with margin
+          # and no test is dropped. If a quarter ever nears 40 minutes, raise the count (--shard=k/6), do not raise the limit.
+          - name: fixture-1of4
             configs: playwright.fixture.config.ts
-            args: --shard=1/2
-          - name: fixture-2of2
+            args: --shard=1/4
+          - name: fixture-2of4
             configs: playwright.fixture.config.ts
-            args: --shard=2/2
+            args: --shard=2/4
+          - name: fixture-3of4
+            configs: playwright.fixture.config.ts
+            args: --shard=3/4
+          - name: fixture-4of4
+            configs: playwright.fixture.config.ts
+            args: --shard=4/4
           - name: talent-and-chrome
             configs: >-
               playwright.learning.config.ts
