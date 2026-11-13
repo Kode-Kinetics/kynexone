@@ -2,6 +2,10 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import path from 'node:path';
 import { openSetupSection, setupSection } from './setupSections';
+import { translate } from '../src/i18n/translations';
+
+// A label in either UI language, taken from the dictionary and anchored, for tests that run in English and Arabic.
+const either = (key: string) => new RegExp(`^(?:${[translate('en', key), translate('ar', key)].map(text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`);
 
 const task5Evidence = (name: string) => path.resolve(__dirname, '../../docs/evidence/setup-studio-task5', name);
 
@@ -262,8 +266,8 @@ async function maintenancePolicy(page: Page, options: { arabic?: boolean; failFi
     }
     return false;
   } });
-  await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  return page.getByRole('dialog', { name: 'Edit Leave Policy', exact: true });
+  await page.getByRole('button', { name: either('Edit') }).click();
+  return page.getByRole('dialog', { name: either('Edit Leave Policy') });
 }
 
 test('leave_policy_takes_several_employment_types_locals_or_expats_service_and_encashment_cap', async ({ page }) => {
@@ -374,22 +378,22 @@ for (const arabic of [false, true]) {
     const dialog = await maintenancePolicy(page, { arabic });
     await expect(dialog).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('dir', arabic ? 'rtl' : 'ltr');
-    await expect(dialog.getByLabel('Policy Name *', { exact: true })).toHaveValue(/regional operations/);
+    await expect(dialog.getByLabel(either('Policy Name *'))).toHaveValue(/regional operations/);
     expect((await new AxeBuilder({ page }).include('[role="dialog"]').analyze()).violations.filter(v => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-    const close = dialog.getByRole('button', { name: 'Close', exact: true });
-    const save = dialog.getByRole('button', { name: 'Save Changes', exact: true });
+    const close = dialog.getByRole('button', { name: either('Close') });
+    const save = dialog.getByRole('button', { name: either('Save Changes') });
     await close.focus(); await page.keyboard.press('Shift+Tab'); await expect(save).toBeFocused();
     await page.keyboard.press('Tab'); await expect(close).toBeFocused();
-    for (const control of [save, dialog.getByRole('button', { name: 'Cancel', exact: true })]) {
+    for (const control of [save, dialog.getByRole('button', { name: either('Cancel') })]) {
       await control.scrollIntoViewIfNeeded();
       expect(await control.evaluate(element => { const r = element.getBoundingClientRect(); return element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })).toBe(true);
     }
-    await dialog.getByLabel('Annual Days', { exact: true }).scrollIntoViewIfNeeded();
+    await dialog.getByLabel(either('Annual Days')).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `/tmp/kynex-setup-final-evidence/leave-${info.project.name}-${arabic ? 'ar' : 'en'}.png` });
     await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeFocused();
+    await expect(page.getByRole('button', { name: either('Edit') })).toBeFocused();
   });
 }
 
@@ -661,7 +665,7 @@ test('source_pages_still_use_the_canonical_forms', async ({ page }) => {
   // Onboarding keeps its daily work (generating a joiner's tasks from a checklist) and links to the checklist editor,
   // which is Setup → Onboarding checklists and is the same editor.
   await page.goto('/recruitment/onboarding');
-  await expect(page.getByPlaceholder('Employee ID', { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('Search by name or code…', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Checklist Templates', exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: 'Onboarding settings', exact: true }).click();
   await expect(page).toHaveURL(/\/setup\?tab=onboardingChecklists/);
@@ -1856,7 +1860,7 @@ for (const locale of [{ name: 'en', arabic: false }, { name: 'ar', arabic: true 
     } });
 
     for (const label of ['Onboarding checklist', 'Checklist code', 'Checklist name', 'Applicable to', 'Department', 'Checklist description', 'Task title', 'Template category', 'Owner', 'Due offset days', 'Order', 'Task description']) {
-      await expect(page.getByLabel(label, { exact: true })).toBeVisible();
+      await expect(page.getByLabel(either(label))).toBeVisible();
     }
     const accessibility = await new AxeBuilder({ page }).include('[data-testid="setup-focused-workspace"]').analyze();
     expect(accessibility.violations.filter(violation => violation.impact === 'serious' || violation.impact === 'critical')).toEqual([]);
