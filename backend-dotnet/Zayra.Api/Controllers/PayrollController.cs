@@ -6150,13 +6150,24 @@ public partial class PayrollController : ControllerBase
     /// worker's accrued rights, end-of-service included. Either way the award is measured from the earlier
     /// date, once.</para>
     ///
+    /// <para><b>A SETTLED EXIT ENDS THE CARRIED SERVICE (owner decision, 2026-11-13).</b> After an approved or
+    /// paid final settlement, end of service for a rehired employee counts from the current joining date (the
+    /// rehire date), for every employee, including one with a carried service start, so an award already paid
+    /// is never paid twice. A carried start is therefore ignored when a closed settlement's last working day is
+    /// on or after it and before the current joining date (a settlement of an EARLIER service period). A
+    /// settlement of the current period (its last working day on or after the joining date) leaves the start
+    /// unchanged, so the first exit's own figure never moves. The provision (<c>BuildEosbProvisionAsync</c>),
+    /// <c>/eosb/calculate</c> and the final-settlement calculation all go through
+    /// <see cref="PickEosbServiceStart"/>, so the second exit is settled on the same start it was provided on.</para>
+    ///
     /// <para>[COUNSEL] Prior service at a DIFFERENT legal entity that is NOT an Art. 18 transfer — an
-    /// intra-group move between two commercial registrations under a fresh contract, or a re-hire after a
-    /// settled exit — is honoured here exactly as carried, because the importer cannot tell the cases apart.
-    /// If the earlier employer already paid an end-of-service award for that period, counting it again
-    /// double-pays it. Counsel to confirm: (a) whether intra-group service without an Art. 18 transfer
-    /// counts toward Art. 84 absent a contractual undertaking, and (b) whether the carried row needs a
-    /// "prior award settled through" date that the calculation must start after.</para>
+    /// intra-group move between two commercial registrations under a fresh contract — is honoured here
+    /// exactly as carried, because the importer cannot tell the cases apart. If the earlier employer already
+    /// paid an end-of-service award for that period, counting it again double-pays it. Counsel to confirm:
+    /// (a) whether intra-group service without an Art. 18 transfer counts toward Art. 84 absent a contractual
+    /// undertaking, and (b) whether the carried row needs a "prior award settled through" date that the
+    /// calculation must start after when that award was paid outside this product. (A re-hire after an exit
+    /// settled IN this product is no longer a counsel question: see the owner decision above.)</para>
     /// </summary>
     private async Task<(DateOnly Start, DateOnly? Carried)> ResolveEosbServiceStartAsync(
         Guid tenantId, Employee employee, CancellationToken ct)
@@ -6167,14 +6178,39 @@ public partial class PayrollController : ControllerBase
             .ThenBy(x => x.PriorServiceStartDate)
             .Select(x => x.PriorServiceStartDate)
             .FirstOrDefaultAsync(ct);
-        return PickEosbServiceStart(employee, carried);
+        var settledDays = carried is null
+            ? new List<DateOnly>()
+            : await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
+                    "EOSB service start: a final settlement approved under ANY legal entity closed the service it paid; " +
+                    "counting that service again for a rehire would pay the same end-of-service award twice.")
+                .AsNoTracking()
+                .Where(s => s.EmployeeId == employee.Id && SettlementStatusesThatConsumedProvision.Contains(s.Status))
+                .Select(s => s.LastWorkingDay)
+                .ToListAsync(ct);
+        return PickEosbServiceStart(employee, carried, SettledBefore(settledDays, employee));
+    }
+
+    /// <summary>The latest last working day among an employee's closed settlements that ended BEFORE the current joining date — the
+    /// exit that closed an earlier service period — or null when there is none.</summary>
+    private static DateOnly? SettledBefore(IEnumerable<DateOnly> lastWorkingDays, Employee employee)
+    {
+        var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        var earlier = lastWorkingDays.Where(d => d < joining).ToList();
+        return earlier.Count == 0 ? null : earlier.Max();
     }
 
     /// <summary>The rule of <see cref="ResolveEosbServiceStartAsync"/> once the carried date is known:
-    /// the EARLIER of the two, never the sum.</summary>
-    private static (DateOnly Start, DateOnly? Carried) PickEosbServiceStart(Employee employee, DateOnly? carried)
+    /// the EARLIER of the two, never the sum — unless <paramref name="settledThrough"/> (the latest last working day of an
+    /// approved, disbursing or paid final settlement that ended before the current joining date; see <see cref="SettledBefore"/>)
+    /// shows the carried service was settled at an earlier exit, in which case the current joining date (the rehire date) is
+    /// the start.</summary>
+    private static (DateOnly Start, DateOnly? Carried) PickEosbServiceStart(
+        Employee employee, DateOnly? carried, DateOnly? settledThrough = null)
     {
         var joining = DateOnly.FromDateTime(employee.JoiningDate);
+        if (carried is DateOnly settledPrior && settledThrough is DateOnly lastWorkingDay
+            && lastWorkingDay >= settledPrior && lastWorkingDay < joining)
+            return (joining, carried);
         return carried is DateOnly prior && prior < joining ? (prior, prior) : (joining, carried);
     }
 

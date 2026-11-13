@@ -501,6 +501,101 @@ public class EosbProvisionAccrualTests
             .Single().Remaining.Should().Be(0m);
     }
 
+    // ── 7b. Rehire after a settled exit: EOSB counts from the rehire date (owner decision 2026-11-13) ──
+
+    private static readonly DateOnly Rehired = new(2026, 10, 1);
+    private static readonly DateOnly December = new(2026, 12, 31);
+    private static readonly DateOnly CarriedStart = new(2020, 1, 1);
+
+    private static async Task SeedCarriedServiceStartAsync(ZayraDbContext db, Fixture fx, DateOnly priorStart)
+    {
+        db.EmployeeEosbOpeningBalances.Add(new EmployeeEosbOpeningBalance
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, EmployeeId = fx.Employee.Id, EmployeeCode = fx.Employee.EmployeeCode,
+            AsAtDate = new DateOnly(2026, 5, 31), PriorServiceStartDate = priorStart, AccruedMonths = 0m, AccruedAmount = 0m,
+            Currency = "SAR", SourceSystem = "Legacy", SourceRecordId = "EOSB-1",
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    /// <summary>June is provided for; the leaver's settlement (last working day 15 Sep) is approved and paid; the same employee id is
+    /// rehired from 1 October.</summary>
+    private static async Task SettleAndRehireAsync(ZayraDbContext db, Fixture fx)
+    {
+        await LockMonthAsync(db, fx, 2026, 6);
+        var s = await SeedPendingSettlementAsync(db, fx, 1_000m, "Termination", Guid.NewGuid());
+        await ApproveSettlementAsync(db, fx, s);
+        var settled = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.Id);
+        settled.Status = FinalSettlementStatuses.Paid;
+        var emp = await db.Employees.SingleAsync(e => e.Id == fx.Employee.Id);
+        emp.OriginalJoiningDate = DateOnly.FromDateTime(emp.JoiningDate);
+        emp.JoiningDate = Rehired.ToDateTime(TimeOnly.MinValue);
+        emp.Status = "Active";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    private static async Task<string?> CalculatedServiceStartAsync(ZayraDbContext db, Fixture fx, DateOnly asOf)
+    {
+        var result = await Payroll(db, fx.TenantId).CalculateEosb(
+            new EosbCalculationRequest(fx.Employee.Id, asOf.ToDateTime(TimeOnly.MinValue), "Termination"), CancellationToken.None);
+        result.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((result as ObjectResult)?.Value));
+        return JsonSerializer.SerializeToElement(((OkObjectResult)result).Value).GetProperty("serviceStartDate").GetString();
+    }
+
+    [Fact]
+    public async Task ARehiredEmployee_WithNoCarriedStart_IsProvidedForFromTheRehireDate()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await SettleAndRehireAsync(db, fx);
+
+        var dec = await LockMonthAsync(db, fx, 2026, 12);
+
+        var expected = Art84(Rehired, December, 10_000m);
+        (await ProvisionLinesAsync(db, dec)).Single(l => l.CreditAccount == Provision).Amount
+            .Should().Be(expected, "the settlement closed the first service period; the new one is provided for from 1 October");
+        var snapshot = await db.EosbProvisionSnapshots.AsNoTracking().SingleAsync(x => x.Period == "2026-12");
+        snapshot.Obligation.Should().Be(expected);
+        snapshot.ServiceYears.Should().BeLessThan(1m);
+    }
+
+    [Fact]
+    public async Task ACarriedServiceStart_ClosedByALaterSettlement_IsMeasuredFromTheRehireDate_InTheProvisionAndTheCalculation()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await SeedCarriedServiceStartAsync(db, fx, CarriedStart);
+        await SettleAndRehireAsync(db, fx);   // last working day 15 Sep 2026 is after the carried start: that service was settled
+
+        var dec = await LockMonthAsync(db, fx, 2026, 12);
+
+        var expected = Art84(Rehired, December, 10_000m);
+        (await ProvisionLinesAsync(db, dec)).Single(l => l.CreditAccount == Provision).Amount
+            .Should().Be(expected, "the carried 2020 service was paid at the first exit and is never counted again");
+        (await db.EosbProvisionSnapshots.AsNoTracking().SingleAsync(x => x.Period == "2026-12")).ServiceYears.Should().BeLessThan(1m);
+        (await CalculatedServiceStartAsync(db, fx, December)).Should().Be("2026-10-01",
+            "the settlement calculation shares the resolved start, so a second exit agrees with the provision");
+    }
+
+    [Fact]
+    public async Task ACarriedServiceStart_WithNoSettlement_IsStillHonoured()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db);
+        await SeedCarriedServiceStartAsync(db, fx, CarriedStart);
+
+        var jun = await LockMonthAsync(db, fx, 2026, 6);
+
+        (await ProvisionLinesAsync(db, jun)).Single(l => l.CreditAccount == Provision).Amount
+            .Should().Be(Art84(CarriedStart, June, 10_000m), "an unsettled carried service start is still the whole service");
+        (await CalculatedServiceStartAsync(db, fx, June)).Should().Be("2020-01-01");
+    }
+
     // ── 8. Actuarial true-up: strict maker ≠ checker ───────────────────────────────
 
     [Fact]

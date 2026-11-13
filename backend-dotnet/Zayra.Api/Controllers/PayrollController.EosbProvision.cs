@@ -20,8 +20,10 @@ public sealed record EosbProvisionRefusal(string Code, string Message);
 /// minus what <see cref="EosbProvisionLedger"/> already carries for the employee (accruals, carried
 /// opening balance, less consumption), so the ledger — never the snapshot table — is the balance.</para>
 ///
-/// <para><b>WHO IS SKIPPED.</b> A leaver whose settlement is approved (its accrual has already consumed
-/// and released the provision — measuring them again would re-provide a liability that has been paid);
+/// <para><b>WHO IS SKIPPED.</b> A leaver whose settlement for the CURRENT service period is approved (its accrual has
+/// already consumed and released the provision — measuring them again would re-provide a liability that has been paid).
+/// A settlement whose last working day is before the current joining date closed an earlier period of a rehired
+/// employee: they are measured again, from the rehire date (owner decision 2026-11-13);
 /// anyone already measured for this period (a retried Lock, a second run in the month); anyone measured
 /// for a LATER period (an out-of-order Lock must not wind the balance back to an older figure).</para>
 /// </summary>
@@ -85,14 +87,18 @@ public partial class PayrollController
                 $"enabled for country '{company.CountryCode}' in GCC settings, so the obligation cannot be measured. " +
                 "Enable end of service for that country, or switch provisioning off for this company, then lock again.");
 
-        // A leaver whose settlement accrual has posted: the provision was consumed and released with them.
-        var settled = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
+        // A leaver whose settlement accrual has posted: the provision was consumed and released with them. Only a settlement of the
+        // CURRENT service period excludes them (checked per employee below): a rehire keeps the employee id and restarts JoiningDate,
+        // and the new period is provided for from the rehire date (owner decision 2026-11-13; see ResolveEosbServiceStartAsync).
+        var settledThrough = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tenantId,
                     "EOSB provision: a leaver settled under ANY legal entity has had their provision consumed; " +
                     "re-measuring them would re-provide a liability that has already been paid.")
                 .AsNoTracking()
                 .Where(s => employeeIds.Contains(s.EmployeeId) && SettlementStatusesThatConsumedProvision.Contains(s.Status))
-                .Select(s => s.EmployeeId).Distinct().ToListAsync(ct))
-            .ToHashSet();
+                .Select(s => new { s.EmployeeId, s.LastWorkingDay })
+                .ToListAsync(ct))
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Select(s => s.LastWorkingDay).ToList());
 
         var measured = await ScopedBypass.TenantWide(_db.EosbProvisionSnapshots, tenantId,
                 "EOSB provision: whether an employee was already measured must be answered across every legal " +
@@ -138,14 +144,18 @@ public partial class PayrollController
         var obligations = new List<EosbObligation>();
         foreach (var employee in employees.OrderBy(e => e.Id))
         {
-            if (settled.Contains(employee.Id)) continue;
+            var settledDays = settledThrough.GetValueOrDefault(employee.Id) ?? new List<DateOnly>();
+            // A settlement belongs to this service period when its last working day is on or after the current joining date.
+            if (settledDays.Any(d => d >= DateOnly.FromDateTime(employee.JoiningDate))) continue;
             var history = measured.Where(m => m.EmployeeId == employee.Id).ToList();
             // A Replacement re-measures its OWN month even when a later month is already measured; every other run must not wind back.
             if (run.RunType == PayrollRunTypes.Replacement
                 ? history.Any(m => m.Period == payPeriod)
                 : history.Any(m => string.CompareOrdinal(m.Period, payPeriod) >= 0)) continue;
 
-            var (serviceStart, _) = PickEosbServiceStart(employee, carriedStarts.GetValueOrDefault(employee.Id));
+            // The same start the settlement calculation resolves: a carried start settled at an earlier exit is not counted again.
+            var (serviceStart, _) = PickEosbServiceStart(employee, carriedStarts.GetValueOrDefault(employee.Id),
+                SettledBefore(settledDays, employee));
             if (serviceStart > periodEnd) continue;
             var salaryOfEmployee = salaries.GetValueOrDefault(employee.Id);
             var wageBasis = EosbWageBasisFrom(components, salaryOfEmployee, employee,
