@@ -625,9 +625,13 @@ public class LeaveProvisionAccrualTests
     // ── 10. Settlement consumes the provision first ─────────────────────────────
 
     private static async Task<EmployeeFinalSettlement> SeedPendingSettlementAsync(
-        ZayraDbContext db, Fixture fx, string employeeCode, decimal encashment, decimal encashmentDays)
+        ZayraDbContext db, Fixture fx, string employeeCode, decimal encashment, decimal encashmentDays, bool linkBalanceRow = false)
     {
         var emp = fx.Emp[employeeCode];
+        // A computed settlement names the balance row each encashment line draws on (FinalSettlementLine.SourceEntityId).
+        Guid? balanceRowId = linkBalanceRow
+            ? await db.EmployeeLeaveBalances.Where(b => b.TenantId == fx.TenantId && b.EmployeeId == emp.Id).Select(b => (Guid?)b.Id).SingleAsync()
+            : null;
         var lastDay = new DateOnly(2026, 9, 15);
         var maker = Guid.NewGuid();
         var offboarding = new EmployeeOffboarding
@@ -652,6 +656,7 @@ public class LeaveProvisionAccrualTests
             TenantId = fx.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
             ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
             Source = FinalSettlementComponents.SettlementSource, Amount = encashment, Quantity = encashmentDays, SortOrder = 0,
+            SourceEntityId = balanceRowId,
         });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
@@ -888,6 +893,56 @@ public class LeaveProvisionAccrualTests
         journal.Single(l => l.CreditAccount.StartsWith("2320")).Amount.Should().Be(4_200m);
         journal.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(journal.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
         (await ProvisionByAccountAsync(db, fx, "A")).Values.Should().OnlyContain(v => v == 0m);
+    }
+
+    // ── An encashment paid outside payroll takes the days off the balance ───────
+
+    private static OffboardingController Offboarding(ZayraDbContext db, Guid tenantId, Guid actorId)
+        => new(db, new Zayra.Api.Infrastructure.Audit.AuditService(db))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext { User = User(tenantId, actorId, "finance-recorder", "payroll.approve") },
+            },
+        };
+
+    [Fact]
+    public async Task AnEncashmentPaidOutsidePayroll_TakesTheDaysOffTheBalance_SoARehireIsNotProvidedForTheOldDaysAgain()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await ThreeMonthsAsync(db);   // A: 12.25 accrued, 3 used -> 9.25 days, 2,775 provided
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 2_775m, encashmentDays: 9.25m, linkBalanceRow: true);
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var paid = await Offboarding(db, fx.TenantId, Guid.NewGuid()).RecordExternalSettlementPayment(
+            s.OffboardingId, new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LP-1", 2_775m, new DateOnly(2026, 9, 20)),
+            CancellationToken.None);
+        paid.Should().BeOfType<OkObjectResult>(JsonSerializer.Serialize((paid as ObjectResult)?.Value));
+        db.ChangeTracker.Clear();
+
+        var balance = await db.EmployeeLeaveBalances.AsNoTracking().SingleAsync(b => b.EmployeeId == fx.Emp["A"].Id);
+        balance.Encashed.Should().Be(9.25m, "the paid days leave the balance, exactly as a payroll-run disbursement takes them");
+        balance.Available.Should().Be(0m);
+
+        // Rehired from 1 November; 2 days accrued in the new service period, on the same balance row.
+        var a = await db.Employees.SingleAsync(e => e.Id == fx.Emp["A"].Id);
+        a.OriginalJoiningDate = DateOnly.FromDateTime(a.JoiningDate);
+        a.JoiningDate = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);
+        a.Status = "Active";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        await SetBalanceAsync(db, fx, "A", accrued: 14.25m, used: 3m);
+        (await db.EmployeeLeaveBalances.AsNoTracking().SingleAsync(b => b.EmployeeId == fx.Emp["A"].Id))
+            .Available.Should().Be(2m, "only the new period's days are available; the encashed 9.25 are gone");
+
+        var nov = await LockMonthAsync(db, fx, 2026, 11);
+
+        (await LeaveLinesAsync(db, nov)).Where(l => l.SourceEntityRef == fx.Emp["A"].Id.ToString())
+            .Should().ContainSingle().Which.Should().Match<FinanceGlEntry>(l => l.CreditAccount == Provision && l.Amount == 600m,
+                "2 days x 300, not the 9.25 days already paid");
+        var snapshot = await db.LeaveProvisionSnapshots.AsNoTracking().SingleAsync(x => x.EmployeeId == fx.Emp["A"].Id && x.Period == "2026-11");
+        (snapshot.Days, snapshot.Obligation).Should().Be((2m, 600m));
     }
 
     // ── The provision panel follows the same service-period rule ────────────────

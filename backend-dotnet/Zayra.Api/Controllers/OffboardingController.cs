@@ -899,6 +899,31 @@ public class OffboardingController : ControllerBase
                 return false;
             }
 
+            // Leave encashment is only real once the BALANCE is decremented — the payroll-run disbursement does it
+            // (PayrollRunProcessor, the settlement's encashment lines), so this rail must too. Without it the paid days stay
+            // Available: a rehired employee (same id, same balance rows) would be provided for, and could be paid, a second time.
+            // The EXACT rows and days the settlement's lines name are taken, never re-derived.
+            var encashedDays = (await _db.FinalSettlementLines.AsNoTracking()
+                    .Where(l => l.TenantId == tenantId && l.SettlementId == settlement.Id
+                             && l.ComponentCode == FinalSettlementComponents.LeaveEncashment
+                             && l.SourceEntityId != null && l.Quantity > 0m)
+                    .Select(l => new { BalanceId = l.SourceEntityId!.Value, l.Quantity })
+                    .ToListAsync(token))
+                .GroupBy(l => l.BalanceId)
+                .ToDictionary(g => g.Key, g => Math.Round(g.Sum(l => l.Quantity), 2));
+            if (encashedDays.Count > 0)
+            {
+                var balanceIds = encashedDays.Keys.ToList();
+                var balanceRows = await _db.EmployeeLeaveBalances
+                    .Where(b => b.TenantId == tenantId && b.EmployeeId == settlement.EmployeeId && balanceIds.Contains(b.Id))
+                    .ToListAsync(token);
+                foreach (var row in balanceRows)
+                {
+                    row.Encashed = Math.Round(row.Encashed + encashedDays[row.Id], 2);
+                    row.UpdatedAtUtc = recordedAtUtc;
+                }
+            }
+
             settlement.Status = FinalSettlementStatuses.Paid;
             settlement.PaidAtUtc = recordedAtUtc;
             settlement.PaidOutsidePayroll = true;
@@ -923,6 +948,7 @@ public class OffboardingController : ControllerBase
                     settlement.NetPayable, settlement.Currency, method, reference,
                     paidOn, period = discharge!.Period,
                     payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
+                    leaveDaysEncashed = Math.Round(encashedDays.Values.Sum(), 2),
                 })));
             await _db.SaveChangesAsync(token);
 
