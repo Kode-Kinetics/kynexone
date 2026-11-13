@@ -651,10 +651,12 @@ test.describe('Payroll — run to WPS file', () => {
 
         const filedCard = batchCard(admin, batchNumber);
         await expect(filedCard).toBeVisible({ timeout: 30_000 });
+        // The card badge shows the wage-file (WPS) status once one exists, so a filed batch
+        // reads "Generated"; older builds showed the batch status "File generated".
         await expect(
           filedCard,
-          'a batch with a generated wage file must read as File generated',
-        ).toContainText('File generated');
+          'a batch with a generated wage file must read as Generated',
+        ).toContainText(/\b(File generated|Generated)\b/);
         await expect(
           filedCard,
           "the filed batch must still show the run's net-pay total",
