@@ -570,7 +570,7 @@ public sealed partial class SaudiBankExportService
 
             var idCandidates = new[]
                 {
-                    emp.IdType is "NationalId" or "Iqama" ? emp.IdNumber : null,
+                    GovernmentIdTypes.IsNationalIdOrIqama(emp.IdType) ? emp.IdNumber : null,
                     emp.IqamaNumber,
                 }
                 .Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToList();

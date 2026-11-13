@@ -224,9 +224,9 @@ public sealed class QiwaIntegrationService : IQiwaIntegrationService
     public static (string Type, string Number) PrimaryIdentity(Employee emp)
     {
         if (!string.IsNullOrWhiteSpace(emp.IdNumber))
-            return (!string.IsNullOrWhiteSpace(emp.IdType) ? emp.IdType : "NationalId", emp.IdNumber);
-        if (!string.IsNullOrWhiteSpace(emp.IqamaNumber)) return ("Iqama", emp.IqamaNumber);
-        if (!string.IsNullOrWhiteSpace(emp.BorderNumber)) return ("BorderNumber", emp.BorderNumber);
+            return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.Canonical(emp.IdType) ?? Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.NationalId, emp.IdNumber);
+        if (!string.IsNullOrWhiteSpace(emp.IqamaNumber)) return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.Iqama, emp.IqamaNumber);
+        if (!string.IsNullOrWhiteSpace(emp.BorderNumber)) return (Zayra.Api.Infrastructure.Employees.GovernmentIdTypes.BorderNumber, emp.BorderNumber);
         return (string.Empty, string.Empty);
     }
 

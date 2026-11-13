@@ -256,6 +256,25 @@ public class SaudiBankExportTests
         (db.BankTransferFiles.Count() + db.PayrollAuditLogs.Count()).Should().Be(before);
     }
 
+    [Theory]
+    [InlineData("NationalId")]
+    [InlineData("National ID")]
+    [InlineData("national id")]
+    [InlineData("National ID (Hawiyya)")]
+    [InlineData(" NATIONAL_ID ")]
+    public async Task Validate_ASaudiNationalId_IsRead_WhicheverSpellingTheIdTypeWasStoredIn(string idType)
+    {
+        var (db, tenant, _, batch, svc) = await Arrange();
+        var saudi = db.Employees.Single(e => e.TenantId == tenant && e.IdNumber == "1012345678");
+        saudi.IdType = idType;   // the profile screen and the CSV import store the displayed label, "National ID"
+        await db.SaveChangesAsync();
+
+        var v = (await svc.ValidateAsync(tenant, batch, SaudiBankExportTestData.Request(), default)).Value!;
+
+        v.Errors.Should().NotContain(e => e.Code == "mol_id_missing", "the National ID is on the record whatever the label's spelling");
+        v.CanExport.Should().BeTrue(string.Join("; ", v.Errors.Select(e => e.Code)));
+    }
+
     [Fact]
     public async Task Validate_WithoutAddressSource_BlocksEveryRow_NeverDefaults()
     {
