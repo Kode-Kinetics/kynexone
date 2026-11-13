@@ -565,6 +565,49 @@ public class LeaverLifecycleS2Tests
     }
 
     /// <summary>
+    /// The leave encashment a settlement pays is only real once the BALANCE drops: the payroll-run disbursement increments
+    /// <c>Encashed</c> on the rows the settlement's lines name, and recording the payment outside payroll must do the same.
+    /// Otherwise the paid days stay available and a rehire (same employee id, same balance rows) is provided for them again.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_TakesTheEncashedLeaveDaysOffTheBalanceRowsTheSettlementNames()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, gross: 2_775m, deductions: 0m);
+        var annual = Guid.NewGuid();
+        var named = new EmployeeLeaveBalance
+        {
+            TenantId = fx.TenantId, EmployeeId = fx.Employee.Id, EmployeeName = fx.Employee.FullName,
+            LeaveTypeId = annual, LeaveTypeName = "Annual leave", Year = 2026, Accrued = 12.25m, Used = 3m,
+        };
+        var other = new EmployeeLeaveBalance
+        {
+            TenantId = fx.TenantId, EmployeeId = fx.Employee.Id, EmployeeName = fx.Employee.FullName,
+            LeaveTypeId = annual, LeaveTypeName = "Annual leave", Year = 2025, Accrued = 4m,
+        };
+        db.EmployeeLeaveBalances.AddRange(named, other);
+        db.FinalSettlementLines.Add(new FinalSettlementLine
+        {
+            TenantId = fx.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+            ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
+            Source = FinalSettlementComponents.SettlementSource, Amount = 2_775m, Quantity = 9.25m, SourceEntityId = named.Id,
+        });
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id, new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LV-1", 2_775m, null),
+            CancellationToken.None);
+        Assert.IsType<OkObjectResult>(result);
+
+        var rows = await db.EmployeeLeaveBalances.AsNoTracking().ToListAsync();
+        var paidRow = rows.Single(b => b.Id == named.Id);
+        Assert.Equal(9.25m, paidRow.Encashed);
+        Assert.Equal(0m, paidRow.Available);
+        Assert.Equal(0m, rows.Single(b => b.Id == other.Id).Encashed);   // only the row the settlement names
+    }
+
+    /// <summary>
     /// B2 — recording the payment is a JOURNAL, not a flag. If it were only a flag, 2320 would carry a
     /// liability that no longer exists for the rest of the entity's life.
     /// </summary>
