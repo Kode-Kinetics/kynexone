@@ -7099,6 +7099,10 @@ public class EmployeesController : ControllerBase
         "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
         "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
         "residencyIssueDate", "idNumber", "qiwaContractNumber", "sponsorName", "terminationReason",
+        // The Qiwa block references (registry section "qiwa"). The Saudi bank export checks EstablishmentId against the company
+        // (establishment_mismatch), and nothing else wrote them, so a wrong value could never be corrected. Approval-gated with
+        // qiwaContractNumber (ProfileChangeApprovalRules.LegacySensitiveFields).
+        "establishmentId", "occupationCode", "workLocationId", "contractReference", "workPermitReference",
         // Stored on EmployeePayrollProfile, not on Employee (registry binding
         // `payrollProfile.socialInsuranceReference`). It is a fail-closed PAY gate in five GCC branches
         // — GPSSA/GRSIA/PIFSS/SPF/SIO — yet it had NO write path outside CSV import, so every
