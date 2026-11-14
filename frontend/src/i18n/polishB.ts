@@ -12,6 +12,14 @@ const ar: Record<string, string> = {
   'This offer needs approval before it can be sent. Choose an HR Manager or Admin who did not write it.': 'يحتاج هذا العرض إلى اعتماد قبل إرساله. اختر مدير موارد بشرية أو مسؤولًا لم يكتب العرض.',
   'Waiting for the named approver to decide.': 'بانتظار قرار المعتمد المحدد.',
   'An approver rejected this offer. Generate a revised offer and request approval on that.': 'رفض أحد المعتمدين هذا العرض. أنشئ عرضًا معدّلًا واطلب اعتماده.',
+  // Payroll run header and batches
+  'Amounts in {currency}': 'المبالغ بعملة {currency}',
+  // Candidates, interviews, payslips
+  '{range}/mo': '{range} شهريًا',
+  '{years, plural, one {# yr} other {# yrs}}': '{years, plural, zero {أقل من سنة} one {سنة} two {سنتان} few {# سنوات} many {# سنة} other {# سنة}}',
+  'French': 'الفرنسية',
+  // Onboarding checklist templates
+  'Saudi Arabia starter checklist': 'قائمة المهام الابتدائية للمملكة العربية السعودية',
   // Access and onboarding
   'Draft · not active yet': 'مسودة · غير نشط بعد',
   'Draft · awaiting pay approval': 'مسودة · بانتظار اعتماد الأجر',
@@ -38,6 +46,16 @@ const enums: Record<string, [string, string]> = {
   'enum.Status.Renewed': ['Renewed', 'مُجدَّد'],
   'enum.Status.Exempted': ['Exempted', 'معفى'],
   'enum.Status.Converted': ['Converted', 'محوّل'],
+  'enum.Status.Downloaded': ['Downloaded', 'تم التنزيل'],
+  'enum.Status.Reconciled': ['Reconciled', 'تمت التسوية'],
+  // Interview and screening recommendations
+  'enum.InterviewRecommendation.StrongHire': ['Strong hire', 'توظيف بقوة'],
+  'enum.InterviewRecommendation.Hire': ['Hire', 'توظيف'],
+  'enum.InterviewRecommendation.NoHire': ['No hire', 'عدم التوظيف'],
+  'enum.InterviewRecommendation.Hold': ['Hold', 'تعليق'],
+  'enum.InterviewRecommendation.Reject': ['Reject', 'رفض'],
+  'enum.InterviewRecommendation.Maybe': ['Maybe', 'محتمل'],
+  'enum.InterviewRecommendation.Shortlist': ['Shortlist', 'ضمن القائمة المختصرة'],
   // Offer lifecycle events (History tab)
   'enum.OfferEvent.DraftCreated': ['Draft created', 'أُنشئت المسودة'],
   'enum.OfferEvent.DraftSaved': ['Draft saved', 'حُفظت المسودة'],

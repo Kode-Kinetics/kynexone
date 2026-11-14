@@ -32,6 +32,7 @@ export type EnumName =
   | 'RecruitmentEvent'
   | 'OfferEvent'
   | 'ApprovalEntity'
+  | 'InterviewRecommendation'
   | 'EmploymentType';
 
 /** "Half day" → "HalfDay", "pending" → "Pending", "PendingHRApproval" unchanged. */
