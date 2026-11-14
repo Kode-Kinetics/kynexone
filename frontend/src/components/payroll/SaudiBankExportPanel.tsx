@@ -27,6 +27,7 @@ import {
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
 import { enumLabel } from '../../i18n/enumLabel';
+import { bankAcceptanceLabel } from '../../lib/payrollBatchDisplay';
 import { useAuth } from '../../contexts/AuthContext';
 import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
@@ -800,7 +801,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: {
           {selectedFormat && (
             <>
               {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{t(selectedFormat.bank)} · {t(selectedFormat.channel)}</dd></div>}
-              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{t(selectedFormat.acceptanceStatus)}</dd></div>
+              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{bankAcceptanceLabel(t, selectedFormat.acceptanceStatus)}</dd></div>
               {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>}
               {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
                 <dd className="truncate">

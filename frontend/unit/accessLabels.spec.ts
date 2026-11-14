@@ -9,8 +9,8 @@ const arabic = /[؀-ۿ]/;
 
 test.describe('Access and onboarding labels', () => {
   test('a Draft employee reads Draft, not just "Awaiting pay approval"', () => {
-    expect(employeeStateLabel('awaiting_pay_approval', 'Draft')).toBe('Draft · awaiting pay approval');
-    expect(employeeStateLabel('not_active', 'Draft')).toBe('Draft · not active yet');
+    expect(employeeStateLabel('awaiting_pay_approval', 'Draft')).toBe('Awaiting pay approval (Draft)');
+    expect(employeeStateLabel('not_active', 'Draft')).toBe('Not active yet (Draft)');
     expect(ar(employeeStateLabel('not_active', 'Draft'))).toMatch(arabic);
     expect(ar(employeeStateLabel('awaiting_pay_approval', 'Draft'))).toMatch(arabic);
   });

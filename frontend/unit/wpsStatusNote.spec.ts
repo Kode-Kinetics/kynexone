@@ -25,3 +25,13 @@ test.describe('batch status shown once', () => {
     }
   });
 });
+
+test.describe('bank format acceptance caveat', () => {
+  test('the API strings are translated, an unknown one passes through', async () => {
+    const { bankAcceptanceLabel } = await import('../src/lib/payrollBatchDisplay');
+    expect(bankAcceptanceLabel(en, 'specification-implemented; bank-acceptance-not-verified')).toBe('Specification implemented; bank acceptance not verified');
+    expect(bankAcceptanceLabel(ar, 'specification-implemented; bank-acceptance-not-verified')).toMatch(/[؀-ۿ]/);
+    expect(bankAcceptanceLabel(ar, 'customer-configured-layout; bank-acceptance-not-verified')).toMatch(/[؀-ۿ]/);
+    expect(bankAcceptanceLabel(en, 'something else')).toBe('something else');
+  });
+});

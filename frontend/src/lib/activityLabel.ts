@@ -14,7 +14,7 @@ type Translator = (key: string, params?: MessageParams) => string;
 export function auditActionLabel(t: Translator, action: string | null | undefined): string {
   const code = (action ?? '').trim();
   if (!code) return '—';
-  const key = `audit.${code.toLowerCase()}`;
+  const key = `enum.AuditAction.${code.toLowerCase()}`;
   const known = t(key);
   if (known !== key) return known;
   const plain = t(code);

@@ -277,8 +277,8 @@ const LEFT_OR_HELD: Readonly<Record<string, EmployeeRowState>> = {
  */
 export function employeeStateLabel(state: EmployeeRowState, status: string | null | undefined): string {
   const draft = (status ?? '').trim().toLowerCase() === 'draft';
-  if (draft && state === 'not_active') return 'Draft · not active yet';
-  if (draft && state === 'awaiting_pay_approval') return 'Draft · awaiting pay approval';
+  if (draft && state === 'not_active') return 'Not active yet (Draft)';
+  if (draft && state === 'awaiting_pay_approval') return 'Awaiting pay approval (Draft)';
   return EMPLOYEE_STATE_LABEL[state];
 }
 const EMPLOYEE_STATE_LABEL: Record<EmployeeRowState, string> = {

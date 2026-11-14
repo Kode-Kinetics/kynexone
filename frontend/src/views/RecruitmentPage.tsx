@@ -216,11 +216,6 @@ function ToneChip(props: React.ComponentProps<typeof StatusChip>) {
   return <StatusChip {...props} label={t(props.label)} />;
 }
 
-function fmt(n: number | null | undefined) {
-  if (n == null) return '—';
-  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-}
-
 const PRIORITY_COLORS: Record<string, string> = {
   Low: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
   Medium: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',

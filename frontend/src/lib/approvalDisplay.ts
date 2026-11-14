@@ -44,10 +44,10 @@ export function approvalChangeSummary(t: Translator, summary: string | null | un
   return summary.split(',').map(part => {
     const token = part.trim();
     if (!token) return '';
-    const key = `approval.field.${token.toLowerCase()}`;
+    const key = `enum.ApprovalField.${token.toLowerCase()}`;
     const label = t(key);
     return label === key ? token : label;
-  }).filter(Boolean).join(t('approval.list_separator'));
+  }).filter(Boolean).join(t('enum.ApprovalList.Separator'));
 }
 
 const TITLE_PREFIXES: Array<[string, string]> = [

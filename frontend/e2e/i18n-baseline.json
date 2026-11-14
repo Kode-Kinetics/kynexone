@@ -153,8 +153,8 @@
   ],
   "totals": {
     "hardcoded": 2709,
-    "rawStatus": 31,
-    "locale": 171,
+    "rawStatus": 27,
+    "locale": 169,
     "icons": 0,
     "files": 113
   },
@@ -445,7 +445,7 @@
       "hardcoded": 5
     },
     "src/components/payroll/SaudiBankExportPanel.tsx": {
-      "rawStatus": 3,
+      "rawStatus": 1,
       "locale": 1
     },
     "src/components/platform/ComingSoon.tsx": {
@@ -551,15 +551,14 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "locale": 31
+      "locale": 30
     },
     "src/views/PublicCredentialPage.tsx": {
       "hardcoded": 11
     },
     "src/views/RecruitmentPage.tsx": {
       "hardcoded": 5,
-      "rawStatus": 2,
-      "locale": 6
+      "locale": 5
     },
     "src/views/ReportsPage.tsx": {
       "hardcoded": 82,

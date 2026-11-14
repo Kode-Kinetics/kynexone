@@ -17,3 +17,15 @@ export function wpsStatusNote(t: Translator, label: string | null | undefined, s
   if (REPEATS_BADGE.has(status) && text.startsWith(status)) return null;
   return t(text);
 }
+
+const ACCEPTANCE_KEYS: Record<string, string> = {
+  'specification-implemented; bank-acceptance-not-verified': 'enum.BankAcceptance.SpecificationImplemented',
+  'customer-configured-layout; bank-acceptance-not-verified': 'enum.BankAcceptance.CustomerConfigured',
+};
+
+/** The honest acceptance caveat of a bank format, in the viewer's language (the API sends a code-like English string). */
+export function bankAcceptanceLabel(t: Translator, status: string | null | undefined): string {
+  const text = (status ?? '').trim();
+  const key = ACCEPTANCE_KEYS[text];
+  return key ? t(key) : text;
+}
