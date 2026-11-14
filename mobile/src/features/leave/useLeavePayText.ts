@@ -4,7 +4,7 @@ import { useFormat } from '@/utils/format';
 import { splitMinutes } from '@/features/overtime/overtimeLogic';
 import { classifyLeavePayError, errorShape, pluralCategory } from './leavePayText';
 
-type PluralGroup = 'days' | 'calendarDays' | 'daysLeft' | 'instalmentsLeft';
+type PluralGroup = 'days' | 'calendarDays' | 'months' | 'daysLeft' | 'instalmentsLeft';
 
 /** Counts, durations, names and error messages for the Leave / Overtime / Payslip screens. */
 export function useLeavePayText() {
@@ -30,7 +30,27 @@ export function useLeavePayText() {
     const name = (en: string | null | undefined, ar: string | null | undefined) =>
       (language === 'ar' && ar ? ar : en) ?? '';
 
-    const error = (err: unknown) => t(`leavePay.errors.${classifyLeavePayError(errorShape(err))}`);
+    /**
+     * A refusal sentence. Day and month counts the server sends are put through the plural forms (so Arabic reads
+     * يومان / ٣ أيام, not "2 يوم") and, in English, lower-cased because they sit mid-sentence ("at least one day").
+     */
+    const error = (err: unknown) => {
+      const shape = errorShape(err);
+      const kind = classifyLeavePayError(shape);
+      const args = shape.args ?? {};
+      const inline = (group: PluralGroup, raw: string | undefined) => {
+        const n = Number(raw);
+        if (raw == null || !Number.isFinite(n)) return raw ?? '';
+        const phrase = count(group, n);
+        return language === 'en' ? phrase.charAt(0).toLowerCase() + phrase.slice(1) : phrase;
+      };
+      return t(`leavePay.errors.${kind}`, {
+        days: inline('days', args.days),
+        months: inline('months', args.months),
+        year: args.year ?? '',
+        leaveType: args.leaveType ?? '',
+      });
+    };
 
     const dateRange = (start: string, end: string, style: 'medium' | 'dayMonth' = 'medium') =>
       start === end || !end
