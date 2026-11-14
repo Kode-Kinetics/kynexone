@@ -12,6 +12,11 @@ const ar: Record<string, string> = {
   'This offer needs approval before it can be sent. Choose an HR Manager or Admin who did not write it.': 'يحتاج هذا العرض إلى اعتماد قبل إرساله. اختر مدير موارد بشرية أو مسؤولًا لم يكتب العرض.',
   'Waiting for the named approver to decide.': 'بانتظار قرار المعتمد المحدد.',
   'An approver rejected this offer. Generate a revised offer and request approval on that.': 'رفض أحد المعتمدين هذا العرض. أنشئ عرضًا معدّلًا واطلب اعتماده.',
+  // Access and onboarding
+  'Draft · not active yet': 'مسودة · غير نشط بعد',
+  'Draft · awaiting pay approval': 'مسودة · بانتظار اعتماد الأجر',
+  '{type} document': 'مستند {type}',
+  'Contract document': 'مستند العقد',
   // Approvals queue
   'Employee change approval - {subject}': 'اعتماد تغيير بيانات الموظف - {subject}',
   'Role': 'الدور',

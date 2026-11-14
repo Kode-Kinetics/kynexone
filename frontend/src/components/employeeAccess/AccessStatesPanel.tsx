@@ -4,7 +4,7 @@ import { useId, useState, type ReactNode } from 'react';
 import { Ban, CheckCircle2, Circle, Clock, KeyRound } from 'lucide-react';
 import type { EmployeeAccessDto } from '../../api/employeeAccess';
 import { useLocale } from '../../contexts/LocaleContext';
-import type { AccessTone, EmployeeRowState, LoginRowState, PasswordRowState, ThreeStates } from '../../lib/employeeAccess';
+import { employeeStateLabel, type AccessTone, type EmployeeRowState, type LoginRowState, type PasswordRowState, type ThreeStates } from '../../lib/employeeAccess';
 import { StatusChip } from '../StatusChip';
 
 const ICON = 'h-3.5 w-3.5 shrink-0';
@@ -47,10 +47,12 @@ export interface ActivationControl {
  * Each row says its state (icon + words), who can act, the next action, and has at most one button.
  */
 export function AccessStatesPanel({
-  states, access, accessProblem, onRetryAccess, detailRow, activation, canIssue, canReset, waitingReason, issuing, detail, workEmailNote,
+  states, employeeStatus, access, accessProblem, onRetryAccess, detailRow, activation, canIssue, canReset, waitingReason, issuing, detail, workEmailNote,
   employeeName, onIssue, onAddWorkEmail,
 }: {
   states: ThreeStates;
+  /** employees.status; a Draft person reads as Draft on the first row. */
+  employeeStatus?: string;
   /** Null while the sign-in status loads or could not be loaded (see accessProblem). */
   access: EmployeeAccessDto | null;
   accessProblem: 'loading' | 'failed' | null;
@@ -115,13 +117,13 @@ export function AccessStatesPanel({
     <div role="group" aria-labelledby={titleId} data-testid="access-states">
       <p id={titleId} className="sr-only">{t('Employment and sign-in status')}</p>
       <dl className="divide-y divide-slate-100 dark:divide-white/10">
-        <Row label={t('Employee active')} testId="state-employee" chip={<StatusChip label={t(employeeChip.label)} tone={employeeChip.tone} icon={employeeChip.icon} />}
+        <Row label={t('Employee active')} testId="state-employee" chip={<StatusChip label={t(employeeStateLabel(states.employee, employeeStatus))} tone={employeeChip.tone} icon={employeeChip.icon} />}
           who={t('An HR approver with employee approval rights')} next={t(activateNext)}
           button={states.employee !== 'active' && activation.allowed
             ? <RowButton primary disabled={activation.busy || activation.unavailable || activation.blocked} onClick={activation.onActivate}>{activation.busy ? t('Activating…') : t('Activate')}</RowButton>
             : null} />
         <Row label={t('Login enabled')} testId="state-login" dim={states.needsWorkEmail || !access}
-          chip={loginChip ? <StatusChip label={t(loginChip.label)} tone={loginChip.tone} icon={loginChip.icon} /> : null}
+          chip={loginChip ? <StatusChip label={t(loginChip.label)} tone={loginChip.tone} icon={loginChip.icon} /> : accessProblem === 'loading' ? <StatusChip label={t('Checking…')} tone="slate" icon={<Circle className={ICON} aria-hidden="true" />} /> : null}
           who={t('HR with sign-in access rights')}
           next={accessProblem === 'loading' ? t('Checking self-service…') : accessProblem === 'failed' ? t('Self-service could not be checked.') : states.needsWorkEmail ? t('Needs work email first') : loginNext ? t(loginNext) : ''}
           detail={detailRow === 'login' ? detail : undefined}
