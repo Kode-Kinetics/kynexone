@@ -419,7 +419,7 @@ test('a run the ERP already holds: the void asks for the acknowledgement, then r
 
 test('Arabic: the ERP acknowledgement', async ({ page }) => {
   await boot(page, { locale: 'ar', erpPosted: true });
-  await card(page, 'نوفمبر').locator('button[aria-label="Void run"], button[aria-label="إلغاء المسير"]').first().click();
+  await card(page, 'Nov 2026').locator(voidButton).first().click();
   await page.locator('textarea').fill('خطأ في الشهر');
   await tid(page, 'void-run-submit').click();
   await expect(tid(page, 'void-erp-posted')).toContainText('مرحَّل بالفعل في نظام ERP');

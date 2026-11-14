@@ -175,7 +175,7 @@ test.describe('Arabic leftovers', () => {
       expect(sidebarText.split('\n').map(line => line.trim()), `sidebar shows "${english}"`).not.toContain(english);
     }
     // Tax policies is a Setup section now (setup consolidation), no longer a sidebar entry.
-    for (const arabic of ['نظرة على المجموعة', 'التحليلات والتقارير', 'ملفات التأمينات الاجتماعية', 'فروقات التشغيل الموازي']) {
+    for (const arabic of ['نظرة على المجموعة', 'التحليلات والتقارير', 'مطابقة التأمينات الاجتماعية', 'فروقات التشغيل الموازي']) {
       expect(sidebarText, `sidebar shows «${arabic}»`).toContain(arabic);
     }
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/sidebar-ar-${info.project.name}.png` });
