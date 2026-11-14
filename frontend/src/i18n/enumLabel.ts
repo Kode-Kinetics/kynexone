@@ -33,6 +33,8 @@ export type EnumName =
   | 'OfferEvent'
   | 'ApprovalEntity'
   | 'InterviewRecommendation'
+  | 'BankBatchType'
+  | 'NitaqatGroup'
   | 'EmploymentType';
 
 /** "Half day" → "HalfDay", "pending" → "Pending", "PendingHRApproval" unchanged. */

@@ -56,7 +56,7 @@ export function PayApprovalsPage() {
             ? (data.requiresOtherReviewerCount === 1
               ? t('You created {count} pay package, so someone else must approve it. It does not appear in your queue.', { count: 1 })
               : t('You created {count} pay packages, so someone else must approve them. They do not appear in your queue.', { count: data.requiresOtherReviewerCount ?? 0 }))
-            : t('{count} packages need another reviewer because you are not independent of them.', { count: data.requiresOtherReviewerCount ?? 0 })}
+            : t('{count, plural, one {# package needs another reviewer because you are not independent of it.} other {# packages need another reviewer because you are not independent of them.}}', { count: data.requiresOtherReviewerCount ?? 0 })}
           {hasPermission('security.manage')
             ? <Link className="ms-2 underline" href="/setup?tab=users">{t('Check reviewer setup')}</Link>
             : data.items.length === 0 && <span className="ms-2">{t('Ask your administrator.')}</span>}

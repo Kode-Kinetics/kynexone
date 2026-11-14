@@ -50,3 +50,27 @@ test.describe('small labels', () => {
     expect(enumLabel(en, 'InterviewRecommendation', 'StrongHire')).toBe('Strong hire');
   });
 });
+
+test.describe('period labels', () => {
+  test('a YYYY-MM month is formatted as a month name, not passed through', () => {
+    expect(createFormatter({ locale: 'ar' }).period('2026-11', 'long')).toBe(createFormatter({ locale: 'ar' }).period('Nov 2026', 'long'));
+    expect(createFormatter({ locale: 'en' }).period('2026-11', 'long')).toBe('November 2026');
+  });
+});
+
+test.describe('plurals and group names', () => {
+  const key = '{count, plural, one {# package needs another reviewer because you are not independent of it.} other {# packages need another reviewer because you are not independent of them.}}';
+  test('one package is singular in English and Arabic', () => {
+    expect(en(key, { count: 1 })).toBe('1 package needs another reviewer because you are not independent of it.');
+    expect(en(key, { count: 3 })).toBe('3 packages need another reviewer because you are not independent of them.');
+    expect(ar(key, { count: 1 })).toContain('حزمة واحدة');
+    expect(ar(key, { count: 2 })).toContain('حزمتان');
+    expect(ar(key, { count: 5 })).toContain('5 حزم');
+  });
+
+  test('Saudization group names read in Arabic', () => {
+    expect(enumLabel(ar, 'NitaqatGroup', 'NonSaudi')).toBe('غير سعودي');
+    expect(enumLabel(ar, 'NitaqatGroup', 'FullTime')).toBe('دوام كامل');
+    expect(enumLabel(en, 'NitaqatGroup', 'NonSaudi')).toBe('Non-Saudi');
+  });
+});

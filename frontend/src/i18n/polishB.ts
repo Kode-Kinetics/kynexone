@@ -15,6 +15,13 @@ const ar: Record<string, string> = {
   // Home attention tiles
   'Action needed': 'يتطلب إجراءً',
   'For review': 'للمراجعة',
+  // Bank payment instruction file: format facts the API sends in English
+  'ANB Connect payroll payment — header.csv + body.csv': 'دفع الرواتب عبر ANB Connect — header.csv + body.csv',
+  'Arab National Bank (ANB)': 'البنك العربي الوطني (ANB)',
+  'ANB Connect API channel (payroll-payment). Not the ANB corporate-portal WPY upload.': 'قناة ANB Connect البرمجية (دفع الرواتب)، وليست رفع WPY عبر بوابة الشركات في البنك.',
+  'specification-implemented; bank-acceptance-not-verified': 'مُنفَّذ وفق المواصفات؛ لم يُتحقق من قبول البنك له',
+  'customer-configured-layout; bank-acceptance-not-verified': 'تخطيط يضبطه العميل؛ لم يُتحقق من قبول البنك له',
+  'Mudad/bank generic CSV (verify with your bank)': 'ملف CSV عام لمُدد والبنوك (تحقق منه مع بنكك)',
   // Payroll run header and batches
   'Amounts in {currency}': 'المبالغ بعملة {currency}',
   // Candidates, interviews, payslips
@@ -23,6 +30,8 @@ const ar: Record<string, string> = {
   'French': 'الفرنسية',
   // Onboarding checklist templates
   'Saudi Arabia starter checklist': 'قائمة المهام الابتدائية للمملكة العربية السعودية',
+  // Pay approvals
+  '{count, plural, one {# package needs another reviewer because you are not independent of it.} other {# packages need another reviewer because you are not independent of them.}}': '{count, plural, one {تحتاج حزمة واحدة إلى مراجع آخر لأنك لست مستقلًا عنها.} two {تحتاج حزمتان إلى مراجع آخر لأنك لست مستقلًا عنهما.} few {تحتاج # حزم إلى مراجع آخر لأنك لست مستقلًا عنها.} many {تحتاج # حزمة إلى مراجع آخر لأنك لست مستقلًا عنها.} other {تحتاج # حزمة إلى مراجع آخر لأنك لست مستقلًا عنها.}}',
   // Access and onboarding
   'Draft · not active yet': 'مسودة · غير نشط بعد',
   'Draft · awaiting pay approval': 'مسودة · بانتظار اعتماد الأجر',
@@ -51,6 +60,21 @@ const enums: Record<string, [string, string]> = {
   'enum.Status.Converted': ['Converted', 'محوّل'],
   'enum.Status.Downloaded': ['Downloaded', 'تم التنزيل'],
   'enum.Status.Reconciled': ['Reconciled', 'تمت التسوية'],
+  'enum.BankBatchType.PAYROLL': ['Payroll', 'رواتب'],
+  'enum.BankBatchType.BENEFIT': ['Benefit', 'مزايا'],
+  'enum.BankBatchType.BONUS': ['Bonus', 'مكافآت'],
+  'enum.BankBatchType.WELFARE': ['Welfare', 'رعاية'],
+  // Saudization (Nitaqat) breakdown group names
+  'enum.NitaqatGroup.Saudi': ['Saudi', 'سعودي'],
+  'enum.NitaqatGroup.NonSaudi': ['Non-Saudi', 'غير سعودي'],
+  'enum.NitaqatGroup.Any': ['Any basis', 'أي نوع دوام'],
+  'enum.NitaqatGroup.FullTime': ['Full-time', 'دوام كامل'],
+  'enum.NitaqatGroup.PartTime': ['Part-time', 'دوام جزئي'],
+  'enum.NitaqatGroup.Standard': ['Standard', 'معتاد'],
+  'enum.NitaqatGroup.Disability': ['Disability', 'ذوو الإعاقة'],
+  'enum.NitaqatGroup.BelowWageFloor': ['Below wage floor', 'دون الحد الأدنى للأجر'],
+  'enum.NitaqatGroup.HalfWageFloor': ['Half wage floor', 'نصف الحد الأدنى للأجر'],
+  'enum.NitaqatGroup.PremiumResidency': ['Premium residency', 'الإقامة المميزة'],
   // Interview and screening recommendations
   'enum.InterviewRecommendation.StrongHire': ['Strong hire', 'توظيف بقوة'],
   'enum.InterviewRecommendation.Hire': ['Hire', 'توظيف'],

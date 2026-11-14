@@ -310,6 +310,9 @@ export function createFormatter(settings: FormatSettings) {
    */
   function period(label: string | null | undefined, style: 'long' | 'short' = 'long'): string {
     if (!label) return '';
+    // "2026-11" (the insights engine's month key) reads as "Nov 2026".
+    const ym = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(label.trim());
+    if (ym) label = `${MONTHS[Number(ym[2]) - 1]} ${ym[1]}`;
     const m = /^([A-Za-z]{3})[a-z]*\.?(?:\s+(\d{4}))?$/.exec(label.trim());
     const idx = m ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
     if (!m || idx < 0) return label;
