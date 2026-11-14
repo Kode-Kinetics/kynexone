@@ -918,9 +918,25 @@ export function PoliciesTab({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
 
 // ── Calculation Preview Tab ─────────────────────────────────────────────────────
 
+/** Names for the employees on overtime rows that carry only an id (calculations, payroll impacts, comp-off conversions): taken from the overtime requests. */
+function useEmployeeNames(): (id: number) => string {
+  const t = useT();
+  const [names, setNames] = useState<Map<number, string>>(new Map());
+  useEffect(() => {
+    let live = true;
+    overtimeApi.allRequests().then(rows => {
+      if (live) setNames(new Map(rows.filter(r => r.employeeName).map(r => [r.employeeId, r.employeeName] as const)));
+    }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  return (id: number) => names.get(id) ?? t('Employee {id}', { id });
+}
+
 function CalcPreviewTab() {
   const t = useT();
   const fx = useFormat();
+  const who = useEmployeeNames();
+  const money = (v: number) => fx.plain.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const [calculations, setCalculations] = useState<OvertimeCalculation[]>([]);
   const [empId, setEmpId] = useState('');
   const [calcPickedEmp, setCalcPickedEmp] = useState<SelectedEmployee | null>(null);
@@ -960,11 +976,11 @@ function CalcPreviewTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {calculations.map(c => (
                 <tr key={c.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                  <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{t('Emp #{id}', { id: c.employeeId })}</td>
+                  <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{who(c.employeeId)}</td>
                   <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{t('{hours}h', { hours: fmtHours(c.approvedHours) })}</td>
-                  <td className="px-3 py-2 text-slate-500">{c.hourlyRate.toFixed(2)}</td>
+                  <td className="px-3 py-2 text-slate-500">{money(c.hourlyRate)}</td>
                   <td className="px-3 py-2 text-slate-500">×{c.multiplier}</td>
-                  <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{c.amount.toFixed(2)}</td>
+                  <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{money(c.amount)}</td>
                   <td className="px-3 py-2 text-slate-500">{c.currency}</td>
                   <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(fx, c.createdAtUtc)}</td>
                 </tr>
@@ -1005,6 +1021,8 @@ function CalcPreviewTab() {
 function PayrollReviewTab() {
   const t = useT();
   const fx = useFormat();
+  const who = useEmployeeNames();
+  const money = (v: number) => fx.plain.number(v, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const [impacts, setImpacts] = useState<OvertimePayrollImpact[]>([]);
   const [conversions, setConversions] = useState<OvertimeCompOffConversion[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1046,9 +1064,9 @@ function PayrollReviewTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {impacts.map(i => (
                 <tr key={i.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{id}', { id: i.employeeId })}</td>
+                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{who(i.employeeId)}</td>
                   <td className="px-4 py-2 text-slate-500">{t('{hours}h', { hours: fmtHours(i.hours) })}</td>
-                  <td className="px-4 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{i.amount.toFixed(2)}</td>
+                  <td className="px-4 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{money(i.amount)}</td>
                   <td className="px-4 py-2"><StatusBadge status={i.status} /></td>
                   <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(fx, i.createdAtUtc)}</td>
                 </tr>
@@ -1074,7 +1092,7 @@ function PayrollReviewTab() {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {conversions.map(c => (
                 <tr key={c.id}>
-                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{t('Emp #{id}', { id: c.employeeId })}</td>
+                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">{who(c.employeeId)}</td>
                   <td className="px-4 py-2 text-slate-500">{t('{hours}h', { hours: c.overtimeHours })}</td>
                   <td className="px-4 py-2 text-slate-500">{t('{days}d', { days: c.compOffDays })}</td>
                   <td className="px-4 py-2"><StatusBadge status={c.status} /></td>

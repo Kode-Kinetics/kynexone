@@ -236,6 +236,10 @@
     "playwright.ux-fixes.config.ts": {
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
+    },
+    "playwright.demo-polish.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked demo-polish spec (e2e/demo-polish.spec.ts): payroll readiness on a locked run, compliance counts, home tiles, run selectors and the offer page, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
     }
   }
 }

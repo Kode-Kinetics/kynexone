@@ -254,7 +254,7 @@ public class WpsTests
         var emp = ActiveEmployee(tenantId, 1, idNumber: "");
         emp.IdType = ""; emp.IqamaNumber = "2123456785"; emp.SaudiOrNonSaudi = "Non-Saudi"; emp.Nationality = "Egyptian";
 
-        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: true);
 
         Assert.DoesNotContain(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
         Assert.True(result.CanExport, string.Join("; ", result.BlockingErrors.Select(e => e.Code)));
@@ -270,7 +270,7 @@ public class WpsTests
         var emp = ActiveEmployee(tenantId, 1, idNumber: "1012345678");
         emp.IqamaNumber = "2123456785";
 
-        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: true);
 
         Assert.Contains(result.BlockingErrors, e => e.Code == "EMPLOYEE_ID_CONFLICT");
     }
@@ -285,7 +285,115 @@ public class WpsTests
         var emp = ActiveEmployee(tenantId, 1, idNumber: "A12345678");
         emp.IdType = "Passport";
 
-        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: true);
+
+        Assert.Contains(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
+    }
+
+    // ── A Saudi company's register carries a National ID (1…) or an Iqama (2…), 10 digits ─────────
+    // The same rule the Saudi bank file applies (KsaWageFileRules), so a passport number recorded under a type the system does not
+    // recognise can never reach the WPS register.
+
+    [Theory]
+    [InlineData("A12345678", "Indian", "MOL_ID_INVALID")]
+    [InlineData("P1234567", "Indian", "MOL_ID_INVALID")]
+    [InlineData("3123456789", "Indian", "MOL_ID_PREFIX_MISMATCH")]
+    [InlineData("2123456785", "Saudi", "MOL_ID_PREFIX_MISMATCH")]
+    [InlineData("1012345678", "", "NATIONALITY_MISSING")]
+    public void Validator_SaudiCompany_AnIdThatIsNotANationalIdOrIqama_BlocksExport(string id, string nationality, string code)
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: id);
+        emp.IdType = "Travel document"; emp.Nationality = nationality; emp.SaudiOrNonSaudi = nationality == "Saudi" ? "Saudi" : "Non-Saudi";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: true);
+
+        Assert.False(result.CanExport);
+        Assert.Contains(result.BlockingErrors, e => e.Code == code && e.EmployeeId == 1);
+    }
+
+    [Theory]
+    [InlineData("1012345678", "Saudi")]
+    [InlineData("2123456785", "Indian")]
+    public void Validator_SaudiCompany_AWellFormedNationalIdOrIqama_Passes(string id, string nationality)
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: id);
+        emp.IdType = nationality == "Saudi" ? "National ID" : "Iqama"; emp.Nationality = nationality;
+        emp.SaudiOrNonSaudi = nationality == "Saudi" ? "Saudi" : "Non-Saudi";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: true);
+
+        Assert.True(result.CanExport, string.Join("; ", result.BlockingErrors.Select(e => e.Code)));
+    }
+
+    [Fact]
+    public void Validator_OutsideSaudiArabia_TheKsaFormatRuleDoesNotApply()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "784199012345671");
+        emp.IdType = "Emirates ID"; emp.Nationality = "Indian";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: false);
+
+        Assert.True(result.CanExport, string.Join("; ", result.BlockingErrors.Select(e => e.Code)));
+    }
+
+    // ── The KSA government-ID resolution is for Saudi companies only ─────────────────────────────
+    // A non-KSA wage file carries the payroll profile's MolId (PayrollController.GenerateWps), not the KSA National ID / Iqama
+    // resolution, so outside Saudi Arabia the validator keeps its earlier rule: IdNumber must be present.
+
+    [Fact]
+    public void Validator_OutsideSaudiArabia_ADifferentIqamaNumber_IsNotAConflict()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "784199012345671");
+        emp.IdType = "Emirates ID"; emp.IqamaNumber = "2123456785";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: false);
+
+        Assert.DoesNotContain(result.BlockingErrors, e => e.Code == "EMPLOYEE_ID_CONFLICT");
+        Assert.True(result.CanExport, string.Join("; ", result.BlockingErrors.Select(e => e.Code)));
+    }
+
+    [Fact]
+    public void Validator_OutsideSaudiArabia_AnIdNumberRecordedAsAPassport_IsStillTheId()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "A12345678");
+        emp.IdType = "Passport";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: false);
+
+        Assert.DoesNotContain(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
+    }
+
+    [Fact]
+    public void Validator_OutsideSaudiArabia_AnIqamaNumberAlone_DoesNotStandInForTheId()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "");
+        emp.IqamaNumber = "2123456785";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp }, saudiCompany: false);
 
         Assert.Contains(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
     }

@@ -25,6 +25,22 @@ public class GovernmentIdTypeTests
     [InlineData("Border Number", GovernmentIdTypes.BorderNumber)]
     [InlineData("BorderNumber", GovernmentIdTypes.BorderNumber)]
     [InlineData("Passport", GovernmentIdTypes.Passport)]
+    [InlineData("Passport No", GovernmentIdTypes.Passport)]
+    [InlineData("Passport No.", GovernmentIdTypes.Passport)]
+    [InlineData("Passport #", GovernmentIdTypes.Passport)]
+    [InlineData("Passport Number", GovernmentIdTypes.Passport)]
+    [InlineData("Border No", GovernmentIdTypes.BorderNumber)]
+    [InlineData("Border No.", GovernmentIdTypes.BorderNumber)]
+    [InlineData("National ID No.", GovernmentIdTypes.NationalId)]
+    [InlineData("Iqama No", GovernmentIdTypes.Iqama)]
+    [InlineData("جواز سفر", GovernmentIdTypes.Passport)]
+    [InlineData("جواز السفر", GovernmentIdTypes.Passport)]
+    [InlineData("رقم الحدود", GovernmentIdTypes.BorderNumber)]
+    [InlineData("هوية وطنية", GovernmentIdTypes.NationalId)]
+    [InlineData("الهوية الوطنية", GovernmentIdTypes.NationalId)]
+    [InlineData("إقامة", GovernmentIdTypes.Iqama)]
+    [InlineData("اقامة", GovernmentIdTypes.Iqama)]
+    [InlineData("الإقامة", GovernmentIdTypes.Iqama)]
     public void Canonical_MapsEverySpellingToOneValue(string stored, string expected)
         => GovernmentIdTypes.Canonical(stored).Should().Be(expected);
 
@@ -36,6 +52,13 @@ public class GovernmentIdTypeTests
 
     [Fact]
     public void Canonical_KeepsAnotherCountrysTypeAsStored() => GovernmentIdTypes.Canonical(" CivilId ").Should().Be("CivilId");
+
+    /// <summary>Prefix matching must not swallow a different document whose name merely starts with the same letters.</summary>
+    [Theory]
+    [InlineData("Nationality")]
+    [InlineData("Emirates ID")]
+    [InlineData("Driving Licence")]
+    public void Canonical_DoesNotClaimAnUnrelatedType(string stored) => GovernmentIdTypes.Canonical(stored).Should().Be(stored);
 
     [Fact]
     public void Qiwa_IsToldTheCanonicalType_NotTheDisplayedLabel()

@@ -12,6 +12,8 @@ import { usePayrollCompanies } from '../../hooks/usePayrollCompanies';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
 import { msg } from '../../i18n/translations';
+import { MonthPicker, DatePicker } from '../ui/DateParts';
+import { erpFormatDisclaimer, erpFormatName, erpOptionText } from '../../lib/erpFormatText';
 
 /**
  * ERP journal hand-off for a period: check → create → download → record what the ERP said.
@@ -148,10 +150,10 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
+        <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
           {t('Accounting month')}
-          <input type="month" className="input mt-1 w-full" value={period} onChange={e => setPeriod(e.target.value)} />
-        </label>
+          <MonthPicker className="mt-1" aria-label={t('Accounting month')} value={period} onChange={setPeriod} />
+        </div>
         <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
           {t('Company')}
           <select className="select mt-1 w-full" value={companyId} onChange={e => setCompanyId(e.target.value)}>
@@ -165,7 +167,7 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
           <select className="select mt-1 w-full" value={formatKey} disabled={!formats}
             onChange={e => { setFormatKey(e.target.value); setOptions({}); setManifest(null); }}>
             {!formats && <option value={formatKey}>{t('Loading formats…')}</option>}
-            {formats?.map(x => <option key={x.key} value={x.key}>{x.displayName}</option>)}
+            {formats?.map(x => <option key={x.key} value={x.key}>{erpFormatName(t, x.displayName)}</option>)}
           </select>
         </label>
       </div>
@@ -176,7 +178,7 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
           {format.status === 'Template' && (
             <p className="mb-1 font-semibold text-amber-700 dark:text-amber-300">{t('Template layout: import one test file into your ERP test company before using it for real postings.')}</p>
           )}
-          <p>{format.disclaimer}</p>
+          <p>{erpFormatDisclaimer(t, format.disclaimer)}</p>
           {format.singleCompany && companyId === '' && (
             <p className="mt-1 font-semibold text-amber-700 dark:text-amber-300" data-testid="journal-export-single-company">
               {t('This format holds one company per file: choose a company above.')}
@@ -190,10 +192,10 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 {format.options.map(o => (
                   <label key={o.key} className="text-xs">
-                    {o.required ? t('{label} (required)', { label: o.label }) : o.label}
+                    {o.required ? t('{label} (required)', { label: erpOptionText(t, o.label) }) : erpOptionText(t, o.label)}
                     <input className="input mt-1 w-full" maxLength={o.maxLength} placeholder={o.defaultValue} required={o.required}
                       value={options[o.key] ?? ''} onChange={e => setOptions(prev => ({ ...prev, [o.key]: e.target.value }))} />
-                    <span className="mt-0.5 block text-[11px] text-slate-400">{o.description}</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">{erpOptionText(t, o.description)}</span>
                   </label>
                 ))}
               </div>
@@ -409,9 +411,9 @@ function ExportOutcome({ id, onChanged }: { id: string; onChanged: () => void })
                     <label>{t('ERP document number')}
                       <input className="input mt-1 w-full" value={numbers[k] ?? ''} onChange={e => setNumbers(p => ({ ...p, [k]: e.target.value }))} />
                     </label>
-                    <label>{t('Posted on')}
-                      <input type="date" className="input mt-1 w-full" value={dates[k] ?? ''} onChange={e => setDates(p => ({ ...p, [k]: e.target.value }))} />
-                    </label>
+                    <div>{t('Posted on')}
+                      <DatePicker className="mt-1" aria-label={t('Posted on')} value={dates[k] ?? ''} onChange={v => setDates(p => ({ ...p, [k]: v }))} />
+                    </div>
                   </div>
                   <button type="button" className="btn-primary h-8 px-3 text-xs" disabled={!!saving || !(numbers[k] ?? '').trim()}
                     onClick={() => act(`c-${k}`, () => {

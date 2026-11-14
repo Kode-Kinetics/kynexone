@@ -314,6 +314,23 @@ test.describe('activation blockers', () => {
     await expect(page.getByTestId('employee-activated')).toBeVisible();
     expect(calls.activate).toBe(2);
   });
+
+  for (const arabic of [false, true]) {
+    test(`a settled leaver is refused with the Rehire sentence in ${arabic ? 'Arabic' : 'English'}`, async ({ page }) => {
+      const body = {
+        error: 'rehire_required', code: 'rehire_required', settledThrough: '2026-07-31',
+        message: "This employee's final settlement for service up to 2026-07-31 is approved or paid. Use Rehire to start a new service period.",
+        messageAr: 'تمت الموافقة على التسوية النهائية لهذا الموظف أو صرفها عن الخدمة حتى 2026-07-31. استخدم إعادة التعيين لبدء فترة خدمة جديدة.',
+      };
+      await boot(page, PROFILE, { arabic, access: 'not_started', blocking: [], status: 'Archived', activate: [{ status: 409, json: body }] });
+      const activate = page.getByTestId('state-employee').getByRole('button');
+      await expect(activate).toBeEnabled({ timeout: 45_000 });
+      await activate.click();
+      const confirm = page.getByRole('dialog');
+      await confirm.getByRole('button', { name: arabic ? /تفعيل/ : 'Activate', exact: !arabic }).last().click();
+      await expect(confirm.getByTestId('activation-error')).toHaveText(arabic ? body.messageAr : body.message);
+    });
+  }
 });
 
 test.describe('pay approvals creator notice', () => {

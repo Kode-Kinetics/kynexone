@@ -20,6 +20,8 @@ interface Options {
   provisioningOn?: boolean;
   /** Annual leave provisioning starts switched on. */
   leaveOn?: boolean;
+  /** The leave provision lists a rehire whose only measurement is of the earlier, settled service. */
+  leaveRehire?: boolean;
   provisionDown?: boolean;
   legacyEmpty?: boolean;
   /** POST legacy reclass answers 422 gl_period_closed. */
@@ -113,6 +115,8 @@ async function boot(page: Page, options: Options = {}) {
             obligation: 2775, lastMovement: -375, provisionCarried: 2775 },
           { employeeId: 3, employeeCode: 'E003', employeeName: 'Khalid Al-Otaibi', lastMeasuredPeriod: '2026-07', days: 22.75, dailyRate: 200,
             obligation: 4550, lastMovement: 350, provisionCarried: 4550 },
+          ...(options.leaveRehire ? [{ employeeId: 4, employeeCode: 'E004', employeeName: 'Nora Al-Harbi', lastMeasuredPeriod: '2026-07',
+            notYetMeasured: true, days: 0, dailyRate: 0, obligation: 0, lastMovement: 0, provisionCarried: 0 }] : []),
         ] : [],
         history: [],
       });
@@ -281,6 +285,20 @@ test('a failed load shows the reason and Try again; empty legacy accounts say th
   await expect(p.getByTestId('eosb-figures')).toHaveCount(0);
   await expect(legacy(page).getByTestId('legacy-empty')).toContainText('Nothing to move');
 });
+
+for (const locale of ['en', 'ar'] as const) {
+  test(`annual leave provision (${locale}): a rehire before the first new lock reads as not yet measured, not the settled period`, async ({ page }) => {
+    const s = await boot(page, { leaveOn: true, leaveRehire: true, locale });
+    // The section's accessible name is translated, so this reaches its parts by test id in both languages.
+    await page.locator('button[aria-controls="leaveprov-employees"]').click();
+    const row = page.getByTestId('leaveprov-employees').getByRole('row').filter({ hasText: 'E004' });
+    await expect(row).toContainText(locale === 'en' ? 'Not yet measured' : 'لم يُقَس بعد');
+    await expect(row).not.toContainText('2026-07');
+    await shot(page, `leaveprov-rehire-${locale}`);
+    expect(s.writes).toEqual([]);
+    expect(s.errors).toEqual([]);
+  });
+}
 
 test('annual leave provision: figures carry their definitions, the basis is stated, and the employees behind them can be shown', async ({ page }) => {
   const s = await boot(page, { leaveOn: true });

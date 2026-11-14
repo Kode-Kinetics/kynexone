@@ -89,6 +89,8 @@ export interface LeaveProvisionEmployee {
   employeeCode: string;
   employeeName: string;
   lastMeasuredPeriod: string;
+  /** A rehire whose only measurement is of the earlier, settled service: the figures below are zero until the next Lock. */
+  notYetMeasured?: boolean;
   days: number;
   dailyRate: number;
   obligation: number;

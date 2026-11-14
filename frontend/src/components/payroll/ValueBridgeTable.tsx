@@ -8,6 +8,7 @@ import { useT } from '../../hooks/useT';
 import { categoryName, groupName, driverName, sectionName } from './reconWords';
 import { amountText, categoryOfKey, signedAmount, valueTieIssues, type DrillTarget, type ValueCell } from '../../lib/payrollRecon';
 import { Table, Td, Th } from '../ui/Table';
+import { payItemLabel } from '../../lib/payItemLabel';
 import { useReconPeriod } from './useReconPeriod';
 import { ReconFigure } from './ReconFigure';
 
@@ -56,7 +57,9 @@ export function ValueBridgeTable({ recon, onDrill }: { recon: ReconDto; onDrill:
     </ReconFigure>
   );
 
-  const itemRows = (kind: ReconSectionKind, item: ReconItem) => {
+  const itemRows = (kind: ReconSectionKind, stored: ReconItem) => {
+    // The API names the line as the run stored it (English); the viewer reads it in their language.
+    const item = { ...stored, label: payItemLabel(t, stored.label) };
     const key = `${kind}-${item.code}`;
     const expanded = open.has(key);
     const rowsOf = (group: Group, keys: string[], values: Record<string, number>) => keys.filter(k => Math.round(values[k] * 100) !== 0).map(k => {

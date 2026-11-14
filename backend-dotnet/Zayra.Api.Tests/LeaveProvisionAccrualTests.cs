@@ -890,6 +890,46 @@ public class LeaveProvisionAccrualTests
         (await ProvisionByAccountAsync(db, fx, "A")).Values.Should().OnlyContain(v => v == 0m);
     }
 
+    /// <summary>
+    /// The provision nets per ACCOUNT, so a fall booked on a remapped account (B, debit 30) reduces what the employee carries even
+    /// though B's own position clamps to zero. A +100 and B -30 carry 70; an encashment of 50 consumes 50 from A, and only the 20
+    /// left may be released. Releasing per position released 50 and drove the employee's provision 30 below zero.
+    /// </summary>
+    [Fact]
+    public async Task Settlement_ReleasesOnlyWhatTheEmployeeStillCarries_AfterAFallOnAnotherAccount()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SeedAsync(db, provisioningOn: false);
+        var emp = fx.Emp["A"];
+        FinanceGlEntry Line(string debit, string credit, decimal amount) => new()
+        {
+            TenantId = fx.TenantId, CompanyId = fx.Company.Id, SourceModule = FinalSettlementGlDescriptions.SourceModule,
+            SourceEntityRef = LeaveProvisionLedger.EmployeeRef(emp.Id), EventType = GlEventTypes.LeaveProvisionAccrual,
+            DebitAccount = debit, CreditAccount = credit, Amount = amount, Currency = "SAR",
+            EntryDate = new DateOnly(2026, 7, 31), Period = "2026-07", Description = "Leave provision",
+        };
+        db.FinanceGlEntries.AddRange(
+            Line(string.Empty, Provision, 100m),
+            Line("2331 - Leave Provision (remapped)", string.Empty, 30m));
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var s = await SeedPendingSettlementAsync(db, fx, "A", encashment: 50m, encashmentDays: 0.5m);
+
+        (await ApproveAsync(db, fx, s)).Should().BeOfType<OkObjectResult>();
+
+        var journal = await db.FinanceGlEntries.AsNoTracking().Where(x => x.SourceEntityId == s.Id).ToListAsync();
+        journal.Where(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReliefPrefix)).Sum(l => l.Amount)
+            .Should().Be(50m, "the encashment is covered by A's provision");
+        var release = journal.Where(l => l.Description.StartsWith(FinalSettlementGlDescriptions.LeaveProvisionReleasePrefix)).ToList();
+        release.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(20m, "70 carried less 50 taken");
+        release.Where(l => l.CreditAccount != "").Sum(l => l.Amount).Should().Be(20m);
+        journal.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(journal.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+        var positions = await LeaveProvisionLedger.LoadPositionsAsync(db, fx.TenantId, new[] { emp.Id }, default);
+        LeaveProvisionLedger.CarriedFor(positions, emp.Id, fx.Company.Id).Should().Be(0m);
+        positions.Sum(p => p.Accrued - p.Consumed).Should().Be(0m, "the employee's provision closes at zero, not 30 below it");
+    }
+
     // ── A rehire after an encashed exit is provided for the new period's days only ──
 
     [Fact]
@@ -949,6 +989,32 @@ public class LeaveProvisionAccrualTests
         row!.Value.GetProperty("lastMeasuredPeriod").GetString().Should().Be("2026-11");
         row.Value.GetProperty("obligation").GetDecimal().Should().Be(600m);
         row.Value.GetProperty("provisionCarried").GetDecimal().Should().Be(600m);
+    }
+
+    /// <summary>
+    /// Rehired on 1 November, before any lock has measured the new period: the only snapshot is July's, which measured the service
+    /// the settlement closed. The panel shows no obligation for the new period yet and says it is not yet measured.
+    /// </summary>
+    [Fact]
+    public async Task ThePanel_ShowsARehireBeforeTheFirstNewLock_AsNotYetMeasured_WithNoObligation()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var fx = await SettleThenRehireAAsync(db);
+
+        var panel = await LeavePanelAsync(db, fx);
+        var row = PanelRow(panel, fx.Emp["A"]);
+
+        row.Should().NotBeNull("a rehired employee is in the panel");
+        row!.Value.GetProperty("notYetMeasured").GetBoolean().Should().BeTrue();
+        row.Value.GetProperty("obligation").GetDecimal().Should().Be(0m, "July's figure measured the service the settlement already paid");
+        row.Value.GetProperty("days").GetDecimal().Should().Be(0m);
+        row.Value.GetProperty("lastMovement").GetDecimal().Should().Be(0m);
+        PanelRow(panel, fx.Emp["C"])!.Value.GetProperty("notYetMeasured").GetBoolean().Should().BeFalse();
+        var others = panel.GetProperty("employees").EnumerateArray()
+            .Where(e => e.GetProperty("employeeId").GetInt32() != fx.Emp["A"].Id)
+            .Sum(e => e.GetProperty("obligation").GetDecimal());
+        panel.GetProperty("employeeObligation").GetDecimal().Should().Be(others, "A adds nothing to the total until the new period is measured");
     }
 
     [Fact]

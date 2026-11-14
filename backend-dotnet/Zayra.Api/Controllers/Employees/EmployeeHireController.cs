@@ -151,6 +151,8 @@ public sealed class EmployeeHireController : ControllerBase
     }
 
     // ── Rehire ───────────────────────────────────────────────────────────────────────────────────
+    internal const string RehireStartNotAfterSettlement = "rehire_start_not_after_settlement";
+
     private static readonly string[] RehirableStatuses =
         [EmployeeStatuses.Terminated, EmployeeStatuses.Exited, EmployeeStatuses.Archived, EmployeeStatuses.Offboarded];
 
@@ -177,6 +179,21 @@ public sealed class EmployeeHireController : ControllerBase
             throw new EmployeeValidationException(400, EmployeeProblemCodes.ValidationFailed,
                 new Dictionary<string, string[]> { ["startDate"] = [EmployeeFieldErrors.JoiningOutOfRange] },
                 "The start date is outside the allowed range.");
+        // Owner rule 2026-11-13: after an approved or paid final settlement, the new service counts from the rehire date. A start
+        // on or before the last working day already settled would overlap paid service, so it must come strictly after it.
+        if (await SettledServicePeriod.LatestSettledLastWorkingDayAsync(_db, tenantId, id, null, ct) is DateOnly settledThrough
+            && requested <= settledThrough)
+        {
+            var refused = Problem(422, RehireStartNotAfterSettlement,
+                $"The start date must be after {settledThrough:yyyy-MM-dd}, the last working day an approved or paid final settlement "
+                + "already covers. Choose a later start date.");
+            var problem = (ProblemDetails)refused.Value!;
+            problem.Extensions["messageAr"] = $"يجب أن يكون تاريخ البدء بعد {settledThrough:yyyy-MM-dd}، آخر يوم عمل تغطيه تسوية نهائية "
+                + "معتمدة أو مصروفة. اختر تاريخ بدء لاحقًا.";
+            problem.Extensions["settledThrough"] = settledThrough;
+            problem.Extensions["errors"] = new Dictionary<string, string[]> { ["joiningDate"] = [RehireStartNotAfterSettlement] };
+            return refused;
+        }
         // A changed designation or grade is checked like a new hire's: this tenant, active, the employing company or shared,
         // and the grade the designation belongs to.
         var gradeChanged = body.GradeId is Guid requestedGrade && requestedGrade != employee.GradeId;

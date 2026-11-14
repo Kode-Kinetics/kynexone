@@ -28,6 +28,8 @@ export interface HireMockOptions {
   flagOff?: boolean;
   /** Existing person the duplicate-check returns. */
   duplicate?: { status: string; matchType?: 'strong' | 'probable' | 'possible'; canView?: boolean; signals?: string[] };
+  /** POST /rehire answers 422 rehire_start_not_after_settlement (the start date is on or before the settled last working day). */
+  rehireBeforeSettlement?: boolean;
   /** The first create answers 409 warnings_require_acknowledgement. */
   warnFirstCreate?: boolean;
   /** The warnings that 409 carries (default: joining_backdated, the code the API sends). */
@@ -198,6 +200,13 @@ export async function bootHire(page: Page, options: HireMockOptions = {}, path =
       return reply({ updatedAtUtc: `2026-10-27T08:00:0${seq}Z`, readiness: { state: 'Draft', blockers: 0 } });
     }
     if (/^\/api\/employees\/\d+\/hire-review$/.test(p)) return reply({ blockers: options.review?.blockers ?? [{ key: 'IqamaNumber', label: 'Identity number missing' }, { key: 'pay:compensationUnapproved', label: 'Pay package awaiting Finance approval' }], warnings: options.review?.warnings ?? [], notProvided: options.review?.notProvided ?? [{ key: 'arabicName', label: 'Arabic name' }], essSections: [] });
+    if (/^\/api\/employees\/\d+\/rehire$/.test(p) && options.rehireBeforeSettlement) {
+      rehires.push(body);
+      return reply({ title: 'rehire_start_not_after_settlement', status: 422, code: 'rehire_start_not_after_settlement',
+        detail: 'The start date must be after 2026-12-31, the last working day an approved or paid final settlement already covers.',
+        messageAr: 'يجب أن يكون تاريخ البدء بعد 2026-12-31.', settledThrough: '2026-12-31',
+        errors: { joiningDate: ['rehire_start_not_after_settlement'] }, traceId: 't-rehire' }, 422);
+    }
     if (/^\/api\/employees\/\d+\/rehire$/.test(p)) { rehires.push(body); return reply({ id: 44, status: 'Draft', fullName: 'Alex Morgan', updatedAtUtc: '2026-10-27T09:00:00Z' }); }
     if (/^\/api\/employees\/\d+\/draft$/.test(p) && method === 'DELETE') { discards.push(p); return route.fulfill({ status: 204 }); }
     if (p.endsWith('/pay-scale')) return reply([]);

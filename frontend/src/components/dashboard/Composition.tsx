@@ -11,12 +11,13 @@ import type { DashboardFull } from '../../api/dashboard';
 import { Bars3D, Ring3D } from './charts/Visuals';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
+import { employmentTypeLabel } from '../../lib/employmentType';
 
 export function Composition({ data }: { data: DashboardFull }) {
   const t = useT();
   const f = useFormat();
   const s = data.summary;
-  const mix = [...data.overview.workforceMix].sort((a, b) => b.value - a.value);
+  const mix = [...data.overview.workforceMix].map((m) => ({ ...m, name: employmentTypeLabel(t, m.name) })).sort((a, b) => b.value - a.value);
   const mixTotal = mix.reduce((n, m) => n + m.value, 0);
   const depts = [...data.overview.headcountByDepartment].sort((a, b) => b.value - a.value).slice(0, 8).map((d) => ({ name: d.name, value: d.value }));
 

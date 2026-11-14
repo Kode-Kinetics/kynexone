@@ -230,20 +230,28 @@ public class GlAdjustmentsController : ControllerBase
             .ToList();
         var employeeIds = latest.Select(x => x.EmployeeId).ToList();
         var positions = await LeaveProvisionLedger.LoadPositionsAsync(_db, tid.Value, employeeIds, ct);
+        // A rehire before the first Lock of the new period has only measurements of the EARLIER service (period ended before the
+        // current joining date). That obligation was settled; the new period has none measured yet, so it shows zero and says so.
         var employees = latest
             .Select(x => new
             {
-                employeeId = x.EmployeeId,
-                employeeCode = people.TryGetValue(x.EmployeeId, out var p) ? p.EmployeeCode : string.Empty,
-                employeeName = people.TryGetValue(x.EmployeeId, out var q) ? q.FullName : string.Empty,
-                lastMeasuredPeriod = x.Period,
-                days = x.Days,
-                dailyRate = x.DailyRate,
-                obligation = x.Obligation,
-                lastMovement = x.Movement,
+                x,
+                notYetMeasured = MeasuredBeforeJoining(x.Period, people.TryGetValue(x.EmployeeId, out var j) ? j.JoiningDate : (DateTime?)null),
+            })
+            .Select(r => new
+            {
+                employeeId = r.x.EmployeeId,
+                employeeCode = people.TryGetValue(r.x.EmployeeId, out var p) ? p.EmployeeCode : string.Empty,
+                employeeName = people.TryGetValue(r.x.EmployeeId, out var q) ? q.FullName : string.Empty,
+                lastMeasuredPeriod = r.x.Period,
+                notYetMeasured = r.notYetMeasured,
+                days = r.notYetMeasured ? 0m : r.x.Days,
+                dailyRate = r.notYetMeasured ? 0m : r.x.DailyRate,
+                obligation = r.notYetMeasured ? 0m : r.x.Obligation,
+                lastMovement = r.notYetMeasured ? 0m : r.x.Movement,
                 // What the ledger still carries for the person (accruals less what a settlement consumed).
                 provisionCarried = Math.Round(positions
-                    .Where(pp => pp.EmployeeId == x.EmployeeId && (pp.CompanyId == cid || pp.CompanyId is null))
+                    .Where(pp => pp.EmployeeId == r.x.EmployeeId && (pp.CompanyId == cid || pp.CompanyId is null))
                     .Sum(pp => pp.Remaining), 2),
             })
             .OrderBy(x => x.employeeCode, StringComparer.Ordinal)
@@ -288,6 +296,17 @@ public class GlAdjustmentsController : ControllerBase
             employees,
             history,
         });
+    }
+
+    /// <summary>True when a "yyyy-MM" measurement period ended before <paramref name="joiningDate"/>: it measured an earlier service
+    /// period of a rehired employee, not the current one. An unreadable period or an unknown joining date is not treated as stale.</summary>
+    internal static bool MeasuredBeforeJoining(string period, DateTime? joiningDate)
+    {
+        if (joiningDate is not DateTime joined
+            || !DateOnly.TryParseExact(period + "-01", "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                   System.Globalization.DateTimeStyles.None, out var first))
+            return false;
+        return first.AddMonths(1).AddDays(-1) < DateOnly.FromDateTime(joined);
     }
 
     [HttpGet("eosb/true-up")]

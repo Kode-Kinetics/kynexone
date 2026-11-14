@@ -414,6 +414,50 @@ public class HireIntegrityHttpTests : IClassFixture<HireIntegrityHttpFixture>
             new { startDate = DateTime.UtcNow.Date, reason = "Second attempt on a draft" }, token);
         again.StatusCode.Should().Be(HttpStatusCode.Conflict, "only a former employee can be rehired");
     }
+
+    // ── Settled service (owner rule 2026-11-13) ──────────────────────────────────────────────────
+    [Fact]
+    public async Task StatusChange_BackToWork_OverAPaidSettlement_Is409_InBothLanguages_AndPointsToRehire()
+    {
+        var token = await _fx.NewUserAsync("rh-st", "employees.write", "employees.read");
+        var former = await _fx.SeedEmployeeAsync("Settled Leaver", TestIds.ValidIqama(3332231), status: "Archived");
+        await _fx.SeedSettlementAsync(former.Id, FinalSettlementStatuses.Paid, DateOnly.FromDateTime(DateTime.UtcNow.Date));
+
+        using var r = await _fx.SendAsync(HttpMethod.Patch, $"/api/employees/{former.Id}/status",
+            new { status = "Active", effectiveDate = DateTime.UtcNow.ToString("yyyy-MM-dd"), reason = "Back at work" }, token);
+
+        r.StatusCode.Should().Be(HttpStatusCode.Conflict, await r.Content.ReadAsStringAsync());
+        var body = await Json(r);
+        body.GetProperty("code").GetString().Should().Be("rehire_required");
+        body.GetProperty("message").GetString().Should().Contain("Rehire");
+        body.GetProperty("messageAr").GetString().Should().Contain("إعادة التعيين");
+        (await _fx.StatusOfAsync(former.Id)).Should().Be("Archived");
+    }
+
+    [Fact]
+    public async Task Rehire_StartingOnOrBeforeTheSettledLastWorkingDay_Is422_InBothLanguages()
+    {
+        var token = await _fx.NewUserAsync("rh-dt", "employees.write", "employees.read");
+        var former = await _fx.SeedEmployeeAsync("Settled Returner", TestIds.ValidIqama(3332241), status: "Archived");
+        var settledThrough = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(5));
+        await _fx.SeedSettlementAsync(former.Id, FinalSettlementStatuses.Paid, settledThrough);
+
+        foreach (var start in new[] { settledThrough.AddDays(-1), settledThrough })
+        {
+            using var refused = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{former.Id}/rehire",
+                new { startDate = start.ToDateTime(TimeOnly.MinValue), reason = "Returning after the settled exit" }, token);
+            refused.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity, await refused.Content.ReadAsStringAsync());
+            var body = await Json(refused);
+            body.GetProperty("code").GetString().Should().Be("rehire_start_not_after_settlement");
+            body.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace();
+            (await _fx.StatusOfAsync(former.Id)).Should().Be("Archived");
+        }
+
+        using var ok = await _fx.SendAsync(HttpMethod.Post, $"/api/employees/{former.Id}/rehire",
+            new { startDate = settledThrough.AddDays(1).ToDateTime(TimeOnly.MinValue), reason = "Returning after the settled exit" }, token);
+        ok.StatusCode.Should().Be(HttpStatusCode.OK, await ok.Content.ReadAsStringAsync());
+        (await _fx.JoiningDatesAsync(former.Id)).Joining.Should().Be(settledThrough.AddDays(1).ToDateTime(TimeOnly.MinValue));
+    }
 }
 
 public sealed class HireIntegrityHttpFixture : IAsyncLifetime
@@ -528,6 +572,27 @@ public sealed class HireIntegrityHttpFixture : IAsyncLifetime
         db.Employees.Add(e);
         await db.SaveChangesAsync();
         return e;
+    }
+
+    /// <summary>A completed separation with a final settlement in <paramref name="status"/> for service up to <paramref name="lastWorkingDay"/>.</summary>
+    public async Task SeedSettlementAsync(int employeeId, string status, DateOnly lastWorkingDay)
+    {
+        using var scope = Host.Services.CreateScope();
+        var db = NewDb(scope);
+        var e = await db.Employees.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == employeeId);
+        var off = new EmployeeOffboarding
+        {
+            TenantId = e.TenantId!.Value, CompanyId = e.CompanyId, EmployeeId = e.Id, EmployeeCode = e.EmployeeCode, EmployeeName = e.FullName,
+            SeparationType = "Termination", Reason = "Seeded exit", Status = "Completed", NoticeDate = lastWorkingDay, LastWorkingDay = lastWorkingDay,
+        };
+        db.EmployeeOffboardings.Add(off);
+        db.EmployeeFinalSettlements.Add(new EmployeeFinalSettlement
+        {
+            TenantId = e.TenantId!.Value, CompanyId = e.CompanyId, EmployeeId = e.Id, EmployeeCode = e.EmployeeCode, EmployeeName = e.FullName,
+            OffboardingId = off.Id, LastWorkingDay = lastWorkingDay, ServiceStartDate = DateOnly.FromDateTime(e.JoiningDate),
+            SettlementDueDate = lastWorkingDay.AddDays(7), TerminationReason = "Termination", Currency = "SAR", Status = status,
+        });
+        await db.SaveChangesAsync();
     }
 
     public async Task<int> EmployeeCountAsync() { using var s = Host.Services.CreateScope(); return await NewDb(s).Employees.IgnoreQueryFilters().CountAsync(); }

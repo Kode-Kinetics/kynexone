@@ -10,6 +10,9 @@ import { useFormat } from '../hooks/useFormat';
 import { maskedAccount } from '../lib/payApprovals';
 import { useAuth } from '../contexts/AuthContext';
 
+/** How long the queue waits for the API before offering Reload. */
+const PAY_APPROVALS_DEADLINE_MS = 60_000;
+
 /** Pay approvals: the new-hire pay packages the signed-in approver may decide, narrowest view of each (OD4). */
 export function PayApprovalsPage() {
   const { t } = useLocale();
@@ -20,9 +23,17 @@ export function PayApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const when = (iso: string) => fmt.date(iso);
 
+  // A queue request that never answers (a slow API, a connection held up behind others) must end in the retryable error,
+  // not an endless "Loading…". The deadline is a JS timer so it also covers a request the browser has not yet sent.
   const load = useCallback(async () => {
     setLoading(true); setError(false);
-    try { setData(await payApprovalsApi.list()); } catch { setError(true); } finally { setLoading(false); }
+    const controller = new AbortController();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const answered = payApprovalsApi.list(controller.signal);
+      const expired = new Promise<never>((_, reject) => { deadline = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, PAY_APPROVALS_DEADLINE_MS); });
+      setData(await Promise.race([answered, expired]));
+    } catch { setError(true); } finally { clearTimeout(deadline); setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
 

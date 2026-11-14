@@ -104,6 +104,22 @@ public sealed class LeaveProvisionCursor
         }
         return result;
     }
+
+    /// <summary>
+    /// Reserves what the employee still carries after this call's own reservations — <see cref="LeaveProvisionLedger.CarriedFor"/>
+    /// (netted over every account, clamped once) less what was taken — spread across accounts by the <see cref="TakeAcrossAccounts"/>
+    /// rule. This is the provision a leaver's settlement releases. Releasing what each POSITION still showed overstated it whenever
+    /// one account was below zero: A +100 and B -30 carry 70, so after an encashment of 50 only 20 is left, not 50.
+    /// </summary>
+    public List<(string Account, decimal Taken)> TakeLeftover(int employeeId, Guid? companyId)
+    {
+        var carried = LeaveProvisionLedger.CarriedFor(_positions, employeeId, companyId);
+        var reserved = _positions
+            .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
+            .Sum(p => _taken.GetValueOrDefault(p.Key));
+        var left = Math.Max(0m, Math.Round(carried - reserved, 2));
+        return TakeAcrossAccounts(employeeId, companyId, left);
+    }
 }
 
 /// <summary>

@@ -53,39 +53,85 @@ export type PayrollReadinessWithPrerequisites = PayrollReadiness & {
   paymentPrerequisites?: PaymentPrerequisites | null;
 };
 
+/** What the headline says, as a translation key plus its parameters, next to the English text the checks read. */
+interface HeadlineText {
+  title: string; detail: string;
+  titleKey: string; detailKey: string;
+  params: { count: number; total: number };
+}
+
 export type PaymentReadinessHeadline =
   | { tone: 'unknown' }
   | { tone: 'empty' }
-  | { tone: 'blocked' | 'attention' | 'clear'; title: string; detail: string };
+  | ({ tone: 'blocked' | 'attention' | 'clear' | 'settled' } & HeadlineText);
 
-const people = (n: number) => `${n.toLocaleString('en-US')} ${n === 1 ? 'employee' : 'employees'}`;
+/** A run in one of these states has been locked: readiness drift can no longer stop its payment. */
+const SETTLED_RUN_STATUSES = new Set(['Locked', 'Paid']);
 
-export function paymentReadinessHeadline(p: PaymentPrerequisites | null | undefined): PaymentReadinessHeadline {
+export function isSettledRunStatus(status: string | null | undefined): boolean {
+  return status != null && SETTLED_RUN_STATUSES.has(status);
+}
+
+/** English text for the checks that read the plain title; the screen translates through the keys instead. */
+const num = (n: number) => n.toLocaleString('en-US');
+const people = (n: number) => `${num(n)} ${n === 1 ? 'employee' : 'employees'}`;
+
+/**
+ * `runStatus` is the status of the period's Regular run (readiness.payrollRunStatus). Once that run is Locked or Paid,
+ * gaps found now cannot block its payment, so they read as records to fix before next month, not as a block.
+ */
+export function paymentReadinessHeadline(p: PaymentPrerequisites | null | undefined, runStatus?: string | null): PaymentReadinessHeadline {
   if (!p) return { tone: 'unknown' };
   if (p.evaluatedEmployees === 0) return { tone: 'empty' };
-  const total = p.evaluatedEmployees.toLocaleString('en-US');
+  const total = num(p.evaluatedEmployees);
+  const params = { count: p.blockedEmployees, total: p.evaluatedEmployees };
   if (p.blockedEmployees > 0 || p.companyBlocking.length > 0) {
+    const employeeGaps = p.blockedEmployees > 0;
+    if (isSettledRunStatus(runStatus)) {
+      return {
+        tone: 'settled',
+        title: employeeGaps
+          ? `${num(p.blockedEmployees)} of ${total} active employees have records to fix before next month`
+          : 'Company setup needs attention before next month',
+        detail: 'This run is already locked, so these gaps do not affect its payment. Fix them before the next payroll is processed.',
+        titleKey: employeeGaps ? '{count} of {total} active employees have records to fix before next month' : 'Company setup needs attention before next month',
+        detailKey: 'This run is already locked, so these gaps do not affect its payment. Fix them before the next payroll is processed.',
+        params,
+      };
+    }
     return {
       tone: 'blocked',
-      title: p.blockedEmployees > 0
-        ? `${p.blockedEmployees.toLocaleString('en-US')} of ${total} active employees cannot be paid yet`
+      title: employeeGaps
+        ? `${num(p.blockedEmployees)} of ${total} active employees cannot be paid yet`
         : 'Company setup blocks this payroll',
       detail: 'These gaps will block approval when the run is validated. Salary coverage alone does not make payroll ready to pay.',
+      titleKey: employeeGaps ? '{count} of {total} active employees cannot be paid yet' : 'Company setup blocks this payroll',
+      detailKey: 'These gaps will block approval when the run is validated. Salary coverage alone does not make payroll ready to pay.',
+      params,
     };
   }
   if (p.employeesWithRecommendations > 0 || p.companyRecommended.length > 0) {
+    const employeeFixes = p.employeesWithRecommendations > 0;
     return {
       tone: 'attention',
       title: `All ${total} active employees have what payment requires`,
-      detail: p.employeesWithRecommendations > 0
+      detail: employeeFixes
         ? `${people(p.employeesWithRecommendations)} still have recommended fixes. They do not block approval but will show as validation warnings.`
         : 'The company has recommended fixes. They do not block approval.',
+      titleKey: 'All {total} active employees have what payment requires',
+      detailKey: employeeFixes
+        ? '{count, plural, one {# employee still has recommended fixes. They do not block approval but will show as validation warnings.} other {# employees still have recommended fixes. They do not block approval but will show as validation warnings.}}'
+        : 'The company has recommended fixes. They do not block approval.',
+      params: { count: p.employeesWithRecommendations, total: p.evaluatedEmployees },
     };
   }
   return {
     tone: 'clear',
     title: `All ${total} active employees have what payment requires`,
     detail: 'Salary, payroll profile, bank details and required records are in place for this period.',
+    titleKey: 'All {total} active employees have what payment requires',
+    detailKey: 'Salary, payroll profile, bank details and required records are in place for this period.',
+    params,
   };
 }
 

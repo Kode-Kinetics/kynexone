@@ -23,6 +23,7 @@ import { EnumLabel } from '../EnumLabel';
 import { Button } from '../ui/Button';
 import { usePeriodLabel } from './LockSummary';
 import { RunReviewPanel } from './RunReviewPanel';
+import { splitRunsByVoided } from '../../lib/runOptions';
 
 /** The tab each stage's name opens (the review stage opens its own panel instead). */
 const STAGE_TAB: Record<Exclude<StageKey, 'review'>, string> = {
@@ -185,6 +186,8 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
   ), [data.runs, data.allBatches]);
   const attentionIds = new Set(attention.map(a => a.id));
   const otherRuns = data.runs.filter(r => !attentionIds.has(r.id));
+  // A voided run is not set beside the live ones: it has its own group.
+  const { live: liveOtherRuns, voided: voidedRuns } = splitRunsByVoided(otherRuns);
   const visibleAttention = showAllAttention ? attention : attention.slice(0, 5);
 
   const companyName = (r: PayrollRun) => {
@@ -221,9 +224,14 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
                 {attention.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {attentionText(t, r.attention)}</option>)}
               </optgroup>
             )}
-            {otherRuns.length > 0 && (
+            {liveOtherRuns.length > 0 && (
               <optgroup label={t('Other runs')}>
-                {otherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
+                {liveOtherRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
+              </optgroup>
+            )}
+            {voidedRuns.length > 0 && (
+              <optgroup label={t('Voided runs')}>
+                {voidedRuns.map(r => <option key={r.id} value={r.id}>{runLabel(r)} — {statusText(t, r.status)}</option>)}
               </optgroup>
             )}
           </select>
@@ -472,7 +480,8 @@ function attentionText(t: T, kind: AttentionKind): string {
 
 function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
   switch (d.id) {
-    case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: d.label });
+    // The label is the API's English status text; the dictionary holds its Arabic (an unknown status prints as sent).
+    case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: t(d.label) });
     case 'payroll_review': return t('Payroll review is done');
     case 'overrides': return t('{count, plural, one {# error cleared by override} other {# errors cleared by override}}', { count: d.count });
     case 'signed_off': return d.name ? t('Signed off by {name}', { name: d.name }) : t('Reconciliation signed off');

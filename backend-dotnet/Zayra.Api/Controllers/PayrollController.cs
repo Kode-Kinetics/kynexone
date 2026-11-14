@@ -3358,7 +3358,16 @@ public partial class PayrollController : ControllerBase
         var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
         var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
             _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
-        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked, borderIds);
+        // The same register GenerateWps writes: the KSA ID rules apply only where the company files the KSA register.
+        var validationCompany = await _db.Companies.AsNoTracking()
+            .Where(c => c.TenantId == tenantId && c.Id == run.CompanyId)
+            .Select(c => new { c.CountryCode, c.Jurisdiction })
+            .FirstOrDefaultAsync(cancellationToken);
+        var validatesKsaRegister = _packResolver.ResolveWageProtectionExporter(
+            validationCompany?.CountryCode ?? string.Empty, validationCompany?.Jurisdiction ?? string.Empty)
+            is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var result = Infrastructure.Payroll.WpsSifValidator.Validate(run, slips, profiles, employees, hardBlocked, borderIds,
+            saudiCompany: validatesKsaRegister);
 
         return Ok(new
         {
@@ -3525,7 +3534,9 @@ public partial class PayrollController : ControllerBase
         var (hardBlocked, driftWarn) = await ComputePayReadinessAsync(tenantId, employees, cancellationToken, wpsPeriodEnd);
         var borderIds = await Zayra.Api.Infrastructure.Employees.BorderNumberRule.ResolveWageFileIdsAsync(
             _db, tenantId, employees, wpsPeriodEnd, cancellationToken, _ruleReader);
-        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked, borderIds);
+        var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
+        var validation = Infrastructure.Payroll.WpsSifValidator.Validate(runForFile, fileSlips, profiles, employees, hardBlocked, borderIds,
+            saudiCompany: isKsaRegister);
         if (!validation.CanExport)
             return BadRequest(new
             {
@@ -3549,7 +3560,6 @@ public partial class PayrollController : ControllerBase
         // The establishment / WPS employer id is REQUIRED. It used to fall back to "0000000000", which
         // printed a placeholder as if it were an establishment into every file of a tenant that had not
         // configured one. Now a missing or placeholder id refuses the export with a stable code.
-        var isKsaRegister = exporter is Infrastructure.CountryPack.Ksa.KsaWageProtectionExporter;
         var (agentId, agentConflict) = await ResolveWpsEstablishmentIdAsync(tenantId, run.CompanyId, isKsaRegister, cancellationToken);
         if ((agentConflict ?? WpsEstablishmentError(agentId, isKsaRegister)) is { } estError)
             return UnprocessableEntity(new { error = estError.Code, message = estError.Message, field = estError.Field });
@@ -8495,13 +8505,11 @@ public partial class PayrollController : ControllerBase
         var leaveCursor = await LeaveProvisionLedger.LoadCursorAsync(_db, tenantId, s.EmployeeId, cancellationToken);
         var leaveConsumptions = leaveCursor.TakeAcrossAccounts(s.EmployeeId, s.CompanyId, s.LeaveEncashmentAmount);
         var leaveTaken = Math.Round(leaveConsumptions.Sum(c => c.Taken), 2);
-        var leaveReleases = new List<(string Account, decimal Amount)>();
-        while (leaveCursor.PositionFor(s.EmployeeId, s.CompanyId) is { } leaveLeftover)
-        {
-            var (releasedFrom, released) = leaveCursor.Take(s.EmployeeId, s.CompanyId, leaveCursor.RemainingOn(leaveLeftover));
-            if (releasedFrom is null || released <= 0m) break;
-            leaveReleases.Add((releasedFrom.ProvisionAccount, released));
-        }
+        // What is left is released, capped at what the employee still carries net across accounts (CarriedFor less what was
+        // taken). A per-position loop released a position's remainder even when another account sat below zero.
+        var leaveReleases = leaveCursor.TakeLeftover(s.EmployeeId, s.CompanyId)
+            .Select(r => (Account: r.Account, Amount: r.Taken))
+            .ToList();
 
         // Cost accounting (WP-C2): the leaver's cost centre AT THE APPROVAL DATE (contract 2.4). A Required expense account with no cost
         // centre for the leaver refuses the approval with M-1 and nothing is written.

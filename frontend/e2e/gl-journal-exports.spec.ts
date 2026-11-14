@@ -185,7 +185,9 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
 }
 
 async function chooseJuly(page: Page) {
-  await page.getByLabel('Accounting month').fill('2026-07');
+  const accountingMonth = page.getByRole('group', { name: 'Accounting month' });
+  await accountingMonth.getByLabel('Year').selectOption('2026');
+  await accountingMonth.getByLabel('Month').selectOption('7');
 }
 
 test('checks balances, creates, downloads and confirms one journal with its ERP document number', async ({ page }, info) => {
@@ -212,7 +214,10 @@ test('checks balances, creates, downloads and confirms one journal with its ERP 
   await expect(outcome.getByText('2026-07-Payroll-11111111-Accrual')).toBeVisible();
   const payroll = outcome.locator('div.rounded-md').filter({ hasText: '2026-07-Payroll-11111111-Accrual' });
   await payroll.getByLabel('ERP document number').fill('SAP-1900001');
-  await payroll.getByLabel('Posted on').fill('2026-08-04');
+  const postedOn = payroll.getByRole('group', { name: 'Posted on' });
+  await postedOn.getByLabel('Year').selectOption('2026');
+  await postedOn.getByLabel('Month').selectOption('8');
+  await postedOn.getByLabel('Day').selectOption('4');
   await payroll.getByRole('button', { name: 'Confirm posted' }).click();
 
   await expect(payroll.getByText('Posted in ERP')).toBeVisible();
@@ -479,7 +484,9 @@ test('another format while a file awaits the ERP: the live file is named and "Cr
 
 test('Arabic: the other-format notice and its confirm button', async ({ page }) => {
   await boot(page, { otherFormatLive: true, locale: 'ar' });
-  await page.getByLabel('الشهر المحاسبي').fill('2026-07');
+  const accountingMonthAr = page.getByRole('group', { name: 'الشهر المحاسبي' });
+  await accountingMonthAr.getByLabel('السنة').selectOption('2026');
+  await accountingMonthAr.getByLabel('الشهر', { exact: true }).selectOption('7');
   await page.locator('button.btn-primary').last().click();
   const notice = page.getByTestId('journal-export-other-format-live');
   await expect(notice).toContainText('ما زال بانتظار نتيجة نظام تخطيط الموارد');

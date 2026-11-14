@@ -911,16 +911,39 @@ public class OffboardingController : ControllerBase
                     .ToListAsync(token))
                 .GroupBy(l => l.BalanceId)
                 .ToDictionary(g => g.Key, g => Math.Round(g.Sum(l => l.Quantity), 2));
+            var daysApplied = 0m;
             if (encashedDays.Count > 0)
             {
                 var balanceIds = encashedDays.Keys.ToList();
+                // Locked, in id order like every other writer of these rows (the payroll run's settlement disbursement, the
+                // encashment approval): a concurrent writer waits here instead of overwriting Encashed with a value read before ours.
                 var balanceRows = await _db.EmployeeLeaveBalances
+                    .TagWith(RowLockingInterceptor.ForUpdateTag)
                     .Where(b => b.TenantId == tenantId && b.EmployeeId == settlement.EmployeeId && balanceIds.Contains(b.Id))
+                    .OrderBy(b => b.Id)
                     .ToListAsync(token);
+                // A line that names a row which is gone (or is not this employee's) cannot be honoured. Skipping it would record the
+                // days as paid while a balance somewhere still shows them, so the payment is refused and nothing is written.
+                var missing = balanceIds.Except(balanceRows.Select(b => b.Id)).ToList();
+                if (missing.Count > 0)
+                {
+                    outcome = Conflict(new
+                    {
+                        error   = "leave_balance_missing",
+                        message = $"{missing.Count} leave balance row(s) this settlement encashes no longer exist for the employee, so "
+                                + "the encashed days cannot be taken off the balance. Cancel and recompute the settlement, then record "
+                                + "the payment.",
+                        messageAr = $"لم يعد {missing.Count} من صفوف رصيد الإجازات التي تصرفها هذه التسوية موجودًا لهذا الموظف، لذلك لا يمكن "
+                                  + "خصم الأيام المصروفة من الرصيد. ألغِ التسوية وأعد احتسابها، ثم سجّل الدفعة.",
+                        missingBalanceIds = missing,
+                    });
+                    return false;
+                }
                 foreach (var row in balanceRows)
                 {
                     row.Encashed = Math.Round(row.Encashed + encashedDays[row.Id], 2);
                     row.UpdatedAtUtc = recordedAtUtc;
+                    daysApplied += encashedDays[row.Id];
                 }
             }
 
@@ -948,7 +971,7 @@ public class OffboardingController : ControllerBase
                     settlement.NetPayable, settlement.Currency, method, reference,
                     paidOn, period = discharge!.Period,
                     payableCleared = discharge.PayableCleared, payableAccount = discharge.PayableAccount,
-                    leaveDaysEncashed = Math.Round(encashedDays.Values.Sum(), 2),
+                    leaveDaysEncashed = Math.Round(daysApplied, 2),
                 })));
             await _db.SaveChangesAsync(token);
 
