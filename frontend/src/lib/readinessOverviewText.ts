@@ -4,7 +4,14 @@ import { reviewItemLabel } from './hire/reviewLabels';
 type T = (key: string, params?: MessageParams) => string;
 
 /** The readiness item's name, from its key (known keys read in the viewer's language; an unknown one keeps the server's label). */
+/** The employee record serves every country, so a key whose hire-wizard label is Saudi-specific reads neutrally here. */
+const OVERVIEW_LABEL: Record<string, string> = {
+  IdNumber: 'Government ID number',
+};
+
 export function readinessItemText(t: T, item: { key: string; label: string }): string {
+  const neutral = OVERVIEW_LABEL[item.key];
+  if (neutral) return t(neutral);
   return reviewItemLabel({ key: item.key, label: item.label }, t as Parameters<typeof reviewItemLabel>[1]);
 }
 

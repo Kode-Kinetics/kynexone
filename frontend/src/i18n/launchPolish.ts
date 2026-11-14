@@ -60,6 +60,7 @@ const ar: Record<string, string> = {
   'Profile completeness': 'اكتمال الملف',
   'Work location': 'موقع العمل',
   'Complete {item}': 'أكمل: {item}',
+  'Government ID number': 'رقم الهوية الحكومية',
   'This is the highest-priority open requirement.': 'هذا أعلى المتطلبات المفتوحة أولوية.',
   'Complete this requirement to keep the employee record ready.': 'أكمل هذا المتطلب لتبقى سجلات الموظف جاهزة.',
   'Required by regulation': 'مطلوب بموجب الأنظمة',
