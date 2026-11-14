@@ -21,7 +21,8 @@ public partial class LeaveService
     /// <summary>
     /// What the monthly job does for one tenant, on the tenant's OWN calendar day <paramref name="tenantToday"/>:
     /// <list type="number">
-    /// <item>accrues every month of the year that has ended and not yet been accrued (the month just finished, and any missed while nothing ran);
+    /// <item>accrues every month of the year that has ended and not yet been accrued (the month just finished, and any missed while nothing ran),
+    ///   and, when nothing ran in January, the months of last year still missing (its December) before that year is rolled over;
     ///   the current month is never accrued early, so a joiner later this month and a leaver this month are credited by what they served;</item>
     /// <item>front-loads yearly policies for the tenant's current year, for anyone not granted yet (a joiner, or the new year);</item>
     /// <item>rolls last year's unused annual leave into this year and closes the old row (<see cref="RolloverYearAsync"/>) — after the
@@ -41,6 +42,23 @@ public partial class LeaveService
         var accrualsBefore = await CountLedgerAsync(tenantId, accrualYear, "Accrual", null, ct);
         var allocationsBefore = await CountLedgerAsync(tenantId, tenantToday.Year, "Allocation", YearlyReferencePrefix + tenantToday.Year, ct);
 
+        // A run that resumes after missing all of January lands with its last completed month in the NEW year, so the old year's
+        // December (and anything else of it still missing) would never be accrued, yet the rollover below closes that year. Complete
+        // the old year first. Only a year the engine was already accruing is completed: a tenant whose first run falls after
+        // January is not credited for the year before. Each month posts once per pair, so a month already accrued is skipped.
+        var previousYear = tenantToday.Year - 1;
+        var previousYearAccrualsBefore = 0;
+        if (accrualYear == tenantToday.Year
+            && (previousYearAccrualsBefore = await CountLedgerAsync(tenantId, previousYear, "Accrual", null, ct)) > 0)
+        {
+            var establishedForPreviousYear = await EstablishedPairsAsync(tenantId, previousYear, ct);
+            for (var month = 1; month <= 12; month++)
+                await AccrueMonthlyAsync(tenantId,
+                    new DateTime(previousYear, month, DateTime.DaysInMonth(previousYear, month), 0, 0, 0, DateTimeKind.Utc), establishedForPreviousYear, ct);
+        }
+        var previousYearCaughtUp = previousYearAccrualsBefore == 0 ? 0
+            : await CountLedgerAsync(tenantId, previousYear, "Accrual", null, ct) - previousYearAccrualsBefore;
+
         for (var month = 1; month <= lastCompletedMonthEnd.Month; month++)
             await AccrueMonthlyAsync(tenantId,
                 new DateTime(accrualYear, month, DateTime.DaysInMonth(accrualYear, month), 0, 0, 0, DateTimeKind.Utc), establishedForAccrual, ct);
@@ -51,7 +69,7 @@ public partial class LeaveService
         var rollover = await RolloverYearAsync(tenantId, tenantToday.Year - 1, ct);
         return new LeaveScheduledAccrualResult(
             accrualYear,
-            await CountLedgerAsync(tenantId, accrualYear, "Accrual", null, ct) - accrualsBefore,
+            await CountLedgerAsync(tenantId, accrualYear, "Accrual", null, ct) - accrualsBefore + previousYearCaughtUp,
             await CountLedgerAsync(tenantId, tenantToday.Year, "Allocation", YearlyReferencePrefix + tenantToday.Year, ct) - allocationsBefore,
             rollover);
     }

@@ -144,6 +144,57 @@ public sealed class LeaveScheduledAccrualTests
             });
     }
 
+    /// <summary>Nothing ran in January, so December was never accrued; the first run back is in February, when the "last completed
+    /// month" is already in the new year. The old year's December is accrued once before that year is rolled over and closed, and
+    /// January is accrued in the new year. A second run posts nothing.</summary>
+    [Fact]
+    public async Task ARunThatResumesInFebruary_AccruesTheMissedDecemberOnce_BeforeTheOldYearIsRolledOver()
+    {
+        var w = await SeedAsync(new DateTime(2025, 1, 1));
+        await w.Service.RunScheduledAccrualAsync(w.TenantId, new DateOnly(2026, 12, 2));
+        var row = await w.Db.EmployeeLeaveBalances.SingleAsync(b => b.Year == 2026);
+        row.Used = 6m;
+        await w.Db.SaveChangesAsync();
+        (await AccrualEntriesAsync(w, 2026)).Should().Be(11, "January to November 2026");
+
+        // Down for the whole of January 2027.
+        var first = await w.Service.RunScheduledAccrualAsync(w.TenantId, new DateOnly(2027, 2, 3));
+
+        (await AccrualEntriesAsync(w, 2026)).Should().Be(12, "December 2026 is caught up");
+        (await w.Db.LeaveBalanceTransactions.CountAsync(t => t.Reference == "MONTHLY-ACCRUAL-2026-12")).Should().Be(1);
+        var old = await RowAsync(w, 2026);
+        old.Accrued.Should().Be(24m);
+        old.Available.Should().Be(0m, "the year is closed with December in it");
+        var current = await RowAsync(w, 2027);
+        current.CarriedForward.Should().Be(18m, "24 accrued less 6 used: December was accrued before the rollover");
+        current.Accrued.Should().Be(2m, "January 2027");
+        first.AccrualEntries.Should().Be(2, "December 2026 and January 2027");
+        first.Rollover.DaysCarried.Should().Be(18m);
+
+        var again = await w.Service.RunScheduledAccrualAsync(w.TenantId, new DateOnly(2027, 2, 20));
+
+        again.AccrualEntries.Should().Be(0);
+        again.Rollover.RowsClosed.Should().Be(0);
+        (await AccrualEntriesAsync(w, 2026)).Should().Be(12);
+        (await AccrualEntriesAsync(w, 2027)).Should().Be(1);
+        (await RowAsync(w, 2027)).CarriedForward.Should().Be(18m);
+        (await w.Db.LeaveBalanceTransactions.CountAsync(t => t.Reference == "CARRYFORWARD-2026")).Should().Be(2);
+    }
+
+    /// <summary>The catch-up only completes a year the engine was already accruing: a tenant whose first run is in February is not
+    /// credited for the whole of the year before.</summary>
+    [Fact]
+    public async Task AFirstEverRunInFebruary_DoesNotAccrueThePreviousYear()
+    {
+        var w = await SeedAsync(new DateTime(2025, 1, 1));
+
+        var result = await w.Service.RunScheduledAccrualAsync(w.TenantId, new DateOnly(2027, 2, 3));
+
+        (await AccrualEntriesAsync(w, 2026)).Should().Be(0);
+        (await AccrualEntriesAsync(w, 2027)).Should().Be(1);
+        result.AccrualEntries.Should().Be(1);
+    }
+
     [Fact]
     public async Task TheRolloverIsIdempotent()
     {
