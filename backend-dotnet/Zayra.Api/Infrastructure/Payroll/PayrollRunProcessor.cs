@@ -550,10 +550,12 @@ public sealed class PayrollRunProcessor
 
         // COMPLIANCE: Load active loans and salary advances per employee for EMI deduction
         var loanCompanyId = company.Id;
-        var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking()
-            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
-                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
-            .ToListAsync(cancellationToken);
+        System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> collectableLoan = l =>
+            l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
+                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd);
+        // A first, unlocked look. The loans this run collects from are locked and re-read inside the transaction below.
+        var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
+        var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
         var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
                 && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
@@ -1065,6 +1067,19 @@ public sealed class PayrollRunProcessor
             // The transaction MUST open BEFORE the ExecuteUpdateAsync impact-status writes below,
             // otherwise that raw SQL auto-commits on its own connection and re-opens the split.
             await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+            // Loan-level serialisation with every other writer of these loans, above all the cash early settlement
+            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken FIRST in the
+            // transaction, before any other lock or row write, in ascending key order (the order the loan payout batch
+            // uses), so it cannot deadlock against them. The loans are then re-read under the lock: one settled in cash
+            // after the unlocked look above drops out, and no payoff can commit until this run has committed its
+            // instalment, after which RecordRepayment refuses because an unlocked run holds that instalment.
+            foreach (var loanId in loanCandidateIds.Distinct()
+                         .OrderBy(x => FinanceDecisionSerializer.ComputeLockKey(FinanceDecisionSerializer.ScopeLoan, tenantId, x)))
+                await FinanceDecisionSerializer.AcquireAsync(_db, FinanceDecisionSerializer.ScopeLoan, tenantId, loanId, cancellationToken);
+            activeLoans = loanCandidateIds.Count == 0 ? [] : await Op(_db.EmployeeLoans).AsNoTracking()
+                .Where(collectableLoan).Where(l => loanCandidateIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
 
             // Idempotent delete of previously-generated rows (enrolls in this tx).
             _db.PayrollSlips.RemoveRange(Op(_db.PayrollSlips).Where(s => s.RunId == id && s.TenantId == tenantId));
@@ -2459,8 +2474,7 @@ public sealed class PayrollRunProcessor
         // employee's balance can be touched by it.
         var runDecrementsDebt = includesRecurringPay || settlementsDisbursed.Count > 0;
         var activeLoansMutable = !runDecrementsDebt ? new List<EmployeeLoan>() : await Op(_db.EmployeeLoans)
-            .Where(l => l.TenantId == tenantId && l.CompanyId == loanCompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null && employeeIdsForRun.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0
-                && (!l.RepaymentStartDate.HasValue || l.RepaymentStartDate.Value <= periodEnd))
+            .Where(collectableLoan)
             .ToListAsync(cancellationToken);
         var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await Op(_db.SalaryAdvances)
             .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
