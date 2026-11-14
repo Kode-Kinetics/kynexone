@@ -37,6 +37,8 @@ const ar: Record<string, string> = {
   'Loading export history…': 'جارٍ تحميل سجل التصدير…',
   'No export files for this month yet.': 'لا توجد ملفات تصدير لهذا الشهر بعد.',
   'Exported by {name} on {date}': 'صدّره {name} في {date}',
+  '{count} line': '{count} سطر',
+  '{count} lines': '{count} أسطر',
   'Hide ERP result': 'إخفاء نتيجة النظام',
   'Record ERP result': 'تسجيل نتيجة النظام',
   'Company code': 'رمز الشركة',
