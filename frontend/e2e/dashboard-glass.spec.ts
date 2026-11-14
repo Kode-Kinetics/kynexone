@@ -154,6 +154,8 @@ test.describe('HR Command Center: data trust', () => {
     const attention = page.locator('section[aria-labelledby="attention-heading"]');
     await expect(attention.getByText('12 employees missing required documents')).toBeVisible();
     await expect(attention.getByText('Review missing documents')).toBeVisible();
+    // Missing documents need action; they are not shown as Critical.
+    await expect(attention.getByRole('link', { name: /Action needed: 12 employees missing required documents/ })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Collect' })).toHaveCount(0);
   });
 
