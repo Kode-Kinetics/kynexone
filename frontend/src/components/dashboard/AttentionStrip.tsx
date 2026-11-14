@@ -8,7 +8,7 @@
 
 import Link from 'next/link';
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
-import type { AttentionItem } from './dashboardModel';
+import { attentionSeverityLabel, type AttentionItem } from './dashboardModel';
 import { useT } from '../../hooks/useT';
 
 export function AttentionStrip({ items, findingsUnavailable }: { items: AttentionItem[]; findingsUnavailable?: boolean }) {
@@ -33,14 +33,16 @@ export function AttentionStrip({ items, findingsUnavailable }: { items: Attentio
       <ul className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden max-sm:basis-full max-sm:flex-col max-sm:items-stretch">
         {items.slice(0, 3).map((it) => {
           const crit = it.severity === 'critical';
+          const calm = it.severity === 'notice';
           return (
             <li key={it.id} className="min-w-0 shrink">
               <Link href={it.to} title={`${it.detail} (${it.source})`}
                 className={`wg-press group inline-flex h-8 max-w-full items-center gap-2 rounded-full border px-3 text-body-sm outline-none focus-visible:ring-2 focus-visible:ring-sapphire ${
                   crit ? 'border-rose-200 bg-rose-50 text-rose-950 hover:border-rose-300 dark:border-rose-400/25 dark:bg-rose-500/10 dark:text-rose-100'
+                       : calm ? 'border-slate-200 bg-slate-50 text-slate-900 hover:border-slate-300 dark:border-white/15 dark:bg-white/5 dark:text-slate-100'
                        : 'border-amber-200 bg-amber-50 text-amber-950 hover:border-amber-300 dark:border-amber-400/25 dark:bg-amber-500/10 dark:text-amber-100'}`}>
-                <span aria-hidden className={`h-2 w-2 shrink-0 ${crit ? 'rounded bg-rose-600' : 'rounded-full bg-amber-500'}`} />
-                <span className="sr-only">{crit ? t('Critical') : t('Warning')}: </span>
+                <span aria-hidden className={`h-2 w-2 shrink-0 ${crit ? 'rounded bg-rose-600' : calm ? 'rounded-full bg-slate-500' : 'rounded-full bg-amber-500'}`} />
+                <span className="sr-only">{attentionSeverityLabel(t, it.severity)}: </span>
                 <span className="min-w-0 truncate font-medium">{it.title}</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap font-semibold text-sapphire group-hover:underline dark:text-blue-300">
                   {it.cta} <ArrowRight className="h-3 w-3" aria-hidden />

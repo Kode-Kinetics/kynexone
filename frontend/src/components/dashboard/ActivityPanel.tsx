@@ -12,6 +12,7 @@ import type { ActivityFeedItem } from '../../api/dashboard';
 import { useT } from '../../hooks/useT';
 import { useFormat } from '../../hooks/useFormat';
 import { msg } from '../../i18n/translations';
+import { auditActionLabel } from '../../lib/activityLabel';
 
 const SHORTCUTS = [
   { label: msg('Add employee'), to: '/people', icon: UserPlus, tone: 'text-blue-700 bg-blue-50 dark:text-blue-200 dark:bg-blue-500/15' },
@@ -23,11 +24,6 @@ const SHORTCUTS = [
 const DOT: Record<string, string> = {
   Payroll: 'bg-blue-600', Leave: 'bg-emerald-600', Attendance: 'bg-amber-500', HR: 'bg-violet-600', Employee: 'bg-violet-600',
 };
-
-function humanise(action: string): string {
-  const s = action.replace(/[._]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim().toLowerCase();
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
 
 export function ActivityPanel({ feed }: { feed: ActivityFeedItem[] }) {
   const t = useT();
@@ -64,7 +60,7 @@ export function ActivityPanel({ feed }: { feed: ActivityFeedItem[] }) {
             <li key={`${it.occurredAt}-${i}`} className="wg-rise flex min-w-0 items-start gap-3" style={{ animationDelay: `${120 + i * 70}ms` }}>
               <span aria-hidden className={`relative mt-1.5 h-[9px] w-[9px] shrink-0 rounded-full ring-2 ring-[color:var(--wg-surface)] ${DOT[it.module] ?? 'bg-slate-500'}`} />
               <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-body-sm font-medium text-slate-900 dark:text-white">{humanise(it.action)}</span>
+                <span className="truncate text-body-sm font-medium text-slate-900 dark:text-white">{auditActionLabel(t, it.action)}</span>
                 <span className="text-xs text-slate-600 dark:text-slate-400">{t(it.module)} · {it.actor} · <time dateTime={it.occurredAt}>{f.relative(it.occurredAt, now)}</time></span>
               </span>
             </li>
