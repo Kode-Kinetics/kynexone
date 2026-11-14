@@ -86,31 +86,29 @@ public class OpeningsController : ControllerBase
         var userId = this.GetUserId();
         var code = await _svc.GenerateJobCodeAsync(tenantId, ct);
 
-        // Mark source requisition as Converted. The opening belongs to the company that raised the requisition; a requisition
-        // outside the caller's company scope is not found, so an opening can never be linked to another company's requisition.
+        // The opening belongs to the company that raised the requisition; a requisition outside the caller's company scope is not found,
+        // so an opening can never be linked to another company's requisition.
         Guid? companyId = req.CompanyId;
+        ManpowerRequisition? requisition = null;
         if (req.RequisitionId.HasValue)
         {
-            var requisition = await _db.ManpowerRequisitions
+            requisition = await _db.ManpowerRequisitions
                 .FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct);
             if (requisition is null) return BadRequest(new { message = "Requisition not found." });
             if (req.CompanyId is Guid named && requisition.CompanyId is Guid owner && named != owner)
                 return BadRequest(new { message = "The requisition belongs to a different company than the one named." });
             companyId = requisition.CompanyId ?? req.CompanyId;
-            if (requisition.Status == "Approved")
-            {
-                requisition.Status = "Converted";
-                await _db.SaveChangesAsync(ct);
-            }
         }
 
         // An opening starts from its requisition: placement, budget range and skills carry over unless the request states its own.
-        var requisitionForTerms = req.RequisitionId.HasValue
-            ? await _db.ManpowerRequisitions.AsNoTracking().FirstOrDefaultAsync(r => r.Id == req.RequisitionId && r.TenantId == tenantId, ct)
-            : null;
-        var terms = OpeningTerms.Inherit(req, requisitionForTerms);
+        var terms = OpeningTerms.Inherit(req, requisition);
         var (catalogueDepartment, catalogueDesignation, placementError) = await CataloguePlacementAsync(tenantId, terms.DepartmentId, terms.DesignationId, terms.GradeId, ct);
         if (placementError is not null) return placementError;
+
+        // The source requisition becomes Converted in the same save as the opening, so a refusal above leaves it Approved (the only
+        // status Create Opening is offered for) and never Converted with no opening.
+        if (requisition?.Status == "Approved")
+            requisition.Status = "Converted";
 
         var j = new JobOpening
         {

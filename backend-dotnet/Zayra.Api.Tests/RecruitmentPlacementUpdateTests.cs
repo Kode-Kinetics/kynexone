@@ -169,6 +169,51 @@ public sealed class RecruitmentPlacementUpdateTests
         stored.GradeId.Should().Be(w.Grade.Id);
     }
 
+    /// <summary>Converting an approved requisition whose inherited grade has since been retired is refused, and the refusal
+    /// leaves the requisition Approved (the only status the screen offers Create Opening for) with no opening.</summary>
+    [Fact]
+    public async Task Opening_FromAnApprovedRequisition_WithARetiredInheritedGrade_IsRefused_AndTheRequisitionStaysApproved()
+    {
+        var w = await SeedAsync();
+        var requisition = await w.Db.ManpowerRequisitions.SingleAsync();
+        requisition.Status = "Approved";
+        requisition.GradeId = w.Grade.Id;
+        var grade = await w.Db.Grades.SingleAsync(g => g.Id == w.Grade.Id);
+        grade.IsActive = false;
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        var result = await Openings(w).Create(OpeningEdit() with { RequisitionId = w.Requisition.Id, DepartmentName = "", DesignationTitle = "" }, CancellationToken.None);
+
+        result.Should().BeOfType<BadRequestObjectResult>();
+        w.Db.ChangeTracker.Clear();
+        (await w.Db.ManpowerRequisitions.AsNoTracking().SingleAsync()).Status.Should().Be("Approved");
+        (await w.Db.JobOpenings.AsNoTracking().CountAsync(j => j.RequisitionId == w.Requisition.Id)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Opening_FromAnApprovedRequisition_ConvertsIt_AndInheritsItsPlacement()
+    {
+        var w = await SeedAsync();
+        var requisition = await w.Db.ManpowerRequisitions.SingleAsync();
+        requisition.Status = "Approved";
+        requisition.GradeId = w.Grade.Id;
+        await w.Db.SaveChangesAsync();
+        w.Db.ChangeTracker.Clear();
+
+        var result = await Openings(w).Create(OpeningEdit() with { RequisitionId = w.Requisition.Id, DepartmentName = "", DesignationTitle = "" }, CancellationToken.None);
+
+        result.Should().BeOfType<CreatedResult>();
+        w.Db.ChangeTracker.Clear();
+        (await w.Db.ManpowerRequisitions.AsNoTracking().SingleAsync()).Status.Should().Be("Converted");
+        var opening = await w.Db.JobOpenings.AsNoTracking().SingleAsync(j => j.RequisitionId == w.Requisition.Id);
+        opening.CompanyId.Should().Be(w.CompanyId);
+        opening.DepartmentId.Should().Be(w.Dept.Id);
+        opening.DesignationId.Should().Be(w.Desig.Id);
+        opening.GradeId.Should().Be(w.Grade.Id);
+        opening.DepartmentName.Should().Be("Finance");
+    }
+
     [Fact]
     public async Task Requisition_Update_TakesTheNamesFromTheCatalogue_NotTheTypedText()
     {
