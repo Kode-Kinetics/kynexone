@@ -120,7 +120,7 @@ async function boot(page: Page, options: BootOptions = {}) {
   await page.goto(options.readOnly ? '/people/901?section=personal' : '/people/901/edit?mode=guided&section=personal');
   await expect(page).toHaveURL(options.readOnly ? /\/people\/901\?section=personal/ : /\/people\/901\/edit/);
   await expect(page).not.toHaveTitle('');
-  const dialog = options.readOnly ? page.locator('main.employee-workspace') : page.getByTestId('employee-edit-flow');
+  const dialog = options.readOnly ? page.locator('.employee-workspace') : page.getByTestId('employee-edit-flow');
   await expect(dialog).toBeVisible();
   if (!options.readOnly) {
     await expect(dialog.getByRole('navigation', { name: 'Employee setup progress' })).toBeVisible();
