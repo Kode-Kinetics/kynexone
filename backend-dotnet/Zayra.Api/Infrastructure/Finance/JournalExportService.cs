@@ -359,7 +359,13 @@ public sealed class JournalExportService
         var scopeTag = filter.PayrollRunId is { } rid ? "run-" + rid.ToString("N")[..8]
                      : string.IsNullOrWhiteSpace(period) ? "all" : period;
         var kindTag = kind == JournalExportKinds.Full ? string.Empty : "-" + kind.ToLowerInvariant();
-        var fileName = $"journal-{companyCode}-{scopeTag}-{currency}-{formatter.Key}{kindTag}-{doc.ExportShort}.{formatter.Extension}";
+        // The file name never carries the registration number: it uses the ERP code, else a neutral id fragment.
+        var fileCompany = company ?? (codes.Count == 1
+            ? present.Concat(liveCompanies.Count == 1 ? liveCompanies : new List<Company>())
+                .FirstOrDefault(c => string.Equals(JournalExportBuilder.CompanyCodeOf(c), companyCode, StringComparison.Ordinal))
+            : null);
+        var fileToken = fileCompany is null ? companyCode : JournalExportBuilder.FileNameCompanyTokenOf(fileCompany);
+        var fileName = $"journal-{fileToken}-{scopeTag}-{currency}-{formatter.Key}{kindTag}-{doc.ExportShort}.{formatter.Extension}";
 
         var outOfPeriod = selection.Entries.Count(e =>
             JournalExportBuilder.TryParsePeriod(e.Period, out var s, out var en) && (e.EntryDate < s || e.EntryDate > en));

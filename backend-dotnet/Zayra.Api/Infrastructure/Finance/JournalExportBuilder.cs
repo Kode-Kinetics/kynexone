@@ -593,4 +593,13 @@ public static class JournalExportBuilder
         : !string.IsNullOrWhiteSpace(company.ErpCompanyCode) ? company.ErpCompanyCode.Trim()
         : !string.IsNullOrWhiteSpace(company.RegistrationNumber) ? company.RegistrationNumber.Trim()
         : company.Id.ToString("N")[..8].ToUpperInvariant();
+
+    /// <summary>The company token in a journal FILE NAME: the ERP company code when set, otherwise a neutral short id
+    /// fragment. Unlike <see cref="CompanyCodeOf"/> it never falls back to the registration (CR) number, which is not
+    /// something to print in a file name that is shared with the ERP team. The CompanyCode column inside the file is
+    /// unaffected. <c>null</c> company ⇒ "GROUP".</summary>
+    public static string FileNameCompanyTokenOf(Company? company) =>
+        company is null ? "GROUP"
+        : !string.IsNullOrWhiteSpace(company.ErpCompanyCode) ? company.ErpCompanyCode.Trim()
+        : company.Id.ToString("N")[..8].ToUpperInvariant();
 }
