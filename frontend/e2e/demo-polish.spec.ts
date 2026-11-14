@@ -274,6 +274,22 @@ for (const locale of LOCALES) {
       for (const v of voided) expect(v).toMatch(locale === 'ar' ? /مُبطَل/ : /Voided/);
       await shot(page, 'payroll-run-selector', locale);
     });
+
+    test('the Payslips tab groups voided runs too, and shows dates and the language by name in the viewer\'s language', async ({ page }) => {
+      const slip = { id: 'ps-1', payrollRunId: RUN_ID, employeeId: 1, employeeCode: 'EMP-1', employeeName: 'Nora Alharbi', payslipNumber: 'PS-2026-11-0001', language: 'en', isPublishedToEss: true, createdAtUtc: '2026-11-13T17:42:41Z', publishedAtUtc: '2026-11-13T18:00:00Z' };
+      await boot(page, { locale, url: '/payroll?tab=payslips', routes: payroll(path => path === `/api/payroll/runs/${RUN_ID}/payslips` ? { items: [slip], total: 1, page: 1, pageSize: 100 } : undefined), waitMs: 2500 });
+      const select = page.getByRole('tabpanel').getByRole('combobox').first();
+      await expect(select).toBeVisible({ timeout: 90_000 });
+      const groups = await select.locator('optgroup').evaluateAll(els => els.map(e => (e as HTMLOptGroupElement).label));
+      expect(groups).toEqual([locale === 'ar' ? 'المسيرات المُبطَلة' : 'Voided runs']);
+      await select.selectOption(RUN_ID);
+      const row = page.getByRole('row').filter({ hasText: 'PS-2026-11-0001' });
+      await expect(row).toBeVisible({ timeout: 30_000 });
+      const text = await row.innerText();
+      expect(text).toContain(locale === 'ar' ? 'الإنجليزية' : 'English');
+      expect(text).not.toMatch(/\bEN\b/);
+      if (locale === 'ar') expect(text).not.toMatch(/Nov \d+, 2026/);
+    });
   });
 }
 
