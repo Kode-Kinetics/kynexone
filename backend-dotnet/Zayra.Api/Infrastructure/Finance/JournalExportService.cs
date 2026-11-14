@@ -355,6 +355,21 @@ public sealed class JournalExportService
             warnings.Add($"{formatter.DisplayName} has no cost-centre field, so the cost centres on these lines are not in the file. "
                        + "Use the generic CSV, SAP, Oracle, Dynamics 365 or QuickBooks format to carry them.");
 
+        // C-3: an ERP value left unmapped falls back to our own code (ErpAccount, CompanyCodeOf, CostCentreErpCode). The file is still
+        // produced, but the ERP may not recognise the fallback: say so, once per account, company and cost centre. Codes only, no amounts.
+        foreach (var account in lines.Where(l => string.IsNullOrWhiteSpace(l.ExternalAccountCode)).Select(l => l.AccountCode)
+                     .Distinct(StringComparer.Ordinal).OrderBy(a => a, StringComparer.Ordinal))
+            warnings.Add($"GL account {account} has no ERP account code mapped, so the file carries the internal code {account}. "
+                       + "Set its ERP account code in the chart of accounts if your ERP numbers it differently.");
+        foreach (var unmappedCompany in present.Where(c => string.IsNullOrWhiteSpace(c.ErpCompanyCode))
+                     .OrderBy(c => c.LegalNameEn, StringComparer.Ordinal))
+            warnings.Add($"{unmappedCompany.LegalNameEn} has no ERP company code, so the file uses "
+                       + $"{JournalExportBuilder.CompanyCodeOf(unmappedCompany)} instead. Set the ERP company code in Company setup.");
+        foreach (var costCentre in lines.Where(l => !string.IsNullOrEmpty(l.CostCenterCode) && string.IsNullOrWhiteSpace(l.CostCenterGlSegment))
+                     .Select(l => l.CostCenterCode!).Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal))
+            warnings.Add($"Cost centre {costCentre} has no ERP segment, so the file carries the internal code {costCentre}. "
+                       + "Set its ERP segment on the cost centre if your ERP uses a different value.");
+
         var bytes = formatter.Format(doc);
         var scopeTag = filter.PayrollRunId is { } rid ? "run-" + rid.ToString("N")[..8]
                      : string.IsNullOrWhiteSpace(period) ? "all" : period;
