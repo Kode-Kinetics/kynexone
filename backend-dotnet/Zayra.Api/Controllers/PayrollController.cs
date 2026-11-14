@@ -7814,7 +7814,8 @@ public partial class PayrollController : ControllerBase
     /// <item><b>NotRecorded</b> (locked before cost centres existed): one honest bucket. Never the live employee row.</item>
     /// <item><b>Preview</b> (any run not yet locked): a dry-run resolution, labelled so.</item>
     /// </list>
-    /// For a stamped run it also returns <c>journalNet</c> per cost centre (the run's own profit-and-loss ledger lines),
+    /// For a stamped run it also returns <c>journalNet</c> per cost centre (the run's own profit-and-loss ledger lines, excluding the EOSB and
+    /// leave provision accruals, which are not payroll cost),
     /// <c>clearedAgainstAccrual</c> (bonus and settlement amounts the payroll cleared against an earlier accrual instead of expensing again) and a top-level
     /// <c>reconciles</c>: per cost centre <c>journalNet == earnings − contra deductions + employer statutory − clearedAgainstAccrual (+ rounding line)</c> (T-025).
     /// Needs <c>finance.gl.read</c> and company scope (S-038).
@@ -7842,8 +7843,11 @@ public partial class PayrollController : ControllerBase
         List<FinanceGlEntry> ledger = new();
         if (basis == "Stamped")
         {
+            // C-2: the month's EOSB and leave provision accruals post under the run (Payroll / run id, 5110 / 5115) but are not
+            // payroll cost and the stamps carry no provision term, so they stay out: journalNet compares like with like.
             ledger = await _db.FinanceGlEntries.AsNoTracking()
-                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id && x.ReversalOfEntryId == null)
+                .Where(x => x.TenantId == tenantId && x.SourceModule == "Payroll" && x.SourceEntityId == id && x.ReversalOfEntryId == null
+                         && x.EventType != GlEventTypes.EosbProvisionAccrual && x.EventType != GlEventTypes.LeaveProvisionAccrual)
                 .ToListAsync(cancellationToken);
             foreach (var l in ledger.Where(l => l.CostCenterId != null && l.CostCenterCode != null))
                 names.TryAdd(l.CostCenterId!.Value, (l.CostCenterCode!, l.CostCenterName ?? l.CostCenterCode!));

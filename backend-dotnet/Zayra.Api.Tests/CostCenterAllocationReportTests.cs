@@ -122,6 +122,58 @@ public class CostCenterAllocationReportTests
         report.GetProperty("retroNoteAr").GetString().Should().NotBeNullOrWhiteSpace();
     }
 
+    // ── C-2: provision accruals are not payroll cost, so they stay out of the reconciliation ──
+
+    private static async Task AddRunLineAsync(CostingLockKit k, Guid runId, string eventType, string ccCode, string debit, string credit, decimal amount, string description)
+    {
+        var run = await k.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == runId);
+        var cc = k.Cc[ccCode];
+        k.Db.FinanceGlEntries.Add(new Zayra.Api.Models.FinanceGlEntry
+        {
+            TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = runId, SourceEntityRef = "RUN",
+            EventType = eventType, DebitAccount = debit, CreditAccount = credit, Amount = amount, Currency = "SAR",
+            EntryDate = new DateOnly(run.Year, run.Month, 28), Period = $"{run.Year}-{run.Month:D2}", Description = description,
+            CostCenterId = cc.Id, CostCenterCode = cc.Code, CostCenterName = cc.Name,
+        });
+        await k.Db.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task C2_ACostedRunWithEosbAndLeaveProvisionsOn_StillReconciles()
+    {
+        await using var k = await OrgAsync();
+        var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 1000m), E("E2", "BASIC", 3000m) }, Array.Empty<(string, string, string, decimal, bool)>());
+        (await k.ApproveAndLockAsync(run.Id)).Should().BeOfType<OkObjectResult>();
+        (await ReportAsync(k, run.Id)).GetProperty("reconciles").GetBoolean().Should().BeTrue("the plain run reconciles before any provision is posted");
+
+        // The month's provision accruals post under the run (Payroll / run id) on the cost centre, to P&L 5110 and 5115.
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.EosbProvisionAccrual, "CC-1", "5110 - End of Service Benefit Expense", "", 544.36m, "EOSB provision accrual");
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.EosbProvisionAccrual, "CC-1", "", "2300 - EOSB Provision", 544.36m, "EOSB provision accrual");
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.LeaveProvisionAccrual, "CC-2", "5115 - Annual Leave Provision Expense", "", 250m, "Leave provision accrual");
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.LeaveProvisionAccrual, "CC-2", "", "2310 - Leave Provision", 250m, "Leave provision accrual");
+
+        var report = await ReportAsync(k, run.Id);
+
+        report.GetProperty("reconciles").GetBoolean().Should().BeTrue("a provision accrual is not payroll cost; the payroll part matches the journal");
+        var cc1 = Buckets(report).Single(b => b.GetProperty("costCenterCode").GetString() == "CC-1");
+        cc1.GetProperty("journalNet").GetDecimal().Should().Be(1000m, "journalNet compares like with like: the payroll P&L lines, not the provision accrual");
+    }
+
+    [Fact]
+    public async Task C2_AGenuineMismatch_StillDoesNotReconcile_WithProvisionsOn()
+    {
+        await using var k = await OrgAsync();
+        var run = await k.SeedRunAsync(new[] { E("E1", "BASIC", 1000m), E("E2", "BASIC", 3000m) }, Array.Empty<(string, string, string, decimal, bool)>());
+        (await k.ApproveAndLockAsync(run.Id)).Should().BeOfType<OkObjectResult>();
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.EosbProvisionAccrual, "CC-1", "5110 - End of Service Benefit Expense", "", 544.36m, "EOSB provision accrual");
+        // A payroll P&L line the stamps do not explain.
+        await AddRunLineAsync(k, run.Id, Zayra.Api.Models.GlEventTypes.Accrual, "CC-2", "5101 - Employer Social Insurance Expense", "", 77m, "Stray payroll line");
+
+        var report = await ReportAsync(k, run.Id);
+
+        report.GetProperty("reconciles").GetBoolean().Should().BeFalse("excluding provisions must not hide a real payroll mismatch");
+    }
+
     // ── S-035: the report never reveals a single employee ────────────────────
 
     [Fact]
