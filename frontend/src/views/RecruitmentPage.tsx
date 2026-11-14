@@ -49,6 +49,7 @@ import {
 } from '../lib/recruitmentCatalogue';
 import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
 import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
+import { offerApprovalNote } from '../lib/offerDisplay';
 import { OfferHistoryRegister } from '../components/recruitment/OfferHistoryRegister';
 import { OfferPolicySettings } from '../components/recruitment/OfferPolicySettings';
 import { offerWorkspacePath } from '../api/offerLifecycle';
@@ -114,6 +115,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
   const approvals = data?.approvals ?? [];
   const context = data?.approval ?? null;
   const next = offer ? offerNextAction(offer.status, context, approvals) : null;
+  const stateNote = offer ? offerApprovalNote(offer.status, context?.sendBlockedReason) : null;
   const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
     && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
 
@@ -152,8 +154,8 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
       <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Approval')}</p>
       {next
-        ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
-        : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
+        ? <p className="text-xs text-slate-600 dark:text-slate-300">{t(OFFER_NEXT_ACTION_TEXT[next])}</p>
+        : stateNote && <p className={`text-xs ${offer.status === 'Sent' || offer.status === 'Accepted' || offer.status === 'Declined' ? 'text-slate-600 dark:text-slate-300' : 'text-amber-700 dark:text-amber-400'}`}>{t(stateNote)}</p>}
       {approvals.length > 0 && (
         <ul className="space-y-1">
           {approvals.map(a => (
@@ -546,7 +548,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
       <div className="mb-4 flex items-center gap-3">
         <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label={t('Filter by status')}>
           <option value="">{t('All Statuses')}</option>
-          {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{t(s)}</option>)}
+          {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{enumLabel(t, 'Status', s)}</option>)}
         </select>
         <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} requisitions', { total })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
@@ -1095,7 +1097,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 {enumLabel(t, 'RecruitmentStage', app.stage)}
               </span>
               {app.status !== 'Active' && (
-                <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{app.status}</span>
+                <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{enumLabel(t, 'Status', app.status)}</span>
               )}
             </div>
           </div>
@@ -1256,7 +1258,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Offer Letter')}</p>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{enumLabel(t, 'Status', offer.status)}</span>
                   </div>
                   <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400">
                     <div className="flex justify-between"><span>{t('Basic Salary')}</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>

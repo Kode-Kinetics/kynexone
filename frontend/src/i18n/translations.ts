@@ -53,6 +53,7 @@ import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
 import { launchPolish } from './launchPolish';
+import { polishB } from './polishB';
 import { complianceActions } from './complianceActions';
 import { insights as insightsText } from './insights';
 import { attendanceExceptions } from './attendanceExceptions';
@@ -1679,6 +1680,8 @@ const en: Dict = {
   ...learning.en,
   // SUC — succession and career development (./succession).
   ...succession.en,
+  // Demo polish B: statuses, offer events and sentences still English under Arabic — see ./polishB.
+  ...polishB.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -3248,6 +3251,7 @@ const ar: Dict = {
   ...learning.ar,
   // SUC — succession and career development (./succession).
   ...succession.ar,
+  ...polishB.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
