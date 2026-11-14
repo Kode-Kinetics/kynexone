@@ -284,6 +284,9 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
                   <Pill tone={STATUS_TONE[row.status] ?? STATUS_TONE.Superseded}>{t(STATUS_LABEL[row.status] ?? row.status)}</Pill>
                   {row.kind !== 'Full' && <Pill tone={STATUS_TONE.PartiallyConfirmed}>{t(KIND_LABEL[row.kind] ?? row.kind)}</Pill>}
                   <span className="text-slate-500">{f.money(row.totalDebits, row.currency || null)}</span>
+                  <span data-testid="journal-export-line-count" className="text-slate-500">
+                    {t(row.lineCount === 1 ? '{count} line' : '{count} lines', { count: row.lineCount })}
+                  </span>
                   <span className="text-slate-400">{t('Exported by {name} on {date}', { name: row.exportedByName, date: f.dateTime(row.exportedAtUtc) })}</span>
                   <span className="ms-auto flex gap-2">
                     <button type="button" className="btn-secondary h-7 px-2 text-xs" onClick={() => download(row)}>{t('Download file')}</button>

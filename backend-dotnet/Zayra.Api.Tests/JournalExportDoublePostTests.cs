@@ -177,6 +177,54 @@ public class JournalExportDoublePostTests
         csv.Should().Contain(",6100-SAL,").And.NotContain(",GROUP,");
     }
 
+    // ── C-3: unmapped ERP values fall back to our own codes; the preview and create responses say so ──
+
+    [Fact]
+    public async Task C3_APreviewWithAnUnmappedAccount_AndABlankCompanyErpCode_ListsAWarningForEach()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        db.GlAccounts.AddRange(
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyA, Code = "5000", Name = "Salaries", ExternalCode = "6100-SAL" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyA, Code = "2100", Name = "Salaries Payable", AccountType = "Liability", ExternalCode = "2100-PAY" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyB, Code = "1400", Name = "Employee Loans", AccountType = "Asset", ExternalCode = "" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyB, Code = "1000", Name = "Bank", AccountType = "Asset", ExternalCode = "1000-BNK" });
+        await db.SaveChangesAsync();
+
+        var preview = await Ctrl(db, await CallerAsync(db, tenantId, "Payroll Manager")).Preview(Period, null, null, "SAR");
+        StatusOf(preview).Should().Be(200);
+        var warnings = Body(preview).GetProperty("warnings").EnumerateArray().Select(w => w.GetString()!).ToList();
+
+        warnings.Where(w => w.Contains("ERP account code")).Should().ContainSingle("one warning per unmapped GL account")
+            .Which.Should().Contain("1400");
+        warnings.Should().NotContain(w => w.Contains("6100-SAL") || w.Contains(" 5000 ") || w.Contains(" 2100 ") || w.Contains(" 1000 "));
+        warnings.Where(w => w.Contains("ERP company code")).Should().ContainSingle("Beta Services has no ERP company code; Alpha KSA does")
+            .Which.Should().Contain("Beta Services");
+
+        db.ChangeTracker.Clear();
+        var created = await CreateAsync(db, await CallerAsync(db, tenantId, "Payroll Manager"));
+        StatusOf(created).Should().Be(201, "warnings never refuse the export");
+        Body(created).GetProperty("warnings").EnumerateArray().Select(w => w.GetString()).Should().Contain(w => w!.Contains("1400"));
+    }
+
+    [Fact]
+    public async Task C3_AFullyMappedExport_HasNoMappingWarnings()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        (await db.Companies.SingleAsync(c => c.Id == CompanyB)).ErpCompanyCode = "SA02";
+        db.GlAccounts.AddRange(
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyA, Code = "5000", Name = "Salaries", ExternalCode = "6100-SAL" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyA, Code = "2100", Name = "Salaries Payable", AccountType = "Liability", ExternalCode = "2100-PAY" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyB, Code = "1400", Name = "Employee Loans", AccountType = "Asset", ExternalCode = "1400-LN" },
+            new GlAccount { TenantId = tenantId, CompanyId = CompanyB, Code = "1000", Name = "Bank", AccountType = "Asset", ExternalCode = "1000-BNK" });
+        await db.SaveChangesAsync();
+
+        var preview = await Ctrl(db, await CallerAsync(db, tenantId, "Payroll Manager")).Preview(Period, null, null, "SAR");
+        StatusOf(preview).Should().Be(200);
+        Body(preview).GetProperty("warnings").EnumerateArray().Should().BeEmpty();
+    }
+
     [Fact]
     public async Task AFileThatBalancesOnlyInTotal_IsRefused_WithAPerCompanyBreakdown()
     {

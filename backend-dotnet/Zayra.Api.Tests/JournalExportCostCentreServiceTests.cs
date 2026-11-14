@@ -307,6 +307,8 @@ public class JournalExportCostCentreServiceTests
         Body(created).GetProperty("warnings").EnumerateArray().Select(w => w.GetString())
             .Should().Contain(w => w!.Contains("cost centre", StringComparison.OrdinalIgnoreCase));
         var plain = await CreateAsync(db, maker, "generic-csv");
-        Body(plain).GetProperty("warnings").EnumerateArray().Should().BeEmpty();
+        // The seeded chart has no ERP account codes, so the plain export carries the C-3 mapping warnings; it must not carry this one.
+        Body(plain).GetProperty("warnings").EnumerateArray().Select(w => w.GetString())
+            .Should().NotContain(w => w!.Contains("no cost-centre field"), "the generic CSV carries the cost centre");
     }
 }
