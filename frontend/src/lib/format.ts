@@ -249,7 +249,8 @@ export function createFormatter(settings: FormatSettings) {
     if (!parsed) return '—';
     // A calendar date has no time of day to show.
     if (parsed.dateOnly) return dateIn(d, style, primaryCal);
-    return `${dateIn(parsed.date, style, primaryCal)}, ${time(parsed.date)}`;
+    // Arabic joins date and time with its own comma: the Latin one reads as a stray mark in front of the year.
+    return `${dateIn(parsed.date, style, primaryCal)}${locale === 'ar' ? '\u060C' : ','} ${time(parsed.date)}`;
   }
 
   /**

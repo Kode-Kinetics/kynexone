@@ -72,7 +72,7 @@ function readSetup(value: unknown): PayApprovalSetup {
 
 export const payApprovalsApi = {
   setup: (companyId: string) => client.get<unknown>('/api/pay-approvals/setup', { params: { companyId } }).then(r => readSetup(r.data)),
-  list: () => client.get<PayApprovalList>('/api/pay-approvals').then(r => r.data),
+  list: (signal?: AbortSignal) => client.get<PayApprovalList>('/api/pay-approvals', { signal }).then(r => r.data),
   detail: (employeeId: number) => client.get<PayApprovalDetail>(`/api/pay-approvals/${employeeId}`).then(r => r.data),
   decide: (employeeId: number, body: { fingerprint: string; decision: PayApprovalDecision; reason: string }) =>
     client.post<{ decision: 'approved' | 'rejected' }>(`/api/pay-approvals/${employeeId}/decision`, body).then(r => r.data),

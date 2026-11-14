@@ -357,16 +357,16 @@ export function sortByAttention<T extends Pick<PayrollRun, 'year' | 'month'> & {
 
 // ── Review: employees with issues first ────────────────────────────────────────
 
-export interface EmployeeIssues { employeeId: number; errors: number; warnings: number; messages: string[] }
+export interface EmployeeIssues { employeeId: number; errors: number; warnings: number; messages: string[]; /** The same findings with their codes, so a screen can show a plain sentence per code. */ findings: Array<{ code: string; message: string }> }
 
 /** Open validation results grouped by employee; errors first, then warnings, then most results. Run-level rows (no employee) are not here. */
-export function employeesWithIssues(results: Array<{ employeeId: number | null; severity: string; message: string; isResolved: boolean }>): EmployeeIssues[] {
+export function employeesWithIssues(results: Array<{ employeeId: number | null; severity: string; message: string; isResolved: boolean; code?: string }>): EmployeeIssues[] {
   const by = new Map<number, EmployeeIssues>();
   for (const r of results) {
     if (r.isResolved || r.employeeId === null) continue;
-    const row = by.get(r.employeeId) ?? { employeeId: r.employeeId, errors: 0, warnings: 0, messages: [] };
+    const row = by.get(r.employeeId) ?? { employeeId: r.employeeId, errors: 0, warnings: 0, messages: [], findings: [] };
     if (r.severity === 'Error') row.errors++; else row.warnings++;
-    if (row.messages.length < 3 && !row.messages.includes(r.message)) row.messages.push(r.message);
+    if (row.messages.length < 3 && !row.messages.includes(r.message)) { row.messages.push(r.message); row.findings.push({ code: r.code ?? '', message: r.message }); }
     by.set(r.employeeId, row);
   }
   return [...by.values()].sort((a, b) => b.errors - a.errors || b.warnings - a.warnings || a.employeeId - b.employeeId);

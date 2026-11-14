@@ -40,6 +40,12 @@ public class WageFileGovernmentIdTests
     [Theory]
     [InlineData("Passport")]
     [InlineData("Border Number")]
+    [InlineData("Passport No")]
+    [InlineData("Passport No.")]
+    [InlineData("Passport #")]
+    [InlineData("Border No")]
+    [InlineData("جواز سفر")]
+    [InlineData("رقم الحدود")]
     public void Resolve_APassportOrBorderNumberInIdNumber_IsNotAGovernmentId(string idType)
         => WageFileGovernmentId.Resolve(Emp("A12345678", idType), null).Outcome.Should().Be(WageFileIdOutcome.Missing);
 

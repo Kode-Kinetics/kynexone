@@ -608,6 +608,78 @@ public class LeaverLifecycleS2Tests
     }
 
     /// <summary>
+    /// A settlement line names a balance row that is gone (or belongs to someone else). Skipping it would pay the days and leave
+    /// a balance somewhere still showing them; the payment is refused instead, and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_RefusesWhenABalanceRowTheSettlementNamesIsMissing()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, gross: 2_775m, deductions: 0m);
+        var present = new EmployeeLeaveBalance
+        {
+            TenantId = fx.TenantId, EmployeeId = fx.Employee.Id, EmployeeName = fx.Employee.FullName,
+            LeaveTypeId = Guid.NewGuid(), LeaveTypeName = "Annual leave", Year = 2026, Accrued = 12m,
+        };
+        db.EmployeeLeaveBalances.Add(present);
+        db.FinalSettlementLines.AddRange(
+            new FinalSettlementLine
+            {
+                TenantId = fx.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+                ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
+                Source = FinalSettlementComponents.SettlementSource, Amount = 1_500m, Quantity = 5m, SourceEntityId = present.Id,
+            },
+            new FinalSettlementLine
+            {
+                TenantId = fx.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+                ComponentName = "Leave encashment — Annual leave (2025)", LineType = FinalSettlementLineTypes.Earning,
+                Source = FinalSettlementComponents.SettlementSource, Amount = 1_275m, Quantity = 4.25m, SourceEntityId = Guid.NewGuid(),
+            });
+        await db.SaveChangesAsync();
+
+        var result = await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id, new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LV-2", 2_775m, null),
+            CancellationToken.None);
+
+        var refused = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Contains("leave_balance_missing", Json(refused.Value));
+        Assert.Equal(FinalSettlementStatuses.Approved, (await db.EmployeeFinalSettlements.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(0m, (await db.EmployeeLeaveBalances.AsNoTracking().SingleAsync()).Encashed);
+        Assert.False(await db.FinanceGlEntries.AnyAsync(x => x.EventType == GlEventTypes.SettlementExternalPayment));
+    }
+
+    /// <summary>The audit records the days actually taken off the balance rows.</summary>
+    [Fact]
+    public async Task ExternalSettlementPayment_AuditsTheDaysAppliedToTheBalanceRows()
+    {
+        await using var db = CreateDb();
+        var fx = await SeedLeaverAsync(db);
+        var settlement = await SeedApprovedSettlementAsync(db, fx, gross: 2_775m, deductions: 0m);
+        var row = new EmployeeLeaveBalance
+        {
+            TenantId = fx.TenantId, EmployeeId = fx.Employee.Id, EmployeeName = fx.Employee.FullName,
+            LeaveTypeId = Guid.NewGuid(), LeaveTypeName = "Annual leave", Year = 2026, Accrued = 12.25m, Used = 3m,
+        };
+        db.EmployeeLeaveBalances.Add(row);
+        db.FinalSettlementLines.Add(new FinalSettlementLine
+        {
+            TenantId = fx.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.LeaveEncashment,
+            ComponentName = "Leave encashment — Annual leave", LineType = FinalSettlementLineTypes.Earning,
+            Source = FinalSettlementComponents.SettlementSource, Amount = 2_775m, Quantity = 9.25m, SourceEntityId = row.Id,
+        });
+        await db.SaveChangesAsync();
+
+        Assert.IsType<OkObjectResult>(await Controller(db, fx.TenantId, fx.ActorId).RecordExternalSettlementPayment(
+            fx.Offboarding.Id, new ExternalSettlementPaymentRequest("BankTransfer", "TRF-LV-3", 2_775m, null),
+            CancellationToken.None));
+
+        var audit = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "payroll.final_settlement.paid_outside_payroll");
+        using var meta = JsonDocument.Parse(audit.Metadata!);
+        Assert.Equal(9.25m, meta.RootElement.GetProperty("leaveDaysEncashed").GetDecimal());
+    }
+
+    /// <summary>
     /// B2 — recording the payment is a JOURNAL, not a flag. If it were only a flag, 2320 would carry a
     /// liability that no longer exists for the rest of the entity's life.
     /// </summary>

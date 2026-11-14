@@ -191,6 +191,7 @@ const BULK_REASON_LABELS: Record<string, string> = {
   forbidden: 'Outside your access scope',
   establishment_budget_exceeded: 'Over establishment budget',
   not_found: 'Record not found',
+  rehire_required: 'Already settled — use Rehire',
 };
 const bulkReasonLabel = (reason?: string | null) => (reason ? BULK_REASON_LABELS[reason] ?? reason : 'Skipped');
 
@@ -2462,7 +2463,7 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
                         <span className={`font-semibold uppercase ${item.outcome === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>{item.outcome}</span>
                         <span className="text-slate-700 dark:text-slate-200">{item.fullName || `#${item.employeeId}`}</span>
                         {item.employeeCode && <span className="text-slate-400">{item.employeeCode}</span>}
-                        <span className="text-slate-500 dark:text-slate-400">— {bulkReasonLabel(item.reason)}</span>
+                        <span className="text-slate-500 dark:text-slate-400">— {t(bulkReasonLabel(item.reason))}</span>
                       </div>
                       {item.blocking && item.blocking.length > 0 && (
                         <p className="mt-0.5 text-slate-500 dark:text-slate-400">Missing: {item.blocking.map((b) => b.label).join(', ')}</p>

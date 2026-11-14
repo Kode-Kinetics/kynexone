@@ -573,10 +573,11 @@ test.describe('browserless payroll payment-readiness contracts', () => {
 
   test('the payroll dashboard shows payment readiness ahead of the totals, with blocking and recommended apart', () => {
     const payroll = read('src/views/PayrollPage.tsx');
-    expect(payroll).toContain('<PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />');
+    expect(payroll).toContain('<PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />');
     expect(payroll.indexOf('<PaymentPrerequisitesPanel')).toBeLessThan(payroll.indexOf("<KpiCard label={t('Gross Payroll')}"));
     expect(payroll.indexOf("<KpiCard label={t('Gross Payroll')}")).toBeGreaterThan(-1);
-    expect(payroll).toContain(">{t('Blocks payment')}</p>");
+    expect(payroll).toContain("t('Blocks payment')");
+    expect(payroll).toContain("t('To fix before next month')");
     expect(payroll).toContain(">{t('Recommended — does not block approval')}</p>");
     expect(payroll).toContain("employeeWorkspaceHref(e.employeeId, { section: 'pay-benefits', panel: 'payroll' })");
     expect(payroll).toContain('const visibleInsights = filterPayrollInsightsForReadiness(insights, readiness);');

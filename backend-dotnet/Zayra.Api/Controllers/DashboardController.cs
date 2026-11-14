@@ -426,9 +426,12 @@ public class DashboardController : ControllerBase
                 RecordsNext = dailyNext.Count(d => true),
                 // Hours are safe to aggregate as REAL as well as NUMERIC; this keeps the query
                 // portable to the SQLite regression harness without changing the decimal API.
-                OvertimeHours = _db.AttendanceRecords
-                    .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today)
-                    .Sum(a => (double?)a.OvertimeHours) ?? 0d,
+                // APPROVED overtime for the month, not the raw detected hours on attendance rows: the minutes on the payroll impacts of requests
+                // worked this month, the same source the Overtime dashboard's approved hours read (OvertimeController.Summary).
+                OvertimeHours = (_db.OvertimePayrollImpacts
+                    .Where(i => i.TenantId == tenantId && _db.OvertimeRequests.Any(r => r.Id == i.OvertimeRequestId && r.TenantId == tenantId
+                        && r.WorkDate >= monthStart && r.WorkDate <= today))
+                    .Sum(i => (double?)i.Minutes) ?? 0d) / 60d,
                 ChurnRisk = _db.AttendanceRecords
                     .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
                         && (a.Status == "Absent" || a.OvertimeHours >= 4))
@@ -497,9 +500,12 @@ public class DashboardController : ControllerBase
         var absent  = todayBuckets.Where(b => b.Status == AttendanceStatuses.Absent).Sum(b => b.Count);
         var records = todayBuckets.Sum(b => b.Count);
 
-        var overtimeHours = await _db.AttendanceRecords
-            .Where(a => a.TenantId == tenantId && a.WorkDate >= monthStart && a.WorkDate <= today && ids.Contains(a.EmployeeId))
-            .SumAsync(a => (decimal?)a.OvertimeHours, ct) ?? 0m;
+        // Approved overtime (payroll impact minutes of requests worked this month), as in the unscoped summary.
+        var overtimeMinutes = await _db.OvertimePayrollImpacts
+            .Where(i => i.TenantId == tenantId && ids.Contains(i.EmployeeId)
+                && _db.OvertimeRequests.Any(r => r.Id == i.OvertimeRequestId && r.TenantId == tenantId && r.WorkDate >= monthStart && r.WorkDate <= today))
+            .SumAsync(i => (int?)i.Minutes, ct) ?? 0;
+        var overtimeHours = overtimeMinutes / 60m;
 
         var churnRisk = await _db.AttendanceRecords
             .Where(a => a.TenantId == tenantId && a.WorkDate >= today.AddDays(-30)
@@ -551,9 +557,18 @@ public class DashboardController : ControllerBase
                 AttendedCount = g.Count(a => a.Status == AttendanceStatuses.Present
                                           || a.Status == AttendanceStatuses.Late
                                           || a.Status == AttendanceStatuses.HalfDay),
-                OvertimeSum   = g.Sum(a => (decimal?)a.OvertimeHours) ?? 0m,
             })
             .ToListAsync(ct);
+
+        // The monthly overtime bars are APPROVED overtime, matching the month-to-date figure: impact minutes by the month the request was worked.
+        var approved = _db.OvertimePayrollImpacts
+            .Where(i => i.TenantId == tenantId)
+            .Join(_db.OvertimeRequests.Where(r => r.TenantId == tenantId && r.WorkDate >= firstMonth && r.WorkDate <= today),
+                i => i.OvertimeRequestId, r => r.Id, (i, r) => new { i.EmployeeId, r.WorkDate, i.Minutes });
+        if (ids is not null) approved = approved.Where(x => ids.Contains(x.EmployeeId));
+        var approvedByMonth = (await approved.GroupBy(x => new { x.WorkDate.Year, x.WorkDate.Month })
+            .Select(g => new { g.Key.Year, g.Key.Month, Minutes = g.Sum(x => (int?)x.Minutes) ?? 0 })
+            .ToListAsync(ct)).ToDictionary(x => (x.Year, x.Month), x => x.Minutes / 60m);
 
         return Enumerable.Range(0, months).Select(offset =>
         {
@@ -562,7 +577,7 @@ public class DashboardController : ControllerBase
             // A month of nothing but rest days has no rostered days and therefore no rate to report;
             // 0% would assert that nobody turned up on days nobody was asked to.
             var rate  = row is { RosteredCount: > 0 } ? Math.Round(row.AttendedCount * 100m / row.RosteredCount, 1) : 0m;
-            return new DashboardTrendDto(month.ToString("MMM"), rate, row?.OvertimeSum ?? 0m);
+            return new DashboardTrendDto(month.ToString("MMM"), rate, approvedByMonth.GetValueOrDefault((month.Year, month.Month)));
         }).ToList();
     }
 

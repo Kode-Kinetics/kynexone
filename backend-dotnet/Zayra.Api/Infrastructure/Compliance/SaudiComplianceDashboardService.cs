@@ -115,8 +115,9 @@ public sealed class SaudiComplianceDashboardService
 
     private async Task<WpsDashboardSection> BuildWpsAsync(Guid tenantId, CancellationToken ct)
     {
+        // A Voided run is not a run anyone is waiting on: it is neither the latest run nor pending approval.
         var lastRun = await _db.PayrollRuns.AsNoTracking()
-            .Where(r => r.TenantId == tenantId)
+            .Where(r => r.TenantId == tenantId && r.Status != "Voided")
             .OrderByDescending(r => r.Year).ThenByDescending(r => r.Month)
             .FirstOrDefaultAsync(ct);
 
@@ -126,7 +127,7 @@ public sealed class SaudiComplianceDashboardService
 
         var pendingApprovals = await _db.PayrollRuns
             .CountAsync(r => r.TenantId == tenantId
-                          && r.Status != "Locked" && r.Status != "Paid" && r.Status != "Draft", ct);
+                          && r.Status != "Locked" && r.Status != "Paid" && r.Status != "Draft" && r.Status != "Voided", ct);
 
         var missingIbanCount = 0;
         if (lastRun is not null)

@@ -17,3 +17,15 @@ export function activationRejectionMessage(error: unknown, translate: (message: 
   if (typeof message === 'string' && message.trim()) return message;
   return translate('The employee could not be activated. Reload the readiness checks and try again.');
 }
+
+/**
+ * The server refused to return a leaver to work because their final settlement for the current service is approved or paid
+ * (409 `rehire_required`): only Rehire starts a new service period. Returns the server's sentence in the viewer's language
+ * (`messageAr` in Arabic), or null for any other failure.
+ */
+export function settledServiceRefusal(error: unknown, locale: string): string | null {
+  const data = (error as { response?: { data?: { code?: unknown; message?: unknown; messageAr?: unknown } } } | null)?.response?.data;
+  if (data?.code !== 'rehire_required') return null;
+  const pick = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return (locale === 'ar' ? pick(data.messageAr) ?? pick(data.message) : pick(data.message) ?? pick(data.messageAr));
+}

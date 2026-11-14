@@ -8,7 +8,7 @@ import { bankFileProductionAllowed } from '../../lib/payrollPaymentAccess';
 // The server allow-list, not a browser flag, owns activation. Old APIs, denied requests and
 // failed probes keep this additive feature hidden without disrupting existing payroll.
 const Panel = dynamic(() => import('./SaudiBankExportPanel').then(m => m.SaudiBankExportPanel));
-export function SaudiBankExportGate({ batchId, employeeIds }: { batchId: string; employeeIds: number[] }) {
+export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels }: { batchId: string; employeeIds: number[]; employeeLabels?: Record<number, string> }) {
   const { hasPermission } = useAuth();
   // The Payroll Manager prepares the file (payroll.payment_batch.manage); payroll.export keeps working.
   const permitted = bankFileProductionAllowed(hasPermission);
@@ -23,5 +23,5 @@ export function SaudiBankExportGate({ batchId, employeeIds }: { batchId: string;
     return () => ac.abort();
   }, [batchId, permitted]);
   return permitted && enabledFor === batchId
-    ? <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} /> : null;
+    ? <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} /> : null;
 }

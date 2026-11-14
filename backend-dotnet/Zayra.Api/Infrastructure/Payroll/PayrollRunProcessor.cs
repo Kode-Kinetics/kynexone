@@ -2630,8 +2630,12 @@ public sealed class PayrollRunProcessor
             if (settlementEncashmentTaken.Count > 0)
             {
                 var balanceIds = settlementEncashmentTaken.Select(x => x.BalanceId).Distinct().ToList();
+                // Locked in id order inside the run's transaction, like the outside-payroll payment: a concurrent writer of the
+                // same rows waits rather than losing this increment (or this one losing theirs).
                 var balanceRows = await _db.EmployeeLeaveBalances
+                    .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
                     .Where(b => b.TenantId == tenantId && balanceIds.Contains(b.Id))
+                    .OrderBy(b => b.Id)
                     .ToListAsync(cancellationToken);
                 foreach (var (balanceId, empId, days) in settlementEncashmentTaken)
                 {

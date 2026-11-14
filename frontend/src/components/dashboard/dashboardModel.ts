@@ -17,6 +17,7 @@ import type {
 import type { AIInsight } from '../../api/intelligence';
 import { msg, translate, type MessageParams } from '../../i18n/translations';
 import { createFormatter } from '../../lib/format';
+import { insightDetail, insightTitle } from '../../lib/insightText';
 
 /**
  * The translator the builders below write their copy with. Components pass `useT()`; tests and
@@ -528,7 +529,7 @@ export function buildAttention(
   data: DashboardFull | null,
   insights: AIInsight[] | null,
   now = Date.now(),
-  options: { payroll?: boolean; t?: Translator; relative?: (iso: string) => string } = {},
+  options: { payroll?: boolean; t?: Translator; relative?: (iso: string) => string; period?: (yearMonth: string) => string } = {},
 ): AttentionItem[] {
   const t = options.t ?? EN;
   const ago = options.relative ?? ((iso: string) => timeAgo(iso, now).toLowerCase());
@@ -603,10 +604,10 @@ export function buildAttention(
     items.push({
       id: `insight-${i.insightType}-${i.id}`,
       severity: sev === 'Critical' ? 'critical' : 'warning',
-      // The finding's title and summary are written by the rules engine (server-side, English
-      // today); they are shown as data. Localising them needs finding codes from the API.
-      title: i.title.replace(/employee\(s\)/g, 'employees'),
-      detail: i.summary,
+      // The engine writes the title and summary in English with the numbers baked in; insightType decides the
+      // sentence and the numbers are read back out of the text (lib/insightText.ts).
+      title: insightTitle(t, i),
+      detail: insightDetail(t, i, options.period ?? ((ym) => ym)),
       source: t('Rules check · {when} · all companies', { when: ago(i.createdAtUtc) }),
       to: insightRoute(i.insightType),
       cta: t(INSIGHT_CTA[i.insightType] ?? 'Open findings'),

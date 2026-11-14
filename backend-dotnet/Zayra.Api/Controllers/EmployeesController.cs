@@ -4452,6 +4452,7 @@ public class EmployeesController : ControllerBase
         // structured body into a generic 400) — EmployeeActivationBlockedException is standalone (§5.6).
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (SettledServiceReactivationException ex) { return Conflict(SettledServiceBody(ex)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
         // PATCH /status reaches the identical separation insert whenever the target is an exit status, so
         // two concurrent calls hit the same partial unique index. Without this it surfaced as a 500 — the
@@ -4596,8 +4597,19 @@ public class EmployeesController : ControllerBase
         }
         catch (EmployeeActivationBlockedException ex) { await Audit("employee.activation_blocked", "Employee", id.ToString(), cancellationToken); return this.NotActivatable(ex); }
         catch (EstablishmentBudgetExceededException ex) { return this.EstablishmentConflict(ex); }
+        catch (SettledServiceReactivationException ex) { return Conflict(SettledServiceBody(ex)); }
         catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
     }
+
+    /// <summary>409 for a return to work over service a final settlement already closed: both languages, and the way forward (Rehire).</summary>
+    private static object SettledServiceBody(SettledServiceReactivationException ex) => new
+    {
+        error = SettledServiceReactivationException.Code,
+        code = SettledServiceReactivationException.Code,
+        message = ex.Message,
+        messageAr = ex.MessageAr,
+        settledThrough = ex.SettledThrough,
+    };
 
     [HttpPost("{id:int}/terminate")]
     [HasPermission("employees.approve")]
@@ -4688,6 +4700,7 @@ public class EmployeesController : ControllerBase
                 blocked.Add(new { id, blocking = ex.Readiness.Blocking.Select(ReadinessItemDto) });
             }
             catch (EstablishmentBudgetExceededException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = "establishment_budget_exceeded" }); }
+            catch (SettledServiceReactivationException) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = SettledServiceReactivationException.Code }); }
             catch (InvalidOperationException ex) { _db.ChangeTracker.Clear(); blocked.Add(new { id, error = ex.Message }); }
         }
         _db.ChangeTracker.Clear();
@@ -4880,6 +4893,13 @@ public class EmployeesController : ControllerBase
             {
                 _db.ChangeTracker.Clear(); // discard this row's tracked-but-rolled-back mutation
                 items.Add(new(id, code, name, "skipped", "establishment_budget_exceeded", null));
+                skipped++;
+            }
+            catch (SettledServiceReactivationException)
+            {
+                // A settled leaver comes back through Rehire; the batch names the reason by code rather than an English sentence.
+                _db.ChangeTracker.Clear();
+                items.Add(new(id, code, name, "skipped", SettledServiceReactivationException.Code, null));
                 skipped++;
             }
             catch (InvalidOperationException ex)

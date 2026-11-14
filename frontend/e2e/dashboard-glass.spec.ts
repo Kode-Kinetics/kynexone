@@ -82,9 +82,10 @@ const USER = {
   permissions: ['dashboard.read', 'employees.read', 'attendance.read', 'leave.read', 'approvals.read', 'approvals.decide', 'payroll.read', 'compliance.read', 'reports.read', 'ai.query', 'ai.insights_view'],
 };
 
-async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
+async function open(page: Page, opts: { locale?: 'en' | 'ar'; rich?: boolean; now?: Date; theme?: 'light' | 'dark'; tenantTz?: string; user?: typeof USER } = {}) {
   const now = opts.now ?? EARLY;
   await page.clock.setFixedTime(now);
+  if (opts.locale) await page.addInitScript((l) => localStorage.setItem('kynexone-locale-choice-v2', l), opts.locale);
   await page.addInitScript((th) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
@@ -107,7 +108,7 @@ async function open(page: Page, opts: { rich?: boolean; now?: Date; theme?: 'lig
     return json({ items: [], total: 0 });
   });
   await page.goto('/dashboard');
-  await expect(page.getByRole('heading', { name: 'HR Command Center' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('heading', { name: opts.locale === 'ar' ? 'مركز قيادة الموارد البشرية' : 'HR Command Center' })).toBeVisible({ timeout: 30_000 });
   if ((opts.user ?? USER).permissions.includes('payroll.read'))
     await expect(page.locator('#hero-heading')).toBeVisible({ timeout: 15_000 });
 }
@@ -392,4 +393,20 @@ test.describe('HR Command Center: the header clock is the tenant\'s, not a hard-
       await expect(line).toContainText('22:58');
     });
   });
+});
+
+// A stored snapshot band must not be named when the Saudization screen would withhold it (thresholds not loaded or verified).
+test.describe('home Saudization tile follows the Saudization screen', () => {
+  for (const locale of ['en', 'ar'] as const) {
+    test(`unverified thresholds: the percentage shows and no band is named (${locale})`, async ({ page }) => {
+      await open(page, { rich: true, locale });
+      const tile = page.getByRole('link').filter({ hasText: locale === 'ar' ? /السعودة/ : /Saudization/ }).first();
+      await expect(tile).toBeVisible();
+      const text = await tile.innerText();
+      expect(text).toContain('38.0%');
+      expect(text).not.toMatch(/MediumGreen|Medium Green|Platinum|أخضر|بلاتيني/);
+      await expect(tile).toContainText(locale === 'ar' ? 'النطاق غير موثّق' : 'Band not verified');
+      await evidence(page, `home-saudization-unverified-${locale}`, true);
+    });
+  }
 });

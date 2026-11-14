@@ -554,6 +554,16 @@ public class EmployeeManagementService : IEmployeeManagementService
         }
 
         var oldStatus = employee.Status;
+        // SETTLED SERVICE (owner rule 2026-11-13): once a final settlement for the CURRENT service period is approved or paid, the
+        // person returns only through Rehire, which moves JoiningDate. This route keeps JoiningDate, so the settled period would be
+        // counted again: the provisions would exclude the person for the whole second tenure and the next exit's end-of-service
+        // award would start from the original date, paying the settled service twice. A settlement whose last working day is before
+        // the current joining date closed an EARLIER period and does not block (a mistaken termination is still reversible).
+        // Checked before anything is staged, and before the readiness gate so the refusal names the real reason.
+        if (EstablishmentOccupancy.IsOccupyingStatus(request.Status) && !EstablishmentOccupancy.IsOccupyingStatus(oldStatus)
+            && await SettledServicePeriod.LatestSettledLastWorkingDayAsync(
+                   _db, tenantId, id, DateOnly.FromDateTime(employee.JoiningDate), ct) is DateOnly settledThrough)
+            throw new SettledServiceReactivationException(settledThrough);
         // READINESS GATE (§5.2/§5.3): fire ONLY when becoming Active from a NON-occupying status —
         // first-time activations and rehires (Draft/Invited/Terminated/…→Active). Runs BEFORE any
         // mutation so a block leaves the record untouched (the guard is a pure read; it throws
@@ -820,8 +830,8 @@ public class EmployeeManagementService : IEmployeeManagementService
                     "This employee has an open separation with a live final settlement against it "
                     + $"(offboarding {blockedOpen[0].Id}). Cancelling it here would strand that settlement, "
                     + "and leaving it open would let the next termination settle a NEW service period "
-                    + "against this one's last working day. Complete the offboarding (once the settlement "
-                    + "is paid) or cancel the settlement first, then reactivate.");
+                    + "against this one's last working day. Either cancel the settlement first and then reactivate, "
+                    + "or complete the offboarding once the settlement is paid and bring the person back with Rehire.");
 
             foreach (var stale in open)
             {

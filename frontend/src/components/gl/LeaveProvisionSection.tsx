@@ -11,6 +11,7 @@ import {
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
 import { Figure } from './EosbProvisionPanel';
+import { lastMeasuredLabel } from '../../lib/glLeaveProvision';
 
 const firstOfNextMonth = () => {
   const d = new Date();
@@ -192,7 +193,7 @@ export function LeaveProvisionSection({
                   {data.employees.map((e) => (
                     <tr key={e.employeeId}>
                       <td className="py-1.5"><span className="font-mono">{e.employeeCode}</span> · {e.employeeName}</td>
-                      <td className="py-1.5 font-mono">{e.lastMeasuredPeriod}</td>
+                      <td className="py-1.5 font-mono">{lastMeasuredLabel(e, t)}</td>
                       <td className="py-1.5 text-end">{f.number(e.days, { maximumFractionDigits: 2 })}</td>
                       <td className="py-1.5 text-end">{money(e.dailyRate)}</td>
                       <td className="py-1.5 text-end">{money(e.obligation)}</td>

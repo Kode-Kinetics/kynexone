@@ -36,6 +36,8 @@ export function parseHireProblem(err: unknown): HireProblem {
   if (code === 'override_reason_required') return { kind: 'override_reason_required' };
   if (code === 'override_not_permitted') return { kind: 'override_not_permitted' };
   if (code === 'invalid_reference') return { kind: 'invalid_reference', field: String(data.field ?? '') };
+  // A rehire must start after the last working day an approved or paid final settlement already covers: shown on the start date.
+  if (code === 'rehire_start_not_after_settlement') return { kind: 'validation', fields: { joiningDate: [code] } };
   if (r.status === 400 && code === 'validation_failed' && data.errors && typeof data.errors === 'object') {
     return { kind: 'validation', fields: data.errors as Record<string, string[]> };
   }
@@ -54,6 +56,7 @@ export const SERVER_CODE_KEYS: Record<string, string> = {
   dob_future: 'Date of birth cannot be in the future.',
   dob_out_of_range: 'Date of birth cannot be more than 100 years ago.',
   joining_out_of_range: 'The start date is outside the allowed range.',
+  rehire_start_not_after_settlement: 'The start date must be after the last working day that was already settled.',
   probation_order: 'The probation end date must be after the probation start date.',
   confirmation_before_joining: 'The confirmation date cannot be before the joining date.',
   probation_waived_with_dates: 'Remove the probation end date, or untick "No probation".',

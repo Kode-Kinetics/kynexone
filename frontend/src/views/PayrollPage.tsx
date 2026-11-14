@@ -8,7 +8,7 @@ import {
   CheckCircle2, ChevronDown, ChevronRight, Download, FileText, Landmark, Layers3,
   Lock, Pencil, Play, Plus, RefreshCw, RotateCcw,
   Settings, TrendingUp, Users, WalletCards, X, Trash2,
-  Zap, Shield, Lightbulb, ArrowUpRight, Circle,
+  Zap, Shield, Lightbulb, ArrowUpRight, Circle, Info,
 } from 'lucide-react';
 import {
   payrollApi,
@@ -26,6 +26,8 @@ import { formatCalendarDate } from '../lib/calendarDate';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
+import { employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { RunSelectOptions } from '../components/payroll/RunSelectOptions';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { SecondApproverNotice } from '../components/SecondApproverNotice';
@@ -274,15 +276,18 @@ function PrerequisiteRow({ label, count, nextAction, danger, action }: {
   );
 }
 
-function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisites: PaymentPrerequisites; onNavigate: (t: Tab) => void }) {
+function PaymentPrerequisitesPanel({ prerequisites, runStatus, onNavigate }: { prerequisites: PaymentPrerequisites; runStatus?: string | null; onNavigate: (t: Tab) => void }) {
   const t = useT();
-  const headline = paymentReadinessHeadline(prerequisites);
+  const headline = paymentReadinessHeadline(prerequisites, runStatus);
   if (headline.tone === 'unknown' || headline.tone === 'empty') return null;
   const tone = {
     blocked: { box: 'border-rose-200 dark:border-rose-500/30', icon: 'text-rose-600 dark:text-rose-400' },
     attention: { box: 'border-amber-200 dark:border-amber-500/30', icon: 'text-amber-600 dark:text-amber-400' },
     clear: { box: 'border-emerald-200 dark:border-emerald-500/30', icon: 'text-emerald-600 dark:text-emerald-400' },
+    // A locked or paid run: the gaps are records to fix for next month, so nothing here reads as a block.
+    settled: { box: 'border-slate-200 dark:border-white/10', icon: 'text-sky-600 dark:text-sky-400' },
   }[headline.tone];
+  const settled = headline.tone === 'settled';
   // Salary gaps are fixed on a payroll tab; every other gap lives on the employee record.
   const salaryAction = { label: t('Assign salaries'), onClick: () => onNavigate('employee-salary') };
   const hasBlocking = prerequisites.companyBlocking.length > 0 || prerequisites.blocking.length > 0;
@@ -294,10 +299,12 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
       <div className="flex items-start gap-3 border-b border-slate-100 px-5 py-4 dark:border-white/10">
         {headline.tone === 'clear'
           ? <CheckCircle2 className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />
-          : <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />}
+          : settled
+            ? <Info className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} aria-hidden="true" />
+            : <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${tone.icon}`} />}
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{headline.title}</h3>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{headline.detail}</p>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{t(headline.titleKey, headline.params)}</h3>
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t(headline.detailKey, headline.params)}</p>
           <p className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
             {prerequisites.attendanceChecked
               ? t('Checked for {count} active employees against salary assignments, payroll profiles and IBANs, statutory readiness and nationality, and attendance for this period — the rules the run validation applies. One employee can have more than one gap.', { count: prerequisites.evaluatedEmployees })
@@ -308,13 +315,13 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
 
       {hasBlocking && (
         <div>
-          <p className="bg-rose-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">{t('Blocks payment')}</p>
+          <p className={`px-5 py-2 text-xs font-semibold uppercase tracking-wide ${settled ? 'bg-slate-50 text-slate-600 dark:bg-white/5 dark:text-slate-300' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'}`}>{settled ? t('To fix before next month') : t('Blocks payment')}</p>
           <ul className="divide-y divide-slate-100 dark:divide-white/5">
             {prerequisites.companyBlocking.map(c => (
-              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={!settled} label={c.companyName ? `${c.companyName}: ${t(c.label)}` : t(c.label)} nextAction={t(c.nextAction)} />
             ))}
             {prerequisites.blocking.map(b => (
-              <PrerequisiteRow key={b.code} danger label={b.label} count={b.count} nextAction={b.nextAction}
+              <PrerequisiteRow key={b.code} danger={!settled} label={t(b.label)} count={b.count} nextAction={t(b.nextAction)}
                 action={b.code === 'MISSING_SALARY_STRUCTURE' ? salaryAction : undefined} />
             ))}
           </ul>
@@ -326,10 +333,10 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
           <p className="bg-amber-50 px-5 py-2 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/10 dark:text-amber-300">{t('Recommended — does not block approval')}</p>
           <ul className="divide-y divide-slate-100 dark:divide-white/5">
             {prerequisites.companyRecommended.map(c => (
-              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={false} label={c.companyName ? `${c.companyName}: ${c.label}` : c.label} nextAction={c.nextAction} />
+              <PrerequisiteRow key={`c-${c.companyId ?? 'none'}-${c.code}`} danger={false} label={c.companyName ? `${c.companyName}: ${t(c.label)}` : t(c.label)} nextAction={t(c.nextAction)} />
             ))}
             {prerequisites.recommended.map(r => (
-              <PrerequisiteRow key={r.code} danger={false} label={r.label} count={r.count} nextAction={r.nextAction} />
+              <PrerequisiteRow key={r.code} danger={false} label={t(r.label)} count={r.count} nextAction={t(r.nextAction)} />
             ))}
           </ul>
         </div>
@@ -359,8 +366,8 @@ function PaymentPrerequisitesPanel({ prerequisites, onNavigate }: { prerequisite
                       <span className="font-mono text-slate-500 dark:text-slate-400">{e.employeeCode}</span>{' '}
                       <span className="text-slate-800 dark:text-slate-100">{e.employeeName}</span>
                     </td>
-                    <td className="px-3 py-2 text-rose-700 dark:text-rose-300">{e.blocking.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
-                    <td className="px-3 py-2 text-amber-700 dark:text-amber-300">{e.recommended.map(code => prerequisiteLabel(prerequisites, code)).join('; ') || '—'}</td>
+                    <td className={`px-3 py-2 ${settled ? 'text-slate-700 dark:text-slate-200' : 'text-rose-700 dark:text-rose-300'}`}>{e.blocking.map(code => t(prerequisiteLabel(prerequisites, code))).join('; ') || '—'}</td>
+                    <td className="px-3 py-2 text-amber-700 dark:text-amber-300">{e.recommended.map(code => t(prerequisiteLabel(prerequisites, code))).join('; ') || '—'}</td>
                     <td className="px-5 py-2 text-end">
                       {e.blocking.length === 1 && e.blocking[0] === 'MISSING_SALARY_STRUCTURE' ? (
                         <button type="button" onClick={salaryAction.onClick} className="font-medium text-sapphire hover:underline dark:text-cyanAccent">{t('Assign salary')}</button>
@@ -704,7 +711,7 @@ function DashboardTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 
       {/* ── Who can actually be paid (exceptions first) ── */}
       {!loading && readiness?.paymentPrerequisites && (
-        <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} onNavigate={onNavigate} />
+        <PaymentPrerequisitesPanel prerequisites={readiness.paymentPrerequisites} runStatus={readiness.payrollRunStatus} onNavigate={onNavigate} />
       )}
 
       {/* ── Summary KPIs ── */}
@@ -1826,7 +1833,6 @@ const GOSI_BELOW_MINIMUM_WAGE = 'GOSI_BELOW_MINIMUM_CONTRIBUTORY_WAGE';
 
 function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
-  const monthLabel = useMonthLabel();
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [results, setResults] = useState<PayrollValidationResult[]>([]);
@@ -1885,7 +1891,7 @@ function ValidationTab({ selectedRunId }: { selectedRunId?: string }) {
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select a payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         <button type="button" className={btn.primary} onClick={validate} disabled={!runId || loading}>
           {loading ? t('Validating…') : t('Run Validation')}
@@ -2371,7 +2377,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run to approve')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
       </div>
 
@@ -2524,7 +2530,6 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 
 function PayslipsTab() {
   const t = useT();
-  const monthLabel = useMonthLabel();
   // The payslip PDF and the run's ZIP bundle are `payroll.export` on the API (PayrollController
   // DownloadSlipPdf / DownloadRunPdfBundle); offering them without it only produced a 403.
   const { hasPermission } = useAuth();
@@ -2582,7 +2587,7 @@ function PayslipsTab() {
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run')} className={`${sel} flex-1 max-w-xs`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select a payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         {runId && (
           <button type="button" className={btn.primary} onClick={generate} disabled={generating}>
@@ -2683,7 +2688,6 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
-  const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   // The run the page is showing (the pipeline's "Open Bank / WPS", or ?tab=bank-wps&run=) is the run this tab opens on.
@@ -2782,7 +2786,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
       <div className="flex flex-wrap items-center gap-3">
         <select aria-label={t('Select payroll run')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         {runId && (
           <>
@@ -2893,7 +2897,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
           </span>
         </div>
       )}
-      {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} />}
+      {selectedBatch && <SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} />}
     </div>
   );
 }
@@ -3246,7 +3250,6 @@ function PaymentTrackingTab() {
 function ReportsTab() {
   const t = useT();
   const fmtAmt = useFmtAmt();
-  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [slips, setSlips] = useState<PayrollSlip[]>([]);
@@ -3300,7 +3303,7 @@ function ReportsTab() {
         <div className="flex items-center gap-3">
           <select aria-label={t('Select payroll run for register')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
             <option value="">{t('Select a payroll run…')}</option>
-            {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+            <RunSelectOptions runs={runs} />
           </select>
           <button type="button" className={btn.primary} onClick={loadRegister} disabled={!runId || loading}>
             {loading ? t('Loading…') : t('Load Register')}
@@ -3380,7 +3383,6 @@ function ReportsTab() {
 
 function AIValidationTab() {
   const t = useT();
-  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState('');
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
@@ -3411,7 +3413,7 @@ function AIValidationTab() {
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run for anomaly checks')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select a payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         <button type="button" className={btn.primary} onClick={runAI} disabled={!runId || loading}>
           <Zap className="h-4 w-4" /> {loading ? t('Analyzing…') : t('Run Checks')}
@@ -3559,7 +3561,6 @@ function EOSBTab() {
 function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: string; onGoToApprovals?: () => void }) {
   const t = useT();
   const fmtAmt = useFmtAmt();
-  const monthLabel = useMonthLabel();
   const { hasPermission } = useAuth();
   const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -3611,7 +3612,7 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run for GL journal')} data-testid="cc-lock-run-select" className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         <button type="button" className={btn.primary} onClick={() => void load()} disabled={!runId || loading}>
           <BookOpen className="h-4 w-4" /> {loading ? t('Loading…') : t('Generate Journal')}
@@ -3710,7 +3711,6 @@ function GlJournalTab({ selectedRunId, onGoToApprovals }: { selectedRunId?: stri
 function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
   const fx = useFormat();
-  const monthLabel = useMonthLabel();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setRunId] = useState(selectedRunId ?? '');
   const [report, setReport] = useState<PayrollReconciliation | null>(null);
@@ -3755,7 +3755,7 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
       <div className="flex items-center gap-3">
         <select aria-label={t('Select payroll run for reconciliation')} className={`${sel} max-w-xs flex-1`} value={runId} onChange={e => setRunId(e.target.value)}>
           <option value="">{t('Select payroll run…')}</option>
-          {runs.map(r => <option key={r.id} value={r.id}>{monthLabel(r.month, r.year)} — {enumLabel(t, 'PayrollRunStatus', r.status)}</option>)}
+          <RunSelectOptions runs={runs} />
         </select>
         <button type="button" className={btn.primary} onClick={load} disabled={!runId || loading}>
           <RefreshCw className="h-4 w-4" /> {loading ? t('Loading…') : t('Reconcile')}
@@ -3781,9 +3781,10 @@ function ReconciliationTab({ selectedRunId }: { selectedRunId?: string }) {
 
           <div className="surface overflow-hidden">
             <div className="grid grid-cols-2 divide-x rtl:divide-x-reverse divide-slate-100 dark:divide-white/5">
-              {[{ label: t('Gross'), prior: report.priorTotalGross, current: report.currentTotalGross }, { label: t('Net'), prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
-                <div key={m.label} className="p-4">
-                  <p className="text-xs text-slate-400">{(m.label === 'Gross' ? t('Total Gross') : t('Total Net'))}</p>
+              {/* Keyed and labelled by a stable id: comparing the translated label to 'Gross' made both cards read "Total net" in Arabic. */}
+              {[{ id: 'gross', label: t('Total Gross'), prior: report.priorTotalGross, current: report.currentTotalGross }, { id: 'net', label: t('Total Net'), prior: report.priorTotalNet, current: report.currentTotalNet }].map(m => (
+                <div key={m.id} className="p-4">
+                  <p className="text-xs text-slate-400">{m.label}</p>
                   <p className="text-lg font-bold text-slate-900 dark:text-white">{runCurrency.amount(m.current)}</p>
                   <p className={`text-xs ${m.current >= m.prior ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {m.current >= m.prior ? '+' : ''}{t('{amount} vs {period}', { amount: runCurrency.amount(m.current - m.prior), period: report.priorPeriod ? fx.period(report.priorPeriod, 'long') : t('Prior period') })}

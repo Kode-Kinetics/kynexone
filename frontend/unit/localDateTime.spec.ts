@@ -63,11 +63,11 @@ test.describe('recruitment never posts a bare datetime-local value', () => {
     expect(src).not.toMatch(/scheduledAt:\s*(interviewForm|schedForm)\.scheduledAt/);
   });
 
-  test('the offer response deadline is shown in the browser\'s wall time, not the UTC text of the instant', () => {
+  test('the offer response deadline is shown and sent in the tenant zone, not the UTC text of the instant or the browser\'s zone', () => {
     const src = read('src/components/recruitment/OfferWorkspace.tsx');
-    expect(src).toContain('instantToLocalInput(draft.responseDeadline)');
+    expect(src).toContain('instantToZonedInput(draft.responseDeadline, f.zone())');
     expect(src).not.toContain('draft.responseDeadline?.slice(0, 16)');
-    expect(src).toContain('localInputToInstant(e.target.value)');
+    expect(src).toContain('zonedInputToInstant(v, f.zone())');
   });
 
   test('every datetime-local in the recruitment components converts through the helpers before sending', () => {

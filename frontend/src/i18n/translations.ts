@@ -13,6 +13,7 @@ import { attendanceEvidence } from './attendanceEvidence';
 import { employeeCompletion } from './employeeCompletion';
 import { hireWizard } from './hireWizard';
 import { demoFixes } from './demoFixes';
+import { settledService } from './settledService';
 import { onboardingP3 } from './onboardingP3';
 import { setupExperience } from './setupExperience';
 import { setupStudio } from './setupStudio';
@@ -51,6 +52,9 @@ import { engagement } from './engagement';
 import { payrollAttendance } from './payrollAttendance';
 import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
+import { launchPolish } from './launchPolish';
+import { complianceActions } from './complianceActions';
+import { insights as insightsText } from './insights';
 import { attendanceExceptions } from './attendanceExceptions';
 import { employeeWorkspace } from './employeeWorkspace';
 import { companyWizard } from './companyWizard';
@@ -1620,11 +1624,18 @@ const en: Dict = {
   ...payrollPipeline.en,
   // Payroll's manpower + value reconciliation and its sign-off — see ./payrollRecon.
   ...payrollRecon.en,
+  // Launch polish: payment readiness, compliance, home and offer sentences — see ./launchPolish.
+  ...launchPolish.en,
+  // Saudi Compliance action items and GOSI findings — see ./complianceActions.
+  ...complianceActions.en,
+  // Rules-engine findings on the home dashboard — see ./insights.
+  ...insightsText.en,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.en,
   ...employeeCompletion.en,
   ...hireWizard.en,
   ...demoFixes.en,
+  ...settledService.en,
   ...onboardingP2.en,
   ...onboardingP3.en,
   ...onboardingP4.en,
@@ -3192,11 +3203,15 @@ const ar: Dict = {
   // Payroll's run pipeline — see ./payrollPipeline.
   ...payrollPipeline.ar,
   ...payrollRecon.ar,
+  ...launchPolish.ar,
+  ...complianceActions.ar,
+  ...insightsText.ar,
   // Attendance → Exceptions — see ./attendanceExceptions.
   ...attendanceExceptions.ar,
   ...employeeCompletion.ar,
   ...hireWizard.ar,
   ...demoFixes.ar,
+  ...settledService.ar,
   ...onboardingP2.ar,
   ...onboardingP3.ar,
   ...onboardingP4.ar,

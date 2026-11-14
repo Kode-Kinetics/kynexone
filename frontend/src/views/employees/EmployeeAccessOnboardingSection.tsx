@@ -16,12 +16,12 @@ import { Modal } from '../../components/Modal';
 import { ActivationBlockers } from '../../components/employeeAccess/ActivationBlockers';
 import { describeApiError } from '../../lib/apiError';
 import { activationFormError, todayCalendarDay } from '../../lib/employeeActivation';
-import { activationRejectionMessage, employeeActivationFailure } from '../../lib/employeeActivationFailure';
+import { activationRejectionMessage, employeeActivationFailure, settledServiceRefusal } from '../../lib/employeeActivationFailure';
 
 export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo, onEmployeeChanged, onRetryReadiness, readinessLoading = false }: { employee: EmployeeDetail; readiness: EmployeeReadiness | null; returnTo: string; onEmployeeChanged?(): void; onRetryReadiness?(): void; readinessLoading?: boolean }) {
   const router = useRouter();
   const { hasPermission, user } = useAuth();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const canWrite = hasPermission('employees.write');
   const canIssue = hasPermission('employees.access.issue');
   const canReset = hasPermission('employees.access.reset');
@@ -61,10 +61,11 @@ export function EmployeeAccessOnboardingSection({ employee, readiness, returnTo,
     } catch (e) {
       // The server says why (a readiness blocker, a permission, a concurrent change): show it in the dialog, don't swallow it.
       // A refusal that names the blockers is shown as those blockers; anything else as the server's own sentence.
+      // A leaver whose final settlement is approved or paid comes back through Rehire, which starts the new service period.
       const blockers = (e as { response?: { data?: { blocking?: unknown[] } } } | null)?.response?.data?.blocking;
-      setActivationError(Array.isArray(blockers) && blockers.length
+      setActivationError(settledServiceRefusal(e, locale) ?? (Array.isArray(blockers) && blockers.length
         ? employeeActivationFailure(e, t)
-        : describeApiError(e, t) || activationRejectionMessage(e, t));
+        : describeApiError(e, t) || activationRejectionMessage(e, t)));
       // The server is the authority: read readiness and access again (readiness only: a whole-record reload would unmount
       // this section and take the dialog, and its message, away), and let the button be pressed again.
       setAccessRefresh((current) => current + 1);

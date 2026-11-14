@@ -508,7 +508,7 @@ type Busy = null | 'save' | 'validate' | 'generate' | 'download';
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
-export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string; employeeIds?: number[] }) {
+export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: { batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string> }) {
   const { locale } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
@@ -974,7 +974,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds }: { batchId: string
 
         {/* Per-employee BIC + address lines, submitted through the existing employee approval workflow.
             Any submitted or reloaded change discards the last validation so the batch must be revalidated. */}
-        {employeeIds && <SaudiBankBeneficiaryEditor key={batchId} employeeIds={employeeIds} onChange={() => setValidation(null)} />}
+        {employeeIds && <SaudiBankBeneficiaryEditor key={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onChange={() => setValidation(null)} />}
       </div>
     </section>
   );
