@@ -15,7 +15,9 @@ namespace Zayra.Api.Controllers;
 /// <c>custom:&lt;templateId&gt;</c> (a customer-configured layout whose approved version a second person
 /// signed off); any other format id fails closed.
 ///
-/// <para>Security: every action needs a tenant, an actor and <c>payroll.export</c>; settings mutation
+/// <para>Security: the file-production actions (availability, context, validate, preview, generate, download, and reading the
+/// format list and the employer setup they use) need a
+/// tenant, an actor and <c>payroll.payment_batch.manage</c> or <c>payroll.export</c>; every other action needs <c>payroll.export</c>; settings mutation
 /// also needs <c>payroll.structure_manage</c>. Batch actions authorise through the shared
 /// <see cref="PaymentBatchScopeExtensions.PaymentBatchScopeErrorAsync"/> (company from batch → run, never
 /// from the request) BEFORE any batch data is read. Settings actions authorise the path company
@@ -44,15 +46,18 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpGet("formats")]
     public IActionResult Formats()
     {
-        // The list of supported formats is static and holds no tenant data: Setup shows it before any export is activated.
-        if (Actor() is null) return Forbid();
+        // The list of supported formats is static and holds no tenant data: Setup shows it before any export is activated. The
+        // file-production panel reads it too, so the payment-batch key may read it.
+        if (FileActor() is null) return Forbid();
         return Ok(SaudiBankExportFormats.Supported);
     }
 
     [HttpGet("companies/{companyId:guid}/settings")]
     public async Task<IActionResult> GetSettings(Guid companyId, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        // Read-only: the file-production panel needs the saved employer setup to validate and generate (its values are in the file
+        // the payment-batch key produces). Changing it still needs payroll.export and payroll.structure_manage.
+        if (FileActor() is not { } a) return Forbid();
         if (await CompanyScopeErrorAsync(a.TenantId, companyId, ct) is { } err) return err;
         return Ok(await _service.GetSettingsAsync(a.TenantId, companyId, ct));
     }
@@ -71,17 +76,17 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpGet("batches/{batchId:guid}/availability")]
     public async Task<IActionResult> Availability(Guid batchId, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await this.PaymentBatchScopeErrorAsync(_db, a.TenantId, batchId, ct) is { } err) return err;
         var companyId = await BatchCompanyAsync(a.TenantId, batchId, ct);
         return Ok(new SaudiBankExportAvailabilityDto(companyId is Guid c
-            && SaudiBankExportActivation.IsEnabled(_activationConfiguration, a.TenantId, c)));
+            && await SaudiBankExportActivation.IsEnabledAsync(_db, _activationConfiguration, a.TenantId, c, ct)));
     }
 
     [HttpGet("batches/{batchId:guid}/context")]
     public async Task<IActionResult> Context(Guid batchId, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
         return Map(await _service.GetContextAsync(a.TenantId, batchId, ct), v => Ok(v));
     }
@@ -89,7 +94,7 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpPost("batches/{batchId:guid}/validate")]
     public async Task<IActionResult> Validate(Guid batchId, [FromBody] SaudiBankExportBatchRequest body, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
         return Map(await _service.ValidateAsync(a.TenantId, batchId, body ?? new SaudiBankExportBatchRequest(), ct), v => Ok(v));
     }
@@ -97,7 +102,7 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpPost("batches/{batchId:guid}/generate")]
     public async Task<IActionResult> Generate(Guid batchId, [FromBody] SaudiBankExportBatchRequest body, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
         return Map(await _service.GenerateAsync(a.TenantId, a.UserId, batchId, body ?? new SaudiBankExportBatchRequest(), ct), v => Ok(v));
     }
@@ -105,7 +110,7 @@ public sealed class SaudiBankExportsController : ControllerBase
     [HttpGet("batches/{batchId:guid}/download")]
     public async Task<IActionResult> Download(Guid batchId, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
         var result = await _service.DownloadAsync(a.TenantId, a.UserId, batchId, ct);
         return Map(result, v =>
@@ -124,10 +129,10 @@ public sealed class SaudiBankExportsController : ControllerBase
     // for another tenant's or an inaccessible company's template (no existence oracle).
 
     [HttpGet("templates/catalog")]
-    public IActionResult TemplateCatalog()
+    public async Task<IActionResult> TemplateCatalog(CancellationToken ct = default)
     {
         if (Actor() is not { } a) return Forbid();
-        if (!SaudiBankExportActivation.EnabledCompanies(_activationConfiguration, a.TenantId)
+        if (!(await SaudiBankExportActivation.EnabledCompanyIdsAsync(_db, _activationConfiguration, a.TenantId, ct))
                 .Any(c => this.GetEntityScope().CanAccessCompany(c))) return Disabled();
         return Ok(CustomBankTemplateStarters.Catalog());
     }
@@ -194,7 +199,7 @@ public sealed class SaudiBankExportsController : ControllerBase
     [RequestSizeLimit(65536)]
     public async Task<IActionResult> Preview(Guid batchId, [FromBody] CustomBankPreviewRequest body, CancellationToken ct)
     {
-        if (Actor() is not { } a) return Forbid();
+        if (FileActor() is not { } a) return Forbid();
         if (await BatchScopeAndActivationErrorAsync(a.TenantId, batchId, ct) is { } err) return err;
         if (body is null) return BadRequest(new { error = "preview_request_required" });
         return Map(await _service.PreviewAsync(a.TenantId, batchId, body, ct), v => Ok(v));
@@ -206,7 +211,7 @@ public sealed class SaudiBankExportsController : ControllerBase
         if (!this.GetEntityScope().CanAccessCompany(companyId)) return NotFound();
         var exists = await _db.Companies.AsNoTracking().AnyAsync(c => c.TenantId == tenantId && c.Id == companyId && !c.IsDeleted, ct);
         if (!exists) return NotFound();
-        return SaudiBankExportActivation.IsEnabled(_activationConfiguration, tenantId, companyId) ? null : Disabled();
+        return await SaudiBankExportActivation.IsEnabledAsync(_db, _activationConfiguration, tenantId, companyId, ct) ? null : Disabled();
     }
 
     private IActionResult MapTemplate(CustomBankResult<CustomBankTemplateDto> r) => r.Outcome switch
@@ -224,12 +229,19 @@ public sealed class SaudiBankExportsController : ControllerBase
     private sealed record ActorInfo(Guid TenantId, Guid UserId);
 
     /// <summary>Null tenant, null actor or missing payroll.export ⇒ null ⇒ the caller refuses.</summary>
-    private ActorInfo? Actor()
-    {
-        if (!HasPermission("payroll.export")) return null;
-        return this.GetTenantId() is Guid t && t != Guid.Empty && this.GetUserId() is Guid u && u != Guid.Empty
+    private ActorInfo? Actor() => HasPermission("payroll.export") ? Identified() : null;
+
+    /// <summary>
+    /// The file-production flow for one batch (availability, context, validate, preview, generate, download): the Payroll Manager
+    /// prepares the bank file with <c>payroll.payment_batch.manage</c>, and <c>payroll.export</c> keeps working as before. The format list
+    /// and the saved employer setup are read by the same flow. Every other action here (saving settings, templates) needs payroll.export.
+    /// </summary>
+    private ActorInfo? FileActor() =>
+        HasPermission("payroll.payment_batch.manage") || HasPermission("payroll.export") ? Identified() : null;
+
+    private ActorInfo? Identified() =>
+        this.GetTenantId() is Guid t && t != Guid.Empty && this.GetUserId() is Guid u && u != Guid.Empty
             ? new ActorInfo(t, u) : null;
-    }
 
     private bool HasPermission(string permission) =>
         User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
@@ -257,7 +269,7 @@ public sealed class SaudiBankExportsController : ControllerBase
     {
         if (await this.PaymentBatchScopeErrorAsync(_db, tenantId, batchId, ct) is { } err) return err;
         var companyId = await BatchCompanyAsync(tenantId, batchId, ct);
-        return companyId is Guid c && SaudiBankExportActivation.IsEnabled(_activationConfiguration, tenantId, c)
+        return companyId is Guid c && await SaudiBankExportActivation.IsEnabledAsync(_db, _activationConfiguration, tenantId, c, ct)
             ? null : Disabled();
     }
 

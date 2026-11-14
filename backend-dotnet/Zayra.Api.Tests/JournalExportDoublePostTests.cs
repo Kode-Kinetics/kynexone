@@ -90,7 +90,7 @@ public class JournalExportDoublePostTests
         var maker = await CallerAsync(db, tenantId, "Payroll Manager");
         var checker = await CallerAsync(db, tenantId, "Finance Approver");
         var csv = IdOf(await CreateAsync(db, maker));
-        var sapId = IdOf(await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default));
+        var sapId = IdOf(await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default, acknowledgeOtherFormatLive: true));
         db.ChangeTracker.Clear();
 
         StatusOf(await Ctrl(db, checker).Confirm(sapId, new ErpImportConfirmationRequest("SAP-100"), default)).Should().Be(200);
@@ -279,7 +279,7 @@ public class JournalExportDoublePostTests
             // One-company formats are exported per company; a required ERP setting (Oracle's ledger id) is supplied.
             var required = f.Options.Where(o => o.Required).ToDictionary(o => o.Key, _ => "300000046975971");
             var created = await Ctrl(db, maker).Create(Period, null, f.SingleEntity ? CompanyA : null, "SAR", false, false, f.Key, default,
-                options: required);
+                options: required, acknowledgeOtherFormatLive: true);
             StatusOf(created).Should().Be(201, f.Key);
             var hash = Body(created).GetProperty("fileHash").GetString();
             db.ChangeTracker.Clear();
@@ -352,6 +352,136 @@ public class JournalExportDoublePostTests
 
         file.Should().BeOfType<FileContentResult>("a v1 artifact must not be reported as drifted after the upgrade");
         ((FileContentResult)file).FileContents.Should().Equal(v1Bytes);
+    }
+
+    // ── C7: one live file per scope — a second FORMAT over the same unconfirmed rows must not be a second thing to send ──
+
+    [Fact]
+    public async Task AnotherFormat_OverTheSameUnconfirmedRows_IsRefused_NamingTheFileAlreadyWaiting()
+    {
+        // A generic CSV and an SAP file of the same month were both "waiting for ERP result" (only a same-format export
+        // supersedes). Whoever took the second file could send it too, and only the confirmation step, after the ERP had
+        // booked both, noticed. The guard moves to the moment of creation.
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var csv = IdOf(await CreateAsync(db, maker));
+
+        var sap = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default);
+        db.ChangeTracker.Clear();
+
+        StatusOf(sap).Should().Be(409);
+        Body(sap).GetProperty("error").GetString().Should().Be(JournalExportErrors.OtherFormatLive);
+        var held = Body(sap).GetProperty("liveExports").EnumerateArray().Single();
+        held.GetProperty("exportId").GetGuid().Should().Be(csv);
+        held.GetProperty("format").GetString().Should().Be("generic-csv");
+        Body(sap).GetProperty("message").GetString().Should().Contain("generic-csv").And.Contain("twice");
+        (await db.GlJournalExports.CountAsync()).Should().Be(1, "a refusal writes no artifact");
+        (await db.GlJournalExports.AsNoTracking().SingleAsync()).Status.Should().Be(GlJournalExportStatuses.Exported, "the file already waiting is untouched");
+    }
+
+    [Fact]
+    public async Task AfterTheEarlierFileIsRejectedByTheErp_AnotherFormatCanBeExported()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var checker = await CallerAsync(db, tenantId, "Finance Approver");
+        var csv = IdOf(await CreateAsync(db, maker));
+        StatusOf(await Ctrl(db, checker).Reject(csv, new ErpImportRejectionRequest("Wrong layout"), default)).Should().Be(200);
+        db.ChangeTracker.Clear();
+
+        var sap = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default);
+
+        StatusOf(sap).Should().Be(201);
+    }
+
+    [Fact]
+    public async Task TheSameFormatAgain_StillSupersedesWithoutAnyAcknowledgement()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var first = IdOf(await CreateAsync(db, maker));
+
+        var again = await CreateAsync(db, maker);
+
+        StatusOf(again).Should().Be(201);
+        (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == first)).Status.Should().Be(GlJournalExportStatuses.Superseded);
+    }
+
+    [Fact]
+    public async Task AnExplicitAcknowledgement_AllowsTheSecondFormat_AndIsAudited()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var csv = IdOf(await CreateAsync(db, maker));
+
+        var sap = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "sap-s4-gje", default, acknowledgeOtherFormatLive: true);
+        db.ChangeTracker.Clear();
+
+        StatusOf(sap).Should().Be(201);
+        var audit = await db.AuditLogs.AsNoTracking().SingleAsync(a => a.Action == "finance.gl.journal_export.other_format_acknowledged");
+        audit.Metadata.Should().Contain(csv.ToString());
+        (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == csv)).Status.Should().Be(GlJournalExportStatuses.Exported,
+            "acknowledging does not touch the other file: it may already be at the ERP");
+    }
+
+    // ── L1.11: optional UTF-8 byte-order mark for Excel (off by default: an ERP importer reads the BOM as part of the first header) ──
+
+    private static readonly byte[] Utf8Bom = { 0xEF, 0xBB, 0xBF };
+
+    [Fact]
+    public void GenericCsv_DeclaresTheBomOption_OffByDefault()
+    {
+        var spec = ((IJournalExportFormatter)new GenericCsvJournalFormatter()).Options.Should().ContainSingle(o => o.Key == "utf8Bom").Subject;
+        spec.DefaultValue.Should().Be("false");
+    }
+
+    [Fact]
+    public void GenericCsv_HasNoBomByDefault_AndTheBomOptionOnlyPrependsThreeBytes()
+    {
+        var formatter = new GenericCsvJournalFormatter();
+        var plain = formatter.Format(JournalExportFormatterGoldenTests.SampleDocument());
+        plain.Take(3).Should().NotEqual(Utf8Bom, "ERP importers must get the file exactly as before");
+
+        var withBom = formatter.Format(JournalExportFormatterGoldenTests.SampleDocument(
+            options: new Dictionary<string, string> { ["utf8Bom"] = "true" }));
+        withBom.Take(3).Should().Equal(Utf8Bom);
+        withBom.Skip(3).Should().Equal(plain, "the BOM is the only difference");
+        Encoding.UTF8.GetString(withBom.Skip(3).ToArray()).Should().Contain("رواتب", "the Arabic text is the same UTF-8 either way");
+    }
+
+    [Fact]
+    public async Task TheBomOption_IsFrozenWithTheExport_SoADownloadRegeneratesTheSameBytes()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+
+        var created = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "generic-csv", default,
+            options: new Dictionary<string, string> { ["utf8Bom"] = "true" });
+        db.ChangeTracker.Clear();
+        StatusOf(created).Should().Be(201);
+
+        var file = await Ctrl(db, maker).Download(IdOf(created), default);
+        file.Should().BeOfType<FileContentResult>("a BOM export must still hash true on download");
+        ((FileContentResult)file).FileContents.Take(3).Should().Equal(Utf8Bom);
+    }
+
+    [Fact]
+    public async Task ABomValueThatIsNotTrueOrFalse_IsRefused()
+    {
+        var (db, tenantId) = await TenantAsync();
+        SeedJuly(db, tenantId);
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+
+        var created = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, "generic-csv", default,
+            options: new Dictionary<string, string> { ["utf8Bom"] = "maybe" });
+
+        StatusOf(created).Should().Be(400);
+        Body(created).GetProperty("error").GetString().Should().Be(JournalExportErrors.InvalidOption);
     }
 
     // ── Download audit ────────────────────────────────────────────────────────────────────────────

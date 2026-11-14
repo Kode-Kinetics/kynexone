@@ -23,6 +23,7 @@ const ar: Record<string, string> = {
 
   // ── Posted run: layout ──
   'Entry date': 'تاريخ القيد',
+  'ERP accounting date': 'تاريخ الاستحقاق في نظام ERP',
   'Posted by': 'رحّله',
   'Other journals posted for this run': 'قيود أخرى رُحِّلت لهذا المسير',
   'The totals above are the payroll accrual only. Settlement, remittance and void entries are separate journals, listed below, each balanced on its own.': 'الإجماليات أعلاه تخص قيد استحقاق الرواتب وحده. قيود التسوية والسداد والإلغاء قيود مستقلة مدرجة أدناه، وكلٌّ منها متوازن بذاته.',
@@ -48,6 +49,10 @@ const ar: Record<string, string> = {
   'Recall reference': 'مرجع الاسترداد',
   'Bank recall or return reference': 'مرجع استرداد البنك أو إعادة المبلغ',
   'Required when the funds were recalled.': 'مطلوب عند استرداد الأموال.',
+  "This run's journal is already posted in your ERP": 'قيد هذا المسير مرحَّل بالفعل في نظام ERP لديكم',
+  'Your ERP holds it under reference {reference}. Voiding here cannot un-post it: the correcting document must be raised in the ERP as well.': 'يحتفظ نظام ERP بالقيد تحت المرجع {reference}. لا يمكن للإلغاء هنا عكس ترحيله: يجب إصدار المستند التصحيحي في نظام ERP أيضًا.',
+  'Voiding here cannot un-post it: the correcting document must be raised in the ERP as well.': 'لا يمكن للإلغاء هنا عكس الترحيل: يجب إصدار المستند التصحيحي في نظام ERP أيضًا.',
+  'I will raise the correcting document in the ERP': 'سأصدر المستند التصحيحي في نظام ERP',
   'Choose what happened to every payment above to continue.': 'اختر ما جرى لكل دفعة أعلاه للمتابعة.',
 
   // ── Payment actions without payroll.export ──

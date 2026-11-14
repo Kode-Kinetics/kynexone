@@ -316,6 +316,40 @@ public sealed class DesignationDrivenAccessTests
             .Should().BeEquivalentTo([w.PayrollRole.Id]);
     }
 
+    [Fact]
+    public async Task Login_provisioning_applies_the_same_actor_ceiling_as_reconcile()
+    {
+        var w = await SeedAsync(withLogin: false);
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer", "Reviewer");
+        w.Emp.DesignationId = w.PayrollOfficer.Id;
+        await w.Db.SaveChangesAsync();
+        var clerk = await UserWithAsync(w, "Onboarding Clerk", "employees.write", "reports.read");
+
+        var staged = await new EmployeeLoginProvisioner(w.Db).EnsureStagedLoginAsync(w.TenantId, w.Emp, clerk, default);
+        await w.Db.SaveChangesAsync();
+
+        staged.Result.Should().Be(EmployeeLoginProvisioner.Results.Staged);
+        (await RolesOfAsync(w, staged.UserId!.Value)).Should().BeEquivalentTo(["Employee", "Reviewer"]);
+        var skipped = await w.Db.AuditLogs.Where(a => a.Action == DesignationAccessService.SkippedAction && a.EntityId == staged.UserId.ToString())
+            .Select(a => a.Metadata).ToListAsync();
+        skipped.Should().ContainSingle().Which.Should().Contain("above_actor").And.Contain("Payroll Officer");
+    }
+
+    [Fact]
+    public async Task Login_provisioning_without_a_known_actor_carries_no_mapped_role()
+    {
+        var w = await SeedAsync(withLogin: false);
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        w.Emp.DesignationId = w.PayrollOfficer.Id;
+        await w.Db.SaveChangesAsync();
+        var system = new RequestContext("127.0.0.1", "tests", null, w.TenantId);
+
+        var staged = await new EmployeeLoginProvisioner(w.Db).EnsureStagedLoginAsync(w.TenantId, w.Emp, system, default);
+        await w.Db.SaveChangesAsync();
+
+        (await RolesOfAsync(w, staged.UserId!.Value)).Should().BeEquivalentTo(["Employee"]);
+    }
+
     // ── who and where ───────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -667,7 +701,7 @@ public sealed class DesignationDrivenAccessTests
     // ── the flag ────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
-    public async Task With_the_feature_off_nothing_is_applied_revoked_or_configured()
+    public async Task With_the_feature_off_nothing_is_given_or_configured_and_only_what_it_granted_is_taken_away()
     {
         var w = await SeedAsync();
         await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
@@ -675,22 +709,52 @@ public sealed class DesignationDrivenAccessTests
         (await RolesOfAsync(w, w.EmpUser.Id)).Should().Contain("Payroll Officer");
         (await w.Db.TenantFeatureFlags.SingleAsync(f => f.TenantId == w.TenantId && f.FeatureKey == FeatureKeys.DesignationAccess)).IsEnabled = false;
         await w.Db.SaveChangesAsync();
-        var auditsBefore = await w.Db.AuditLogs.CountAsync();
 
-        var moved = await AssignAsync(w, w.Clerk); // would remove Payroll Officer if the feature were on
-        w.Emp.Status = "Terminated";
-        var left = await Svc(w).ReconcileAsync(w.TenantId, w.Emp, w.Actor, default);
-        var revoked = await Svc(w).RevokeGrantedForLeaversAsync(w.TenantId, [w.EmpUser.Id], w.Actor, default);
-        var newLoginRoles = await Svc(w).MappedRolesForNewLoginAsync(w.TenantId, new Employee { DesignationId = w.PayrollOfficer.Id, CompanyId = w.CompanyId }, default);
+        var moved = await AssignAsync(w, w.Clerk); // the old designation's access goes: the switch is a kill switch, not a freeze
+        var regiven = await AssignAsync(w, w.PayrollOfficer); // ...and nothing is ever given while it is off
+        var newLoginRoles = await Svc(w).MappedRolesForNewLoginAsync(w.TenantId, new Employee { DesignationId = w.PayrollOfficer.Id, CompanyId = w.CompanyId }, Guid.NewGuid(), w.Actor, default);
         var configure = () => Svc(w).SetRolesAsync(w.TenantId, w.Clerk, ["Manager"], w.Actor, default);
 
-        moved.Changed.Should().BeFalse();
-        left.Changed.Should().BeFalse();
-        revoked.Should().Be(0);
+        moved.Removed.Should().Contain("Payroll Officer");
+        moved.Added.Should().BeEmpty();
+        regiven.Added.Should().BeEmpty();
         newLoginRoles.Should().BeEmpty();
         (await configure.Should().ThrowAsync<DesignationAccessException>()).Which.Code.Should().Be("feature_not_enabled");
-        (await RolesOfAsync(w, w.EmpUser.Id)).Should().Contain("Payroll Officer");
-        (await w.Db.AuditLogs.CountAsync()).Should().Be(auditsBefore);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee"]);
+    }
+
+    [Fact]
+    public async Task With_the_feature_off_a_leavers_granted_access_is_still_taken_away()
+    {
+        var w = await SeedAsync();
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        await AssignAsync(w, w.PayrollOfficer);
+        (await w.Db.TenantFeatureFlags.SingleAsync(f => f.TenantId == w.TenantId && f.FeatureKey == FeatureKeys.DesignationAccess)).IsEnabled = false;
+        await w.Db.SaveChangesAsync();
+
+        var revoked = await Svc(w).RevokeGrantedForLeaversAsync(w.TenantId, [w.EmpUser.Id], w.Actor, default);
+        await w.Db.SaveChangesAsync();
+
+        revoked.Should().Be(1);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee"]);
+    }
+
+    [Fact]
+    public async Task Switching_the_feature_off_takes_away_everything_it_granted_keeps_hand_given_roles_and_audits_it()
+    {
+        var w = await SeedAsync();
+        await MapAsync(w, w.PayrollOfficer, "Payroll Officer");
+        await AssignAsync(w, w.PayrollOfficer);
+        w.Db.UserRoles.Add(new UserRole { UserId = w.EmpUser.Id, RoleId = w.ReviewerRole.Id }); // given by hand: no designation mark
+        await w.Db.SaveChangesAsync();
+
+        var removed = await Svc(w).RevokeAllGrantedAsync(w.TenantId, w.Actor, default);
+        await w.Db.SaveChangesAsync();
+
+        removed.Should().Be(1);
+        (await RolesOfAsync(w, w.EmpUser.Id)).Should().BeEquivalentTo(["Employee", "Reviewer"]);
+        (await w.Db.AuditLogs.CountAsync(a => a.Action == DesignationAccessService.AppliedAction && a.Metadata!.Contains("feature_off"))).Should().Be(1);
+        (await Svc(w).RevokeAllGrantedAsync(w.TenantId, w.Actor, default)).Should().Be(0, "nothing left to sweep");
     }
 
     [Fact]

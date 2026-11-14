@@ -38,3 +38,27 @@ test('the actions are available exactly to holders of payroll.export', () => {
   expect(paymentActionsAllowed(p => p === 'payroll.lock')).toBe(false);
   expect(paymentActionsAllowed(() => false)).toBe(false);
 });
+
+// M2: four narrow keys open one family of payment actions each; payroll.export still opens every one.
+test('payroll.export still opens every payment action', () => {
+  const held = (p: string) => p === 'payroll.export';
+  for (const action of ['create', 'wps', 'settle', 'remit'] as const) expect(paymentActionsAllowed(held, [action])).toBe(true);
+  expect(paymentActionsAllowed(held)).toBe(true);
+});
+
+test('a narrow key opens only its own family', () => {
+  const only = (key: string) => (p: string) => p === key;
+  expect(paymentActionsAllowed(only('payroll.payment_batch.manage'), ['create'])).toBe(true);
+  expect(paymentActionsAllowed(only('payroll.payment_batch.manage'), ['settle'])).toBe(false);
+  expect(paymentActionsAllowed(only('payroll.wps_status.update'), ['wps'])).toBe(true);
+  expect(paymentActionsAllowed(only('payroll.payment.settle'), ['settle'])).toBe(true);
+  expect(paymentActionsAllowed(only('payroll.payment.settle'), ['create'])).toBe(false);
+  expect(paymentActionsAllowed(only('payroll.remit.manage'), ['remit'])).toBe(true);
+  expect(paymentActionsAllowed(only('payroll.remit.manage'), ['wps'])).toBe(false);
+});
+
+test('with no action named, any payment key shows the actions (the server still decides each one)', () => {
+  expect(paymentActionsAllowed(p => p === 'payroll.remit.manage')).toBe(true);
+  expect(paymentActionsAllowed(p => p === 'payroll.read')).toBe(false);
+  expect(paymentActionsAllowed(() => false)).toBe(false);
+});

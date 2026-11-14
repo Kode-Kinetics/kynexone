@@ -2423,7 +2423,7 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.ToTable("gl_adjustment_requests", t =>
             {
                 t.HasCheckConstraint("ck_gl_adjustment_requests__kind",
-                    "kind IN ('EosbTrueUp','LegacyAbsenceReclass')");
+                    "kind IN ('EosbTrueUp','LegacyAbsenceReclass','ReceivableWriteOff')");
                 t.HasCheckConstraint("ck_gl_adjustment_requests__status",
                     "status IN ('Pending','Approved','Rejected')");
             });

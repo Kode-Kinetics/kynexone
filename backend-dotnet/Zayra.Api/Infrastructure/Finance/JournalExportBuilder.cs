@@ -83,6 +83,7 @@ public static class JournalExportErrors
     public const string CostCentreTotalMismatch = "cost_centre_total_mismatch";
     public const string UncostedRequiredLines = "uncosted_required_lines";
     public const string UnsafeCompanyCode = "unsafe_company_code";
+    public const string OtherFormatLive = "other_format_export_live";
 }
 
 /// <summary>Rounded DR/CR of one company inside an export — every company must balance on its own.</summary>

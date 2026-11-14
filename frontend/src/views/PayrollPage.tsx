@@ -1438,8 +1438,9 @@ function RunsTab({ onSelectRun, focusRunId, onFocusRun, version, onRunsChanged }
                   <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{companies.find(c => c.id === run.companyId)?.name ?? ''}</p>
                 )}
                 <p className="mt-1 text-xs text-slate-500">{t('{employeeCount} employees · Net {totalNetSalary}', { employeeCount: run.employeeCount, totalNetSalary: fmt(run.totalNetSalary) })}</p>
-                {/* A Voided run is finished: there is nothing left to process or validate, and a re-process would be refused. */}
-                {run.status !== 'Locked' && run.status !== 'Voided' && (
+                {/* A Voided run is finished: there is nothing left to process or validate, and a re-process would be refused.
+                    A Locked or Paid run is past Process: it has its own action row below, so it never shows both. */}
+                {run.status !== 'Locked' && run.status !== 'Paid' && run.status !== 'Voided' && (
                   <div className="mt-2 flex gap-1">
                     <button type="button" onClick={e => { e.stopPropagation(); processRun(run.id); }} className={`${btn.sm} h-6 px-2 text-xs`}>
                       <Play className="h-3 w-3" /> {t('Process')}
@@ -2678,9 +2679,9 @@ function PayslipsTab() {
 
 function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
   const t = useT();
-  // Creating a batch and generating the file need payroll.export (Admin only). Without it the actions are shown off, with the reason.
+  // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
-  const canExport = paymentActionsAllowed(hasPermission);
+  const canExport = paymentActionsAllowed(hasPermission, ['create']);
   const fmtAmt = useFmtAmt();
   const monthLabel = useMonthLabel();
   const { confirm, dialog: confirmDialog } = useConfirm();
@@ -2888,7 +2889,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
         <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
           <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            {t('Saudi bank payroll file: the ANB Connect payroll instruction (with WPS fields) is the file to send to the bank. It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
+            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. It appears below. If it does not, you need the Payroll export permission, or the platform team has switched bank export off for your company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
           </span>
         </div>
       )}
@@ -2901,7 +2902,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
 
 function PaymentTrackingTab() {
   const t = useT();
-  // WPS status, settlement and remittance all need payroll.export (Admin only): without it the row actions give way to the reason.
+  // WPS status, settlement and remittance need payroll.export (Admin) or the narrow key of their family: without one the row actions give way to the reason (the server refuses the wrong family).
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission);
   const fmtAmt = useFmtAmt();

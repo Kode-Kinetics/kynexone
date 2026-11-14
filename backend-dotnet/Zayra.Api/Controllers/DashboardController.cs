@@ -897,6 +897,8 @@ public class DashboardController : ControllerBase
         ["workPermitNumber"] = "work permit", ["workPermitIssueDate"] = "work permit issue date",
         ["medicalInformation"] = "medical information", ["disciplinaryRecords"] = "disciplinary records",
         ["terminationReason"] = "termination reason",
+        ["establishmentId"] = "establishment ID", ["occupationCode"] = "occupation code", ["workLocationId"] = "work location ID",
+        ["contractReference"] = "contract reference", ["workPermitReference"] = "work permit reference",
     };
 
     /// <summary>"bankIban,passportNumber" becomes "IBAN, passport". Null when nothing is listed.</summary>

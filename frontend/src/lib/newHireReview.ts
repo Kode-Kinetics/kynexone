@@ -169,6 +169,18 @@ export function draftRequestFailureReason(err: unknown, t: Translate = english):
   return t(msg('Something went wrong. Please retry.'));
 }
 
+/**
+ * The notice after a draft is approved. An accepted offer's pay package is not applied by the HR approver: it waits as a
+ * salary request for a second approver, and the employee stays out of post until then, so the notice says so instead
+ * of calling them active.
+ */
+export function draftApprovalNotice(employee: { name: string; employeeCode: string; status: string }, t: Translate = english): string {
+  const params = { name: employee.name, code: employee.employeeCode };
+  return employee.status === 'Active'
+    ? t(msg('{name} is now employee {code}.'), params)
+    : t(msg('{name} is now employee {code}. Their pay package is waiting for a second approver; activate them once it is approved.'), params);
+}
+
 /** True when the server refused because the draft had already been decided (409 draft_closed). */
 export function isClosedDraftError(err: unknown): boolean {
   const e = err as AxiosLike;

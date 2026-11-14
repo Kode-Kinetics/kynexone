@@ -492,7 +492,7 @@ function GosiPanel({ company, onCompanyUpdate }: { company: CompanyDto | null; o
         <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-900/30 dark:bg-blue-900/10 dark:text-blue-300">
           <p className="font-semibold mb-1">{t('GOSI contribution rates payroll will apply')}</p>
           <p className="mb-2 text-blue-500 dark:text-blue-400">
-            {rich(t('Read from the effective-dated statutory rules — the same values the payslip and the GOSI filing use. Change them under {path}; this screen never holds its own copy.', { path: mark('path') }),
+            {rich(t('Read from the effective-dated statutory rules — the same values the payslip and the GOSI reconciliation use. Change them under {path}; this screen never holds its own copy.', { path: mark('path') }),
               { path: <strong>{t('Finance → Rates → Statutory')}</strong> })}
           </p>
 

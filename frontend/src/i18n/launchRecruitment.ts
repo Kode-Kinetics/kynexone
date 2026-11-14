@@ -328,6 +328,19 @@ const ar: Record<string, string> = {
   "Hire": "توظيف",
   "Hold": "تعليق",
   "StrongHire": "توظيف بقوة",
+  "Choose a department": "اختر القسم",
+  "Choose a designation": "اختر المسمى الوظيفي",
+  "Choose a grade": "اختر الدرجة",
+  "No grade": "بدون درجة",
+  "The department, designation and grade lists could not be loaded.": "تعذر تحميل قوائم الأقسام والمسميات الوظيفية والدرجات.",
+  "Add departments, designations and grades under Setup first. They are picked from your organisation's own records.": "أضف الأقسام والمسميات الوظيفية والدرجات من الإعدادات أولًا؛ فهي تُختار من سجلات مؤسستك.",
+  "Title, Department and Designation are required.": "المسمى والقسم والمسمى الوظيفي مطلوبة.",
+  "The offer is below the minimum of {gradeName} ({currency} {limit}).": "العرض أقل من الحد الأدنى للدرجة {gradeName} ({currency} {limit}).",
+  "The offer is above the maximum of {gradeName} ({currency} {limit}).": "العرض أعلى من الحد الأقصى للدرجة {gradeName} ({currency} {limit}).",
+  "{name} is now employee {code}. Their pay package is waiting for a second approver; activate them once it is approved.": "أصبح {name} الآن موظفًا برقم {code}. باقة راتبه بانتظار معتمِد ثانٍ؛ فعّل الموظف بعد اعتمادها.",
+  "Reason for moving to Offer without an interview or assessment": "سبب الانتقال إلى مرحلة العرض دون مقابلة أو تقييم",
+  "Move to Offer with this reason": "الانتقال إلى مرحلة العرض بهذا السبب",
+  "Nobody has interviewed or assessed this candidate yet. Schedule an interview or assessment first, or give a reason to move on.": "لم تُجرَ مقابلة أو تقييم لهذا المرشح بعد. حدّد مقابلة أو تقييمًا أولًا، أو اذكر سببًا للمتابعة.",
 };
 
 export const launchRecruitment = { ar, en: Object.fromEntries(Object.keys(ar).map(key => [key, key])) as Record<string, string> };

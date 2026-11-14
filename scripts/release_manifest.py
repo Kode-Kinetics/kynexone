@@ -81,17 +81,18 @@ ACTIVATION_GATES = [
         "name": "SaudiBankExportActivation:Enabled",
         "needles": ["SaudiBankExportActivation", "Enabled"],
         "env": "SaudiBankExportActivation__Enabled",
-        "gates": "Whether Saudi bank payment-file export exists for anyone at all.",
-        "buildDefault": "off (absent or unparseable is off)",
+        "gates": "Operator kill switch for Saudi bank payment-file export. Saudi companies have the export "
+                 "on by default; setting this to anything other than true closes it for every tenant.",
+        "buildDefault": "unset (export on for Saudi companies); an explicit value other than true turns it off",
         "evidence": "backend-dotnet/Zayra.Api/Infrastructure/Payroll/SaudiBankExports/SaudiBankExportActivation.cs",
     },
     {
         "name": "SaudiBankExportActivation:Companies[n]:{TenantId,CompanyId}",
         "needles": ["SaudiBankExportActivation", "Companies"],
         "env": "SaudiBankExportActivation__Companies__<n>__TenantId / __CompanyId",
-        "gates": "Which exact legal entities may export. No wildcard, no tenant-wide fallback; an "
-                 "empty list denies everyone even with Enabled=true.",
-        "buildDefault": "empty (nobody)",
+        "gates": "Operator allow-list that also opens the export for a named non-Saudi legal entity (needs "
+                 "Enabled=true). No wildcard, no tenant-wide fallback. Saudi companies do not need an entry.",
+        "buildDefault": "empty (Saudi companies only)",
         "evidence": "backend-dotnet/Zayra.Api/Infrastructure/Payroll/SaudiBankExports/SaudiBankExportActivation.cs",
     },
     {
@@ -102,6 +103,16 @@ ACTIVATION_GATES = [
                  "they wait in ApprovedPendingEffectiveDate and the health counter shows how many.",
         "buildDefault": "on",
         "evidence": "backend-dotnet/Zayra.Api/Infrastructure/Employees/EffectiveChangeOptions.cs",
+    },
+    {
+        "name": "LeaveAccrual:Enabled",
+        "needles": ["LeaveAccrual", "Enabled"],
+        "env": "LeaveAccrual__Enabled",
+        "gates": "Whether the scheduled monthly leave accrual, yearly-policy grant and year rollover run. Off means "
+                 "balances move only through the manual Open year / Accrue actions. Turn it on per deployment after "
+                 "the tenants' balances have been reviewed; it posts accruals and carries unused annual leave forward.",
+        "buildDefault": "off",
+        "evidence": "backend-dotnet/Zayra.Api/Infrastructure/Leave/LeaveAccrualOptions.cs",
     },
     {
         "name": "Email:DeliveryMode",

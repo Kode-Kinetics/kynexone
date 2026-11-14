@@ -80,6 +80,8 @@ public class OrganizationSetupService : IOrganizationSetupService
         var company = new Company { TenantId = tenantId, CreatedBy = context.UserId };
         Apply(company, request);
         _db.Companies.Add(company);
+        // A new Saudi company's payslip is bilingual from its first run (insert-if-absent: a tenant's existing default template is never touched).
+        await PayslipTemplateDefaults.EnsureSaudiBilingualDefaultForNewCompanyAsync(_db, tenantId, company.CountryCode, cancellationToken);
         await EnsureExportedCompanyCodeUniqueAsync(tenantId, company, cancellationToken);
         await SaveCompanyAsync(company.ErpCompanyCode, cancellationToken);
         await _audit.WriteAsync("organization.company_created", nameof(Company), company.Id.ToString(), context, null, cancellationToken);

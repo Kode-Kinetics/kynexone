@@ -349,15 +349,8 @@ public static class EmployeeSalaryBreakdownWriter
         if (current.Length == 0 || previousStructureCodes.Contains(current, StringComparer.OrdinalIgnoreCase))
             profile.SalaryStructureReference = structureCode;
     }
-    private static async Task<string> ResolveCompanyCurrencyAsync(ZayraDbContext db, Employee employee, CancellationToken cancellationToken)
-    {
-        if (employee.CompanyId is not Guid companyId) return "AED";
-        var currency = await db.Companies.AsNoTracking()
-            .Where(x => x.TenantId == employee.TenantId && x.Id == companyId)
-            .Select(x => x.DefaultCurrency)
-            .FirstOrDefaultAsync(cancellationToken);
-        return string.IsNullOrWhiteSpace(currency) ? "AED" : currency.Trim().ToUpperInvariant();
-    }
+    private static Task<string> ResolveCompanyCurrencyAsync(ZayraDbContext db, Employee employee, CancellationToken cancellationToken) =>
+        Zayra.Api.Infrastructure.Payroll.EmployeeCompanyCurrency.ResolveAsync(db, employee, cancellationToken);
     /// <summary>The monthly salary field a grade pay-scale line lands on, or null when it is not monthly cash.</summary>
     public enum GradeSalaryField { Basic, Housing, Transport, Food, Mobile, Other, FixedDeduction }
 

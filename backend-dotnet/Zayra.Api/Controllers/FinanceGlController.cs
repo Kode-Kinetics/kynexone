@@ -688,6 +688,73 @@ public partial class FinanceGlController : ControllerBase
         return Ok(new { accounts = seeded.Accounts, mappings = seeded.Mappings, drivers = seeded.Drivers, rateDefinitions = seeded.RateDefinitions, payComponents = seededComponents.Components });
     }
 
+    // ── Employer GOSI expense split preset (L1.4) ─────────────────────────────
+
+    /// <summary>
+    /// Whether the "split employer GOSI expense by scheme" preset is on for a company (or the whole group when no company is named),
+    /// and the three expense accounts it uses. Read-only.
+    /// </summary>
+    [HttpGet("presets/employer-gosi-split")]
+    public async Task<IActionResult> GetEmployerGosiSplit([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.read") && !HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (ScopeError(companyId) is { } err) return err;
+        var enabled = await GosiExpenseSplitPreset.IsEnabledAsync(_db, tid.Value, companyId, ct);
+        return Ok(new
+        {
+            enabled, companyId,
+            accounts = GosiExpenseSplitPreset.Schemes.Select(s => new { component = s.Component, code = s.AccountCode, name = s.AccountName }),
+        });
+    }
+
+    /// <summary>
+    /// One click: book employer GOSI expense by scheme (annuities 5102, SANED 5103, occupational hazards 5104) instead of the pooled 5101.
+    /// The credit side (the liability by component) does not move; see <see cref="GosiExpenseSplitPreset"/>.
+    ///
+    /// <para><b>Authority.</b> It creates posting drivers, which on the manual driver screen needs <c>finance.gl.drivers.manage</c>, and chart
+    /// accounts, which needs <c>finance.gl.manage</c>; it needs BOTH. It does not need <c>finance.gl.drivers.author_predicates</c>: that key
+    /// guards free-form predicates and employer-expense pairs authored by hand, while this preset writes one fixed, reviewed set of rows that
+    /// balance by construction, so pressing it cannot author a predicate of the caller's choosing.</para>
+    ///
+    /// <para>Refused with 409 while a payroll run of the scope awaits finance review or lock, because it would change what that run
+    /// posts; the same guard the mapping editor uses.</para>
+    /// </summary>
+    [HttpPost("presets/employer-gosi-split")]
+    public async Task<IActionResult> EnableEmployerGosiSplit([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage") || !HasPermission("finance.gl.drivers.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
+        if (await CostAccountingGuards.HasRunAwaitingFinanceOrLockAsync(_db, tid.Value, companyId, ct))
+            return Conflict(CostAccountingGuards.LockedIntoApprovedRunBody);
+
+        var result = await GosiExpenseSplitPreset.EnableAsync(_db, tid.Value, companyId, ct);
+        if (!result.Ok)
+            return Conflict(new { code = result.ErrorCode, message = result.ErrorMessage });
+        await WriteAudit("finance.gl.gosi_split.enabled", "GlDriver", companyId?.ToString() ?? "tenant-default", companyId,
+            new { companyId, result.AccountsCreated, result.DriversCreated, result.MappingsCreated }, ct);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { enabled = true, companyId, accountsCreated = result.AccountsCreated, driversCreated = result.DriversCreated });
+    }
+
+    /// <summary>Turns the split off again: the next run posts employer GOSI to the pooled account. Posted journals are not rewritten.</summary>
+    [HttpPost("presets/employer-gosi-split/disable")]
+    public async Task<IActionResult> DisableEmployerGosiSplit([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage") || !HasPermission("finance.gl.drivers.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (await WriteScopeErrorAsync(tid.Value, companyId, ct) is { } err) return err;
+        if (await CostAccountingGuards.HasRunAwaitingFinanceOrLockAsync(_db, tid.Value, companyId, ct))
+            return Conflict(CostAccountingGuards.LockedIntoApprovedRunBody);
+
+        var switchedOff = await GosiExpenseSplitPreset.DisableAsync(_db, tid.Value, companyId, ct);
+        await WriteAudit("finance.gl.gosi_split.disabled", "GlDriver", companyId?.ToString() ?? "tenant-default", companyId,
+            new { companyId, switchedOff }, ct);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { enabled = false, companyId });
+    }
+
     // ── Control-account health ───────────────────────────────────────────────
 
     /// <summary>

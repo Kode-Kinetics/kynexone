@@ -670,7 +670,8 @@ test('source_pages_still_use_the_canonical_forms', async ({ page }) => {
   await page.getByRole('link', { name: 'Onboarding settings', exact: true }).click();
   await expect(page).toHaveURL(/\/setup\?tab=onboardingChecklists/);
   await expect(page.getByRole('button', { name: 'Create Checklist', exact: true })).toBeVisible();
-  expect(writes).toEqual([]);
+  // The leave policy editor's statutory floor-check is a dry-run POST that saves nothing (see the policy save test above).
+  expect(writes.filter(path => path !== '/api/leave/policies/floor-check')).toEqual([]);
 });
 
 async function selectArea(page: Page, label: string) {

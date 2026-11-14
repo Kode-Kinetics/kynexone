@@ -68,6 +68,7 @@ test('creates rules, sending the typed figures as numbers and an upper-case code
   expect(posted).toEqual([{
     code: 'RYD-DAY', name: 'Riyadh day', branchId: 'b-1', departmentId: null, gradeId: null,
     graceMinutes: 5, earlyExitThresholdMinutes: 15, halfDayThresholdMinutes: 240, standardWorkMinutes: 480, breakMinutes: 60,
+    defaultShiftStart: '',
   }]);
 });
 

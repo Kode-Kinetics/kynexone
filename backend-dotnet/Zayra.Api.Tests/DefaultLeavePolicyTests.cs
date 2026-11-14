@@ -185,6 +185,8 @@ public class DefaultLeavePolicyTests
         {
             TenantId = tenant.Id, EmployeeId = employee.Id, LeaveTypeId = sickTypeId,
             StartDate = Thursday, EndDate = Sunday, DayType = "Full", Reason = "Influenza",
+            // A new Saudi tenant's sick type requires a certificate from the first day (launch spec item 6), so the request carries one.
+            AttachmentPath = "documents/medical-certificate.pdf",
         }, employee.UserAccountId);
 
         var expected = await PolicyAsync(db, tenant.Id, "SICK", "SA");
@@ -220,6 +222,7 @@ public class DefaultLeavePolicyTests
         {
             TenantId = tenant.Id, EmployeeId = employee.Id, LeaveTypeId = sickTypeId,
             StartDate = yesterday, EndDate = yesterday, DayType = "Full", Reason = "Fever",
+            AttachmentPath = "documents/medical-certificate.pdf",
         }, employee.UserAccountId);
         submitted.Status.Should().NotBe("Draft");
 
@@ -235,7 +238,7 @@ public class DefaultLeavePolicyTests
             {
                 TenantId = tenant.Id, EmployeeId = employee.Id, LeaveTypeId = sickTypeId,
                 StartDate = yesterday.AddDays(-10), EndDate = yesterday.AddDays(-10),
-                DayType = "Full", Reason = "Fever",
+                DayType = "Full", Reason = "Fever", AttachmentPath = "documents/medical-certificate.pdf",
             }, employee.UserAccountId);
         await refused.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*7 day(s) advance notice*");
@@ -256,9 +259,13 @@ public class DefaultLeavePolicyTests
         var tenant = await NewTenantAsync(db, "idem-leave");
 
         var first = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
-        first.LeavePolicies.Should().Be(
-            (TenantProvisioningBundle.DefaultLeavePolicyCountries.Length + 1) * 2,
-            "one country-neutral row plus one per GCC state, for each of the two seeded leave types");
+        var perBaseType = TenantProvisioningBundle.DefaultLeavePolicyCountries.Length + 1;
+        // A NEW Saudi tenant is also born with the KSA leave catalogue (launch spec item 6): each of its types has a country-neutral
+        // policy and one for SA. The two base types keep one country-neutral row plus one per GCC state.
+        var catalogue = TenantProvisioningBundle.KsaLeaveCatalogue.Length * 2;
+        first.LeavePolicies.Should().Be(perBaseType * 2 + catalogue,
+            "the two base types' country rows, plus two rows for each type of the KSA catalogue");
+        first.LeaveTypes.Should().Be(2 + TenantProvisioningBundle.KsaLeaveCatalogue.Length);
 
         var second = await TenantProvisioningBundle.ProvisionAsync(db, tenant.Id, "SA", CancellationToken.None);
         second.LeavePolicies.Should().Be(0);
@@ -267,9 +274,15 @@ public class DefaultLeavePolicyTests
         foreach (var code in new[] { "ANNUAL", "SICK" })
         {
             var policies = await PoliciesAsync(db, tenant.Id, code);
-            policies.Should().HaveCount(first.LeavePolicies / 2);
+            policies.Should().HaveCount(perBaseType);
             policies.Select(p => p.CountryCode).Should().OnlyHaveUniqueItems(
                 "the natural key is (leave type, tenant-wide scope, country)");
+        }
+        foreach (var seed in TenantProvisioningBundle.KsaLeaveCatalogue)
+        {
+            var policies = await PoliciesAsync(db, tenant.Id, seed.Code);
+            policies.Should().HaveCount(2, $"{seed.Code}: a country-neutral policy and one for SA");
+            policies.Select(p => p.CountryCode).Should().OnlyHaveUniqueItems();
         }
     }
 

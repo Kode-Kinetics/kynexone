@@ -119,6 +119,8 @@ public static class PrivilegedMfaPolicy
         "payroll.read", // every employee's pay and bank lines, read-only but sensitive
         "payroll.slips.read", // the register and payslips: every employee's pay, read-only but sensitive (no export)
         "payroll.write", "payroll.approve", "payroll.lock", "payroll.run_delete", "payroll.export",
+        // M2: the money-moving payment keys (batch and WPS file, WPS status, net-pay settlement, remittance).
+        "payroll.payment_batch.manage", "payroll.wps_status.update", "payroll.payment.settle", "payroll.remit.manage",
         "payroll.structure_manage", "payroll.rules.manage", "payroll.rates.manage", "payroll.rates.statutory_override",
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",

@@ -4,7 +4,7 @@ import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import type { PayrollGLJournal, PostedGlJournal } from '../../api/payroll';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
-import { hasCostCentres, journalTitle } from '../../lib/glJournalView';
+import { erpAccountingDate, hasCostCentres, journalTitle } from '../../lib/glJournalView';
 import { Badge } from '../gl/glUi';
 
 /**
@@ -68,6 +68,7 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
           <p className="text-sm font-semibold text-slate-900 dark:text-white">{title}</p>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {t('Entry date')}: <span className="tabular-nums">{fmt.date(j.entryDate, 'medium')}</span>
+            {' · '}{t('ERP accounting date')}: <span data-testid="gl-erp-accounting-date" className="tabular-nums">{fmt.date(erpAccountingDate(j), 'medium')}</span>
             {j.postedByName && <> · {t('Posted by')}: <bdi>{j.postedByName}</bdi></>}
           </p>
         </div>
@@ -79,11 +80,11 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table aria-label={t('Journal lines for {title}', { title })} className={`w-full text-sm ${showCostCentre ? 'min-w-[440px]' : ''}`}>
+        <table aria-label={t('Journal lines for {title}', { title })} className="w-full table-fixed text-sm sm:table-auto">
           <thead>
             <tr className="border-b border-slate-100 dark:border-white/5">
               <th className="px-2 py-2 sm:px-3 text-start text-xs font-semibold uppercase text-fg-muted">{t('Account')}</th>
-              {showCostCentre && <th className="px-2 py-2 sm:px-3 text-start text-xs font-semibold uppercase text-fg-muted">{t('Cost centre')}</th>}
+              {showCostCentre && <th className="hidden px-2 py-2 sm:table-cell sm:px-3 text-start text-xs font-semibold uppercase text-fg-muted">{t('Cost centre')}</th>}
               <th className="px-2 py-2 sm:px-3 text-end text-xs font-semibold uppercase text-fg-muted">{t('Debit')} ({currency})</th>
               <th className="px-2 py-2 sm:px-3 text-end text-xs font-semibold uppercase text-fg-muted">{t('Credit')} ({currency})</th>
             </tr>
@@ -91,11 +92,14 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
           <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
             {j.entries.map((e, i) => (
               <tr key={i} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-                <td className="px-2 py-2 sm:px-3 text-slate-700 dark:text-slate-300">
+                <td className="break-words px-2 py-2 sm:px-3 text-slate-700 dark:text-slate-300">
                   <span className="me-2 font-mono text-xs text-slate-500"><bdi>{e.glAccount}</bdi></span>{e.glAccountName}
+                  {showCostCentre && e.costCentreCode && (
+                    <span className="mt-0.5 block text-caption text-slate-500 dark:text-slate-400 sm:hidden">{t('Cost centre')}: <bdi>{e.costCentreCode}</bdi></span>
+                  )}
                 </td>
                 {showCostCentre && (
-                  <td className="px-2 py-2 sm:px-3 text-slate-700 dark:text-slate-300">
+                  <td className="hidden px-2 py-2 sm:table-cell sm:px-3 text-slate-700 dark:text-slate-300">
                     {e.costCentreCode ? (
                       <>
                         <span><bdi>{e.costCentreCode}</bdi>{e.costCentreName ? <> — {e.costCentreName}</> : null}</span>
@@ -109,7 +113,8 @@ function JournalBlock({ j, currency }: { j: PostedGlJournal; currency: string })
               </tr>
             ))}
             <tr className="border-t-2 border-slate-200 dark:border-white/10">
-              <td colSpan={showCostCentre ? 2 : 1} className="px-2 py-2 sm:px-3 text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Total')}</td>
+              <td className="px-2 py-2 sm:px-3 text-xs font-semibold text-slate-600 dark:text-slate-300">{t('Total')}</td>
+              {showCostCentre && <td className="hidden sm:table-cell" />}
               <td className="px-2 py-2 sm:px-3 text-end text-sm font-semibold tabular-nums text-sapphire dark:text-cyanAccent">{amt(j.totalDebits)}</td>
               <td className="px-2 py-2 sm:px-3 text-end text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{amt(j.totalCredits)}</td>
             </tr>

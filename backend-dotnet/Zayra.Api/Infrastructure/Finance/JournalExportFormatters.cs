@@ -112,7 +112,26 @@ public sealed class GenericCsvJournalFormatter : IJournalExportFormatter
 
     public bool CarriesCostCentre => true;
 
+    /// <summary>L1.11 — Excel opens a BOM-less UTF-8 file as ANSI and shows Arabic as mojibake, so a person opening the file in Excel can ask for the byte-order mark.
+    /// Off by default: an ERP importer reads the BOM as part of the first header name.</summary>
+    public const string BomOption = "utf8Bom";
+    public IReadOnlyList<JournalExportOptionSpec> Options { get; } = new[]
+    {
+        new JournalExportOptionSpec(BomOption, "UTF-8 byte-order mark (for Excel)", "false",
+            "true adds a UTF-8 byte-order mark so Excel opens Arabic text correctly. Leave it off (false) for an ERP import.", 5),
+    };
+
     public byte[] Format(JournalExportDocument doc)
+    {
+        var bytes = FormatCore(doc);
+        if (!string.Equals(doc.Option(BomOption, "false"), "true", StringComparison.OrdinalIgnoreCase)) return bytes;
+        var withBom = new byte[bytes.Length + 3];
+        withBom[0] = 0xEF; withBom[1] = 0xBB; withBom[2] = 0xBF;
+        Buffer.BlockCopy(bytes, 0, withBom, 3, bytes.Length);
+        return withBom;
+    }
+
+    private static byte[] FormatCore(JournalExportDocument doc)
     {
         var withCc = doc.HasCostCentres;
         return ErpFile.Csv(withCc ? Headers.Concat(CostCentreHeaders).ToArray() : Headers, doc.Lines.Select(l =>

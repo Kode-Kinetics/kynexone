@@ -1767,6 +1767,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("event_type");
 
+                    b.Property<string>("FromStage")
+                        .HasColumnType("text")
+                        .HasColumnName("from_stage");
+
                     b.Property<string>("Notes")
                         .IsRequired()
                         .HasColumnType("text")
@@ -1789,6 +1793,10 @@ namespace Zayra.Api.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid")
                         .HasColumnName("tenant_id");
+
+                    b.Property<string>("ToStage")
+                        .HasColumnType("text")
+                        .HasColumnName("to_stage");
 
                     b.HasKey("Id");
 
@@ -3989,6 +3997,10 @@ namespace Zayra.Api.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at_utc");
+
+                    b.Property<TimeOnly?>("DefaultShiftStart")
+                        .HasColumnType("time without time zone")
+                        .HasColumnName("default_shift_start");
 
                     b.Property<Guid?>("DepartmentId")
                         .HasColumnType("uuid")
@@ -10857,6 +10869,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("field_value");
 
+                    b.Property<byte[]>("FieldValueEnc")
+                        .HasColumnType("bytea")
+                        .HasColumnName("field_value_enc");
+
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
@@ -10892,7 +10908,10 @@ namespace Zayra.Api.Migrations
                     b.HasIndex("TenantId", "EmployeeId", "CountryCode", "FieldKey")
                         .IsUnique();
 
-                    b.ToTable("employee_compliance_records", (string)null);
+                    b.ToTable("employee_compliance_records", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_employee_compliance_records_field_value_enc_shape", "field_value_enc IS NULL OR (octet_length(field_value_enc) BETWEEN 30 AND 1024 AND get_byte(field_value_enc, 0) IN (1, 2) AND get_byte(field_value_enc, 1) > 0)");
+                        });
                 });
 
             modelBuilder.Entity("Zayra.Api.Models.EmployeeContract", b =>
@@ -16333,6 +16352,10 @@ namespace Zayra.Api.Migrations
                         .HasColumnType("character varying(16)")
                         .HasColumnName("status");
 
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
                     b.Property<string>("TargetAccount")
                         .HasMaxLength(250)
                         .HasColumnType("character varying(250)")
@@ -16354,7 +16377,7 @@ namespace Zayra.Api.Migrations
 
                     b.ToTable("gl_adjustment_requests", null, t =>
                         {
-                            t.HasCheckConstraint("ck_gl_adjustment_requests__kind", "kind IN ('EosbTrueUp','LegacyAbsenceReclass')");
+                            t.HasCheckConstraint("ck_gl_adjustment_requests__kind", "kind IN ('EosbTrueUp','LegacyAbsenceReclass','ReceivableWriteOff')");
 
                             t.HasCheckConstraint("ck_gl_adjustment_requests__status", "status IN ('Pending','Approved','Rejected')");
                         });
@@ -18462,6 +18485,10 @@ namespace Zayra.Api.Migrations
                     b.Property<int>("FilledCount")
                         .HasColumnType("integer")
                         .HasColumnName("filled_count");
+
+                    b.Property<Guid?>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
 
                     b.Property<int>("HeadCount")
                         .HasColumnType("integer")
@@ -22416,6 +22443,10 @@ namespace Zayra.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("employment_type");
+
+                    b.Property<Guid?>("GradeId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("grade_id");
 
                     b.Property<int>("HeadCount")
                         .HasColumnType("integer")

@@ -40,8 +40,8 @@ public class GlPostingIntegrityTests
         (await k.Payroll().Lock(run.Id, default)).Should().BeOfType<OkObjectResult>();
 
         var gl = await k.RunGlAsync(run.Id);
-        gl.Where(l => l.CreditAccount == "5008 - Attendance & Late Deductions (contra)").Sum(l => l.Amount).Should().Be(420m);
-        gl.Where(l => l.CreditAccount == "5009 - Unpaid Leave & LOP Deductions (contra)").Sum(l => l.Amount).Should().Be(200m);
+        gl.Where(l => l.CreditAccount == "5008 - Absence, Late & Early Deductions (contra)").Sum(l => l.Amount).Should().Be(420m);
+        gl.Where(l => l.CreditAccount == "5009 - Unpaid Leave Deductions (contra)").Sum(l => l.Amount).Should().Be(200m);
         gl.Should().NotContain(l => l.CreditAccount.StartsWith("2104") || l.CreditAccount.StartsWith("2105"),
             "nothing ever remits or clears 2104/2105, so crediting them leaves a payable nobody owes");
     }
@@ -54,6 +54,9 @@ public class GlPostingIntegrityTests
         var accounts = await k.Db.GlAccounts.AsNoTracking().Where(a => a.TenantId == k.TenantId).ToListAsync();
         accounts.Single(a => a.Code == "5008").AccountType.Should().Be("Expense");
         accounts.Single(a => a.Code == "5009").AccountType.Should().Be("Expense");
+        // L1.2: the names say what the routing does. Late/early AND loss-of-pay credit 5008; approved unpaid leave credits 5009.
+        accounts.Single(a => a.Code == "5008").Name.Should().Be("Absence, Late & Early Deductions (contra)");
+        accounts.Single(a => a.Code == "5009").Name.Should().Be("Unpaid Leave Deductions (contra)");
         accounts.Single(a => a.Code == "5199").Name.Should().Be("Payroll Rounding Differences");
         accounts.Should().NotContain(a => a.Code == "2104" || a.Code == "2105");
         var drivers = await k.Db.GlDrivers.AsNoTracking().Where(d => d.TenantId == k.TenantId).ToListAsync();

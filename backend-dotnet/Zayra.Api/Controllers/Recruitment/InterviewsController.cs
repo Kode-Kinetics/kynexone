@@ -41,8 +41,18 @@ public class InterviewsController : ControllerBase
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
 
         var total = await q.CountAsync(ct);
-        var items = await q.OrderByDescending(x => x.ScheduledAt)
+        var rows = await q.OrderByDescending(x => x.ScheduledAt)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+
+        // The list names the candidate and the job itself, so the screen needs no second lookup of every application.
+        var applicationIds = rows.Select(r => r.ApplicationId).Distinct().ToList();
+        var applications = await _db.JobApplications.AsNoTracking()
+            .Where(a => a.TenantId == tid && applicationIds.Contains(a.Id))
+            .Select(a => new { a.Id, a.CandidateName, a.JobTitle })
+            .ToDictionaryAsync(a => a.Id, ct);
+        var items = rows.Select(r => new InterviewListItem(r,
+            applications.TryGetValue(r.ApplicationId, out var a) ? a.CandidateName : string.Empty,
+            applications.TryGetValue(r.ApplicationId, out var b) ? b.JobTitle : string.Empty)).ToList();
 
         return Ok(new { total, page, pageSize, items });
     }
@@ -229,3 +239,24 @@ public record SubmitFeedbackRequest(
     int CommunicationScore, int TechnicalScore, int CultureFitScore,
     int ProblemSolvingScore, int LeadershipScore, int OverallScore,
     string? Strengths, string? Concerns, string? Notes, string Recommendation);
+
+/// <summary>An interview as the list returns it: the schedule's own fields (as before), plus who is being interviewed and for which job.</summary>
+public sealed record InterviewListItem([property: System.Text.Json.Serialization.JsonIgnore] InterviewSchedule Schedule, string CandidateName, string JobTitle)
+{
+    // Flattened onto the schedule's own JSON so existing readers of the list keep every field they had.
+    public Guid Id => Schedule.Id;
+    public Guid ApplicationId => Schedule.ApplicationId;
+    public string InterviewType => Schedule.InterviewType;
+    public string InterviewerNames => Schedule.InterviewerNames;
+    public DateTime ScheduledAt => Schedule.ScheduledAt;
+    public int DurationMinutes => Schedule.DurationMinutes;
+    public string Mode => Schedule.Mode;
+    public string MeetingLink => Schedule.MeetingLink;
+    public string Location => Schedule.Location;
+    public string Status => Schedule.Status;
+    public int? OverallRating => Schedule.OverallRating;
+    public string Recommendation => Schedule.Recommendation;
+    public string FeedbackNotes => Schedule.FeedbackNotes;
+    public DateTime? CompletedAt => Schedule.CompletedAt;
+    public DateTime CreatedAtUtc => Schedule.CreatedAtUtc;
+}

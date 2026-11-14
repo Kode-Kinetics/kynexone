@@ -193,6 +193,10 @@
       "disposition": "nightly",
       "reason": "Route-mocked feature suite; its spec is also collected by the root chromium project on PRs, this config is the focused fast run, executed nightly in 4 shards."
     },
+    "playwright.launch-hiring.config.ts": {
+      "disposition": "covered-by-chromium",
+      "reason": "Route-mocked launch-hiring forms spec (e2e/launch-hiring-forms.spec.ts): catalogue pickers, opening from requisition, offer suggestion and grade-band warning, stage-gate reason, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."
+    },
     "playwright.recruitment-demo.config.ts": {
       "disposition": "covered-by-chromium",
       "reason": "Route-mocked recruitment drawer, offers, interviews and onboarding display spec (e2e/recruitment-demo-ux.spec.ts) at desktop and phone, EN and AR; also collected by the root chromium project on PRs, this config is the focused fast run."

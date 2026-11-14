@@ -244,6 +244,53 @@ public class WpsTests
     }
 
     [Fact]
+    public void Validator_AnExpatWhoseIqamaIsInIqamaNumber_IsNotMissingAnId()
+    {
+        // The bank export reads the Iqama from IqamaNumber; the WPS check must read the same field.
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "");
+        emp.IdType = ""; emp.IqamaNumber = "2123456785"; emp.SaudiOrNonSaudi = "Non-Saudi"; emp.Nationality = "Egyptian";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+
+        Assert.DoesNotContain(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
+        Assert.True(result.CanExport, string.Join("; ", result.BlockingErrors.Select(e => e.Code)));
+    }
+
+    [Fact]
+    public void Validator_ANationalIdAndAnIqamaThatDisagree_BlockExport()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "1012345678");
+        emp.IqamaNumber = "2123456785";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+
+        Assert.Contains(result.BlockingErrors, e => e.Code == "EMPLOYEE_ID_CONFLICT");
+    }
+
+    [Fact]
+    public void Validator_APassportNumberRecordedAsTheIdNumber_IsNotAWageFileId()
+    {
+        var tenantId = Guid.NewGuid();
+        var run  = ApprovedRun(tenantId);
+        var slip = Slip(tenantId, run.Id, 1, "EMP-001");
+        run.TotalNetSalary = slip.NetSalary;
+        var emp = ActiveEmployee(tenantId, 1, idNumber: "A12345678");
+        emp.IdType = "Passport";
+
+        var result = WpsSifValidator.Validate(run, new[] { slip }, new[] { Profile(tenantId, 1) }, new[] { emp });
+
+        Assert.Contains(result.BlockingErrors, e => e.Code == "MISSING_ID_NUMBER");
+    }
+
+    [Fact]
     public void Validator_InactiveEmployee_BlocksExport()
     {
         // Pay interlock (§6.2): a non-employed status is now a BLOCKING error, not a warning — a

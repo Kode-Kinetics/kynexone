@@ -342,6 +342,32 @@ public class MfaTests
         Assert.False((await db.Users.FirstAsync(x => x.Id == user.Id)).MFAEnabled);
     }
 
+    [Fact]
+    public async Task EnrollmentWrongCodes_ApplyTheSameAccountLockoutAsTheSignInCodeStep()
+    {
+        var (db, totp, tokens) = MakeServices();
+        var svc = MakeMfaService(db, totp, tokens);
+        var user = MakeUser(TenantA);
+        user.Status = "Active";
+        user.MfaFailedCount = AuthService.MfaFailedLockoutThreshold - 2;
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+        var enrollmentToken = await svc.CreateEnrollmentChallengeAsync(user.Id, TenantA, "127.0.0.1", CancellationToken.None);
+        var init = await svc.InitiateEnrollmentSetupAsync(enrollmentToken, CancellationToken.None);
+
+        Assert.False(await svc.VerifyEnrollmentSetupAsync(enrollmentToken, new MfaVerifySetupRequest(init!.TempSecret, "000000"), CancellationToken.None));
+        var belowThreshold = await db.Users.AsNoTracking().FirstAsync(x => x.Id == user.Id);
+        Assert.False(belowThreshold.IsLocked);
+        Assert.Null(belowThreshold.LockoutEnd);
+
+        Assert.False(await svc.VerifyEnrollmentSetupAsync(enrollmentToken, new MfaVerifySetupRequest(init.TempSecret, "000000"), CancellationToken.None));
+        var atThreshold = await db.Users.AsNoTracking().FirstAsync(x => x.Id == user.Id);
+        Assert.Equal(AuthService.MfaFailedLockoutThreshold, atThreshold.MfaFailedCount);
+        Assert.True(atThreshold.IsLocked);
+        Assert.NotNull(atThreshold.LockoutEnd);
+        Assert.True(atThreshold.LockoutEnd > DateTime.UtcNow);
+    }
+
     // ── Disable flow ──────────────────────────────────────────────────────────
 
     [Fact]

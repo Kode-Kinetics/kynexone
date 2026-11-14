@@ -382,6 +382,9 @@ public sealed class JournalExportService
                 return (result, OptionRefusal(formatter, $"'{key}' is not a setting of {formatter.DisplayName}."));
             if (value.Length > spec.MaxLength || value.Any(char.IsControl))
                 return (result, OptionRefusal(formatter, $"{spec.Label} must be at most {spec.MaxLength} characters with no line breaks."));
+            if (spec.Key == GenericCsvJournalFormatter.BomOption && value.Length > 0
+                && !value.Equals("true", StringComparison.OrdinalIgnoreCase) && !value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                return (result, OptionRefusal(formatter, $"{spec.Label} must be true or false."));
             if (spec.Key is "ledgerId" or "groupId" && value.Length > 0 && !value.All(char.IsAsciiDigit))
                 return (result, OptionRefusal(formatter, $"{spec.Label} must be a number."));
             if (value.Length > 0) result[spec.Key] = value;

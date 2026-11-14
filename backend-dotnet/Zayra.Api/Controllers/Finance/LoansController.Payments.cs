@@ -361,14 +361,26 @@ public partial class LoansController
             return !existing.IsReversed && existing.Amount == req.Amount && existing.PaidDate == req.PaidDate && existing.PaymentMethod == req.PaymentMethod
                 ? Ok(new { loan = EmployeeLoanDto.Project(loan), repayment = existing })
                 : Conflict("This reference already identifies a different repayment.");
-        if (loan.RepaymentMethod == "PayrollDeduction" || loan.IsLockedByPayroll)
+        if (loan.IsLockedByPayroll)
             return Conflict("Payroll deduction loans cannot receive standalone repayments.");
         if (loan.Status is not ("Active" or "Overdue") || !loan.DisbursementDate.HasValue) return Conflict("Only disbursed loans can receive repayments.");
         if (req.PaidDate < loan.DisbursementDate) return BadRequest("Repayment date cannot precede loan disbursement.");
         if (req.Amount > loan.OutstandingBalance) return BadRequest("Repayment exceeds the outstanding balance.");
+        // A payroll-collected loan takes a cash receipt only as a FULL early settlement. A part payment would race the next payroll
+        // deduction, which would collect the same instalment again.
+        if (loan.RepaymentMethod == "PayrollDeduction" && req.Amount != loan.OutstandingBalance)
+            return Conflict("A payroll-collected loan can only be settled early in full. Record the whole outstanding balance, or let payroll continue to collect it.");
+        // An instalment held by a payroll run that has not been locked yet can still be reprocessed or rejected, which restores the
+        // balance this receipt is about to settle.
+        if (await HasUnfinishedPayrollInstalmentAsync(tid, loan.Id, ct))
+            return Conflict("A payroll run that includes this loan has not been locked yet. Lock or void it before recording a cash settlement.");
         var originalDisbursement = await OriginalDisbursementAsync(loan, ct);
         if (originalDisbursement == null) return Conflict(LoanJournalReconciliationRequired);
         var companyId = originalDisbursement.CompanyId;
+        // The receivable is one account shared by every loan. A receipt credits it, so the account must still carry the amount: if a
+        // payroll run already relieved it for another (legacy) loan, crediting it again would leave an asset in credit.
+        if ((await GlControlAccounts.LoadAsync(_db, tid, companyId, originalDisbursement.DebitAccount, ct)).AvailableForRelief < req.Amount)
+            return Conflict(LoanJournalReconciliationRequired);
         if (await PeriodCloseGuard.IsClosedAsync(_db, tid, companyId, req.PaidDate.ToString("yyyy-MM"), ct)) return UnprocessableEntity("The repayment accounting period is closed.");
         var installments = await _db.LoanInstallments.Where(x => x.TenantId == tid && x.LoanId == id).OrderBy(x => x.DueDate).ThenBy(x => x.InstallmentNumber).ToListAsync(ct);
         if (!string.IsNullOrWhiteSpace(loan.PolicySnapshotJson) && loan.PolicySnapshotJson != "{}")
@@ -380,11 +392,14 @@ public partial class LoansController
                 && installments.Any(x => x.DueDate > req.PaidDate && x.AmountDue > x.AmountPaid))
                 return Conflict("Early settlement is not permitted by the approved loan policy.");
         }
-        if (installments.Any(x => x.PayrollRunId.HasValue || x.Status == "Waived" || x.AmountPaid < 0 || x.AmountPaid > x.AmountDue) || installments.Sum(x => x.AmountDue - x.AmountPaid) != loan.OutstandingBalance)
+        // An instalment a payroll run consumed is settled and is never touched; the receipt goes to the remaining ones only.
+        if (installments.Any(x => x.Status == "Waived" || x.AmountPaid < 0 || x.AmountPaid > x.AmountDue)
+            || installments.Sum(x => x.AmountDue - x.AmountPaid) != loan.OutstandingBalance
+            || req.Amount > installments.Where(x => !x.PayrollRunId.HasValue).Sum(x => x.AmountDue - x.AmountPaid))
             return Conflict("The repayment schedule needs reconciliation before a receipt can be recorded.");
         var oldBalance = loan.OutstandingBalance;
         var remaining = req.Amount;
-        foreach (var installment in installments.Where(x => x.AmountPaid < x.AmountDue))
+        foreach (var installment in installments.Where(x => x.AmountPaid < x.AmountDue && !x.PayrollRunId.HasValue))
         {
             var allocation = Math.Min(remaining, installment.AmountDue - installment.AmountPaid);
             if (allocation == 0) break;
@@ -407,6 +422,15 @@ public partial class LoansController
         await _db.SaveChangesAsync(ct);
         return Ok(new { loan = EmployeeLoanDto.Project(loan), repayment = receipt });
     }, ct);
+
+    private Task<bool> HasUnfinishedPayrollInstalmentAsync(Guid tid, Guid loanId, CancellationToken ct) =>
+        (from c in Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayrollRunConsumptions, tid,
+                "Whether an unlocked payroll run holds this authorized loan's instalment; boolean only.")
+         join r in Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayrollRuns, tid,
+                "Status of the run that consumed this authorized loan; boolean only.") on c.PayrollRunId equals r.Id
+         where c.TenantId == tid && c.ArtifactType == PayrollConsumptionArtifacts.Loan && c.ArtifactId == loanId
+            && (r.Status == "Processed" || r.Status == "PendingFinanceReview" || r.Status == "Approved")
+         select c.Id).AnyAsync(ct);
 
     private void AddLoanAudit(Guid loanId, string action, object values) => _db.LoanAuditLogs.Add(new LoanAuditLog
     {

@@ -26,6 +26,14 @@ public static class SaudiNationality
         "SaudiArabia",
     };
 
+    /// <summary>
+    /// Is this PERSON Saudi? The ISO code HR confirmed is the record: when it is set and confirmed it decides, whatever the free text
+    /// says ("Suadi" with a confirmed SA is Saudi; "Saudi" with a confirmed EG is not). A code that is only proposed, or no code, leaves
+    /// the free-text spelling to decide, exactly as before.
+    /// </summary>
+    public static bool IsSaudi(string? nationality, string? nationalityCode, string? mappingState) =>
+        IsSaudi(EmployeeNationality.Effective(nationality, nationalityCode, mappingState));
+
     /// <summary>True when <paramref name="nationality"/> is a recognised spelling of Saudi.</summary>
     public static bool IsSaudi(string? nationality) =>
         !string.IsNullOrWhiteSpace(nationality) && Spellings.Contains(Fold(nationality));
@@ -48,4 +56,21 @@ public static class SaudiNationality
         }
         return sb.ToString();
     }
+}
+
+/// <summary>
+/// The nationality value every classifier reads for a person on file. When HR has CONFIRMED an ISO code it is the record, and it is passed
+/// on as the code itself ("SA", "KW", "IN"), which the Saudi, GCC and GOSI matchers all already understand; otherwise (no code, or only a
+/// proposed one) it is the free text as typed, so nobody is reclassified until HR confirms.
+/// </summary>
+public static class EmployeeNationality
+{
+    public static string? Effective(string? nationality, string? nationalityCode, string? mappingState) =>
+        string.Equals(mappingState, Zayra.Api.Models.NationalityMappingStates.Confirmed, StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(nationalityCode)
+            ? nationalityCode.Trim().ToUpperInvariant()
+            : nationality;
+
+    public static string? Effective(Zayra.Api.Models.Employee? employee) =>
+        employee is null ? null : Effective(employee.Nationality, employee.NationalityCode, employee.NationalityMappingState);
 }

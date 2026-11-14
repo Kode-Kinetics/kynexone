@@ -204,22 +204,31 @@ public class GlAdjustmentsController : ControllerBase
         var snapshots = await _db.LeaveProvisionSnapshots.AsNoTracking()
             .Where(x => x.TenantId == tid && x.CompanyId == cid)
             .ToListAsync(ct);
-        // A leaver whose settlement is approved has had their provision consumed and released: their last measurement is history, not a
-        // figure still provided for.
-        var settledIds = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tid.Value,
+        // A leaver whose settlement for the CURRENT service period is approved has had their provision consumed and released: their
+        // last measurement is history, not a figure still provided for. A settlement whose last working day is before the current
+        // joining date closed an earlier period of a rehired employee (same employee id, JoiningDate restarted) and does not hide them.
+        var settledThrough = (await ScopedBypass.TenantWide(_db.EmployeeFinalSettlements, tid.Value,
                     "company scope authorised above; a leaver settled under any entity no longer carries a provision")
                 .AsNoTracking()
                 .Where(s => (s.Status == FinalSettlementStatuses.Approved || s.Status == FinalSettlementStatuses.Disbursing || s.Status == FinalSettlementStatuses.Paid))
-                .Select(s => s.EmployeeId).Distinct().ToListAsync(ct)).ToHashSet();
+                .Select(s => new { s.EmployeeId, s.LastWorkingDay })
+                .ToListAsync(ct))
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Max(s => s.LastWorkingDay));
+        var measuredIds = snapshots.Select(x => x.EmployeeId).Distinct().ToList();
+        var people = await _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tid && measuredIds.Contains(e.Id))
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.JoiningDate })
+            .ToDictionaryAsync(e => e.Id, ct);
+        bool SettledInCurrentService(int employeeId) =>
+            settledThrough.TryGetValue(employeeId, out var lastWorkingDay)
+            // No employee row to compare against: hidden, as every settled leaver was before.
+            && (!people.TryGetValue(employeeId, out var person) || lastWorkingDay >= DateOnly.FromDateTime(person.JoiningDate));
         var latest = snapshots.GroupBy(x => x.EmployeeId)
             .Select(g => g.OrderByDescending(x => x.Period, StringComparer.Ordinal).First())
-            .Where(x => !settledIds.Contains(x.EmployeeId))
+            .Where(x => !SettledInCurrentService(x.EmployeeId))
             .ToList();
         var employeeIds = latest.Select(x => x.EmployeeId).ToList();
-        var people = await _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tid && employeeIds.Contains(e.Id))
-            .Select(e => new { e.Id, e.EmployeeCode, e.FullName })
-            .ToDictionaryAsync(e => e.Id, ct);
         var positions = await LeaveProvisionLedger.LoadPositionsAsync(_db, tid.Value, employeeIds, ct);
         var employees = latest
             .Select(x => new
@@ -431,6 +440,97 @@ public class GlAdjustmentsController : ControllerBase
         return Ok(ToDto(row));
     }
 
+    // ═══ Employee receivable write-off ══════════════════════════════════════════════════════════
+
+    /// <summary>The loan residuals a final settlement reclassified to 1420 that can still be written off, and the requests made for them.</summary>
+    [HttpGet("receivable-write-offs")]
+    public async Task<IActionResult> GetReceivableWriteOffs([FromQuery] Guid? companyId, CancellationToken ct)
+    {
+        if (!CanRead()) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (await CompanyError(tid.Value, companyId, ct) is { } err) return err;
+        var cid = companyId!.Value;
+        var pending = await _db.GlAdjustmentRequests.AsNoTracking()
+            .Where(x => x.TenantId == tid && x.CompanyId == cid && x.Kind == GlAdjustmentKinds.ReceivableWriteOff
+                     && x.Status == GlAdjustmentStatuses.Pending)
+            .Select(x => new { x.Id, x.SubjectId }).ToListAsync(ct);
+        var receivables = await _db.PayrollEmployeeReceivables.AsNoTracking()
+            .Where(r => r.TenantId == tid && r.CompanyId == cid && r.EventType == GlEventTypes.SettlementResidualReclass
+                     && r.Status == PayrollReceivableStatuses.Outstanding && r.Amount > r.RecoveredAmount)
+            .OrderBy(r => r.CreatedAtUtc).ToListAsync(ct);
+        return Ok(new
+        {
+            companyId = cid,
+            receivables = receivables.Select(r => new
+            {
+                r.Id, r.EmployeeId, r.EmployeeCode, r.Period, r.Amount, r.RecoveredAmount,
+                outstanding = Math.Round(r.Amount - r.RecoveredAmount, 2),
+                pendingRequestId = pending.FirstOrDefault(p => p.SubjectId == r.Id)?.Id,
+            }).ToList(),
+            requests = await ListRequestsAsync(tid.Value, cid, GlAdjustmentKinds.ReceivableWriteOff, ct),
+        });
+    }
+
+    /// <summary>
+    /// Asks for a loan residual (a 1420 receivable a final settlement left) to be written off IN FULL: DR 5114 / CR 1420. Pending
+    /// until a different person with the manage permission approves it; nothing posts here.
+    /// </summary>
+    [HttpPost("receivable-write-offs")]
+    public async Task<IActionResult> RequestReceivableWriteOff([FromBody] ReceivableWriteOffRequest req, CancellationToken ct)
+    {
+        if (!HasPermission("finance.gl.manage")) return Forbid();
+        var tid = this.GetTenantId(); if (tid is null) return Unauthorized();
+        if (await CompanyError(tid.Value, req.CompanyId, ct) is { } err) return err;
+        var cid = req.CompanyId!.Value;
+        if (req.ReceivableId is not Guid receivableId)
+            return BadRequest(new { code = "GL_ADJUSTMENT_SUBJECT_REQUIRED", message = "Choose the receivable to write off." });
+        if (string.IsNullOrWhiteSpace(req.Reason))
+            return BadRequest(new { code = "GL_ADJUSTMENT_REASON_REQUIRED", message = "Say why the balance will not be collected." });
+        if (req.AccountingDate == default)
+            return BadRequest(new { code = "GL_ADJUSTMENT_DATE_REQUIRED", message = "Choose the accounting date to post on." });
+        var period = req.AccountingDate.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+        if (await PeriodCloseGuard.IsClosedAsync(_db, tid.Value, cid, period, ct))
+            return UnprocessableEntity(new { error = "gl_period_closed", message = $"GL period {period} is closed. Choose a date in an open period.", period });
+
+        var receivable = await _db.PayrollEmployeeReceivables.AsNoTracking()
+            .FirstOrDefaultAsync(r => r.TenantId == tid && r.Id == receivableId && r.CompanyId == cid, ct);
+        if (receivable is null) return NotFound(new { message = "Receivable not found." });
+        if (receivable.EventType != GlEventTypes.SettlementResidualReclass)
+            return UnprocessableEntity(new { error = "receivable_not_writable_off",
+                message = "Only a loan balance left after a final settlement can be written off here." });
+        if (receivable.Status != PayrollReceivableStatuses.Outstanding || receivable.Outstanding <= 0m)
+            return UnprocessableEntity(new { error = "receivable_not_outstanding", message = "This receivable has nothing left to write off." });
+        if (await IsReceivableSubjectAsync(tid.Value, receivable.EmployeeId, ct) is { } subjectRequester) return subjectRequester;
+        if (await _db.GlAdjustmentRequests.AnyAsync(x => x.TenantId == tid && x.Kind == GlAdjustmentKinds.ReceivableWriteOff
+                && x.SubjectId == receivableId && x.Status == GlAdjustmentStatuses.Pending, ct))
+            return Conflict(new { code = "GL_ADJUSTMENT_ALREADY_PENDING", message = "A write-off of this receivable is already waiting for approval." });
+
+        var gl = await GlAccountResolver.LoadAsync(_db, tid.Value, cid, ct);
+        var source = GlAccountResolver.AccountLabel(GlControlAccounts.EmployeeReceivableDriver, gl);
+        var target = GlAccountResolver.AccountLabel("RECEIVABLE_WRITE_OFF_EXPENSE", gl);
+        var carried = (await GlControlAccounts.LoadAsync(_db, tid.Value, cid, source, ct)).AvailableForRelief;
+        if (carried < receivable.Outstanding)
+            return UnprocessableEntity(new { error = "receivable_not_carried",
+                message = $"{source} carries {carried:N2}, less than the {receivable.Outstanding:N2} to write off. Reconcile the receivable first.",
+                carried });
+        if (req.CostCenterId is Guid requestedCc && await CostCentreErrorAsync(tid.Value, cid, requestedCc, target, ct) is { } ccError) return ccError;
+
+        var row = new GlAdjustmentRequest
+        {
+            TenantId = tid.Value, CompanyId = cid, Kind = GlAdjustmentKinds.ReceivableWriteOff,
+            Period = period, AccountingDate = req.AccountingDate, Amount = receivable.Outstanding,
+            Currency = await CompanyCurrencyAsync(tid.Value, cid, ct),
+            SourceAccount = source, TargetAccount = target, Reason = req.Reason.Trim(),
+            SubjectId = receivableId, CostCenterId = req.CostCenterId,
+            RequestedByUserId = this.GetUserId(), RequestedByName = UserName(),
+        };
+        _db.GlAdjustmentRequests.Add(row);
+        WriteAudit("finance.gl.receivable_write_off.requested", row,
+            new { row.SubjectId, row.Amount, row.SourceAccount, row.TargetAccount, row.AccountingDate, row.Reason, row.CostCenterId });
+        await _db.SaveChangesAsync(ct);
+        return Ok(ToDto(row));
+    }
+
     // ═══ Decisions (both kinds) ═════════════════════════════════════════════════════════════════
 
     /// <summary>Approves a pending request and posts its journal in the same transaction. Refused to the
@@ -477,6 +577,23 @@ public class GlAdjustmentsController : ControllerBase
         WriteAudit(AuditPrefix(row) + ".rejected", row, new { row.Amount, note = row.DecisionNote, requestedBy = row.RequestedByUserId });
         await _db.SaveChangesAsync(ct);
         return Ok(ToDto(row));
+    }
+
+    /// <summary>
+    /// The employee whose balance it is neither asks for nor approves its write-off: 403 when the caller's linked employee is the
+    /// receivable's employee (the same linked-employee check recording an outside payment uses). Null otherwise.
+    /// </summary>
+    private async Task<IActionResult?> IsReceivableSubjectAsync(Guid tid, int employeeId, CancellationToken ct)
+    {
+        var actorId = this.GetUserId();
+        if (actorId is null || !await _db.Employees.AsNoTracking().AnyAsync(e => e.TenantId == tid && e.Id == employeeId && e.UserAccountId == actorId, ct))
+            return null;
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            code = "GL_ADJUSTMENT_SUBJECT_IS_ACTOR",
+            message = "This balance is owed by you, so someone else must request and approve its write-off.",
+            messageAr = "هذا الرصيد مستحق عليك، لذا يجب أن يطلب شطبه ويعتمده شخص آخر.",
+        });
     }
 
     private async Task<IActionResult> ApproveCoreAsync(Guid tid, Guid id, string? note, CancellationToken ct)
@@ -531,6 +648,32 @@ public class GlAdjustmentsController : ControllerBase
                 lines.Add(Line(provision, string.Empty, GlEventTypes.EosbActuarialTrueUp, text));
                 lines.Add(Line(string.Empty, expense, GlEventTypes.EosbActuarialTrueUp, text));
             }
+        }
+        else if (row.Kind == GlAdjustmentKinds.ReceivableWriteOff)
+        {
+            // The receivable is locked so a payroll run cannot net it into pay while it is being written off.
+            var receivable = await _db.PayrollEmployeeReceivables
+                .TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .FirstOrDefaultAsync(r => r.TenantId == tid && r.Id == row.SubjectId && r.CompanyId == cid, ct);
+            if (receivable is null || receivable.Status != PayrollReceivableStatuses.Outstanding || receivable.Outstanding != row.Amount)
+                return Conflict(new
+                {
+                    code = "GL_ADJUSTMENT_BALANCE_CHANGED",
+                    message = $"The receivable now carries {(receivable?.Outstanding ?? 0m):N2} ({receivable?.Status ?? "missing"}), not the {row.Amount:N2} that was requested. " +
+                              "Reject this request and ask again so the figure approved is the figure that posts.",
+                    requested = row.Amount, current = receivable?.Outstanding ?? 0m,
+                });
+            if (await IsReceivableSubjectAsync(tid, receivable.EmployeeId, ct) is { } subjectApprover) return subjectApprover;
+            var carried = (await GlControlAccounts.LoadAsync(_db, tid, cid, row.SourceAccount!, ct)).AvailableForRelief;
+            if (carried < row.Amount)
+                return UnprocessableEntity(new { error = "receivable_not_carried",
+                    message = $"{row.SourceAccount} carries {carried:N2}, less than the {row.Amount:N2} to write off. Reject this and reconcile the receivable first.",
+                    carried });
+            var text = $"Employee receivable written off: {row.Reason}";
+            lines.Add(Line(row.TargetAccount!, string.Empty, GlEventTypes.ReceivableWriteOff, text));
+            lines.Add(Line(string.Empty, row.SourceAccount!, GlEventTypes.ReceivableWriteOff, text));
+            receivable.Status = PayrollReceivableStatuses.WrittenOff;
+            receivable.UpdatedAtUtc = DateTime.UtcNow;
         }
         else
         {
@@ -663,7 +806,7 @@ public class GlAdjustmentsController : ControllerBase
     private static object ToDto(GlAdjustmentRequest r, Guid? me, bool mayDecide) => new
     {
         r.Id, r.CompanyId, r.Kind, r.Status, r.Period, r.AccountingDate, r.Amount, r.Currency,
-        r.SourceAccount, r.TargetAccount, r.Reason, r.ReportReference, r.CostCenterId,
+        r.SourceAccount, r.TargetAccount, r.Reason, r.ReportReference, r.CostCenterId, r.SubjectId,
         r.RequestedByName, r.RequestedAtUtc, r.DecidedByName, r.DecidedAtUtc, r.DecisionNote,
         // The panel hides Approve for the requester rather than letting them hit the SoD refusal.
         requestedByMe = me is not null && r.RequestedByUserId == me,
@@ -671,8 +814,12 @@ public class GlAdjustmentsController : ControllerBase
         canApprove = mayDecide && me is not null && r.Status == GlAdjustmentStatuses.Pending && r.RequestedByUserId != me,
     };
 
-    private static string AuditPrefix(GlAdjustmentRequest r) => r.Kind == GlAdjustmentKinds.EosbTrueUp
-        ? "finance.gl.eosb_true_up" : "finance.gl.legacy_absence_reclass";
+    private static string AuditPrefix(GlAdjustmentRequest r) => r.Kind switch
+    {
+        GlAdjustmentKinds.EosbTrueUp => "finance.gl.eosb_true_up",
+        GlAdjustmentKinds.ReceivableWriteOff => "finance.gl.receivable_write_off",
+        _ => "finance.gl.legacy_absence_reclass",
+    };
 
     private async Task<IActionResult?> CompanyError(Guid tid, Guid? companyId, CancellationToken ct)
     {
@@ -779,3 +926,5 @@ public record EosbTrueUpRequest(Guid? CompanyId, string? Period, decimal Amount,
 /// prior, closed financial year. Omitted = the contra-expense the account now routes to (5008 / 5009).</param>
 public record LegacyAbsenceReclassRequest(Guid? CompanyId, string? SourceAccount, DateOnly AccountingDate, string? TargetAccountCode, string? Reason, Guid? CostCenterId = null);
 public record GlAdjustmentDecisionRequest(string? Note);
+/// <param name="ReceivableId">The employee receivable (a PayrollEmployeeReceivable row from a final settlement's residual) to write off in full.</param>
+public record ReceivableWriteOffRequest(Guid? CompanyId, Guid? ReceivableId, DateOnly AccountingDate, string? Reason, Guid? CostCenterId = null);

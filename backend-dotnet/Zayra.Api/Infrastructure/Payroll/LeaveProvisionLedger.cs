@@ -20,6 +20,9 @@ public sealed record LeaveProvisionPosition(
     public (int EmployeeId, Guid? CompanyId, string ProvisionAccount) Key => (EmployeeId, CompanyId, ProvisionAccount);
 }
 
+/// <summary>The provision one employee still carries on ONE stored account (credit positive). See <see cref="LeaveProvisionLedger.HoldingsFor"/>.</summary>
+public sealed record LeaveProvisionHolding(string Account, decimal Balance);
+
 /// <summary>
 /// A MUTABLE, single-call view over the immutable snapshot returned by <see cref="LeaveProvisionLedger.LoadPositionsAsync"/>,
 /// so a caller settling several employees against one snapshot can never hand the same position to two of them. Nothing is
@@ -57,6 +60,49 @@ public sealed class LeaveProvisionCursor
         if (taken <= 0m) return (position, 0m);
         _taken[position.Key] = _taken.GetValueOrDefault(position.Key) + taken;
         return (position, taken);
+    }
+
+    /// <summary>
+    /// Reserves up to <paramref name="wanted"/> across EVERY account that holds this employee's provision, with the same rule a monthly
+    /// fall uses (<see cref="LeaveProvisionPlanner"/>): accounts from <see cref="LeaveProvisionLedger.HoldingsFor"/> net of this call's
+    /// reservations, positive balances only, largest first (ties by account label, ordinal), each up to its own balance, so no account
+    /// is driven below zero. Within one account the exact company's position is taken before an unattributed one. Returns what was
+    /// taken per account; the sum is the ONLY amount the caller may debit to the provision.
+    /// </summary>
+    public List<(string Account, decimal Taken)> TakeAcrossAccounts(int employeeId, Guid? companyId, decimal wanted)
+    {
+        var result = new List<(string Account, decimal Taken)>();
+        var left = Math.Round(wanted, 2);
+        if (left <= 0m) return result;
+        var holdings = LeaveProvisionLedger.HoldingsFor(_positions, employeeId, companyId)
+            .Select(h => (h.Account, Balance: Math.Round(h.Balance - _positions
+                .Where(p => p.EmployeeId == employeeId && p.ProvisionAccount == h.Account && (p.CompanyId == companyId || p.CompanyId is null))
+                .Sum(p => _taken.GetValueOrDefault(p.Key)), 2)))
+            .Where(h => h.Balance > 0m)
+            .OrderByDescending(h => h.Balance).ThenBy(h => h.Account, StringComparer.Ordinal)
+            .ToList();
+        foreach (var (account, balance) in holdings)
+        {
+            if (left <= 0m) break;
+            var forAccount = Math.Min(left, balance);
+            var takenHere = 0m;
+            foreach (var position in _positions
+                         .Where(p => p.EmployeeId == employeeId && p.ProvisionAccount == account
+                                  && (p.CompanyId == companyId || (companyId is not null && p.CompanyId is null)))
+                         .OrderBy(p => p.CompanyId is null ? 1 : 0))
+            {
+                var need = Math.Round(forAccount - takenHere, 2);
+                if (need <= 0m) break;
+                var take = Math.Min(need, RemainingOn(position));
+                if (take <= 0m) continue;
+                _taken[position.Key] = _taken.GetValueOrDefault(position.Key) + take;
+                takenHere = Math.Round(takenHere + take, 2);
+            }
+            if (takenHere <= 0m) continue;
+            result.Add((account, takenHere));
+            left = Math.Round(left - takenHere, 2);
+        }
+        return result;
     }
 }
 
@@ -143,6 +189,20 @@ public static class LeaveProvisionLedger
         => Math.Max(0m, Math.Round(positions
             .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
             .Sum(p => p.Accrued - p.Consumed), 2));
+
+    /// <summary>
+    /// What an employee's provision is carried ON: per stored account, Σ (accrued − consumed) over the same positions
+    /// <see cref="CarriedFor"/> reads (the company's and unattributed ones), unclamped and ordered by account label. A monthly fall
+    /// debits these accounts, so a remap of the provision account never relieves an account that was never credited. The sum of
+    /// the balances equals <see cref="CarriedFor"/> whenever that is positive.
+    /// </summary>
+    public static List<LeaveProvisionHolding> HoldingsFor(IEnumerable<LeaveProvisionPosition> positions, int employeeId, Guid? companyId)
+        => positions
+            .Where(p => p.EmployeeId == employeeId && (p.CompanyId == companyId || p.CompanyId is null))
+            .GroupBy(p => p.ProvisionAccount, StringComparer.Ordinal)
+            .Select(g => new LeaveProvisionHolding(g.Key, Math.Round(g.Sum(p => p.Accrued - p.Consumed), 2)))
+            .OrderBy(h => h.Account, StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>Convenience single-employee load, returning a cursor ready to <c>Take</c> from.</summary>
     public static async Task<LeaveProvisionCursor> LoadCursorAsync(

@@ -935,6 +935,21 @@ public sealed class PayrollVoidService
             {
                 var row = rows.FirstOrDefault(r => r.Id == w.ArtifactId);
                 if (row is null) continue;
+                // A write-off is final. The void's contra re-debits 1420 by exactly what this run netted, so that amount comes back as a
+                // NEW outstanding receivable; restoring the written-off row would resurrect the part that was written off and leave the
+                // sub-ledger above what 1420 carries.
+                if (row.Status == PayrollReceivableStatuses.WrittenOff)
+                {
+                    if (w.Amount > 0m)
+                        _db.PayrollEmployeeReceivables.Add(new PayrollEmployeeReceivable
+                        {
+                            TenantId = tenantId, CompanyId = row.CompanyId, EmployeeId = row.EmployeeId, EmployeeCode = row.EmployeeCode,
+                            SourceRunId = row.SourceRunId, EventType = row.EventType, Period = row.Period,
+                            Amount = Math.Round(w.Amount, 2), Status = PayrollReceivableStatuses.Outstanding,
+                        });
+                    result.ReceivablesRestored++;
+                    continue;
+                }
                 row.RecoveredAmount = w.PriorAmountPaid ?? Math.Max(0m, row.RecoveredAmount - w.Amount);
                 if (!string.IsNullOrWhiteSpace(w.PriorStatus)) row.Status = w.PriorStatus!;
                 row.RecoveredByRunId = null;
@@ -1014,6 +1029,13 @@ public sealed class PayrollVoidService
             // id-set predicate re-applies exact tenant scope and never reads another tenant.
             var loans = await _db.EmployeeLoans.IgnoreQueryFilters()
                 .Where(l => l.TenantId == tenantId && loanIds.Contains(l.Id)).ToListAsync(ct);
+            // Cash receipts recorded AFTER the run took its instalment (an early settlement of the remainder). The prior
+            // balances predate them, so restoring those alone would put the settled amount back as owed and collect it twice.
+            var cashAfterRun = await ScopedBypass.TenantWide(_db.LoanRepayments, tenantId,
+                    "A void is a system correction that must see every company's receipts for the loans the run consumed.")
+                .Where(r => loanIds.Contains(r.LoanId) && !r.IsReversed)
+                .Select(r => new { r.LoanId, r.Amount, r.CreatedAtUtc })
+                .ToListAsync(ct);
             foreach (var w in witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.Loan))
             {
                 var loan = loans.FirstOrDefault(l => l.Id == w.ArtifactId);
@@ -1023,6 +1045,13 @@ public sealed class PayrollVoidService
                 // Restore the RECORDED prior status, not an assumed "Closed → Active": a loan that was
                 // already being settled, or was Overdue, must come back as what it was.
                 if (!string.IsNullOrWhiteSpace(w.PriorStatus)) loan.Status = w.PriorStatus!;
+                var settledByCash = cashAfterRun.Where(r => r.LoanId == loan.Id && r.CreatedAtUtc > w.CreatedAtUtc).Sum(r => r.Amount);
+                if (settledByCash > 0m)
+                {
+                    loan.OutstandingBalance = Math.Max(0m, loan.OutstandingBalance - settledByCash);
+                    loan.TotalRepaid += settledByCash;
+                    if (loan.OutstandingBalance <= 0m) loan.Status = "Settled";
+                }
                 result.LoansRestored++;
                 result.LoanRestoreDetail.Add(new
                 {

@@ -217,10 +217,10 @@ public class GlPhase2Tests
         //
         // GL-posting fixes add ONE Balancing driver: ROUNDING (5199), resolved only by explicit key for the
         // Lock journal's sub-unit rounding line, so it can never steal a component either.
-        drivers.Should().HaveCount(33, "31 shipped drivers plus the annual-leave provision pair (LEAVE_PROVISION, LEAVE_PROVISION_EXPENSE)");
-        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2 + 1 + 2,
+        drivers.Should().HaveCount(35, "31 shipped drivers plus the annual-leave provision pair (LEAVE_PROVISION, LEAVE_PROVISION_EXPENSE), the receivable write-off expense and OPENING_BALANCE_EQUITY (the opening-balance route of the provision catch-up)");
+        drivers.Where(d => d.Category == GlDriverCategories.Balancing).Should().HaveCount(6 + 2 + 2 + 1 + 2 + 1 + 1,
             "NET_PAYABLE + EMPLOYER_STATUTORY_EXPENSE + the six control accounts + POD-D's EOSB_PROVISION " +
-            "and SETTLEMENT_PAYABLE + ROUNDING + the annual-leave pair LEAVE_PROVISION / LEAVE_PROVISION_EXPENSE are the only Balancing drivers");
+            "and SETTLEMENT_PAYABLE + ROUNDING + the annual-leave pair LEAVE_PROVISION / LEAVE_PROVISION_EXPENSE + RECEIVABLE_WRITE_OFF_EXPENSE + OPENING_BALANCE_EQUITY are the only Balancing drivers");
 
         // POD-D routing goldens — a settlement's expense lines must never collapse onto EARN:OTHER,
         // which would bury end-of-service cost inside general payroll expense on the P&L.

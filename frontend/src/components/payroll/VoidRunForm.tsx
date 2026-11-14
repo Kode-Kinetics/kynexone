@@ -6,7 +6,7 @@ import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
 import { journalTitle } from '../../lib/glJournalView';
 import {
-  electionOptions, electionsComplete, readRequiredElections,
+  electionOptions, electionsComplete, readErpPostedRefusal, readRequiredElections,
   type VoidChoices, type VoidDisposition, type VoidElectionGroup,
 } from '../../lib/voidElections';
 import { serverMessage } from '../gl/glUi';
@@ -32,14 +32,20 @@ export function VoidRunForm({ currency, onClose, onSubmit }: {
   const [choices, setChoices] = useState<VoidChoices>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // The ERP already holds this run's journal: voiding here cannot un-post it, so the operator must say they will raise the correcting document there.
+  const [erpPosted, setErpPosted] = useState<{ reference: string | null } | null>(null);
+  const [erpAck, setErpAck] = useState(false);
+  const erpAckId = useId();
 
   const submit = async () => {
     setBusy(true); setError('');
     try {
-      await onSubmit(reason.trim(), electionOptions(choices));
+      await onSubmit(reason.trim(), { ...electionOptions(choices), ...(erpPosted && erpAck ? { acknowledgeErpPosted: true } : {}) });
     } catch (e: unknown) {
       const required = readRequiredElections(e);
+      const posted = readErpPostedRefusal(e);
       if (required) setGroups(required);
+      else if (posted) { setErpPosted(posted); setErpAck(false); }
       else setError(serverMessage(e, t) || t('The action was refused.'));
       setBusy(false);
     }
@@ -74,13 +80,28 @@ export function VoidRunForm({ currency, onClose, onSubmit }: {
         </div>
       )}
 
+      {erpPosted && (
+        <div data-testid="void-erp-posted" className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">{t("This run's journal is already posted in your ERP")}</p>
+          <p className="text-xs leading-5 text-amber-900 dark:text-amber-200">
+            {erpPosted.reference
+              ? t('Your ERP holds it under reference {reference}. Voiding here cannot un-post it: the correcting document must be raised in the ERP as well.', { reference: erpPosted.reference })
+              : t('Voiding here cannot un-post it: the correcting document must be raised in the ERP as well.')}
+          </p>
+          <label htmlFor={erpAckId} className="flex items-start gap-2 text-xs text-amber-900 dark:text-amber-200">
+            <input id={erpAckId} data-testid="void-erp-ack" type="checkbox" className="mt-0.5" checked={erpAck} onChange={e => setErpAck(e.target.checked)} />
+            <span>{t('I will raise the correcting document in the ERP')}</span>
+          </label>
+        </div>
+      )}
+
       {error && <p role="alert" className="text-xs text-rose-600 dark:text-rose-400">{error}</p>}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onClose}
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300 dark:hover:bg-white/5">
           {t('Cancel')}
         </button>
-        <button type="button" data-testid="void-run-submit" onClick={submit} disabled={busy || reason.trim().length < 1 || pending}
+        <button type="button" data-testid="void-run-submit" onClick={submit} disabled={busy || reason.trim().length < 1 || pending || (erpPosted != null && !erpAck)}
           className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50">
           {busy ? t('Working…') : t('Void run')}
         </button>

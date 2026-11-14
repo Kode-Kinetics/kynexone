@@ -90,7 +90,8 @@ public class LeaveCrossYearWithdrawalTests
                     User = new ClaimsPrincipal(new ClaimsIdentity(new[]
                     {
                         new Claim("tenant_id", tenantId.ToString()),
-                        new Claim(ClaimTypes.NameIdentifier, userId.ToString())
+                        new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
+                        new Claim("permission", "ess.write")
                     }, "Test"))
                 }
             }

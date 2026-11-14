@@ -148,6 +148,110 @@ public class LeaveProvisionPlannerTests
         LeaveCashOutRate.MonthlyGross(null, 5_000m, 0m).Should().Be(5_000m, "no salary record: the employee's own salary figure is the whole package");
     }
 
+    // ── A fall after the provision account was remapped debits the account that holds the provision ──
+
+    private const string Remapped = "2331 - Leave Provision (remapped)";
+
+    private static (List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots) PlanAt(
+        string provisionAccount, params LeaveObligation[] obligations) =>
+        LeaveProvisionPlanner.Build(Tenant, Company, Run, "2026-07", July, "SAR", Expense, provisionAccount, obligations, null, "system", July);
+
+    private static decimal CreditPosition(IEnumerable<(string Account, decimal Balance)> held, IEnumerable<FinanceGlEntry> lines, string account) =>
+        held.Where(h => h.Account == account).Sum(h => h.Balance)
+        + lines.Where(l => l.CreditAccount == account).Sum(l => l.Amount)
+        - lines.Where(l => l.DebitAccount == account).Sum(l => l.Amount);
+
+    [Fact]
+    public void AFall_AfterARemap_DebitsTheAccountThatHoldsTheProvision_NotTheNewlyMappedOne()
+    {
+        // 1,000 credited to 2330; LEAVE_PROVISION then remapped to 2331; the obligation is now 800.
+        var held = new[] { new LeaveProvisionHolding(Provision, 1_000m) };
+        var (lines, snapshots) = PlanAt(Remapped,
+            new LeaveObligation(1, "A", 8m, 100m, "Gross", 800m, 1_000m, false, Holdings: held));
+
+        var debit = lines.Single(l => l.SourceEntityRef == "1");
+        (debit.DebitAccount, debit.CreditAccount, debit.Amount).Should().Be((Provision, "", 200m));
+        lines.Should().NotContain(l => l.DebitAccount == Remapped || l.CreditAccount == Remapped,
+            "the newly mapped account never held this provision");
+        lines.Single(l => l.CreditAccount == Expense).Amount.Should().Be(200m);
+        lines.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(lines.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+        CreditPosition(held.Select(h => (h.Account, h.Balance)), lines, Provision).Should().Be(800m);
+        snapshots.Single().Movement.Should().Be(-200m);
+    }
+
+    [Fact]
+    public void AFall_AcrossTwoHeldAccounts_TakesTheLargestFirst_AndNeverDrivesAnAccountBelowZero()
+    {
+        // 300 still on 2330, 500 on 2331 after the remap, and an old 2329 line that is already negative (never debited further).
+        var held = new[]
+        {
+            new LeaveProvisionHolding(Provision, 300m),
+            new LeaveProvisionHolding(Remapped, 500m),
+            new LeaveProvisionHolding("2329 - Old Leave Provision", -40m),
+        };
+        // Carried = 300 + 500 - 40 = 760; obligation 100 -> a fall of 660.
+        var (lines, _) = PlanAt(Remapped,
+            new LeaveObligation(1, "A", 1m, 100m, "Gross", 100m, 760m, false, Holdings: held));
+
+        var debits = lines.Where(l => l.SourceEntityRef == "1").ToList();
+        debits.Should().OnlyContain(l => l.CreditAccount == "" && l.Description == LeaveProvisionPlanner.ReleaseLabel);
+        debits.Select(l => (l.DebitAccount, l.Amount)).Should().Equal((Remapped, 500m), (Provision, 160m));
+        // With cost accounting on every line gets a posting key; the split debits must not collide.
+        var costed = new GlResolutionContext(
+            new Dictionary<string, (string, string)>(), new Dictionary<string, (string, string)>(), Array.Empty<GlDriverRow>())
+        { CompanyId = Company, CostAccountingEnabled = true, CostCentres = new Dictionary<Guid, GlCostCentreInfo>() };
+        var (costedLines, _) = LeaveProvisionPlanner.Build(Tenant, Company, Run, "2026-07", July, "SAR", Expense, Remapped,
+            new[] { new LeaveObligation(1, "A", 1m, 100m, "Gross", 100m, 760m, false, Holdings: held) }, null, "system", July,
+            new LeaveCostContext(costed));
+        costedLines.Where(l => l.SourceEntityRef == "1").Select(l => l.PostingKey).Should().OnlyContain(k => k != null).And.OnlyHaveUniqueItems();
+        var heldPairs = held.Select(h => (h.Account, h.Balance)).ToList();
+        CreditPosition(heldPairs, lines, Remapped).Should().Be(0m);
+        CreditPosition(heldPairs, lines, Provision).Should().Be(140m);
+        CreditPosition(heldPairs, lines, "2329 - Old Leave Provision").Should().Be(-40m);
+        heldPairs.Select(h => h.Account).Distinct().Sum(a => CreditPosition(heldPairs, lines, a)).Should().Be(100m, "the total carried equals the obligation");
+        lines.Single(l => l.CreditAccount == Expense).Amount.Should().Be(660m);
+        lines.Where(l => l.DebitAccount != "").Sum(l => l.Amount).Should().Be(lines.Where(l => l.CreditAccount != "").Sum(l => l.Amount));
+    }
+
+    [Fact]
+    public void ARise_AfterARemap_CreditsTheCurrentlyMappedAccount()
+    {
+        var held = new[] { new LeaveProvisionHolding(Provision, 1_000m) };
+        var (lines, _) = PlanAt(Remapped,
+            new LeaveObligation(1, "A", 12m, 100m, "Gross", 1_200m, 1_000m, false, Holdings: held));
+
+        var credit = lines.Single(l => l.SourceEntityRef == "1");
+        (credit.DebitAccount, credit.CreditAccount, credit.Amount).Should().Be(("", Remapped, 200m));
+    }
+
+    [Fact]
+    public void AFall_LargerThanWhatTheHeldAccountsCarry_IsRefused_RatherThanDrivingAnAccountNegative()
+    {
+        var held = new[] { new LeaveProvisionHolding(Provision, 100m) };
+        var act = () => PlanAt(Remapped, new LeaveObligation(1, "A", 0m, 100m, "Gross", 0m, 300m, false, Holdings: held));
+
+        act.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void Holdings_NetEachAccountAcrossCompanyAndUnattributedPositions_LessConsumption()
+    {
+        var other = Guid.NewGuid();
+        var positions = new[]
+        {
+            new LeaveProvisionPosition(1, Company, Provision, "SAR", 1_000m, 250m),
+            new LeaveProvisionPosition(1, null, Provision, "SAR", 100m, 0m),
+            new LeaveProvisionPosition(1, Company, Remapped, "SAR", -200m, 0m),
+            new LeaveProvisionPosition(1, other, Provision, "SAR", 9_999m, 0m),
+            new LeaveProvisionPosition(2, Company, Provision, "SAR", 5_000m, 0m),
+        };
+
+        LeaveProvisionLedger.HoldingsFor(positions, 1, Company)
+            .Should().Equal(new LeaveProvisionHolding(Provision, 850m), new LeaveProvisionHolding(Remapped, -200m));
+        LeaveProvisionLedger.HoldingsFor(positions, 1, Company).Sum(h => h.Balance)
+            .Should().Be(LeaveProvisionLedger.CarriedFor(positions, 1, Company), "holdings and the carried figure read the same positions");
+    }
+
     // ── The carried provision when the provision account was remapped between months ──
 
     [Fact]

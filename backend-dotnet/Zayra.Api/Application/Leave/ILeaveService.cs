@@ -5,6 +5,12 @@ namespace Zayra.Api.Application.Leave;
 /// <summary>What one "open the year" run changed.</summary>
 public sealed record LeaveYearOpenResult(int Year, int BalancesCreated, int AccrualEntries, int AllocationEntries);
 
+/// <summary>What one year rollover moved: the closed balance rows and the days carried into the next year.</summary>
+public sealed record LeaveYearRolloverResult(int FromYear, int RowsClosed, decimal DaysCarried);
+
+/// <summary>What one scheduled monthly run posted for a tenant.</summary>
+public sealed record LeaveScheduledAccrualResult(int AccrualYear, int AccrualEntries, int AllocationEntries, LeaveYearRolloverResult Rollover);
+
 public interface ILeaveService
 {
     // Balance engine
@@ -17,6 +23,13 @@ public interface ILeaveService
     /// holds a figure (imported or entered by hand) is left alone.
     /// </summary>
     Task<LeaveYearOpenResult> OpenYearBalancesAsync(Guid tenantId, int year, CancellationToken ct = default);
+    /// <summary>
+    /// The monthly job for one tenant on its own calendar day: accrues the months that have ended, front-loads yearly policies, and rolls last
+    /// year's unused annual leave into this year, closing the old row. Idempotent.
+    /// </summary>
+    Task<LeaveScheduledAccrualResult> RunScheduledAccrualAsync(Guid tenantId, DateOnly tenantToday, CancellationToken ct = default);
+    /// <summary>Carries the unused annual-leave days of <paramref name="fromYear"/> into the next year and closes the old rows. Idempotent.</summary>
+    Task<LeaveYearRolloverResult> RolloverYearAsync(Guid tenantId, int fromYear, CancellationToken ct = default);
     Task<decimal> CalculateWorkingDaysAsync(Guid tenantId, DateOnly start, DateOnly end, Guid? policyId, CancellationToken ct = default);
     /// <summary>
     /// As above, but with the employee's employing company so the tenant's configured rest days are

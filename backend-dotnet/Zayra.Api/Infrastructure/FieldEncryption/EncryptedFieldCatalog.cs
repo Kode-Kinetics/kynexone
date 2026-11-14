@@ -68,6 +68,9 @@ public static class EncryptedFieldCatalog
         F<VisaRecord>(nameof(VisaRecord.EmiratesIdNumber), true),
         F<PassportRecord>(nameof(PassportRecord.PassportNumber), true),
         F<EmployeeDependent>(nameof(EmployeeDependent.NationalId), false),
+        // The identity numbers a hire form stores as compliance records (Iqama, national ID, passport, border number, Emirates ID...) are
+        // keyed by FieldKey, so the whole value column is protected rather than guessing which keys are identifiers. Never looked up by value.
+        F<EmployeeComplianceRecord>(nameof(EmployeeComplianceRecord.FieldValue), false),
     ];
 
     private static readonly Dictionary<Type, EncryptedField[]> ByEntity =

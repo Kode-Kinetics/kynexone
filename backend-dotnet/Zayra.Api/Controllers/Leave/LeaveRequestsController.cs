@@ -375,7 +375,8 @@ public class LeaveRequestsController : ControllerBase
             var submitted = await _leaveService.SubmitRequestAsync(tenantId.Value, request, this.GetUserId(), ct);
             // The employee and whoever decides the first step; never the whole workspace. The same path Self-Service uses.
             await LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId.Value, submitted, ct);
-            return Created($"/api/leave/requests/{submitted.Id}", submitted);
+            // The attachment key is the handle to a medical document: only the employee and HR/Admin get it back, whoever filed the request.
+            return Created($"/api/leave/requests/{submitted.Id}", LeaveFileKeyExposure.ForReader(_db, submitted, User, scope));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -511,8 +512,8 @@ public class LeaveRequestsController : ControllerBase
         if (!isAdminOrHr && !ownRequest)
             return Forbid();
         // Cancelling your own request is self-service (ess.write); anyone else's is leave administration
-        // (leave.write or leave.cancel). The role and ownership checks alone let an ess.read-only login
-        // cancel its own leave.
+        // (leave.write or leave.cancel). The role and ownership checks alone do not decide it: cancelling
+        // also needs the matching permission.
         var canAdministerLeave = User.HasPermission("leave.write") || User.HasPermission("leave.cancel");
         if (!(canAdministerLeave || (ownRequest && User.HasPermission("ess.write"))))
             return Forbid();
@@ -648,11 +649,15 @@ public class LeaveRequestsController : ControllerBase
         if (leaveRequest is null) return NotFound();
 
         var canAdminister = User.IsInRole("Admin") || User.IsInRole("HR Manager");
-        if (!canAdminister)
-        {
-            var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-            if (scope.CallerEmployeeId != leaveRequest.EmployeeId) return Forbid();
-        }
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        var ownRequest = scope.CallerEmployeeId == leaveRequest.EmployeeId;
+        if (!canAdminister && !ownRequest) return Forbid();
+        // The same permission as cancelling (CTO decision 2026-11-12): your own request is self-service (ess.write); anyone
+        // else's is leave administration (leave.write or leave.cancel). The role and ownership checks alone do not decide it:
+        // withdrawing also needs the matching permission.
+        var canAdministerLeave = User.HasPermission("leave.write") || User.HasPermission("leave.cancel");
+        if (!(canAdministerLeave || (ownRequest && User.HasPermission("ess.write"))))
+            return Forbid();
 
         // The fast path; LeaveService repeats this check under the employee's leave lock, so a final approval that
         // commits between this read and the write cannot be overwritten.
@@ -835,6 +840,17 @@ public class LeaveRequestsController : ControllerBase
             if (!DateOnly.TryParse(row.GetValueOrDefault("EndDate", string.Empty), out var endDate))
             { skipped++; errors.Add($"Row {rowNum}: EndDate is required and must be yyyy-MM-dd."); continue; }
             decimal.TryParse(row.GetValueOrDefault("HoursRequested", "0"), out var hours);
+            // An attachment key in a file is accepted only when it is the key of a document this employee has uploaded: a key that belongs
+            // to another employee's record is not accepted as the attachment of this leave.
+            var attachmentKey = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim();
+            if (attachmentKey.Length > 0)
+            {
+                var ownsKey = attachmentKey.Length <= 1024 && await _db.EmployeeDocuments.AsNoTracking()
+                    .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == employee.Id && d.StorageUrl == attachmentKey && !d.IsDeleted
+                        && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()), ct);
+                if (!ownsKey)
+                { skipped++; errors.Add($"Row {rowNum}: AttachmentPath must be the storage key of a document the employee has uploaded."); continue; }
+            }
 
             var request = new LeaveRequest
             {

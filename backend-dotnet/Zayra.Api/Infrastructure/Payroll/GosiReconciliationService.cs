@@ -176,7 +176,7 @@ public sealed class GosiReconciliationService
         foreach (var slip in slips)
         {
             employees.TryGetValue(slip.EmployeeId, out var emp);
-            var nationality = emp?.Nationality ?? string.Empty;
+            var nationality = Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp) ?? string.Empty;
 
             var actualEe = actualEeByEmp.GetValueOrDefault(slip.EmployeeId);
             var actualEr = actualErByEmp.GetValueOrDefault(slip.EmployeeId);
@@ -470,7 +470,7 @@ public sealed class GosiReconciliationService
                 var breakdown = new SalaryBreakdown(basic, housing, transport, 0m);
                 var expected = await calc.CalculateAsync(new StatutoryDeductionInput(
                     EmployeeId: Guid.Empty, CompanyId: company!.Id, Salary: breakdown,
-                    Nationality: emp?.Nationality ?? string.Empty,
+                    Nationality: Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp) ?? string.Empty,
                     ContractType: emp?.ContractType ?? "Indefinite",
                     PeriodYear: year, PeriodMonth: month)
                 {
@@ -487,7 +487,7 @@ public sealed class GosiReconciliationService
             var first = empSlips[0];
             rows.Add(new GosiPeriodRow(
                 empId, first.EmployeeCode, first.EmployeeName,
-                GosiCalculationService.DeriveClassification(emp?.Nationality ?? string.Empty),
+                GosiCalculationService.DeriveClassification(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp) ?? string.Empty),
                 coveredWage, expectedEe, expectedEr,
                 actualEeByEmp.GetValueOrDefault(empId), actualErByEmp.GetValueOrDefault(empId),
                 empSlips.Select(s => s.RunId).Distinct().Count()));

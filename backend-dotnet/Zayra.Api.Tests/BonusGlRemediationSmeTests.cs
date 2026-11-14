@@ -502,17 +502,15 @@ public class BonusGlRemediationSmeTests
 
         var payroll = Payroll(db, tid);
         await Lock(db, payroll, run.Id);
+        // A covered instalment relieves the receivable at Lock itself, so there is nothing left for the loan remittance to clear.
         (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "EMI"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ConflictObjectResult>();
         db.ChangeTracker.Clear();
 
         var gl = await Ledger(db, tid);
-        AssertBalanced(gl, "disbursement + accrual + remittance must balance");
+        AssertBalanced(gl, "disbursement + accrual must balance");
         Cr(gl, "1400").Should().Be(2_000m, "the EMI relieves the receivable it was actually lent against");
-        var coveredRemit = gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).ToList();
-        Dr(coveredRemit, "2107").Should().Be(2_000m, "a covered EMI posts DR 2107 …");
-        Cr(coveredRemit, "1400").Should().Be(2_000m, "… / CR 1400 exactly, with no leg to Cash/Bank");
-        Cr(coveredRemit, "1000").Should().Be(0m);
+        gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).Should().BeEmpty("no remittance journal is needed");
         Asset(gl, "1400").Should().Be(0m, "…amortising it to exactly zero");
         Cr(gl, "1000").Should().Be(2_000m,
             "cash left the bank ONCE, at disbursement — an EMI withheld from pay is not a second outflow");
@@ -550,8 +548,9 @@ public class BonusGlRemediationSmeTests
         gl.Where(l => l.EventType == GlEventTypes.Remit(RemitGroups.Loan)).Should().BeEmpty(
             "the whole remittance is refused: nothing is cleared, nothing is paid");
         Cr(gl, "1000").Should().Be(1_200m, "only the real disbursement credits cash; the uncovered 800 is not a bank outflow");
-        Asset(gl, "1400").Should().Be(1_200m, "the receivable is untouched by a refused remittance");
-        Liability(gl, "2107").Should().Be(2_000m);
+        Cr(gl, "1400").Should().Be(1_200m, "Lock relieved the receivable by what it carries, and no more");
+        Asset(gl, "1400").Should().Be(0m);
+        Liability(gl, "2107").Should().Be(800m, "only the uncovered 800 keeps the clearing path");
         GlControlAccounts.FindSignViolations(gl).Should().BeEmpty();
     }
 
@@ -576,7 +575,7 @@ public class BonusGlRemediationSmeTests
         var payrollJune = Payroll(db, tid);
         await Lock(db, payrollJune, june.Id);
         (await payrollJune.RemitStatutory(june.Id, new RemitStatutoryRequest("LOAN", "EMI-1"), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
+            .Should().BeOfType<ConflictObjectResult>("June's instalment was covered, so Lock already relieved 1400 and nothing is left to remit");
         db.ChangeTracker.Clear();
 
         var afterJune = await Ledger(db, tid);
@@ -1727,21 +1726,13 @@ public class BonusGlRemediationSmeTests
         await Loan(db, tid, co, emp, "LN-1", outstanding: 5_000m, installment: 333.3333m, disbursedToGl: 5_000m);
 
         await Lock(db, Payroll(db, tid), run.Id);
-        var payroll = Payroll(db, tid);
-        (await payroll.RemitStatutory(run.Id, new RemitStatutoryRequest("LOAN", "REF-1", new DateOnly(2026, 6, 30)), CancellationToken.None))
-            .Should().BeOfType<OkObjectResult>();
         db.ChangeTracker.Clear();
 
-        var remit = (await Ledger(db, tid))
-            .Where(l => l.EventType == GlEventTypes.Remit("LOAN")).ToList();
-        remit.Should().NotBeEmpty();
-
-        var dr = remit.Where(l => !string.IsNullOrEmpty(l.DebitAccount)).Sum(l => l.Amount);
-        var cr = remit.Where(l => !string.IsNullOrEmpty(l.CreditAccount)).Sum(l => l.Amount);
-        cr.Should().Be(dr, "Σ(split) == the line amount EXACTLY — no rounding on the credit leg");
-        dr.Should().Be(333.3333m, "the debit leg posts the stored 4dp accrual verbatim");
-        Cr(remit, "1400").Should().Be(333.3333m, "the whole 4dp instalment relieves the receivable, to the last digit");
-        Cr(remit, "1000").Should().Be(0m, "and nothing is credited to Cash/Bank");
+        // The credit now happens at Lock: the receivable line must carry the stored 4dp instalment exactly, and the
+        // accrual journal must still tie to the last digit.
+        var accrual = (await Ledger(db, tid)).Where(l => l.EventType == GlEventTypes.Accrual && l.SourceModule == "Payroll").ToList();
+        Cr(accrual, "1400").Should().Be(333.3333m, "Σ(split) == the line amount EXACTLY — the whole 4dp instalment relieves the receivable, to the last digit");
+        Cr(accrual, "2107").Should().Be(0m, "a covered instalment leaves nothing on the clearing liability");
         Asset(await Ledger(db, tid), "1400").Should().Be(5_000m - 333.3333m);
     }
 

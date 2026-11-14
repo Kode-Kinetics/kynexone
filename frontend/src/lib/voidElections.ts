@@ -99,3 +99,16 @@ export function electionOptions(choices: VoidChoices): Pick<VoidRunOptions,
   }
   return out;
 }
+
+/**
+ * The refusal for a run whose journal the ERP already holds (HTTP 422, error "erp_already_posted"): voiding here cannot un-post it, so
+ * the operator must acknowledge that the correcting document is raised in the ERP as well. Null for any other error.
+ */
+export function readErpPostedRefusal(err: unknown): { reference: string | null } | null {
+  const response = (err as { response?: { status?: number; data?: unknown } } | null)?.response;
+  if (response?.status !== 422) return null;
+  const data = response.data as { error?: unknown; detail?: { erpPostingReference?: unknown } } | null;
+  if (data?.error !== 'erp_already_posted') return null;
+  const ref = data.detail?.erpPostingReference;
+  return { reference: typeof ref === 'string' && ref.trim() ? ref.trim() : null };
+}

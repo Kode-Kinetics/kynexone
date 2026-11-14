@@ -256,6 +256,39 @@ public class SaudiBankExportTests
         (db.BankTransferFiles.Count() + db.PayrollAuditLogs.Count()).Should().Be(before);
     }
 
+    [Theory]
+    [InlineData("NationalId")]
+    [InlineData("National ID")]
+    [InlineData("national id")]
+    [InlineData("National ID (Hawiyya)")]
+    [InlineData(" NATIONAL_ID ")]
+    public async Task Validate_ASaudiNationalId_IsRead_WhicheverSpellingTheIdTypeWasStoredIn(string idType)
+    {
+        var (db, tenant, _, batch, svc) = await Arrange();
+        var saudi = db.Employees.Single(e => e.TenantId == tenant && e.IdNumber == "1012345678");
+        saudi.IdType = idType;   // the profile screen and the CSV import store the displayed label, "National ID"
+        await db.SaveChangesAsync();
+
+        var v = (await svc.ValidateAsync(tenant, batch, SaudiBankExportTestData.Request(), default)).Value!;
+
+        v.Errors.Should().NotContain(e => e.Code == "mol_id_missing", "the National ID is on the record whatever the label's spelling");
+        v.CanExport.Should().BeTrue(string.Join("; ", v.Errors.Select(e => e.Code)));
+    }
+
+    [Fact]
+    public async Task Validate_ANationalIdWithNoRecordedType_IsRead_AsTheWpsFileReadsIt()
+    {
+        var (db, tenant, _, batch, svc) = await Arrange();
+        var saudi = db.Employees.Single(e => e.TenantId == tenant && e.IdNumber == "1012345678");
+        saudi.IdType = string.Empty;   // an imported record with the National ID column filled and no type
+        await db.SaveChangesAsync();
+
+        var v = (await svc.ValidateAsync(tenant, batch, SaudiBankExportTestData.Request(), default)).Value!;
+
+        v.Errors.Should().NotContain(e => e.Code == "mol_id_missing");
+        v.CanExport.Should().BeTrue(string.Join("; ", v.Errors.Select(e => e.Code)));
+    }
+
     [Fact]
     public async Task Validate_WithoutAddressSource_BlocksEveryRow_NeverDefaults()
     {
@@ -477,5 +510,54 @@ public class SaudiBankExportTests
         var ctrl = Ctrl(db, tenant, company);
         ctrl.Formats().Should().BeOfType<ForbidResult>();
         (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
+    }
+
+    // The Payroll Manager prepares the bank file (payroll.payment_batch.manage); payroll.export keeps working as before. The whole
+    // file-production flow opens to either key: availability, context, validate, preview, generate and download.
+    [Theory]
+    [InlineData("payroll.payment_batch.manage")]
+    [InlineData("payroll.export")]
+    public async Task Controller_BankFileProduction_OpensToThePaymentBatchKeyOrPayrollExport(string key)
+    {
+        var (db, tenant, company, batch, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, key);
+
+        ctrl.Formats().Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.GetSettings(company, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Availability(batch, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Context(batch, default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Preview(batch, new CustomBankPreviewRequest(), default)).Should().NotBeOfType<ForbidResult>(key);
+        (await ctrl.Generate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<OkObjectResult>(key);
+        (await ctrl.Download(batch, default)).Should().BeOfType<FileContentResult>(key);
+    }
+
+    [Fact]
+    public async Task Controller_BankFileProduction_WithNeitherKey_IsForbidden()
+    {
+        var (db, tenant, company, batch, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, "payroll.read", "payroll.payment.settle", "payroll.wps_status.update");
+
+        ctrl.Formats().Should().BeOfType<ForbidResult>();
+        (await ctrl.GetSettings(company, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Availability(batch, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Context(batch, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Validate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Preview(batch, new CustomBankPreviewRequest(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Generate(batch, SaudiBankExportTestData.Request(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.Download(batch, default)).Should().BeOfType<ForbidResult>();
+        db.BankTransferFiles.Count().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Controller_ThePaymentBatchKeyAlone_OpensNothingElseInBankExports()
+    {
+        var (db, tenant, company, _, _) = await Arrange();
+        var ctrl = Ctrl(db, tenant, company, "payroll.payment_batch.manage");
+
+        (await ctrl.PutSettings(company, SaudiBankExportTestData.Settings(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.ListTemplates(company, default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.GetTemplate(company, Guid.NewGuid(), default)).Should().BeOfType<ForbidResult>();
+        (await ctrl.TemplateCatalog(default)).Should().BeOfType<ForbidResult>();
     }
 }

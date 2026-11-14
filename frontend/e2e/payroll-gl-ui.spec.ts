@@ -33,6 +33,10 @@ interface Options {
   createRefused?: boolean;
   /** Void is refused with the elections 422 until they are sent. */
   voidNeedsElections?: boolean;
+  /** The ERP already holds the run's journal: void is refused with erp_already_posted until acknowledgeErpPosted=true. */
+  erpPosted?: boolean;
+  /** The November run is Paid (past Locked). */
+  paid?: boolean;
 }
 
 interface Recorded { method: string; path: string; search: string; body: unknown }
@@ -127,7 +131,7 @@ async function boot(page: Page, options: Options = {}, startTab = 'runs') {
     if (p === '/api/companies') return reply(paged([]));
     if (p === '/api/payroll/runs' && method === 'GET') {
       return reply(paged([
-        run({ status: state.voided ? 'Voided' : 'Locked' }),
+        run({ status: state.voided ? 'Voided' : options.paid ? 'Paid' : 'Locked' }),
         run({ id: 'run-oct', month: 10, status: 'Voided', lockedAtUtc: null }),
       ]));
     }
@@ -138,6 +142,9 @@ async function boot(page: Page, options: Options = {}, startTab = 'runs') {
       const q = url.searchParams;
       if (options.voidNeedsElections && !q.get('settlementDisposition')) {
         return reply({ error: 'remittance_disposition_required', message: 'This run has already DISBURSED the GOSI remittance (7,435.41 credited to 1000 - Cash/Bank).', detail: { requiredElections: elections, outstandingElectionCount: 3 } }, 422);
+      }
+      if (options.erpPosted && q.get('acknowledgeErpPosted') !== 'true') {
+        return reply({ error: 'erp_already_posted', message: "This run's journal is already POSTED in the ERP (reference SAP-1900001).", detail: { erpPostingStatus: 'Posted', erpPostingReference: 'SAP-1900001' } }, 422);
       }
       state.voided = true;
       return reply({ runId: 'run-nov', status: 'Voided' });
@@ -377,4 +384,66 @@ test('payment tracking shows the lifecycle status only: Paid, never "File genera
   await expect(row).toContainText('Paid');
   await expect(row).not.toContainText('File generated');
   await shot(page, info, 'glui-en-tracking-status');
+});
+
+// ═════════════════════════════ Launch polish: accounting date, ERP acknowledgement, Paid card, 390 width ═════════════════════════════
+
+test('the accrual shows the ERP accounting date (period end) next to the entry date it was locked on', async ({ page }) => {
+  await boot(page, {}, 'gl-journal');
+  await openJournal(page);
+  const accrual = tid(page, 'gl-journal-accrual');
+  await expect(accrual).toContainText('Entry date');
+  await expect(tid(page, 'gl-journal-accrual').getByTestId('gl-erp-accounting-date')).toContainText(/30/);
+  await expect(accrual).toContainText('ERP accounting date');
+  // A payment keeps the day it was made.
+  await expect(tid(page, 'gl-journal-settlement').getByTestId('gl-erp-accounting-date')).toContainText(/12/);
+});
+
+test('a run the ERP already holds: the void asks for the acknowledgement, then resends with it', async ({ page }) => {
+  const { writes, state } = await boot(page, { erpPosted: true });
+  await card(page, 'Nov 2026').locator('button[aria-label="Void run"]').click();
+  await page.getByLabel('Reason', { exact: true }).fill('Posted against the wrong month');
+  await tid(page, 'void-run-submit').click();
+
+  await expect(tid(page, 'void-erp-posted')).toContainText('SAP-1900001');
+  await expect(tid(page, 'void-run-submit')).toBeDisabled();
+  expect(writes.filter(w => w.path.endsWith('/void'))[0].search).not.toContain('acknowledgeErpPosted');
+  await tid(page, 'void-erp-ack').check();
+  await expect(tid(page, 'void-run-submit')).toBeEnabled();
+  await tid(page, 'void-run-submit').click();
+
+  await expect.poll(() => state.voided).toBe(true);
+  const sent = writes.filter(w => w.path.endsWith('/void')).at(-1)!;
+  expect(new URLSearchParams(sent.search).get('acknowledgeErpPosted')).toBe('true');
+});
+
+test('Arabic: the ERP acknowledgement', async ({ page }) => {
+  await boot(page, { locale: 'ar', erpPosted: true });
+  await card(page, 'Nov 2026').locator(voidButton).first().click();
+  await page.locator('textarea').fill('خطأ في الشهر');
+  await tid(page, 'void-run-submit').click();
+  await expect(tid(page, 'void-erp-posted')).toContainText('مرحَّل بالفعل في نظام ERP');
+  await expect(tid(page, 'void-erp-posted')).toContainText('SAP-1900001');
+});
+
+test('a Paid run card shows one action row (Validate, Void), never a Process button as well', async ({ page }) => {
+  await boot(page, { paid: true });
+  const nov = card(page, 'Nov 2026');
+  await expect(nov.getByRole('button', { name: 'Process' })).toHaveCount(0);
+  await expect(nov.getByRole('button', { name: 'Validate' })).toHaveCount(1);
+  await expect(nov.locator('button[aria-label="Void run"]')).toHaveCount(1);
+});
+
+test('at 390 wide the posted journal table fits: no horizontal scroll, cost centre stacked under the account', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await boot(page, {}, 'gl-journal');
+  await openJournal(page);
+  const accrual = tid(page, 'gl-journal-accrual');
+  await expect(accrual).toBeVisible();
+  const fits = await accrual.evaluate((el) => {
+    const scroller = el.querySelector('.overflow-x-auto') as HTMLElement;
+    return scroller.scrollWidth <= scroller.clientWidth + 1;
+  });
+  expect(fits).toBe(true);
+  await expect(accrual).toContainText('CC-ENG');
 });

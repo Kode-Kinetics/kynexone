@@ -113,11 +113,19 @@ public class AssessmentsController : ControllerBase
         if (!string.IsNullOrEmpty(status)) q = q.Where(x => x.Status == status);
 
         var total = await q.CountAsync(ct);
-        var items = await q.OrderByDescending(x => x.CreatedAtUtc)
+        var rows = await q.OrderByDescending(x => x.CreatedAtUtc)
             .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+        var items = rows.Select(StaffView).ToList();
 
         return Ok(new { total, page, pageSize, items });
     }
+
+    /// <summary>The invitation token is the candidate's key to take the assessment: it goes to the candidate, never into a response read by staff.</summary>
+    private static object StaffView(CandidateAssessment a) => new
+    {
+        a.Id, a.TenantId, a.CompanyId, a.ApplicationId, a.CandidateId, a.TemplateId, a.TemplateName, a.Status, a.SentAtUtc, a.StartedAtUtc,
+        a.CompletedAtUtc, a.ExpiresAtUtc, a.ScoreObtained, a.TotalMarks, a.ScorePercentage, a.Passed, a.ResultJson, a.AssignedByUserId, a.CreatedAtUtc,
+    };
 
     // POST /api/recruitment/assessments/send — Send assessment to candidate
     [HttpPost("send")]
@@ -170,7 +178,7 @@ public class AssessmentsController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
-        return Ok(assessment);
+        return Ok(StaffView(assessment));
     }
 
     // PATCH /api/recruitment/assessments/{id}/result — Record result (HR submits on behalf)
@@ -210,7 +218,7 @@ public class AssessmentsController : ControllerBase
         });
 
         await _db.SaveChangesAsync(ct);
-        return Ok(assessment);
+        return Ok(StaffView(assessment));
     }
 }
 

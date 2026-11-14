@@ -30,10 +30,13 @@ public static class LeaveProvisioningRateKeys
     public const string ExpenseDriverKey = "LEAVE_PROVISION_EXPENSE";
 }
 
-/// <summary>One employee's measured unused-leave value, ready for the planner.</summary>
+/// <summary>One employee's measured unused-leave value, ready for the planner. <c>Holdings</c> is the per-account
+/// provision the ledger still carries for the employee (see <see cref="LeaveProvisionLedger.HoldingsFor"/>); a fall is debited
+/// against it.</summary>
 public sealed record LeaveObligation(
     int EmployeeId, string EmployeeCode, decimal Days, decimal DailyRate, string Basis,
-    decimal Obligation, decimal CarriedBefore, bool IsCatchUp, Guid? CostCentreId = null);
+    decimal Obligation, decimal CarriedBefore, bool IsCatchUp, Guid? CostCentreId = null,
+    bool OpeningRoute = false, IReadOnlyList<LeaveProvisionHolding>? Holdings = null);
 
 /// <summary>Cost-accounting context for the planner: the expense side splits per cost centre and every line gets a posting key.</summary>
 public sealed record LeaveCostContext(GlResolutionContext Gl);
@@ -48,17 +51,20 @@ public static class LeaveProvisionPlanner
     public const string CatchUpLabel = "Opening annual leave provision (catch-up)";
     public const string MonthlyLabel = "Monthly annual leave provision movement";
     public const string ReleaseLabel = "Annual leave provision reduced (unused leave value fell)";
+    public const string OpeningBalanceLabel = "Opening annual leave provision (catch-up) - opening balance";
 
     public static (List<FinanceGlEntry> Lines, List<LeaveProvisionSnapshot> Snapshots) Build(
         Guid tenantId, Guid? companyId, Guid runId, string period, DateOnly measuredAt, string currency,
         string expenseAccount, string provisionAccount, IEnumerable<LeaveObligation> obligations,
-        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null, string? snapshotPeriod = null)
+        Guid? postedBy, string postedByName, DateOnly entryDate, LeaveCostContext? cost = null, string? snapshotPeriod = null,
+        string? openingBalanceAccount = null)
     {
         var lines = new List<FinanceGlEntry>();
         var snapshots = new List<LeaveProvisionSnapshot>();
         // Per cost centre when costing is on (one bucket, key null, when it is off). Keyed by cost centre id,
         // Guid.Empty = no cost centre (a dictionary cannot hold a null key).
         var catchUpRise = new Dictionary<Guid, decimal>();
+        decimal openingRise = 0m;   // M6: see ProvisionCatchUpRoute
         var monthlyRise = new Dictionary<Guid, decimal>();
         var fall = new Dictionary<Guid, decimal>();
         var keyOrdinals = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -119,15 +125,20 @@ public static class LeaveProvisionPlanner
             if (movement > 0m)
             {
                 lines.Add(Line(string.Empty, provisionAccount, movement, label, employeeRef));
-                if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
+                if (o.IsCatchUp && o.OpeningRoute && openingBalanceAccount is not null) openingRise += movement;
+                else if (o.IsCatchUp) Add(catchUpRise, gl is null ? null : o.CostCentreId, movement); else Add(monthlyRise, gl is null ? null : o.CostCentreId, movement);
             }
             else
             {
-                lines.Add(Line(provisionAccount, string.Empty, -movement, label, employeeRef));
+                foreach (var (account, amount) in PlanReduction(o, provisionAccount, -movement))
+                    lines.Add(Line(account, string.Empty, amount, label, employeeRef));
                 Add(fall, gl is null ? null : o.CostCentreId, -movement);
             }
         }
 
+        // Equity is not profit and loss: one line, no cost centre.
+        if (openingRise > 0m && openingBalanceAccount is not null)
+            lines.Add(Line(openingBalanceAccount, string.Empty, openingRise, OpeningBalanceLabel, period));
         foreach (var (key, amount) in catchUpRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
             lines.Add(Line(ExpenseAt(Real(key)), string.Empty, amount, CatchUpLabel, period, Real(key)));
         foreach (var (key, amount) in monthlyRise.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
@@ -135,5 +146,39 @@ public static class LeaveProvisionPlanner
         foreach (var (key, amount) in fall.OrderBy(kv => CcCode(kv.Key), StringComparer.Ordinal).Where(kv => kv.Value > 0m))
             lines.Add(Line(string.Empty, ExpenseAt(Real(key)), amount, ReleaseLabel, period, Real(key)));
         return (lines, snapshots);
+    }
+
+    /// <summary>
+    /// Which provision accounts a FALL debits. A rise always credits the account mapped NOW; a fall relieves the accounts that
+    /// actually hold this employee's provision (<see cref="LeaveObligation.Holdings"/>, read from the stored lines), so a remap of
+    /// <c>LEAVE_PROVISION</c> between months never debits an account that was never credited.
+    ///
+    /// <para><b>Rule:</b> only accounts with a positive balance are relieved, largest balance first (ties by account label,
+    /// ordinal), each by at most its own balance — no account's credit position is driven below zero. A fall the holdings cannot
+    /// cover is refused: it cannot arise when the carried figure and the holdings come from the same positions, and posting it
+    /// would misstate an account.</para>
+    ///
+    /// <para>With no holdings supplied (callers that do not read the ledger) the fall debits <paramref name="provisionAccount"/>,
+    /// as before.</para>
+    /// </summary>
+    private static List<(string Account, decimal Amount)> PlanReduction(LeaveObligation o, string provisionAccount, decimal reduction)
+    {
+        if (o.Holdings is null) return new List<(string, decimal)> { (provisionAccount, reduction) };
+        var plan = new List<(string Account, decimal Amount)>();
+        var left = reduction;
+        foreach (var held in o.Holdings
+                     .Select(h => (h.Account, Balance: Math.Round(h.Balance, 2)))
+                     .Where(h => h.Balance > 0m && !string.IsNullOrEmpty(h.Account))
+                     .OrderByDescending(h => h.Balance).ThenBy(h => h.Account, StringComparer.Ordinal))
+        {
+            if (left <= 0m) break;
+            var take = Math.Min(left, held.Balance);
+            plan.Add((held.Account, take));
+            left = Math.Round(left - take, 2);
+        }
+        if (left > 0m)
+            throw new InvalidOperationException(
+                $"Leave provision for employee {o.EmployeeId}: a reduction of {reduction} exceeds the {reduction - left} held on its provision accounts.");
+        return plan;
     }
 }

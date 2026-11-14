@@ -312,7 +312,7 @@ public static class PayrollValidationEngine
             // it as an expatriate (no GOSI), so a typo for "Saudi" would silently drop the contribution. An Error, because
             // the figure on the slip may be wrong; overridable with a reason (a real but unlisted nationality is a judgement).
             if (isKsa && emp is not null && !string.IsNullOrWhiteSpace(emp.Nationality)
-                && Zayra.Api.Application.Onboarding.NationalityClasses.Of(emp.Nationality) == Zayra.Api.Application.Onboarding.NationalityClasses.Unknown)
+                && Zayra.Api.Application.Onboarding.NationalityClasses.Of(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp)) == Zayra.Api.Application.Onboarding.NationalityClasses.Unknown)
                 Err(NationalityUnrecognised,
                     $"Employee {slip.EmployeeCode} has the nationality \"{emp.Nationality.Trim()}\", which is not recognised as Saudi, GCC or a known country, " +
                     "so GOSI cannot be classified and it was NOT assumed to be an expatriate. Correct the nationality on the employee record " +
@@ -322,7 +322,7 @@ public static class PayrollValidationEngine
             // Rule 2: GOSI rate check — KSA runs only
             if (isKsa && emp is not null)
             {
-                var classification = GosiCalculationService.DeriveClassification(emp.Nationality);
+                var classification = GosiCalculationService.DeriveClassification(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp));
                 var gosiEeAmount   = gosiEeByEmp.TryGetValue(slip.EmployeeId, out var g) ? g : 0m;
                 var hasGosiEe      = gosiEeAmount > 0m;
 
@@ -365,7 +365,7 @@ public static class PayrollValidationEngine
                     // accrues back-contributions with a monthly surcharge and costs the establishment
                     // its GOSI compliance certificate, which gates Qiwa services and visa issuance. But
                     // it now names the two rows that make it go away.
-                    var gccHome = GosiCalculationService.DeriveGccHomeState(emp.Nationality);
+                    var gccHome = GosiCalculationService.DeriveGccHomeState(Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(emp));
                     if (!hasGosiEe && periodGosiEe <= 0m && paysRecurring && gccHome is not null)
                         Err(GosiGccSchemeNotConfigured,
                             $"Employee {slip.EmployeeCode} is a {gccHome} national working in Saudi Arabia, and no " +

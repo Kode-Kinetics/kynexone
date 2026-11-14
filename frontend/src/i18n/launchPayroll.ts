@@ -219,7 +219,6 @@ const ar: Record<string, string> = {
   "Records — {batchNumber}": "السجلات — {batchNumber}",
   "WPS Reference": "مرجع حماية الأجور",
   "Missing IBAN": "الآيبان مفقود",
-  "Saudi bank payroll file: the ANB Connect payroll instruction (with WPS fields) is the file to send to the bank. It appears below once bank export is switched on for this company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.": "ملف رواتب البنك السعودي: تعليمات رواتب ANB Connect (بحقول حماية الأجور) هي الملف الذي يُرسل إلى البنك. يظهر أدناه بعد تفعيل التصدير البنكي لهذه الشركة. لا يقبل «مدد» إلا ملف حماية الأجور الذي يوقّعه بنكك — احتفظ بملف المخرجات من البنك أو بلقطة شاشة من «مدد» كدليل قبل وضع علامة «مقبول» على الدفعة.",
   "Choose the bank's WPS output file or a Mudad compliance screenshot/PDF first.": "اختر أولًا ملف مخرجات حماية الأجور من البنك أو لقطة شاشة / ملف PDF لامتثال «مدد».",
   "Enter the cheque number or cash receipt reference.": "أدخل رقم الشيك أو مرجع إيصال الدفع النقدي.",
   "Attach the bank's WPS output file or a Mudad compliance screenshot/PDF to this batch first. Another person then marks it Accepted.": "أرفق بهذه الدفعة أولًا ملف مخرجات حماية الأجور من البنك أو لقطة شاشة / ملف PDF لامتثال «مدد». ثم يضع شخص آخر علامة «مقبول».",

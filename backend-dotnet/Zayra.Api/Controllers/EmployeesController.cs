@@ -3731,10 +3731,24 @@ public class EmployeesController : ControllerBase
             }
 
             var employee = EmployeeFromDraft(draft, tenantId, placement, approvedAtUtc);
+            // A second approver decides the pay: an accepted offer's pay package is NOT written by the HR approver. It is staged as the same
+            // first-package salary request the Add-Employee form stages, and the employee stays out of post until a different approver with
+            // pay-approval rights, who is neither the approver of this draft nor anyone who made the hire, applies it. Refused up front when
+            // nobody could ever approve it.
+            var stagesPay = compensation.Salary is not null;
+            IReadOnlySet<Guid> hireMakers = new HashSet<Guid>();
+            if (stagesPay)
+            {
+                hireMakers = await _draftHireMakers.MakersAsync(tenantId, draftId, ct);
+                if (!await Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.ExistsAsync(_db, tenantId, "payroll.approve", actorId, null, placement.CompanyId, ct, hireMakers))
+                    throw new Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException(
+                        "payroll.approve", "approving this hire's pay package", "اعتماد باقة راتب هذا التعيين",
+                        ("pay-approval rights (payroll.approve) who did not make this hire", "صلاحية اعتماد الرواتب (payroll.approve) ممن لم يشارك في هذا التعيين"));
+            }
             // A hire that states no notice period gets the company's default, as the form's create does (drafts carry no notice field).
             employee.NoticePeriodDays ??= await EmployeeHireDefaults.NoticePeriodDaysAsync(_db, tenantId, employee.CountryCode, ct);
             employee.EmployeeCode = await GenerateEmployeeCode(tenantId, ct);
-            employee.ActivatedAtUtc = approvedAtUtc;
+            employee.ActivatedAtUtc = stagesPay ? null : approvedAtUtc;
 
             if (employee.ManagerEmployeeId is null && employee.DepartmentId.HasValue)
             {
@@ -3768,6 +3782,12 @@ public class EmployeesController : ControllerBase
             employee.ReadinessState = draftReadiness.State;
             employee.ActivationBlockersCount = draftReadiness.Blocking.Count;
             employee.ReadinessEvaluatedAtUtc = approvedAtUtc;
+            if (stagesPay)
+            {
+                // Out of post, with no pay of its own, until a second approver approves the staged package (which sets the gross).
+                employee.Status = EmployeeStatuses.Draft;
+                employee.Salary = null;
+            }
 
             // The caller-owned transaction is deliberately outside EstablishmentGuard. The guard
             // joins it on lockable paths; Off/unclassified paths are now atomic too.
@@ -3778,7 +3798,16 @@ public class EmployeesController : ControllerBase
                     _db.Employees.Add(employee);
                     await _db.SaveChangesAsync(ct); // allocate the internal employee key inside tx
                     if (compensation.Salary is not null)
-                        await EmployeeSalaryBreakdownWriter.ApplyAsync(_db, employee, compensation.Salary, requestContext, ct, fillOmittedFromGrade: true);
+                    {
+                        await EmployeeSalaryBreakdownWriter.StageFirstPackageAsync(_db, employee, compensation.Salary, requestContext, ct, fillOmittedFromGrade: true);
+                        await Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.OpenAsync(_db, employee, requestContext, ct);
+                        // Everyone who made the hire (the draft's editors, whoever sent and accepted the offer) wrote this package too:
+                        // they can never be the approver of it, like the HR approver who staged it.
+                        foreach (var maker in hireMakers.Where(m => m != requestContext.UserId))
+                            _db.AuditLogs.Add(AuthAuditEntry.Create(Guid.NewGuid(), approvedAtUtc, Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.WrittenAction,
+                                "Employee", employee.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), requestContext with { TenantId = tenantId, UserId = maker },
+                                JsonSerializer.Serialize(Zayra.Api.Infrastructure.Employees.Onboarding.CompensationApprovalGate.FingerprintForApproval(null, null))));
+                    }
                     await Zayra.Api.Infrastructure.Benefits.GradeBenefitDefaults.StageDefaultsAsync(
                         _db, employee, requestContext.UserId, ct);
 
@@ -3805,7 +3834,7 @@ public class EmployeesController : ControllerBase
                     draft.CurrentStep = EmployeeDraftStatuses.Activated;
                     draft.ApprovedAtUtc = approvedAtUtc;
                     draft.ActivatedAtUtc = approvedAtUtc;
-                    await AddHistory(employee, "Activated", DateOnly.FromDateTime(employee.JoiningDate), ct);
+                    await AddHistory(employee, stagesPay ? "Created" : "Activated", DateOnly.FromDateTime(employee.JoiningDate), ct);
 
                     // The draft-side record of the same event: which employee this draft became and
                     // who approved it. The review list and the "already activated" refusal read it by
@@ -3883,6 +3912,11 @@ public class EmployeesController : ControllerBase
         {
             _db.ChangeTracker.Clear();
             return SalaryStructureRefused(ex);
+        }
+        catch (Zayra.Api.Infrastructure.Approvals.SecondApproverCheck.NoEligibleApproverException ex)
+        {
+            _db.ChangeTracker.Clear();
+            return UnprocessableEntity(ex.Body);
         }
         catch (WorkEmailPlusAddressException)
         {
@@ -7065,6 +7099,10 @@ public class EmployeesController : ControllerBase
         "emiratesId", "emiratesIdExpiryDate", "laborCardNumber", "visaFileNumber", "qid", "qidExpiryDate",
         "workPermitNumber", "workPermitIssueDate", "civilId", "civilIdExpiryDate", "residencyNumber",
         "residencyIssueDate", "idNumber", "qiwaContractNumber", "sponsorName", "terminationReason",
+        // The Qiwa block references (registry section "qiwa"). The Saudi bank export checks EstablishmentId against the company
+        // (establishment_mismatch), and nothing else wrote them, so a wrong value could never be corrected. Approval-gated with
+        // qiwaContractNumber (ProfileChangeApprovalRules.LegacySensitiveFields).
+        "establishmentId", "occupationCode", "workLocationId", "contractReference", "workPermitReference",
         // Stored on EmployeePayrollProfile, not on Employee (registry binding
         // `payrollProfile.socialInsuranceReference`). It is a fail-closed PAY gate in five GCC branches
         // — GPSSA/GRSIA/PIFSS/SPF/SIO — yet it had NO write path outside CSV import, so every

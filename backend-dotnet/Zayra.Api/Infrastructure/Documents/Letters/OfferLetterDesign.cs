@@ -85,7 +85,9 @@ public static class OfferLetterDesign
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     // Typed so an Employee can never be persisted as an offer design snapshot.
     public static string SerializeSnapshot(OfferDesignSnapshot snapshot) => JsonSerializer.Serialize(snapshot, Json);
-    public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "probation_period", "offer_reference"];
+    public static readonly string[] Tokens = ["company_name", "candidate_name", "job_title", "department", "start_date", "issue_date", "response_deadline", "basic_salary", "housing_allowance", "transport_allowance", "other_allowances", "gross_salary", "currency", "probation_months", "probation_period", "offer_reference",
+        // The Saudi default letter's clauses (OfferLetterClauses): filled for every offer, whatever the design.
+        "work_location", "contract_term_clause", "notice_period_employer", "notice_period_employee", "gosi_clause", "health_residency_clause", "compensation_lines"];
     private static readonly Regex TokenPattern = new(@"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", RegexOptions.Compiled);
     private static readonly object FontGate = new();
     private static readonly HashSet<string> RegisteredFonts = [];
@@ -104,12 +106,25 @@ public static class OfferLetterDesign
          new("TRANSPORT", "Transport allowance (sample)", null, "Cash", 1000, null, "Monthly", true, null, null, 2, false)],
         16000, 192000, 0, 12000, 3000, 1000, 0);
 
+    /// <summary>The default letter for a Saudi employer, in English or Arabic (right to left, Noto Sans Arabic): contract term, probation, working hours, annual leave, notice, GOSI.</summary>
+    /// <summary>The letter an offer starts with when no template is chosen: the Saudi default for a Saudi employer (Arabic for a Saudi candidate, English otherwise), else the generic one.</summary>
+    public static OfferDesign DefaultFor(string? companyCountryCode, string? candidateNationality)
+    {
+        var iso = (Zayra.Api.Application.Common.CountryCodeStandard.NormalizeToIso2(companyCountryCode) ?? companyCountryCode ?? string.Empty).Trim().ToUpperInvariant();
+        return iso == "SA" ? OfferLetterClauses.KsaDefault(OfferLetterClauses.IsSaudi(candidateNationality), dynamicCompensation: true) : DynamicDefault();
+    }
+
+    public static OfferDesign KsaDefault(bool arabic, bool dynamicCompensation = false) => OfferLetterClauses.KsaDefault(arabic, dynamicCompensation);
+
     public static Dictionary<string, string> SampleValues() => new()
     {
         ["company_name"] = "Your organization", ["candidate_name"] = "Alex Morgan (sample)", ["job_title"] = "Finance Manager",
         ["department"] = "Finance", ["start_date"] = "01 January 2027", ["issue_date"] = "19 October 2026", ["response_deadline"] = "26 October 2026",
         ["basic_salary"] = "12,000.00", ["housing_allowance"] = "3,000.00", ["transport_allowance"] = "1,000.00", ["other_allowances"] = "0.00",
-        ["gross_salary"] = "16,000.00", ["currency"] = "SAR", ["probation_months"] = "3", ["probation_period"] = "3 months", ["offer_reference"] = "SAMPLE-001"
+        ["gross_salary"] = "16,000.00", ["currency"] = "SAR", ["probation_months"] = "3", ["probation_period"] = "3 months", ["offer_reference"] = "SAMPLE-001",
+        ["work_location"] = "Riyadh", ["contract_term_clause"] = "The contract will be fixed-term or indefinite as agreed.", ["notice_period_employer"] = "60 days", ["notice_period_employee"] = "60 days",
+        ["gosi_clause"] = "You will be registered with the General Organization for Social Insurance.", ["health_residency_clause"] = "",
+        ["compensation_lines"] = "Basic salary: SAR 12,000.00\nHousing allowance: SAR 3,000.00\nTransport allowance: SAR 1,000.00\nTotal monthly salary: SAR 16,000.00"
     };
 
     public static string Merge(string text, IReadOnlyDictionary<string, string> values) => TokenPattern.Replace(text, m =>
@@ -217,6 +232,17 @@ public static class OfferLetterDesign
         values["transport_allowance"] = Money(offer.TransportAllowance); values["other_allowances"] = Money(offer.OtherAllowances); values["gross_salary"] = Money(offer.GrossSalary);
         values["currency"] = await OfferRules.ResolveCurrencyAsync(db, offer.TenantId, offer.CompanyId, ct);
         values["probation_months"] = offer.ProbationMonths.ToString(CultureInfo.InvariantCulture); values["probation_period"] = probationPeriod; values["offer_reference"] = offer.Id.ToString();
+        // The clauses that depend on the hire: GOSI/residency on the candidate's nationality, notice on the company's own rule, the place of work on the job's location.
+        var arabic = design.Direction == "rtl";
+        var nationality = offer.CandidateId is { } candidateId
+            ? await db.Candidates.AsNoTracking().Where(x => x.TenantId == offer.TenantId && x.Id == candidateId).Select(x => x.Nationality).FirstOrDefaultAsync(ct) : null;
+        var noticeDays = await Zayra.Api.Infrastructure.Employees.EmployeeHireDefaults.NoticePeriodDaysAsync(db, offer.TenantId, companyRow?.CountryCode, ct);
+        var jobLocation = await (from a in db.JobApplications.AsNoTracking()
+                                 join o in db.JobOpenings.AsNoTracking() on a.JobOpeningId equals o.Id
+                                 where a.TenantId == offer.TenantId && a.Id == offer.ApplicationId
+                                 select o.Location).FirstOrDefaultAsync(ct);
+        foreach (var (key, value) in OfferLetterClauses.Values(arabic, OfferLetterClauses.IsSaudi(nationality), noticeDays, jobLocation, null)) values[key] = value;
+        values["compensation_lines"] = OfferLetterClauses.CompensationLines(arabic, values["currency"], offer.BasicSalary, offer.HousingAllowance, offer.TransportAllowance, offer.OtherAllowances, offer.GrossSalary);
         var compensation = offer.CompensationSnapshotJson is null ? null
             : JsonSerializer.Deserialize<OfferCompensationSnapshot>(offer.CompensationSnapshotJson, OfferCompensation.Json);
         return new(design, values, templateId, version, compensation);
@@ -298,6 +324,8 @@ public static class OfferLetterDesign
                             }
                             foreach (var row in compensation.Components.OrderBy(r => r.Order))
                             {
+                                // A cash line that pays nothing and is not required is noise on a letter ("Other allowances: 0.00"): it is not printed.
+                                if (row.Included && row.Kind == "Cash" && (row.Amount ?? 0m) == 0m && !row.Required) continue;
                                 var label = d.Direction == "rtl" && !string.IsNullOrWhiteSpace(row.LabelAr) ? row.LabelAr : row.LabelEn;
                                 var value = !row.Included ? $"Excluded: {row.ExclusionReason}"
                                     : row.Kind == "Benefit" ? row.Description ?? ""

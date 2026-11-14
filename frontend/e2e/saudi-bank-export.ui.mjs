@@ -59,14 +59,14 @@ try {
    await page.getByText('TEST-PAYROLL-EXPORT',{exact:true}).click();
    await availability;
    if(!activation){
-    assert.equal(await page.getByRole('heading',{name:'Bank instruction file — ANB Connect CSV',exact:true}).count(),0);
+    assert.equal(await page.getByRole('heading',{name:'Payroll payment instruction file (bank format) — ANB Connect CSV',exact:true}).count(),0);
     assert.deepEqual(bankRequests,[`/api/payroll/bank-exports/batches/${batchId}/availability`]);
     assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
     await page.screenshot({path:OUT+`/browser-${name}.png`,fullPage:false});
     results.push({name,status:'PASS',steps:['existing payroll renders','export disabled: no panel, settings, export or write requests'],scope:'UI fixtures only; server gate separately tested'});
     await context.close();continue;
    }
-   const heading=page.getByRole('heading',{name:'Bank instruction file — ANB Connect CSV',exact:true});await heading.waitFor();steps.push('panel rendered');
+   const heading=page.getByRole('heading',{name:'Payroll payment instruction file (bank format) — ANB Connect CSV',exact:true});await heading.waitFor();steps.push('panel rendered');
    assert.equal(await page.getByRole('button',{name:'Generate files',exact:true}).isDisabled(),true);
    await page.getByLabel('Batch number',{exact:true}).fill('202609123');
    await page.getByLabel('Credit value date',{exact:true}).fill('2026-09-30');

@@ -42,6 +42,11 @@ import type {
   OfferApproval, OfferApprovalContext, OfferApproverOption,
 } from '../api/recruitment';
 import { OfferPlacementFields } from '../components/OfferPlacementFields';
+import { CatalogueFields } from '../components/recruitment/CatalogueFields';
+import {
+  requisitionRequestBody, openingFormDefaults, offerBandWarning,
+  type CatalogueOptions, type GradeOption,
+} from '../lib/recruitmentCatalogue';
 import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
 import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
 import { OfferHistoryRegister } from '../components/recruitment/OfferHistoryRegister';
@@ -72,7 +77,7 @@ import { policyTaskDescription, policyTaskForm, policyTaskProblem, readPolicyFor
 import {
   HIRE_THROUGH_OFFER_HINT, assessmentScoreLabel, assessmentScoreMax, canRecordAssessmentResult,
   canSendOffer, nextPipelineStage, offerCreationFailure, parseAssessmentScore,
-  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction, applicationStageChanges,
+  OFFER_NEXT_ACTION_TEXT, canRequestApproval, offerNextAction, applicationStageChanges, approverOptionLabel, advanceNeedsOverrideReason,
 } from '../lib/recruitmentJourney';
 
 // ── Offer approval ────────────────────────────────────────────────────────────
@@ -126,7 +131,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
     if (!approver) { setError(t('Choose who approves this offer.')); return; }
     setBusy(true); setError('');
     try {
-      await offersApi.requestApproval(offerId, { expectedVersion: offer.version, approverUserId: approver.userId, approverName: approver.name });
+      await offersApi.requestApproval(offerId, { expectedVersion: offer.version, approverUserId: approver.userId, approverName: approver.name, approverRole: approver.role || undefined });
       setApproverId(''); setOptions(null);
       await load(); onChanged();
     } catch (e) { notifyApiError(e); } finally { setBusy(false); }
@@ -180,7 +185,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
               <select aria-label={t('Offer approver')} value={approverId} onChange={e => setApproverId(e.target.value)}
                 className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs dark:border-white/10 dark:bg-white/5">
                 <option value="">{t('Choose approver…')}</option>
-                {options.map(o => <option key={o.userId} value={o.userId}>{o.name || o.email}</option>)}
+                {options.map(o => <option key={o.userId} value={o.userId}>{approverOptionLabel(o)}</option>)}
               </select>
               <button type="button" disabled={busy || !approverId} onClick={requestApproval}
                 className="rounded-lg bg-sapphire px-2.5 py-1 text-xs font-medium text-white hover:bg-sapphire/90 disabled:opacity-50">{t('Request approval')}</button>
@@ -367,10 +372,12 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
   const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
-    departmentName: '', designationTitle: '', headCount: 1, employmentType: 'Full-Time',
+    departmentId: '', designationId: '', gradeId: '', headCount: 1, employmentType: 'Full-Time',
     priority: 'Medium', justification: '', requiredSkills: '', minExperienceYears: '',
     maxExperienceYears: '', budgetFrom: '', budgetTo: '', targetJoiningDate: '', requestedByName: '',
   });
+  const [catalogue, setCatalogue] = useState<CatalogueOptions>({ departments: [], designations: [], grades: [] });
+  const departmentName = catalogue.departments.find(d => d.id === form.departmentId)?.name ?? '';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [budgetCheck, setBudgetCheck] = useState<HeadcountCheckResult | null>(null);
@@ -378,37 +385,23 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 
   // Budget-aware: check the requested headcount against the department's approved establishment.
   useEffect(() => {
-    if (!form.departmentName.trim() || form.headCount < 1) { setBudgetCheck(null); return; }
+    if (!departmentName.trim() || form.headCount < 1) { setBudgetCheck(null); return; }
     const t = setTimeout(() => {
-      planningApi.headcountCheck({ departmentName: form.departmentName.trim(), headCount: form.headCount })
+      planningApi.headcountCheck({ departmentName: departmentName.trim(), headCount: form.headCount })
         .then(setBudgetCheck).catch(() => setBudgetCheck(null));
     }, 400);
     return () => clearTimeout(t);
-  }, [form.departmentName, form.headCount]);
+  }, [departmentName, form.headCount]);
 
   const save = async () => {
-    if (!form.departmentName || !form.designationTitle || !form.justification) {
+    if (!form.departmentId || !form.designationId || !form.justification) {
       setError(t('Department, Designation and Justification are required.'));
       return;
     }
     setSaving(true);
     setError('');
     try {
-      await requisitionsApi.create({
-        departmentName: form.departmentName,
-        designationTitle: form.designationTitle,
-        headCount: form.headCount,
-        employmentType: form.employmentType,
-        priority: form.priority,
-        justification: form.justification,
-        requiredSkills: form.requiredSkills,
-        minExperienceYears: form.minExperienceYears ? Number(form.minExperienceYears) : undefined,
-        maxExperienceYears: form.maxExperienceYears ? Number(form.maxExperienceYears) : undefined,
-        budgetFrom: form.budgetFrom ? Number(form.budgetFrom) : undefined,
-        budgetTo: form.budgetTo ? Number(form.budgetTo) : undefined,
-        targetJoiningDate: form.targetJoiningDate || undefined,
-        requestedByName: form.requestedByName,
-      });
+      await requisitionsApi.create(requisitionRequestBody(form, catalogue));
       onSaved();
     } catch {
       setError(t('Failed to create requisition.'));
@@ -426,16 +419,12 @@ function CreateReqModal({ onClose, onSaved }: CreateReqModalProps) {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Department *')}</label>
-                <input className="input w-full" placeholder={t('For example: Engineering')} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Designation *')}</label>
-                <input className="input w-full" placeholder={t('For example: Software Engineer')} value={form.designationTitle} onChange={e => set('designationTitle', e.target.value)} />
-              </div>
-            </div>
+            <CatalogueFields
+              idPrefix="requisition"
+              value={{ departmentId: form.departmentId, designationId: form.designationId, gradeId: form.gradeId }}
+              onLoaded={setCatalogue}
+              onChange={(v, options) => { setCatalogue(options); setForm(f => ({ ...f, ...v })); }}
+            />
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Head Count')}</label>
@@ -631,14 +620,12 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
   const t = useT();
   const { currencyCode } = useTenantSettings();
   const [form, setForm] = useState({
-    title: requisition?.designationTitle ?? '',
-    departmentName: requisition?.departmentName ?? '',
-    designationTitle: requisition?.designationTitle ?? '',
-    employmentType: requisition?.employmentType ?? 'Full-Time',
-    headCount: requisition?.headCount ?? 1,
-    description: '', requirements: '', responsibilities: '',
-    salaryFrom: '', salaryTo: '', location: '', assignedHrName: '',
+    ...openingFormDefaults(requisition),
+    description: '', responsibilities: '', location: '', assignedHrName: '',
   });
+  const [catalogue, setCatalogue] = useState<CatalogueOptions>({ departments: [], designations: [], grades: [] });
+  const departmentName = catalogue.departments.find(d => d.id === form.departmentId)?.name ?? requisition?.departmentName ?? '';
+  const designationTitle = catalogue.designations.find(d => d.id === form.designationId)?.name ?? requisition?.designationTitle ?? '';
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
@@ -649,8 +636,8 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
     setAiBusy(true); setError('');
     try {
       const r = await recruitmentAiApi.jobDescription({
-        title: form.title, departmentName: form.departmentName || undefined,
-        designationTitle: form.designationTitle || undefined, employmentType: form.employmentType,
+        title: form.title, departmentName: departmentName || undefined,
+        designationTitle: designationTitle || undefined, employmentType: form.employmentType,
       });
       setForm(f => ({
         ...f,
@@ -663,13 +650,15 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
   };
 
   const save = async () => {
-    if (!form.title || !form.departmentName) { setError(t('Title and Department are required.')); return; }
+    if (!form.title || !form.departmentId || !form.designationId) { setError(t('Title, Department and Designation are required.')); return; }
     setSaving(true); setError('');
     try {
       await openingsApi.create({
         requisitionId: requisition?.id,
-        title: form.title, departmentName: form.departmentName,
-        designationTitle: form.designationTitle, employmentType: form.employmentType,
+        title: form.title,
+        departmentId: form.departmentId, departmentName,
+        designationId: form.designationId, designationTitle,
+        gradeId: form.gradeId || undefined, employmentType: form.employmentType,
         headCount: Number(form.headCount), description: form.description,
         requirements: form.requirements, responsibilities: form.responsibilities,
         salaryFrom: form.salaryFrom ? Number(form.salaryFrom) : undefined,
@@ -693,11 +682,13 @@ function CreateOpeningModal({ requisition, onClose, onSaved }: {
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Job Title *')}</label>
               <input className="input w-full" placeholder={t('For example: Senior Software Engineer')} aria-label={t('Job title')} value={form.title} onChange={e => set('title', e.target.value)} />
             </div>
+            <CatalogueFields
+              idPrefix="opening"
+              value={{ departmentId: form.departmentId, designationId: form.designationId, gradeId: form.gradeId }}
+              onLoaded={setCatalogue}
+              onChange={(v, options) => { setCatalogue(options); setForm(f => ({ ...f, ...v })); }}
+            />
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Department *')}</label>
-                <input className="input w-full" placeholder={t('For example: Engineering')} aria-label={t('Department')} value={form.departmentName} onChange={e => set('departmentName', e.target.value)} />
-              </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">{t('Head Count')}</label>
                 <input type="number" className="input w-full" min={1} value={form.headCount} onChange={e => set('headCount', Number(e.target.value))} aria-label={t('Head count')} />
@@ -972,6 +963,22 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   const [noteText, setNoteText] = useState('');
   const [rejectReason, setRejectReason] = useState('');
   const [approvalContext, setApprovalContext] = useState<OfferApprovalContext | null>(null);
+  const [overrideNeeded, setOverrideNeeded] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  // The opening's grade gives the offer's grade-band check (a guideline: it warns, never blocks).
+  const [opening, setOpening] = useState<JobOpening | null>(null);
+  const [grades, setGrades] = useState<GradeOption[]>([]);
+  const openingId = detail?.application?.jobOpeningId;
+  useEffect(() => {
+    if (!openingId) return;
+    let cancelled = false;
+    openingsApi.get(openingId).then(r => { if (!cancelled) setOpening(r.opening); }).catch(() => {});
+    offersApi.placementOptions().then(o => { if (!cancelled) setGrades(o.grades ?? []); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [openingId]);
+  const grade = grades.find(g => g.id === opening?.gradeId) ?? null;
+  // HR enters the basic salary; nothing is derived from the grade or the opening. The grade's range is a guideline that warns and never blocks.
+  const bandWarning = offerBandWarning(Number(offerForm.basicSalary), grade);
   useNavigationBlocker({ id: `application-drawer-${id}`, when: !!(offerForm.startDate || offerForm.basicSalary || noteText || rejectReason || interviewForm.scheduledAt), message: t('This application has unsaved changes. Discard them and leave?'), onDiscard: () => {} });
 
   const load = () => {
@@ -985,9 +992,16 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
   // Offer -> Hired is not a stage move: accepting the offer hires and creates the employee record.
   const nextStage = nextPipelineStage(app.stage);
 
+  // Moving to Offer needs an interview or assessment on record; without one the API asks for a reason, which is kept on the timeline.
   const doAdvance = async () => {
     setActing('advance');
-    try { await applicationsApi.advance(id, app.version); load(); onRefresh(); } catch (e) { notifyApiError(e); }
+    try {
+      await applicationsApi.advance(id, app.version, undefined, overrideNeeded ? overrideReason.trim() : undefined);
+      setOverrideNeeded(false); setOverrideReason('');
+      load(); onRefresh();
+    } catch (e) {
+      if (advanceNeedsOverrideReason(e)) setOverrideNeeded(true); else notifyApiError(e);
+    }
     finally { setActing(''); }
   };
 
@@ -1091,11 +1105,22 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
         {/* Stage advance/reject actions */}
         {app.status === 'Active' && app.stage !== 'Hired' && (
           <div className="flex gap-2 border-b border-slate-100 px-5 py-3 dark:border-white/[0.06]">
-            {nextStage && (
+            {nextStage && !overrideNeeded && (
               <button type="button" disabled={!!acting} onClick={doAdvance}
                 className="flex items-center gap-1.5 rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
                 <ArrowRight className="h-3.5 w-3.5" />{t('Move to {nextStage}', { nextStage })}
               </button>
+            )}
+            {nextStage && overrideNeeded && (
+              <div className="flex w-full flex-col gap-2">
+                <p role="alert" className="text-xs text-amber-700 dark:text-amber-300">{t('Nobody has interviewed or assessed this candidate yet. Schedule an interview or assessment first, or give a reason to move on.')}</p>
+                <input className="input w-full" aria-label={t('Reason for moving to Offer without an interview or assessment')} placeholder={t('Reason for moving to Offer without an interview or assessment')}
+                  value={overrideReason} onChange={e => setOverrideReason(e.target.value)} />
+                <button type="button" disabled={!!acting || overrideReason.trim().length < 5} onClick={doAdvance}
+                  className="self-start rounded-lg bg-sapphire px-3 py-1.5 text-xs font-semibold text-white hover:bg-sapphire/90 disabled:opacity-50">
+                  {t('Move to Offer with this reason')}
+                </button>
+              </div>
             )}
             {!nextStage && app.stage === 'Offer' && (
               <button type="button" onClick={() => setTab('offer')}
@@ -1272,6 +1297,13 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                         <input type="number" className="input w-full" placeholder={t('Transport Allowance')} value={offerForm.transportAllowance} onChange={e => setOfferForm(f => ({ ...f, transportAllowance: e.target.value }))} aria-label={t('Transport allowance')} />
                         <input type="number" className="input w-full" placeholder={t('Other Allowances')} value={offerForm.otherAllowances} onChange={e => setOfferForm(f => ({ ...f, otherAllowances: e.target.value }))} aria-label={t('Other allowances')} />
                       </div>
+                      {bandWarning && (
+                        <p role="status" className="rounded-lg border border-amber-300/60 bg-amber-50 px-2 py-1.5 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                          {bandWarning.side === 'below'
+                            ? t('The offer is below the minimum of {gradeName} ({currency} {limit}).', { gradeName: bandWarning.gradeName, currency: bandWarning.currency, limit: f.number(bandWarning.limit) })
+                            : t('The offer is above the maximum of {gradeName} ({currency} {limit}).', { gradeName: bandWarning.gradeName, currency: bandWarning.currency, limit: f.number(bandWarning.limit) })}
+                        </p>
+                      )}
                       <button type="button" disabled={acting === 'offer' || !offerForm.startDate || !offerForm.basicSalary} onClick={doGenerateOffer}
                         className="btn-primary w-full text-xs">
                         {acting === 'offer' ? t('Generating…') : t('Generate Offer Letter')}
@@ -1901,10 +1933,10 @@ function InterviewsTab() {
             <div key={iv.id} className="surface p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  {applicationById.get(iv.applicationId) && (
+                  {(iv.candidateName || applicationById.get(iv.applicationId)) && (
                     <p className="mb-1 truncate text-sm font-semibold text-slate-900 dark:text-white">
-                      <bdi>{applicationById.get(iv.applicationId)!.candidateName}</bdi>
-                      <span className="font-normal text-slate-500 dark:text-slate-400"> · <bdi>{applicationById.get(iv.applicationId)!.jobTitle}</bdi></span>
+                      <bdi>{iv.candidateName || applicationById.get(iv.applicationId)?.candidateName}</bdi>
+                      <span className="font-normal text-slate-500 dark:text-slate-400"> · <bdi>{iv.jobTitle || applicationById.get(iv.applicationId)?.jobTitle}</bdi></span>
                     </p>
                   )}
                   <div className="flex items-center gap-2 mb-1">

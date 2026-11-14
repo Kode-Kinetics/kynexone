@@ -8,6 +8,7 @@ using Zayra.Api.Application.Recruitment;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Notifications;
+using Zayra.Api.Infrastructure.Recruitment;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers.Recruitment;
@@ -78,6 +79,9 @@ public class RequisitionsController : ControllerBase
         if (req.CompanyId is Guid named && dept?.CompanyId is Guid owner && named != owner)
             return BadRequest(new { message = "The department belongs to a different company than the one named." });
 
+        if (req.GradeId is Guid gradeId && !await _db.Grades.AsNoTracking().AnyAsync(g => g.Id == gradeId && g.TenantId == tenantId && g.IsActive && !g.IsDeleted, ct))
+            return BadRequest(new { message = "The chosen grade is not an active grade in your organisation." });
+
         var r = new ManpowerRequisition
         {
             TenantId = tenantId,
@@ -87,6 +91,7 @@ public class RequisitionsController : ControllerBase
             DepartmentName = dept?.NameEn ?? req.DepartmentName,
             DesignationId = req.DesignationId,
             DesignationTitle = desig?.TitleEn ?? req.DesignationTitle,
+            GradeId = req.GradeId,
             HeadCount = req.HeadCount,
             EmploymentType = req.EmploymentType,
             Priority = req.Priority,
@@ -114,8 +119,14 @@ public class RequisitionsController : ControllerBase
         if (r is null) return NotFound();
         if (r.Status is not ("Draft" or "Rejected")) return BadRequest(new { message = "Only Draft or Rejected requisitions can be edited." });
 
-        r.DepartmentName = req.DepartmentName;
-        r.DesignationTitle = req.DesignationTitle;
+        // The placement is picked from the organisation's records: an id the request names must be an active record of this organisation
+        // (the same rule an opening applies), and the record names it (a stale or typed name never survives an edit).
+        var placement = await RecruitmentPlacement.ResolveAsync(_db, tenantId, req.DepartmentId, req.DesignationId, req.GradeId, ct);
+        if (placement.Error is not null) return BadRequest(new { message = placement.Error });
+        // The requisition's own placement (a recruitment record, not an employee's attribution): an id the request names replaces the stored one.
+        _db.Entry(r).CurrentValues.SetValues(new { DepartmentId = req.DepartmentId ?? r.DepartmentId, DesignationId = req.DesignationId ?? r.DesignationId, GradeId = req.GradeId ?? r.GradeId });
+        r.DepartmentName = placement.Department?.NameEn ?? (r.DepartmentId is null ? req.DepartmentName : r.DepartmentName);
+        r.DesignationTitle = placement.Designation?.TitleEn ?? (r.DesignationId is null ? req.DesignationTitle : r.DesignationTitle);
         r.HeadCount = req.HeadCount;
         r.EmploymentType = req.EmploymentType;
         r.Priority = req.Priority;
@@ -328,6 +339,6 @@ public record CreateRequisitionRequest(
     int HeadCount, string EmploymentType, string Priority, string Justification,
     string RequiredSkills, int? MinExperienceYears, int? MaxExperienceYears,
     decimal? BudgetFrom, decimal? BudgetTo, DateOnly? TargetJoiningDate, string RequestedByName,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null, Guid? GradeId = null);
 
 public record DecisionRequest(string? Reason, string? Comments);

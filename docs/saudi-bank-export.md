@@ -50,9 +50,34 @@ Docker is needed for PostgreSQL tests. The UI runner uses installed Playwright a
 The source remains on the pre-existing dirty worktree; merge/release must preserve unrelated changes and record a clean candidate with matching UI/API versions. Passing these feature checks is not unrestricted application production certification.
 
 
-## Controlled integration and activation (2026-09-27)
+## Activation: ON for Saudi companies, platform kill switch (2026-11-10)
 
-This feature is **OFF by default**. Merging or deploying this code activates no customer.
+**This supersedes the default-off rules in the next section.** Owner decision: Saudi clients must have the bank file, so the export
+is **ON by default for every Saudi company** (country SA or SAU, in the caller's own tenant, not deleted). Nothing is configured:
+no environment variable, no redeploy, no tenant/company GUID list. Setup collects the settings and the file step is open.
+
+What can close it (all platform- or operator-owned; no tenant-admin setting, header or client flag can):
+
+1. **Platform console, per tenant** — Tenants → a tenant → Features → "Saudi bank file (ANB Connect)". It shows ON with no row. Switching
+   it OFF writes `tenant_feature_flags(saudi_bank_export, IsEnabled=false)` and an audit row (before = on, after = off). It takes effect on
+   the next request (no cache). It is final: it also overrides the operator allow-list. Tenant Admin cannot switch it
+   (`module_not_enforceable`). The bulk feature endpoint can switch it off for many tenants at once.
+2. **Operator global kill switch** — `SaudiBankExportActivation__Enabled` set to anything other than `true` (e.g. `false`) closes every
+   tenant. Unset or blank leaves the default alone.
+3. A company that is not Saudi has no default; the pre-existing allow-list below still opens one.
+
+**Before rollout, check the live environment:** if Render already carries `SaudiBankExportActivation__Enabled=false` from the
+default-off era, it now acts as the global kill switch, so the default will not take effect until that variable is removed. A blank
+value counts as unset (it does NOT close the export). The bulk "enable for all tenants" action is refused for this switch so it can
+never reopen a tenant the platform closed; switch tenants back on by name or from their Features tab.
+
+This is the file instruction only; it moves no money and submits nothing. The panel states the layout is not a bank-certified format.
+
+## Controlled integration and activation (2026-09-27) — historical
+
+(Before 2026-11-10 the feature was OFF by default. The allow-list described here still works.)
+
+This feature was **OFF by default**. Merging or deploying this code activates no customer.
 The operator-owned `SaudiBankExportActivation` configuration requires both `Enabled=true`
 and an exact `(TenantId, CompanyId)` entry under `Companies`. Missing/invalid IDs, an empty
 list, a missing switch, or a false switch deny access. Wildcards and tenant-wide fallbacks

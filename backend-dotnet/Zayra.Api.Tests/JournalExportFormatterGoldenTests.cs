@@ -102,7 +102,7 @@ public class JournalExportFormatterGoldenTests
         && SampleDocument().ShortRefs("KX", 12).Values.All(v => text.Contains(v, StringComparison.Ordinal));
 
     /// <summary>The fixed sample. Companies: A has erp_company_code SA01; B has none and falls back to its CR number.</summary>
-    internal static JournalExportDocument SampleDocument(Guid? exportId = null)
+    internal static JournalExportDocument SampleDocument(Guid? exportId = null, IReadOnlyDictionary<string, string>? options = null)
     {
         var run = Guid.Parse("11111111-2222-3333-4444-555555555555");
         var loan = Guid.Parse("66666666-7777-8888-9999-000000000000");
@@ -140,6 +140,7 @@ public class JournalExportFormatterGoldenTests
             Lines = lines,
             ExportId = exportId ?? ExportId,
             Kind = JournalExportKinds.Full,
+            Options = options ?? new Dictionary<string, string>(),
         };
     }
 

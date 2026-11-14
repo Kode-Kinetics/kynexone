@@ -321,7 +321,7 @@ public class PayrollRecoveryB3Tests
         foreach (var (loan, amount) in new[] { (loanA, 6_000m), (loanB, 500m) })
             db.FinanceGlEntries.Add(new FinanceGlEntry
             {
-                TenantId = tid, CompanyId = companyId, SourceModule = "Loan", SourceEntityId = Guid.NewGuid(),
+                TenantId = tid, CompanyId = companyId, SourceModule = "Loan", SourceEntityId = loan.Id,
                 SourceEntityRef = loan.LoanNumber, EventType = "Disbursement",
                 DebitAccount = "1400 - Employee Loans Receivable", CreditAccount = "1000 - Cash/Bank",
                 Amount = amount, Currency = "SAR", EntryDate = new DateOnly(2026, 5, 1), Period = "2026-05",

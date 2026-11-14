@@ -178,6 +178,8 @@ public static class PayrollReceivableStatuses
     /// <summary>A legacy void journal with no payment records behind it: the 1420 debit is real but cannot
     /// be attributed to an employee, so it is carried EXPLICITLY rather than lost.</summary>
     public const string Unattributed = "Unattributed";
+    /// <summary>Approved write-off (DR 5114 / CR 1420): no longer netted into a run and no longer counted as outstanding.</summary>
+    public const string WrittenOff = "WrittenOff";
 }
 
 /// <summary>

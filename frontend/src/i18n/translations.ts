@@ -2,6 +2,7 @@ import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
 import { launchPayroll } from './launchPayroll';
+import { launchSaudiOps } from './launchSaudiOps';
 import { launchLeave } from './launchLeave';
 import { launchCompliance } from './launchCompliance';
 import { launchAttendance } from './launchAttendance';
@@ -98,6 +99,7 @@ type Dict = Record<string, string>;
 // ── English (base) ────────────────────────────────────────────────────────────
 const en: Dict = {
   // Launch rehearsal wording (payroll, leave, compliance, attendance, recruitment, new hires). First, so any key another module already translates keeps its existing wording.
+  ...launchSaudiOps.en,
   ...launchPayroll.en,
   ...launchLeave.en,
   ...launchCompliance.en,
@@ -1670,6 +1672,7 @@ const en: Dict = {
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
 const ar: Dict = {
+  ...launchSaudiOps.ar,
   ...launchPayroll.ar,
   ...launchLeave.ar,
   ...launchCompliance.ar,

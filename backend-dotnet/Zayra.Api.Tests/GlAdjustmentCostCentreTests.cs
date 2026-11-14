@@ -21,7 +21,7 @@ public class GlAdjustmentCostCentreTests
     private const string Provision = "2310 - End of Service Benefit Provision";
     private const string Expense = "5110 - End of Service Benefit Expense";
     private const string Attendance = "2104 - Attendance Adjustment Payable";
-    private const string AttendanceContra = "5008 - Attendance & Late Deductions (contra)";
+    private const string AttendanceContra = "5008 - Absence, Late & Early Deductions (contra)";
 
     private static (ZayraDbContext db, SqliteConnection conn) NewDb()
     {
@@ -61,7 +61,7 @@ public class GlAdjustmentCostCentreTests
         db.GlAccounts.AddRange(
             new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "5110", Name = "End of Service Benefit Expense", AccountType = "Expense", CostCenterRule = expenseRule },
             new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "2310", Name = "End of Service Benefit Provision", AccountType = "Liability", CostCenterRule = "Optional" },
-            new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "5008", Name = "Attendance & Late Deductions (contra)", AccountType = "Expense", CostCenterRule = "Optional" },
+            new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "5008", Name = "Absence, Late & Early Deductions (contra)", AccountType = "Expense", CostCenterRule = "Optional" },
             new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "2104", Name = "Attendance Adjustment Payable", AccountType = "Liability", CostCenterRule = "Optional" },
             new GlAccount { TenantId = tid, CompanyId = co.Id, Code = "3200", Name = "Retained Earnings", AccountType = "Equity", CostCenterRule = "Optional" });
         await db.SaveChangesAsync();

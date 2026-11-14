@@ -163,7 +163,7 @@ public class ApplicationsController : ControllerBase
         var userId = this.GetUserId();
         var app = await _db.JobApplications.FirstOrDefaultAsync(a => a.Id == id && a.TenantId == tenantId, ct);
         if (app is null) return NotFound();
-        try { app = await _lifecycle.ChangeApplicationAsync(Actor(tenantId, app.CompanyId), id, req.ExpectedVersion, "Advance", req.Notes ?? "Advanced application stage.", ct); }
+        try { app = await _lifecycle.ChangeApplicationAsync(Actor(tenantId, app.CompanyId), id, req.ExpectedVersion, "Advance", req.Notes ?? "Advanced application stage.", ct, req.OverrideReason); }
         catch (OfferLifecycleException e) { return LifecycleFailure(e); }
 
         await _notify.NotifyEachAsync(tenantId, await HiringTeamAsync(tenantId, app.JobOpeningId, ct),
@@ -417,7 +417,7 @@ public class ApplicationsController : ControllerBase
 
 public record ApplyRequest(Guid JobOpeningId, Guid CandidateId, string? Notes);
 
-public record AdvanceRequest(string? Notes, string? PerformedByName, long? ExpectedVersion = null);
+public record AdvanceRequest(string? Notes, string? PerformedByName, long? ExpectedVersion = null, string? OverrideReason = null);
 
 public record RejectApplicationRequest(string Reason, string? PerformedByName, long? ExpectedVersion = null);
 

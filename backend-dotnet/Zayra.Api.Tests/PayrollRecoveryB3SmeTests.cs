@@ -210,8 +210,11 @@ public class PayrollRecoveryB3SmeTests
         // The DISBURSEMENTS, on the books: DR receivable / CR cash. Without these 1400/1410 have no
         // debit balance, the withheld EMI would be routed to Cash/Bank by the clearing splitter, and the
         // receivable leg of the recovery would never be exercised at all.
+        // The loan's debit is its own disbursement journal (Loan / Disbursement, keyed on the loan): a loan relieves 1400 only up to what ITS journal put there.
+        var loanDisbursement = OpeningLine(tenantId, company.Id, LoanRecv, string.Empty, 9_000m, "Loan disbursement LN-SME-1");
+        loanDisbursement.SourceModule = "Loan"; loanDisbursement.SourceEntityId = loan.Id; loanDisbursement.EventType = "Disbursement";
         db.FinanceGlEntries.AddRange(
-            OpeningLine(tenantId, company.Id, LoanRecv,    string.Empty, 9_000m, "Loan disbursement LN-SME-1"),
+            loanDisbursement,
             OpeningLine(tenantId, company.Id, string.Empty, CashBank,    9_000m, "Loan disbursement LN-SME-1"),
             OpeningLine(tenantId, company.Id, AdvanceRecv, string.Empty, 2_000m, "Advance disbursement ADV-SME-1"),
             OpeningLine(tenantId, company.Id, string.Empty, CashBank,    2_000m, "Advance disbursement ADV-SME-1"));
@@ -367,7 +370,9 @@ public class PayrollRecoveryB3SmeTests
         accrued[GosiEe].Should().BeLessThan(0m);
         accrued[GosiEr].Should().BeLessThan(0m);
         accrued[TaxPayable].Should().Be(-400m, "the bonus withholding accrued to 2102");
-        accrued[LoanPayable].Should().Be(-2_000m, "the withheld 1,500 EMI + 500 advance installment");
+        accrued[LoanPayable].Should().Be(0m, "the withheld 1,500 EMI + 500 advance installment relieve their receivables at Lock, not 2107");
+        accrued[LoanRecv].Should().Be(7_500m);
+        accrued[AdvanceRecv].Should().Be(1_500m);
         accrued[BonusPayable].Should().Be(0m, "the clearing retired the payable rather than re-expensing it");
         accrued[CashBank].Should().Be(opening[CashBank], "an accrual moves no cash");
 

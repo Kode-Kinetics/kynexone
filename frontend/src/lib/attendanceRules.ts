@@ -25,6 +25,8 @@ export interface AttendanceRuleForm {
   halfDayThresholdMinutes: string;
   standardWorkMinutes: string;
   breakMinutes: string;
+  /** 'HH:mm', or '' for the 09:00 default. When a day starts for an employee with no shift assigned. */
+  defaultShiftStart: string;
 }
 
 export type AttendanceRuleErrors = Partial<Record<keyof AttendanceRuleForm, string>>;
@@ -32,7 +34,7 @@ export type AttendanceRuleErrors = Partial<Record<keyof AttendanceRuleForm, stri
 /** What a new policy starts from: the same figures the built-in DEFAULT policy uses. */
 export const NEW_RULE_FORM: AttendanceRuleForm = {
   code: '', name: '', branchId: '', departmentId: '', gradeId: '',
-  graceMinutes: '10', earlyExitThresholdMinutes: '15', halfDayThresholdMinutes: '240', standardWorkMinutes: '480', breakMinutes: '60',
+  graceMinutes: '10', earlyExitThresholdMinutes: '15', halfDayThresholdMinutes: '240', standardWorkMinutes: '480', breakMinutes: '60', defaultShiftStart: '',
 };
 
 const whole = (value: string): number | null => (/^-?\d+$/.test(value.trim()) ? Number(value.trim()) : null);
@@ -54,6 +56,7 @@ export function validateRuleForm(form: AttendanceRuleForm): AttendanceRuleErrors
   if (rest === null || rest < 0 || (standard !== null && rest >= standard)) errors.breakMinutes = msg('Enter a whole number of minutes, shorter than the working day.');
   const half = whole(form.halfDayThresholdMinutes);
   if (half === null || half < 1 || (standard !== null && half > standard)) errors.halfDayThresholdMinutes = msg('Enter a whole number of minutes above 0 and no more than the working day.');
+  if (form.defaultShiftStart.trim() && !/^([01]\d|2[0-3]):[0-5]\d$/.test(form.defaultShiftStart.trim())) errors.defaultShiftStart = msg('Enter a time such as 08:00.');
   return errors;
 }
 
@@ -69,6 +72,7 @@ export function ruleFormToRequest(form: AttendanceRuleForm): AttendancePolicyReq
     halfDayThresholdMinutes: Number(form.halfDayThresholdMinutes),
     standardWorkMinutes: Number(form.standardWorkMinutes),
     breakMinutes: Number(form.breakMinutes),
+    defaultShiftStart: form.defaultShiftStart.trim(),
   };
 }
 
@@ -78,7 +82,7 @@ export function ruleFormFromPolicy(policy: AttendancePolicy): AttendanceRuleForm
     branchId: policy.branchId ?? '', departmentId: policy.departmentId ?? '', gradeId: policy.gradeId ?? '',
     graceMinutes: String(policy.graceMinutes), earlyExitThresholdMinutes: String(policy.earlyExitThresholdMinutes),
     halfDayThresholdMinutes: String(policy.halfDayThresholdMinutes), standardWorkMinutes: String(policy.standardWorkMinutes),
-    breakMinutes: String(policy.breakMinutes),
+    breakMinutes: String(policy.breakMinutes), defaultShiftStart: policy.defaultShiftStart ?? '',
   };
 }
 

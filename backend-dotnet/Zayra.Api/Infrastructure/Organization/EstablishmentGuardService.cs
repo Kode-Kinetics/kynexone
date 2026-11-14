@@ -234,9 +234,9 @@ public sealed class EstablishmentGuardService : IEstablishmentGuard
             // IgnoreQueryFilters is intentional: guard counts must be absolute — the ambient company-scope filter would under-count occupancy for scoped callers; explicit TenantId (+ !IsDeleted) predicates are applied inline.
             var nationality = await _db.Employees.IgnoreQueryFilters().AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.Id == employeeId)
-                .Select(e => e.Nationality)
+                .Select(e => new { e.Nationality, e.NationalityCode, e.NationalityMappingState })
                 .FirstOrDefaultAsync(ct);
-            gosiClassification = Payroll.GosiCalculationService.DeriveClassification(nationality);
+            gosiClassification = Payroll.GosiCalculationService.DeriveClassification(nationality?.Nationality, nationality?.NationalityCode, nationality?.NationalityMappingState);
         }
 
         var metadata = JsonSerializer.Serialize(new

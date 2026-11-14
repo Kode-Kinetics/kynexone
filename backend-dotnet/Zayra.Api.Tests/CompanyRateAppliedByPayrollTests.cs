@@ -32,6 +32,8 @@ public class CompanyRateAppliedByPayrollTests
         EosbProvisioningRateKeys.Mode,
         // Read at every payroll Lock alongside the EOSB switch (the monthly annual-leave provision).
         LeaveProvisioningRateKeys.Mode,
+        // Read at every payroll Lock by both provisions: where a first measurement's catch-up is posted.
+        ProvisionCatchUpRoute.Key,
         // Read by readiness (the pay-stage Iqama window) and by the Saudi wage / bank file (the employee ID).
         BorderNumberRule.GraceDaysRateKey, BorderNumberRule.UseAsWageFileIdRateKey,
     };
@@ -99,7 +101,7 @@ public class CompanyRateAppliedByPayrollTests
         var (db, conn) = NewDb(); await using var _ = conn; await using var __ = db;
         var ok = (await Rates(db, Guid.NewGuid()).ListRateRegistry(default)).Should().BeOfType<OkObjectResult>().Subject;
         var items = Items(ok.Value!);
-        items.Should().HaveCount(17);
+        items.Should().HaveCount(18);
         foreach (var i in items)
         {
             var key = (string)Prop(i, "RateKey")!;

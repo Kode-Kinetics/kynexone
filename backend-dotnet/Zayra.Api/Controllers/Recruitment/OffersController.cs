@@ -137,9 +137,11 @@ public class OffersController : ControllerBase
         var options = await OfferRules.ApproversWhoCanDecide(_db, tid)
             .Where(u => !writers.Contains(u.Id))
             .OrderBy(u => u.FullName)
-            .Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email))
+            .Select(u => new { u.Id, u.FullName, u.Email, Roles = u.UserRoles.Where(ur => ur.Role != null && ur.Role.IsActive && !ur.Role.IsDeleted).Select(ur => ur.Role!.Name).ToList() })
             .ToListAsync(ct);
-        return Ok(options);
+        // The role is shown beside the name so two people with similar names can be told apart; the approving roles come first.
+        return Ok(options.Select(u => new OfferApproverOption(u.Id, u.FullName, u.Email,
+            string.Join(", ", u.Roles.OrderBy(r => OfferRules.ApproverRoleNames.Contains(r, StringComparer.OrdinalIgnoreCase) ? 0 : 1).ThenBy(r => r, StringComparer.Ordinal)))));
     }
 
     // GET /api/recruitment/offers/placement-options
@@ -161,7 +163,17 @@ public class OffersController : ControllerBase
             .OrderBy(d => d.TitleEn)
             .Select(d => new OfferPlacementOption(d.Id, d.TitleEn, d.Code))
             .ToListAsync(ct);
-        return Ok(new OfferPlacementOptions(departments, designations));
+        // A recruiter picks a grade by name; the pay band behind it is shown only to the HR roles that already see pay bands.
+        var seeBands = User.IsInRole("Admin") || User.IsInRole("HR Manager") || User.IsInRole("HR Officer");
+        var gradeRows = await _db.Grades.AsNoTracking()
+            .Where(g => g.TenantId == tid && g.IsActive && !g.IsDeleted)
+            .OrderBy(g => g.Level).ThenBy(g => g.Name)
+            .Select(g => new { g.Id, g.Name, g.Code, g.MinSalary, g.MidSalary, g.MaxSalary, g.Currency })
+            .ToListAsync(ct);
+        var grades = gradeRows.Select(g => new OfferGradeOption(g.Id, g.Name, g.Code,
+            seeBands && g.MinSalary > 0 ? g.MinSalary : null, seeBands && g.MidSalary > 0 ? g.MidSalary : null,
+            seeBands && g.MaxSalary > 0 ? g.MaxSalary : null, seeBands && !string.IsNullOrWhiteSpace(g.Currency) ? g.Currency : null)).ToList();
+        return Ok(new OfferPlacementOptions(departments, designations, grades));
     }
 
     // POST /api/recruitment/offers
@@ -338,7 +350,8 @@ public record DeclineOfferRequest(string? Reason, long? ExpectedVersion = null, 
         ? new(version, Decision, Source, at, Reason ?? string.Empty, EvidenceReference) : null;
 }
 public record OfferPlacementOption(Guid Id, string Name, string Code);
-public record OfferPlacementOptions(IReadOnlyList<OfferPlacementOption> Departments, IReadOnlyList<OfferPlacementOption> Designations);
+public record OfferGradeOption(Guid Id, string Name, string Code, decimal? MinSalary, decimal? MidSalary, decimal? MaxSalary, string? Currency);
+public record OfferPlacementOptions(IReadOnlyList<OfferPlacementOption> Departments, IReadOnlyList<OfferPlacementOption> Designations, IReadOnlyList<OfferGradeOption>? Grades = null);
 public record AddOfferApprovalRequest(string ApproverName, Guid? ApproverUserId, string? ApproverRole, long? ExpectedVersion = null);
-public record OfferApproverOption(Guid UserId, string Name, string Email);
+public record OfferApproverOption(Guid UserId, string Name, string Email, string Role = "");
 public record DecideApprovalRequest(string Decision, string? Comments, long? ExpectedVersion = null);

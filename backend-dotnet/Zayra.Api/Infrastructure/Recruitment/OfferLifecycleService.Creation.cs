@@ -64,8 +64,12 @@ public sealed partial class OfferLifecycleService
             {
                 await OfferLetterDesign.ApplyTemplateAsync(db, offer, input.TemplateId, ct);
                 if (Enabled && input.TemplateId is null)
+                {
+                    var country = await db.Companies.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == actor.CompanyId).Select(c => c.CountryCode).FirstOrDefaultAsync(ct);
+                    var nationality = await db.Candidates.AsNoTracking().Where(c => c.TenantId == actor.TenantId && c.Id == app.CandidateId).Select(c => c.Nationality).FirstOrDefaultAsync(ct);
                     offer.DesignSnapshotJson = OfferLetterDesign.SerializeSnapshot(
-                        await OfferLetterDesign.SnapshotAsync(db, offer, OfferLetterDesign.DynamicDefault(), null, null, ct));
+                        await OfferLetterDesign.SnapshotAsync(db, offer, OfferLetterDesign.DefaultFor(country, nationality), null, null, ct));
+                }
             }
             catch (ArgumentException e) { throw new OfferLifecycleException("offer_design_invalid", e.Message, 422); }
             if (Enabled)

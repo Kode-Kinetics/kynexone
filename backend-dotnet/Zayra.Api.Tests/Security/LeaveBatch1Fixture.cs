@@ -119,6 +119,8 @@ public sealed class LeaveBatch1Fixture : IAsyncLifetime
             await AddUserAsync("admin", "Admin", null, "FullPortal",
                 "employees.read", "leave.read", "leave.write", "leave.approve", "approvals.decide", "reports.read");
             await AddUserAsync("auditor", "Auditor", null, "FullPortal", "employees.read", "leave.read", "reports.read");
+            // Files leave on someone's behalf (leave.write, organisation-wide) without being HR or Admin.
+            await AddUserAsync("clerk", "Employee", null, "FullPortal", "employees.read", "leave.read", "leave.write", "ess.read", "ess.write");
 
             var leaveType = new LeaveType { TenantId = TenantId, Code = "AL", NameEn = "Annual Leave", IsActive = true, IsPaid = true };
             db.LeaveTypes.Add(leaveType);
@@ -135,7 +137,7 @@ public sealed class LeaveBatch1Fixture : IAsyncLifetime
             await TestApprovalConfig.EnsureDefaultLeaveWorkflowAsync(db, TenantId, approverType: "Manager");
         }
 
-        foreach (var name in new[] { "manager", "employee", "peer", "hr", "admin", "auditor" })
+        foreach (var name in new[] { "manager", "employee", "peer", "hr", "admin", "auditor", "clerk" })
             _tokens[name] = await MintAsync(name);
     }
 

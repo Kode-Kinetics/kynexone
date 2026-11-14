@@ -360,7 +360,9 @@ public class JournalExportDecisionIntegrityTests
     private static async Task<IActionResult> CreateAsync(ZayraDbContext db, ClaimsPrincipal maker, string format = "generic-csv", Guid? replacesExportId = null)
     {
         var result = await Ctrl(db, maker).Create(Period, null, null, "SAR", false, false, format, default,
-            includePreviouslyConfirmed: replacesExportId is not null, replacesExportId: replacesExportId);
+            includePreviouslyConfirmed: replacesExportId is not null, replacesExportId: replacesExportId,
+            // Several formats of one scope are built on purpose here; the one-live-file guard (C7) has its own tests.
+            acknowledgeOtherFormatLive: true);
         db.ChangeTracker.Clear();
         return result;
     }
