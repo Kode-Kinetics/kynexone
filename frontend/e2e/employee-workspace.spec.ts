@@ -494,6 +494,16 @@ test('workspace destination mapping renders one addressable record surface and o
   await expect(page.getByRole('heading', { name: 'Pay & Benefits' })).toBeVisible();
 });
 
+test('workspace renders exactly one main landmark and keeps the heading labelling', async ({ page }) => {
+  await bootEmployeeWorkspaceFixture(page);
+  await page.goto('/people/901?section=employment&panel=details');
+
+  await expect(page.locator('#employee-workspace-heading')).toBeVisible();
+  // The app shell owns the only <main>; the employee workspace must not nest another landmark.
+  await expect(page.locator('main, [role="main"]')).toHaveCount(1);
+  await expect(page.locator('.employee-workspace')).toHaveAttribute('aria-labelledby', 'employee-workspace-heading');
+});
+
 test('workspace overview distinguishes blockers from recommendations and presents the next action', async ({ page }) => {
   await bootEmployeeWorkspaceFixture(page);
   await page.goto('/people/901?section=overview');

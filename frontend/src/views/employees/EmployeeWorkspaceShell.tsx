@@ -80,7 +80,7 @@ export function EmployeeWorkspaceShell({
   const sectionHref = (target: EmployeeSection) => employeeWorkspaceHref(employee.id, { section: target, returnTo });
 
   return (
-    <main className="employee-workspace min-h-full bg-slate-50/80 dark:bg-slate-950/30" aria-labelledby="employee-workspace-heading">
+    <section className="employee-workspace min-h-full bg-slate-50/80 dark:bg-slate-950/30" aria-labelledby="employee-workspace-heading">
       <div className="sticky top-0 z-20 border-b border-line bg-surface px-4 py-3 shadow-e1 lg:px-6">
         <Link href={returnTo} className="mb-3 inline-flex min-h-9 items-center text-sm font-semibold text-sapphire hover:underline">
           <span aria-hidden="true" className="me-2 rtl:rotate-180">←</span> {t('Back to People')}
@@ -165,6 +165,6 @@ export function EmployeeWorkspaceShell({
           {section === 'activity' && <EmployeeActivitySection employee={employee} panel={panel} returnTo={returnTo} />}
         </section>
       </div>
-    </main>
+    </section>
   );
 }

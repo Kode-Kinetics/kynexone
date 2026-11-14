@@ -492,3 +492,23 @@ test('Arabic: the other-format notice and its confirm button', async ({ page }) 
   await expect(notice).toContainText('ما زال بانتظار نتيجة نظام تخطيط الموارد');
   await expect(page.getByTestId('journal-export-create-anyway')).toContainText('أنشئ على أي حال');
 });
+
+test('the export history row shows how many lines the file holds', async ({ page }) => {
+  await boot(page);
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Create export file' }).click();
+
+  const row = page.getByTestId('journal-export-history').getByRole('listitem').first();
+  await expect(row).toContainText('journal-GROUP-2026-07-SAR-generic-csv-5F0C2A9E.csv');
+  await expect(row.getByTestId('journal-export-line-count')).toHaveText('4 lines');
+});
+
+test('Arabic: the export history row shows the translated line count', async ({ page }) => {
+  await boot(page, { locale: 'ar' });
+  const accountingMonthAr = page.getByRole('group', { name: 'الشهر المحاسبي' });
+  await accountingMonthAr.getByLabel('السنة').selectOption('2026');
+  await accountingMonthAr.getByLabel('الشهر', { exact: true }).selectOption('7');
+  await page.getByRole('button', { name: 'إنشاء ملف التصدير' }).click();
+
+  await expect(page.getByTestId('journal-export-line-count').first()).toHaveText('4 أسطر');
+});
