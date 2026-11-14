@@ -531,6 +531,10 @@ public sealed class IntegrationDeliveryHonestyTests
     {
         await using var db = InMemory();
         var tenantId = Guid.NewGuid();
+        // Sync logs are listed only for employees the caller can see, so the logged employees exist.
+        db.Employees.AddRange(
+            new Employee { Id = 1, TenantId = tenantId, EmployeeCode = "E1", FullName = "A", Status = "Active" },
+            new Employee { Id = 2, TenantId = tenantId, EmployeeCode = "E2", FullName = "B", Status = "Active" });
         db.QiwaSyncLogs.AddRange(
             new QiwaSyncLog
             {
