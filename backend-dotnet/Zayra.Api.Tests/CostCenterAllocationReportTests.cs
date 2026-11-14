@@ -127,13 +127,14 @@ public class CostCenterAllocationReportTests
     private static async Task AddRunLineAsync(CostingLockKit k, Guid runId, string eventType, string ccCode, string debit, string credit, decimal amount, string description)
     {
         var run = await k.Db.PayrollRuns.AsNoTracking().SingleAsync(r => r.Id == runId);
-        var cc = k.Cc[ccCode];
+        // Only an expense line carries a cost centre; the balance-sheet side of an accrual is posted without one.
+        var cc = string.IsNullOrEmpty(debit) ? null : k.Cc[ccCode];
         k.Db.FinanceGlEntries.Add(new Zayra.Api.Models.FinanceGlEntry
         {
             TenantId = k.TenantId, CompanyId = k.CompanyId, SourceModule = "Payroll", SourceEntityId = runId, SourceEntityRef = "RUN",
             EventType = eventType, DebitAccount = debit, CreditAccount = credit, Amount = amount, Currency = "SAR",
             EntryDate = new DateOnly(run.Year, run.Month, 28), Period = $"{run.Year}-{run.Month:D2}", Description = description,
-            CostCenterId = cc.Id, CostCenterCode = cc.Code, CostCenterName = cc.Name,
+            CostCenterId = cc?.Id, CostCenterCode = cc?.Code, CostCenterName = cc?.Name,
         });
         await k.Db.SaveChangesAsync();
     }
