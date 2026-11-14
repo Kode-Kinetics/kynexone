@@ -49,6 +49,9 @@ import {
 } from '../lib/recruitmentCatalogue';
 import { OfferTemplateSelect } from '../components/OfferTemplateSelect';
 import { OfferLetterDesigner } from '../components/OfferLetterDesigner';
+import { yearsLabel } from '../lib/displayLabels';
+import { checklistOptionLabel } from '../lib/checklistLabel';
+import { offerApprovalNote } from '../lib/offerDisplay';
 import { OfferHistoryRegister } from '../components/recruitment/OfferHistoryRegister';
 import { OfferPolicySettings } from '../components/recruitment/OfferPolicySettings';
 import { offerWorkspacePath } from '../api/offerLifecycle';
@@ -114,6 +117,7 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
   const approvals = data?.approvals ?? [];
   const context = data?.approval ?? null;
   const next = offer ? offerNextAction(offer.status, context, approvals) : null;
+  const stateNote = offer ? offerApprovalNote(offer.status, context?.sendBlockedReason) : null;
   const showRequest = !!offer && !!context && !context.myPendingStepId && !context.canSend
     && canRequestApproval(offer.status, approvals) && (context.required || approvals.length > 0);
 
@@ -152,8 +156,8 @@ export function OfferApprovalPanel({ offerId, onChanged, onContext }: {
     <div className="mt-3 space-y-2 rounded-lg border border-slate-200 p-3 dark:border-white/10">
       <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{t('Approval')}</p>
       {next
-        ? <p className="text-xs text-slate-600 dark:text-slate-300">{OFFER_NEXT_ACTION_TEXT[next]}</p>
-        : context.sendBlockedReason && <p className="text-xs text-amber-700 dark:text-amber-400">{context.sendBlockedReason}</p>}
+        ? <p className="text-xs text-slate-600 dark:text-slate-300">{t(OFFER_NEXT_ACTION_TEXT[next])}</p>
+        : stateNote && <p className={`text-xs ${offer.status === 'Sent' || offer.status === 'Accepted' || offer.status === 'Declined' ? 'text-slate-600 dark:text-slate-300' : 'text-amber-700 dark:text-amber-400'}`}>{t(stateNote)}</p>}
       {approvals.length > 0 && (
         <ul className="space-y-1">
           {approvals.map(a => (
@@ -210,11 +214,6 @@ function ago(utc: string, t: (key: string, params?: Record<string, string | numb
 function ToneChip(props: React.ComponentProps<typeof StatusChip>) {
   const t = useT();
   return <StatusChip {...props} label={t(props.label)} />;
-}
-
-function fmt(n: number | null | undefined) {
-  if (n == null) return '—';
-  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -546,7 +545,7 @@ function RequisitionsTab({ onCreateOpening }: { onCreateOpening: (req: ManpowerR
       <div className="mb-4 flex items-center gap-3">
         <select className="select w-44" value={statusFilter} onChange={e => setStatusFilter(e.target.value)} aria-label={t('Filter by status')}>
           <option value="">{t('All Statuses')}</option>
-          {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{t(s)}</option>)}
+          {[msg('Draft'), msg('Submitted'), msg('PendingApproval'), msg('Approved'), msg('Rejected'), msg('Converted')].map(s => <option value={s} key={s}>{enumLabel(t, 'Status', s)}</option>)}
         </select>
         <span className="ms-auto text-xs text-slate-500 dark:text-slate-400">{t('{total} requisitions', { total })}</span>
         <button type="button" className="btn-primary flex items-center gap-1.5 text-sm" onClick={() => setCreateOpen(true)}>
@@ -819,7 +818,7 @@ function RecruitmentAiModal({ openings, onClose }: { openings: JobOpening[]; onC
                   <div className="flex items-center gap-3">
                     <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500 dark:bg-white/10 dark:text-slate-300">{i + 1}</span>
                     <span className="font-medium text-slate-800 dark:text-slate-200">{c.name}</span>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${recTone(c.recommendation)}`}>{t(c.recommendation)}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-semibold ${recTone(c.recommendation)}`}>{enumLabel(t, 'InterviewRecommendation', c.recommendation)}</span>
                     <div className="ms-auto flex items-center gap-2">
                       <div className="h-1.5 w-24 rounded-full bg-slate-200 dark:bg-white/10"><div className="h-1.5 rounded-full bg-sapphire dark:bg-cyanAccent" style={{ width: `${c.score}%` }} /></div>
                       <span className="w-9 text-end text-xs font-semibold text-slate-600 dark:text-slate-300">{c.score}</span>
@@ -859,6 +858,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
   onOpeningCreated: () => void;
 }) {
   const t = useT();
+  const f = useFormat();
   const { currencyCode } = useTenantSettings();
   const [items, setItems] = useState<JobOpening[]>([]);
   const [loading, setLoading] = useState(true);
@@ -916,7 +916,7 @@ function OpeningsTab({ onSelectOpening, requisitionToOpen, onOpeningCreated }: {
             </div>
             <div className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
               <p>{o.departmentName}</p>
-              {o.salaryFrom && <p>{t('{currencyCode} {salaryFrom}–{salaryTo}/mo', { currencyCode, salaryFrom: fmt(o.salaryFrom), salaryTo: fmt(o.salaryTo) })}</p>}
+              {o.salaryFrom && <p>{t('{range}/mo', { range: f.moneyRange(o.salaryFrom, o.salaryTo, currencyCode) })}</p>}
               {o.location && <p>{o.location}</p>}
             </div>
             <div className="flex items-center justify-between border-t border-slate-100 pt-3 dark:border-white/[0.06]">
@@ -1095,7 +1095,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 {enumLabel(t, 'RecruitmentStage', app.stage)}
               </span>
               {app.status !== 'Active' && (
-                <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{app.status}</span>
+                <span className="rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-600 dark:bg-rose-500/10 dark:text-rose-400">{enumLabel(t, 'Status', app.status)}</span>
               )}
             </div>
           </div>
@@ -1141,7 +1141,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
               <div><span className="text-slate-400">{t('Email')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.email}</span></div>
               <div><span className="text-slate-400">{t('Phone')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.phone || '—'}</span></div>
-              <div><span className="text-slate-400">{t('Experience')} </span><span className="text-slate-700 dark:text-slate-300">{detail.candidate.totalExperienceYears}y</span></div>
+              <div><span className="text-slate-400">{t('Experience')} </span><span className="text-slate-700 dark:text-slate-300">{yearsLabel(t, detail.candidate.totalExperienceYears)}</span></div>
               <div><span className="text-slate-400">{t('Source')} </span><span className="text-slate-700 dark:text-slate-300">{t(detail.candidate.source)}</span></div>
             </div>
           </div>
@@ -1214,7 +1214,7 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                       {Array.from({ length: 5 }, (_, i) => (
                         <Star key={i} className={`h-3.5 w-3.5 ${i < iv.overallRating! ? 'fill-amber-400 text-amber-400' : 'text-slate-200 dark:text-slate-700'}`} />
                       ))}
-                      <span className="ms-1 text-xs font-medium text-slate-600 dark:text-slate-400">{t(iv.recommendation)}</span>
+                      <span className="ms-1 text-xs font-medium text-slate-600 dark:text-slate-400">{enumLabel(t, 'InterviewRecommendation', iv.recommendation)}</span>
                     </div>
                   )}
                   {iv.feedbackNotes && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{iv.feedbackNotes}</p>}
@@ -1256,14 +1256,14 @@ function ApplicationDrawer({ id, onClose, onRefresh }: { id: string; onClose: ()
                 <div className="rounded-lg border border-slate-200 p-4 dark:border-white/10">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Offer Letter')}</p>
-                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{offer.status}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-caption font-medium ${offer.status === 'Accepted' ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10' : offer.status === 'Declined' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-600 dark:bg-blue-500/10'}`}>{enumLabel(t, 'Status', offer.status)}</span>
                   </div>
                   <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400">
-                    <div className="flex justify-between"><span>{t('Basic Salary')}</span><span className="font-medium">{currencyCode} {fmt(offer.basicSalary)}</span></div>
-                    <div className="flex justify-between"><span>{t('Housing')}</span><span>{currencyCode} {fmt(offer.housingAllowance)}</span></div>
-                    <div className="flex justify-between"><span>{t('Transport')}</span><span>{currencyCode} {fmt(offer.transportAllowance)}</span></div>
+                    <div className="flex justify-between"><span>{t('Basic Salary')}</span><span className="font-medium">{f.money(offer.basicSalary, currencyCode)}</span></div>
+                    <div className="flex justify-between"><span>{t('Housing')}</span><span>{f.money(offer.housingAllowance, currencyCode)}</span></div>
+                    <div className="flex justify-between"><span>{t('Transport')}</span><span>{f.money(offer.transportAllowance, currencyCode)}</span></div>
                     <div className="flex justify-between border-t border-slate-100 pt-1 font-semibold text-slate-800 dark:border-white/10 dark:text-white">
-                      <span>{t('Gross Total')}</span><span>{currencyCode} {fmt(offer.grossSalary)}</span>
+                      <span>{t('Gross Total')}</span><span>{f.money(offer.grossSalary, currencyCode)}</span>
                     </div>
                   </div>
                   <div className="mt-3 flex gap-2">
@@ -1597,7 +1597,7 @@ function CandidatesTab() {
                   <p className="text-slate-700 dark:text-slate-300">{c.currentJobTitle || '—'}</p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">{c.currentCompany || ''}</p>
                 </td>
-                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.totalExperienceYears}y</td>
+                <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{yearsLabel(t, c.totalExperienceYears)}</td>
                 <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{c.educationLevel ? t(c.educationLevel) : '—'}</td>
                 <td className="px-4 py-3">
                   <span className="rounded-lg bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-white/10 dark:text-slate-400">{t(c.source)}</span>
@@ -1953,7 +1953,7 @@ function InterviewsTab() {
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t('Interviewers: {interviewerNames}', { interviewerNames: iv.interviewerNames })}</p>
                   {iv.recommendation && (
                     <p className={`text-xs font-medium mt-1 ${RECOMMENDATION_COLORS[iv.recommendation] ?? ''}`}>
-                      {t('Recommendation: {recommendation}', { recommendation: iv.recommendation })}
+                      {t('Recommendation: {recommendation}', { recommendation: enumLabel(t, 'InterviewRecommendation', iv.recommendation) })}
                     </p>
                   )}
                   {iv.feedbackNotes && (
@@ -1998,7 +1998,7 @@ function InterviewsTab() {
                       <select aria-label={t('Interview recommendation')} value={completionForm.recommendation}
                         onChange={e => setCompletionForm(f => ({ ...f, recommendation: e.target.value }))}
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-white/10 dark:bg-white/5">
-                        {[msg('StrongHire'), msg('Hire'), msg('Hold'), msg('Reject')].map(r => <option key={r} value={r}>{t(r)}</option>)}
+                        {[msg('StrongHire'), msg('Hire'), msg('Hold'), msg('Reject')].map(r => <option key={r} value={r}>{enumLabel(t, 'InterviewRecommendation', r)}</option>)}
                       </select>
                     </label>
                     <label className="sm:col-span-2 text-xs font-medium text-slate-600 dark:text-slate-400">
@@ -2716,7 +2716,7 @@ export function OnboardingTab({ configurationOnly = false, policyDraft, policyDr
           <select aria-label={t('Onboarding checklist')} title={t('Onboarding checklist')} value={selectedChecklistId} disabled={templateSaving} onChange={e => { setSelectedChecklistId(e.target.value); if (activePolicyTask) changeTemplateForm({ checklistId: e.target.value, applicabilityConfirmed: false, overwriteConfirmed: false }); }}
             className="min-w-64 rounded-lg border border-slate-200 dark:border-white/10 bg-white dark:bg-white/5 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200">
             <option value="">{t('Select checklist')}</option>
-            {checklists.filter(c => c.isActive || showOffChecklists || c.id === selectedChecklistId).map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}{c.isActive ? '' : ` (${t('Off')})`}</option>)}
+            {checklists.filter(c => c.isActive || showOffChecklists || c.id === selectedChecklistId).map(c => <option key={c.id} value={c.id}>{checklistOptionLabel(t, c)}</option>)}
           </select>
           {configurationOnly && <ShowTurnedOffToggle checked={showOffChecklists} onChange={setShowOffChecklists} count={checklists.filter(c => !c.isActive).length} />}
           {configurationOnly && selectedChecklistId && (() => {

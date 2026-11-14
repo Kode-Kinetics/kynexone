@@ -83,6 +83,9 @@ import { CostCentreJournalReport } from '../components/payroll/CostCentreJournal
 import { SettlementRunDutyPanel } from '../components/payroll/SettlementRunDutyPanel';
 import { SettlementRunDutyCard } from '../components/payroll/SettlementRunDutyCard';
 import { msg } from '../i18n/translations';
+import { insightDetail, insightTitle } from '../lib/insightText';
+import { languageLabel } from '../lib/displayLabels';
+import { wpsStatusNote } from '../lib/payrollBatchDisplay';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
 function fmtDate(s: string | null | undefined) {
@@ -512,6 +515,7 @@ function CompanyBirdsEyeTable({ overview, onDrillDown }: { overview: PayrollOver
 
 function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) {
   const t = useT();
+  const fx = useFormat();
   // This panel is ADVISORY and nobody asked for it — it fetches on mount, beside whatever payroll work
   // the operator is actually doing. /api/ai/insights requires `ai.insights_view`, which the HR Manager
   // and Finance Approver bundles do not hold, so for them it 403'd and the shared client's global
@@ -578,11 +582,11 @@ function AiInsightsPanel({ readiness }: { readiness: PayrollReadiness | null }) 
               <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${severityIcon[ins.severity] ?? severityIcon.Info}`} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <p className="text-xs font-semibold text-slate-800 dark:text-white">{ins.title}</p>
-                  <span className="rounded-full bg-white/60 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10 dark:text-slate-400">{ins.module}</span>
+                  <p className="text-xs font-semibold text-slate-800 dark:text-white">{insightTitle(t, ins)}</p>
+                  <span className="rounded-full bg-white/60 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-white/10 dark:text-slate-400">{t(ins.module)}</span>
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{ins.summary}</p>
-                <p className="mt-1.5 text-[10px] text-slate-400">{new Date(ins.createdAtUtc).toLocaleString()}</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{insightDetail(t, ins, (ym) => fx.period(ym, 'long'))}</p>
+                <p className="mt-1.5 text-[10px] text-slate-400">{fx.dateTime(ins.createdAtUtc)}</p>
               </div>
             </div>
           </div>
@@ -2530,6 +2534,7 @@ function ApprovalsTab({ selectedRunId, isAdmin, isFinance, isHROrPayroll, onReco
 
 function PayslipsTab() {
   const t = useT();
+  const fx = useFormat();
   // The payslip PDF and the run's ZIP bundle are `payroll.export` on the API (PayrollController
   // DownloadSlipPdf / DownloadRunPdfBundle); offering them without it only produced a 403.
   const { hasPermission } = useAuth();
@@ -2647,14 +2652,14 @@ function PayslipsTab() {
                     {p.employeeCode && <span className="ms-2 font-mono text-[11px] font-normal text-slate-400">{p.employeeCode}</span>}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-slate-500">{p.payslipNumber}</td>
-                  <td className="px-4 py-2 text-slate-500">{p.language.toUpperCase()}</td>
+                  <td className="px-4 py-2 text-slate-500">{languageLabel(t, p.language)}</td>
                   <td className="px-4 py-2">
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${p.isPublishedToEss ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-white/10'}`}>
                       {p.isPublishedToEss ? t('Published') : t('Not published')}
                     </span>
                   </td>
-                  <td className="px-4 py-2 text-xs text-slate-400">{p.publishedAtUtc ? fmtDate(p.publishedAtUtc) : '—'}</td>
-                  <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(p.createdAtUtc)}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{p.publishedAtUtc ? fx.date(p.publishedAtUtc) : '—'}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{fx.date(p.createdAtUtc)}</td>
                   <td className="px-4 py-2">
                     {canExport ? <button
                       type="button"
@@ -2906,6 +2911,7 @@ function BankWpsTab({ selectedRunId }: { selectedRunId?: string }) {
 
 function PaymentTrackingTab() {
   const t = useT();
+  const fx = useFormat();
   // WPS status, settlement and remittance need payroll.export (Admin) or the narrow key of their family: without one the row actions give way to the reason (the server refuses the wrong family).
   const { hasPermission } = useAuth();
   const canExport = paymentActionsAllowed(hasPermission);
@@ -3070,11 +3076,11 @@ function PaymentTrackingTab() {
                   <td className="px-4 py-2 font-mono text-xs font-medium text-slate-900 dark:text-white">{b.batchNumber}</td>
                   <td className="px-4 py-2 text-slate-500">{b.paymentMethod}</td>
                   <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{b.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-4 py-2 text-slate-500">{b.currency}</td>
+                  <td className="px-4 py-2 text-slate-500">{fx.currencyLabel(b.currency)}</td>
                   <td className="px-4 py-2">
                     <div className="space-y-1">
                       <StatusBadge status={effectiveStatus(b)} />
-                      {b.wpsStatusLabel && b.wpsStatusLabel !== effectiveStatus(b) && <p className="max-w-56 text-[11px] text-slate-500">{b.wpsStatusLabel}</p>}
+                      {wpsStatusNote(t, b.wpsStatusLabel, effectiveStatus(b)) && <p className="max-w-56 text-[11px] text-slate-500">{wpsStatusNote(t, b.wpsStatusLabel, effectiveStatus(b))}</p>}
                       {(b.paymentExclusions?.length ?? 0) > 0 && (
                         <p className="max-w-56 text-[11px] text-amber-600 dark:text-amber-400" title={b.paymentExclusions!.map(x => `${x.employeeCode}: ${x.reason}`).join('\n')}>
                           {t('{length} not in the bank file (cash/cheque or zero net): {toLocaleString}', { length: b.paymentExclusions!.length, toLocaleString: (b.excludedTotal ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 }) })}
@@ -3085,7 +3091,7 @@ function PaymentTrackingTab() {
                       {b.wpsRejectionReason && <p className="max-w-48 truncate text-[11px] text-rose-500">{b.wpsRejectionReason}</p>}
                     </div>
                   </td>
-                  <td className="px-4 py-2 text-xs text-slate-400">{fmtDate(b.createdAtUtc)}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{fx.date(b.createdAtUtc)}</td>
                   <td className="px-4 py-2">
                     {!canExport ? (
                       <p className="text-xs text-slate-500 dark:text-slate-400" title={t(PAYMENT_ACTION_DENIED.wps)}>{t('Needs an administrator')}</p>
@@ -3129,7 +3135,7 @@ function PaymentTrackingTab() {
                           <option value="">{t('Next status')}</option>
                           {nextStatuses(b).map(s => (
                             <option key={s} value={s} disabled={s === 'Accepted' && (!b.latestEvidenceId || !!b.acceptBlockedReason)}>
-                              {s === 'Accepted' ? t('Accepted — evidence attached (not verified by Mudad)') : s}
+                              {s === 'Accepted' ? t('Accepted — evidence attached (not verified by Mudad)') : enumLabel(t, 'Status', s)}
                             </option>
                           ))}
                         </select>

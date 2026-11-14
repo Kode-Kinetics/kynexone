@@ -26,6 +26,8 @@ import {
   type SaudiBankExportIssue, type CustomBankTemplate,
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
+import { enumLabel } from '../../i18n/enumLabel';
+import { bankAcceptanceLabel } from '../../lib/payrollBatchDisplay';
 import { useAuth } from '../../contexts/AuthContext';
 import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
@@ -417,7 +419,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
   dirty: boolean;
   onSubmit: (e?: React.FormEvent) => void;
 }) {
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
   const cc = CUSTOM_COPY[locale === 'ar' ? 'ar' : 'en'];
   // A custom template needs only the establishment id and (optionally) a debit IBAN; the ANB employer fields do not apply.
   const draftIsCustom = isCustomFormatId(draft.formatId);
@@ -460,7 +462,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
             onChange={(e) => setField('formatId', e.target.value)} aria-invalid={sErr('formatId') ? true : undefined}
             aria-describedby={describedBy('formatId', sErr('formatId'), false)}>
             <option value="">—</option>
-            {formats.map((f) => <option key={f.id} value={f.id}>{isCustomFormatId(f.id) ? `${f.name} (${cc.suffix})` : f.name}</option>)}
+            {formats.map((f) => <option key={f.id} value={f.id}>{isCustomFormatId(f.id) ? `${t(f.name)} (${cc.suffix})` : t(f.name)}</option>)}
           </select>
         </FieldShell>
         {!draftIsCustom && <FieldShell id={fid('batchType')} label={c.batchType} error={sErr('batchType')}>
@@ -468,7 +470,7 @@ export function SaudiBankSettingsForm({ c, idPrefix, draft, setField, errors, fo
             onChange={(e) => setField('batchType', e.target.value)} aria-invalid={sErr('batchType') ? true : undefined}
             aria-describedby={describedBy('batchType', sErr('batchType'), false)}>
             <option value="">{c.selectBatchType}</option>
-            {SAUDI_BANK_BATCH_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            {SAUDI_BANK_BATCH_TYPES.map((type) => <option key={type} value={type}>{enumLabel(t, 'BankBatchType', type)}</option>)}
           </select>
         </FieldShell>}
         {textInput('molEstablishmentId', c.molEstablishmentId, { help: c.molHelp, ltr: true })}
@@ -509,7 +511,7 @@ type LoadState = { status: 'loading' } | { status: 'error'; message: string } | 
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
 export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: { batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string> }) {
-  const { locale } = useLocale();
+  const { locale, t } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
   const uid = useId();
@@ -795,11 +797,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: {
         {/* Format facts + disclaimer */}
         <dl className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
           <div><dt className="text-slate-400">{c.company}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.companyName}</dd></div>
-          <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{ctx?.runStatus}</dd></div>
+          <div><dt className="text-slate-400">{c.runStatus}</dt><dd className="font-medium text-slate-800 dark:text-white">{enumLabel(t, 'PayrollRunStatus', ctx?.runStatus)}</dd></div>
           {selectedFormat && (
             <>
-              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{selectedFormat.bank} · {selectedFormat.channel}</dd></div>}
-              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{selectedFormat.acceptanceStatus}</dd></div>
+              {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.bank} · {c.channel}</dt><dd className="font-medium text-slate-800 dark:text-white">{t(selectedFormat.bank)} · {t(selectedFormat.channel)}</dd></div>}
+              <div><dt className="text-slate-400">{c.acceptance}</dt><dd className="font-mono text-amber-700 dark:text-amber-400">{bankAcceptanceLabel(t, selectedFormat.acceptanceStatus)}</dd></div>
               {!isCustomFormatId(selectedFormat.id) && <div><dt className="text-slate-400">{c.reviewedOn}</dt><dd className="text-slate-700 dark:text-slate-300">{selectedFormat.reviewedOn}</dd></div>}
               {!isCustomFormatId(selectedFormat.id) && <div className="min-w-0"><dt className="text-slate-400">{c.source}</dt>
                 <dd className="truncate">

@@ -981,7 +981,7 @@ function CalcPreviewTab() {
                   <td className="px-3 py-2 text-slate-500">{money(c.hourlyRate)}</td>
                   <td className="px-3 py-2 text-slate-500">×{c.multiplier}</td>
                   <td className="px-3 py-2 font-semibold text-emerald-600 dark:text-emerald-400">{money(c.amount)}</td>
-                  <td className="px-3 py-2 text-slate-500">{c.currency}</td>
+                  <td className="px-3 py-2 text-slate-500">{fx.currencyLabel(c.currency)}</td>
                   <td className="px-3 py-2 text-xs text-slate-400">{fmtDate(fx, c.createdAtUtc)}</td>
                 </tr>
               ))}

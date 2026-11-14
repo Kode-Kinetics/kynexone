@@ -179,6 +179,34 @@ export function createFormatter(settings: FormatSettings) {
     }
   }
 
+  /**
+   * The currency on its own, for a column or a heading: the symbol in Arabic ("ر.س."), the ISO code
+   * in English ("SAR"). Empty when no currency is known; an unrecognised code is returned as given.
+   */
+  function currencyLabel(currency: string | null | undefined): string {
+    const code = currency?.trim();
+    if (!code) return '';
+    if (locale !== 'ar') return code;
+    try {
+      const part = nf({ style: 'currency', currency: code, currencyDisplay: 'symbol' }).formatToParts(0).find((p) => p.type === 'currency');
+      return part?.value ?? code;
+    } catch {
+      return code;
+    }
+  }
+
+  /** A range with the currency once: "SAR 5,000.00–8,000.00" in English, "5,000–8,000 ر.س." in Arabic. */
+  function moneyRange(from: number | null | undefined, to: number | null | undefined, currency?: string | null): string {
+    if (from == null || Number.isNaN(from)) return '—';
+    const label = currencyLabel(currency === undefined ? defaultCurrency : currency);
+    const hasFraction = locale !== 'ar' || [from, to ?? 0].some((n) => !Number.isInteger(n));
+    const opts = hasFraction ? { minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 0 };
+    const lo = number(from, opts);
+    const range = to == null || Number.isNaN(to) ? lo : `${lo}–${number(to, opts)}`;
+    if (!label) return range;
+    return locale === 'ar' ? `${range} ${label}` : `${label} ${range}`;
+  }
+
   /** Compact amount for tiles and charts: "SAR 1.25M", "SAR 12.3K". */
   function moneyCompact(n: number | null | undefined, currency?: string | null): string {
     return money(n, currency, { compact: true });
@@ -282,6 +310,9 @@ export function createFormatter(settings: FormatSettings) {
    */
   function period(label: string | null | undefined, style: 'long' | 'short' = 'long'): string {
     if (!label) return '';
+    // "2026-11" (the insights engine's month key) reads as "Nov 2026".
+    const ym = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(label.trim());
+    if (ym) label = `${MONTHS[Number(ym[2]) - 1]} ${ym[1]}`;
     const m = /^([A-Za-z]{3})[a-z]*\.?(?:\s+(\d{4}))?$/.exec(label.trim());
     const idx = m ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
     if (!m || idx < 0) return label;
@@ -306,6 +337,7 @@ export function createFormatter(settings: FormatSettings) {
     numberLocale: nLocale,
     currency: defaultCurrency,
     ...display,
+    currencyLabel, moneyRange,
     relative, period, zone,
     plain,
   };

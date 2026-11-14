@@ -19,6 +19,7 @@ import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
 import { EnumLabel, enumLabel } from '../components/EnumLabel';
 import { msg } from '../i18n/translations';
+import { approvalChangeSummary, approvalEntityLabel, approvalOwnerMeta, approvalQueueLabel, approvalTitleLabel } from '../lib/approvalDisplay';
 import type { StatutoryLeaveContext } from '../api/leave';
 
 const PAGE_SIZE = 25;
@@ -54,9 +55,9 @@ const statusTone = (s: string, t: Translate): { label: string; tone: 'amber' | '
 };
 
 const hoursUntil = (s?: string | null) => s ? Math.round((new Date(s).getTime() - Date.now()) / 360_000) / 10 : null;
-const ageLabel = (hours: number, t: Translate) => hours < 1 ? t('<1h old') : hours < 24 ? t('{hours}h old', { hours }) : t('{days}d old', { days: Math.round(hours / 24) });
-const ownerLabel = (r: ApprovalRequest, t: Translate) => r.currentApproverName || r.currentQueue || r.currentApproverRole || t('Unassigned');
-const ownerMeta = (r: ApprovalRequest, t: Translate) => [r.currentApproverType, r.currentApproverRole].filter(Boolean).join(' · ') || t('No route metadata');
+const ageLabel = (hours: number, t: Translate) => hours < 1 ? t('<1h old') : hours < 24 ? t('{hours}h old', { hours: Math.round(hours) }) : t('{days}d old', { days: Math.round(hours / 24) });
+const ownerLabel = (r: ApprovalRequest, t: Translate) => r.currentApproverName || approvalQueueLabel(t, r.currentQueue) || (r.currentApproverRole ? t(r.currentApproverRole) : '') || t('Unassigned');
+const ownerMeta = (r: ApprovalRequest, t: Translate) => approvalOwnerMeta(t, r.currentApproverType, r.currentApproverRole);
 
 /** "Step 2 of 3" when the server says how many steps will run, else the bare step number. */
 const stepLabel = (r: ApprovalRequest, t: Translate) =>
@@ -362,16 +363,16 @@ export function ApprovalsPage() {
                     <div className="flex items-start gap-3">
                       <span className={`mt-0.5 h-2.5 w-2.5 rounded-full ${r.isOverdue ? 'bg-rose-500' : r.status === 'Pending' ? 'bg-amber-400' : 'bg-slate-300'}`} />
                       <div>
-                        <p className="font-medium text-slate-900 dark:text-white">{r.title}</p>
-                        {r.changeSummary && <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Changes: {summary}', { summary: r.changeSummary })}</p>}
-                        <p className="mt-1 text-xs text-slate-400">{t('{entity} · {priority} · Created {date}', { entity: r.entityName, priority: enumLabel(t, 'Status', r.priority || 'Normal'), date: fmtDateTime(r.createdAtUtc) })}</p>
+                        <p className="font-medium text-slate-900 dark:text-white">{approvalTitleLabel(t, r.title)}</p>
+                        {r.changeSummary && <p className="mt-0.5 text-xs font-medium text-slate-600 dark:text-slate-300">{t('Changes: {summary}', { summary: approvalChangeSummary(t, r.changeSummary) })}</p>}
+                        <p className="mt-1 text-xs text-slate-400">{t('{entity} · {priority} · Created {date}', { entity: approvalEntityLabel(t, r.entityName), priority: enumLabel(t, 'Status', r.priority || 'Normal'), date: fmtDateTime(r.createdAtUtc) })}</p>
                       </div>
                     </div>
                   </td>
                   <td className="px-4 py-3">
                     <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{ownerLabel(r, t)}</p>
                     <p className="text-xs text-slate-400">{ownerMeta(r, t)}</p>
-                    {r.escalatedToRole && <p className="mt-1 text-xs font-semibold text-rose-500">{t('Escalated to {role}', { role: r.escalatedToRole })}</p>}
+                    {r.escalatedToRole && <p className="mt-1 text-xs font-semibold text-rose-500">{t('Escalated to {role}', { role: t(r.escalatedToRole) })}</p>}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-xs font-semibold ${r.isOverdue ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400' : 'bg-slate-100 text-slate-500 dark:bg-white/10 dark:text-slate-300'}`}>
@@ -449,9 +450,9 @@ export function ApprovalsPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">{t('Request')}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{selected.title}</p>
-                  {selected.changeSummary && <p className="mt-0.5 text-sm text-slate-700 dark:text-slate-200">{t('Changes: {summary}', { summary: selected.changeSummary })}</p>}
-                  <p className="text-xs text-slate-400 dark:text-slate-500">{selected.entityName} · {selected.entityId}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900 dark:text-white">{approvalTitleLabel(t, selected.title)}</p>
+                  {selected.changeSummary && <p className="mt-0.5 text-sm text-slate-700 dark:text-slate-200">{t('Changes: {summary}', { summary: approvalChangeSummary(t, selected.changeSummary) })}</p>}
+                  <p className="text-xs text-slate-400 dark:text-slate-500">{approvalEntityLabel(t, selected.entityName)} · {selected.entityId}</p>
                 </div>
                 <StatusChip {...statusTone(selected.status, t)} />
               </div>

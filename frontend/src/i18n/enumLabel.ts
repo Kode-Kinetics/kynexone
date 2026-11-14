@@ -30,6 +30,11 @@ export type EnumName =
   | 'NitaqatBand'
   | 'RecruitmentStage'
   | 'RecruitmentEvent'
+  | 'OfferEvent'
+  | 'ApprovalEntity'
+  | 'InterviewRecommendation'
+  | 'BankBatchType'
+  | 'NitaqatGroup'
   | 'EmploymentType';
 
 /** "Half day" → "HalfDay", "pending" → "Pending", "PendingHRApproval" unchanged. */

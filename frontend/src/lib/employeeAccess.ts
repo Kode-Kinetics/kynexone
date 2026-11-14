@@ -271,6 +271,20 @@ export type EmployeeRowState = 'not_active' | 'awaiting_pay_approval' | 'active'
 const LEFT_OR_HELD: Readonly<Record<string, EmployeeRowState>> = {
   suspended: 'suspended', offboarded: 'offboarded', terminated: 'ended', exited: 'ended', archived: 'ended', inactive: 'inactive',
 };
+/**
+ * The words on the "Employee active" row. A Draft person is shown as a Draft: the API's merged
+ * "awaiting pay approval" alone read as if the employee were already on payroll.
+ */
+export function employeeStateLabel(state: EmployeeRowState, status: string | null | undefined): string {
+  const draft = (status ?? '').trim().toLowerCase() === 'draft';
+  if (draft && state === 'not_active') return 'Not active yet (Draft)';
+  if (draft && state === 'awaiting_pay_approval') return 'Awaiting pay approval (Draft)';
+  return EMPLOYEE_STATE_LABEL[state];
+}
+const EMPLOYEE_STATE_LABEL: Record<EmployeeRowState, string> = {
+  not_active: 'Not active yet', awaiting_pay_approval: 'Awaiting pay approval', active: 'Active', suspended: 'Employment suspended',
+  offboarded: 'Offboarding in progress', ended: 'Employment ended', inactive: 'Employee inactive',
+};
 export type LoginRowState = 'no_login' | 'login_enabled' | 'access_stopped';
 export type PasswordRowState = 'not_set_up' | 'code_given' | 'password_set' | 'unknown';
 

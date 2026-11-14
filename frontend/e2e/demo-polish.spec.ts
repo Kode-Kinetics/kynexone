@@ -274,6 +274,22 @@ for (const locale of LOCALES) {
       for (const v of voided) expect(v).toMatch(locale === 'ar' ? /مُبطَل/ : /Voided/);
       await shot(page, 'payroll-run-selector', locale);
     });
+
+    test('the Payslips tab groups voided runs too, and shows dates and the language by name in the viewer\'s language', async ({ page }) => {
+      const slip = { id: 'ps-1', payrollRunId: RUN_ID, employeeId: 1, employeeCode: 'EMP-1', employeeName: 'Nora Alharbi', payslipNumber: 'PS-2026-11-0001', language: 'en', isPublishedToEss: true, createdAtUtc: '2026-11-13T17:42:41Z', publishedAtUtc: '2026-11-13T18:00:00Z' };
+      await boot(page, { locale, url: '/payroll?tab=payslips', routes: payroll(path => path === `/api/payroll/runs/${RUN_ID}/payslips` ? { items: [slip], total: 1, page: 1, pageSize: 100 } : undefined), waitMs: 2500 });
+      const select = page.getByRole('tabpanel').getByRole('combobox').first();
+      await expect(select).toBeVisible({ timeout: 90_000 });
+      const groups = await select.locator('optgroup').evaluateAll(els => els.map(e => (e as HTMLOptGroupElement).label));
+      expect(groups).toEqual([locale === 'ar' ? 'المسيرات المُبطَلة' : 'Voided runs']);
+      await select.selectOption(RUN_ID);
+      const row = page.getByRole('row').filter({ hasText: 'PS-2026-11-0001' });
+      await expect(row).toBeVisible({ timeout: 30_000 });
+      const text = await row.innerText();
+      expect(text).toContain(locale === 'ar' ? 'الإنجليزية' : 'English');
+      expect(text).not.toMatch(/\bEN\b/);
+      if (locale === 'ar') expect(text).not.toMatch(/Nov \d+, 2026/);
+    });
   });
 }
 
@@ -295,8 +311,12 @@ const OFFER_WORKSPACE = {
   compensationSnapshot: { schemaVersion: 1, currency: 'SAR', precision: 2, components: OFFER_COMPONENTS, monthlyCash: 5940, annualRecurringCash: 71280, oneTimeCash: 0, basicSalary: 4400, housingAllowance: 1100, transportAllowance: 440, otherAllowances: 0, policyVersion: 1, policySource: 'Company' },
   designSnapshot: null,
 };
+const OFFER_EVENTS = ['DraftSaved', 'Frozen', 'ApprovalRequested', 'ApprovalDecided', 'IssuanceReserved', 'EmailQueued', 'EmailTransportResult', 'EmailIssued']
+  .map((eventType, i) => ({ id: `e-${i}`, eventType, occurredAtUtc: `2026-11-12T0${i}:00:00Z`, actorName: 'Admin', dataJson: '{}' }));
 const offerRoutes: Handler = path => {
   if (path === `/api/recruitment/offers/${OFFER_ID}/workspace`) return OFFER_WORKSPACE;
+  if (path === `/api/recruitment/offers/${OFFER_ID}`) return { offer: OFFER_WORKSPACE.offer, approvals: [], approval: { required: true, isAuthor: true, canSend: false, sendBlockedReason: 'Open the offer workspace and choose explicit email delivery or record confirmed external sending.', myPendingStepId: null } };
+  if (path === `/api/recruitment/offers/${OFFER_ID}/events`) return { items: OFFER_EVENTS, total: OFFER_EVENTS.length, page: 1, pageSize: 20 };
   if (path === '/api/recruitment/offer-templates/defaults') return { design: { schemaVersion: 2 }, tokens: [] };
   return undefined;
 };
@@ -325,6 +345,21 @@ for (const locale of LOCALES) {
         expect(body).not.toMatch(/^\d+\. Basic salary/m);
       }
       await shot(page, 'offer-terms', locale);
+    });
+
+    test('a Sent offer shows its real state on Approvals and readable event names on History', async ({ page }) => {
+      await boot(page, { locale, url: `/recruitment/offers/${OFFER_ID}`, routes: offerRoutes, waitMs: 2500 });
+      const panel = page.getByRole('tabpanel');
+      await expect(page.getByRole('tab', { name: locale === 'ar' ? 'الموافقات' : 'Approvals' })).toBeVisible({ timeout: 90_000 });
+      await page.getByRole('tab', { name: locale === 'ar' ? 'الموافقات' : 'Approvals' }).click();
+      await expect(panel.getByText(locale === 'ar' ? 'أُرسل العرض إلى المرشح وبانتظار رده.' : "Sent to the candidate; awaiting the candidate's response.")).toBeVisible();
+      await expect(panel.getByText(/Open the offer workspace|افتح مساحة العرض الوظيفي/)).toHaveCount(0);
+      await page.getByRole('tab', { name: locale === 'ar' ? 'السجل' : 'History' }).click();
+      await expect(page.getByRole('tabpanel')).toContainText(locale === 'ar' ? 'حُفظت المسودة' : 'Draft saved', { timeout: 20_000 });
+      const history = await page.getByRole('tabpanel').innerText();
+      for (const raw of ['EmailIssued', 'EmailTransportResult', 'EmailQueued', 'IssuanceReserved', 'ApprovalDecided', 'ApprovalRequested', 'DraftSaved']) expect(history).not.toContain(raw);
+      expect(history).toContain(locale === 'ar' ? 'حُفظت المسودة' : 'Draft saved');
+      await shot(page, 'offer-history', locale);
     });
   });
 }

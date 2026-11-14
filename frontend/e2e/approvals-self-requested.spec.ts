@@ -97,6 +97,10 @@ test('a self-requested change says why it cannot be approved, and what it change
   await expect(mine.getByText('Changes: IBAN, passport')).toBeVisible();
   await expect(mine.getByText('Your request')).toBeVisible();
   await expect(page.getByText('Watching')).toHaveCount(0);
+  // The API's codes are read as words: no class name, no "Role:" prefix.
+  await expect(mine.getByText('Employee change request', { exact: false })).toBeVisible();
+  await expect(page.getByText('EmployeeChangeRequest')).toHaveCount(0);
+  await expect(page.getByText('Role:HR Manager')).toHaveCount(0);
   // The decidable row still offers the decision.
   await expect(page.getByRole('row').filter({ hasText: 'Omar Haddad' }).getByRole('button', { name: 'Review' })).toBeVisible();
   if (EVIDENCE) await page.screenshot({ path: `${EVIDENCE}/approvals-list.png` });

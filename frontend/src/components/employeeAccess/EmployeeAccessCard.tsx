@@ -86,6 +86,7 @@ export function EmployeeAccessCard({
     <Shell title={t('Self-service')}>
       <AccessStatesPanel
         states={states}
+        employeeStatus={employeeStatus}
         access={access}
         accessProblem={problem}
         onRetryAccess={() => void load()}

@@ -542,10 +542,10 @@ function BreakdownCard({ standing }: { standing: NitaqatStanding }) {
             {standing.breakdown.map((b) => (
               <tr key={`${b.classification}-${b.countBasis}-${b.category}`}>
                 <td className="px-2 py-1.5 text-slate-700 dark:text-slate-200">
-                  {b.classification} · {b.countBasis}
+                  {enumLabel(t, 'NitaqatGroup', b.classification)} · {enumLabel(t, 'NitaqatGroup', b.countBasis)}
                   {b.category !== 'Standard' && (
                     <span className="ms-1 rounded bg-slate-100 px-1.5 py-0.5 text-caption text-slate-600 dark:bg-white/[0.06] dark:text-slate-300">
-                      {b.category}
+                      {enumLabel(t, 'NitaqatGroup', b.category)}
                     </span>
                   )}
                   {!b.isVerified && (

@@ -274,7 +274,7 @@ export function RunPipeline({ runId, onSelectRun, onNavigate, version, onRunsCha
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-h4 font-semibold text-fg">{runLabel(run)}</span>
             <span className="badge badge-neutral"><EnumLabel enum="PayrollRunStatus" value={run.status} /></span>
-            {currencyCode && <span className="text-body-sm text-fg-muted"><bdi>{currencyCode}</bdi></span>}
+            {currencyCode && <span className="text-body-sm text-fg-muted">{t('Amounts in {currency}', { currency: fmt.currencyLabel(currencyCode) })}</span>}
           </div>
 
           {model.voided && <p role="status" className="rounded-lg border border-line bg-surface-sunken px-3 py-2 text-body-sm text-fg-muted">{t('This run was voided. It has no further stages.')}</p>}
