@@ -4256,7 +4256,9 @@ public partial class PayrollController : ControllerBase
         // and post its cash journal after a concurrent void of the run had committed. Waiting on the run row
         // makes the two strictly sequential: this settle then reads the committed status (Voided -> refused
         // below) and the void, if it comes second, sees the settlement and asks for its cash election.
-        // Lock order is batch advisory lock -> run row; no path takes the run row and then a batch lock.
+        // Lock order is batch advisory lock -> run row -> the leaver's loan, then advance, locks (FinalizePaidSettlementsAsync);
+        // no path takes the run row and then a batch lock, and none takes a debt lock and then a run row or a batch lock.
+        // The full order is documented on FinanceDecisionSerializer.AcquireDebtLocksAsync.
         var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
         if (run is null) return NotFound();
@@ -4691,10 +4693,33 @@ public partial class PayrollController : ControllerBase
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var employeeReceivableAccount = GlAccountResolver.AccountLabel(
             GlControlAccounts.EmployeeReceivableDriver, glCtx);
+        // The leaver's loans and advances are LOCKED before their balances are read. A payroll run that includes the same leaver
+        // collects an instalment from them under the same finance.loan / finance.advance locks; without these, one write overwrote
+        // the other and the employee repaid through payroll while the whole residual also moved to 1420. The unlocked look only
+        // names the candidates; the tracked rows are read after the locks, so the residual is what payroll left, and payroll, if
+        // it comes second, sees the debt already moved. Lock order: the caller holds the batch-payment lock (and, for the bank
+        // settlement, the run row); the debt locks come next, loans then advances, each ascending (AcquireDebtLocksAsync).
+        System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
+            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
+            && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
+            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
+            && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0;
+        var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
+        var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
+        await Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
+        var loans = loanIds.Count == 0 ? new List<EmployeeLoan>() : await _db.EmployeeLoans
+            .Where(openLoan).Where(l => loanIds.Contains(l.Id))
+            .ToListAsync(ct);
+        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await _db.SalaryAdvances
+            .Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
+            .ToListAsync(ct);
+
         // AvailableForRelief, never the raw scoped balance: the unattributed (CompanyId == null) pool sits
         // inside every company's view while the relief posted against it is stamped with the relieving
         // company, so two entities reading the same pool would each relieve it in full and drive the ASSET
-        // into credit. Same clamp POD-B1b's loan remittance uses.
+        // into credit. Same clamp POD-B1b's loan remittance uses. Read after the debt locks, so a cash
+        // settlement of one of these loans that committed first is already in the balance.
         var loanBalance    = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, loanReceivableAccount, ct);
         var advanceBalance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, advanceReceivableAccount, ct);
         var reclassBudget = new Dictionary<string, decimal>(StringComparer.Ordinal)
@@ -4702,15 +4727,6 @@ public partial class PayrollController : ControllerBase
             [loanReceivableAccount]    = Math.Max(0m, loanBalance.AvailableForRelief),
             [advanceReceivableAccount] = Math.Max(0m, advanceBalance.AvailableForRelief),
         };
-
-        var loans = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
-                     && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
-            .ToListAsync(ct);
-        var advances = await _db.SalaryAdvances
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
-                     && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
-            .ToListAsync(ct);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         decimal totalReclassed = 0m, totalUnbooked = 0m;

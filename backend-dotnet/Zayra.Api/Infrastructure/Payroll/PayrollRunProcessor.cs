@@ -556,10 +556,12 @@ public sealed class PayrollRunProcessor
         // A first, unlocked look. The loans this run collects from are locked and re-read inside the transaction below.
         var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
         var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
-        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
-            .ToListAsync(cancellationToken);
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
+            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd);
+        // A first, unlocked look, like the loans: the advances this run collects from are locked and re-read inside the transaction.
+        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
+        var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
 
         var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
@@ -1074,11 +1076,14 @@ public sealed class PayrollRunProcessor
             // uses), so it cannot deadlock against them. The loans are then re-read under the lock: one settled in cash
             // after the unlocked look above drops out, and no payoff can commit until this run has committed its
             // instalment, after which RecordRepayment refuses because an unlocked run holds that instalment.
-            foreach (var loanId in loanCandidateIds.Distinct()
-                         .OrderBy(x => FinanceDecisionSerializer.ComputeLockKey(FinanceDecisionSerializer.ScopeLoan, tenantId, x)))
-                await FinanceDecisionSerializer.AcquireAsync(_db, FinanceDecisionSerializer.ScopeLoan, tenantId, loanId, cancellationToken);
+            // The advances follow the loans, in the one order every multi-lock writer uses (FinanceDecisionSerializer.AcquireDebtLocksAsync):
+            // the leaver-settlement payment moves both to 1420 and the void restores both, and each re-reads them under these locks.
+            await FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanCandidateIds, advanceCandidateIds, cancellationToken);
             activeLoans = loanCandidateIds.Count == 0 ? [] : await Op(_db.EmployeeLoans).AsNoTracking()
                 .Where(collectableLoan).Where(l => loanCandidateIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
+            activeAdvances = advanceCandidateIds.Count == 0 ? [] : await Op(_db.SalaryAdvances).AsNoTracking()
+                .Where(collectableAdvance).Where(a => advanceCandidateIds.Contains(a.Id))
                 .ToListAsync(cancellationToken);
 
             // Idempotent delete of previously-generated rows (enrolls in this tx).
@@ -2477,8 +2482,7 @@ public sealed class PayrollRunProcessor
             .Where(collectableLoan)
             .ToListAsync(cancellationToken);
         var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await Op(_db.SalaryAdvances)
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
+            .Where(collectableAdvance)
             .ToListAsync(cancellationToken);
 
         // POD-B3 — the loan witness is UNCONDITIONAL and PER-LOAN, and it records the balances as they were
