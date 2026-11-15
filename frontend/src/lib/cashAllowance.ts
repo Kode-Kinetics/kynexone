@@ -66,9 +66,10 @@ export function addBenefitProblems(f: AddBenefitForm): AddBenefitProblems {
   return { ...out, ...eosbProblems(f) };
 }
 
-/** The request to send. A contract benefit carries nothing about pay; a cash allowance carries its GL account and end of service choice. */
-export function addBenefitRequest(f: AddBenefitForm): CreateBenefitBody {
-  const base = { nameEn: f.nameEn.trim() || null, nameAr: f.nameAr.trim() || null };
+/** The request to send. A contract benefit carries nothing about pay; a cash allowance carries its GL account and end of service choice.
+ *  From a company's view (`companyId`) it is that company's own benefit; the group view sends no company. */
+export function addBenefitRequest(f: AddBenefitForm, companyId?: string | null): CreateBenefitBody {
+  const base = { nameEn: f.nameEn.trim() || null, nameAr: f.nameAr.trim() || null, ...(companyId ? { companyId } : {}) };
   if (f.kind !== 'Cash') return { ...base, kind: 'Contract' };
   return { ...base, kind: 'Cash', glDriverKey: f.glDriverKey.trim(), ...eosbRequest(f) };
 }

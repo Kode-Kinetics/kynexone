@@ -306,3 +306,13 @@ test('a payroll readiness line is named by the allowance, in the reader’s lang
   expect(readinessIssueHref({ code: 'x', href: 'https://evil.example/' })).toBe('/benefits/by-grade');
   expect(readinessIssueHref({ code: 'x', href: '//evil.example/' })).toBe('/benefits/by-grade');
 });
+
+// A company's own benefit: added from that company's view, the request names the company (the server checks the caller may reach it).
+
+test('from a company view the request names the company; from the group view it never carries one', () => {
+  const form = { ...blankAddBenefit, nameEn: 'Parking' };
+  expect(addBenefitRequest(form, 'company-1')).toEqual({ nameEn: 'Parking', nameAr: null, kind: 'Contract', companyId: 'company-1' });
+  expect(addBenefitRequest(cash(), 'company-1')).toMatchObject({ kind: 'Cash', glDriverKey: 'EARN:PHONE', companyId: 'company-1' });
+  expect(addBenefitRequest(form, null)).not.toHaveProperty('companyId');
+  expect(addBenefitRequest(form)).not.toHaveProperty('companyId');
+});

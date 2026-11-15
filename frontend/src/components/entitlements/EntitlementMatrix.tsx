@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { Banknote, Check, ChevronLeft, ChevronRight, Hourglass, Info, Plus, TriangleAlert } from 'lucide-react';
+import { Banknote, Building2, Check, ChevronLeft, ChevronRight, Hourglass, Info, Plus, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   entitlementsApi, type BlockReason, type EntitlementMatrix as Matrix, type MatrixCellError, type MatrixComponent, type MatrixGrade,
@@ -12,6 +12,7 @@ import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { LegacyImportPanel } from './LegacyImportPanel';
 import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
+import { isolateName } from '../../lib/bidi';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
 import {
@@ -31,7 +32,7 @@ import { Skeleton } from '../ui/Skeleton';
 import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 import { MatrixCell as GridCell } from './MatrixCell';
 import {
-  cellView, gradeWindow, monthlyFixedTotals, needsValueCodes, rowChip, statusSummary, type RowChip, type StatusItem,
+  benefitPowers, cellView, gradeWindow, monthlyFixedTotals, needsValueCodes, rowChip, statusSummary, type RowChip, type StatusItem,
 } from '../../lib/benefitsGrid';
 import {
   FLOOR_PROBLEM, applyFromGradeUpward, applySameForAll, blankDraft, cellKey, dependantKeys, draftFromCell, draftProblem, groupKeys, groupOrder,
@@ -173,8 +174,11 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   const scheduled = useMemo(() => new Map((matrix?.gaps ?? []).filter(g => g.scheduledFrom).map(g => [cellKey(g.gradeId, g.componentCode), g.scheduledFrom!])), [matrix]);
   // An allowance still waiting for Finance takes no grade value: it is not a gap to set and not a step in the guide.
   const pendingCodes = useMemo(() => new Set(components.filter(isPendingFinance).map(c => c.code)), [components]);
-  // A new benefit is a row for the whole group, so it is added from the group view by someone who can reach every company.
-  const canAddBenefit = canManage && !companyId && isGroupScope;
+  // A new benefit is the group's when added from the group view (by someone who can reach every company), or the viewed company's own when added from
+  // that company's view — only against a server that supports a company's own benefits (an older one would add it for every company). Remove follows
+  // ownership: a group benefit from the group view, a company's own from its company's view.
+  const powers = benefitPowers({ canManage, isGroupScope, companyId, companyBenefits: !!matrix?.capabilities?.companyBenefits });
+  const canAddBenefit = powers.canAdd;
   const dirty = changed.length > 0;
 
   // Every edit is kept in the browser as it is made, so nothing typed is lost to a reload or a new benefit.
@@ -360,11 +364,14 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
       </div>
     </>}
 
-    {adding && canAddBenefit && <AddBenefitDialog onClose={() => setAdding(false)} onAdded={async (name, benefit) => { addedBenefit(name, benefit); await load(asOf); }} />}
+    {adding && canAddBenefit && <AddBenefitDialog companyId={companyId || null} companyName={companyId ? companyLabel : ''}
+      onClose={() => setAdding(false)} onAdded={async (name, benefit) => { addedBenefit(name, benefit); await load(asOf); }} />}
 
     {added && <ResultBanner
       changed={added.pending ? t('Added. Finance must confirm the GL account and end-of-service setting before it can be used.') : fillTemplate(t('{benefit} was added.'), { benefit: added.name })}
-      where={added.pending ? undefined : t('Benefits by grade, group default. Not live until you publish values.')}
+      where={added.pending ? undefined : companyId
+        ? fillTemplate(t('Benefits by grade, {company} only. Not live until you publish values.'), { company: isolateName(companyLabel) })
+        : t('Benefits by grade, group default. Not live until you publish values.')}
       next={!added.pending && grades[0] ? { label: fillTemplate(t('Set values for {benefit}'), { benefit: added.name }), onClick: () => openCell(cellKey(grades[0].id, added.code)) } : undefined}
       onDismiss={() => setAdded(null)} />}
     {error && <p role="alert" className="text-body text-danger-fg">{error}</p>}
@@ -419,7 +426,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
             component: c, grades, drafts, original, gapKeys, offering: offering(c.code), companyView: !!companyId, canManage, today: matrix.today, companyId,
             canFinance, makerBlocked: makerBlocked.has(c.code), financeOpen: finance?.code === c.code ? finance.mode : null,
             onFinance: (mode: 'confirm' | 'correct') => { setFinance({ code: c.code, mode }); setNotice(''); setCautions([]); setStaleNote(''); setEditing(null); },
-            canRemove: canAddBenefit, onRemoved: (name: string) => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); },
+            canRemove: powers.canRemove(c), onRemoved: (name: string) => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); },
             onEdit: openCell, onMarkRest: () => setDrafts(list => markRestNotOffered(list, grades, c, new Set(scheduled.keys()))), onOfferingChanged: () => void load(asOf),
             say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled, isNew: newCode === c.code,
           });
@@ -775,7 +782,10 @@ function GuideStrip({ progress, changes, canManage, status, pendingNames, nextLa
  * expense posts to and an end of service choice (a category and a note). GOSI and WPS are shown as fixed. What the server refuses
  * is said next to its field. Added by someone without the Finance permission, a cash allowance waits for Finance to confirm it.
  */
-function AddBenefitDialog({ onAdded, onClose }: { onAdded: (name: string, added: MatrixComponent) => Promise<void>; onClose: () => void }) {
+/** `companyId`: added from that company's view, it is the company's own benefit (no other company sees it); null from the group view. */
+function AddBenefitDialog({ companyId, companyName, onAdded, onClose }: {
+  companyId: string | null; companyName: string; onAdded: (name: string, added: MatrixComponent) => Promise<void>; onClose: () => void;
+}) {
   const { t, locale } = useLocale();
   const [form, setForm] = useState<AddBenefitForm>(blankAddBenefit);
   const [busy, setBusy] = useState(false);
@@ -790,7 +800,7 @@ function AddBenefitDialog({ onAdded, onClose }: { onAdded: (name: string, added:
   const set = (patch: Partial<AddBenefitForm>) => { setForm(f => ({ ...f, ...patch })); setServer(null); setProblems({}); };
 
   // The GL accounts are read when they are first needed: a contract benefit never asks for them.
-  const { gl, retry } = useCashGlChoices(cash);
+  const { gl, retry } = useCashGlChoices(cash, companyId);
 
   useEffect(() => {
     if (!focus) return;
@@ -806,7 +816,7 @@ function AddBenefitDialog({ onAdded, onClose }: { onAdded: (name: string, added:
     if (first) { ask(first); return; }
     setBusy(true);
     try {
-      const added = await entitlementsApi.addBenefit(addBenefitRequest(form));
+      const added = await entitlementsApi.addBenefit(addBenefitRequest(form, companyId));
       await onAdded(localName(locale, added.nameEn, added.nameAr), added);
     } catch (err) {
       const refused = benefitServerProblem(err, t('Unable to add the benefit.'));
@@ -833,6 +843,10 @@ function AddBenefitDialog({ onAdded, onClose }: { onAdded: (name: string, added:
     </>}>
     <form id="add-benefit-form" onSubmit={e => void submit(e)} noValidate className="space-y-4">
       <p data-purpose className="text-body text-fg-muted">{t('Add a benefit that every grade can receive. You set its value for each grade next.')}</p>
+      {companyId && <p data-testid="add-benefit-company" className="flex items-start gap-2 rounded-lg border border-info/30 bg-info-soft p-2 text-body text-fg">
+        <Building2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+        <span>{fillTemplate(t('Only {company} gets this benefit. Other companies don’t see it.'), { company: isolateName(companyName) })}</span>
+      </p>}
     <div className="grid gap-3 sm:grid-cols-2">
       <p className="text-meta text-fg-muted sm:col-span-2">{t('Enter the name in English, Arabic or both.')}</p>
       <label className="text-body">{t('Benefit name (English)')}

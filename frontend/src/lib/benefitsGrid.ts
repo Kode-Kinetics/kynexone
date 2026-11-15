@@ -49,11 +49,11 @@ export function cellView(i: CellViewInput): CellView {
   return { kind: 'set', pencil: i.canEdit, setCall: false, interactive: true };
 }
 
-export type OfferingMode = 'Group' | 'Adopted' | 'Tailored' | 'Skipped';
+export type OfferingMode = 'Group' | 'Adopted' | 'Tailored' | 'Skipped' | 'Own';
 
 export interface RowChip {
   /** The short text shown, and its i18n key. */
-  key: 'Waiting for Finance' | 'Not offered' | 'Tailored' | 'Adopted' | 'New' | 'Added by you';
+  key: 'Waiting for Finance' | 'Not offered' | 'Tailored' | 'Adopted' | 'This company only' | 'New' | 'Added by you';
   /** The full wording, for the chip's title and name (an i18n key). */
   title: string;
   tone: 'warning' | 'neutral' | 'info' | 'success';
@@ -65,9 +65,27 @@ export function rowChip(row: { pending: boolean; mode?: OfferingMode; companyVie
   if (row.companyView && row.mode === 'Skipped') return { key: 'Not offered', title: 'Not offered by this company', tone: 'neutral' };
   if (row.companyView && row.mode === 'Tailored') return { key: 'Tailored', title: 'Tailored for this company', tone: 'info' };
   if (row.companyView && row.mode === 'Adopted') return { key: 'Adopted', title: 'Adopted from the group', tone: 'success' };
+  if (row.companyView && row.mode === 'Own') return { key: 'This company only', title: 'Added for this company, which alone offers it', tone: 'info' };
   if (row.isNew) return { key: 'New', title: 'Added just now', tone: 'info' };
   if (row.isCustom) return { key: 'Added by you', title: 'Added by you', tone: 'neutral' };
   return null;
+}
+
+/**
+ * Who may add and remove a customer-added benefit in the grid being shown. The group view (no company): someone who reaches every company, as before.
+ * A company's view: anyone who manages benefits and can open that company (the server checks the company again), but only against a server that
+ * says it supports a company's own benefits (`companyBenefits`) — an older one would ignore the company and add the benefit for every company.
+ * Remove follows ownership: a group benefit from the group view only, a company's own from that company's view only.
+ */
+export function benefitPowers(v: { canManage: boolean; isGroupScope: boolean; companyId: string; companyBenefits: boolean }): {
+  canAdd: boolean; canRemove: (c: { ownerCompanyId?: string | null }) => boolean;
+} {
+  const groupView = !v.companyId;
+  const canAdd = v.canManage && (groupView ? v.isGroupScope : v.companyBenefits);
+  return {
+    canAdd,
+    canRemove: c => v.canManage && (c.ownerCompanyId ? c.ownerCompanyId === v.companyId : groupView && v.isGroupScope),
+  };
 }
 
 /**

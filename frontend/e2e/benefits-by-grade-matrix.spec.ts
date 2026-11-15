@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { LOCALE_DICTS } from '../src/i18n/translations';
+import { isolateName } from '../src/lib/bidi';
 
 /**
  * Benefits by grade (Release A R1) in a real browser, against route mocks. The mocks are not hand-written: they are the
@@ -57,7 +58,8 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
 }
 
-async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[]; publishRefusal?: unknown } = {}) {
+async function boot(page: Page, locale: Locale, options: { matrix?: unknown; companyMatrix?: unknown; permissions?: string[]; roles?: string[]; plans?: unknown[]; publishRefusal?: unknown;
+  isGroupScope?: boolean; myCompanies?: { id: string; name: string }[] } = {}) {
   const errors: string[] = [];
   const publishes: { dryRun: boolean; body: any }[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -68,9 +70,9 @@ async function boot(page: Page, locale: Locale, options: { matrix?: unknown; com
   await page.route('**/api/**', route => {
     const request = route.request(); const url = new URL(request.url()); const p = url.pathname;
     if (p === '/api/auth/me') return route.fulfill({ json: {
-      id: 'user-1', tenantId: 'tenant-1', tenantSlug: 'masar', fullName: 'Hala Al-Qahtani', roles: options.roles ?? ['HR Director'], isGroupScope: true,
+      id: 'user-1', tenantId: 'tenant-1', tenantSlug: 'masar', fullName: 'Hala Al-Qahtani', roles: options.roles ?? ['HR Director'], isGroupScope: options.isGroupScope ?? true,
       permissions: options.permissions ?? ['entitlements.read', 'entitlements.manage'],
-      companies: companies.map((c, i) => ({ ...c, code: `M${i + 1}`, countryCode: 'SA', isActive: true })),
+      companies: (options.myCompanies ?? companies).map((c, i) => ({ ...c, code: `M${i + 1}`, countryCode: 'SA', isActive: true })),
     } });
     if (p === '/api/entitlements/matrix' && request.method() === 'GET')
       return route.fulfill({ json: url.searchParams.get('companyId') ? (options.companyMatrix ?? logisticsMatrix) : (options.matrix ?? groupMatrix) });
@@ -542,6 +544,138 @@ for (const locale of ['en', 'ar'] as const) {
       await page.keyboard.press('Escape');
       await expect(drawer).toHaveCount(0);
       await expect(cellButton(page, locale, 'PER_DIEM', 'G5')).toBeFocused();
+      expect(errors).toEqual([]);
+    });
+
+    // ── A company's own benefits: added from the company's view, for that company only ──────────────────────────────
+    const logistics = companies.find(c => c.id === logisticsMatrix.companyId)!;
+    const ownParking = {
+      code: 'BEN_PARKING_K3P9QZ', nameEn: 'Parking', nameAr: 'موقف', class: 'Contractual', floor: 'None', group: 'Contract',
+      allowedValueTypes: ['Amount', 'InKind', 'Quantity'], allowedCoverageTiers: [], allowedDependantScopes: ['None'],
+      allowedLimitPeriods: ['Annual'], defaultLimitPeriod: 'Annual', isFloor: false, canBeSkipped: true, isLoanFacility: false,
+      floorReason: null, isCustom: true, ownerCompanyId: logisticsMatrix.companyId,
+    };
+    const companyView = (extra: unknown[] = []) => ({
+      ...logisticsMatrix, capabilities: { benefitDefinition: false, companyBenefits: true },
+      components: [...logisticsMatrix.components, ...extra],
+      offerings: [...logisticsMatrix.offerings, ...extra.map((c: any) => ({ componentCode: c.code, mode: 'Own', offered: true, skippedFrom: null, changesOn: null, canBeSkipped: false }))],
+      gaps: [...logisticsMatrix.gaps, ...extra.flatMap((c: any) => logisticsMatrix.grades.map((g: { id: string }) => ({ gradeId: g.id, componentCode: c.code, scheduledFrom: null })))],
+    });
+
+    test('a company admin adds a benefit for their own company only: the dialog says so, the request names the company, and the row is theirs to remove', async ({ page }) => {
+      const { errors } = await boot(page, locale, { isGroupScope: false, myCompanies: [logistics], companyMatrix: companyView() });
+      let exists = false;
+      const calls: { path: string; body: any }[] = [];
+      await page.route('**/api/entitlements/**', route => {
+        const request = route.request(); const p = new URL(request.url()).pathname;
+        if (p === '/api/entitlements/components' && request.method() === 'POST') { calls.push({ path: p, body: request.postDataJSON() }); exists = true; return route.fulfill({ json: ownParking }); }
+        if (p === `/api/entitlements/components/${ownParking.code}/remove` && request.method() === 'POST') { calls.push({ path: p, body: null }); exists = false; return route.fulfill({ json: { removed: ownParking.code } }); }
+        if (p === '/api/entitlements/matrix' && request.method() === 'GET') return route.fulfill({ json: companyView(exists ? [ownParking] : []) });
+        return route.fallback();
+      });
+      const benefit = locale === 'ar' ? ownParking.nameAr : ownParking.nameEn;
+
+      // No group option for a company admin: the grid is their company's, and Add benefit is there.
+      await expect(page.getByRole('combobox', { name: say(locale, 'Applies to') })).toHaveValue(logistics.id);
+      await addBenefitButton(page, locale).click();
+      const dialog = addDialog(page, locale);
+      await expect(dialog.getByText(say(locale, 'Only {company} gets this benefit. Other companies don’t see it.', { company: isolateName(logistics.name) }))).toBeVisible();
+      await shot(page, `company-add-benefit-dialog-${locale}`);
+      await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Parking');
+      await page.getByLabel(say(locale, 'Benefit name (Arabic)')).fill('موقف');
+      await submitAdd(page, locale).click();
+
+      const banner = page.locator('[data-result]');
+      await expect(banner).toContainText(say(locale, '{benefit} was added.', { benefit }));
+      await expect(banner).toContainText(say(locale, 'Benefits by grade, {company} only. Not live until you publish values.', { company: isolateName(logistics.name) }));
+      expect(calls[0]).toMatchObject({ path: '/api/entitlements/components', body: { nameEn: 'Parking', nameAr: 'موقف', kind: 'Contract', companyId: logistics.id } });
+      await page.reload();
+      await expect(page.getByRole('row').filter({ hasText: benefit }).getByTestId('row-chip')).toHaveText(say(locale, 'This company only'));
+      await shot(page, `company-own-benefit-row-${locale}`);
+
+      // Theirs to remove; a group benefit in the same grid is not.
+      await rowMenu(page, locale, locale === 'ar' ? component('AIR_TICKET').nameAr : component('AIR_TICKET').nameEn).click();
+      await expect(page.getByRole('menuitem', { name: say(locale, 'Remove benefit') })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await rowMenu(page, locale, benefit).click();
+      await page.getByRole('menuitem', { name: say(locale, 'Remove benefit'), exact: true }).click();
+      await page.getByRole('button', { name: say(locale, 'Yes, remove it'), exact: true }).click();
+      await expect(page.getByText(say(locale, '{benefit} was removed.', { benefit }))).toBeVisible();
+      expect(calls[1]).toMatchObject({ path: `/api/entitlements/components/${ownParking.code}/remove` });
+      expect(errors).toEqual([]);
+    });
+
+    test('a company admin adds a monthly cash allowance for their company: its GL accounts are the company’s, and Finance confirms it', async ({ page }) => {
+      const { errors } = await boot(page, locale, { isGroupScope: false, myCompanies: [logistics], companyMatrix: companyView() });
+      const glQueries: (string | null)[] = []; const calls: any[] = [];
+      await page.route('**/api/entitlements/components**', route => {
+        const request = route.request(); const url = new URL(request.url());
+        if (url.pathname === '/api/entitlements/components/cash-gl-drivers') {
+          glQueries.push(url.searchParams.get('companyId'));
+          return route.fulfill({ json: [{ key: 'EARN:FLEET', label: 'Fleet allowances', labelAr: null, usable: true, reasonCode: null, reason: null }] });
+        }
+        if (url.pathname === '/api/entitlements/components' && request.method() === 'POST') {
+          calls.push(request.postDataJSON());
+          return route.fulfill({ json: { ...ownParking, code: 'ALW_CAR_K3P9QZ', nameEn: 'Car', nameAr: 'بدل سيارة', class: 'QiwaWage', group: 'Wage', allowedValueTypes: ['Amount', 'PercentOfBasic'], canBeSkipped: false,
+            cashAllowance: { financePending: true, financeConfirmedAtUtc: null, glDriverKey: 'EARN:FLEET', eosbIncluded: true, eosbExclusionCategory: null, eosbExclusionReason: null, effectiveFrom: null } } });
+        }
+        return route.fallback();
+      });
+
+      await addBenefitButton(page, locale).click();
+      await page.getByLabel(say(locale, 'Benefit name (English)')).fill('Car');
+      await page.getByRole('radio', { name: say(locale, 'Yes, a monthly cash allowance paid in the salary') }).check();
+      const glSelect = page.getByLabel(say(locale, 'GL account for this allowance (required)'));
+      await glSelect.selectOption('EARN:FLEET');
+      await shot(page, `company-add-cash-allowance-dialog-${locale}`);
+      await submitAdd(page, locale).click();
+
+      await expect(page.locator('[data-result]')).toContainText(say(locale, 'Added. Finance must confirm the GL account and end-of-service setting before it can be used.'));
+      expect(glQueries).toContain(logistics.id);
+      expect(calls[0]).toMatchObject({ kind: 'Cash', glDriverKey: 'EARN:FLEET', companyId: logistics.id });
+      expect(errors).toEqual([]);
+    });
+
+    test('group HR in a company view adds for that company only when the server can; an older server keeps the button to the group view', async ({ page }) => {
+      const { errors } = await boot(page, locale, { companyMatrix: logisticsMatrix });
+      const toolbarCompany = page.getByRole('combobox', { name: say(locale, 'Applies to') });
+      await toolbarCompany.selectOption(logistics.id);
+      await expect(page.getByRole('row').filter({ hasText: locale === 'ar' ? component('AIR_TICKET').nameAr : component('AIR_TICKET').nameEn }).first()).toBeVisible();
+      await expect(page.getByRole('button', { name: say(locale, 'Add benefit'), exact: true })).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test('group HR in a company view, against a server that has company benefits, adds for that company', async ({ page }) => {
+      const { errors } = await boot(page, locale, { companyMatrix: companyView() });
+      await page.getByRole('combobox', { name: say(locale, 'Applies to') }).selectOption(logistics.id);
+      await addBenefitButton(page, locale).click();
+      await expect(addDialog(page, locale).getByText(say(locale, 'Only {company} gets this benefit. Other companies don’t see it.', { company: isolateName(logistics.name) }))).toBeVisible();
+      await page.keyboard.press('Escape');
+      await page.getByRole('combobox', { name: say(locale, 'Applies to') }).selectOption('');
+      await addBenefitButton(page, locale).click();
+      await expect(addDialog(page, locale).getByText(say(locale, 'Only {company} gets this benefit. Other companies don’t see it.', { company: isolateName(logistics.name) }))).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+
+    test('a company’s own benefit shows in its company’s grid and in no sister company’s', async ({ page }) => {
+      const facility = companies.find(c => c.id !== logisticsMatrix.companyId)!;
+      const { errors } = await boot(page, locale);
+      // The server answers each company's view with that company's catalogue: the sister company's has no trace of Logistics' own benefit.
+      await page.route('**/api/entitlements/matrix**', route => {
+        const request = route.request(); const id = new URL(request.url()).searchParams.get('companyId');
+        if (request.method() !== 'GET' || !id) return route.fallback();
+        return route.fulfill({ json: id === logistics.id ? companyView([ownParking]) : { ...companyView(), companyId: facility.id } });
+      });
+      const benefit = locale === 'ar' ? ownParking.nameAr : ownParking.nameEn;
+      const applies = page.getByRole('combobox', { name: say(locale, 'Applies to') });
+
+      await applies.selectOption(logistics.id);
+      await expect(page.getByRole('row').filter({ hasText: benefit }).getByTestId('row-chip')).toHaveText(say(locale, 'This company only'));
+      await shot(page, `company-own-benefit-in-its-company-${locale}`);
+      await applies.selectOption(facility.id);
+      await expect(page.getByRole('row').filter({ hasText: locale === 'ar' ? component('AIR_TICKET').nameAr : component('AIR_TICKET').nameEn }).first()).toBeVisible();
+      await expect(page.getByRole('row').filter({ hasText: benefit })).toHaveCount(0);
+      await shot(page, `company-own-benefit-absent-in-sister-${locale}`);
       expect(errors).toEqual([]);
     });
 
