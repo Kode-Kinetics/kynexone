@@ -358,6 +358,14 @@ public static class GlEventTypes
     /// </summary>
     public const string OpeningBalance = "OpeningBalance";
 
+    /// <summary>
+    /// The companion of a backfilled opening journal: payroll recovered from a carried-in loan or advance before its receivable
+    /// was booked, so the Lock credited that recovery to the clearing account (2107) instead of the receivable. This moves it back:
+    /// DR the clearing account the run used / CR 1400 or 1410. An ordinary journal (exported to the ERP, unlike
+    /// <see cref="OpeningBalance"/>), written by OpeningBalanceBackfillService in the same transaction as the opening journal.
+    /// </summary>
+    public const string OpeningBalanceClearingReclass = "OpeningBalanceClearingReclass";
+
     public static string Remit(string group)         => RemitPrefix + group;
     public static string RemitReversal(string group) => RemitReversalPrefix + group;
     public static string RemitReclass(string group)  => RemitReclassPrefix + group;
