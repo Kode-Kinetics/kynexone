@@ -40,7 +40,7 @@ import { useConfirm } from '../components/ui/useConfirm';
 import { useAppToast } from '../components/ui/AppToast';
 import { isGradeBlocked, isLoanTypeNotOffered, localName, reasonKeyFor } from '../lib/gradeLoanLimits';
 
-import { EnumLabel, type EnumName } from '../components/EnumLabel';
+import { EnumLabel, enumLabel, type EnumName } from '../components/EnumLabel';
 import { useFormat } from '../hooks/useFormat';
 // Loan types, loan policies, the advance policy and bonus types are configuration: they are Setup sections now.
 type Tab = 'loans' | 'loanPayments' | 'advances' | 'bonusBatches' | 'auditReport';
@@ -112,21 +112,23 @@ function SummaryCard({ label, value, sub, icon: Icon, color }: { label: string; 
 }
 
 function GlEntriesTable({ entries, fmt }: { entries: FinanceGlEntry[]; fmt: (n: number) => string }) {
-  if (entries.length === 0) return <p className="py-4 text-center text-xs text-slate-400">No GL entries recorded yet</p>;
+  const { t } = useLocale();
+  const fx = useFormat();
+  if (entries.length === 0) return <p className="py-4 text-center text-xs text-slate-400">{t('No GL entries recorded yet')}</p>;
   return (
     <div className="surface overflow-hidden">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Date', 'Event', 'Debit Account', 'Credit Account', 'Amount', 'Posted By'].map((h) => (
-              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
           {entries.map((e) => (
             <tr key={e.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-              <td className="px-3 py-2 font-mono text-slate-500">{e.entryDate}</td>
+              <td className="px-3 py-2 font-mono text-slate-500">{fx.plain.date(e.entryDate)}</td>
               <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{e.eventType}</td>
               <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{e.debitAccount}</td>
               <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{e.creditAccount}</td>
@@ -141,21 +143,23 @@ function GlEntriesTable({ entries, fmt }: { entries: FinanceGlEntry[]; fmt: (n: 
 }
 
 function AuditTrailTable({ logs }: { logs: AuditLogEntry[] }) {
-  if (logs.length === 0) return <p className="py-4 text-center text-xs text-slate-400">No audit events recorded</p>;
+  const { t } = useLocale();
+  const fx = useFormat();
+  if (logs.length === 0) return <p className="py-4 text-center text-xs text-slate-400">{t('No audit events recorded')}</p>;
   return (
     <div className="surface overflow-hidden max-h-48 overflow-y-auto">
       <table className="w-full text-xs">
         <thead>
           <tr className="border-b border-slate-100 dark:border-white/[0.07]">
             {['Timestamp', 'Action', 'Performed By', 'Details'].map((h) => (
-              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+              <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
           {logs.map((l) => (
             <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
-              <td className="px-3 py-2 font-mono text-slate-500">{new Date(l.createdAtUtc).toLocaleString()}</td>
+              <td className="px-3 py-2 font-mono text-slate-500">{fx.plain.dateTime(l.createdAtUtc)}</td>
               <td className="px-3 py-2 font-semibold text-slate-700 dark:text-slate-300">{l.action}</td>
               <td className="px-3 py-2 text-slate-500">{l.performedByName}</td>
               <td className="px-3 py-2 text-slate-500 truncate max-w-xs">{l.newValuesJson}</td>
@@ -421,7 +425,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
   const openDetail = async (loan: EmployeeLoan) => {
     setError('');
-    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, 'Unable to open loan.')); }
+    try { const d = await loansApi.get(loan.id); setSelected(d); setDetailTab('schedule'); setDetailModal(true); } catch (e) { setError(loanErrorMessage(e, t('Unable to open loan.'))); }
   };
 
   const createLoan = async () => {
@@ -442,7 +446,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       setCreateModal(false); setSelectedEmployee(null); load();
       onChanged();
     }
-    catch (e) { setError(loanErrorMessage(e, 'Failed to create loan.')); }
+    catch (e) { setError(loanErrorMessage(e, t('Failed to create loan.'))); }
     finally { setSaving(false); }
   };
 
@@ -461,13 +465,13 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, 'Failed to submit decision.')); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to submit decision.'))); }
     finally { setSaving(false); }
   };
 
   const recordReceipt = async () => {
     if (!selected) return;
-    if (receiptForm.amount <= 0 || receiptForm.amount > selected.loan.outstandingBalance || !receiptForm.paidDate || !receiptForm.reference.trim()) { setError('Enter an amount within the outstanding balance, payment date and receipt reference.'); return; }
+    if (receiptForm.amount <= 0 || receiptForm.amount > selected.loan.outstandingBalance || !receiptForm.paidDate || !receiptForm.reference.trim()) { setError(t('Enter an amount within the outstanding balance, payment date and receipt reference.')); return; }
     setSaving(true); setError('');
     try {
       await loansApi.recordRepayment(selected.loan.id, receiptForm);
@@ -475,7 +479,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       onChanged();
       const d = await loansApi.get(selected.loan.id); setSelected(d);
       load();
-    } catch (e) { setError(loanErrorMessage(e, 'Failed to record repayment.')); }
+    } catch (e) { setError(loanErrorMessage(e, t('Failed to record repayment.'))); }
     finally { setSaving(false); }
   };
 
@@ -483,11 +487,11 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
     <>
       <div className="space-y-4">
         {!createModal && !decideModal && !receiptModal && <FormError error={error} />}
-        <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.</p>
+        <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">{t('Request → Approval → Loan Payments → Payment confirmation → Repayment receipts. New loans use separate bank repayments by default.')}</p>
         <div className="flex items-center justify-between">
-          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title="Filter by status">
-            <option value="">All Statuses</option>
-            {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? 'Approved — awaiting payment' : s}</option>)}
+          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
+            <option value="">{t('All Statuses')}</option>
+            {['Pending', 'Approved', 'Active', 'Overdue', 'Settled', 'Rejected', 'Closed'].map((s) => <option key={s} value={s}>{s === 'Approved' ? t('Approved — awaiting payment') : enumLabel(t, 'LoanStatus', s)}</option>)}
           </select>
           <button type="button" onClick={() => { setCreateForm({ loanTypeId: loanTypes[0]?.id ?? '', requestedAmount: 0, requestedInstallments: 12, repaymentMethod: 'BankTransfer', notes: '' }); setSelectedEmployee(null); setEligibility(null); setPreview(null); setOfferedTypes(null); setOfferedTypesSettled(false); setRequestException(false); setConsentDocumentId(null); setCheckedKey(''); setError(''); setCreateModal(true); }} className="btn-primary">
             <Plus className="h-4 w-4" /> {t('New Loan Request')}
@@ -498,7 +502,7 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Loan #', 'Employee', 'Type / Repayment', 'Requested', 'Approved', 'Outstanding', 'Installment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -508,18 +512,18 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               ) : loadError != null ? (
                 <LoadFailedRow colSpan={10} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
-                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No loans found</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">{t('No loans found')}</td></tr>
               ) : items.map((l) => (
                 <tr key={l.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(l)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{l.loanNumber}</td>
                   <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{l.employeeName}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{repaymentMethodLabels[l.repaymentMethod]}</span></td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.loanTypeName}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[l.repaymentMethod])}</span></td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(l.requestedAmount, l.currency)}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.approvedAmount > 0 ? fmt(l.approvedAmount, l.currency) : '—'}</td>
                   <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(l.outstandingBalance, l.currency)}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{l.installmentAmount > 0 ? fmt(l.installmentAmount, l.currency) : '—'}</td>
-                  <td className="px-4 py-3"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">HR review required</span>}</td>
-                  <td className="px-4 py-3 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>View →</button></td>
+                  <td className="px-4 py-3"><StatusBadge status={l.status} />{l.reviewRequired && <span className="mt-1 block text-xs text-amber-700 dark:text-amber-300">{t('HR review required')}</span>}</td>
+                  <td className="px-4 py-3 text-sapphire text-xs"><button type="button" onClick={e => { e.stopPropagation(); openDetail(l); }} aria-label={`View loan ${l.loanNumber}`}>{t('View →')}</button></td>
                 </tr>
               ))}
             </tbody>
@@ -527,11 +531,11 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
         </div>
         {total > pageSize && (
           <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>{total} total</span>
+            <span>{t('{total} total', { total })}</span>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">← Prev</button>
-              <span className="px-2">Page {page} of {Math.ceil(total / pageSize)}</span>
-              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Next →</button>
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('← Prev')}</button>
+              <span className="px-2">{t('Page {page} of {pages}', { page, pages: Math.ceil(total / pageSize) })}</span>
+              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Next →')}</button>
             </div>
           </div>
         )}
@@ -594,37 +598,37 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
       </Modal>
 
       {/* Detail Modal */}
-      <Modal isOpen={detailModal && !!selected} title={`Loan — ${selected?.loan.loanNumber}`} onClose={() => setDetailModal(false)} size="lg"
+      <Modal isOpen={detailModal && !!selected} title={t('Loan — {number}', { number: selected?.loan.loanNumber ?? '' })} onClose={() => setDetailModal(false)} size="lg"
         footer={
           <div className="flex items-center gap-2">
             {selected && ['Active', 'Overdue'].includes(selected.loan.status) && selected.loan.repaymentMethod !== 'PayrollDeduction' && canManagePayments && (
-              <button type="button" onClick={() => { setReceiptForm({ amount: Math.min(selected.loan.installmentAmount, selected.loan.outstandingBalance), paidDate: localDateToday(), reference: '', paymentMethod: selected.loan.repaymentMethod }); setError(''); setReceiptModal(true); }} className="btn-primary h-8 px-3 text-sm">Record Repayment</button>
+              <button type="button" onClick={() => { setReceiptForm({ amount: Math.min(selected.loan.installmentAmount, selected.loan.outstandingBalance), paidDate: localDateToday(), reference: '', paymentMethod: selected.loan.repaymentMethod }); setError(''); setReceiptModal(true); }} className="btn-primary h-8 px-3 text-sm">{t('Record Repayment')}</button>
             )}
-            {selected?.loan.status === 'Approved' && (canManagePayments || user?.roles.includes('Finance Approver')) && <button type="button" onClick={onPayments} className="btn-primary">Open Loan Payments</button>}
-            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">Close</button>
+            {selected?.loan.status === 'Approved' && (canManagePayments || user?.roles.includes('Finance Approver')) && <button type="button" onClick={onPayments} className="btn-primary">{t('Open Loan Payments')}</button>}
+            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">{t('Close')}</button>
           </div>
         }>
         {selected && (
           <div className="space-y-4">
             <LoanStatement detail={selected} />
             <LoanConsentAttach loan={selected.loan} self={self} onAttached={() => { void loansApi.get(selected.loan.id).then(setSelected); load(); }} />
-            {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">HR review required: {selected.loan.reviewReason || 'Employment details have changed.'} Open Reviews &amp; Changes for the review history and next action.</p>}
+            {selected.loan.reviewRequired && <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">{t('HR review required: {reason} Open Reviews & Changes for the review history and next action.', { reason: selected.loan.reviewReason || t('Employment details have changed.') })}</p>}
             <p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
-              {selected.loan.status === 'Approved' ? 'Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.' : selected.loan.status === 'Pending' ? 'Awaiting the next approval decision. Approval does not send funds.' : selected.loan.status === 'Active' ? `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}. ${selected.loan.repaymentMethod === 'PayrollDeduction' ? 'Scheduled installments are collected through payroll.' : 'Finance records receipts after payments are received.'}` : `Repayment method: ${repaymentMethodLabels[selected.loan.repaymentMethod]}.`}
+              {selected.loan.status === 'Approved' ? t('Approved and awaiting disbursement. Finance must process this loan in Loan Payments and confirm the completed payment.') : selected.loan.status === 'Pending' ? t('Awaiting the next approval decision. Approval does not send funds.') : selected.loan.status === 'Active' ? t('Repayment method: {method}. {note}', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]), note: selected.loan.repaymentMethod === 'PayrollDeduction' ? t('Scheduled installments are collected through payroll.') : t('Finance records receipts after payments are received.') }) : t('Repayment method: {method}.', { method: t(repaymentMethodLabels[selected.loan.repaymentMethod]) })}
             </p>
             <div className="grid grid-cols-3 gap-3 text-sm">
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Employee</p><p className="font-semibold text-slate-900 dark:text-white">{selected.loan.employeeName}</p></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Outstanding</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.loan.outstandingBalance, selected.loan.currency)}</p></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">Status</p><StatusBadge status={selected.loan.status} /></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">{t('Employee')}</p><p className="font-semibold text-slate-900 dark:text-white">{selected.loan.employeeName}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">{t('Outstanding')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.loan.outstandingBalance, selected.loan.currency)}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400 mb-1">{t('Status')}</p><StatusBadge status={selected.loan.status} /></div>
             </div>
 
             {selected.approvals.length > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
-                <p className="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-400">Approval Route</p>
+                <p className="mb-2 text-sm font-semibold text-amber-700 dark:text-amber-400">{t('Approval Route')}</p>
                 {selected.approvals.map((a) => (
                   <div key={a.id} className="flex items-center justify-between">
-                    <span className="text-sm text-amber-700 dark:text-amber-300">Step {a.stepOrder} — {a.status === 'Pending' ? loanApprovalRole(a.approverRole) : a.approverRole} · {a.status}{a.approvedByName ? ` · ${a.approvedByName}` : ''}</span>
-                    {selected.loan.status === 'Pending' && canDecideLoan(a, selected.approvals, user) && <button type="button" onClick={() => openDecide(a, selected.loan)} className="btn-primary h-7 px-2 text-xs">Decide</button>}
+                    <span className="text-sm text-amber-700 dark:text-amber-300">{t('Step {step} — {role} · {status}', { step: a.stepOrder, role: t(a.status === 'Pending' ? loanApprovalRole(a.approverRole) : a.approverRole), status: enumLabel(t, 'ApprovalStatus', a.status) })}{a.approvedByName ? ` · ${a.approvedByName}` : ''}</span>
+                    {selected.loan.status === 'Pending' && canDecideLoan(a, selected.approvals, user) && <button type="button" onClick={() => openDecide(a, selected.loan)} className="btn-primary h-7 px-2 text-xs">{t('Decide')}</button>}
                   </div>
                 ))}
               </div>
@@ -632,10 +636,10 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
 
             {/* Sub-tabs */}
             <div className="flex gap-3 overflow-x-auto border-b border-slate-100 dark:border-white/[0.07]">
-              {(['schedule', 'receipts', 'gl', 'audit', 'review'] as const).filter(t => t !== 'gl' || canManagePayments).map((t) => (
-                <button key={t} type="button" onClick={() => setDetailTab(t)}
-                  className={`pb-2 text-xs font-semibold uppercase tracking-wide transition border-b-2 ${detailTab === t ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                  {t === 'schedule' ? 'Installments' : t === 'receipts' ? 'Repayment Receipts' : t === 'gl' ? 'GL Entries' : t === 'review' ? 'Reviews & Changes' : 'Audit Trail'}
+              {(['schedule', 'receipts', 'gl', 'audit', 'review'] as const).filter(k => k !== 'gl' || canManagePayments).map((k) => (
+                <button key={k} type="button" onClick={() => setDetailTab(k)}
+                  className={`pb-2 text-xs font-semibold uppercase tracking-wide transition border-b-2 ${detailTab === k ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                  {k === 'schedule' ? t('Installments') : k === 'receipts' ? t('Repayment Receipts') : k === 'gl' ? t('GL Entries') : k === 'review' ? t('Reviews & Changes') : t('Audit Trail')}
                 </button>
               ))}
             </div>
@@ -643,12 +647,12 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
             {detailTab === 'schedule' && selected.installments.length > 0 && (
               <div className="max-h-48 overflow-y-auto surface">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.installments.map((ins) => (
                       <tr key={ins.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 text-slate-500">{ins.installmentNumber}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{ins.dueDate}</td>
+                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fx.plain.date(ins.dueDate)}</td>
                         <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountDue, selected.loan.currency)}</td>
                         <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{fmt(ins.amountPaid, selected.loan.currency)}</td>
                         <td className="px-3 py-2"><StatusBadge status={ins.status} /></td>
@@ -659,59 +663,59 @@ function LoansTab({ loanTypes, onPayments, onChanged, mine }: { loanTypes: LoanT
               </div>
             )}
             {detailTab === 'schedule' && selected.installments.length === 0 && (
-              <p className="text-center text-sm text-slate-400 py-4">No installments scheduled yet</p>
+              <p className="text-center text-sm text-slate-400 py-4">{t('No installments scheduled yet')}</p>
             )}
             {detailTab === 'gl' && <GlEntriesTable entries={selected.glEntries ?? []} fmt={n => fmt(n, selected.loan.currency)} />}
-            {detailTab === 'receipts' && <div className="space-y-2">{(selected.repayments ?? []).length === 0 ? <p className="py-4 text-sm text-slate-500">No separate repayment receipts recorded.</p> : selected.repayments.map(receipt => <div key={receipt.id} className="surface flex flex-wrap justify-between gap-2 p-3 text-sm"><span>{receipt.paidDate} · {receipt.reference}<span className="block text-xs text-slate-500">{repaymentMethodLabels[receipt.paymentMethod as LoanRepaymentMethod] ?? receipt.paymentMethod}{receipt.isReversed ? ' · Reversed — excluded from repayments' : ''}</span></span><strong className={receipt.isReversed ? 'text-slate-500 line-through' : ''}>{fmt(receipt.amount, selected.loan.currency)}</strong></div>)}</div>}
+            {detailTab === 'receipts' && <div className="space-y-2">{(selected.repayments ?? []).length === 0 ? <p className="py-4 text-sm text-slate-500">{t('No separate repayment receipts recorded.')}</p> : selected.repayments.map(receipt => <div key={receipt.id} className="surface flex flex-wrap justify-between gap-2 p-3 text-sm"><span>{fx.plain.date(receipt.paidDate)} · {receipt.reference}<span className="block text-xs text-slate-500">{t(repaymentMethodLabels[receipt.paymentMethod as LoanRepaymentMethod] ?? receipt.paymentMethod)}{receipt.isReversed ? ` · ${t('Reversed — excluded from repayments')}` : ''}</span></span><strong className={receipt.isReversed ? 'text-slate-500 line-through' : ''}>{fmt(receipt.amount, selected.loan.currency)}</strong></div>)}</div>}
             {detailTab === 'audit' && <AuditTrailTable logs={selected.auditLogs ?? []} />}
             {detailTab === 'review' && <LoanLifecyclePanel detail={selected} onChanged={async () => { setSelected(await loansApi.get(selected.loan.id)); await load(); onChanged(); }} />}
           </div>
         )}
       </Modal>
 
-      <Modal isOpen={receiptModal} title={`Record Repayment — ${selected?.loan.loanNumber}`} onClose={() => !saving && setReceiptModal(false)}
-        footer={<><button type="button" onClick={() => setReceiptModal(false)} disabled={saving} className="btn-secondary">Cancel</button><button type="button" onClick={recordReceipt} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Recording…' : 'Record Received Payment'}</button></>}>
+      <Modal isOpen={receiptModal} title={t('Record Repayment — {number}', { number: selected?.loan.loanNumber ?? '' })} onClose={() => !saving && setReceiptModal(false)}
+        footer={<><button type="button" onClick={() => setReceiptModal(false)} disabled={saving} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={recordReceipt} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Recording…') : t('Record Received Payment')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <p className="text-sm text-slate-500">Record funds already received. The payment is allocated to the oldest unpaid installments. Paying the full outstanding balance settles the loan.</p>
-          <FormField label="Payment method">
-            <select value={receiptForm.paymentMethod} onChange={(e) => setReceiptForm(x => ({ ...x, paymentMethod: e.target.value }))} className="select w-full" title="Payment method">
-              {Object.entries(repaymentMethodLabels).filter(([value]) => value !== 'PayrollDeduction').map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          <p className="text-sm text-slate-500">{t('Record funds already received. The payment is allocated to the oldest unpaid installments. Paying the full outstanding balance settles the loan.')}</p>
+          <FormField label={t('Payment method')}>
+            <select value={receiptForm.paymentMethod} onChange={(e) => setReceiptForm(x => ({ ...x, paymentMethod: e.target.value }))} className="select w-full" title={t('Payment method')}>
+              {Object.entries(repaymentMethodLabels).filter(([value]) => value !== 'PayrollDeduction').map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
             </select>
           </FormField>
-          <FormField label={`Received amount (${selected?.loan.currency ?? currencyCode})`} required>
-            <input type="number" min="0.01" step="0.01" max={selected?.loan.outstandingBalance} value={receiptForm.amount} onChange={(e) => setReceiptForm(x => ({ ...x, amount: Number(e.target.value) }))} className="input w-full" title="Received amount" />
+          <FormField label={t('Received amount ({currency})', { currency: fx.currencyLabel(selected?.loan.currency ?? currencyCode) })} required>
+            <input type="number" min="0.01" step="0.01" max={selected?.loan.outstandingBalance} value={receiptForm.amount} onChange={(e) => setReceiptForm(x => ({ ...x, amount: Number(e.target.value) }))} className="input w-full" title={t('Received amount')} />
           </FormField>
-          <FormField label="Payment date" required>
-            <input type="date" max={localDateToday()} value={receiptForm.paidDate} onChange={(e) => setReceiptForm(x => ({ ...x, paidDate: e.target.value }))} className="input w-full" title="Payment date" />
+          <FormField label={t('Payment date')} required>
+            <input type="date" max={localDateToday()} value={receiptForm.paidDate} onChange={(e) => setReceiptForm(x => ({ ...x, paidDate: e.target.value }))} className="input w-full" title={t('Payment date')} />
           </FormField>
-          <FormField label="Receipt / bank reference" required><input value={receiptForm.reference} onChange={(e) => setReceiptForm(x => ({ ...x, reference: e.target.value }))} className="input w-full" title="Receipt / bank reference" maxLength={160} /></FormField>
+          <FormField label={t('Receipt / bank reference')} required><input value={receiptForm.reference} onChange={(e) => setReceiptForm(x => ({ ...x, reference: e.target.value }))} className="input w-full" title={t('Receipt / bank reference')} maxLength={160} /></FormField>
         </div>
       </Modal>
 
       {/* Decide Modal */}
-      <Modal isOpen={decideModal} title="Loan Approval Decision" onClose={() => setDecideModal(false)}
-        footer={<><button type="button" onClick={() => setDecideModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={decide} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit Decision'}</button></>}>
+      <Modal isOpen={decideModal} title={t('Loan Approval Decision')} onClose={() => setDecideModal(false)}
+        footer={<><button type="button" onClick={() => setDecideModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={decide} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Submitting…') : t('Submit Decision')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Decision" required>
+          <FormField label={t('Decision')} required>
             <div className="flex gap-3">
               {['Approved', 'Rejected'].map((d) => (
                 <button key={d} type="button" onClick={() => setDecideForm(x => ({ ...x, decision: d }))}
                   className={`flex-1 flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition ${decideForm.decision === d ? (d === 'Approved' ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400' : 'border-red-400 bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-400') : 'border-slate-200 text-slate-500 dark:border-white/10'}`}>
-                  {d === 'Approved' ? <CheckCircle className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {d}
+                  {d === 'Approved' ? <CheckCircle className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {enumLabel(t, 'LoanStatus', d)}
                 </button>
               ))}
             </div>
           </FormField>
           {decideForm.decision === 'Approved' && (
             <>
-              <FormField label={`Approved Amount (${selected?.loan.currency ?? currencyCode})`}><input type="number" value={decideForm.approvedAmount} onChange={(e) => setDecideForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title="Approved Amount" /></FormField>
-              <FormField label="Approved Installments"><input type="number" value={decideForm.approvedInstallments} onChange={(e) => setDecideForm(x => ({ ...x, approvedInstallments: Number(e.target.value) }))} className="input w-full" title="Approved Installments" /></FormField>
-              <FormField label="Repayment Start Date"><input type="date" value={decideForm.repaymentStartDate} onChange={(e) => setDecideForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title="Repayment Start Date" /></FormField>
+              <FormField label={t('Approved Amount ({currency})', { currency: fx.currencyLabel(selected?.loan.currency ?? currencyCode) })}><input type="number" value={decideForm.approvedAmount} onChange={(e) => setDecideForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title={t('Approved Amount')} /></FormField>
+              <FormField label={t('Approved Installments')}><input type="number" value={decideForm.approvedInstallments} onChange={(e) => setDecideForm(x => ({ ...x, approvedInstallments: Number(e.target.value) }))} className="input w-full" title={t('Approved Installments')} /></FormField>
+              <FormField label={t('Repayment Start Date')}><input type="date" value={decideForm.repaymentStartDate} onChange={(e) => setDecideForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title={t('Repayment Start Date')} /></FormField>
             </>
           )}
-          <FormField label="Comments"><textarea value={decideForm.comments} onChange={(e) => setDecideForm(x => ({ ...x, comments: e.target.value }))} className="input w-full" rows={3} placeholder="Optional comments…" /></FormField>
+          <FormField label={t('Comments')}><textarea value={decideForm.comments} onChange={(e) => setDecideForm(x => ({ ...x, comments: e.target.value }))} className="input w-full" rows={3} placeholder={t('Optional comments…')} /></FormField>
         </div>
       </Modal>
     </>
@@ -783,6 +787,7 @@ export function AdvancePolicyTab() {
 // ── Salary Advances ───────────────────────────────────────────────────────────
 
 function AdvancesTab() {
+  const { t } = useLocale();
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
@@ -812,7 +817,7 @@ function AdvancesTab() {
   useEffect(() => { load(); }, [load]);
 
   const createAdvance = async () => {
-    if (!selectedEmployee) { setError('Select an employee'); return; }
+    if (!selectedEmployee) { setError(t('Select an employee')); return; }
     setSaving(true); setError('');
     try {
       await advancesApi.create({
@@ -831,7 +836,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.approve(selected.id, approveForm); setApproveModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, 'Failed to approve.')); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to approve.'))); }
     finally { setSaving(false); }
   };
 
@@ -839,7 +844,7 @@ function AdvancesTab() {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.reject(selected.id, rejectReason); setRejectModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, 'Failed to reject.')); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to reject.'))); }
     finally { setSaving(false); }
   };
 
@@ -847,12 +852,12 @@ function AdvancesTab() {
     <>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title="Filter by status">
-            <option value="">All Statuses</option>
-            {['Pending', 'Approved', 'Active', 'Settled', 'Rejected'].map((s) => <option key={s}>{s}</option>)}
+          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
+            <option value="">{t('All Statuses')}</option>
+            {['Pending', 'Approved', 'Active', 'Settled', 'Rejected'].map((s) => <option key={s} value={s}>{enumLabel(t, 'LoanStatus', s)}</option>)}
           </select>
           <button type="button" onClick={() => { setCreateForm({ requestedAmount: 0, repaymentType: 'FullDeduction', installments: 1, repaymentStartDate: '', reason: '' }); setSelectedEmployee(null); setError(''); setCreateModal(true); }} className="btn-primary">
-            <Plus className="h-4 w-4" /> New Advance Request
+            <Plus className="h-4 w-4" /> {t('New Advance Request')}
           </button>
         </div>
         <div className="surface overflow-hidden">
@@ -860,7 +865,7 @@ function AdvancesTab() {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Advance #', 'Employee', 'Requested', 'Approved', 'Outstanding', 'Repayment', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -868,7 +873,7 @@ function AdvancesTab() {
               {loading ? (
                 <tr><td colSpan={8} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={8} className="py-12 text-center text-slate-400">No advances found</td></tr>
+                <tr><td colSpan={8} className="py-12 text-center text-slate-400">{t('No advances found')}</td></tr>
               ) : items.map((a) => (
                 <tr key={a.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{a.advanceNumber}</td>
@@ -876,13 +881,13 @@ function AdvancesTab() {
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(a.requestedAmount)}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{a.approvedAmount > 0 ? fmt(a.approvedAmount) : '—'}</td>
                   <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(a.outstandingBalance)}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{a.repaymentType}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{t(a.repaymentType === 'FullDeduction' ? 'Full deduction' : a.repaymentType === 'Installments' ? 'Installments' : a.repaymentType)}</td>
                   <td className="px-4 py-3"><StatusBadge status={a.status} /></td>
                   <td className="px-4 py-3">
                     {a.status === 'Pending' && (
                       <div className="flex gap-1">
-                        <button type="button" onClick={() => { setSelected(a); setApproveForm({ approvedAmount: a.requestedAmount, installments: a.installments || 1, repaymentStartDate: '' }); setError(''); setApproveModal(true); }} className="btn-primary h-6 px-2 text-xs">Approve</button>
-                        <button type="button" onClick={() => { setSelected(a); setRejectReason(''); setError(''); setRejectModal(true); }} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">Reject</button>
+                        <button type="button" onClick={() => { setSelected(a); setApproveForm({ approvedAmount: a.requestedAmount, installments: a.installments || 1, repaymentStartDate: '' }); setError(''); setApproveModal(true); }} className="btn-primary h-6 px-2 text-xs">{t('Approve')}</button>
+                        <button type="button" onClick={() => { setSelected(a); setRejectReason(''); setError(''); setRejectModal(true); }} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">{t('Reject')}</button>
                       </div>
                     )}
                   </td>
@@ -893,50 +898,50 @@ function AdvancesTab() {
         </div>
         {total > pageSize && (
           <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>{total} total</span>
+            <span>{t('{total} total', { total })}</span>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">← Prev</button>
-              <span className="px-2">Page {page} of {Math.ceil(total / pageSize)}</span>
-              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Next →</button>
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('← Prev')}</button>
+              <span className="px-2">{t('Page {page} of {pages}', { page, pages: Math.ceil(total / pageSize) })}</span>
+              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Next →')}</button>
             </div>
           </div>
         )}
       </div>
 
-      <Modal isOpen={createModal} title="New Advance Request" onClose={() => setCreateModal(false)}
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createAdvance} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Submitting…' : 'Submit'}</button></>}>
+      <Modal isOpen={createModal} title={t('New Advance Request')} onClose={() => setCreateModal(false)}
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={createAdvance} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Submitting…') : t('Submit')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Employee" required>
+          <FormField label={t('Employee')} required>
             <EmployeeSearchSelect value={selectedEmployee} onChange={setSelectedEmployee} required />
           </FormField>
-          <FormField label={`Requested Amount (${currencyCode})`} required><input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title="Requested Amount" min="1" /></FormField>
-          <FormField label="Repayment Type">
-            <select value={createForm.repaymentType} onChange={(e) => setCreateForm(x => ({ ...x, repaymentType: e.target.value }))} className="select w-full" title="Repayment Type">
-              {['FullDeduction', 'Installments'].map((v) => <option key={v}>{v}</option>)}
+          <FormField label={t('Requested Amount ({currency})', { currency: fx.currencyLabel(currencyCode) })} required><input type="number" value={createForm.requestedAmount} onChange={(e) => setCreateForm(x => ({ ...x, requestedAmount: Number(e.target.value) }))} className="input w-full" title={t('Requested Amount')} min="1" /></FormField>
+          <FormField label={t('Repayment Type')}>
+            <select value={createForm.repaymentType} onChange={(e) => setCreateForm(x => ({ ...x, repaymentType: e.target.value }))} className="select w-full" title={t('Repayment Type')}>
+              {['FullDeduction', 'Installments'].map((v) => <option key={v} value={v}>{v === 'FullDeduction' ? t('Full deduction') : t('Installments')}</option>)}
             </select>
           </FormField>
           {createForm.repaymentType === 'Installments' && (
-            <FormField label="Installments"><input type="number" value={createForm.installments} onChange={(e) => setCreateForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title="Installments" /></FormField>
+            <FormField label={t('Installments')}><input type="number" value={createForm.installments} onChange={(e) => setCreateForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} /></FormField>
           )}
-          <FormField label="Reason"><textarea value={createForm.reason} onChange={(e) => setCreateForm(x => ({ ...x, reason: e.target.value }))} className="input w-full" rows={2} title="Reason" /></FormField>
+          <FormField label={t('Reason')}><textarea value={createForm.reason} onChange={(e) => setCreateForm(x => ({ ...x, reason: e.target.value }))} className="input w-full" rows={2} title={t('Reason')} /></FormField>
         </div>
       </Modal>
 
-      <Modal isOpen={approveModal} title={`Approve Advance — ${selected?.advanceNumber}`} onClose={() => setApproveModal(false)}
-        footer={<><button type="button" onClick={() => setApproveModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={approve} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Approving…' : 'Approve'}</button></>}>
+      <Modal isOpen={approveModal} title={t('Approve Advance — {number}', { number: selected?.advanceNumber ?? '' })} onClose={() => setApproveModal(false)}
+        footer={<><button type="button" onClick={() => setApproveModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={approve} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Approving…') : t('Approve')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label={`Approved Amount (${currencyCode})`} required><input type="number" value={approveForm.approvedAmount} onChange={(e) => setApproveForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title="Approved Amount" /></FormField>
-          <FormField label="Installments"><input type="number" value={approveForm.installments} onChange={(e) => setApproveForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title="Installments" /></FormField>
-          <FormField label="Repayment Start Date"><input type="date" value={approveForm.repaymentStartDate} onChange={(e) => setApproveForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title="Repayment Start Date" /></FormField>
+          <FormField label={t('Approved Amount ({currency})', { currency: fx.currencyLabel(currencyCode) })} required><input type="number" value={approveForm.approvedAmount} onChange={(e) => setApproveForm(x => ({ ...x, approvedAmount: Number(e.target.value) }))} className="input w-full" title={t('Approved Amount')} /></FormField>
+          <FormField label={t('Installments')}><input type="number" value={approveForm.installments} onChange={(e) => setApproveForm(x => ({ ...x, installments: Number(e.target.value) }))} className="input w-full" title={t('Installments')} /></FormField>
+          <FormField label={t('Repayment Start Date')}><input type="date" value={approveForm.repaymentStartDate} onChange={(e) => setApproveForm(x => ({ ...x, repaymentStartDate: e.target.value }))} className="input w-full" title={t('Repayment Start Date')} /></FormField>
         </div>
       </Modal>
 
-      <Modal isOpen={rejectModal} title="Reject Advance" onClose={() => setRejectModal(false)}
-        footer={<><button type="button" onClick={() => setRejectModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={reject} disabled={saving} className="h-8 px-4 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-600 disabled:opacity-60">{saving ? 'Rejecting…' : 'Reject'}</button></>}>
+      <Modal isOpen={rejectModal} title={t('Reject Advance')} onClose={() => setRejectModal(false)}
+        footer={<><button type="button" onClick={() => setRejectModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={reject} disabled={saving} className="h-8 px-4 rounded-lg bg-red-500 text-white text-sm font-semibold hover:bg-red-600 disabled:opacity-60">{saving ? t('Rejecting…') : t('Reject')}</button></>}>
         <FormError error={error} />
-        <FormField label="Rejection Reason"><textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input w-full" rows={3} placeholder="Reason for rejection…" /></FormField>
+        <FormField label={t('Rejection Reason')}><textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input w-full" rows={3} placeholder={t('Reason for rejection…')} /></FormField>
       </Modal>
     </>
   );
@@ -1272,15 +1277,15 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
   };
 
   const createBatch = async () => {
-    if (!createForm.bonusTypeId || !createForm.batchName.trim() || !createForm.paymentPeriod.trim() || !createForm.paymentDate) { setError('All fields are required'); return; }
+    if (!createForm.bonusTypeId || !createForm.batchName.trim() || !createForm.paymentPeriod.trim() || !createForm.paymentDate) { setError(t('All fields are required')); return; }
     setSaving(true); setError('');
     try { await bonusBatchesApi.create(createForm); setCreateModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, 'Failed to create batch.')); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to create batch.'))); }
     finally { setSaving(false); }
   };
 
   const addEmployee = async () => {
-    if (!selected || !selectedBonusEmp) { setError('Select an employee'); return; }
+    if (!selected || !selectedBonusEmp) { setError(t('Select an employee')); return; }
     setSaving(true); setError(''); setAddResult(null);
     try {
       const r = await bonusBatchesApi.addEmployee(selected.batch.id, {
@@ -1291,7 +1296,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       });
       setAddResult({ grossBonusAmount: r.grossBonusAmount, taxWithheld: r.taxWithheld, netBonusAmount: r.netBonusAmount });
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
-    } catch (e) { setError(apiErrorReason(e, 'Failed to add employee.')); }
+    } catch (e) { setError(apiErrorReason(e, t('Failed to add employee.'))); }
     finally { setSaving(false); }
   };
 
@@ -1324,7 +1329,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     if (!editBatchId) return;
     setSaving(true); setError('');
     try { await bonusBatchesApi.update(editBatchId, editBatchForm); setEditBatchModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, 'Failed to update batch.')); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to update batch.'))); }
     finally { setSaving(false); }
   };
 
@@ -1352,7 +1357,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       setBulkResult(r);
       const d = await bonusBatchesApi.get(selected.batch.id); setSelected(d);
       load();
-    } catch (e) { setError(apiErrorReason(e, 'Bulk add failed.')); }
+    } catch (e) { setError(apiErrorReason(e, t('Bulk add failed.'))); }
     finally { setSaving(false); }
   };
 
@@ -1370,12 +1375,12 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
     <>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
-          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title="Filter by status">
-            <option value="">All Statuses</option>
-            {['Draft', 'PendingApproval', 'Approved', 'Cancelled', 'Paid'].map((s) => <option key={s}>{s}</option>)}
+          <select value={filterStatus} onChange={(e) => { setFilterStatus(e.target.value); setPage(1); }} className="select" title={t('Filter by status')}>
+            <option value="">{t('All Statuses')}</option>
+            {['Draft', 'PendingApproval', 'Approved', 'Cancelled', 'Paid'].map((s) => <option key={s} value={s}>{enumLabel(t, 'LoanStatus', s)}</option>)}
           </select>
           <button type="button" onClick={() => { setCreateForm({ bonusTypeId: bonusTypes[0]?.id ?? '', batchName: '', paymentPeriod: '', paymentDate: '', notes: '' }); setError(''); setCreateModal(true); }} className="btn-primary">
-            <Plus className="h-4 w-4" /> New Bonus Batch
+            <Plus className="h-4 w-4" /> {t('New Bonus Batch')}
           </button>
         </div>
         <div className="surface overflow-hidden">
@@ -1383,7 +1388,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             <thead>
               <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                 {['Batch #', 'Name', 'Type', 'Period', 'Payment Date', 'Employees', 'Total Amount', 'Status', ''].map((h) => (
-                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                  <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                 ))}
               </tr>
             </thead>
@@ -1391,7 +1396,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
               {loading ? (
                 <tr><td colSpan={10} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={10} className="py-12 text-center text-slate-400">No bonus batches</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-slate-400">{t('No bonus batches')}</td></tr>
               ) : items.map((b) => (
                 <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03] cursor-pointer" onClick={() => openDetail(b)}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-500">{b.batchNumber}</td>
@@ -1404,10 +1409,10 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
                   <td className="px-4 py-3"><StatusBadge status={b.status} /></td>
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-1">
-                      <button type="button" onClick={() => openDetail(b)} className="rounded px-2 py-1 text-xs text-sapphire hover:bg-sapphire/10">View</button>
+                      <button type="button" onClick={() => openDetail(b)} className="rounded px-2 py-1 text-xs text-sapphire hover:bg-sapphire/10">{t('View')}</button>
                       {b.status === 'Draft' && <>
-                        <button type="button" onClick={(e) => openEditBatch(b, e)} className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10">Edit</button>
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteBatchId(b.id); }} className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20">Delete</button>
+                        <button type="button" onClick={(e) => openEditBatch(b, e)} className="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-white/10">{t('Edit')}</button>
+                        <button type="button" onClick={(e) => { e.stopPropagation(); setDeleteBatchId(b.id); }} className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20">{t('Delete')}</button>
                       </>}
                     </div>
                   </td>
@@ -1418,81 +1423,81 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
         </div>
         {total > pageSize && (
           <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>{total} total</span>
+            <span>{t('{total} total', { total })}</span>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">← Prev</button>
-              <span className="px-2">Page {page} of {Math.ceil(total / pageSize)}</span>
-              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">Next →</button>
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('← Prev')}</button>
+              <span className="px-2">{t('Page {page} of {pages}', { page, pages: Math.ceil(total / pageSize) })}</span>
+              <button type="button" onClick={() => setPage((p) => p + 1)} disabled={page >= Math.ceil(total / pageSize)} className="btn-secondary h-7 px-2 text-xs disabled:opacity-40">{t('Next →')}</button>
             </div>
           </div>
         )}
       </div>
 
       {/* Create Batch Modal */}
-      <Modal isOpen={createModal} title="New Bonus Batch" onClose={() => setCreateModal(false)}
-        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={createBatch} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Creating…' : 'Create'}</button></>}>
+      <Modal isOpen={createModal} title={t('New Bonus Batch')} onClose={() => setCreateModal(false)}
+        footer={<><button type="button" onClick={() => setCreateModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={createBatch} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Creating…') : t('Create')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Bonus Type" required>
-            <select value={createForm.bonusTypeId} onChange={(e) => setCreateForm(x => ({ ...x, bonusTypeId: e.target.value }))} className="select w-full" title="Bonus Type">
-              <option value="">Select type</option>
+          <FormField label={t('Bonus Type')} required>
+            <select value={createForm.bonusTypeId} onChange={(e) => setCreateForm(x => ({ ...x, bonusTypeId: e.target.value }))} className="select w-full" title={t('Bonus Type')}>
+              <option value="">{t('Select type')}</option>
               {bonusTypes.map((t) => <option key={t.id} value={t.id}>{t.nameEn}</option>)}
             </select>
           </FormField>
-          <FormField label="Batch Name" required><input value={createForm.batchName} onChange={(e) => setCreateForm(x => ({ ...x, batchName: e.target.value }))} className="input w-full" placeholder="Q4 2026 Annual Bonus" /></FormField>
-          <FormField label="Payment Period" required><input value={createForm.paymentPeriod} onChange={(e) => setCreateForm(x => ({ ...x, paymentPeriod: e.target.value }))} className="input w-full" placeholder="2026-12" /></FormField>
-          <FormField label="Payment Date" required><input type="date" value={createForm.paymentDate} onChange={(e) => setCreateForm(x => ({ ...x, paymentDate: e.target.value }))} className="input w-full" title="Payment Date" /></FormField>
-          <FormField label="Notes"><textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" /></FormField>
+          <FormField label={t('Batch Name')} required><input value={createForm.batchName} onChange={(e) => setCreateForm(x => ({ ...x, batchName: e.target.value }))} className="input w-full" placeholder={t('Q4 2026 Annual Bonus')} /></FormField>
+          <FormField label={t('Payment Period')} required><input value={createForm.paymentPeriod} onChange={(e) => setCreateForm(x => ({ ...x, paymentPeriod: e.target.value }))} className="input w-full" placeholder="2026-12" /></FormField>
+          <FormField label={t('Payment Date')} required><input type="date" value={createForm.paymentDate} onChange={(e) => setCreateForm(x => ({ ...x, paymentDate: e.target.value }))} className="input w-full" title={t('Payment Date')} /></FormField>
+          <FormField label={t('Notes')}><textarea value={createForm.notes} onChange={(e) => setCreateForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title={t('Notes')} /></FormField>
         </div>
       </Modal>
 
       {/* Edit Batch Modal */}
-      <Modal isOpen={editBatchModal} title="Edit Batch" onClose={() => setEditBatchModal(false)}
-        footer={<><button type="button" onClick={() => setEditBatchModal(false)} className="btn-secondary">Cancel</button><button type="button" onClick={saveEditBatch} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Saving…' : 'Save'}</button></>}>
+      <Modal isOpen={editBatchModal} title={t('Edit Batch')} onClose={() => setEditBatchModal(false)}
+        footer={<><button type="button" onClick={() => setEditBatchModal(false)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={saveEditBatch} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Saving…') : t('Save')}</button></>}>
         <FormError error={error} />
         <div className="space-y-3">
-          <FormField label="Batch Name" required><input value={editBatchForm.batchName} onChange={(e) => setEditBatchForm(x => ({ ...x, batchName: e.target.value }))} className="input w-full" title="Batch Name" /></FormField>
-          <FormField label="Payment Period"><input value={editBatchForm.paymentPeriod} onChange={(e) => setEditBatchForm(x => ({ ...x, paymentPeriod: e.target.value }))} className="input w-full" placeholder="2026-12" title="Payment Period" /></FormField>
-          <FormField label="Payment Date"><input type="date" value={editBatchForm.paymentDate} onChange={(e) => setEditBatchForm(x => ({ ...x, paymentDate: e.target.value }))} className="input w-full" title="Payment Date" /></FormField>
-          <FormField label="Notes"><textarea value={editBatchForm.notes} onChange={(e) => setEditBatchForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title="Notes" /></FormField>
+          <FormField label={t('Batch Name')} required><input value={editBatchForm.batchName} onChange={(e) => setEditBatchForm(x => ({ ...x, batchName: e.target.value }))} className="input w-full" title={t('Batch Name')} /></FormField>
+          <FormField label={t('Payment Period')}><input value={editBatchForm.paymentPeriod} onChange={(e) => setEditBatchForm(x => ({ ...x, paymentPeriod: e.target.value }))} className="input w-full" placeholder="2026-12" title={t('Payment Period')} /></FormField>
+          <FormField label={t('Payment Date')}><input type="date" value={editBatchForm.paymentDate} onChange={(e) => setEditBatchForm(x => ({ ...x, paymentDate: e.target.value }))} className="input w-full" title={t('Payment Date')} /></FormField>
+          <FormField label={t('Notes')}><textarea value={editBatchForm.notes} onChange={(e) => setEditBatchForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} title={t('Notes')} /></FormField>
         </div>
       </Modal>
 
       {/* Delete Batch Confirm */}
-      <Modal isOpen={!!deleteBatchId} title="Delete Batch" onClose={() => setDeleteBatchId(null)}
-        footer={<><button type="button" onClick={() => setDeleteBatchId(null)} className="btn-secondary">Cancel</button><button type="button" onClick={confirmDeleteBatch} disabled={deletingBatch} className="bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-60">{deletingBatch ? 'Deleting…' : 'Delete Batch'}</button></>}>
-        <p className="text-sm text-slate-700 dark:text-slate-300">This will permanently delete this Draft batch and all employee entries in it. This cannot be undone.</p>
+      <Modal isOpen={!!deleteBatchId} title={t('Delete Batch')} onClose={() => setDeleteBatchId(null)}
+        footer={<><button type="button" onClick={() => setDeleteBatchId(null)} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={confirmDeleteBatch} disabled={deletingBatch} className="bg-red-600 text-white rounded-lg px-4 py-2 text-sm font-semibold hover:bg-red-700 disabled:opacity-60">{deletingBatch ? t('Deleting…') : t('Delete Batch')}</button></>}>
+        <p className="text-sm text-slate-700 dark:text-slate-300">{t('This will permanently delete this Draft batch and all employee entries in it. This cannot be undone.')}</p>
       </Modal>
 
       {/* Detail Modal */}
       <Modal isOpen={detailModal && !!selected} title={`Batch — ${selected?.batch.batchNumber}`} onClose={() => setDetailModal(false)} size="lg"
         footer={
           <div className="flex items-center gap-2">
-            {selected?.batch.status === 'Draft' && <button type="button" onClick={() => submitBatch(selected!.batch.id)} className="btn-primary h-8 px-3 text-sm">Submit for Approval</button>}
-            {selected?.batch.status === 'PendingApproval' && <button type="button" onClick={() => approveBatch(selected!.batch.id)} className="btn-primary h-8 px-3 text-sm">Approve Batch</button>}
-            {selected?.batch.status === 'Approved' && <button type="button" onClick={() => markPaidBatch(selected!.batch.id)} className="h-8 px-3 text-sm rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600">Mark Paid</button>}
+            {selected?.batch.status === 'Draft' && <button type="button" onClick={() => submitBatch(selected!.batch.id)} className="btn-primary h-8 px-3 text-sm">{t('Submit for Approval')}</button>}
+            {selected?.batch.status === 'PendingApproval' && <button type="button" onClick={() => approveBatch(selected!.batch.id)} className="btn-primary h-8 px-3 text-sm">{t('Approve Batch')}</button>}
+            {selected?.batch.status === 'Approved' && <button type="button" onClick={() => markPaidBatch(selected!.batch.id)} className="h-8 px-3 text-sm rounded-lg bg-emerald-500 text-white text-sm font-semibold hover:bg-emerald-600">{t('Mark Paid')}</button>}
             {selected?.batch.status === 'Draft' && <>
-              <button type="button" onClick={openBulkModal} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> Bulk Add</button>
-              <button type="button" onClick={() => { const btype = bonusTypes.find(t => t.id === selected?.batch.bonusTypeId); setEmpForm({ basicSalary: 0, calculationMethod: btype?.calculationMethod ?? 'Fixed', calculationValue: btype?.defaultCalculationValue ?? 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); setError(''); setAddEmployeeModal(true); }} className="btn-secondary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> Add One</button>
+              <button type="button" onClick={openBulkModal} className="btn-primary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> {t('Bulk Add')}</button>
+              <button type="button" onClick={() => { const btype = bonusTypes.find(t => t.id === selected?.batch.bonusTypeId); setEmpForm({ basicSalary: 0, calculationMethod: btype?.calculationMethod ?? 'Fixed', calculationValue: btype?.defaultCalculationValue ?? 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); setError(''); setAddEmployeeModal(true); }} className="btn-secondary h-8 px-3 text-sm"><Plus className="h-3.5 w-3.5" /> {t('Add One')}</button>
             </>}
-            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">Close</button>
+            <button type="button" onClick={() => setDetailModal(false)} className="btn-secondary ms-auto">{t('Close')}</button>
           </div>
         }>
         {selected && (
           <div className="space-y-4">
             <div className="grid grid-cols-4 gap-3 text-sm">
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">Status</p><StatusBadge status={selected.batch.status} /></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">Employees</p><p className="font-semibold text-slate-900 dark:text-white">{selected.batch.employeeCount}</p></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">Total Gross</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.batch.totalAmount)}</p></div>
-              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">Period</p><p className="font-semibold text-slate-900 dark:text-white">{selected.batch.paymentPeriod}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">{t('Status')}</p><StatusBadge status={selected.batch.status} /></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">{t('Employees')}</p><p className="font-semibold text-slate-900 dark:text-white">{selected.batch.employeeCount}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">{t('Total Gross')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(selected.batch.totalAmount)}</p></div>
+              <div className="surface p-3 rounded-lg"><p className="text-xs text-slate-400">{t('Period')}</p><p className="font-semibold text-slate-900 dark:text-white">{selected.batch.paymentPeriod}</p></div>
             </div>
 
             {/* Sub-tabs */}
             <div className="flex gap-3 border-b border-slate-100 dark:border-white/[0.07]">
-              {(['employees', 'gl', 'audit'] as const).map((t) => (
-                <button key={t} type="button" onClick={() => setDetailTab(t)}
-                  className={`pb-2 text-xs font-semibold uppercase tracking-wide transition border-b-2 ${detailTab === t ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                  {t === 'employees' ? 'Employee Breakdown' : t === 'gl' ? 'GL Entries' : 'Audit Trail'}
+              {(['employees', 'gl', 'audit'] as const).map((k) => (
+                <button key={k} type="button" onClick={() => setDetailTab(k)}
+                  className={`pb-2 text-xs font-semibold uppercase tracking-wide transition border-b-2 ${detailTab === k ? 'border-sapphire text-sapphire' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
+                  {k === 'employees' ? t('Employee Breakdown') : k === 'gl' ? t('GL Entries') : t('Audit Trail')}
                 </button>
               ))}
             </div>
@@ -1500,10 +1505,10 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
             {detailTab === 'employees' && (
               <div className="surface overflow-hidden max-h-64 overflow-y-auto">
                 <table className="w-full text-xs">
-                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h}</th>)}</tr></thead>
+                  <thead><tr className="border-b border-slate-100 dark:border-white/10">{['Employee', 'Department', 'Basic Salary', 'Method', 'Value', 'Gross Bonus', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>)}</tr></thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
                     {selected.bonuses.length === 0 ? (
-                      <tr><td colSpan={7} className="py-6 text-center text-slate-400">No employees added yet</td></tr>
+                      <tr><td colSpan={7} className="py-6 text-center text-slate-400">{t('No employees added yet')}</td></tr>
                     ) : selected.bonuses.map((b) => (
                       <tr key={b.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                         <td className="px-3 py-2 font-medium text-slate-900 dark:text-white">{b.employeeName}</td>
@@ -1526,49 +1531,49 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       </Modal>
 
       {/* Bulk Add Modal */}
-      <Modal isOpen={bulkModal} title="Bulk Add Employees" onClose={() => { setBulkModal(false); setBulkResult(null); }}
+      <Modal isOpen={bulkModal} title={t('Bulk Add Employees')} onClose={() => { setBulkModal(false); setBulkResult(null); }}
         footer={
           bulkResult ? (
-            <button type="button" onClick={() => { setBulkModal(false); setBulkResult(null); }} className="btn-primary">Done</button>
+            <button type="button" onClick={() => { setBulkModal(false); setBulkResult(null); }} className="btn-primary">{t('Done')}</button>
           ) : (
-            <><button type="button" onClick={() => setBulkModal(false)} className="btn-secondary">Cancel</button>
-            <button type="button" onClick={runBulkAdd} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Adding…' : 'Add All'}</button></>
+            <><button type="button" onClick={() => setBulkModal(false)} className="btn-secondary">{t('Cancel')}</button>
+            <button type="button" onClick={runBulkAdd} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Adding…') : t('Add All')}</button></>
           )
         }>
         {bulkResult ? (
           <div className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20">
-              <p className="font-semibold text-emerald-700 dark:text-emerald-300">{bulkResult.added} employees added</p>
-              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">Total bonus: {fx.plain.money(bulkResult.totalNetAdded, batchCurrency)}</p>
+              <p className="font-semibold text-emerald-700 dark:text-emerald-300">{t('{count} employees added', { count: bulkResult.added })}</p>
+              <p className="text-sm text-emerald-600 dark:text-emerald-400 mt-1">{t('Total bonus: {amount}', { amount: fx.plain.money(bulkResult.totalNetAdded, batchCurrency) })}</p>
             </div>
             {(bulkResult.skippedDuplicate + bulkResult.skippedMinService + bulkResult.skippedNoSalary) > 0 && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20 text-sm space-y-1">
-                {bulkResult.skippedDuplicate > 0 && <p className="text-amber-700 dark:text-amber-300">Skipped {bulkResult.skippedDuplicate} already in batch</p>}
-                {bulkResult.skippedMinService > 0 && <p className="text-amber-700 dark:text-amber-300">Skipped {bulkResult.skippedMinService} below minimum service months</p>}
-                {bulkResult.skippedNoSalary > 0 && <p className="text-amber-700 dark:text-amber-300">Skipped {bulkResult.skippedNoSalary} with no salary on record</p>}
+                {bulkResult.skippedDuplicate > 0 && <p className="text-amber-700 dark:text-amber-300">{t('Skipped {count} already in batch', { count: bulkResult.skippedDuplicate })}</p>}
+                {bulkResult.skippedMinService > 0 && <p className="text-amber-700 dark:text-amber-300">{t('Skipped {count} below minimum service months', { count: bulkResult.skippedMinService })}</p>}
+                {bulkResult.skippedNoSalary > 0 && <p className="text-amber-700 dark:text-amber-300">{t('Skipped {count} with no salary on record', { count: bulkResult.skippedNoSalary })}</p>}
               </div>
             )}
           </div>
         ) : (
           <div className="space-y-4">
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Adds all active employees matching the filters below. Salary is fetched from each employee&apos;s salary structure. Bonus amount is calculated using the type&apos;s default value (or your override below).
+              {t("Adds all active employees matching the filters below. Salary is fetched from each employee's salary structure. Bonus amount is calculated using the type's default value (or your override below).")}
             </p>
             <FormError error={error} />
-            <FormField label="Department (leave blank for all)">
-              <select value={bulkForm.department} onChange={(e) => setBulkForm(x => ({ ...x, department: e.target.value }))} className="select w-full" title="Department filter">
-                <option value="">All departments</option>
+            <FormField label={t('Department (leave blank for all)')}>
+              <select value={bulkForm.department} onChange={(e) => setBulkForm(x => ({ ...x, department: e.target.value }))} className="select w-full" title={t('Department filter')}>
+                <option value="">{t('All departments')}</option>
                 {departments.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
             </FormField>
-            <FormField label={`Override Calculation Value (${bonusTypes.find(t => t.id === selected?.batch.bonusTypeId)?.calculationMethod === 'PercentageSalary' ? '%' : 'amount'}) — leave blank to use type default`}>
+            <FormField label={t('Override Calculation Value ({unit}) — leave blank to use type default', { unit: bonusTypes.find(bt => bt.id === selected?.batch.bonusTypeId)?.calculationMethod === 'PercentageSalary' ? '%' : t('amount') })}>
               <input
                 type="number" min={0} step={0.01}
                 value={bulkForm.overrideValue}
                 onChange={(e) => setBulkForm(x => ({ ...x, overrideValue: e.target.value }))}
                 className="input w-full"
-                placeholder={`Default: ${bonusTypes.find(t => t.id === selected?.batch.bonusTypeId)?.defaultCalculationValue ?? 0}`}
-                title="Override calculation value"
+                placeholder={t('Default: {value}', { value: bonusTypes.find(bt => bt.id === selected?.batch.bonusTypeId)?.defaultCalculationValue ?? 0 })}
+                title={t('Override calculation value')}
               />
             </FormField>
           </div>
@@ -1576,33 +1581,33 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
       </Modal>
 
       {/* Add Employee Modal */}
-      <Modal isOpen={addEmployeeModal} title="Add Employee to Batch" onClose={() => { setAddEmployeeModal(false); setAddResult(null); }}
-        footer={<><button type="button" onClick={() => { setAddEmployeeModal(false); setAddResult(null); }} className="btn-secondary">{addResult ? 'Done' : 'Cancel'}</button>{!addResult && <button type="button" onClick={addEmployee} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? 'Adding…' : 'Add'}</button>}</>}>
+      <Modal isOpen={addEmployeeModal} title={t('Add Employee to Batch')} onClose={() => { setAddEmployeeModal(false); setAddResult(null); }}
+        footer={<><button type="button" onClick={() => { setAddEmployeeModal(false); setAddResult(null); }} className="btn-secondary">{addResult ? t('Done') : t('Cancel')}</button>{!addResult && <button type="button" onClick={addEmployee} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Adding…') : t('Add')}</button>}</>}>
         <FormError error={error} />
         {addResult ? (
           <div className="space-y-3">
             <div className="rounded-lg bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm">
-              <p className="font-semibold text-emerald-700 dark:text-emerald-400 mb-2">Employee Added — Tax Summary</p>
+              <p className="font-semibold text-emerald-700 dark:text-emerald-400 mb-2">{t('Employee Added — Tax Summary')}</p>
               <div className="grid grid-cols-3 gap-3">
-                <div><p className="text-xs text-slate-400">Gross Bonus</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(addResult.grossBonusAmount)}</p></div>
-                <div><p className="text-xs text-slate-400">Federal Withholding (22%)</p><p className="font-semibold text-amber-600 dark:text-amber-400">−{fmt(addResult.taxWithheld)}</p></div>
-                <div><p className="text-xs text-slate-400">Net to Employee</p><p className="font-semibold text-emerald-600 dark:text-emerald-400">{fmt(addResult.netBonusAmount)}</p></div>
+                <div><p className="text-xs text-slate-400">{t('Gross Bonus')}</p><p className="font-semibold text-slate-900 dark:text-white">{fmt(addResult.grossBonusAmount)}</p></div>
+                <div><p className="text-xs text-slate-400">{t('Federal Withholding (22%)')}</p><p className="font-semibold text-amber-600 dark:text-amber-400">−{fmt(addResult.taxWithheld)}</p></div>
+                <div><p className="text-xs text-slate-400">{t('Net to Employee')}</p><p className="font-semibold text-emerald-600 dark:text-emerald-400">{fmt(addResult.netBonusAmount)}</p></div>
               </div>
             </div>
-            <button type="button" onClick={() => { setEmpForm({ basicSalary: 0, calculationMethod: empForm.calculationMethod, calculationValue: 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); }} className="btn-secondary w-full">Add Another Employee</button>
+            <button type="button" onClick={() => { setEmpForm({ basicSalary: 0, calculationMethod: empForm.calculationMethod, calculationValue: 0, notes: '' }); setSelectedBonusEmp(null); setAddResult(null); }} className="btn-secondary w-full">{t('Add Another Employee')}</button>
           </div>
         ) : (
           <div className="space-y-3">
-            <FormField label="Employee" required>
+            <FormField label={t('Employee')} required>
               <EmployeeSearchSelect value={selectedBonusEmp} onChange={setSelectedBonusEmp} required />
             </FormField>
-            <FormField label={`Basic Salary (${currencyCode})`} required><input type="number" value={empForm.basicSalary} onChange={(e) => setEmpForm(x => ({ ...x, basicSalary: Number(e.target.value) }))} className="input w-full" title="Basic Salary" /></FormField>
-            <FormField label="Calculation Method">
-              <select value={empForm.calculationMethod} onChange={(e) => setEmpForm(x => ({ ...x, calculationMethod: e.target.value }))} className="select w-full" title="Calculation Method">
-                {['Fixed', 'PercentageSalary'].map((v) => <option key={v}>{v}</option>)}
+            <FormField label={t('Basic Salary ({currency})', { currency: fx.currencyLabel(currencyCode) })} required><input type="number" value={empForm.basicSalary} onChange={(e) => setEmpForm(x => ({ ...x, basicSalary: Number(e.target.value) }))} className="input w-full" title={t('Basic Salary')} /></FormField>
+            <FormField label={t('Calculation Method')}>
+              <select value={empForm.calculationMethod} onChange={(e) => setEmpForm(x => ({ ...x, calculationMethod: e.target.value }))} className="select w-full" title={t('Calculation Method')}>
+                {['Fixed', 'PercentageSalary'].map((v) => <option key={v} value={v}>{v === 'Fixed' ? t('Fixed amount') : t('Percentage of salary')}</option>)}
               </select>
             </FormField>
-            <FormField label={empForm.calculationMethod === 'Fixed' ? `Fixed Amount (${currencyCode})` : 'Percentage (%)'}><input type="number" step="0.1" value={empForm.calculationValue} onChange={(e) => setEmpForm(x => ({ ...x, calculationValue: Number(e.target.value) }))} className="input w-full" title="Calculation Value" /></FormField>
+            <FormField label={empForm.calculationMethod === 'Fixed' ? t('Fixed Amount ({currency})', { currency: fx.currencyLabel(currencyCode) }) : t('Percentage (%)')}><input type="number" step="0.1" value={empForm.calculationValue} onChange={(e) => setEmpForm(x => ({ ...x, calculationValue: Number(e.target.value) }))} className="input w-full" title={t('Calculation Value')} /></FormField>
           </div>
         )}
       </Modal>
@@ -1614,6 +1619,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
 // ── Audit Report ──────────────────────────────────────────────────────────────
 
 function AuditReportTab() {
+  const { t } = useLocale();
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
@@ -1643,12 +1649,12 @@ function AuditReportTab() {
         <div className="flex items-center gap-3">
           <ShieldCheck className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
           <div>
-            <p className="font-semibold text-emerald-700 dark:text-emerald-400">Finance Module — Audit Ready</p>
+            <p className="font-semibold text-emerald-700 dark:text-emerald-400">{t('Finance Module — Audit Ready')}</p>
             <p className="text-xs text-emerald-600 dark:text-emerald-300 mt-0.5">
-              All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.
+              {t('All financial transactions are recorded with double-entry GL journal entries, immutable audit trails, and reconciliation checks.')}
               {/* Was hard-coded to America/New_York and labelled EST for every tenant; now the tenant's
                   zone, named, so a reader in another zone knows which clock the time is on. */}
-              Report generated: {fx.dateTime(new Date())} ({fx.zone()})
+              {t('Report generated: {time}', { time: `${fx.dateTime(new Date())} (${fx.zone()})` })}
             </p>
           </div>
         </div>
@@ -1667,18 +1673,18 @@ function AuditReportTab() {
       {section === 'loans' && loanAudit && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <SummaryCard label="Total Loans" value={loanAudit.totalLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" />
-            <SummaryCard label="Active" value={loanAudit.activeLoans} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label="Total Disbursed" value={fmt(loanAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label="Outstanding" value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            <SummaryCard label={t('Total Loans')} value={loanAudit.totalLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" />
+            <SummaryCard label={t('Active')} value={loanAudit.activeLoans} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
+            <SummaryCard label={t('Total Disbursed')} value={fmt(loanAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Outstanding')} value={fmt(loanAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
           </div>
           <div className="surface overflow-hidden">
-            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Loan Register</p>
+            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Reconciliation — Loan Register')}</p>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Loan #', 'Employee', 'Type', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                   ))}
                 </tr>
               </thead>
@@ -1692,7 +1698,7 @@ function AuditReportTab() {
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.totalRepaid)}</td>
                     <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(r.outstandingBalance)}</td>
                     <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                    <td className="px-4 py-3">{r.isReconciled ? <span className="text-xs font-semibold text-emerald-600">✓ OK</span> : <span className="text-xs font-semibold text-red-500">✗ Variance</span>}</td>
+                    <td className="px-4 py-3">{r.isReconciled ? <span className="text-xs font-semibold text-emerald-600">✓ {t('OK')}</span> : <span className="text-xs font-semibold text-red-500">✗ {t('Variance')}</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1704,18 +1710,18 @@ function AuditReportTab() {
       {section === 'advances' && advanceAudit && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <SummaryCard label="Total Advances" value={advanceAudit.totalAdvances} icon={DollarSign} color="text-blue-600 dark:text-blue-400" />
-            <SummaryCard label="Active" value={advanceAudit.activeAdvances} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label="Total Disbursed" value={fmt(advanceAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label="Outstanding" value={fmt(advanceAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            <SummaryCard label={t('Total Advances')} value={advanceAudit.totalAdvances} icon={DollarSign} color="text-blue-600 dark:text-blue-400" />
+            <SummaryCard label={t('Active')} value={advanceAudit.activeAdvances} icon={TrendingUp} color="text-emerald-600 dark:text-emerald-400" />
+            <SummaryCard label={t('Total Disbursed')} value={fmt(advanceAudit.totalDisbursed)} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Outstanding')} value={fmt(advanceAudit.totalOutstanding)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
           </div>
           <div className="surface overflow-hidden">
-            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Reconciliation — Advance Register</p>
+            <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Reconciliation — Advance Register')}</p>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                   {['Advance #', 'Employee', 'Disbursed', 'Repaid', 'Outstanding', 'Status', 'Reconciled'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                    <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                   ))}
                 </tr>
               </thead>
@@ -1728,7 +1734,7 @@ function AuditReportTab() {
                     <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{fmt(r.totalRepaid)}</td>
                     <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{fmt(r.outstandingBalance)}</td>
                     <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                    <td className="px-4 py-3">{r.isReconciled ? <span className="text-xs font-semibold text-emerald-600">✓ OK</span> : <span className="text-xs font-semibold text-red-500">✗ Variance</span>}</td>
+                    <td className="px-4 py-3">{r.isReconciled ? <span className="text-xs font-semibold text-emerald-600">✓ {t('OK')}</span> : <span className="text-xs font-semibold text-red-500">✗ {t('Variance')}</span>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1740,19 +1746,19 @@ function AuditReportTab() {
       {section === 'bonuses' && bonusAudit && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <SummaryCard label="Total Batches" value={bonusAudit.totalBatches} icon={Gift} color="text-blue-600 dark:text-blue-400" />
-            <SummaryCard label="Paid Batches" value={bonusAudit.paidBatches} icon={CheckCircle} color="text-emerald-600 dark:text-emerald-400" />
-            <SummaryCard label="Total Bonus Amount" value={fmt(bonusAudit.totalBonusAmount)} icon={DollarSign} color="text-sapphire" />
-            <SummaryCard label="Pending Payment" value={fmt(bonusAudit.pendingPaymentAmount)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
+            <SummaryCard label={t('Total Batches')} value={bonusAudit.totalBatches} icon={Gift} color="text-blue-600 dark:text-blue-400" />
+            <SummaryCard label={t('Paid Batches')} value={bonusAudit.paidBatches} icon={CheckCircle} color="text-emerald-600 dark:text-emerald-400" />
+            <SummaryCard label={t('Total Bonus Amount')} value={fmt(bonusAudit.totalBonusAmount)} icon={DollarSign} color="text-sapphire" />
+            <SummaryCard label={t('Pending Payment')} value={fmt(bonusAudit.pendingPaymentAmount)} icon={AlertTriangle} color="text-amber-600 dark:text-amber-400" />
           </div>
           {bonusAudit.byDepartment?.length > 0 && (
             <div className="surface overflow-hidden">
-              <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">Bonus Distribution by Department</p>
+              <p className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 border-b border-slate-100 dark:border-white/[0.07]">{t('Bonus Distribution by Department')}</p>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {['Department', 'Employees', 'Total Bonus'].map((h) => (
-                      <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
+                      <th key={h} className="px-4 py-3 text-start text-xs font-semibold uppercase tracking-wide text-slate-400">{h === '#' || h === '' ? h : t(h)}</th>
                     ))}
                   </tr>
                 </thead>
@@ -1777,6 +1783,7 @@ function AuditReportTab() {
 // ── LoansPage ─────────────────────────────────────────────────────────────────
 
 export function LoansPage() {
+  const { t } = useLocale();
   const { user } = useAuth();
   const { companyVersion } = useCompany();
   const canViewFinanceModules = user?.roles.some(role => ['Admin', 'Finance', 'Finance Approver', 'HR Manager', 'HR Director'].includes(role)) ?? false;
@@ -1815,9 +1822,9 @@ export function LoansPage() {
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{ownAccounts ? 'My Loans' : canViewFinanceModules ? 'Loans, Advances & Bonuses' : 'Team Loans'}</h1>
+          <h1 className="text-2xl font-semibold text-slate-950 dark:text-white">{ownAccounts ? t('My Loans') : canViewFinanceModules ? t('Loans, Advances & Bonuses') : t('Team Loans')}</h1>
           <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-            {ownAccounts ? 'Apply for a loan, follow approvals and view your repayment statement.' : 'Review scoped employee loans, approval routes and repayment history.'}
+            {ownAccounts ? t('Apply for a loan, follow approvals and view your repayment statement.') : t('Review scoped employee loans, approval routes and repayment history.')}
           </p>
         </div>
         {!ownAccounts && <ModuleSettingsLink sections={['loanTypes', 'loanPolicies', 'advancePolicy', 'bonusTypes']} label={msg('Loan settings')} />}
@@ -1825,13 +1832,13 @@ export function LoansPage() {
 
       {summary && canViewFinanceModules && !ownAccounts && !['loans', 'loanPayments'].includes(activeTab) && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <SummaryCard label="Active Obligations" value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub="loans + advances" />
-          <SummaryCard label="Total Outstanding" value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub="loans + advances" />
-          <SummaryCard label="Pending Approval" value={summary.pendingLoans} icon={AlertTriangle} color="text-sapphire" sub="awaiting decision" />
-          <SummaryCard label="Audit Status" value="Ready" icon={ShieldCheck} color="text-emerald-600 dark:text-emerald-400" sub="GL entries current" />
+          <SummaryCard label={t('Active Obligations')} value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub={t('loans + advances')} />
+          <SummaryCard label={t('Total Outstanding')} value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub={t('loans + advances')} />
+          <SummaryCard label={t('Pending Approval')} value={summary.pendingLoans} icon={AlertTriangle} color="text-sapphire" sub={t('awaiting decision')} />
+          <SummaryCard label={t('Audit Status')} value={t('Ready')} icon={ShieldCheck} color="text-emerald-600 dark:text-emerald-400" sub={t('GL entries current')} />
         </div>
       )}
-      {user?.employeeId && canViewTeam && <div className="flex gap-2"><button className={ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(true); setActiveTab('loans'); }}>My Loans</button><button className={!ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(false); setActiveTab('loans'); }}>{canViewFinanceModules ? 'Scoped Employee Loans' : 'Team Loans'}</button></div>}
+      {user?.employeeId && canViewTeam && <div className="flex gap-2"><button className={ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(true); setActiveTab('loans'); }}>{t('My Loans')}</button><button className={!ownAccounts ? 'btn-primary' : 'btn-secondary'} onClick={() => { setMine(false); setActiveTab('loans'); }}>{canViewFinanceModules ? t('Scoped Employee Loans') : t('Team Loans')}</button></div>}
       {activeTab === 'loans' && <LoanAccountSummary key={companyVersion} mine={ownAccounts} version={summaryVersion} />}
 
       <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-200 dark:border-white/[0.08]">
@@ -1847,7 +1854,7 @@ export function LoansPage() {
             }`}
           >
             <Icon className="h-4 w-4" />
-            {label}
+            {t(label)}
           </button>
         ))}
       </div>

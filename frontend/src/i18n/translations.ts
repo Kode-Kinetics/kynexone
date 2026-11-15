@@ -54,6 +54,7 @@ import { payrollPipeline } from './payrollPipeline';
 import { payrollRecon } from './payrollRecon';
 import { launchPolish } from './launchPolish';
 import { polishB } from './polishB';
+import { statusTail } from './statusTail';
 import { complianceActions } from './complianceActions';
 import { insights as insightsText } from './insights';
 import { attendanceExceptions } from './attendanceExceptions';
@@ -1682,6 +1683,8 @@ const en: Dict = {
   ...succession.en,
   // Demo polish B: statuses, offer events and sentences still English under Arabic — see ./polishB.
   ...polishB.en,
+  // Status tail: Loans and Compliance screens and raw status words — see ./statusTail.
+  ...statusTail.en,
 };
 
 // ── Arabic (RTL) ──────────────────────────────────────────────────────────────
@@ -3252,6 +3255,7 @@ const ar: Dict = {
   // SUC — succession and career development (./succession).
   ...succession.ar,
   ...polishB.ar,
+  ...statusTail.ar,
 };
 
 // ── French ────────────────────────────────────────────────────────────────────
