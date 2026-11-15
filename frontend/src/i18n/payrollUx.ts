@@ -31,7 +31,6 @@ const ar: Record<string, string> = {
   'Post the statutory remittance to the general ledger?': 'ترحيل السداد النظامي إلى دفتر الأستاذ؟',
   'This posts a journal to the general ledger. It is reversed with a contra journal, not deleted.': 'يرحّل هذا الإجراء قيدًا إلى دفتر الأستاذ. ويُعكس بقيد عكسي ولا يُحذف.',
   'This posts a journal to the general ledger. It is reversed with a contra journal, not deleted. The amounts come from the run and appear on the GL Journal tab once posted.': 'يرحّل هذا الإجراء قيدًا إلى دفتر الأستاذ. ويُعكس بقيد عكسي ولا يُحذف. تُحتسب المبالغ من المسير وتظهر في تبويب قيود دفتر الأستاذ بعد الترحيل.',
-  'Settle net pay to GL': 'تسوية صافي الرواتب في دفتر الأستاذ',
   'Post settlement': 'ترحيل التسوية',
   'Post remittance': 'ترحيل السداد',
 
