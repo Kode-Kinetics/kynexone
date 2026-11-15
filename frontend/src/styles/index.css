@@ -86,7 +86,8 @@ textarea:focus-visible {
   }
 
   /* A wide table scrolls sideways inside its card on a narrow screen instead of being clipped by the card's overflow-hidden. */
-  .kx-scroll-tables .surface { overflow-x: auto; }
+  /* Only the cards that clip (overflow-hidden): a stat card that merely runs a little wide must not become a scroll region nobody can focus. */
+  .kx-scroll-tables .surface.overflow-hidden { overflow-x: auto; }
 
   .muted-text {
     @apply text-fg-subtle;
