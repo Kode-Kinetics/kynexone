@@ -258,10 +258,14 @@ public sealed class EntitlementResolver : IEntitlementResolver
                     .OrderByDescending(x => x.CompanyId.HasValue).FirstOrDefault();
                 // A component that can never be skipped (floors and paid wage components) is always offered.
                 offered = (rule is not null && !EntitlementComponentRules.CanBeSkipped(rule) && !rule.IsLoanFacility) || own is null || own.IsOffered;
-                if (definitionOn && EntitlementComponentRules.IsCustom(cell.PayComponentCode))
+                if (EntitlementComponentRules.IsCustom(cell.PayComponentCode))
                 {
-                    var tenantRows = offerings.Where(x => x.CompanyId == null && string.Equals(x.Code, cell.PayComponentCode, StringComparison.OrdinalIgnoreCase)).ToList();
-                    if (tenantRows.Count > 0 && !tenantRows.Any(r => r.IsActive && (r.EffectiveFrom == null || r.EffectiveFrom <= asOf) && (r.EffectiveTo == null || r.EffectiveTo >= asOf)))
+                    // A customer-added benefit's definition this company can see: the group's (no company), or this company's own (its company row that
+                    // is offered). A company's own benefit of a SISTER company is never read above, so a cell for it — whatever wrote it — offers nothing.
+                    var definitionRows = offerings.Where(x => string.Equals(x.Code, cell.PayComponentCode, StringComparison.OrdinalIgnoreCase)
+                        && (x.CompanyId == null || x.IsOffered)).ToList();
+                    if (definitionRows.Count == 0) offered = false;
+                    else if (definitionOn && !definitionRows.Any(r => r.IsActive && (r.EffectiveFrom == null || r.EffectiveFrom <= asOf) && (r.EffectiveTo == null || r.EffectiveTo >= asOf)))
                         offered = false;
                 }
             }

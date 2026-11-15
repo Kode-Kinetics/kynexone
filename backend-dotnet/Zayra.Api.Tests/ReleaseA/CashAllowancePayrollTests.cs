@@ -673,7 +673,7 @@ public class CashAllowancePayrollTests
             });
         await h.Db.SaveChangesAsync();
 
-        var response = await new EntitlementMatrixController { ControllerContext = h.Context() }.CashGlDrivers(h.Service, default);
+        var response = await new EntitlementMatrixController { ControllerContext = h.Context() }.CashGlDrivers(h.Service, null, default);
 
         var list = JsonSerializer.SerializeToElement(((OkObjectResult)response).Value, new JsonSerializerOptions(JsonSerializerDefaults.Web)).EnumerateArray().ToList();
         string[] Keys(bool usable) => list.Where(d => d.GetProperty("usable").GetBoolean() == usable).Select(d => d.GetProperty("key").GetString()!).ToArray();

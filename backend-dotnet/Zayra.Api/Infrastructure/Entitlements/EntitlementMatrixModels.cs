@@ -34,12 +34,14 @@ public sealed record MatrixGradeDto(Guid Id, string Code, string Name, string? N
 /// <param name="CanBeSkipped">Whether a company may stop offering it from this screen. False for statutory floors, loans
 /// (offered per company in Loans) and wage components (a company row would shadow the payroll catalogue).</param>
 /// <param name="FloorReason">Why a statutory-floor row is locked, in both languages.</param>
+/// <param name="OwnerCompanyId">Set on a company's own benefit: the one company it belongs to and is offered to. Null on a group benefit and every built-in one.</param>
 public sealed record MatrixComponentDto(
     string Code, string NameEn, string NameAr, string Class, string Floor, string Group,
     IReadOnlyList<string> AllowedValueTypes, IReadOnlyList<string> AllowedCoverageTiers, IReadOnlyList<string> AllowedDependantScopes,
     IReadOnlyList<string> AllowedLimitPeriods, string? DefaultLimitPeriod,
     bool IsFloor, bool CanBeSkipped, bool IsLoanFacility, BlockReasonDto? FloorReason, bool IsCustom = false,
-    CashAllowanceInfoDto? CashAllowance = null, IReadOnlyList<AllowanceWarningDto>? Warnings = null, BenefitDefinitionDto? Definition = null);
+    CashAllowanceInfoDto? CashAllowance = null, IReadOnlyList<AllowanceWarningDto>? Warnings = null, BenefitDefinitionDto? Definition = null,
+    Guid? OwnerCompanyId = null);
 
 /// <summary>What a customer-added benefit is, beyond its name (feature <c>benefit_definition_v1</c>; null on every component while the feature is off).</summary>
 /// <param name="Delivery">Coverage (a contract benefit, <c>BEN_*</c>) or SalaryAllowance (a monthly cash allowance, <c>ALW_*</c>). Derived from the code, never a second column.</param>
@@ -51,7 +53,9 @@ public sealed record BenefitDefinitionDto(
     IReadOnlyList<Guid> OfferedCompanyIds, string Version, Guid? SourcePlanId, bool CodeLocked);
 
 /// <summary>What this API can do, so a newer screen against an older API (or a tenant without the feature) hides what it cannot rely on.</summary>
-public sealed record MatrixCapabilitiesDto(bool BenefitDefinition);
+/// <param name="CompanyBenefits">A benefit can be added for one company from that company's view (<c>companyId</c> on the add). A screen that sees it absent (an
+/// older API, which would ignore the company and add the benefit for every company) keeps Add benefit to the group view.</param>
+public sealed record MatrixCapabilitiesDto(bool BenefitDefinition, bool CompanyBenefits = false);
 
 /// <summary>What Finance and the grid need to know about a customer-defined cash allowance (<c>ALW_*</c>): whether it is still waiting for Finance to
 /// confirm it, and the GL driver and end-of-service setting in effect (for the version dated <paramref name="EffectiveFrom"/>; null = since the start).</summary>
@@ -71,7 +75,7 @@ public sealed record MatrixCellDto(
     string? NationalityBasis, string? SourceRule, string? Note, DateOnly EffectiveFrom, DateOnly? EffectiveTo, DateOnly? NextChangeOn);
 
 /// <param name="Mode">Group (the tenant view), Adopted (the group values, no company cells), Tailored (at least one company
-/// cell) or Skipped (the company does not offer it). Derived, never stored.</param>
+/// cell), Skipped (the company does not offer it) or Own (this company's own benefit, offered to it alone). Derived, never stored.</param>
 /// <param name="ChangesOn">A scheduled skip or re-offer, if one is already published for a later month.</param>
 public sealed record MatrixOfferingDto(string ComponentCode, string Mode, bool Offered, DateOnly? SkippedFrom, DateOnly? ChangesOn, bool CanBeSkipped);
 
@@ -148,6 +152,11 @@ public sealed record CreateBenefitRequest(
     public BenefitScopeInput? Scope { get; init; }
     /// <summary>A client-generated id: a replay of the same request by the same person returns the original result instead of 409 benefit_exists.</summary>
     public Guid? RequestId { get; init; }
+
+    /// <summary>The one company the benefit is for (it becomes that company's own: no other company sees it). Absent = a group benefit for every company.
+    /// The caller must reach the company (403 <c>company_not_accessible</c> otherwise, whether or not it exists). Not a definition field: it is honoured with the
+    /// benefit_definition_v1 feature off too.</summary>
+    public Guid? CompanyId { get; init; }
 
     /// <summary>Any JSON property the contract does not know. A request carrying one is refused (<c>unrecognised_field</c>), never silently dropped.</summary>
     [JsonExtensionData]

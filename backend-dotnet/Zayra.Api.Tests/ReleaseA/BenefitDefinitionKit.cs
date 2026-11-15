@@ -155,10 +155,12 @@ internal sealed class CreateBenefitRequestBuilder(string nameEn)
     public bool? IsActive, RequiresEnrolment;
     public BenefitScopeInput? Scope;
     public Guid? RequestId;
+    public Guid? CompanyId;
 
     public CreateBenefitRequest Build() => new(nameEn, NameAr, Kind, GlDriverKey, EosbIncluded, EosbExclusionReason, EosbExclusionCategory)
     {
         Code = Code, Delivery = Delivery, Frequency = Frequency, Category = Category, PolicyClass = PolicyClass, EffectiveFrom = EffectiveFrom,
         EffectiveTo = EffectiveTo, IsActive = IsActive, RequiresEnrolment = RequiresEnrolment, Scope = Scope, RequestId = RequestId,
+        CompanyId = CompanyId,
     };
 }
