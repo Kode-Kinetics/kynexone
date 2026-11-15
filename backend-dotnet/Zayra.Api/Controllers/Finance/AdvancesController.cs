@@ -99,24 +99,34 @@ public partial class AdvancesController : ControllerBase
 
     // ── Salary Advances ───────────────────────────────────────────────────────
 
-    // F10 — gated on loans.read or loans.write, as the loan book is (see LoansController.LoansReadDenial).
+    // F10 — the book is gated on loans.read or loans.write, as the loan book is (see LoansController.LoansReadDenial). A
+    // self-service caller (loans.self) passes mine=true and sees only the advances that pay their own linked employee record;
+    // without mine=true the book stays closed to them.
     [HttpGet]
-    [HasPermission("loans.read", "loans.write")]
+    [HasPermission("loans.self", "loans.read", "loans.write")]
     public async Task<IActionResult> List(
         [FromQuery] Guid? employeeId, [FromQuery] string? status,
-        [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default)
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 30, CancellationToken ct = default, [FromQuery] bool mine = false)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 100);
-        if (LoansController.LoansReadDenial(this) is { } denied) return denied;
+        if (AdvanceReadDenial(mine) is { } denied) return denied;
         var tid = GetTenantId();
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        var q = _db.SalaryAdvances.Where(x => x.TenantId == tid && !x.IsDeleted);
-
-        if (!scope.IsUnrestricted)
+        IQueryable<SalaryAdvance> q;
+        if (mine)
         {
-            var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
-            q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
+            var ownId = await CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct);
+            q = OwnAdvances(tid, ownId);
+        }
+        else
+        {
+            var scope = await _scopeService.ResolveAsync(User, tid, ct);
+            q = _db.SalaryAdvances.Where(x => x.TenantId == tid && !x.IsDeleted);
+            if (!scope.IsUnrestricted)
+            {
+                var allowedEmployeeIds = scope.AllowedEmployeeIds!.ToArray();
+                q = q.Where(x => x.EmployeeIntId.HasValue && allowedEmployeeIds.Contains(x.EmployeeIntId.Value));
+            }
         }
         if (employeeId.HasValue)
             q = q.Where(x => x.EmployeeId == employeeId);
@@ -129,18 +139,32 @@ public partial class AdvancesController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    [HasPermission("loans.read", "loans.write")]
-    public async Task<IActionResult> Get(Guid id, CancellationToken ct)
+    [HasPermission("loans.self", "loans.read", "loans.write")]
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct, [FromQuery] bool mine = false)
     {
-        if (LoansController.LoansReadDenial(this) is { } denied) return denied;
+        if (AdvanceReadDenial(mine) is { } denied) return denied;
         var tid = GetTenantId();
-        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
-        if (adv == null) return NotFound();
-        // Object-level authorization (see LoansController.GetLoan): a scoped caller may only read an
-        // advance for an employee in their scope; prevents IDOR via the detail route.
-        var scope = await _scopeService.ResolveAsync(User, tid, ct);
-        if (!scope.IsUnrestricted && !(adv.EmployeeIntId.HasValue && scope.CanAccessEmployee(adv.EmployeeIntId.Value)))
-            return Forbid();
+        SalaryAdvance? adv;
+        if (mine)
+        {
+            // Self-service: the caller's own advance only, by the server-resolved employee link; any other id is refused.
+            var ownId = await CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct);
+            adv = await ScopedBypass.TenantWide(_db.SalaryAdvances, tid,
+                    "Self-service read of one salary advance by id; refused below unless it pays the caller's own server-resolved employee record.")
+                .FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, ct);
+            if (adv == null) return NotFound();
+            if (!(ownId.HasValue && adv.EmployeeIntId == ownId)) return Forbid();
+        }
+        else
+        {
+            adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+            if (adv == null) return NotFound();
+            // Object-level authorization (see LoansController.GetLoan): a scoped caller may only read an
+            // advance for an employee in their scope; prevents IDOR via the detail route.
+            var scope = await _scopeService.ResolveAsync(User, tid, ct);
+            if (!scope.IsUnrestricted && !(adv.EmployeeIntId.HasValue && scope.CanAccessEmployee(adv.EmployeeIntId.Value)))
+                return Forbid();
+        }
         var installments = await _db.AdvanceInstallments.Where(x => x.AdvanceId == id).OrderBy(x => x.InstallmentNumber).ToListAsync(ct);
         var approvals = await _db.AdvanceApprovals.Where(x => x.AdvanceId == id).OrderBy(x => x.StepOrder).ToListAsync(ct);
         var auditLogs = await _db.AdvanceAuditLogs.AsNoTracking().Where(x => x.TenantId == tid && x.AdvanceId == id).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
@@ -156,6 +180,28 @@ public partial class AdvancesController : ControllerBase
             : new List<FinanceGlEntry>();
         return Ok(new { advance = SalaryAdvanceDto.Project(adv), installments, approvals, auditLogs, glEntries });
     }
+
+    /// <summary>The loan book (every advance in the caller's data scope) is for loans.read or loans.write. A loans.self caller
+    /// reads only their own advances, with mine=true; without it they are refused with the same reason as the loan book.</summary>
+    private IActionResult? AdvanceReadDenial(bool mine) =>
+        User.HasPermission("loans.read") || User.HasPermission("loans.write") || (mine && User.HasPermission("loans.self"))
+            ? null
+            : StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "loans_read_forbidden",
+                message = "Salary advances are shown to holders of the loans.read or loans.write permission; an employee with loans.self " +
+                          "sees their own advances with mine=true. Ask an administrator if you need them.",
+                messageAr = "تُعرض سلف الرواتب لمن يملك صلاحية loans.read أو loans.write؛ ويرى الموظف صاحب صلاحية loans.self سلفه فقط " +
+                            "باستخدام mine=true. تواصل مع المسؤول إذا احتجت إليها.",
+                requiredPermissions = new[] { "loans.read", "loans.write" },
+            });
+
+    /// <summary>The caller's own advances, by the server-resolved employee link (never a client-supplied id). An employee keeps
+    /// their own history after a company transfer, so the company filter is dropped; the tenant and the employee id are pinned.</summary>
+    private IQueryable<SalaryAdvance> OwnAdvances(Guid tid, int? ownEmployeeId) =>
+        ScopedBypass.TenantWide(_db.SalaryAdvances, tid,
+                "Authenticated employee's own salary advances across a company transfer; the employee id is server-resolved.")
+            .Where(x => !x.IsDeleted && ownEmployeeId.HasValue && x.EmployeeIntId == ownEmployeeId);
 
     /// <summary>The tenant-wide lock every advance request takes, as LoansController.CreateLoan takes
     /// "finance.loan-create": the per-year count, the cooldown and the advance number are all read-then-write,
