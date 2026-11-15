@@ -67,7 +67,20 @@ interface BootOptions {
   readerOnly?: boolean;
   /** C7: another format's file over the same rows still awaits the ERP, so a create is refused until acknowledgeOtherFormatLive=true. */
   otherFormatLive?: boolean;
+  /** C-1: a payroll-run file holding some of the month's rows still awaits the ERP: the check names it, a create is refused (409). */
+  liveOverlap?: boolean;
 }
+
+const runFile = 'journal-SA01-run-f15b4846-SAR-generic-csv-FB8A0869.csv';
+const overlapMessage = `2 of these ledger rows are already in export ${runFile}, which is waiting for its ERP result. This file cannot be created until that export's ERP result is recorded (posted or rejected), or that export's own scope is exported again in the same format to supersede it.`;
+const overlapMessageAr = `2 من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير ${runFile} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. لا يمكن إنشاء هذا الملف حتى تُسجَّل نتيجة ذلك الملف (مرحّل أو مرفوض)، أو يُصدَّر نطاق ذلك الملف نفسه مجددًا بالصيغة نفسها ليحلّ محله.`;
+const overlapRefusal = {
+  error: 'entries_in_live_export', code: 'entries_in_live_export',
+  message: `2 of these ledger rows are already in export ${runFile}, which is waiting for its ERP result. Sending them in a second file could make your ERP post them twice. Record that export's ERP result (posted or rejected) first, or export that export's own scope again in the same format to supersede it.`,
+  messageAr: `2 من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير ${runFile} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. إرسالها في ملف ثانٍ قد يجعل النظام يرحّلها مرتين. سجّل أولًا نتيجة ذلك الملف (مرحّل أو مرفوض)، أو صدّر نطاق ذلك الملف نفسه مجددًا بالصيغة نفسها ليحلّ محله.`,
+  exportId: 'exp-run', fileName: runFile, rows: 2,
+  liveExports: [{ exportId: 'exp-run', fileName: runFile, format: 'generic-csv', rows: 2, exportedAtUtc: '2026-08-03T09:00:00Z', status: 'Exported' }],
+};
 
 async function boot(page: Page, options: BootOptions = {}): Promise<State> {
   const groupScope = options.groupScope ?? true;
@@ -116,9 +129,15 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     const gl = '/api/finance/gl/journal-exports';
     if (path === `${gl}/formats`) return reply(formats);
     const forViewer = (m: JournalExportManifest): JournalExportManifest => (options.readerOnly ? { ...m, sample: null } : m);
+    if (path === `${gl}/preview` && options.liveOverlap) return reply(forViewer({
+      ...manifest(null, 'Full'),
+      warnings: [overlapMessage],
+      liveExportOverlaps: [{ exportId: 'exp-run', fileName: runFile, format: 'generic-csv', rows: 2, relation: 'other_scope', message: overlapMessage, messageAr: overlapMessageAr }],
+    }));
     if (path === `${gl}/preview`) return reply(forViewer(manifest(null, 'Supplementary')));
     if (path === gl && request.method() === 'POST') {
       state.creates.push(url.search);
+      if (options.liveOverlap) return reply(overlapRefusal, 409);
       if (options.otherFormatLive && url.searchParams.get('acknowledgeOtherFormatLive') !== 'true') return reply({
         error: 'other_format_export_live', code: 'other_format_export_live',
         message: 'A generic-csv export of this period (journal-GROUP-2026-07-SAR-generic-csv-8A2D975A.csv) is still waiting for your ERP\'s result …',
@@ -511,4 +530,44 @@ test('Arabic: the export history row shows the translated line count', async ({ 
   await page.getByRole('button', { name: 'إنشاء ملف التصدير' }).click();
 
   await expect(page.getByTestId('journal-export-line-count').first()).toHaveText('4 أسطر');
+});
+
+// C-1: a file of another scope (here the payroll run) still waits for the ERP and holds some of the month's rows. The check
+// names it once, and creating is refused with the server's sentence, never with a "create anyway" button.
+test('a payroll-run file still waiting for the ERP: the check names it once and creating is refused in plain words', async ({ page }) => {
+  const state = await boot(page, { liveOverlap: true });
+  await chooseJuly(page);
+  await page.getByRole('button', { name: 'Check balances' }).click();
+  const notice = page.getByTestId('journal-export-live-overlap');
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText(runFile);
+  await expect(page.getByTestId('journal-export-manifest').getByText(runFile)).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'Create export file' }).click();
+  const refusal = page.getByTestId('journal-export-refusal');
+  await expect(refusal).toContainText('2 of these ledger rows are already in export');
+  await expect(refusal).toContainText(runFile);
+  await expect(page.getByTestId('journal-export-create-anyway')).toHaveCount(0);
+  await expect(page.getByTestId('journal-export-manifest')).toHaveCount(0);
+  expect(state.creates).toHaveLength(1);
+  expect(state.errors).toEqual([]);
+});
+
+test('Arabic: the waiting-file notice and the refusal are in Arabic', async ({ page }) => {
+  const state = await boot(page, { liveOverlap: true, locale: 'ar' });
+  const accountingMonthAr = page.getByRole('group', { name: 'الشهر المحاسبي' });
+  await accountingMonthAr.getByLabel('السنة').selectOption('2026');
+  await accountingMonthAr.getByLabel('الشهر', { exact: true }).selectOption('7');
+  await page.getByRole('button', { name: 'التحقق من التوازن' }).click();
+  const notice = page.getByTestId('journal-export-live-overlap');
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText('ما زال بانتظار نتيجة نظام تخطيط الموارد');
+  await expect(notice).toContainText(runFile);
+  await expect(page.getByTestId('journal-export-manifest')).not.toContainText('ledger rows');
+
+  await page.getByRole('button', { name: 'إنشاء ملف التصدير' }).click();
+  const refusal = page.getByTestId('journal-export-refusal');
+  await expect(refusal).toContainText('إرسالها في ملف ثانٍ قد يجعل النظام يرحّلها مرتين');
+  await expect(refusal).not.toContainText('ledger rows');
+  expect(state.errors).toEqual([]);
 });
