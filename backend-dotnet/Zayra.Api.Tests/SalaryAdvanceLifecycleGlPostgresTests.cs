@@ -28,9 +28,10 @@ namespace Zayra.Api.Tests;
 /// period, company, cost centre when costing is on), that every journal balances, that nothing posts twice, and that the
 /// advance sub-ledger (Σ OutstandingBalance) equals the 1410 Employee Salary Advances balance.
 ///
-/// <para>The disbursement is one helper, <see cref="ApproveAndDisburseAsync"/>. Today Approve both approves AND disburses
-/// (it posts DR 1410 / CR 1000); if a separate payout step is introduced, only that helper and the assertions marked
-/// "DISBURSEMENT-AT-APPROVE" change.</para>
+/// <para>The disbursement is one helper, <see cref="ApproveAndDisburseAsync"/>: Approve agrees the terms and the schedule and
+/// posts nothing (Pending → Approved); a different Finance user then records the payout (Approved → Active), which posts DR 1410 /
+/// CR 1000 dated and periodised on the paid date. The first repayment date is today (<c>World.Start</c>), the earliest a
+/// request may name, so this month's run collects the first instalment.</para>
 ///
 /// <para>The company, chart of accounts and cost centres come from <see cref="CostingLockKit"/>; the final-settlement
 /// approval is seeded exactly as <see cref="SettlementDisbursementRacePostgresTests"/> seeds it (Approved, accrued to 2320),
@@ -75,20 +76,20 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         var m1 = w.Month1;
 
         // ── Step 1: the employee requests 1,000.00 over 3 instalments for themselves (policy cap 50% of 10,000).
-        var advId = await RequestAsSelfAsync(w, 1_000m, 3, m1);
+        var advId = await RequestAsSelfAsync(w, 1_000m, 3, w.Start);
         await AssertAdvanceAsync(advId, "Pending", outstanding: 0m, repaid: 0m);
         (await AdvanceInstallmentsAsync(advId)).Should().BeEmpty("nothing is scheduled before approval");
         (await AdvanceGlAsync(w)).Should().BeEmpty("a request posts nothing");
 
         // ── Step 2: a different person (Finance) approves and the advance is disbursed.
-        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, m1);
+        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, w.Start);
         await AssertAdvanceAsync(advId, "Active", outstanding: 1_000m, repaid: 0m);
         var schedule = await AdvanceInstallmentsAsync(advId);
         schedule.Select(i => i.AmountDue).Should().Equal(333.33m, 333.33m, 333.34m);
-        schedule.Select(i => i.DueDate).Should().Equal(m1, m1.AddMonths(1), m1.AddMonths(2));
+        schedule.Select(i => i.DueDate).Should().Equal(w.Start, w.Start.AddMonths(1), w.Start.AddMonths(2));
         schedule.Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null);
 
-        // DISBURSEMENT-AT-APPROVE: one balanced journal, DR 1410 / CR 1000, dated into today's period, this company.
+        // DISBURSEMENT-AT-PAYOUT: one balanced journal, DR 1410 / CR 1000, in the paid date's period (today), this company.
         var disbursement = await AdvanceGlAsync(w);
         Dump("Step 2 — disbursement", disbursement);
         disbursement.Should().ContainSingle();
@@ -105,10 +106,23 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await using (var db = _fx.CreateDb())
         {
             var again = await Advances(db, w, w.SecondFinanceUser, "Finance", "loans.write")
-                .Approve(advId, new AdvanceApproveRequest(1_000m, 3, m1), Ct);
+                .Approve(advId, new AdvanceApproveRequest(1_000m, 3, w.Start), Ct);
             again.Should().BeOfType<BadRequestObjectResult>().Which.Value!.ToString().Should().Contain("not in Pending status");
         }
         (await AdvanceGlAsync(w)).Should().ContainSingle("a replayed approval must not disburse twice");
+
+        // Nor does a replayed payout: the same reference returns the paid advance, a different one is refused.
+        await using (var db = _fx.CreateDb())
+        {
+            (await Advances(db, w, w.SecondFinanceUser, "Finance", "loans.write")
+                .Payout(advId, new AdvancePayoutRequest(DateOnly.FromDateTime(DateTime.UtcNow), PayoutReference(advId), null), Ct))
+                .Should().BeOfType<OkObjectResult>("the same reference is an idempotent replay");
+            var other = await Advances(db, w, w.SecondFinanceUser, "Finance", "loans.write")
+                .Payout(advId, new AdvancePayoutRequest(DateOnly.FromDateTime(DateTime.UtcNow), "OTHER-REF", null), Ct);
+            other.Should().BeOfType<ConflictObjectResult>();
+            Body(other).Should().Contain("advance_already_paid");
+        }
+        (await AdvanceGlAsync(w)).Should().ContainSingle("a replayed payout must not disburse twice");
 
         // ── Step 3: payroll run 1 deducts the first instalment; the lock relieves 1410 by exactly that amount.
         var run1 = await NewRegularRunAsync(w, m1);
@@ -183,7 +197,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         var w = await SeedAsync(costing: false, maxPerYear: 1);
 
         // Finance rejects the employee's own request.
-        var rejected = await RequestAsSelfAsync(w, 800m, 2, w.Month1);
+        var rejected = await RequestAsSelfAsync(w, 800m, 2, w.Start);
         await using (var db = _fx.CreateDb())
             Ok<object>(await Advances(db, w, w.FinanceUser, "Finance", "loans.write").Reject(rejected, new RejectRequest("not eligible this month"), Ct), "reject");
         await AssertAdvanceAsync(rejected, "Rejected", outstanding: 0m, repaid: 0m, approved: 0m);
@@ -192,28 +206,42 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await using (var db = _fx.CreateDb())
         {
             var lateApprove = await Advances(db, w, w.SecondFinanceUser, "Finance", "loans.write")
-                .Approve(rejected, new AdvanceApproveRequest(800m, 2, w.Month1), Ct);
+                .Approve(rejected, new AdvanceApproveRequest(800m, 2, w.Start), Ct);
             lateApprove.Should().BeOfType<BadRequestObjectResult>().Which.Value!.ToString().Should().Contain("not in Pending status");
         }
         (await AdvanceGlAsync(w)).Should().BeEmpty("approving a rejected advance must not disburse");
 
-        // Withdrawal: there is no cancel endpoint today; the person who filed the request withdraws it through Reject
-        // (maker-checker is deliberately not applied to a rejection). A rejected request does not use the yearly quota of 1.
-        var withdrawn = await RequestOnBehalfAsync(w, w.HrUser, 600m, 2, w.Month1);
+        // Withdrawal is the Cancel endpoint: the person who filed the request withdraws it, with a reason, before it is paid.
+        // A cancelled request never paid anything and does not use the yearly quota of 1.
+        var withdrawn = await RequestOnBehalfAsync(w, w.HrUser, 600m, 2, w.Start);
         await using (var db = _fx.CreateDb())
-            Ok<object>(await Advances(db, w, w.HrUser, "HR Manager", "loans.write").Reject(withdrawn, new RejectRequest("filed by mistake"), Ct), "withdraw");
-        await AssertAdvanceAsync(withdrawn, "Rejected", outstanding: 0m, repaid: 0m, approved: 0m);
+            Ok<object>(await Advances(db, w, w.HrUser, "HR Manager", "loans.write").Cancel(withdrawn, new AdvanceCancelRequest("filed by mistake"), Ct), "withdraw");
+        await AssertAdvanceAsync(withdrawn, "Cancelled", outstanding: 0m, repaid: 0m, approved: 0m);
+
+        // An approved advance that has not been paid can also be withdrawn; its schedule is retired and nothing posts.
+        var approvedThenWithdrawn = await RequestOnBehalfAsync(w, w.HrUser, 400m, 2, w.Start);
+        await using (var db = _fx.CreateDb())
+            Ok<SalaryAdvanceDto>(await Advances(db, w, w.FinanceUser, "Finance", "loans.write")
+                .Approve(approvedThenWithdrawn, new AdvanceApproveRequest(400m, 2, w.Start), Ct), "approve");
+        (await AdvanceGlAsync(w)).Should().BeEmpty("approval posts nothing");
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Advances(db, w, w.HrUser, "HR Manager", "loans.write").Cancel(approvedThenWithdrawn, new AdvanceCancelRequest("no longer needed"), Ct), "withdraw approved");
+        await AssertAdvanceAsync(approvedThenWithdrawn, "Cancelled", outstanding: 0m, repaid: 0m, approved: 400m);
+        (await AdvanceInstallmentsAsync(approvedThenWithdrawn)).Should().OnlyContain(i => i.Status == "Cancelled");
         (await AdvanceGlAsync(w)).Should().BeEmpty();
         await AssertSubLedgerEqualsGlAsync(w, 0m);
 
         // Once disbursed, an advance cannot be withdrawn: Reject is refused and the journal is untouched.
-        var live = await RequestAsSelfAsync(w, 500m, 1, w.Month1);
-        await ApproveAndDisburseAsync(w, live, 500m, 1, w.Month1);
+        var live = await RequestAsSelfAsync(w, 500m, 1, w.Start);
+        await ApproveAndDisburseAsync(w, live, 500m, 1, w.Start);
         await using (var db = _fx.CreateDb())
         {
             var reject = await Advances(db, w, w.FinanceUser, "Finance", "loans.write").Reject(live, new RejectRequest("too late"), Ct);
             reject.Should().BeOfType<ConflictObjectResult>();
             Body(reject).Should().Contain("invalid_advance_state");
+            var cancel = await Advances(db, w, w.FinanceUser, "Finance", "loans.write").Cancel(live, new AdvanceCancelRequest("too late"), Ct);
+            cancel.Should().BeOfType<ConflictObjectResult>("a paid advance is recovered through payroll, not cancelled");
+            Body(cancel).Should().Contain("invalid_advance_state");
         }
         await AssertAdvanceAsync(live, "Active", outstanding: 500m, repaid: 0m);
         (await AdvanceGlAsync(w)).Should().ContainSingle().Which.Amount.Should().Be(500m);
@@ -238,19 +266,19 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         (await AdvanceCountAsync(w)).Should().Be(0);
 
         // The requester cannot approve their own request (HR filed it on the employee's behalf).
-        var onBehalf = await RequestOnBehalfAsync(w, w.HrUser, 1_000m, 2, w.Month1);
+        var onBehalf = await RequestOnBehalfAsync(w, w.HrUser, 1_000m, 2, w.Start);
         await using (var db = _fx.CreateDb())
-            (await Advances(db, w, w.HrUser, "HR Manager", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000m, 2, w.Month1), Ct))
+            (await Advances(db, w, w.HrUser, "HR Manager", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000m, 2, w.Start), Ct))
                 .Should().BeOfType<BadRequestObjectResult>().Which.Value!.ToString()
                 .Should().Contain("requester cannot approve their own salary advance");
         // The employee the advance pays cannot approve it either, even holding an approver role.
         await using (var db = _fx.CreateDb())
-            (await Advances(db, w, w.EmployeeUser, "Finance", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000m, 2, w.Month1), Ct))
+            (await Advances(db, w, w.EmployeeUser, "Finance", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000m, 2, w.Start), Ct))
                 .Should().BeOfType<BadRequestObjectResult>().Which.Value!.ToString()
                 .Should().Contain("cannot approve a salary advance paid to you");
         // The approver may lower the amount but never raise it past the request.
         await using (var db = _fx.CreateDb())
-            (await Advances(db, w, w.FinanceUser, "Finance", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000.01m, 2, w.Month1), Ct))
+            (await Advances(db, w, w.FinanceUser, "Finance", "loans.write").Approve(onBehalf, new AdvanceApproveRequest(1_000.01m, 2, w.Start), Ct))
                 .Should().BeOfType<BadRequestObjectResult>().Which.Value!.ToString()
                 .Should().Contain("cannot exceed the requested amount");
         await AssertAdvanceAsync(onBehalf, "Pending", outstanding: 0m, repaid: 0m, approved: 0m);
@@ -272,28 +300,29 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         (await AdvanceGlAsync(w)).Should().BeEmpty();
     }
 
-    [Fact(Skip = "GAP, owner decision: no rule limits what an employee may owe on advances at once. With MaxAdvancesPerYear = 2 a second " +
-                 "50% advance is accepted while the first is still fully outstanding; the salary cap is checked per request " +
-                 "(AdvancesController.CreateCore, the policy block). Un-skip when a concurrent-advance or total-exposure rule exists.")]
+    // Owner decision: the policy's percentage-of-salary cap applies to the cumulative total of this request and what the
+    // employee already owes or has asked for (Pending, Approved and Active advances), refused as advance_cumulative_limit.
+    [Fact]
     public async Task Guards_ASecondAdvanceWhileTheFirstIsStillOutstanding_IsRefused()
     {
         // The yearly quota is 2, so the quota alone does not refuse the second request. Each request is checked against the
         // 50% cap on its own; nothing looks at what the employee still owes.
         var w = await SeedAsync(costing: false, maxPerYear: 2);
-        var first = await RequestAsSelfAsync(w, 5_000m, 5, w.Month1);
-        await ApproveAndDisburseAsync(w, first, 5_000m, 5, w.Month1);
+        var first = await RequestAsSelfAsync(w, 5_000m, 5, w.Start);
+        await ApproveAndDisburseAsync(w, first, 5_000m, 5, w.Start);
         await AssertAdvanceAsync(first, "Active", outstanding: 5_000m, repaid: 0m);
 
         var second = await TryRequestAsSelfAsync(w, 5_000m, 5);
         second.Should().BeOfType<BadRequestObjectResult>(
             "an employee who still owes 5,000 (50% of salary) on an Active advance must not get a second 50% advance; " +
             "actual: " + Body(second));
+        Body(second).Should().Contain("advance_cumulative_limit");
         (await AdvanceCountAsync(w)).Should().Be(1);
     }
 
-    [Fact(Skip = "DEFECT: an advance can be requested (and then approved and paid) for an employee serving notice or Offboarded; " +
-                 "AdvancesController.CreateCore and Approve never read employment status or an in-progress offboarding, " +
-                 "unlike LoanEligibilityService (BlockDuringNotice / Offboarded). Un-skip with the fix.")]
+    // Fixed: an employee who is not serving (Offboarded, Terminated, or on notice) is refused, as LoanEligibilityService refuses
+    // a loan by default (allowed statuses Active, BlockDuringNotice).
+    [Fact]
     public async Task Guards_AnEmployeeServingNotice_IsRefusedANewAdvance()
     {
         // An employee with an offboarding in progress (status Offboarded): the loan module refuses them
@@ -315,6 +344,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
 
         var refused = await TryRequestOnBehalfAsync(w, w.HrUser, 2_000m, 2);
         refused.Should().BeOfType<BadRequestObjectResult>("an employee serving notice must not receive a new advance; actual: " + Body(refused));
+        Body(refused).Should().Contain("advance_employee_not_eligible");
         (await AdvanceCountAsync(w)).Should().Be(0);
     }
 
@@ -327,8 +357,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     {
         var w = await SeedAsync(costing: true);
         var m1 = w.Month1;
-        var advId = await RequestAsSelfAsync(w, 1_000m, 3, m1);
-        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, m1);
+        var advId = await RequestAsSelfAsync(w, 1_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, w.Start);
 
         var run1 = await NewRegularRunAsync(w, m1);
         await ProcessAsync(w, run1);
@@ -398,8 +428,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     {
         var w = await SeedAsync(costing: true);
         var m1 = w.Month1;
-        var advId = await RequestAsSelfAsync(w, 1_000m, 3, m1);
-        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, m1);
+        var advId = await RequestAsSelfAsync(w, 1_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 1_000m, 3, w.Start);
 
         var run1 = await NewRegularRunAsync(w, m1);
         await ProcessAsync(w, run1);
@@ -433,8 +463,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     public async Task FinalSettlement_LargeEnough_RecoversTheWholeAdvanceFromTheFinalPay_And1410EndsAtZero()
     {
         var w = await SeedAsync(costing: false, withColleague: true);
-        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Month1);
-        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Month1);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
         var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
 
         await ProcessAsync(w, s.RunId);
@@ -517,8 +547,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         // The final pay (500) cannot cover the 3,000 advance: the run withholds all 500, the net is zero, and the 2,500
         // left over must reach 1420 when the settlement completes.
         var w = await SeedAsync(costing: false);
-        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Month1);
-        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Month1);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
         var s = await SeedApprovedSettlementAsync(w, gross: 500m);
 
         await ProcessAsync(w, s.RunId);
@@ -601,6 +631,9 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         public Guid Preparer { get; } = Guid.NewGuid();
         public Guid Approver { get; } = Guid.NewGuid();
         public Guid Locker { get; } = Guid.NewGuid();
+        /// <summary>The first repayment date every request and approval names: today, so the payout (also today) keeps it and
+        /// the Month1 run collects the first instalment. A request may not name a date before yesterday.</summary>
+        public DateOnly Start { get; } = DateOnly.FromDateTime(DateTime.UtcNow);
     }
 
     /// <summary>A SAR company in KSA (chart and drivers seeded; cost accounting on or off), one cost centre and department, an
@@ -665,7 +698,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await using var db = _fx.CreateDb();
         return await Advances(db, w, w.EmployeeUser, "Employee", "loans.self", employeeClaim: w.EmployeeId).Create(
             new CreateAdvanceRequest(Guid.Empty, string.Empty, amount, installments == 1 ? "OneTime" : "Installments", installments,
-                start ?? w.Month1, "family expense"), Ct);
+                start ?? w.Start, "family expense"), Ct);
     }
 
     private async Task<Guid> RequestAsSelfAsync(World w, decimal amount, int installments, DateOnly start) =>
@@ -675,22 +708,37 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     {
         await using var db = _fx.CreateDb();
         return await Advances(db, w, hrUser, "HR Manager", "loans.write").Create(
-            new CreateAdvanceRequest(Guid.Empty, string.Empty, amount, "Installments", installments, w.Month1, "filed by HR", w.EmployeeId), Ct);
+            new CreateAdvanceRequest(Guid.Empty, string.Empty, amount, "Installments", installments, w.Start, "filed by HR", w.EmployeeId), Ct);
     }
 
     private async Task<Guid> RequestOnBehalfAsync(World w, Guid hrUser, decimal amount, int installments, DateOnly start) =>
         Ok<SalaryAdvanceDto>(await TryRequestOnBehalfAsync(w, hrUser, amount, installments), "request on behalf").Id;
 
     /// <summary>
-    /// THE approve-and-disburse step. Today <c>AdvancesController.Approve</c> does both: it activates the advance, writes the
-    /// schedule and posts the disbursement journal (DR 1410 / CR 1000). A separate payout step would be called here, after the
-    /// approval, and the "DISBURSEMENT-AT-APPROVE" assertions above would move to after it.
+    /// THE approve-and-disburse step: Finance approves (Pending → Approved, nothing posts), then a different Finance user records
+    /// the payout today (Approved → Active), which posts DR 1410 / CR 1000 on the paid date. Approval alone is checked to post
+    /// nothing and to leave nothing owed, so every caller also proves that approval and payout are separate.
     /// </summary>
     private async Task ApproveAndDisburseAsync(World w, Guid advanceId, decimal amount, int installments, DateOnly start)
     {
+        await using (var db = _fx.CreateDb())
+            Ok<SalaryAdvanceDto>(await Advances(db, w, w.FinanceUser, "Finance", "loans.write")
+                .Approve(advanceId, new AdvanceApproveRequest(amount, installments, start), Ct), "approve");
+        await AssertAdvanceAsync(advanceId, "Approved", outstanding: 0m, repaid: 0m, approved: amount);
+        (await AdvanceDisbursementsAsync(advanceId)).Should().Be(0, "approval posts nothing; the cash moves at payout");
+        await using (var db = _fx.CreateDb())
+            Ok<SalaryAdvanceDto>(await Advances(db, w, w.SecondFinanceUser, "Finance", "loans.write")
+                .Payout(advanceId, new AdvancePayoutRequest(DateOnly.FromDateTime(DateTime.UtcNow), PayoutReference(advanceId), null), Ct), "payout");
+        (await AdvanceDisbursementsAsync(advanceId)).Should().Be(1, "the payout posts the disbursement once");
+    }
+
+    private static string PayoutReference(Guid advanceId) => $"BANK-{advanceId:N}"[..20];
+
+    private async Task<int> AdvanceDisbursementsAsync(Guid advanceId)
+    {
         await using var db = _fx.CreateDb();
-        Ok<SalaryAdvanceDto>(await Advances(db, w, w.FinanceUser, "Finance", "loans.write")
-            .Approve(advanceId, new AdvanceApproveRequest(amount, installments, start), Ct), "approve and disburse");
+        return await db.FinanceGlEntries.AsNoTracking()
+            .CountAsync(x => x.SourceModule == "Advance" && x.SourceEntityId == advanceId && x.EventType == "Disbursement");
     }
 
     // ── payroll actions ─────────────────────────────────────────────────────────────────────────
