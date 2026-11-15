@@ -57,21 +57,20 @@ public static class AdvanceReceivableTieOut
         {
             var glCtx = await GlAccountResolver.LoadAsync(db, tenantId, companyId, ct);
             var account = GlAccountResolver.AccountLabel(GlControlAccounts.AdvanceReceivableDriver, glCtx);
-            var lines = await ScopedBypass.TenantWide(db.FinanceGlEntries, tenantId,
-                    "Advance receivable tie-out: the account balance is a system read over every line the company posted.")
-                .AsNoTracking()
-                .Where(x => x.CompanyId == companyId && (x.DebitAccount == account || x.CreditAccount == account))
-                .Select(x => new { x.DebitAccount, x.CreditAccount, x.Amount, x.EventType })
-                .ToListAsync(ct);
+            // The balance is summed by the database, one row back per company however long the ledger is.
+            var ledger = await LedgerTotalsAsync(
+                ScopedBypass.TenantWide(db.FinanceGlEntries, tenantId,
+                        "Advance receivable tie-out: the account balance is a system read over every line the company posted.")
+                    .AsNoTracking()
+                    .Where(x => x.CompanyId == companyId && (x.DebitAccount == account || x.CreditAccount == account)),
+                account, db.Database.IsNpgsql(), ct);
             var own = advances.Where(a => a.CompanyId == companyId).ToList();
             // The unattributed bucket is reported only when something sits in it.
-            if (companyId is null && own.Count == 0 && lines.Count == 0) continue;
+            if (companyId is null && own.Count == 0 && ledger is null) continue;
 
-            var gl = Math.Round(lines.Sum(l => l.DebitAccount == account ? l.Amount : -l.Amount), 2);
+            var gl = Math.Round((ledger?.Debits ?? 0m) - (ledger?.Credits ?? 0m), 2);
             var subLedger = Math.Round(own.Sum(a => a.OutstandingBalance), 2);
-            var reclassed = Math.Round(lines
-                .Where(l => l.CreditAccount == account && l.EventType == GlEventTypes.SettlementResidualReclass)
-                .Sum(l => l.Amount), 2);
+            var reclassed = Math.Round(ledger?.Reclass ?? 0m, 2);
             var difference = Math.Round(gl - subLedger, 2);
             var tied = Math.Abs(difference) < Tolerance;
             var explained = !tied && reclassed > 0m && Math.Abs(difference + reclassed) < Tolerance;
@@ -79,5 +78,34 @@ public static class AdvanceReceivableTieOut
                 reclassed, tied, explained, !tied && !explained));
         }
         return rows;
+    }
+
+    private sealed record LedgerTotals(decimal Debits, decimal Credits, decimal Reclass);
+
+    /// <summary>The debit, credit and reclass totals of the lines that touch <paramref name="account"/> (already filtered to the
+    /// company), or null when there are none. Debits are the lines whose debit side is the account, credits the others (the filter
+    /// guarantees the account is on one side), the reclass the 1420 reclass lines that credit it.
+    ///
+    /// <para>PostgreSQL sums in the database. SQLite, which only the test harness uses, cannot apply <c>Sum</c> to a decimal
+    /// column, so there the same totals are taken from the rows; production never takes that branch.</para></summary>
+    private static async Task<LedgerTotals?> LedgerTotalsAsync(
+        IQueryable<FinanceGlEntry> lines, string account, bool sumInDatabase, CancellationToken ct)
+    {
+        if (sumInDatabase)
+            return await lines
+                .GroupBy(_ => 1)
+                .Select(g => new LedgerTotals(
+                    g.Sum(x => x.DebitAccount == account ? x.Amount : 0m),
+                    g.Sum(x => x.DebitAccount == account ? 0m : x.Amount),
+                    g.Sum(x => x.CreditAccount == account && x.EventType == GlEventTypes.SettlementResidualReclass ? x.Amount : 0m)))
+                .FirstOrDefaultAsync(ct);
+
+        var rows = await lines.Select(x => new { x.DebitAccount, x.CreditAccount, x.Amount, x.EventType }).ToListAsync(ct);
+        return rows.Count == 0
+            ? null
+            : new LedgerTotals(
+                rows.Where(r => r.DebitAccount == account).Sum(r => r.Amount),
+                rows.Where(r => r.DebitAccount != account).Sum(r => r.Amount),
+                rows.Where(r => r.CreditAccount == account && r.EventType == GlEventTypes.SettlementResidualReclass).Sum(r => r.Amount));
     }
 }
