@@ -5653,6 +5653,7 @@ public class EmployeesController : ControllerBase
                 }
             }
 
+            // IgnoreQueryFilters is intentional: the status the record ended on, read back whichever company filter applies; TenantId is re-applied explicitly in this predicate.
             var finalStatus = await _db.Employees.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.Status).FirstAsync(ct);
             var statusRestored = fallbackReason is null;
