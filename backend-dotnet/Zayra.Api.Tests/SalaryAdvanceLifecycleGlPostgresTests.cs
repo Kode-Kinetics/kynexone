@@ -626,6 +626,40 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Balance(await LedgerAsync(w), Emp1420).Should().Be(2_500m, "completing it again posts nothing");
     }
 
+    /// <summary>
+    /// A void of the settlement run after a zero-net settlement was completed without payment does exactly what it does after the
+    /// settlement was completed by a paid batch (PayrollVoidService): the void is allowed, the settlement goes back to the status
+    /// its witness recorded (Approved) with no run, batch or paid date, the advance gets back the instalment the run took, and the
+    /// leftover already moved to 1420 stays there (that journal belongs to the settlement, not the run, and is never contra'd by a
+    /// void, whichever way the settlement was completed). The only difference is that no cash left, so no cash election is asked.
+    /// </summary>
+    [Fact]
+    public async Task Void_AfterAZeroNetSettlementWasCompletedWithoutPayment_IsTreatedAsAfterAPaidBatch()
+    {
+        var w = await SeedAsync(costing: false);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+        await ProcessAsync(w, s.RunId);
+        await OverrideHalfWageCapAsync(w, s.RunId);
+        await ApproveAsync(w, s.RunId, expectedOverridden: 1);
+        await LockAsync(w, s.RunId);
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+
+        var settlement = await SettlementAsync(s.SettlementId);
+        settlement.Status.Should().Be(FinalSettlementStatuses.Approved);
+        (settlement.PayrollRunId, settlement.PaymentBatchId, settlement.PaidAtUtc).Should().Be(((Guid?)null, (Guid?)null, (DateTime?)null));
+        settlement.ResidualDebtReclassed.Should().Be(2_500m, "the move to 1420 is the settlement's, and a void leaves it as after a paid batch");
+        await AssertAdvanceAsync(advId, "Active", outstanding: 500m, repaid: 0m);
+        var ledger = await LedgerAsync(w);
+        Balance(ledger, Emp1420).Should().Be(2_500m);
+        Debits(ledger).Should().Be(Credits(ledger));
+        await AssertSubLedgerEqualsGlAsync(w, 500m);
+    }
+
     private async Task CompleteWithoutPaymentAsync(World w, Guid settlementId)
     {
         await using var db = _fx.CreateDb();
