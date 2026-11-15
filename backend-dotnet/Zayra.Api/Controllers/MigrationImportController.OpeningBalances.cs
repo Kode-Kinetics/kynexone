@@ -1000,20 +1000,25 @@ public sealed partial class MigrationImportController
             .ToListAsync(ct);
         var byNumber = existing.ToDictionary(x => x.InstallmentNumber);
 
-        var paidPerInstallment = plan.InstallmentsPaid == 0
-            ? 0m
-            : Math.Round(plan.TotalRepaid / plan.InstallmentsPaid, 2);
+        // Both halves sum to the cent and no row is zero: the instalments already repaid share TotalRepaid (each rounded down to
+        // the cent, the last taking the remainder: 700 over three is 233.33, 233.33, 233.34, never 699.99), and the instalments still
+        // to pay are the instalment amount with the last taking the remainder; when that would leave the last row at zero or
+        // below (200 over three at 100), the outstanding balance is shared the same way as the repaid part (66.66, 66.66, 66.68).
+        var paidAmounts = SplitToTheCent(plan.TotalRepaid, plan.InstallmentsPaid);
         var unpaidCount = plan.TotalInstallments - plan.InstallmentsPaid;
-        var lastUnpaidResidual = plan.OutstandingBalance - (unpaidCount - 1) * plan.InstallmentAmount;
+        var unpaidAmounts = Enumerable.Repeat(plan.InstallmentAmount, unpaidCount).ToArray();
+        if (unpaidCount > 0)
+        {
+            unpaidAmounts[unpaidCount - 1] = plan.OutstandingBalance - (unpaidCount - 1) * plan.InstallmentAmount;
+            if (unpaidAmounts[unpaidCount - 1] <= 0m) unpaidAmounts = SplitToTheCent(plan.OutstandingBalance, unpaidCount);
+        }
 
         for (var n = 1; n <= plan.TotalInstallments; n++)
         {
             var isPaid = n <= plan.InstallmentsPaid;
             var unpaidIndex = n - plan.InstallmentsPaid - 1; // 0-based position among unpaid rows
             var dueDate = plan.FirstUnpaidDueDate.AddMonths(unpaidIndex);
-            var amountDue = isPaid
-                ? paidPerInstallment
-                : (unpaidIndex == unpaidCount - 1 ? lastUnpaidResidual : plan.InstallmentAmount);
+            var amountDue = isPaid ? paidAmounts[n - 1] : unpaidAmounts[unpaidIndex];
 
             if (!byNumber.TryGetValue(n, out var inst))
             {
@@ -1036,6 +1041,17 @@ public sealed partial class MigrationImportController
 
         foreach (var surplus in existing.Where(x => x.InstallmentNumber > plan.TotalInstallments && x.PayrollRunId is null))
             _db.AdvanceInstallments.Remove(surplus);
+    }
+
+    /// <summary><paramref name="total"/> over <paramref name="count"/> rows, each rounded down to the cent, the last taking the
+    /// remainder, so the rows sum exactly to the total.</summary>
+    private static decimal[] SplitToTheCent(decimal total, int count)
+    {
+        if (count <= 0) return Array.Empty<decimal>();
+        var each = Math.Floor(total / count * 100m) / 100m;
+        var rows = Enumerable.Repeat(each, count).ToArray();
+        rows[count - 1] = total - each * (count - 1);
+        return rows;
     }
 
     // ── eosbOpeningProvision ────────────────────────────────────────────────────────────────────────
