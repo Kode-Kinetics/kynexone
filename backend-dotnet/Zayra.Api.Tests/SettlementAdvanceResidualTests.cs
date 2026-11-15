@@ -61,6 +61,52 @@ public class SettlementAdvanceResidualTests
         Assert.Empty(await h.Db.PayrollEmployeeReceivables.ToListAsync());
     }
 
+    /// <summary>
+    /// A leaver whose final pay was all taken by the debts it recovered has a zero net, so the bank batch leaves them out —
+    /// there is nothing to send. Their settlement must still complete when the batch is settled, and the advance the final
+    /// pay could not cover still moves to 1420; before, they were never seen, the settlement stayed Disbursing and the
+    /// leftover stayed on the advance of an ex-employee.
+    /// </summary>
+    [Fact]
+    public async Task ZeroNetLeaverLeftOutOfTheBankBatch_HasTheSettlementCompleted_AndTheLeftoverMovedTo1420()
+    {
+        await using var h = await Fixture.Create();
+        var advance = h.Advance(h.Company.Id);
+        var colleague = new Employee { TenantId = h.Tid, CompanyId = h.Company.Id, EmployeeCode = "STAYER", FullName = "Stayer", Nationality = "Indian", Status = "Active", JoiningDate = new(2024, 1, 1) };
+        h.Db.AddRange(advance, colleague, h.AdvanceDisbursementGl(h.Company.Id, advance.ApprovedAmount),
+            new EmployeePayrollProfile { TenantId = h.Tid, EmployeeId = h.Employee.Id, Iban = "AE070331234567890123456" });
+        await h.Db.SaveChangesAsync();
+        h.Db.Add(new EmployeePayrollProfile { TenantId = h.Tid, EmployeeId = colleague.Id, Iban = "AE070331234567890123457" });
+        var run = new PayrollRun { TenantId = h.Tid, CompanyId = h.Company.Id, Year = 2026, Month = 1, RunType = PayrollRunTypes.OffCycle, Status = "Locked" };
+        var offboarding = new EmployeeOffboarding { TenantId = h.Tid, EmployeeId = h.Employee.Id, Status = "InProgress", LastWorkingDay = new(2026, 1, 31) };
+        var settlement = new EmployeeFinalSettlement
+        {
+            TenantId = h.Tid, CompanyId = h.Company.Id, EmployeeId = h.Employee.Id, EmployeeCode = h.Employee.EmployeeCode,
+            OffboardingId = offboarding.Id, PayrollRunId = run.Id, Currency = "AED", Status = FinalSettlementStatuses.Disbursing,
+        };
+        h.Db.AddRange(run, offboarding, settlement,
+            new PayrollSlip { TenantId = h.Tid, RunId = run.Id, EmployeeId = h.Employee.Id, EmployeeCode = h.Employee.EmployeeCode, EmployeeName = h.Employee.FullName, GrossSalary = 500, Deductions = 500, LoanDeductions = 500, NetSalary = 0 },
+            new PayrollSlip { TenantId = h.Tid, RunId = run.Id, EmployeeId = colleague.Id, EmployeeCode = colleague.EmployeeCode, EmployeeName = colleague.FullName, GrossSalary = 1000, NetSalary = 1000 },
+            new FinanceGlEntry { TenantId = h.Tid, CompanyId = h.Company.Id, SourceModule = "Payroll", SourceEntityId = run.Id,
+                EventType = GlEventTypes.Accrual, CreditAccount = "2100 - Salaries Payable", Description = PayrollGlDescriptions.NetPayable, Amount = 1000, Currency = "AED" });
+        await h.Db.SaveChangesAsync();
+        Assert.IsType<CreatedResult>(await h.Payroll().CreatePaymentBatch(run.Id, new PayrollPaymentBatchRequest("WPS", "AED"), default));
+        var batch = await h.Db.PayrollPaymentBatches.SingleAsync(b => b.PayrollRunId == run.Id);
+        Assert.Equal(1000m, batch.TotalAmount);
+        batch.WpsStatus = WpsStatuses.Accepted;
+        await h.Db.SaveChangesAsync();
+        h.Db.ChangeTracker.Clear();
+
+        Assert.IsType<OkObjectResult>(await h.Payroll().SettlePaymentBatch(batch.Id, new(), default));
+
+        var paid = await h.Db.EmployeeFinalSettlements.AsNoTracking().SingleAsync();
+        Assert.Equal(FinalSettlementStatuses.Paid, paid.Status);
+        Assert.Equal(600m, paid.ResidualDebtReclassed);
+        var moved = await h.Db.SalaryAdvances.AsNoTracking().SingleAsync(a => a.Id == advance.Id);
+        Assert.Equal((0m, "Closed"), (moved.OutstandingBalance, moved.Status));
+        Assert.Empty(await h.Db.PayrollPaymentRecords.AsNoTracking().Where(r => r.EmployeeId == h.Employee.Id).ToListAsync());
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection = new("DataSource=:memory:");

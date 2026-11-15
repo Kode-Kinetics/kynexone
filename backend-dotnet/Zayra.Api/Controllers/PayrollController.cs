@@ -4309,8 +4309,6 @@ public partial class PayrollController : ControllerBase
         var netLines = accrualLines
             .Where(l => string.IsNullOrEmpty(l.DebitAccount) && l.Description == PayrollGlDescriptions.NetPayable)
             .ToList();
-        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
-            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
 
         // The bank batch settles ONLY what it carries. Employees left out of it (cash/cheque, zero net)
         // stay open in 2100 until their payment outside the bank file is recorded against this batch —
@@ -4320,6 +4318,21 @@ public partial class PayrollController : ControllerBase
         var batchEmployeeIds = (await _db.PayrollPaymentRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status != PaymentRecordStatuses.Cancelled)
             .Select(x => x.EmployeeId).ToListAsync(cancellationToken)).ToHashSet();
+        // A leaver whose final pay was all taken by the debts the run recovered has a ZERO net: the batch leaves them out because
+        // there is nothing to send, and no payment record is made for zero. Their settlement is nonetheless complete once the
+        // run's payment is settled — nothing else will ever pay it — so it is completed here with everyone the batch paid, and
+        // what the final pay could not cover moves to 1420 like any other leaver's. (Before, they were never seen: the
+        // settlement stayed Disbursing and the leftover stayed on an ex-employee's loan or advance.)
+        var zeroNetEmployeeIds = batchExclusions
+            .Where(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.ZeroNetCode)
+            .Select(x => x.EmployeeId).ToHashSet();
+        var completedEmployeeIds = batchEmployeeIds.Union(zeroNetEmployeeIds).ToHashSet();
+
+        // A run whose payslips are ALL zero still has nothing to settle here (no cash journal to post); completing its zero-net
+        // leavers' settlements without a paying batch is an open decision, not made in this change.
+        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
+            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
+
         var toSettle = netLines.Sum(l => l.Amount) - excludedOpen;
         if (toSettle <= 0m)
             return BadRequest(new { error = "nothing_to_settle", message = "Every payslip in this run is paid outside the bank file; record those payments instead of settling the batch." });
@@ -4360,7 +4373,7 @@ public partial class PayrollController : ControllerBase
         // This is the ONLY place a settlement reaches Paid, and it is the ordinary net-pay settlement
         // journal that does it — no second payment mechanism anywhere in the pipeline.
         var settlementResult = await FinalizePaidSettlementsAsync(
-            tenantId, run, batch, glCtx, settlementPeriod, batchEmployeeIds, cancellationToken);
+            tenantId, run, batch, glCtx, settlementPeriod, completedEmployeeIds, cancellationToken);
 
         await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
             new

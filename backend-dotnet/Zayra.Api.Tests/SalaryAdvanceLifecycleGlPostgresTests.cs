@@ -497,10 +497,10 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertNotDeductedNextMonthAsync(w, advId);
     }
 
-    [Fact(Skip = "DEFECT: as FinalSettlement_LargeEnough (no ADVANCE_EMI line on a settlement run, so it cannot lock). Also suspected " +
-                 "from the code, not yet observable: a leaver whose final pay is fully taken by the advance has zero net, is left out " +
-                 "of the bank batch, so FinalizePaidSettlements never sees them; the settlement stays Disbursing and the leftover " +
-                 "never reaches 1420.")]
+    [Fact(Skip = "OPEN (needs a decision): the only payslip of this settlement run is zero, so its payment batch carries no money and " +
+                 "SettlePaymentBatch refuses it as nothing_to_settle; the leaver's settlement then stays Disbursing and the 2,500 leftover " +
+                 "never reaches 1420. A zero-net leaver in a batch that pays others is now completed when that batch is settled " +
+                 "(SettlementAdvanceResidualTests); completing one with no paying batch is not done in this branch.")]
     public async Task FinalSettlement_TooSmallToCoverTheAdvance_IsPaid_AndTheLeftoverMovesTo1420()
     {
         // The final pay (500) cannot cover the 3,000 advance: the run withholds all 500, the net is zero, and the 2,500
@@ -513,9 +513,14 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await ProcessAsync(w, s.RunId);
         await AssertSlipAsync(w, s.RunId, advanceDeduction: 500m, net: 0m);
         await AssertAdvanceAsync(advId, "Active", outstanding: 2_500m, repaid: 500m);
-        await ApproveAsync(w, s.RunId);
+        // Taking all of the final pay is above the KSA Art. 92/93 half-wage cap, an Error the approver may clear only by
+        // naming the written basis for it. That is the operator's path for a leaver whose debts consume the final pay.
+        await OverrideHalfWageCapAsync(w, s.RunId);
+        await ApproveAsync(w, s.RunId, expectedOverridden: 1);
         await LockAsync(w, s.RunId);
-        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
+        // (Lock writes the net-pay line even at 0.00; only the lines that move money are compared.)
+        Sides((await RunGlAsync(s.RunId)).Where(l => l.Amount != 0m).ToList())
+            .Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
 
         await PayBatchAsync(w, s.RunId);
         (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
@@ -704,11 +709,24 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Ok<object>(await Payroll(db, w, w.Preparer, "Payroll Officer").Process(runId, Ct), "process");
     }
 
-    private async Task ApproveAsync(World w, Guid runId)
+    private async Task ApproveAsync(World w, Guid runId, int? expectedOverridden = null)
     {
         await using (var db = _fx.CreateDb()) await ReconTestSupport.SignOffAsync(db, runId);
         await using var db2 = _fx.CreateDb();
-        Ok<object>(await Payroll(db2, w, w.Approver, "Admin").Approve(runId, new PayrollDecisionRequest("reviewed"), Ct), "approve run");
+        Ok<object>(await Payroll(db2, w, w.Approver, "Admin").Approve(runId,
+            new PayrollDecisionRequest("reviewed", ExpectedOverriddenCount: expectedOverridden), Ct), "approve run");
+    }
+
+    /// <summary>Clears the run's DEDUCTIONS_EXCEED_HALF_WAGE Error the documented way: the approver (never the preparer) gives the
+    /// reason and the reference of the written basis.</summary>
+    private async Task OverrideHalfWageCapAsync(World w, Guid runId)
+    {
+        await using var db = _fx.CreateDb();
+        var result = await db.PayrollValidationResults.AsNoTracking()
+            .SingleAsync(r => r.PayrollRunId == runId && r.Code == "DEDUCTIONS_EXCEED_HALF_WAGE" && !r.IsResolved);
+        Ok<object>(await Payroll(db, w, w.Approver, "Admin").ResolveValidationResult(runId, result.Id,
+            new PayrollReasonRequest("The leaver's advance is recovered from the end-of-service dues.", "SETTLEMENT-AGREEMENT-1"), Ct),
+            "override the half-wage cap");
     }
 
     private async Task LockAsync(World w, Guid runId)
