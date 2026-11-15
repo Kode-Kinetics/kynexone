@@ -116,7 +116,7 @@ for (const locale of LOCALES) {
     test.describe(`shots: Bank / WPS tab (${locale}, ${form})`, () => {
       test.use({ viewport });
       test('the tab with a Saudi batch open', async ({ page }) => {
-        await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+        await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500, stages: process.env.SHOT_PREFIX === 'before' ? 'open' : 'default' });
         await expect(page.getByRole('cell', { name: /Maha Almutairi/ })).toBeVisible({ timeout: 90_000 });
         await page.waitForTimeout(2500);
         await shot(page, 'bank-wps', locale, form);

@@ -18,7 +18,7 @@ test('RovingTabList: the cue observes the inner tab list as well as the scroller
   expect(src).toMatch(/observer\?\.observe\(tablist\.current\)/);
 });
 
-test('only the Attendance workspace turns the scroll cue on', () => {
+test('only the Attendance and Payroll workspaces turn the scroll cue on', () => {
   const dir = path.resolve(__dirname, '../src');
   const users: string[] = [];
   const walk = (d: string) => {
@@ -29,5 +29,5 @@ test('only the Attendance workspace turns the scroll cue on', () => {
     }
   };
   walk(dir);
-  expect(users).toEqual(['AttendancePage.tsx']);
+  expect(users.sort()).toEqual(['AttendancePage.tsx', 'PayrollPage.tsx']);
 });

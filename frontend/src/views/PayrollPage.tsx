@@ -25,6 +25,8 @@ import { identityAuditApi } from '../api/identity';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
+import { formatCalendarDate } from '../lib/calendarDate';
+import { dateLocale } from '../lib/format';
 import { employeeLabel, employeeLabelsFromRecords } from '../lib/employeeLabel';
 import { useRunEmployeeLabels } from '../hooks/useRunEmployeeLabels';
 import { RunSelectOptions } from '../components/payroll/RunSelectOptions';
@@ -91,10 +93,14 @@ import { languageLabel } from '../lib/displayLabels';
 import { wpsStatusNote } from '../lib/payrollBatchDisplay';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
-/** A date or timestamp in the viewer's language and calendar (month names follow the language; digits stay Latin). */
+function fmtDate(s: string | null | undefined, locale: string) {
+  return formatCalendarDate(s, locale);
+}
+
+/** A date or timestamp in the viewer's language (month names follow it; digits stay Latin). */
 function useFmtDate() {
-  const fx = useFormat();
-  return useCallback((s: string | null | undefined) => (s ? fx.date(s) : '—'), [fx]);
+  const { locale } = useLocale();
+  return useCallback((s: string | null | undefined) => fmtDate(s, dateLocale(locale)), [locale]);
 }
 
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
