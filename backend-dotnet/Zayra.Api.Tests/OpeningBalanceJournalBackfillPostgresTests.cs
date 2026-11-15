@@ -122,7 +122,7 @@ public class OpeningBalanceJournalBackfillPostgresTests(PostgresFixture fixture)
         CutoverDate = cutover, CarriedAmount = amount, Currency = "SAR", SourceSystem = "SAP", SourceRecordId = "X", MigrationBatchId = Guid.NewGuid(),
     };
 
-    private static OpeningBalanceJournalsController Controller(ZayraDbContext db, Guid tid, string role) => new(db)
+    private static OpeningBalanceJournalsController Controller(ZayraDbContext db, Guid tid, string role) => new(new Zayra.Api.Infrastructure.Finance.OpeningBalanceBackfillService(db))
     {
         ControllerContext = new ControllerContext
         {
