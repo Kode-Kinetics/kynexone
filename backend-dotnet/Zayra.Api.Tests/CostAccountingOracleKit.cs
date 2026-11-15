@@ -258,9 +258,11 @@ internal sealed class OracleWorld : IAsyncDisposable
     {
         var ctrl = new AdvancesController(K.Db, new AllowAll()) { ControllerContext = ControllerFor("payroll.write", "payroll.approve") };
         var post = typeof(AdvancesController).GetMethod("PostGlEntry", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        // The disbursement is dated today, as the payout of an advance paid today is (PostGlEntry takes the paid date).
         await (Task)post.Invoke(ctrl, new object?[]
         {
-            TenantId, Guid.NewGuid(), K.CompanyId, AdvanceId, "ADV-1", "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", 1200m, null, CancellationToken.None,
+            TenantId, Guid.NewGuid(), K.CompanyId, AdvanceId, "ADV-1", "Advance", "Disbursement", "ADVANCE_RECEIVABLE", "CASH_BANK", 1200m, null,
+            DateOnly.FromDateTime(DateTime.UtcNow), CancellationToken.None,
         })!;
         await K.Db.SaveChangesAsync();
     }
