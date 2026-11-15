@@ -47,4 +47,29 @@ public class OpeningBalanceDryRunAndRolePostgresTests(PostgresFixture fixture)
         await using var verify = fixture.CreateDb();
         Assert.False(await verify.SalaryAdvances.AnyAsync(a => a.TenantId == b.Tenant && a.AdvanceNumber == fresh), "a preview writes nothing");
     }
+
+    [Fact]
+    public async Task AnHrManagerAlone_IsRefusedLoanAndAdvanceRows_InBothLanguages_TheOtherSectionsImport()
+    {
+        var (b, cutover, number) = await K.SeedAsync(fixture, "RL-LN");
+
+        var errors = await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover),
+            withCutover: true, expectErrors: true, roles: new[] { "HR Manager" });
+
+        var error = Assert.Single(errors);
+        Assert.Contains("opening_balance_needs_finance", error, StringComparison.Ordinal);
+        Assert.Contains("المالية", error, StringComparison.Ordinal);
+        await using (var db = fixture.CreateDb())
+        {
+            Assert.False(await db.EmployeeLoans.AnyAsync(l => l.TenantId == b.Tenant && l.LoanNumber == number));
+            Assert.True(await db.CompanyCutovers.AnyAsync(c => c.TenantId == b.Tenant && c.CompanyId == b.CompanyId), "the cutover section imports as before");
+        }
+        var advance = await K.CommitAsync(fixture, b, "advances", K.AdvanceCsv(b, $"RL-ADV-{Guid.NewGuid():N}"[..18], paid: 3, outstanding: 300m, cutover),
+            expectErrors: true, roles: new[] { "HR Manager" });
+        Assert.Contains("opening_balance_needs_finance", Assert.Single(advance), StringComparison.Ordinal);
+
+        // An HR Manager who is also a Finance approver may.
+        await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), roles: new[] { "HR Manager", "Finance Approver" });
+        Assert.Single(await K.OpeningJournalAsync(fixture, b, (await K.LoanAsync(fixture, b, number)).Id));
+    }
 }

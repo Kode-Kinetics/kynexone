@@ -542,10 +542,11 @@ public sealed partial class MigrationImportController : ControllerBase
                 RequireCutoverStatus(row);
                 return await _db.CompanyCutovers.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == cutoverCompany.Id, ct)
                     ? "updated" : "created";
-            // The dry run refuses a loan or advance row for exactly the reasons the commit would (the guards, the opening
+            // The dry run refuses a loan or advance row for exactly the reasons the commit would (role, guards, the opening
             // journal's closed-period and remap checks), so every refusal is visible before anything is committed.
             case "loans":
             {
+                RequireOpeningJournalRole();
                 var loanPlan = await PlanLoanAsync(row, tenantId, cutover, ct);
                 var loan = await _db.EmployeeLoans.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct);
                 if (loan is not null && await GuardLoanRestatementAsync(loan, loanPlan, tenantId, ct)) return "skipped";
@@ -554,6 +555,7 @@ public sealed partial class MigrationImportController : ControllerBase
             }
             case "advances":
             {
+                RequireOpeningJournalRole();
                 var advancePlan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
                 var advance = await _db.SalaryAdvances.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct);
                 if (advance is not null) await GuardAdvanceRestatementAsync(advance, advancePlan, tenantId, ct);

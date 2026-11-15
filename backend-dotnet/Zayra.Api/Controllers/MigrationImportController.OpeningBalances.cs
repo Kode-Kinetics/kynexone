@@ -653,6 +653,7 @@ public sealed partial class MigrationImportController
     private async Task<string> UpsertLoanOpeningBalanceAsync(
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
+        RequireOpeningJournalRole();
         var plan = await PlanLoanAsync(row, tenantId, cutover, ct);
 
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(
@@ -703,6 +704,18 @@ public sealed partial class MigrationImportController
         await StampOriginAsync(OpeningBalanceEntityTypes.Loan, loan.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
+    }
+
+    /// <summary>The roles that may import rows posting an opening journal (loans, advances). The import itself is open to
+    /// Admin and HR Manager; a row that books a receivable against opening balance equity is a finance posting.</summary>
+    private static readonly string[] OpeningJournalRoles = { "Admin", "Finance", "Finance Controller", "Finance Approver" };
+
+    private void RequireOpeningJournalRole()
+    {
+        if (OpeningJournalRoles.Any(User.IsInRole)) return;
+        throw new InvalidOperationException(
+            "[opening_balance_needs_finance] This row posts an opening balance to the general ledger, so it must be imported by Finance or an Admin. The package's other sections are not affected. " +
+            "/ يرحّل هذا السطر رصيدًا افتتاحيًا إلى دفتر الأستاذ العام، لذا يجب أن تستورده المالية أو مسؤول النظام. لا تتأثر الأقسام الأخرى في الحزمة.");
     }
 
     /// <summary>
@@ -901,6 +914,7 @@ public sealed partial class MigrationImportController
     private async Task<string> UpsertAdvanceOpeningBalanceAsync(
         Dictionary<string, string> row, Guid tenantId, CutoverContext cutover, SectionResult result, CancellationToken ct)
     {
+        RequireOpeningJournalRole();
         var plan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
 
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
