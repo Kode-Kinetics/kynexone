@@ -168,3 +168,27 @@ test('a complete queue shows no cap notice', async ({ page }) => {
   await expect(page.getByTestId('leave-approval-decision')).toHaveCount(1);
   await expect(page.getByTestId('leave-queue-cut')).toHaveCount(0);
 });
+
+test('a request with a supporting document offers View document, and opens it through the authenticated route', async ({ page, context }) => {
+  // The server sets hasDocument only for whoever may open the file (the employee, HR, Admin); a line manager never sees the action.
+  const withDocument = { ...DECISION_HR_STEP, hasDocument: true };
+  const withoutDocument = { ...DECISION_HR_STEP, id: 'req-plain', employeeName: 'Sara Ali', hasDocument: false };
+  const { errors } = await boot(page, '/leave', { queue: [withDocument, withoutDocument] });
+  const fetched: string[] = [];
+  await page.route('**/api/leave/requests/*/attachment', route => {
+    fetched.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ status: 200, contentType: 'application/pdf', body: Buffer.from('%PDF-1.4\n%%EOF\n') });
+  });
+  await page.getByRole('tab', { name: 'Approvals' }).click({ timeout: 90_000 });
+
+  const omar = page.getByTestId('leave-approval-decision').filter({ hasText: 'Omar Haddad' });
+  const sara = page.getByTestId('leave-approval-decision').filter({ hasText: 'Sara Ali' });
+  await expect(omar.getByTestId('leave-view-document')).toHaveText('View document');
+  await expect(sara.getByTestId('leave-view-document')).toHaveCount(0);
+
+  const opened = context.waitForEvent('page');
+  await omar.getByTestId('leave-view-document').click();
+  await opened;
+  await expect.poll(() => fetched).toEqual(['/api/leave/requests/req-hr/attachment']);
+  expect(errors).toEqual([]);
+});

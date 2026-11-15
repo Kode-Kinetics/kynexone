@@ -40,6 +40,7 @@ import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
 import { deadEnds } from './deadEnds';
+import { leaveDocument } from './leaveDocument';
 import { recruitmentDemo } from './recruitmentDemo';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
@@ -1670,6 +1671,7 @@ const en: Dict = {
   ...belowMinimum.en,
   ...loanBatchApprover.en,
   ...deadEnds.en,
+  ...leaveDocument.en,
   ...recruitmentDemo.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
@@ -3242,6 +3244,7 @@ const ar: Dict = {
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
   ...deadEnds.ar,
+  ...leaveDocument.ar,
   ...recruitmentDemo.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,

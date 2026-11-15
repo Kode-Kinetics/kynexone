@@ -179,6 +179,8 @@ export interface LeaveAwaitingDecision {
   kind: 'Decision' | 'Cancellation';
   cancellationReason: string | null;
   cancellationRequestedAtUtc: string | null;
+  /** A supporting document is attached and the viewer may open it (the leave's own employee or HR/Admin); never the key itself. */
+  hasDocument?: boolean;
 }
 
 /** A queue read from the server: its rows, the pending total in the viewer's scope, and whether it stopped at the cap. */
@@ -472,6 +474,17 @@ export interface StatutoryLeaveContext {
   separateEventReason: string | null;
 }
 
+/** The file name the server put in Content-Disposition (it sanitises it), or a neutral one. */
+function attachmentFileName(header: unknown): string {
+  if (typeof header !== 'string') return 'leave-document';
+  const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (star) {
+    try { return decodeURIComponent(star[1].trim().replace(/^"|"$/g, '')); } catch { /* fall through */ }
+  }
+  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(header);
+  return plain ? plain[1].trim() : 'leave-document';
+}
+
 export const leaveRequestsApi = {
   /** For each Saudi statutory leave request among `ids`: the employee's other leave of that kind. */
   statutoryHistory: (ids: string[]) =>
@@ -485,6 +498,10 @@ export const leaveRequestsApi = {
       client.get<{ items: LeaveRequest[]; total: number }>('/api/leave/requests', { params: { ...params, page, pageSize } }).then(r => r.data)),
   get: (id: string) =>
     client.get<LeaveRequest>(`/api/leave/requests/${id}`).then(r => r.data),
+  /** The leave's supporting document as a blob, through the authenticated route. 404 when the caller may not see it or there is none. */
+  attachment: (id: string) =>
+    client.get<Blob>(`/api/leave/requests/${id}/attachment`, { responseType: 'blob' })
+      .then(r => ({ blob: r.data, fileName: attachmentFileName(r.headers?.['content-disposition']) })),
   /** The request with its steps and, for approved leave someone asked to cancel, where that cancellation stands. */
   detail: (id: string) =>
     client.get<{ request: LeaveRequest; approvals: LeaveApproval[]; cancellation: LeaveCancellationState | null }>(`/api/leave/requests/${id}`).then(r => r.data),

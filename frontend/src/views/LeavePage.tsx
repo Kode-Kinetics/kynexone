@@ -48,6 +48,7 @@ import { requestFailureReason } from '../lib/requestFailure';
 import { essApi } from '../api/ess';
 import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
+import { LeaveDocumentLink } from '../components/leave/LeaveDocumentLink';
 import { LeaveCancellationActions, LeaveCancellationDetail, useLeaveCancellationDecision } from '../components/leave/LeaveCancellationQueue';
 import { isSaudiStatutoryLeave, isCalendarSpanLeave, isDeclarableLeave } from '../lib/ksaStatutoryLeave';
 
@@ -872,6 +873,7 @@ function MyRequestsTab() {
                   <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</p>
                   {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{t('Rejected: {rejectionReason}', { rejectionReason: r.rejectionReason })}</p>}
                   {r.reason && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-1">{r.reason}</p>}
+                  {r.attachmentPath && <div className="mt-2"><LeaveDocumentLink leaveId={r.id} available /></div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   <StatusBadge status={r.status} />
@@ -1044,6 +1046,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     ? <LeaveCancellationDetail item={r} />
                     : <>
                         {r.reason && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">"{r.reason}"</p>}
+                        {r.hasDocument && <div className="mt-2"><LeaveDocumentLink leaveId={r.id} available /></div>}
                         <StatutoryLeaveHistory context={history[r.id]} />
                       </>}
                 </div>

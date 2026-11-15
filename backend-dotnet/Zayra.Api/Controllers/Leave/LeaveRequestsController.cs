@@ -4,10 +4,12 @@ using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Zayra.Api.Application.Auth;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Application.Leave;
 using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Authorization;
+using Zayra.Api.Infrastructure.Documents;
 using Zayra.Api.Infrastructure.Leave;
 using Zayra.Api.Infrastructure.Notifications;
 using Zayra.Api.Models;
@@ -23,13 +25,18 @@ public class LeaveRequestsController : ControllerBase
     private readonly ILeaveService _leaveService;
     private readonly IDataScopeService _scopeService;
     private readonly INotificationService _notifications;
+    private readonly IDocumentStorage? _storage;
+    private readonly IAuditService? _audit;
 
-    public LeaveRequestsController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService scopeService, INotificationService notifications)
+    public LeaveRequestsController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService scopeService, INotificationService notifications,
+        IDocumentStorage? storage = null, IAuditService? audit = null)
     {
         _db = db;
         _leaveService = leaveService;
         _scopeService = scopeService;
         _notifications = notifications;
+        _storage = storage;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -132,7 +139,9 @@ public class LeaveRequestsController : ControllerBase
             }
             if (!await CanDecideResolvedLeaveStepAsync(tenantId, r.Id, userId, ct)) continue;
             if (await LeaveService.MakerCheckerRefusalAsync(_db, r, userId, ct) is not null) continue;
-            items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null));
+            // Whether a supporting document is attached, only for whoever may open it (never the key itself).
+            items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null,
+                !string.IsNullOrWhiteSpace(r.AttachmentPath) && LeaveFileKeyExposure.MaySeeKey(User, scan.Scope, r.EmployeeId)));
         }
         return items;
     }
@@ -248,6 +257,69 @@ public class LeaveRequestsController : ControllerBase
         }
 
         return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope), approvals, statutoryHistory, statutory, cancellation });
+    }
+
+    /// <summary>The types a browser shows inline without running anything; every other stored type is served as a download.</summary>
+    private static readonly HashSet<string> InlineAttachmentTypes = new(StringComparer.OrdinalIgnoreCase) { "application/pdf", "image/png", "image/jpeg" };
+
+    /// <summary>
+    /// The leave's supporting document (a sick note and the like), for the approver screens. Who may open it is the leave
+    /// file-key rule (<see cref="LeaveFileKeyExposure.MaySeeKey"/>): the leave's own employee and Admin / HR Manager /
+    /// HR Officer, within the same tenant and data scope as <c>GET /api/leave/requests/{id}</c>. Line managers may not.
+    /// Only the employee document the leave references is served: the leave's employee's own, not deleted, and passed by the
+    /// upload scan. Everyone else, a leave without one, or a file that is gone, gets 404, so the endpoint never says a
+    /// document exists. Each download is audited.
+    /// </summary>
+    [HttpGet("{id:guid}/attachment")]
+    public async Task<IActionResult> DownloadAttachment(Guid id, CancellationToken ct)
+    {
+        var tenantId = this.GetTenantId();
+        if (tenantId is null) return Unauthorized();
+        if (_storage is null) return NotFound();
+
+        var request = await _db.LeaveRequests.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
+        if (request is null || string.IsNullOrWhiteSpace(request.AttachmentPath)) return NotFound();
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId) || !LeaveFileKeyExposure.MaySeeKey(User, scope, request.EmployeeId))
+            return NotFound();
+
+        var key = request.AttachmentPath.Trim();
+        var document = await _db.EmployeeDocuments.AsNoTracking()
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId && d.StorageUrl == key && !d.IsDeleted)
+            .OrderByDescending(d => d.UploadedAtUtc)
+            .FirstOrDefaultAsync(ct);
+        if (document is null || !Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return NotFound();
+
+        byte[] contents;
+        try { contents = await _storage.GetBytesAsync(tenantId.Value, document.StorageUrl, ct); }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException) { return NotFound(); }
+
+        if (_audit is not null)
+            await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
+                new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
+                    this.GetUserId(), tenantId.Value),
+                System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
+
+        var declared = (document.ContentType ?? string.Empty).Split(';')[0].Trim();
+        var inline = InlineAttachmentTypes.Contains(declared);
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.ContentDisposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue(inline ? "inline" : "attachment")
+        {
+            FileName = SafeAttachmentFileName(document.FileName),
+        }.ToString();
+        return File(contents, inline ? declared.ToLowerInvariant() : "application/octet-stream");
+    }
+
+    /// <summary>A header-safe file name: letters, digits, dot, dash and underscore only, no "..", at most 100 characters.</summary>
+    internal static string SafeAttachmentFileName(string? name)
+    {
+        var raw = Path.GetFileName((name ?? string.Empty).Replace('\\', '/'));
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(raw, "[^A-Za-z0-9._-]", "_");
+        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\.{2,}", ".").Trim('.', '_', '-');
+        if (cleaned.Length > 100) cleaned = cleaned[^100..].TrimStart('.', '_', '-');
+        return cleaned.Any(char.IsLetterOrDigit) ? cleaned : "leave-document";
     }
 
     /// <summary>
@@ -1026,12 +1098,15 @@ public record LeaveAwaitingDecisionDto(
     /// <summary>"Decision" (approve or reject the request) or "Cancellation" (approve the cancellation or keep the leave).</summary>
     string Kind,
     string? CancellationReason,
-    DateTime? CancellationRequestedAtUtc)
+    DateTime? CancellationRequestedAtUtc,
+    /// <summary>A supporting document is attached AND the viewer may open it (the leave's employee or HR/Admin).</summary>
+    bool HasDocument = false)
 {
-    public static LeaveAwaitingDecisionDto From(LeaveRequest r, string kind, string? cancellationReason, DateTime? cancellationRequestedAtUtc) => new(
+    public static LeaveAwaitingDecisionDto From(LeaveRequest r, string kind, string? cancellationReason, DateTime? cancellationRequestedAtUtc,
+        bool hasDocument = false) => new(
         r.Id, r.EmployeeId, r.EmployeeName, r.DepartmentName, r.DesignationTitle, r.LeaveTypeId, r.LeaveTypeName,
         r.StartDate, r.EndDate, r.TotalDays, r.Status, r.Reason, r.IsEmergency, r.SubmittedAtUtc, kind,
-        cancellationReason, cancellationRequestedAtUtc);
+        cancellationReason, cancellationRequestedAtUtc, hasDocument);
 }
 
 public record ApproveLeaveRequest(string? Notes);
