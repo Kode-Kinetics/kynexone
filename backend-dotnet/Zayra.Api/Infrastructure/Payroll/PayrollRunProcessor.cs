@@ -1054,12 +1054,11 @@ public sealed class PayrollRunProcessor
         var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
         var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
         // The ownership rule itself (this company's, or no company) is AdvanceRecoveryScope, shared with the settlement plan and the
-        // settlement payment so the three cannot drift apart.
-        var recoverableAdvance = AdvanceRecoveryScope.RecoverableBy(tenantId, loanCompanyId);
+        // settlement payment so the three cannot drift apart, and read the same way for every caller (never through Op()).
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
             a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value)
                 && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(a.EmployeeIntId.Value));
-        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(recoverableAdvance).Where(collectableAdvance).ToListAsync(cancellationToken);
+        var activeAdvances = await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
         var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
 
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
@@ -1122,8 +1121,8 @@ public sealed class PayrollRunProcessor
             activeLoans = loanCandidateIds.Count == 0 ? [] : await Op(_db.EmployeeLoans).AsNoTracking()
                 .Where(collectableLoan).Where(l => loanCandidateIds.Contains(l.Id))
                 .ToListAsync(cancellationToken);
-            activeAdvances = advanceCandidateIds.Count == 0 ? [] : await Op(_db.SalaryAdvances).AsNoTracking()
-                .Where(recoverableAdvance).Where(collectableAdvance).Where(a => advanceCandidateIds.Contains(a.Id))
+            activeAdvances = advanceCandidateIds.Count == 0 ? [] : await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId).AsNoTracking()
+                .Where(collectableAdvance).Where(a => advanceCandidateIds.Contains(a.Id))
                 .ToListAsync(cancellationToken);
 
             // Idempotent delete of previously-generated rows (enrolls in this tx).
@@ -2526,8 +2525,8 @@ public sealed class PayrollRunProcessor
         var activeLoansMutable = !runDecrementsDebt ? new List<EmployeeLoan>() : await Op(_db.EmployeeLoans)
             .Where(collectableLoan)
             .ToListAsync(cancellationToken);
-        var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await Op(_db.SalaryAdvances)
-            .Where(recoverableAdvance).Where(collectableAdvance)
+        var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await AdvanceRecoveryScope.Query(_db, tenantId, loanCompanyId)
+            .Where(collectableAdvance)
             .ToListAsync(cancellationToken);
 
         // POD-B3 — the loan witness is UNCONDITIONAL and PER-LOAN, and it records the balances as they were

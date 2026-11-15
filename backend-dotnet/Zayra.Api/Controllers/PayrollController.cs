@@ -4722,17 +4722,16 @@ public partial class PayrollController : ControllerBase
         // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
         // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
         // is still dispositioned here, as payroll still collects it (PayrollRunProcessor, collectableAdvance).
-        var recoverableAdvance = Infrastructure.Payroll.AdvanceRecoveryScope.RecoverableBy(tenantId, run.CompanyId);
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
             a.EmployeeIntId != null && employeeIds.Contains(a.EmployeeIntId.Value);
         var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
-        var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(recoverableAdvance).Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
+        var advanceIds = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId).AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
         await Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
         var loans = loanIds.Count == 0 ? new List<EmployeeLoan>() : await _db.EmployeeLoans
             .Where(openLoan).Where(l => loanIds.Contains(l.Id))
             .ToListAsync(ct);
-        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await _db.SalaryAdvances
-            .Where(recoverableAdvance).Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
+        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, run.CompanyId)
+            .Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
             .ToListAsync(ct);
 
         // AvailableForRelief, never the raw scoped balance: the unattributed (CompanyId == null) pool sits
@@ -9430,8 +9429,7 @@ public partial class PayrollController : ControllerBase
             .ToListAsync(ct);
         // Exactly the advances the settlement run will recover (and the settlement payment will disposition): this company's, and
         // legacy advances with no company. One shared rule, so the plan cannot count an advance another legal entity owns.
-        var advances = await _db.SalaryAdvances.AsNoTracking()
-            .Where(Infrastructure.Payroll.AdvanceRecoveryScope.RecoverableBy(tenantId, companyId))
+        var advances = await Infrastructure.Payroll.AdvanceRecoveryScope.Query(_db, tenantId, companyId).AsNoTracking()
             .Where(a => a.EmployeeIntId == employee.Id)
             .ToListAsync(ct);
         var receivables = await _db.PayrollEmployeeReceivables.AsNoTracking()
