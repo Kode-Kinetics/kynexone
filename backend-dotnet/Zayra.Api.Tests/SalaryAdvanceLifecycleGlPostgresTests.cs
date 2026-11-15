@@ -460,10 +460,11 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     }
 
     [Fact]
-    public async Task FinalSettlement_AdvanceNotYetDue_IsMovedTo1420_TheAdvanceGoesToZero_AndTheJournalBalances()
+    public async Task FinalSettlement_AdvanceNotYetDue_IsRecoveredFromTheFinalPay_LikeTheSettlementPlannedIt()
     {
-        // The advance's repayment starts next month, so the settlement run (this month) does not withhold it; when the
-        // settlement is paid the outstanding advance is reclassified DR 1420 / CR 1410 and the advance is closed.
+        // The advance's repayment starts next month, but the employee is leaving: the settlement PLANNED to recover the whole
+        // advance from the final pay, so the settlement run withholds it whatever its repayment start date. (It used to skip
+        // it: the full settlement was paid out and the whole advance moved to 1420 to be chased from an ex-employee.)
         var w = await SeedAsync(costing: false, withColleague: true);
         var next = w.Month1.AddMonths(1);
         var advId = await RequestAsSelfAsync(w, 3_000m, 3, next);
@@ -471,33 +472,27 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
 
         await ProcessAsync(w, s.RunId);
-        await AssertSlipAsync(w, s.RunId, advanceDeduction: 0m, net: 12_000m);
+        await AssertSlipAsync(w, s.RunId, advanceDeduction: 3_000m, net: 9_000m);
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 3_000m);
         await ApproveAsync(w, s.RunId);
         await LockAsync(w, s.RunId);
-        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|12000.00", $"CR|{Net2100}|12000.00" });
+        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[]
+        {
+            $"DR|{Settle2320}|12000.00", $"CR|{Adv1410}|3000.00", $"CR|{Net2100}|9000.00",
+        });
 
         await PayBatchAsync(w, s.RunId);
         var settlement = await SettlementAsync(s.SettlementId);
         settlement.Status.Should().Be(FinalSettlementStatuses.Paid);
-        settlement.ResidualDebtReclassed.Should().Be(3_000m);
+        settlement.ResidualDebtReclassed.Should().Be(0m);
         settlement.ResidualDebtUnbooked.Should().Be(0m);
-        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 0m);
 
         var ledger = await LedgerAsync(w);
         Dump("Ledger after settlement paid (advance not yet due)", ledger);
-        var reclass = ledger.Where(l => l.EventType == GlEventTypes.SettlementResidualReclass).ToList();
-        reclass.Should().ContainSingle();
-        (reclass[0].DebitAccount, reclass[0].CreditAccount, reclass[0].Amount, reclass[0].CompanyId)
-            .Should().Be((Emp1420, Adv1410, 3_000m, w.CompanyId));
-        reclass[0].Period.Should().Be(TodayPeriod(), "dated into the payment period");
+        ledger.Should().NotContain(l => l.EventType == GlEventTypes.SettlementResidualReclass, "nothing was left to reclassify");
         Debits(ledger).Should().Be(Credits(ledger));
-        Balance(ledger, Emp1420).Should().Be(3_000m);
+        Balance(ledger, Emp1420).Should().Be(0m);
         await AssertSubLedgerEqualsGlAsync(w, 0m);
-        await using (var db = _fx.CreateDb())
-            (await db.PayrollEmployeeReceivables.AsNoTracking().Where(r => r.TenantId == w.TenantId).ToListAsync())
-                .Should().ContainSingle().Which.Should().Match<PayrollEmployeeReceivable>(r =>
-                    r.EmployeeId == w.EmployeeId && r.Amount == 3_000m && r.Status == PayrollReceivableStatuses.Outstanding,
-                    "the 1420 debit has its per-employee sub-ledger row");
 
         await AssertNotDeductedNextMonthAsync(w, advId);
     }

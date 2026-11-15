@@ -556,12 +556,7 @@ public sealed class PayrollRunProcessor
         // A first, unlocked look. The loans this run collects from are locked and re-read inside the transaction below.
         var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
         var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
-        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
-            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd);
-        // A first, unlocked look, like the loans: the advances this run collects from are locked and re-read inside the transaction.
-        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
-        var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
+        // The salary advances are loaded below, once the leavers this run settles are known.
 
         var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
@@ -1037,6 +1032,18 @@ public sealed class PayrollRunProcessor
                     .ToDictionary(g => g.Key, g => g.ToList());
             }
         }
+
+        // COMPLIANCE: the salary advances this run collects from. A first, unlocked look, like the loans: they are locked and
+        // re-read inside the transaction below. A leaver whose final settlement this run pays has the WHOLE outstanding advance
+        // recovered from the final pay whatever its repayment start date: the settlement planned exactly that
+        // (PlannedAdvanceRecovery counts every open advance), and skipping one not yet due paid the full settlement out and moved
+        // the advance to 1420, to be chased from an ex-employee. Everyone else is collected from the advance's start date.
+        var settlingEmployeeIds = settlementsByEmp.Keys.ToList();
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
+            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(a.EmployeeIntId.Value));
+        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
+        var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
 
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
