@@ -64,12 +64,19 @@ test.describe('calendar dates render as the day they name', () => {
   });
 
   test('offboarding, performance, payroll and leave format dates through the shared helper', () => {
-    for (const file of ['src/views/PerformancePage.tsx', 'src/views/PayrollPage.tsx', 'src/views/LeavePage.tsx']) {
+    for (const file of ['src/views/PerformancePage.tsx', 'src/views/PayrollPage.tsx']) {
       const body = fmtDateSource(file);
       expect(body, file).toContain('formatCalendarDate(');
       expect(body, file).not.toContain('new Date(');
       expect(read(file), file).toContain("from '../lib/calendarDate'");
     }
+    // Leave writes its dates in the viewer's language through the same helper (no more fixed en-US).
+    const leave = read('src/views/LeavePage.tsx');
+    const hook = /^function useFmtDate\([\s\S]*?\n\}/m.exec(leave)?.[0] ?? '';
+    expect(hook, 'LeavePage declares useFmtDate').toContain('formatCalendarDateForLocale(');
+    expect(hook).not.toContain('new Date(');
+    expect(hook).not.toContain("'en-US'");
+    expect(leave).toContain("from '../lib/calendarDate'");
     // Offboarding renders dates through the locale-aware formatter, which treats a yyyy-MM-dd value as a calendar date.
     const offboarding = read('src/views/OffboardingPage.tsx');
     expect(offboarding).toContain('fx.date(o.lastWorkingDay)');

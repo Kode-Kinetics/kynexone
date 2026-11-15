@@ -35,6 +35,7 @@ interface Options {
   waiting?: unknown[];
   queueTotal?: number;
   cut?: boolean;
+  arabic?: boolean;
 }
 
 async function boot(page: Page, url: string, opts: Options = {}) {
@@ -42,10 +43,10 @@ async function boot(page: Page, url: string, opts: Options = {}) {
   const errors: string[] = [];
   let current = [...(opts.queue ?? [])];
   page.on('pageerror', e => errors.push(e.message));
-  await page.addInitScript(() => {
+  await page.addInitScript((arabic) => {
     localStorage.setItem('zayra_access_token', 'fixture');
-    localStorage.setItem('kynexone-locale-choice-v2', 'en');
-  });
+    localStorage.setItem('kynexone-locale-choice-v2', arabic ? 'ar' : 'en');
+  }, opts.arabic === true);
   await page.route('**/api/**', async route => {
     const request = route.request(); const path = new URL(request.url()).pathname;
     const reply = (json: unknown) => route.fulfill({ json });
@@ -191,4 +192,16 @@ test('a request with a supporting document offers View document, and opens it th
   await opened;
   await expect.poll(() => fetched).toEqual(['/api/leave/requests/req-hr/attachment']);
   expect(errors).toEqual([]);
+});
+
+test('on the Arabic screen the HR approval card writes its dates in Arabic, not as "Dec 1, 2026"', async ({ page }) => {
+  await boot(page, '/leave', { arabic: true, queue: [DECISION_HR_STEP] });
+  await page.getByRole('tab').filter({ hasText: /الاعتمادات/ }).first().click({ timeout: 90_000 });
+
+  const decision = page.getByTestId('leave-approval-decision');
+  await expect(decision).toHaveCount(1);
+  await expect(decision).toContainText('Omar Haddad');
+  const text = (await decision.innerText()).replace('Omar Haddad', '').replace('Annual Leave', '').replace('Ops', '').replace('Officer', '');
+  expect(text).not.toMatch(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/);
+  expect(text).toMatch(/ديسمبر/);
 });

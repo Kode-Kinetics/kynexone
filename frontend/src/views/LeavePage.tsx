@@ -5,7 +5,7 @@ import {
   acknowledgementsFor, checksFromWarnings, isReasonRequired, openChecks, parseFloorWarnings, parseStoredAcks, readyToSave,
   type FloorCheck,
 } from '../lib/belowMinimum';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Modal as SharedModal } from '../components/Modal';
 import { TransliterateButton } from '../components/TransliterateButton';
 import { useAuth } from '../contexts/AuthContext';
@@ -34,7 +34,7 @@ import client, { apiErrorReason, notifyApiError } from '../api/client';
 import { companiesApi, branchesApi } from '../api/organization';
 import type { CompanyDto, BranchDto } from '../api/organization';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
-import { calendarDaysBetween, formatCalendarDate } from '../lib/calendarDate';
+import { calendarDaysBetween, formatCalendarDateForLocale } from '../lib/calendarDate';
 import { payrollApi } from '../api/payroll';
 import type { PayrollRun } from '../api/payroll';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
@@ -95,8 +95,12 @@ const leaveRequestsImportExport = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // DateOnly values are calendar facts, not UTC instants: `new Date('2026-08-24')` parses as UTC
-// midnight and displays Aug 23 west of UTC. The shared helper builds the local calendar day instead.
-function fmtDate(s: string | null | undefined) { return formatCalendarDate(s, 'en-US'); }
+// midnight and displays Aug 23 west of UTC. The shared helper builds the local calendar day instead, and
+// writes it in the viewer's language (Arabic on the Arabic screen), not always en-US.
+function useFmtDate(): (s: string | null | undefined) => string {
+  const { locale } = useLocale();
+  return useCallback((s) => formatCalendarDateForLocale(s, locale), [locale]);
+}
 
 function fmtAmt(n: number) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -256,6 +260,7 @@ function LoadFailure({ what, error }: { what: string; error: unknown }) {
 }
 
 function DashboardTab({ onNavigate, groupFilter = {} }: { onNavigate: (tab: Tab) => void; groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [dash, setDash] = useState<LeaveDashboard | null>(null);
   const [onLeave, setOnLeave] = useState<LeaveCalendarEntry[]>([]);
@@ -801,6 +806,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
 // ── My Requests Tab ───────────────────────────────────────────────────────────
 
 function MyRequestsTab() {
+  const fmtDate = useFmtDate();
   const { t, locale } = useLocale();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const { run, isBusy } = useBusyKeys();
@@ -922,6 +928,7 @@ function MyRequestsTab() {
  * Officers and Supervisors see leave without deciding it; deciders see what is waiting on someone else. No buttons.
  */
 function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: GroupFilter; reloadKey?: number }) {
+  const fmtDate = useFmtDate();
   const { t, locale } = useLocale();
   const [rows, setRows] = useState<LeaveWaiting[]>([]);
   const [total, setTotal] = useState(0);
@@ -967,6 +974,7 @@ function WaitingOnOthers({ groupFilter = {}, reloadKey = 0 }: { groupFilter?: Gr
 }
 
 function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   // Approve and reject are `leave.approve` on the API (LeaveRequestsController). An HR Officer or a
   // Supervisor can see this queue but not decide it, so they get the queue without the buttons.
   const { hasPermission } = useAuth();
@@ -1775,6 +1783,7 @@ export function HolidayCalendarTab({ onDirtyChange, embedded = false, onSaved, c
   companyId?: string;
 } = {}) {
   const { t } = useLocale();
+  const fmtDate = useFmtDate();
   const toast = useAppToast();
   const { confirm, dialog: confirmDialog } = useConfirm();
   const [calendars, setCalendars] = useState<PublicHolidayCalendar[]>([]);
@@ -2285,6 +2294,7 @@ function EncashmentTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Comp-Off Tab ──────────────────────────────────────────────────────────────
 
 function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [showCreate, setShowCreate] = useState(false);
   const [compOffPickedEmp, setCompOffPickedEmp] = useState<SelectedEmployee | null>(null);
@@ -2374,6 +2384,7 @@ function CompOffTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Absences Tab ──────────────────────────────────────────────────────────────
 
 function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [regModal, setRegModal] = useState<AbsenceRecord | null>(null);
   const [regReason, setRegReason] = useState('');
@@ -2442,6 +2453,7 @@ function AbsencesTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── Reports Tab ───────────────────────────────────────────────────────────────
 
 function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [view, setView] = useState<'onleave' | 'sick'>('onleave');
   const [onLeave, setOnLeave] = useState<LeaveRequest[]>([]);
@@ -2502,6 +2514,7 @@ function ReportsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
 // ── AI Insights Tab ───────────────────────────────────────────────────────────
 
 function AIInsightsTab() {
+  const fmtDate = useFmtDate();
   const t = useT();
   const [generating, setGenerating] = useState(false);
 
