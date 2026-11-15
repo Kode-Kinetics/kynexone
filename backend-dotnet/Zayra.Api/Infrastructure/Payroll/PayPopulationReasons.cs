@@ -39,14 +39,29 @@ public static class PayPopulationReasons
     /// <summary>Soft-deleted but still owed wages through the last working day: paid.</summary>
     public const string WarnDeletedButWagesOwed = "DELETED_BUT_WAGES_OWED";
 
-    /// <summary>The paid-with-warning codes Approve requires an acknowledged count for.</summary>
-    public static readonly string[] AcknowledgeBeforeApprove = [WarnNoLastWorkingDay, WarnOnLeaveNoLeaveRequest, WarnDeletedButWagesOwed];
+    /// <summary>
+    /// The status says employed (Active, Probation, Confirmed, On leave) but the run does not pay them: a last working day
+    /// before the period with no recorded reactivation, or a final wage month already paid. Left out, and counted in the
+    /// Approve acknowledgement, never shown as routine.
+    /// </summary>
+    public const string WarnEmployedStatusNotPaid = "WARN_EMPLOYED_STATUS_NOT_PAID";
+
+    /// <summary>
+    /// /validate: a payslip on this run was computed under a standing the employee no longer has (no longer paid by the
+    /// run, or their final wage month changed). A blocking Error: re-process the run before approving.
+    /// </summary>
+    public const string StandingChangedReprocess = "PAY_STANDING_CHANGED_REPROCESS";
+
+    /// <summary>The codes Approve requires an acknowledged count for: paid with a warning, or employed but not paid.</summary>
+    public static readonly string[] AcknowledgeBeforeApprove =
+        [WarnNoLastWorkingDay, WarnOnLeaveNoLeaveRequest, WarnDeletedButWagesOwed, WarnEmployedStatusNotPaid];
 
     /// <summary>Left-out codes that are routine (shown as a count, never omitted); the rest are raised as warnings.</summary>
     public static readonly string[] Routine = [NotYetEmployed, LeftBeforePeriod, FinalWageAlreadyPaid, InactiveOrArchived];
 
     public static readonly string[] LeftOut =
-        [NotYetEmployed, LeftBeforePeriod, FinalWageAlreadyPaid, SuspendedPayHold, InactiveOrArchived, ExitStatusNoDate, DeletedNoWagesOwed, UnknownStatus];
+        [NotYetEmployed, LeftBeforePeriod, FinalWageAlreadyPaid, SuspendedPayHold, InactiveOrArchived, ExitStatusNoDate, DeletedNoWagesOwed, UnknownStatus,
+         WarnEmployedStatusNotPaid];
 }
 
 /// <summary>One employee the run leaves out, or pays with a warning.</summary>
@@ -62,7 +77,8 @@ public sealed class PayPopulationReport
 /// <summary>Turns the population report into the run's stored findings (Process writes them; /validate re-adds them).</summary>
 public static class PayPopulationFindings
 {
-    /// <param name="paidEmployeeIds">Who the run actually pays: a warning is only about someone paid.</param>
+    /// <param name="paidEmployeeIds">Who the run actually pays (Process: its population; /validate: the run's payslips): a
+    /// paid-with-warning entry is only about someone paid.</param>
     public static IEnumerable<PayrollValidationResult> ToResults(Guid tenantId, Guid runId, PayPopulationReport report, IReadOnlySet<int> paidEmployeeIds)
     {
         foreach (var x in report.LeftOut)
@@ -71,7 +87,8 @@ public static class PayPopulationFindings
                 TenantId = tenantId, PayrollRunId = runId, EmployeeId = x.EmployeeId,
                 Severity = PayPopulationReasons.Routine.Contains(x.Code) ? "Info" : "Warning",
                 Code = x.Code,
-                Message = $"{x.EmployeeName} ({x.EmployeeCode}) is not paid by this run: {x.Message}",
+                Message = $"{x.EmployeeName} ({x.EmployeeCode}) is not paid by this run: {x.Message}"
+                          + (PayPopulationReasons.AcknowledgeBeforeApprove.Contains(x.Code) ? " Acknowledge it when approving the run." : string.Empty),
             };
         foreach (var x in report.PayWarnings.Where(w => paidEmployeeIds.Contains(w.EmployeeId)))
             yield return new PayrollValidationResult

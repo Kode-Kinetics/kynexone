@@ -24,7 +24,10 @@ public enum EmploymentStatusClass
 /// <summary>The dated facts the predicate needs. Dates are the employee's own; nothing here is "today".</summary>
 /// <param name="OffboardingLastWorkingDay">The newest non-cancelled offboarding's last working day, if any.</param>
 /// <param name="StatusExitDate">The effective date of the status change into the current status, if recorded.</param>
-public sealed record EmploymentFacts(string? Status, DateOnly? JoiningDate, DateOnly? OffboardingLastWorkingDay, DateOnly? StatusExitDate);
+/// <param name="EmployedSince">The effective date of the latest status change INTO an employed or pay-hold status (a
+/// reactivation), if recorded. A last working day before it belongs to an earlier, ended stretch of employment.</param>
+public sealed record EmploymentFacts(string? Status, DateOnly? JoiningDate, DateOnly? OffboardingLastWorkingDay, DateOnly? StatusExitDate,
+    DateOnly? EmployedSince = null);
 
 /// <summary>
 /// THE one employment predicate (payroll pay population spec, section 1.3): who is employed on a date. Payroll, the
@@ -83,11 +86,17 @@ public static class EmploymentStanding
         _ => [],
     };
 
-    /// <summary>The day employment ends (inclusive), or null when none is recorded for the current service period.</summary>
+    /// <summary>
+    /// The day employment ends (inclusive), or null when none is recorded for the current service period. For an employed
+    /// or pay-hold status, a last working day before the latest recorded change INTO such a status (a reactivation) ended
+    /// an earlier stretch of employment and is ignored, even when the joining date was never updated.
+    /// </summary>
     public static DateOnly? SeparationDate(EmploymentFacts f)
     {
-        if (f.OffboardingLastWorkingDay is DateOnly lwd && (f.JoiningDate is not DateOnly j1 || lwd >= j1)) return lwd;
         var cls = Classify(f.Status);
+        var reactivatedAfter = cls is EmploymentStatusClass.Employed or EmploymentStatusClass.PayHold
+            && f.OffboardingLastWorkingDay is DateOnly old && f.EmployedSince is DateOnly since && old < since;
+        if (!reactivatedAfter && f.OffboardingLastWorkingDay is DateOnly lwd && (f.JoiningDate is not DateOnly j1 || lwd >= j1)) return lwd;
         if (cls is EmploymentStatusClass.Exit or EmploymentStatusClass.Inactive
             && f.StatusExitDate is DateOnly exit && (f.JoiningDate is not DateOnly j2 || exit >= j2)) return exit;
         return null;

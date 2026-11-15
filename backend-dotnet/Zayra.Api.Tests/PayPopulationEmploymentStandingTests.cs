@@ -82,6 +82,33 @@ public class PayPopulationEmploymentStandingTests
         EmploymentStanding.IsEmployedOn(f, new DateOnly(2026, 1, 1)).Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("Active")]
+    [InlineData("Probation")]
+    [InlineData("Suspended")]
+    public void AReactivatedEmployee_IgnoresALastWorkingDayFromBeforeTheReactivation(string status)
+    {
+        // Offboarded 30 June 2025 (joining date never updated), set back to an employed status on 1 September 2025.
+        var f = Facts(status, offboardingLwd: new DateOnly(2025, 6, 30)) with { EmployedSince = new DateOnly(2025, 9, 1) };
+        EmploymentStanding.SeparationDate(f).Should().BeNull("the old last working day ended an earlier stretch of employment");
+        EmploymentStanding.IsEmployedOn(f, new DateOnly(2026, 3, 1)).Should().BeTrue();
+    }
+
+    [Fact]
+    public void AReactivationBeforeTheLastWorkingDay_DoesNotCancelIt()
+    {
+        // Active since 2024; the offboarding came later, so its last working day still ends employment.
+        var f = Facts("Active", offboardingLwd: new DateOnly(2025, 6, 30)) with { EmployedSince = new DateOnly(2024, 1, 1) };
+        EmploymentStanding.SeparationDate(f).Should().Be(new DateOnly(2025, 6, 30));
+    }
+
+    [Fact]
+    public void AReactivationDate_NeverCancelsTheLastWorkingDayOfAnExitStatus()
+    {
+        var f = Facts("Terminated", offboardingLwd: new DateOnly(2025, 6, 30)) with { EmployedSince = new DateOnly(2025, 9, 1) };
+        EmploymentStanding.SeparationDate(f).Should().Be(new DateOnly(2025, 6, 30));
+    }
+
     [Fact]
     public void Suspended_IsEmployedButOnPayHold()
     {

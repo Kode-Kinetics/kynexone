@@ -40,14 +40,16 @@ public class PayPopulationRunTests
         return (db, conn);
     }
 
-    private static DefaultHttpContext Ctx(Guid tenantId, Guid userId) => new()
+    private static readonly Guid FinanceUser = Guid.NewGuid();
+
+    private static DefaultHttpContext Ctx(Guid tenantId, Guid userId, string role = "Admin") => new()
     {
         User = new ClaimsPrincipal(new ClaimsIdentity(new List<Claim>
         {
             new("tenant_id", tenantId.ToString()),
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.Name, userId == Maker ? "maker" : "checker"),
-            new(ClaimTypes.Role, "Admin"),
+            new(ClaimTypes.Role, role),
             new("permission", "payroll.read"),
             new("permission", "payroll.write"),
             new("permission", "payroll.approve"),
@@ -55,9 +57,9 @@ public class PayPopulationRunTests
         }, "test")),
     };
 
-    private static PayrollController Payroll(ZayraDbContext db, Guid tenantId, Guid userId)
+    private static PayrollController Payroll(ZayraDbContext db, Guid tenantId, Guid userId, string role = "Admin")
     {
-        var http = Ctx(tenantId, userId);
+        var http = Ctx(tenantId, userId, role);
         return new PayrollController(
             db, new _PpScope(), new _PpHttp(http), new _PpNotifications(),
             new _PpPackResolver(), _PpRules.Rules, new _PpLetters(), new _PpStorage(),
@@ -562,9 +564,11 @@ public class PayPopulationRunTests
         db.LeaveRequests.Add(leave);
         db.LeavePayrollImpacts.AddRange(
             new LeavePayrollImpact { TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-01",
-                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Processed" },
+                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Processed",
+                SliceFrom = new DateOnly(2026, 1, 25), SliceTo = new DateOnly(2026, 1, 31) },
             new LeavePayrollImpact { TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-02",
-                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Pending" });
+                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Pending",
+                SliceFrom = new DateOnly(2026, 2, 1), SliceTo = new DateOnly(2026, 2, 5) });
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         var feb = await AddRun(db, co, 2026, 2);
@@ -688,6 +692,345 @@ public class PayPopulationRunTests
 
         (await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None))
             .Should().BeOfType<OkObjectResult>("an ordinary run must approve exactly as before");
+    }
+
+    // ══ Money audit fixes ═════════════════════════════════════════════════════════════════════════════
+
+    private static async Task AddStatusChange(ZayraDbContext db, Co co, Employee e, string from, string to, DateOnly effective)
+    {
+        db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
+        {
+            TenantId = co.TenantId, EmployeeId = e.Id, OldStatus = from, NewStatus = to, EffectiveDate = effective, Reason = "test",
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+    }
+
+    [Fact]
+    public async Task AReactivatedEmployee_WithAnOldCompletedOffboarding_IsPaid()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var e = await AddEmployee(db, co, "Active");
+        await AddOffboarding(db, co, e, new DateOnly(2025, 6, 30), status: "Completed");
+        await AddStatusChange(db, co, e, "Active", "Offboarded", new DateOnly(2025, 6, 30));
+        await AddStatusChange(db, co, e, "Offboarded", "Active", new DateOnly(2025, 9, 1));
+        var run = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, run.Id);
+
+        (await Slip(db, run.Id, e.Id)).Should().NotBeNull("set back to Active after the old offboarding, so employed and paid")
+            .And.Subject.As<PayrollSlip>().BasicSalary.Should().Be(Basic);
+        (await Findings(db, run.Id)).Should().NotContain(f => f.EmployeeId == e.Id && f.Code == PayPopulationReasons.LeftBeforePeriod);
+    }
+
+    [Fact]
+    public async Task AnActiveEmployee_WithAPastLastWorkingDayAndNoReactivation_IsAWarningTheApproveCountIncludes()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Active");
+        await AddOffboarding(db, co, e, new DateOnly(2025, 6, 30), status: "Completed");
+        var run = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, run.Id);
+
+        (await Slip(db, run.Id, e.Id)).Should().BeNull("no recorded reactivation: the last working day still applies");
+        var finding = (await Findings(db, run.Id)).Should().ContainSingle(f => f.EmployeeId == e.Id).Subject;
+        finding.Code.Should().Be(PayPopulationReasons.WarnEmployedStatusNotPaid);
+        finding.Severity.Should().Be("Warning", "a person whose status says employed is never left out as Info");
+        var (_, _, root) = await Preview(db, co, run.Id);
+        root.GetProperty("payWarningCount").GetInt32().Should().Be(1);
+
+        await ReconTestSupport.SignOffAsync(db, run.Id);
+        db.ChangeTracker.Clear();
+        var refused = await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None);
+        refused.Should().BeOfType<ConflictObjectResult>().Which.Value!.ToString().Should().Contain("pay_warnings_not_acknowledged");
+        db.ChangeTracker.Clear();
+        (await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedPayWarningCount: 1), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+    }
+
+    [Fact]
+    public async Task ADraftPreview_CountsAnEmployedPersonLeftOut_InThePayWarningCount()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Probation");
+        await AddOffboarding(db, co, e, new DateOnly(2025, 6, 30), status: "Completed");
+        var run = await AddRun(db, co, 2026, 3);
+
+        var (rows, _, root) = await Preview(db, co, run.Id);
+
+        rows.Should().ContainSingle(r => r.EmployeeId == e.Id).Which.ReasonCode.Should().Be(PayPopulationReasons.WarnEmployedStatusNotPaid);
+        root.GetProperty("payWarningCount").GetInt32().Should().Be(1, "the Draft preview predicts the count Approve will ask for");
+    }
+
+    [Fact]
+    public async Task LevelOneApproval_ThenValidate_KeepsTheAcknowledgement_AndFinanceApprovesWithTheSameCount()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, run, resigned) = await ProcessedRunWithOneUndatedResignation(db);
+        await ReconTestSupport.SignOffAsync(db, run.Id);
+        db.ChangeTracker.Clear();
+
+        // Level 1: an HR Manager moves the run to Finance, acknowledging the one warned person.
+        (await Payroll(db, co.TenantId, Checker, "HR Manager").Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None))
+            .Should().BeOfType<ConflictObjectResult>("level 1 is held to the same acknowledgement");
+        db.ChangeTracker.Clear();
+        (await Payroll(db, co.TenantId, Checker, "HR Manager").Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedPayWarningCount: 1), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == run.Id)).Status.Should().Be("PendingFinanceReview");
+        db.ChangeTracker.Clear();
+
+        // HR now records a last working day before the period. Re-deriving would drop the warning and the count Finance
+        // must acknowledge; past Processed, /validate rewrites nothing.
+        await AddOffboarding(db, co, resigned, new DateOnly(2026, 2, 10));
+        var before = (await Findings(db, run.Id)).Select(f => (f.Code, f.EmployeeId, f.Severity)).OrderBy(x => x.Code).ThenBy(x => x.EmployeeId).ToList();
+        (await Payroll(db, co.TenantId, Maker).Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+        var after = (await Findings(db, run.Id)).Select(f => (f.Code, f.EmployeeId, f.Severity)).OrderBy(x => x.Code).ThenBy(x => x.EmployeeId).ToList();
+        after.Should().Equal(before, "a run past Processed is read-only to /validate");
+
+        (await Payroll(db, co.TenantId, FinanceUser, "Finance Controller").Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None))
+            .Should().BeOfType<ConflictObjectResult>("Finance acknowledges the same person level 1 did");
+        db.ChangeTracker.Clear();
+        (await Payroll(db, co.TenantId, FinanceUser, "Finance Controller").Approve(run.Id, new PayrollDecisionRequest("ok", ExpectedPayWarningCount: 1), CancellationToken.None))
+            .Should().BeOfType<OkObjectResult>();
+        (await db.PayrollRuns.AsNoTracking().FirstAsync(r => r.Id == run.Id)).Status.Should().Be("Approved");
+    }
+
+    [Fact]
+    public async Task Validate_RaisesABlockingReprocessError_WhenAPaidEmployeeNoLongerHasTheirStanding()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Active");
+        var run = await AddRun(db, co, 2026, 3);
+        await Process(db, co, run.Id);
+        (await Slip(db, run.Id, e.Id)).Should().NotBeNull();
+        (await db.Employees.FirstAsync(x => x.Id == e.Id)).Status = "Suspended";
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Payroll(db, co.TenantId, Maker).Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var error = (await Findings(db, run.Id)).Should().ContainSingle(f => f.Code == PayPopulationReasons.StandingChangedReprocess).Subject;
+        error.Severity.Should().Be("Error");
+        error.EmployeeId.Should().Be(e.Id);
+        error.Message.Should().Contain("Re-process").And.Contain("أعد معالجة");
+        await ReconTestSupport.SignOffAsync(db, run.Id);
+        db.ChangeTracker.Clear();
+        (await Payroll(db, co.TenantId, Checker).Approve(run.Id, new PayrollDecisionRequest("ok"), CancellationToken.None))
+            .Should().BeOfType<UnprocessableEntityObjectResult>("a payslip computed under a standing the person no longer has blocks approval");
+    }
+
+    [Fact]
+    public async Task Validate_RaisesTheReprocessError_WhenALastWorkingDayInThePeriodIsRecordedAfterProcess()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Active");
+        var run = await AddRun(db, co, 2026, 3);
+        await Process(db, co, run.Id);
+        await AddOffboarding(db, co, e, new DateOnly(2026, 3, 10));
+
+        (await Payroll(db, co.TenantId, Maker).Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        (await Findings(db, run.Id)).Should().Contain(f => f.Code == PayPopulationReasons.StandingChangedReprocess && f.EmployeeId == e.Id && f.Severity == "Error",
+            "the slip pays a full month; the person now leaves on 10 March");
+    }
+
+    [Fact]
+    public async Task Validate_CountsPayWarningsOnlyForPeopleTheRunPays()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var (co, run, resigned) = await ProcessedRunWithOneUndatedResignation(db);
+        var lateResigned = await AddEmployee(db, co, "Resigned");   // added after Process: no slip on this run
+
+        (await Payroll(db, co.TenantId, Maker).Validate(run.Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var warned = (await Findings(db, run.Id)).Where(f => PayPopulationReasons.AcknowledgeBeforeApprove.Contains(f.Code)).Select(f => f.EmployeeId).ToList();
+        warned.Should().Equal(new int?[] { resigned.Id }, "a warning about someone the run did not pay would change the count Approve asks for");
+        warned.Should().NotContain(lateResigned.Id);
+    }
+
+    [Fact]
+    public async Task ALoneSurvivingSlice_IsScaledByItsOwnDates()
+    {
+        // 26 Apr - 2 May 2026: 1-2 May are Fri/Sat, so the only slice is April's 5 days (26-30 Apr) = TotalDays.
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Resigned");
+        await AddOffboarding(db, co, e, new DateOnly(2026, 4, 28));
+        var leave = new LeaveRequest
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, EmployeeId = e.Id, StartDate = new DateOnly(2026, 4, 26),
+            EndDate = new DateOnly(2026, 5, 2), TotalDays = 5m, Status = "Approved", DayType = "Full",
+        };
+        db.LeaveRequests.Add(leave);
+        db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+        {
+            TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-04",
+            ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Pending",
+            SliceFrom = new DateOnly(2026, 4, 26), SliceTo = new DateOnly(2026, 4, 30),
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var apr = await AddRun(db, co, 2026, 4);
+
+        await Process(db, co, apr.Id);
+
+        var leaveDeduction = (await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == apr.Id && d.EmployeeId == e.Id && d.ComponentCode == "LEAVE").Select(d => d.Amount).ToListAsync()).Sum();
+        leaveDeduction.Should().Be(600m, "26-28 April of the slice's 26-30 April: 3/5 of 1,000, not 3/7 (the whole request's span)");
+    }
+
+    [Fact]
+    public async Task ASickLeaveScaleImpact_IsScaledByTheWholeRequest_NotMistakenForAMonthSlice()
+    {
+        // Art. 117 scale row: Days = unpaid-equivalent days (2.5 of 12), charged whole to the start month, no slice dates.
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Resigned");
+        await AddOffboarding(db, co, e, new DateOnly(2026, 1, 27));
+        var leave = new LeaveRequest
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, EmployeeId = e.Id, StartDate = new DateOnly(2026, 1, 25),
+            EndDate = new DateOnly(2026, 2, 5), TotalDays = 10m, Status = "Approved", DayType = "Full",
+        };
+        db.LeaveRequests.Add(leave);
+        db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+        {
+            TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-01",
+            ImpactType = "Leave Deduction (KSA Art.117 sick-leave scale: 2.5d@0%)", Days = 2.5m, Amount = 1_200m, Status = "Pending",
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var jan = await AddRun(db, co, 2026, 1);
+
+        await Process(db, co, jan.Id);
+
+        var leaveDeduction = (await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == jan.Id && d.EmployeeId == e.Id && d.ComponentCode == "LEAVE").Select(d => d.Amount).ToListAsync()).Sum();
+        leaveDeduction.Should().Be(300m, "25-27 January of the whole 25 Jan - 5 Feb request: 3/12 of 1,200, not 3/7");
+    }
+
+    [Fact]
+    public async Task ACrossMonthUnpaidLeave_IsDeductedAcrossTwoProcessedRuns()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        var e = await AddEmployee(db, co, "Active");
+        var hr = await AddEmployee(db, co, "Active");
+        Guid empUser = Guid.NewGuid(), hrUser = Guid.NewGuid();
+        (await db.Employees.FirstAsync(x => x.Id == e.Id)).UserAccountId = empUser;
+        (await db.Employees.FirstAsync(x => x.Id == hr.Id)).UserAccountId = hrUser;
+        var unpaid = new LeaveType { TenantId = co.TenantId, Code = "UNPAID", NameEn = "Unpaid Leave", Category = "Unpaid", IsActive = true, IsPaid = false };
+        db.LeaveTypes.Add(unpaid);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var leaves = await TestApprovalConfig.LeaveServiceAsync(db, co.TenantId, "HR");
+        var request = await leaves.SubmitRequestAsync(co.TenantId, new LeaveRequest
+        {
+            TenantId = co.TenantId, EmployeeId = e.Id, LeaveTypeId = unpaid.Id,
+            StartDate = new DateOnly(2026, 1, 25), EndDate = new DateOnly(2026, 2, 5), DayType = "Full", Reason = "family matter",
+        }, empUser);
+        await leaves.ApproveRequestAsync(co.TenantId, request.Id, hrUser, "HR", "ok");
+        db.ChangeTracker.Clear();
+
+        var jan = await AddRun(db, co, 2026, 1);
+        await Process(db, co, jan.Id);
+        var feb = await AddRun(db, co, 2026, 2);
+        await Process(db, co, feb.Id);
+
+        async Task<decimal> LeaveDeduction(Guid runId) => (await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == runId && d.EmployeeId == e.Id && d.ComponentCode == "LEAVE").Select(d => d.Amount).ToListAsync()).Sum();
+        (await LeaveDeduction(jan.Id)).Should().Be(1_000m, "25-29 January: 5 working days at 200");
+        (await LeaveDeduction(feb.Id)).Should().Be(1_000m, "1-5 February: 5 working days at 200");
+        (await db.LeavePayrollImpacts.AsNoTracking().Where(i => i.LeaveRequestId == request.Id).Select(i => i.Status).ToListAsync())
+            .Should().HaveCount(2).And.OnlyContain(s => s == "Processed", "each month's slice is consumed by its own run, once");
+    }
+
+    [Fact]
+    public async Task ASoftDeletedLeaverPaidBySettlementRun_IsStillWarnedDeletedButWagesOwed()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var leaver = await AddEmployee(db, co, "Offboarded", deleted: true);
+        await AddOffboarding(db, co, leaver, new DateOnly(2026, 2, 20), status: "Completed");
+        db.EmployeeFinalSettlements.Add(new EmployeeFinalSettlement
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, EmployeeId = leaver.Id, EmployeeCode = leaver.EmployeeCode, EmployeeName = leaver.FullName,
+            TerminationReason = "Resignation", Status = FinalSettlementStatuses.Approved, GrossPayable = 9_000m,
+            LastWorkingDay = new DateOnly(2026, 2, 20),
+        });
+        await db.SaveChangesAsync();
+        var run = await AddRun(db, co, 2026, 3);
+        (await db.PayrollRuns.FirstAsync(r => r.Id == run.Id)).SettlesFinalSettlements = true;
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var (_, _, root) = await Preview(db, co, run.Id);
+
+        root.GetProperty("payWarnings").EnumerateArray()
+            .Select(w => (w.GetProperty("employeeId").GetInt32(), w.GetProperty("reasonCode").GetString()))
+            .Should().Contain((leaver.Id, PayPopulationReasons.WarnDeletedButWagesOwed),
+                "a deleted record paid by the settlement rail is still a deleted record paid");
+    }
+
+    [Fact]
+    public async Task ARehiresOldFinalWageSlipWithNoPaidToDate_DoesNotStopTheCurrentServicePeriod()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Resigned", joined: new DateTime(2026, 1, 1));   // re-hired 1 January 2026
+        // The first service period ended in June 2025; its final-wage slip predates PaidToDate (null).
+        var oldRun = new PayrollRun
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, Year = 2025, Month = 6, Status = "Locked",
+            RunType = PayrollRunTypes.Regular, IncludesRecurringPay = true, CreatedByUserId = Maker,
+        };
+        db.PayrollRuns.Add(oldRun);
+        db.PayrollSlips.Add(new PayrollSlip
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, RunId = oldRun.Id, EmployeeId = e.Id, EmployeeCode = e.EmployeeCode,
+            Status = "Processed", IsFinalWageMonth = true, PaidToDate = null, BasicSalary = Basic, GrossSalary = Basic, NetSalary = Basic,
+        });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        await AddOffboarding(db, co, e, new DateOnly(2026, 3, 15));   // the current service period ends 15 March
+        var run = await AddRun(db, co, 2026, 3);
+
+        await Process(db, co, run.Id);
+
+        var slip = await Slip(db, run.Id, e.Id);
+        slip.Should().NotBeNull("the June 2025 final wage belongs to the earlier service period");
+        slip!.BasicSalary.Should().Be(3_000m, "1-15 March = 15/30 of 6,000");
+        slip.IsFinalWageMonth.Should().BeTrue();
     }
 }
 

@@ -1054,7 +1054,9 @@ public partial class PayrollController : ControllerBase
         // list (what Process decided); before that, the live preview.
         List<PayPopulationEntry> payWarnings;
         if (run.Status == "Draft")
-            payWarnings = report.PayWarnings.Where(w => includedIds.Contains(w.EmployeeId)).ToList();
+            payWarnings = report.PayWarnings.Where(w => includedIds.Contains(w.EmployeeId))
+                .Concat(report.LeftOut.Where(x => PayPopulationReasons.AcknowledgeBeforeApprove.Contains(x.Code)))
+                .ToList();
         else
         {
             var stored = await _db.PayrollValidationResults.AsNoTracking()
@@ -1063,9 +1065,13 @@ public partial class PayrollController : ControllerBase
                 .Select(x => new { EmployeeId = x.EmployeeId!.Value, x.Code, x.Message })
                 .ToListAsync(cancellationToken);
             var byId = eligible.ToDictionary(e => e.Id);
+            // Someone acknowledged because they are NOT paid is not in the eligible set: named from the left-out list.
+            var leftOutById = report.LeftOut.GroupBy(x => x.EmployeeId).ToDictionary(g => g.Key, g => g.First());
             payWarnings = stored.Select(x => byId.TryGetValue(x.EmployeeId, out var e)
                     ? new PayPopulationEntry(x.EmployeeId, e.EmployeeCode, e.FullName, e.Status, x.Code, x.Message)
-                    : new PayPopulationEntry(x.EmployeeId, x.EmployeeId.ToString(CultureInfo.InvariantCulture), string.Empty, string.Empty, x.Code, x.Message))
+                    : leftOutById.TryGetValue(x.EmployeeId, out var o)
+                        ? new PayPopulationEntry(x.EmployeeId, o.EmployeeCode, o.EmployeeName, o.Status, x.Code, x.Message, o.Date)
+                        : new PayPopulationEntry(x.EmployeeId, x.EmployeeId.ToString(CultureInfo.InvariantCulture), string.Empty, string.Empty, x.Code, x.Message))
                 .ToList();
         }
 
@@ -1763,15 +1769,36 @@ public partial class PayrollController : ControllerBase
         return Ok(results);
     }
 
+    /// <summary>
+    /// Re-derives a Processed run's stored findings (the ones Approve and Lock read). It runs inside
+    /// <see cref="InRunRowLockTransactionAsync"/>: the run row is read FOR UPDATE first, so /validate and an approval of the
+    /// same run take turns, and the delete of the old findings and the insert of the new ones commit together or not at all.
+    /// Past Processed (PendingFinanceReview, Approved, Locked, Paid, Voided) it rewrites nothing and returns the stored
+    /// findings: the approver acknowledged THOSE, and a run past Processed is never rewritten. Locks: payroll_runs FOR UPDATE
+    /// only (no batch-payment advisory, loan or advance lock), so it sits inside the order
+    /// payroll.batch-payment advisory → payroll_runs → finance.loan → finance.advance.
+    /// </summary>
     [HttpPost("runs/{id:guid}/validate")]
     [HasPermission("payroll.write")]
     public async Task<IActionResult> Validate(Guid id, CancellationToken cancellationToken)
     {
         var tenantId = GetTenantId();
-        var run = await _db.PayrollRuns.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
+        return await InRunRowLockTransactionAsync(() => ValidateCoreAsync(id, tenantId, cancellationToken), cancellationToken);
+    }
+
+    private async Task<IActionResult> ValidateCoreAsync(Guid id, Guid tenantId, CancellationToken cancellationToken)
+    {
+        // FOR UPDATE: see InRunRowLockTransactionAsync.
+        var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+            .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id, cancellationToken);
         if (run is null) return NotFound();
         if (run.Status == "Draft")
             return BadRequest(new { message = "Run must be Processed before it can be validated." });
+        if (run.Status != "Processed")
+            return Ok(await _db.PayrollValidationResults.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.PayrollRunId == id)
+                .OrderByDescending(x => x.Severity).ThenBy(x => x.Code)
+                .ToListAsync(cancellationToken));
 
         // Load all data needed by the engine and re-run from scratch.
         var activeCompaniesForValidation = await _db.Companies.AsNoTracking()
@@ -1798,7 +1825,7 @@ public partial class PayrollController : ControllerBase
         // or Rule 1 MISSING_SALARY_STRUCTURE-style Errors would be raised for people the run legitimately
         // pays, and the run could never be approved or locked.
         var validationPeriodStart = new DateOnly(run.Year, run.Month, 1);
-        var (eligibleForValidation, validationLeaverIds, _, validationPopulationReport, _) = await LoadEligibleWithLeaversAsync(
+        var (eligibleForValidation, validationLeaverIds, validationLastWorkingDays, validationPopulationReport, _) = await LoadEligibleWithLeaversAsync(
             tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true,
             validationPeriodStart, validationPeriodStart.AddMonths(1).AddDays(-1), excludeRunId: run.Id, cancellationToken,
             includeSettlementLeavers: run.SettlesFinalSettlements);
@@ -1945,7 +1972,16 @@ public partial class PayrollController : ControllerBase
         results.AddRange(await ReadinessPayValidationFindingsAsync(tenantId, id, employees, Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month), cancellationToken));
         // Same pay-population list Process writes (who is left out, who is paid with a warning) — /validate replaces the
         // stored results wholesale, so it must re-add it or the Approve acknowledgement would silently lose its subject.
-        results.AddRange(PayPopulationFindings.ToResults(tenantId, id, validationPopulationReport, employeeIdsForValidation));
+        // "Paid" means paid by THIS run: its payslips, not whoever today's data would pay, or a person added after
+        // Process would change the count Approve asks for.
+        var runSlips = await _db.PayrollSlips.AsNoTracking()
+            .Where(s => s.TenantId == tenantId && s.RunId == id && s.Status != "Voided")
+            .Select(s => new { s.EmployeeId, s.EmployeeCode, s.IsFinalWageMonth, s.PaidToDate, s.ProrationBasis })
+            .ToListAsync(cancellationToken);
+        var runSlipEmployeeIds = runSlips.Select(s => s.EmployeeId).ToHashSet();
+        results.AddRange(PayPopulationFindings.ToResults(tenantId, id, validationPopulationReport, runSlipEmployeeIds));
+        results.AddRange(await StandingChangedFindingsAsync(tenantId, run, runSlips.Select(s => (s.EmployeeId, s.EmployeeCode, s.IsFinalWageMonth, s.PaidToDate, s.ProrationBasis)).ToList(),
+            employeeIdsForValidation, validationLastWorkingDays, valPeriodStart, valPeriodEnd, cancellationToken));
 
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
@@ -1967,6 +2003,57 @@ public partial class PayrollController : ControllerBase
         await _db.SaveChangesAsync(cancellationToken);
 
         return Ok(results.OrderByDescending(r => r.Severity).ThenBy(r => r.Code).ToList());
+    }
+
+    /// <summary>
+    /// A payslip on this run computed under a standing its employee no longer has: no longer paid by the run at all (status,
+    /// dates or selection changed since Process), or their last working day moved into, out of, or within the period. Each is
+    /// a blocking Error: the slip pays the wrong amount, so the run is reopened and processed again, never approved as is.
+    /// Settlements this run disburses are left to the settlement rail's own guards (a disbursed settlement is no longer
+    /// "awaiting", so the population no longer lists it).
+    /// </summary>
+    private async Task<List<PayrollValidationResult>> StandingChangedFindingsAsync(
+        Guid tenantId, PayrollRun run,
+        List<(int EmployeeId, string EmployeeCode, bool IsFinalWageMonth, DateOnly? PaidToDate, string? ProrationBasis)> slips,
+        IReadOnlySet<int> paidNow, IReadOnlyDictionary<int, DateOnly> lastWorkingDays,
+        DateOnly periodStart, DateOnly periodEnd, CancellationToken ct)
+    {
+        var findings = new List<PayrollValidationResult>();
+        if (slips.Count == 0) return findings;
+        var disbursedHere = run.SettlesFinalSettlements
+            ? (await _db.EmployeeFinalSettlements.AsNoTracking()
+                .Where(s => s.TenantId == tenantId && s.PayrollRunId == run.Id)
+                .Select(s => s.EmployeeId).ToListAsync(ct)).ToHashSet()
+            : new HashSet<int>();
+        foreach (var s in slips)
+        {
+            if (disbursedHere.Contains(s.EmployeeId)) continue;
+            string? why = null;
+            if (!paidNow.Contains(s.EmployeeId))
+                why = "is no longer paid by this run (their status, dates or the run's selection changed after it was processed)";
+            else
+            {
+                DateOnly? lwd = lastWorkingDays.TryGetValue(s.EmployeeId, out var l) && l >= periodStart && l <= periodEnd ? l : null;
+                if (lwd is DateOnly now && !s.IsFinalWageMonth)
+                    why = $"now has a last working day of {now:yyyy-MM-dd} in this period, but the payslip pays the month as not their last";
+                else if (lwd is null && s.IsFinalWageMonth)
+                    why = "no longer has a last working day in this period, but the payslip pays the month as their last";
+                else if (lwd is DateOnly moved && s.PaidToDate is DateOnly paidTo && paidTo != moved
+                         && !string.IsNullOrEmpty(s.ProrationBasis) && s.ProrationBasis != Infrastructure.Payroll.ProrationBases.None)
+                    why = $"now has a last working day of {moved:yyyy-MM-dd}, but the payslip pays to {paidTo:yyyy-MM-dd}";
+            }
+            if (why is null) continue;
+            findings.Add(new PayrollValidationResult
+            {
+                TenantId = tenantId, PayrollRunId = run.Id, EmployeeId = s.EmployeeId, Severity = "Error",
+                Code = Infrastructure.Payroll.PayPopulationReasons.StandingChangedReprocess,
+                Message = $"Employee {s.EmployeeCode} {why}. Their payslip no longer matches who they are paid as. " +
+                          "Re-process the run (reopen it and process it again) before approving it. — " +
+                          $"تغيّر وضع الموظف {s.EmployeeCode} بعد معالجة المسير، ولم يعد كشف راتبه مطابقًا لوضعه الحالي. " +
+                          "أعد معالجة المسير (أعد فتحه ثم عالجه من جديد) قبل اعتماده.",
+            });
+        }
+        return findings;
     }
 
     // C1: segregation of duties — Payroll Officer who processes cannot self-approve.
@@ -2118,7 +2205,8 @@ public partial class PayrollController : ControllerBase
 
         // ── Pay population: people paid WITH A WARNING must be acknowledged the same way ─────────────────
         // Resigned / Notice period with no last working day, "On leave" with no approved leave, a deleted record still
-        // owed wages: each is paid in full, but the record suggests HR may have meant otherwise. Warn, never block: the
+        // owed wages: each is paid in full, but the record suggests HR may have meant otherwise. And the reverse: a status
+        // that says employed on someone the run does not pay (a past last working day, no recorded reactivation). Warn, never block: the
         // approver states how many such people they reviewed, exactly like a cash count. Read from the run's stored
         // findings, which Process writes and /validate re-derives.
         var payWarningCodes = Infrastructure.Payroll.PayPopulationReasons.AcknowledgeBeforeApprove;
@@ -2129,8 +2217,9 @@ public partial class PayrollController : ControllerBase
             return Conflict(new
             {
                 error           = "pay_warnings_not_acknowledged",
-                message         = $"This run pays {payWarningCount} employee(s) with a warning (no last working day, 'On leave' with no " +
-                                  "approved leave, or a deleted record still owed wages). Review GET /api/payroll/runs/{id}/population and " +
+                message         = $"This run has {payWarningCount} employee(s) to acknowledge: paid with a warning (no last working day, " +
+                                  "'On leave' with no approved leave, or a deleted record still owed wages), or not paid although their status " +
+                                  "says employed. Review GET /api/payroll/runs/{id}/population and " +
                                   $"re-submit with expectedPayWarningCount={payWarningCount} to acknowledge.",
                 payWarningCount,
                 acknowledged    = req.ExpectedPayWarningCount,

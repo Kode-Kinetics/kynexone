@@ -881,12 +881,13 @@ public sealed class PayrollRunProcessor
                 if (req is null) continue;
                 var pr = prorationByEmp[imp.EmployeeId];
                 // The dates this impact charges. An approved unpaid leave that crosses a month end is written as one
-                // impact per month (LeaveService), each carrying only its month's days: that slice covers the request's
-                // days inside THIS period, and scaling it by the whole request's span would cut it a second time. A
-                // row written before slicing carries the whole request (Days == TotalDays) and keeps the whole span.
-                var isMonthSlice = (req.StartDate < periodStart || req.EndDate > periodEnd) && imp.Days < req.TotalDays;
-                var rangeStart = isMonthSlice && req.StartDate < periodStart ? periodStart : req.StartDate;
-                var rangeEnd   = isMonthSlice && req.EndDate > periodEnd ? periodEnd : req.EndDate;
+                // impact per month (LeaveService), each stamped with the first and last day it charges: a slice is scaled
+                // by ITS dates, or the request's whole span would cut it a second time. A row with no dates (written
+                // before slicing, or the Art. 117 sick-leave scale row, whose Days are unpaid-equivalent days) charges
+                // the whole request and keeps the whole span. Never inferred from Days, which means something else on a
+                // sick-leave row and equals TotalDays on a lone surviving slice.
+                var rangeStart = imp.SliceFrom ?? req.StartDate;
+                var rangeEnd   = imp.SliceTo   ?? req.EndDate;
                 var reqDays = rangeEnd.DayNumber - rangeStart.DayNumber + 1;
                 if (reqDays <= 0) continue;
                 var from = rangeStart > pr.PaidFrom ? rangeStart : pr.PaidFrom;
@@ -3242,21 +3243,34 @@ public sealed class PayrollRunProcessor
         var everyone = live.Concat(deleted).ToList();
         var everyoneIds = everyone.Select(e => e.Id).ToList();
 
-        // Exit statuses without an offboarding are dated by the status change that put them there.
+        // Status history dates two things. An exit status without an offboarding is dated by the status change that put
+        // them there. An employed or pay-hold status with an offboarding on record may have been set back after it (a
+        // reactivation): the latest change INTO such a status is read so an older last working day does not drop them.
         var statusById = everyone.ToDictionary(e => e.Id, e => e.Status);
         var exitClassIds = everyone
             .Where(e => EmploymentStanding.Classify(e.Status) is EmploymentStatusClass.Exit or EmploymentStatusClass.Inactive)
-            .Select(e => e.Id).ToList();
-        var historyRows = exitClassIds.Count == 0
+            .Select(e => e.Id).ToHashSet();
+        var reactivationCandidateIds = everyone
+            .Where(e => EmploymentStanding.Classify(e.Status) is EmploymentStatusClass.Employed or EmploymentStatusClass.PayHold
+                     && newestLwd.ContainsKey(e.Id))
+            .Select(e => e.Id).ToHashSet();
+        var historyIds = exitClassIds.Concat(reactivationCandidateIds).ToList();
+        var historyRows = historyIds.Count == 0
             ? new List<(int EmployeeId, string NewStatus, DateOnly EffectiveDate, DateTime CreatedAtUtc)>()
             : (await _db.EmployeeStatusHistories.AsNoTracking()
-                .Where(h => h.TenantId == tenantId && exitClassIds.Contains(h.EmployeeId))
+                .Where(h => h.TenantId == tenantId && historyIds.Contains(h.EmployeeId))
                 .Select(h => new { h.EmployeeId, h.NewStatus, h.EffectiveDate, h.CreatedAtUtc })
                 .ToListAsync(ct)).Select(h => (h.EmployeeId, h.NewStatus, h.EffectiveDate, h.CreatedAtUtc)).ToList();
         var historyExit = historyRows
-            .Where(h => string.Equals(h.NewStatus?.Trim(), statusById[h.EmployeeId]?.Trim(), StringComparison.OrdinalIgnoreCase))
+            .Where(h => exitClassIds.Contains(h.EmployeeId)
+                     && string.Equals(h.NewStatus?.Trim(), statusById[h.EmployeeId]?.Trim(), StringComparison.OrdinalIgnoreCase))
             .GroupBy(h => h.EmployeeId)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(h => h.CreatedAtUtc).First().EffectiveDate);
+        var employedSince = historyRows
+            .Where(h => reactivationCandidateIds.Contains(h.EmployeeId)
+                     && EmploymentStanding.Classify(h.NewStatus) is EmploymentStatusClass.Employed or EmploymentStatusClass.PayHold)
+            .GroupBy(h => h.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.Max(h => h.EffectiveDate));
 
         // Who has a salary that would be paid: the left-out list names them (spec: never silently unpaid).
         var withSalary = (await _db.EmployeeSalaryStructures.AsNoTracking()
@@ -3267,10 +3281,14 @@ public sealed class PayrollRunProcessor
             e.Status,
             e.JoiningDate == default ? null : DateOnly.FromDateTime(e.JoiningDate),
             newestLwd.TryGetValue(e.Id, out var l) ? l : null,
-            historyExit.TryGetValue(e.Id, out var h) ? h : null));
+            historyExit.TryGetValue(e.Id, out var h) ? h : null,
+            employedSince.TryGetValue(e.Id, out var since) ? since : null));
 
         // STOP CONDITION — the final wage month is paid exactly ONCE. Only someone with a separation date can have one,
-        // and a final-wage slip from an EARLIER service period (before the current joining date) does not count.
+        // and a final-wage slip from an EARLIER service period (covering days before the current joining date) does not
+        // count. A slip with no PaidToDate (written before it existed) is dated by its run's period: one whose period ended
+        // before the current joining date belongs to the earlier service period too. A slip whose run cannot be read is
+        // counted, so the final wage is never paid twice by guesswork.
         var separatedIds = everyone.Where(e => EmploymentStanding.SeparationDate(facts[e.Id]) is not null).Select(e => e.Id).ToList();
         var finalised = new HashSet<int>();
         if (separatedIds.Count > 0)
@@ -3279,11 +3297,20 @@ public sealed class PayrollRunProcessor
                 .Where(s => s.TenantId == tenantId && s.IsFinalWageMonth && s.Status != "Voided"
                          && separatedIds.Contains(s.EmployeeId)
                          && (excludeRunId == null || s.RunId != excludeRunId))
-                .Select(s => new { s.EmployeeId, s.PaidToDate })
+                .Select(s => new { s.EmployeeId, s.RunId, s.PaidToDate })
                 .ToListAsync(ct);
+            var undatedRunIds = finalSlips.Where(s => s.PaidToDate is null).Select(s => s.RunId).Distinct().ToList();
+            var runPeriodEnd = undatedRunIds.Count == 0 ? new Dictionary<Guid, DateOnly>() : (await Op(_db.PayrollRuns).AsNoTracking()
+                    .Where(r => r.TenantId == tenantId && undatedRunIds.Contains(r.Id))
+                    .Select(r => new { r.Id, r.Year, r.Month })
+                    .ToListAsync(ct))
+                .ToDictionary(r => r.Id, r => new DateOnly(r.Year, r.Month, DateTime.DaysInMonth(r.Year, r.Month)));
             foreach (var slip in finalSlips)
-                if (facts[slip.EmployeeId].JoiningDate is not DateOnly jd || slip.PaidToDate is not DateOnly paidTo || paidTo >= jd)
+            {
+                var coveredTo = slip.PaidToDate ?? (runPeriodEnd.TryGetValue(slip.RunId, out var end) ? end : (DateOnly?)null);
+                if (facts[slip.EmployeeId].JoiningDate is not DateOnly jd || coveredTo is not DateOnly to || to >= jd)
                     finalised.Add(slip.EmployeeId);
+            }
         }
 
         // "On leave" by hand: is there approved leave behind it on any day of the period?
@@ -3306,13 +3333,20 @@ public sealed class PayrollRunProcessor
         {
             if (settlementIds.Contains(e.Id))
             {
-                // POD-C1 — admitted by the disbursement rail; never also as a leaver (two payslips for one person).
+                // POD-C1 — admitted by the disbursement rail; never also as a leaver (two payslips for one person). A deleted
+                // record paid here is still a deleted record paid, and Finance acknowledges it like any other.
                 paid.Add(e);
+                if (e.IsDeleted)
+                    Warn(e, PayPopulationReasons.WarnDeletedButWagesOwed,
+                        "This employee record is deleted but an approved final settlement is owed, so this settlement run pays it.",
+                        newestLwd.TryGetValue(e.Id, out var settledLwd) ? settledLwd : null);
                 continue;
             }
             var f = facts[e.Id];
             var cls = EmploymentStanding.Classify(e.Status);
             var sep = EmploymentStanding.SeparationDate(f);
+            // The status says employed, so leaving them out is never routine: a Warning Finance acknowledges at Approve.
+            var saysEmployed = cls == EmploymentStatusClass.Employed && !e.IsDeleted;
 
             if (cls == EmploymentStatusClass.PreEmployment)
             {
@@ -3341,6 +3375,11 @@ public sealed class PayrollRunProcessor
             if (sep is DateOnly left && left < pStart)
             {
                 if (e.IsDeleted) LeaveOut(e, PayPopulationReasons.DeletedNoWagesOwed, "Deleted, and left before this period: no wages owed.", left);
+                else if (saysEmployed)
+                    LeaveOut(e, PayPopulationReasons.WarnEmployedStatusNotPaid,
+                        $"Status '{e.Status}' says employed, but the last working day {left:yyyy-MM-dd} is before this period and no change of " +
+                        "status back to employed is recorded after it, so nothing was paid. If they were reactivated or re-hired, record the " +
+                        "status change (or the new joining date), then re-process.", left, always: true);
                 else LeaveOut(e, PayPopulationReasons.LeftBeforePeriod, $"Last working day {left:yyyy-MM-dd} is before this period.", left);
                 continue;
             }
@@ -3352,7 +3391,11 @@ public sealed class PayrollRunProcessor
             }
             if (sep is not null && finalised.Contains(e.Id))
             {
-                LeaveOut(e, PayPopulationReasons.FinalWageAlreadyPaid, "Their final wage month has already been paid.", sep);
+                if (saysEmployed)
+                    LeaveOut(e, PayPopulationReasons.WarnEmployedStatusNotPaid,
+                        $"Status '{e.Status}' says employed, but their final wage month has already been paid, so nothing was paid. " +
+                        "If they are still employed, cancel the offboarding or record the reactivation, then re-process.", sep, always: true);
+                else LeaveOut(e, PayPopulationReasons.FinalWageAlreadyPaid, "Their final wage month has already been paid.", sep);
                 continue;
             }
             if (EmploymentStanding.IsOnPayHold(f))
