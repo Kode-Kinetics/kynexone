@@ -527,6 +527,63 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertNotDeductedNextMonthAsync(w, advId);
     }
 
+    [Fact]
+    public async Task FinalSettlement_RecoversThePaidOutAdvance_AndLeavesAnApprovedAdvanceAwaitingPayoutAlone()
+    {
+        // A leaver holds two advances: one approved AND paid out (Active, 3,000 owed), and one approved but not yet paid out
+        // (Approved, nothing owed, no journal). The settlement run recovers the paid one in full; the unpaid one is not money
+        // the employee owes, so it is neither withheld, nor moved to 1420, nor allowed to block the settlement. The advance
+        // audit reads both as reconciled: an unpaid advance disbursed nothing.
+        var w = await SeedAsync(costing: false, maxPerYear: 2, withColleague: true);
+        var paid = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, paid, 3_000m, 3, w.Start);
+        var unpaid = await RequestAsSelfAsync(w, 1_000m, 1, w.Start);
+        await using (var db = _fx.CreateDb())
+            Ok<SalaryAdvanceDto>(await Advances(db, w, w.FinanceUser, "Finance", "loans.write")
+                .Approve(unpaid, new AdvanceApproveRequest(1_000m, 1, w.Start), Ct), "approve, no payout");
+        await AssertAdvanceAsync(unpaid, "Approved", outstanding: 0m, repaid: 0m, approved: 1_000m);
+        var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
+        (await SettlementAsync(s.SettlementId)).PlannedAdvanceRecovery.Should().Be(3_000m, "only the paid-out advance is owed");
+
+        await ProcessAsync(w, s.RunId);
+        await AssertSlipAsync(w, s.RunId, advanceDeduction: 3_000m, net: 9_000m);
+        await AssertAdvanceAsync(paid, "Closed", outstanding: 0m, repaid: 3_000m);
+        await AssertAdvanceAsync(unpaid, "Approved", outstanding: 0m, repaid: 0m, approved: 1_000m);
+        (await AdvanceInstallmentsAsync(unpaid)).Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null);
+        await ApproveAsync(w, s.RunId);
+        await LockAsync(w, s.RunId);
+        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[]
+        {
+            $"DR|{Settle2320}|12000.00", $"CR|{Adv1410}|3000.00", $"CR|{Net2100}|9000.00",
+        });
+
+        await PayBatchAsync(w, s.RunId);
+        var settlement = await SettlementAsync(s.SettlementId);
+        settlement.Status.Should().Be(FinalSettlementStatuses.Paid);
+        settlement.ResidualDebtReclassed.Should().Be(0m);
+        settlement.ResidualDebtUnbooked.Should().Be(0m);
+        await AssertAdvanceAsync(unpaid, "Approved", outstanding: 0m, repaid: 0m, approved: 1_000m);
+        (await AdvanceDisbursementsAsync(unpaid)).Should().Be(0, "nothing was ever paid out on the unpaid advance");
+        var ledger = await LedgerAsync(w);
+        ledger.Should().NotContain(l => l.EventType == GlEventTypes.SettlementResidualReclass);
+        Balance(ledger, Emp1420).Should().Be(0m);
+        Debits(ledger).Should().Be(Credits(ledger));
+        await AssertSubLedgerEqualsGlAsync(w, 0m);
+
+        await using (var db = _fx.CreateDb())
+        {
+            var report = JsonSerializer.SerializeToElement(Ok<object>(
+                await Advances(db, w, w.FinanceUser, "Finance", "loans.read").AuditReport(Ct), "advance audit"));
+            report.GetProperty("ApprovedAwaitingPayout").GetInt32().Should().Be(1);
+            report.GetProperty("TotalDisbursed").GetDecimal().Should().Be(3_000m, "only the paid-out advance disbursed cash");
+            var rows = report.GetProperty("Reconciliation").EnumerateArray().ToList();
+            rows.Should().HaveCount(2);
+            rows.Should().OnlyContain(r => r.GetProperty("IsReconciled").GetBoolean() && r.GetProperty("BalanceCheck").GetDecimal() == 0m
+                && r.GetProperty("MovedToEmployeeReceivable").GetDecimal() == 0m);
+            report.GetProperty("ReceivableTieOut").EnumerateArray().Should().OnlyContain(r => !r.GetProperty("Flagged").GetBoolean());
+        }
+    }
+
     [Fact(Skip = "OPEN (needs a decision): the only payslip of this settlement run is zero, so its payment batch carries no money and " +
                  "SettlePaymentBatch refuses it as nothing_to_settle; the leaver's settlement then stays Disbursing and the 2,500 leftover " +
                  "never reaches 1420. A zero-net leaver in a batch that pays others is now completed when that batch is settled " +
