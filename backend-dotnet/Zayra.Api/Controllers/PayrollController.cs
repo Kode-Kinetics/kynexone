@@ -4703,9 +4703,10 @@ public partial class PayrollController : ControllerBase
             l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
             && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
         // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
-        // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it.
+        // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
+        // is still dispositioned here, as payroll still collects it (PayrollRunProcessor, collectableAdvance).
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
-            a.TenantId == tenantId && a.CompanyId == run.CompanyId && a.Status == "Active" && a.EmployeeIntId != null
+            a.TenantId == tenantId && (a.CompanyId == run.CompanyId || a.CompanyId == null) && a.Status == "Active" && a.EmployeeIntId != null
             && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0;
         var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
         var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);

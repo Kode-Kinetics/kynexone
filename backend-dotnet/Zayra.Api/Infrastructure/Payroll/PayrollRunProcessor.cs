@@ -1038,9 +1038,18 @@ public sealed class PayrollRunProcessor
         // recovered from the final pay whatever its repayment start date: the settlement planned exactly that
         // (PlannedAdvanceRecovery counts every open advance), and skipping one not yet due paid the full settlement out and moved
         // the advance to 1420, to be chased from an ex-employee. Everyone else is collected from the advance's start date.
+        //
+        // Only advances owned by this run's company, exactly as for loans (collectableLoan): an advance is the 1410 receivable of
+        // the legal entity that paid it, and this run's accrual relieves this company's 1410. An employee who moved to another
+        // entity is therefore NOT charged in the new entity's payroll for the old entity's advance; it is collected only in the
+        // owning entity's runs, which no longer carry the employee, so (as for a loan) the old entity must settle it at the
+        // transfer. Collecting it here instead would credit a 1410 this company never debited. A legacy advance with no company
+        // (written before company scope was required, not yet backfilled) is still collected, as before: the ledger treats the
+        // unattributed 1410 pool as part of every company's view (GlControlAccounts), and dropping it would silently stop
+        // collecting a debt.
         var settlingEmployeeIds = settlementsByEmp.Keys.ToList();
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
-            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+            a.TenantId == tenantId && (a.CompanyId == loanCompanyId || a.CompanyId == null) && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
                 && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(a.EmployeeIntId.Value));
         var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
         var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
