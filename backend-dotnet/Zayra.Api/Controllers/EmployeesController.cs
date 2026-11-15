@@ -241,6 +241,83 @@ public class EmployeesController : ControllerBase
         return Ok(new PagedResult<ExEmployeeListItemDto>(items, total, page, pageSize));
     }
 
+    /// <summary>
+    /// READ-ONLY report of everyone already recorded as Retired or Deceased (matched without regard to case): whether each still has an open
+    /// login, a WPS footprint (a payroll profile that is still eligible for the bank file) or a separation record. Retired and Deceased now
+    /// end employment like Terminated (login closed, WPS cleared, separation recorded), but people set to those statuses BEFORE that change
+    /// were never put through it. This lists them so HR can decide; it changes nothing and starts nothing. HR Manager and Admin (the
+    /// employees.approve permission, which HR Officer does not hold), inside the caller's data and company scope.
+    /// </summary>
+    [HttpGet("separated-status-report")]
+    [HasPermission("employees.approve")]
+    public async Task<IActionResult> SeparatedStatusReport([FromQuery] int page = 1, [FromQuery] int pageSize = 50, CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var tenantId = RequireTenant();
+        var entityScope = this.GetEntityScope();
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+
+        var query = _db.Employees.AsNoTracking()
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && SeparatedStatusesLower.Contains(e.Status.ToLower()));
+        if (!scope.IsUnrestricted)
+            query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
+        if (!entityScope.IsGroupLevel)
+        {
+            var accessibleIds = entityScope.AccessibleCompanyIds;
+            query = query.Where(e => e.CompanyId.HasValue && accessibleIds.Contains(e.CompanyId.Value));
+        }
+
+        const int cap = 5000;
+        var people = await query.OrderBy(e => e.EmployeeCode).Take(cap + 1)
+            .Select(e => new { e.Id, e.EmployeeCode, e.FullName, e.Status, e.CompanyId }).ToListAsync(cancellationToken);
+        var capped = people.Count > cap;
+        if (capped) people = people.Take(cap).ToList();
+        var ids = people.Select(p => p.Id).ToList();
+
+        var access = ids.Count == 0
+            ? new Dictionary<int, EmployeeAccessStates.Facts>()
+            : await EmployeeAccessStates.LoadAsync(_db, tenantId, ids, cancellationToken);
+        var wpsIds = (await _db.EmployeePayrollProfiles.AsNoTracking()
+            .Where(p => p.TenantId == tenantId && ids.Contains(p.EmployeeId) && !p.IsDeleted && p.WpsEligible)
+            .Select(p => p.EmployeeId).Distinct().ToListAsync(cancellationToken)).ToHashSet();
+        var separations = (await _db.EmployeeOffboardings.AsNoTracking()
+                .Where(o => o.TenantId == tenantId && ids.Contains(o.EmployeeId) && o.Status != "Cancelled")
+                .Select(o => new { o.EmployeeId, o.Status, o.SeparationType, o.LastWorkingDay, o.CreatedAtUtc }).ToListAsync(cancellationToken))
+            .GroupBy(o => o.EmployeeId).ToDictionary(g => g.Key, g => g.OrderByDescending(o => o.CreatedAtUtc).First());
+
+        var rows = people.Select(p =>
+        {
+            var hasLogin = access.TryGetValue(p.Id, out var facts) && EmployeeAccessStates.LoginEnabled(facts);
+            var hasWps = wpsIds.Contains(p.Id);
+            var hasSeparation = separations.TryGetValue(p.Id, out var sep);
+            return new
+            {
+                employeeId = p.Id, employeeCode = p.EmployeeCode, fullName = p.FullName, status = p.Status, companyId = p.CompanyId,
+                hasOpenLogin = hasLogin, hasWpsFootprint = hasWps, hasSeparationRecord = hasSeparation,
+                separationStatus = hasSeparation ? sep!.Status : null, separationType = hasSeparation ? sep!.SeparationType : null,
+                lastWorkingDay = hasSeparation ? (DateOnly?)sep!.LastWorkingDay : null,
+                needsReview = hasLogin || hasWps || !hasSeparation,
+            };
+        }).ToList();
+
+        return Ok(new
+        {
+            items = rows.Skip(Paging.Skip(page, pageSize)).Take(pageSize).ToList(),
+            total = rows.Count, page, pageSize, capped,
+            summary = new
+            {
+                total = rows.Count,
+                withOpenLogin = rows.Count(r => r.hasOpenLogin),
+                withWpsFootprint = rows.Count(r => r.hasWpsFootprint),
+                withoutSeparationRecord = rows.Count(r => !r.hasSeparationRecord),
+                needingReview = rows.Count(r => r.needsReview),
+            },
+        });
+    }
+
+    private static readonly string[] SeparatedStatusesLower = ["retired", "deceased"];
+
     // ── Configurable export / import / shareable template ────────────────────────
     // The CSV column set is DERIVED from EmployeeFieldRegistry (the single source of truth §3.2) — the
     // template, the export header, and the importer header-validation all read this ONE ordered list, so
