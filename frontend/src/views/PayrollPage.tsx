@@ -28,6 +28,7 @@ import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
 import { formatCalendarDate } from '../lib/calendarDate';
 import { dateLocale } from '../lib/format';
 import { employeeLabel, employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { EmployeeLabelText } from '../components/payroll/EmployeeLabelText';
 import { useRunEmployeeLabels } from '../hooks/useRunEmployeeLabels';
 import { RunSelectOptions } from '../components/payroll/RunSelectOptions';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
@@ -1997,7 +1998,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                 <div className="flex items-center gap-2">
                   <StatusBadge status={r.severity} />
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
-                  {r.employeeId && <span className="text-xs text-slate-400"><bdi>{employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))}</bdi></span>}
+                  {r.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
               </div>
@@ -3006,8 +3007,8 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
                         {r.employeeName
-                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
-                          : runNames[r.employeeId] ? <bdi>{runNames[r.employeeId]}</bdi> : t('Emp #{id}', { id: r.employeeId })}
+                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 whitespace-nowrap text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                          : runNames[r.employeeId] ? <EmployeeLabelText label={runNames[r.employeeId]} /> : t('Emp #{id}', { id: r.employeeId })}
                       </td>
                       <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
@@ -3641,7 +3642,7 @@ function AIValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: strin
                       <div className="flex items-center gap-2">
                         <StatusBadge status={w.severity} />
                         <span className="font-mono text-xs text-slate-500">{w.code}</span>
-                        {w.employeeId && <span className="text-xs text-slate-400"><bdi>{employeeLabel(w.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))}</bdi></span>}
+                        {w.employeeId && <span className="text-xs text-slate-400"><EmployeeLabelText label={employeeLabel(w.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))} /></span>}
                       </div>
                       <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{w.message}</p>
                     </div>

@@ -31,6 +31,7 @@ import { bankAcceptanceLabel, bankFormatLabel } from '../../lib/payrollBatchDisp
 import { DatePicker } from '../ui/DateParts';
 import { useAuth } from '../../contexts/AuthContext';
 import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
+import { EmployeeLabelText } from './EmployeeLabelText';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
 import type { BankFlowProgress } from '../../lib/bankFileSteps';
 import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
@@ -1015,7 +1016,7 @@ function IssueList({ issues, c, labels, onFocusField }: { issues: SaudiBankExpor
       {issues.map((i, idx) => (
         <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="rounded-md bg-white/60 px-2 py-1.5 dark:bg-black/10">
           <span className="font-mono text-[11px] opacity-80">{i.code}</span>
-          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><bdi>{labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))}</bdi></span>}
+          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><EmployeeLabelText label={labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))} /></span>}
           {i.field && <span className="ms-2 opacity-80">{c.field}: <span className="font-mono" dir="ltr">{i.field}</span></span>}
           <span className="block">{i.message}</span>
           {i.field && FOCUSABLE_FIELDS.has(i.field) && (

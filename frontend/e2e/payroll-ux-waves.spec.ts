@@ -435,6 +435,15 @@ for (const locale of LOCALES) {
       await expect(row).not.toContainText(/Emp #|#200/);
     });
 
+    test('an employee code stays on one line in the records table; the name is what wraps', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      const code = page.getByRole('row', { name: /REF-1\b/ }).locator('bdi', { hasText: 'EVT2-0001' });
+      await expect(code).toBeVisible({ timeout: 90_000 });
+      const box = await code.boundingBox();
+      expect(box!.height, 'a code that broke at its hyphen would be two lines tall').toBeLessThan(20);
+      await expect(code.locator('xpath=..')).toHaveClass(/whitespace-nowrap/);
+    });
+
     test('validation findings name the employee', async ({ page }) => {
       const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 1, includedCount: 1, excludedCount: 0, notEligibleCount: 0,
         included: [{ employeeId: 226, code: 'EVT2-0226', name: 'Layla Al-Harbi' }], excluded: [], notEligible: [] };
