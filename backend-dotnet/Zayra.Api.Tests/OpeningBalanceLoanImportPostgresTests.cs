@@ -77,6 +77,51 @@ public class OpeningBalanceLoanImportPostgresTests(PostgresFixture fixture)
         Assert.Equal((250m, 250m), await TieOutAsync(b));
     }
 
+    /// <summary>Once payroll has collected from a carried-in loan, a re-import that would change it is refused, in both languages,
+    /// and the loan and its ledger are left alone: the package states the world at cutover, payroll has moved on since.</summary>
+    [Fact]
+    public async Task ACarriedInLoanPayrollHasCollectedFrom_IsNotRestated_AndTheRefusalIsBilingual()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        await ProcessThisMonthAsync(b);
+        var loan = await LoanAsync(b, number);
+        Assert.Equal(200m, loan.OutstandingBalance);
+
+        var errors = await CommitAsync(b, LoanCsv(b, number, paid: 1, outstanding: 500m, cutover), expectErrors: true);
+
+        var error = Assert.Single(errors);
+        Assert.Contains("loan_collected_by_payroll", error, StringComparison.Ordinal);
+        Assert.Contains("adjust it from the loan screen", error, StringComparison.Ordinal);
+        Assert.Contains("الرواتب", error, StringComparison.Ordinal);
+        loan = await LoanAsync(b, number);
+        Assert.Equal((200m, 400m, "Active"), (loan.OutstandingBalance, loan.TotalRepaid, loan.Status));
+        Assert.Single(await OpeningJournalAsync(b, loan.Id));
+    }
+
+    /// <summary>Re-running the same file after payroll has collected is a no-op: nothing is restated, nothing posts, and the
+    /// instalment payroll took is not given back.</summary>
+    [Fact]
+    public async Task ReRunningTheSameFileAfterPayroll_ChangesNothing()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        await ProcessThisMonthAsync(b);
+
+        await CommitAsync(b, LoanCsv(b, number, paid: 3, outstanding: 300m, cutover));
+
+        var loan = await LoanAsync(b, number);
+        Assert.Equal((200m, 400m), (loan.OutstandingBalance, loan.TotalRepaid));
+        Assert.Single(await OpeningJournalAsync(b, loan.Id));
+    }
+
+    private async Task ProcessThisMonthAsync(Kit.Borrower b)
+    {
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        await using var db = fixture.CreateDb();
+        Assert.Equal(200, (await Kit.ProcessAsync(db, b, runId, null, CancellationToken.None)).StatusCode);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
     private async Task<(Kit.Borrower B, DateOnly Cutover, string Number)> SeedAsync()
@@ -85,7 +130,7 @@ public class OpeningBalanceLoanImportPostgresTests(PostgresFixture fixture)
         return (b, new DateOnly(b.Today.Year, b.Today.Month, 1), $"LEG-LN-{Guid.NewGuid():N}"[..20]);
     }
 
-    private async Task CommitAsync(Kit.Borrower b, string loansCsv, bool withCutover = false)
+    private async Task<IReadOnlyList<string>> CommitAsync(Kit.Borrower b, string loansCsv, bool withCutover = false, bool expectErrors = false)
     {
         var sections = new Dictionary<string, string> { ["loans"] = loansCsv };
         if (withCutover)
@@ -98,7 +143,8 @@ public class OpeningBalanceLoanImportPostgresTests(PostgresFixture fixture)
         await using var db = fixture.CreateDb();
         var result = await Migration(db, b.Tenant).Commit(new MigrationPackageRequest($"pkg-{Guid.NewGuid():N}", sections, false), default);
         var dto = Assert.IsType<MigrationReconciliationDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
-        Assert.True(dto.Errors.Count == 0, string.Join(" | ", dto.Errors));
+        if (!expectErrors) Assert.True(dto.Errors.Count == 0, string.Join(" | ", dto.Errors));
+        return dto.Errors.ToList();
     }
 
     private async Task<EmployeeLoan> LoanAsync(Kit.Borrower b, string number)

@@ -660,6 +660,21 @@ public sealed partial class MigrationImportController
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.LoanNumber == plan.LoanNumber && !x.IsDeleted, ct);
         var created = loan is null;
+        // Once anything has been recovered from the loan (a payroll instalment, or a repayment recorded against it), the package no
+        // longer describes it: it states the world at cutover and the loan has moved on. Restating it then would give the recovered
+        // money back to the balance (and leave the ledger behind). The same figures again are a no-op; different figures are refused.
+        if (loan is not null && await RecoveredSinceImportAsync(loan, ct))
+        {
+            var carried = await _db.OpeningBalanceOrigins.AsNoTracking()
+                .Where(o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Loan && o.EntityId == loan.Id)
+                .Select(o => (decimal?)o.CarriedAmount).FirstOrDefaultAsync(ct);
+            var sameFigures = carried == plan.OutstandingBalance && loan.ApprovedAmount == plan.OriginalAmount
+                && loan.InstallmentAmount == plan.InstallmentAmount && loan.ApprovedInstallments == plan.TotalInstallments;
+            if (sameFigures) return "skipped";
+            throw new InvalidOperationException(
+                $"[loan_collected_by_payroll] Loan {plan.LoanNumber}: payroll has already collected from this loan, so its opening balance is not restated; adjust it from the loan screen. " +
+                $"/ القرض {plan.LoanNumber}: سبق أن حصّلت الرواتب من هذا القرض، فلا يُعاد بيان رصيده الافتتاحي؛ عدّله من شاشة القرض.");
+        }
         loan ??= new EmployeeLoan
         {
             TenantId = tenantId,
@@ -699,6 +714,22 @@ public sealed partial class MigrationImportController
         await StampOriginAsync(OpeningBalanceEntityTypes.Loan, loan.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
+    }
+
+    /// <summary>Whether anything has been recovered from <paramref name="loan"/> since it was carried in: an instalment a live
+    /// (non-voided) payroll run took, an instalment stamped by a payroll run, or a repayment recorded against it and not reversed.</summary>
+    private async Task<bool> RecoveredSinceImportAsync(EmployeeLoan loan, CancellationToken ct)
+    {
+        var tenantId = loan.TenantId;
+        if (await (from c in _db.PayrollRunConsumptions.AsNoTracking()
+                   join r in _db.PayrollRuns.AsNoTracking() on c.PayrollRunId equals r.Id
+                   where c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Loan && c.ArtifactId == loan.Id
+                         && r.TenantId == tenantId && r.Status != "Voided"
+                   select c.Id).AnyAsync(ct))
+            return true;
+        if (await _db.LoanInstallments.AsNoTracking().AnyAsync(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.PayrollRunId != null, ct))
+            return true;
+        return await _db.LoanRepayments.AsNoTracking().AnyAsync(x => x.TenantId == tenantId && x.LoanId == loan.Id && !x.IsReversed, ct);
     }
 
     private async Task<LoanType> ResolveLoanTypeAsync(LoanPlan plan, Guid tenantId, CancellationToken ct)
@@ -772,9 +803,9 @@ public sealed partial class MigrationImportController
                 };
                 _db.LoanInstallments.Add(inst);
             }
-            // An instalment this product has ALREADY collected is never rewritten by a re-import. The
-            // package states the world as at cutover; payroll has moved on since, and re-running the
-            // same file must not un-pay a month someone was actually deducted for.
+            // An instalment this product has ALREADY collected is never rewritten. (A loan payroll has collected from is no
+            // longer restated at all: UpsertLoanOpeningBalanceAsync skips the same figures and refuses different ones. This
+            // stays as the belt to that brace.)
             else if (inst.Status == "Paid" && inst.PayrollRunId is not null)
             {
                 continue;
