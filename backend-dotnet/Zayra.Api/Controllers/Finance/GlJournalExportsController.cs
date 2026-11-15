@@ -1100,6 +1100,18 @@ public class GlJournalExportsController : ControllerBase
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
         warnings = build.Warnings ?? Array.Empty<string>(),
+        // C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages (the
+        // English sentence is also in warnings).
+        liveExportOverlaps = (build.LiveOverlaps ?? Array.Empty<LiveExportOverlap>()).Select(o => new
+        {
+            exportId = o.Holder.ExportId,
+            fileName = o.Holder.FileName,
+            format = o.Holder.FormatKey,
+            rows = o.Holder.Rows,
+            relation = o.Relation,
+            message = o.Message,
+            messageAr = o.MessageAr,
+        }).ToList(),
         tieOut = new
         {
             ok = build.TieOut.Ok,
