@@ -527,6 +527,34 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertNotDeductedNextMonthAsync(w, advId);
     }
 
+    /// <summary>
+    /// A loan, like an advance, is recovered whole from a leaver's final pay whatever its repayment start date: the settlement plan
+    /// counts every open loan, so the run withholds it too and the two agree. (It used to skip a loan not yet due, so the plan
+    /// promised a recovery the run never made.)
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_LoanNotYetDue_IsRecoveredFromTheFinalPay_LikeTheSettlementPlannedIt()
+    {
+        var w = await SeedAsync(costing: false);
+        var loanId = await SeedPayrollLoanAsync(w, 3_000m, firstDue: w.Month1.AddMonths(1));
+        var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
+        await using (var db = _fx.CreateDb())
+        {
+            var settlement = await db.EmployeeFinalSettlements.SingleAsync(x => x.Id == s.SettlementId);
+            settlement.PlannedLoanRecovery = 3_000m;
+            await db.SaveChangesAsync();
+        }
+
+        await ProcessAsync(w, s.RunId);
+
+        await using var verify = _fx.CreateDb();
+        var taken = await verify.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == s.RunId && d.ComponentCode == "LOAN_EMI").Select(d => d.Amount).ToListAsync();
+        taken.Sum().Should().Be(3_000m, "the whole loan the settlement planned is withheld from the final pay");
+        var loan = await verify.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId);
+        (loan.OutstandingBalance, loan.Status).Should().Be((0m, "Closed"));
+    }
+
     [Fact]
     public async Task FinalSettlement_RecoversThePaidOutAdvance_AndLeavesAnApprovedAdvanceAwaitingPayoutAlone()
     {
@@ -624,6 +652,24 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
 
         await CompleteWithoutPaymentAsync(w, s.SettlementId);
         Balance(await LedgerAsync(w), Emp1420).Should().Be(2_500m, "completing it again posts nothing");
+    }
+
+    /// <summary>An Active loan collected by payroll, its first instalment due on <paramref name="firstDue"/>.</summary>
+    private async Task<Guid> SeedPayrollLoanAsync(World w, decimal amount, DateOnly firstDue)
+    {
+        await using var db = _fx.CreateDb();
+        var employee = await db.Employees.AsNoTracking().SingleAsync(e => e.Id == w.EmployeeId);
+        var type = new LoanType { TenantId = w.TenantId, Code = $"LT-{Guid.NewGuid():N}"[..10], NameEn = "Personal", IsActive = true, MaxAmount = 50_000m, MaxInstallments = 12 };
+        var loan = new EmployeeLoan
+        {
+            TenantId = w.TenantId, CompanyId = w.CompanyId, EmployeeIntId = employee.Id, EmployeeId = employee.PublicId, EmployeeName = employee.FullName,
+            LoanNumber = $"LN-{Guid.NewGuid():N}"[..14], LoanTypeId = type.Id, LoanTypeName = type.NameEn, RepaymentMethod = "PayrollDeduction",
+            Currency = "SAR", RequestedAmount = amount, ApprovedAmount = amount, RequestedInstallments = 3, ApprovedInstallments = 3,
+            InstallmentAmount = amount / 3, RepaymentStartDate = firstDue, OutstandingBalance = amount, Status = "Active",
+        };
+        db.AddRange(type, loan);
+        await db.SaveChangesAsync();
+        return loan.Id;
     }
 
     /// <summary>
