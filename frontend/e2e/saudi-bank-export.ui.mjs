@@ -69,11 +69,14 @@ try {
    const heading=page.getByRole('heading',{name:'Payroll payment instruction file (bank format) — ANB Connect CSV',exact:true});await heading.waitFor();steps.push('panel rendered');
    assert.equal(await page.getByRole('button',{name:'Generate files',exact:true}).isDisabled(),true);
    await page.getByLabel('Batch number',{exact:true}).fill('202609123');
-   await page.getByLabel('Credit value date',{exact:true}).fill('2026-09-30');
+   const creditDate=page.getByRole('group',{name:'Credit value date',exact:true});
+   await creditDate.getByLabel('Year',{exact:true}).selectOption('2026');await creditDate.getByLabel('Month',{exact:true}).selectOption('9');await creditDate.getByLabel('Day',{exact:true}).selectOption('30');
    await page.getByRole('button',{name:'Validate',exact:true}).click();
    await page.getByText('Validation passed. No blockers found.',{exact:true}).waitFor();steps.push('validation renders');
    await page.getByRole('button',{name:'Generate files',exact:true}).click();
    await page.getByText('header.csv',{exact:true}).waitFor();await page.getByText('body.csv',{exact:true}).waitFor();steps.push('artifact metadata renders');
+   const exportCard=page.locator('div').filter({has:page.getByText('Generated export (immutable)',{exact:true})}).last();
+   assert.equal(await exportCard.getByText('anb-connect-csv-v1').count(),0);assert.equal(await exportCard.getByText('ANB Connect payroll payment — header.csv + body.csv').count(),1);steps.push('export card shows the format name, not its id');
    const downloaded=page.waitForEvent('download');await page.getByRole('button',{name:'Download zip',exact:true}).click();
    assert.equal((await downloaded).suggestedFilename(),'synthetic-ui-test.zip');steps.push('download received');
    await page.getByLabel('Employee (from this batch)',{exact:true}).selectOption('1');

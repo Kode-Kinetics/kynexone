@@ -27,7 +27,8 @@ import {
 } from '../../api/saudiBankExports';
 import { useLocale } from '../../contexts/LocaleContext';
 import { enumLabel } from '../../i18n/enumLabel';
-import { bankAcceptanceLabel } from '../../lib/payrollBatchDisplay';
+import { bankAcceptanceLabel, bankFormatLabel } from '../../lib/payrollBatchDisplay';
+import { DatePicker } from '../ui/DateParts';
 import { useAuth } from '../../contexts/AuthContext';
 import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
@@ -860,10 +861,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: {
                 aria-describedby={describedBy('batchReference', bErr('batchReference'), true)} />
             </FieldShell>
             <FieldShell id={fid('paymentDate')} label={c.paymentDate} help={c.paymentDateHelp} error={bErr('paymentDate')}>
-              <input id={fid('paymentDate')} type="date" className={`${inp} ${bErr('paymentDate') ? inpErr : ''}`} value={batchInput.paymentDate}
-                onChange={(e) => setBatchField('paymentDate', e.target.value)} dir="ltr"
-                aria-invalid={bErr('paymentDate') ? true : undefined}
-                aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} />
+              <span id={fid('paymentDate')} tabIndex={-1} aria-describedby={describedBy('paymentDate', bErr('paymentDate'), true)} className="block outline-none">
+                <DatePicker aria-label={c.paymentDate} value={batchInput.paymentDate} onChange={(v) => setBatchField('paymentDate', v)} />
+              </span>
             </FieldShell>
           </div>
 
@@ -949,11 +949,11 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: {
           )}
 
           {artifact && (
-            <div className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 dark:border-teal-500/20 dark:bg-teal-500/5">
+            <div id="bank-wps-generated-export" tabIndex={-1} className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 outline-none dark:border-teal-500/20 dark:bg-teal-500/5">
               <p className="text-sm font-semibold text-slate-800 dark:text-white">{c.artifactTitle}</p>
               <dl className="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
                 <div><dt className="text-slate-400">{c.artifactId}</dt><dd className="break-all font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.id}</dd></div>
-                <div><dt className="text-slate-400">{c.format}</dt><dd className="font-mono text-slate-700 dark:text-slate-300">{artifact.formatId}</dd></div>
+                <div><dt className="text-slate-400">{c.format}</dt><dd className="text-slate-700 dark:text-slate-300">{bankFormatLabel(t, formats, artifact.formatId, cc.suffix)}</dd></div>
                 <div><dt className="text-slate-400">{c.batchReference}</dt><dd className="font-mono text-slate-700 dark:text-slate-300" dir="ltr">{artifact.batchReference}</dd></div>
                 <div><dt className="text-slate-400">{c.paymentDate}</dt><dd className="text-slate-700 dark:text-slate-300" dir="ltr">{(artifact.paymentDate ?? '').slice(0, 10)}</dd></div>
                 <div><dt className="text-slate-400">{c.employees}</dt><dd className="tabular-nums text-slate-700 dark:text-slate-300">{artifact.employeeCount}</dd></div>
