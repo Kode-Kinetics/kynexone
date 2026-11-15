@@ -561,7 +561,7 @@ public sealed partial class MigrationImportController : ControllerBase
             {
                 RequireOpeningJournalRole();
                 var loanPlan = await PlanLoanAsync(row, tenantId, cutover, ct);
-                RefuseOwnRecord(loanPlan.Employee, loanPlan.LoanNumber);
+                await RefuseOwnRecordAsync(loanPlan.Employee, loanPlan.LoanNumber, tenantId, ct);
                 var loan = await _db.EmployeeLoans.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct);
                 if (loan is not null && await GuardLoanRestatementAsync(loan, loanPlan, tenantId, ct)) return "skipped";
                 await PrepareLoanJournalAsync(loanPlan, loan, tenantId, ct);
@@ -572,7 +572,7 @@ public sealed partial class MigrationImportController : ControllerBase
             {
                 RequireOpeningJournalRole();
                 var advancePlan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
-                RefuseOwnRecord(advancePlan.Employee, advancePlan.AdvanceNumber);
+                await RefuseOwnRecordAsync(advancePlan.Employee, advancePlan.AdvanceNumber, tenantId, ct);
                 var advance = await _db.SalaryAdvances.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct);
                 if (advance is not null) await GuardAdvanceRestatementAsync(advance, advancePlan, tenantId, ct);
                 await PrepareAdvanceJournalAsync(advancePlan, advance, tenantId, ct);

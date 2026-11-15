@@ -87,6 +87,25 @@ internal static class OpeningBalanceImportKit
         await db.Employees.Where(e => e.Id == b.EmployeeId).ExecuteUpdateAsync(x => x.SetProperty(e => e.UserAccountId, userId));
     }
 
+    /// <summary>Links the borrower to a login ONLY through an employee_user_accounts row (Employee.UserAccountId stays empty).</summary>
+    internal static async Task LinkBorrowerByAccountRowOnlyAsync(PostgresFixture fx, Kit.Borrower b, Guid userId)
+    {
+        await using var db = fx.CreateDb();
+        var tag = userId.ToString("N")[..12];
+        db.Users.Add(new Zayra.Api.Domain.Entities.User
+        {
+            Id = userId, TenantId = b.Tenant, Email = $"link-{tag}@kynexone.local", NormalizedEmail = $"LINK-{tag}@KYNEXONE.LOCAL",
+            FullName = "Linked Importer", PasswordHash = "x", IsActive = true, Status = "Active", AccessMode = AccessModes.FullPortal,
+        });
+        db.EmployeeUserAccounts.Add(new EmployeeUserAccount
+        {
+            TenantId = b.Tenant, EmployeeId = b.EmployeeId, UserId = userId,
+            AccessMode = AccessModes.FullPortal, Status = "Active", RequiresPasswordSetup = false,
+        });
+        await db.SaveChangesAsync();
+        await db.Employees.Where(e => e.Id == b.EmployeeId).ExecuteUpdateAsync(x => x.SetProperty(e => e.UserAccountId, (Guid?)null));
+    }
+
     internal static async Task<EmployeeLoan> LoanAsync(PostgresFixture fx, Kit.Borrower b, string number)
     {
         await using var db = fx.CreateDb();

@@ -14,15 +14,18 @@ namespace Zayra.Api.Tests;
 public class OpeningBalanceImportGuardsPostgresTests(PostgresFixture fixture)
 {
     [Theory]
-    [InlineData("Admin")]
-    [InlineData("Finance")]
-    public async Task NobodyImportsADebtOfTheirOwnEmployeeRecord(string role)
+    [InlineData("Admin", false)]
+    [InlineData("Finance", false)]
+    [InlineData("Admin", true)]
+    [InlineData("Finance", true)]
+    public async Task NobodyImportsADebtOfTheirOwnEmployeeRecord(string role, bool linkedOnlyByAccountRow)
     {
         var (b, cutover, number) = await K.SeedAsync(fixture, "OWN");
         await K.CommitAsync(fixture, b, "companyCutover", await K.CutoverCsvAsync(fixture, b));
         await K.EnsureLoanTypeAsync(fixture, b);
         var me = Guid.NewGuid();
-        await K.LinkBorrowerToUserAsync(fixture, b, me);
+        if (linkedOnlyByAccountRow) await K.LinkBorrowerByAccountRowOnlyAsync(fixture, b, me);
+        else await K.LinkBorrowerToUserAsync(fixture, b, me);
 
         foreach (var dryRun in new[] { true, false })
         {

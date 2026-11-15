@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
+using Zayra.Api.Infrastructure.Common;
 using Zayra.Api.Models;
 
 namespace Zayra.Api.Controllers;
@@ -657,7 +658,7 @@ public sealed partial class MigrationImportController
     {
         RequireOpeningJournalRole();
         var plan = await PlanLoanAsync(row, tenantId, cutover, ct);
-        RefuseOwnRecord(plan.Employee, plan.LoanNumber);
+        await RefuseOwnRecordAsync(plan.Employee, plan.LoanNumber, tenantId, ct);
 
         var loan = await _db.EmployeeLoans.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.LoanNumber == plan.LoanNumber && !x.IsDeleted, ct);
@@ -757,9 +758,16 @@ public sealed partial class MigrationImportController
     }
 
     /// <summary>The subject never decides: nobody imports an opening balance onto their own employee record, whatever their role.</summary>
-    private void RefuseOwnRecord(Employee employee, string reference)
+    /// The caller is "the same person" through any of the three links the rest of the product checks (BenefitsController):
+    /// the token's employee_id, Employee.UserAccountId, or a live employee_user_accounts row.
+    private async Task RefuseOwnRecordAsync(Employee employee, string reference, Guid tenantId, CancellationToken ct)
     {
-        if (UserId() is Guid me && employee.UserAccountId == me)
+        var me = UserId();
+        var own = (me is Guid id && (employee.UserAccountId == id
+                      || await _db.EmployeeUserAccounts.AsNoTracking().AnyAsync(x =>
+                             x.TenantId == tenantId && x.EmployeeId == employee.Id && x.UserId == id && !x.IsDeleted, ct)))
+                  || await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct) == employee.Id;
+        if (own)
             throw new InvalidOperationException(
                 $"[opening_balance_own_record] {reference} is a debt of your own employee record, so you cannot import it. Another Finance user or an Admin must. " +
                 $"/ {reference} دين على سجلك الوظيفي، فلا يمكنك استيراده. يجب أن يستورده مستخدم آخر من المالية أو مسؤول النظام.");
@@ -997,7 +1005,7 @@ public sealed partial class MigrationImportController
     {
         RequireOpeningJournalRole();
         var plan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
-        RefuseOwnRecord(plan.Employee, plan.AdvanceNumber);
+        await RefuseOwnRecordAsync(plan.Employee, plan.AdvanceNumber, tenantId, ct);
 
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.AdvanceNumber == plan.AdvanceNumber && !x.IsDeleted, ct);
