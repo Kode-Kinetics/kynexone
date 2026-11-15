@@ -915,7 +915,9 @@ public class EmployeeSelfServiceController : ControllerBase
         if (_notifications is not null)
             await Zayra.Api.Infrastructure.Leave.LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId, leave, cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
-        return Created($"/api/ess/leave/request/{leave.Id}", leave);
+        // Through the one leave file-key rule, like every other leave response (the caller here is always the leave's own employee).
+        var ownScope = new DataScope { Level = DataScopeLevel.Own, CallerEmployeeId = employeeId, AllowedEmployeeIds = new[] { employeeId } };
+        return Created($"/api/ess/leave/request/{leave.Id}", Zayra.Api.Infrastructure.Leave.LeaveFileKeyExposure.ForReader(_db, leave, User, ownScope));
     }
 
     [HttpGet("documents")]

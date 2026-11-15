@@ -901,6 +901,12 @@ public partial class LeaveService : ILeaveService
         if (!await LeaveCompanyScope.IsUsableByAsync(_db, leaveType, employee.CompanyId, ct))
             throw new LeaveRefusedException(LeaveRefusalCodes.TypeUnavailable, LeaveCompanyScope.NotThisCompanysType);
 
+        // A type meant for another gender (maternity, paternity, or every policy restricted to the other gender) is refused
+        // whoever files it, before any statutory or balance rule. An employee whose gender is not recorded is refused nothing.
+        if (!await LeaveTypeEligibility.IsEligibleAsync(_db, tenantId, leaveType, employee, ct))
+            throw new LeaveRefusedException(LeaveRefusalCodes.NotEligible, $"{leaveType.NameEn} is not available to you.",
+                LeaveRefusedException.ArgsOf(("leaveType", leaveType.NameEn)));
+
         var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
             .Where(b => b.TenantId == tenantId
                 && b.StartDate <= request.EndDate && b.EndDate >= request.StartDate
