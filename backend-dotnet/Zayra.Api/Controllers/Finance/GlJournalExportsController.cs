@@ -1097,6 +1097,23 @@ public class GlJournalExportsController : ControllerBase
             : BadRequest(new { error = "invalid_period", message = "period must be YYYY-MM." });
     }
 
+    /// <summary>The opening-balance rows a selection left out, with the sentence that explains it (null when there are none).</summary>
+    internal static object OpeningBalanceExclusion(JournalExportSelection selection)
+    {
+        var count = selection.OpeningBalanceExcludedCount;
+        var total = JournalAmount.Round(selection.OpeningBalanceExcludedTotal, JournalAmount.ScaleForAll(selection.Currencies));
+        return new
+        {
+            count,
+            total,
+            message = count == 0 ? null
+                : $"{count} opening-balance ledger row(s) ({total:N2}) are not exported: they carry balances brought in from your previous " +
+                  "system, which your ERP already holds. Exporting them would book those balances twice.",
+            messageAr = count == 0 ? null
+                : $"لم يُصدَّر {count} من قيود الأرصدة الافتتاحية ({total:N2}): فهي تحمل أرصدة مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، وتصديرها يعني تسجيل هذه الأرصدة مرتين.",
+        };
+    }
+
     private object Manifest(JournalExportBuild build, GlJournalExport? export, bool sampleLines, ErpStampResult? stamp = null) => new
     {
         exportId = export?.Id,
@@ -1130,6 +1147,9 @@ public class GlJournalExportsController : ControllerBase
             total = JournalAmount.Round(build.Selection.PreviouslyConfirmedExcludedTotal, JournalAmount.ScaleForAll(build.Selection.Currencies)),
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
+        // Opening balances carried in from the previous system are never exported (the client's ERP already holds them):
+        // how many and how much this file leaves out, in both languages.
+        openingBalanceExcluded = OpeningBalanceExclusion(build.Selection),
         warnings = build.Warnings ?? Array.Empty<string>(),
         // C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages (the
         // English sentence is also in warnings).

@@ -120,6 +120,11 @@ export interface JournalExportManifest {
   byCompany: CompanyBalance[];
   journalCount: number;
   previouslyConfirmedExcluded: { count: number; total: number; exportIds: string[] };
+  /**
+   * Opening-balance ledger rows (balances carried in from the previous system) left out of every ERP export, because the
+   * client's ERP already holds those balances. Absent from an older API.
+   */
+  openingBalanceExcluded?: { count: number; total: number; message: string | null; messageAr: string | null };
   warnings: string[];
   /**
    * C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages. The English

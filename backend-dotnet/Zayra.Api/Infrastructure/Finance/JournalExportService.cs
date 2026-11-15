@@ -139,8 +139,15 @@ public sealed class JournalExportService
             return (null, new JournalExportRefusal(422, new
             {
                 error = JournalExportErrors.Empty,
-                message = "No posted GL rows match this filter.",
+                message = selection.OpeningBalanceExcludedCount > 0
+                    ? "No GL rows to export for this filter: the only rows in it are opening balances carried in from your previous " +
+                      "system, which your ERP already holds, so they are never exported."
+                    : "No posted GL rows match this filter.",
+                messageAr = selection.OpeningBalanceExcludedCount > 0
+                    ? "لا توجد قيود للتصدير لهذا النطاق: القيود الوحيدة فيه أرصدة افتتاحية مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، فلا تُصدَّر أبدًا."
+                    : null,
                 unattributedExcluded = new { count = selection.UnattributedExcludedCount, total = selection.UnattributedExcludedTotal },
+                openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, total = selection.OpeningBalanceExcludedTotal },
                 hint = selection.UnattributedExcludedCount > 0
                     ? "Every pre-POD-B1b ledger row is unattributed (CompanyId is null). Re-run with includeUnattributed=true "
                     + "or without companyId to include them."

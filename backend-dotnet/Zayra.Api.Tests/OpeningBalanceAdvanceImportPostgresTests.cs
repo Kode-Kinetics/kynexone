@@ -91,26 +91,41 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
     }
 
     /// <summary>
-    /// The journal export has no rule for opening-balance entries: it sends every ledger row of the period, as it already does
-    /// for the provision catch-up booked to 3900. So the advance opening journal is selected like any other row, and carries
-    /// EventType "OpeningBalance" so the ERP side can tell it apart. Pinned as it stands, not as a decision: a client whose ERP
-    /// already holds the receivable from the old system would book it twice if it imported this line. Whether opening entries
-    /// should be excluded or flagged in the export is an open product decision.
+    /// The client's ERP already holds a carried-in balance from the old system, so the opening journal never goes to it: the
+    /// ERP journal export leaves every OpeningBalance line out, and the preview says how many and how much, in English and
+    /// Arabic. The ledger keeps the line, so the 1410 tie-out still holds.
     /// </summary>
     [Fact]
-    public async Task CarriedInAdvance_OpeningJournal_IsInThePeriodsJournalExport_TaggedOpeningBalance()
+    public async Task CarriedInAdvance_OpeningJournal_IsLeftOutOfTheErpExport_ThePreviewSaysSo_AndTheTieOutStillHolds()
     {
         var (b, cutover, number) = await SeedAsync();
         await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
         var advance = await AdvanceAsync(b, number);
+        var period = $"{cutover:yyyy-MM}";
 
-        await using var db = fixture.CreateDb();
-        var selection = await Zayra.Api.Infrastructure.Finance.JournalExportBuilder.SelectAsync(db, b.Tenant,
-            new Zayra.Api.Infrastructure.Finance.JournalExportFilter(Period: $"{cutover:yyyy-MM}", CompanyId: b.CompanyId));
-        var opening = Assert.Single(selection.Entries, e => e.SourceEntityId == advance.Id);
-        Assert.Equal((OpeningBalanceEvent, 300m, cutover), (opening.EventType, opening.Amount, opening.EntryDate));
-        Assert.StartsWith("1410", opening.DebitAccount, StringComparison.Ordinal);
-        Assert.StartsWith("3900", opening.CreditAccount, StringComparison.Ordinal);
+        await using (var db = fixture.CreateDb())
+        {
+            var selection = await Zayra.Api.Infrastructure.Finance.JournalExportBuilder.SelectAsync(db, b.Tenant,
+                new Zayra.Api.Infrastructure.Finance.JournalExportFilter(Period: period, CompanyId: b.CompanyId));
+            Assert.DoesNotContain(selection.Entries, e => e.SourceEntityId == advance.Id);
+            Assert.DoesNotContain(selection.Entries, e => e.EventType == OpeningBalanceEvent);
+            Assert.Equal((1, 300m), (selection.OpeningBalanceExcludedCount, selection.OpeningBalanceExcludedTotal));
+        }
+
+        await using (var db = fixture.CreateDb())
+        {
+            var preview = Assert.IsType<OkObjectResult>(await ExportController(db, b.Tenant)
+                .Preview(period, null, b.CompanyId, "SAR", false, false, "generic-csv", default));
+            using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(preview.Value));
+            var note = doc.RootElement.GetProperty("openingBalanceExcluded");
+            Assert.Equal((1, 300m), (note.GetProperty("count").GetInt32(), note.GetProperty("total").GetDecimal()));
+            Assert.Contains("ERP", note.GetProperty("message").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(note.GetProperty("messageAr").GetString()));
+            Assert.DoesNotContain(doc.RootElement.GetProperty("sample").EnumerateArray(),
+                l => l.GetProperty("EventType").GetString() == OpeningBalanceEvent);
+        }
+
+        Assert.Equal((300m, 300m, true), await TieOutAsync(b));
     }
 
     [Fact]
@@ -196,6 +211,26 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
         var dto = Assert.IsType<MigrationReconciliationDto>(ok.Value);
         if (!expectErrors) Assert.True(dto.Errors.Count == 0, string.Join(" | ", dto.Errors));
         return dto.Errors.ToList();
+    }
+
+    private static Zayra.Api.Controllers.Finance.GlJournalExportsController ExportController(ZayraDbContext db, Guid tid)
+    {
+        var exports = new Zayra.Api.Infrastructure.Finance.JournalExportService(db, JournalExportFormatterGoldenTests.AllFormatters());
+        return new Zayra.Api.Controllers.Finance.GlJournalExportsController(db, exports, new Zayra.Api.Infrastructure.Finance.PeriodHandoffReconciler(db, exports))
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim("tenant_id", tid.ToString()), new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                        new Claim(ClaimTypes.Name, "Finance"), new Claim("is_group_scope", "true"),
+                        new Claim("permission", "finance.gl.read"), new Claim("permission", "finance.gl.export"),
+                    }, "test")),
+                },
+            },
+        };
     }
 
     /// <summary>The company's 1410 tie-out row: (sub-ledger, GL, tied out).</summary>
