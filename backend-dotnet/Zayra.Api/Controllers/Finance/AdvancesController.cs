@@ -558,9 +558,12 @@ public partial class AdvancesController : ControllerBase
                 $"Only an approved advance can be paid out (current: {adv.Status}).",
                 $"لا يمكن صرف إلا سلفة معتمدة (الحالة الحالية: {adv.Status})."));
 
+        // The payout form defaults the paid date to the browser's local today, which for a user east of UTC is already
+        // tomorrow in UTC: the date is accepted up to UTC today plus one day, the same tolerance the first repayment date
+        // has (StartDateRefusal), and a clearly future date is still refused. A default (no date) is UTC today.
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         var paidDate = req.PaidDate ?? today;
-        if (paidDate == default || paidDate > today || paidDate < DateOnly.FromDateTime(adv.CreatedAtUtc))
+        if (paidDate == default || paidDate > today.AddDays(1) || paidDate < DateOnly.FromDateTime(adv.CreatedAtUtc))
             return BadRequest(Refusal("advance_payout_date_invalid",
                 "The paid date cannot be in the future or before the advance was requested.",
                 "لا يمكن أن يكون تاريخ الصرف في المستقبل أو قبل تاريخ طلب السلفة."));

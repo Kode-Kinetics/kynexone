@@ -158,6 +158,28 @@ public class AdvancePayoutLifecycleTests
         await AssertStillApprovedAsync(db, id);
     }
 
+    /// <summary>Review P2-1: the payout form defaults the paid date to the browser's local today, which for a user east of UTC is
+    /// already tomorrow in UTC. The date is accepted up to UTC today plus one (the same tolerance the first-repayment date has) and
+    /// refused beyond it.</summary>
+    [Fact]
+    public async Task Payout_DatedUtcTodayPlusOne_IsAccepted_ForAUserEastOfUtc_AndPlusTwoIsRefused()
+    {
+        await using var db = CreateDb();
+        var f = await SeedAsync(db);
+        var (id, _) = await ApprovedAsync(db, f);
+
+        AssertRefusal<BadRequestObjectResult>(await PayAsync(db, f, id, "BANK-001", Today.AddDays(2)), "advance_payout_date_invalid");
+        await AssertStillApprovedAsync(db, id);
+        db.ChangeTracker.Clear();
+
+        var result = await PayAsync(db, f, id, "BANK-001", Today.AddDays(1));
+
+        Assert.IsType<OkObjectResult>(result);
+        var adv = await db.SalaryAdvances.AsNoTracking().SingleAsync(x => x.Id == id);
+        Assert.Equal("Active", adv.Status);
+        Assert.Equal(Today.AddDays(1), (await db.FinanceGlEntries.AsNoTracking().SingleAsync()).EntryDate);
+    }
+
     [Fact]
     public async Task Payout_DatedInTheFuture_IsRefused()
     {
