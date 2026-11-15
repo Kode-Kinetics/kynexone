@@ -196,6 +196,13 @@ public partial class AdvancesController : ControllerBase
             return Forbid();
 
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
+        // Audit P2-5: with no active policy every amount used to be allowed (only the 60-instalment hard cap applied). The
+        // salary cap, the yearly quota, the service minimum and the cooldown all live on the policy, so there is no advance
+        // without one.
+        if (policy == null)
+            return BadRequest(Refusal("advance_policy_required",
+                "Salary advances need an active advance policy. Ask HR to set one up in Setup (Advance policy) before requesting an advance.",
+                "تتطلب سلف الرواتب سياسة سلف فعّالة. اطلب من الموارد البشرية إعدادها من الإعدادات (سياسة السلف) قبل طلب سلفة."));
 
         // Every policy limit is checked here, before the advance is recorded. Nothing is paid until a second person approves it.
         if (InstallmentsRefusal(policy, req.RequestedAmount, req.Installments) is { } installmentsRefusal)
