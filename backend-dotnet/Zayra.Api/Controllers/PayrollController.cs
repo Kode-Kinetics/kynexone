@@ -4702,8 +4702,10 @@ public partial class PayrollController : ControllerBase
         System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
             l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
             && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
+        // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
+        // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it.
         System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
-            a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
+            a.TenantId == tenantId && a.CompanyId == run.CompanyId && a.Status == "Active" && a.EmployeeIntId != null
             && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0;
         var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
         var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
@@ -4808,8 +4810,13 @@ public partial class PayrollController : ControllerBase
             {
                 var moved = Reclass(s, advanceReceivableAccount, Math.Round(a.OutstandingBalance, 2), "advance");
                 if (moved <= 0m) continue;
+                var before = a.OutstandingBalance;
                 a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
                 if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+                // On the advance's own trail, with the amount: the advance audit counts it (a move to 1420 is not a repayment, so
+                // TotalRepaid is unchanged and only this row explains the drop in the balance).
+                _db.AdvanceAuditLogs.Add(Infrastructure.Payroll.AdvanceResidualAudit.Entry(
+                    tenantId, a, moved, before, s.Id, run.Id, batch.Id, GetUserId(), GetUserName()));
             }
 
             await PayrollAudit("payroll.final_settlement.paid", "EmployeeFinalSettlement", s.Id.ToString(), new

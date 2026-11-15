@@ -451,6 +451,8 @@ public class AdvancesController : ControllerBase
         var glEntries = await _db.FinanceGlEntries
             .Where(x => x.TenantId == tid && x.SourceModule == "Advance"
                 && (scope.IsUnrestricted || advanceIds.Contains(x.SourceEntityId))).ToListAsync(ct);
+        // What a paid final settlement moved to the 1420 Employee Receivable: off the balance, but not a repayment.
+        var movedTo1420 = await Zayra.Api.Infrastructure.Payroll.AdvanceResidualAudit.MovedByAdvanceAsync(_db, tid, advanceIds, ct);
 
         return Ok(new
         {
@@ -468,8 +470,9 @@ public class AdvancesController : ControllerBase
             {
                 a.AdvanceNumber, a.EmployeeName, a.Status, a.ApprovedAmount,
                 a.TotalRepaid, a.OutstandingBalance,
-                BalanceCheck = Math.Round(a.ApprovedAmount - a.TotalRepaid - a.OutstandingBalance, 2),
-                IsReconciled = Math.Abs(a.ApprovedAmount - a.TotalRepaid - a.OutstandingBalance) < 0.01m,
+                MovedToEmployeeReceivable = movedTo1420.GetValueOrDefault(a.Id),
+                BalanceCheck = Math.Round(a.ApprovedAmount - a.TotalRepaid - movedTo1420.GetValueOrDefault(a.Id) - a.OutstandingBalance, 2),
+                IsReconciled = Math.Abs(a.ApprovedAmount - a.TotalRepaid - movedTo1420.GetValueOrDefault(a.Id) - a.OutstandingBalance) < 0.01m,
             }).ToList(),
         });
     }
