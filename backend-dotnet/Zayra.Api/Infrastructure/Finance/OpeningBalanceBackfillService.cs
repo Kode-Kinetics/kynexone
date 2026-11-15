@@ -107,7 +107,11 @@ public sealed class OpeningBalanceBackfillService(ZayraDbContext db)
             r.CarriedAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
             r.CurrentOutstanding.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
             r.PayrollTakes.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
-            r.ToPost.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))));
+            r.ToPost.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture),
+            // What apply posts WITH, not only how much: entry date/period, currency and the resolved accounts.
+            r.CutoverDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), r.Currency,
+            r.Prepared?.Receivable ?? "", r.Prepared?.Equity ?? "", r.Prepared?.Period ?? "",
+            r.Prepared?.OpeningDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) ?? "")));
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
     }
 
