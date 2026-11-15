@@ -160,9 +160,12 @@ export interface SalaryAdvance {
   rejectionReason?: string;
   isLockedByPayroll: boolean;
   createdAtUtc: string;
-  /** Set once the advance has been paid out (the payout step records the date and the bank or cash reference). */
-  paidOutDate?: string | null;
-  payoutReference?: string | null;
+  /** Set once Finance has recorded the payout: when, and the bank or cash reference. */
+  paidAtUtc?: string | null;
+  paymentReference?: string | null;
+  /** Set when the advance was cancelled before payout: when, and why. */
+  cancelledAtUtc?: string | null;
+  cancelReason?: string | null;
 }
 
 export interface AdvanceApprovalStep {
@@ -345,11 +348,20 @@ export const advancePolicyApi = {
 export interface AdvanceDetail { advance: SalaryAdvance; installments: AdvanceInstallment[]; approvals?: AdvanceApprovalStep[]; auditLogs: AuditLogEntry[]; glEntries: FinanceGlEntry[] }
 
 export const advancesApi = {
-  list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number } = {}) =>
+  /** `mine` is the self-service view: only the advances that pay the signed-in employee (the server resolves who that is). */
+  list: (params: { employeeId?: string; status?: string; page?: number; pageSize?: number; mine?: boolean } = {}) =>
     client.get<{ total: number; items: SalaryAdvance[] }>('/api/finance/advances', { params }).then(r => r.data),
 
-  get: (id: string) =>
-    client.get<AdvanceDetail>(`/api/finance/advances/${id}`).then(r => r.data),
+  get: (id: string, mine?: boolean) =>
+    client.get<AdvanceDetail>(`/api/finance/advances/${id}`, mine ? { params: { mine: true } } : undefined).then(r => r.data),
+
+  /** Approved to Active: Finance records the payout. The paid date defaults to today on the server. */
+  payout: (id: string, body: { paidDate?: string; reference: string; notes?: string }) =>
+    client.post<SalaryAdvance>(`/api/finance/advances/${id}/payout`, body).then(r => r.data),
+
+  /** Pending or Approved to Cancelled, with a reason. */
+  cancel: (id: string, reason: string) =>
+    client.post<SalaryAdvance>(`/api/finance/advances/${id}/cancel`, { reason }).then(r => r.data),
 
   create: (body: { employeeId?: string; employeeName: string; requestedAmount: number; repaymentType: string; installments: number; repaymentStartDate?: string; reason?: string; employeeIntId?: number }) =>
     client.post<SalaryAdvance>('/api/finance/advances', body).then(r => r.data),

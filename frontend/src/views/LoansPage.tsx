@@ -789,16 +789,26 @@ export function AdvancePolicyTab() {
 
 const ADVANCE_STATUS_FILTER = ['Pending', 'Approved', 'Active', 'Closed', 'Rejected', 'Cancelled'] as const;
 
+const statusOf = (e: unknown): number | undefined => (e as { response?: { status?: number } } | null)?.response?.status;
+
 function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
+  const { confirm, ask, dialog: confirmDialog } = useConfirm();
   const { user, hasPermission } = useAuth();
   const { currencyCode } = useTenantSettings();
   const fx = useFormat();
   const fmt = (n: number) => fx.plain.money(n, currencyCode);
-  // The list and the detail are `loans.read` / `loans.write` on the API; requesting is `loans.self` (own record) or `loans.write` (on someone's behalf).
-  // An employee with only `loans.self` can request an advance but is not given the list by the server, so none is offered.
+  // The book is `loans.read` / `loans.write` on the API. An employee with `loans.self` reads only their own advances (`mine=true`);
+  // requesting is `loans.self` (own record) or `loans.write` (on someone's behalf).
   const canRead = hasPermission('loans.read') || hasPermission('loans.write');
-  const showList = canRead && !ownAccounts;
+  const showList = ownAccounts ? hasPermission('loans.self') : canRead;
+  // Who may act, by the signals the page already uses (roles) and the API's own gates: recording a payout is `loans.write` with the Admin or
+  // Finance role; HR or Finance cancel any unpaid advance, anyone else only their own pending one. The server decides in the end and its
+  // refusal is shown.
+  const roles = user?.roles ?? [];
+  const canPayout = !ownAccounts && hasPermission('loans.write') && roles.some(role => ['Admin', 'Finance'].includes(role));
+  const canCancelAny = !ownAccounts && roles.some(role => ['Admin', 'Finance', 'HR Manager', 'HR Director'].includes(role));
+  const canCancel = (a: SalaryAdvance) => a.status === 'Pending' || a.status === 'Approved' ? (canCancelAny || (ownAccounts && a.status === 'Pending')) : false;
   const [items, setItems] = useState<SalaryAdvance[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(showList);
@@ -816,8 +826,12 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
   const [approveForm, setApproveForm] = useState({ approvedAmount: 0, installments: 1, repaymentStartDate: '' });
   const [rejectReason, setRejectReason] = useState('');
   const [rejectModal, setRejectModal] = useState(false);
+  const [payoutModal, setPayoutModal] = useState(false);
+  const [payoutForm, setPayoutForm] = useState({ paidDate: '', reference: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [cancelError, setCancelError] = useState('');
   const [detail, setDetail] = useState<AdvanceDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailError, setDetailError] = useState<unknown>(null);
@@ -825,15 +839,15 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
   const load = useCallback(async () => {
     if (!showList) { setLoading(false); return; }
     setLoading(true);
-    try { const r = await advancesApi.list({ status: filterStatus || undefined, page, pageSize }); setItems(r.items); setTotal(r.total); setLoadError(null); }
+    try { const r = await advancesApi.list({ status: filterStatus || undefined, page, pageSize, mine: ownAccounts || undefined }); setItems(r.items); setTotal(r.total); setLoadError(null); }
     catch (e) { setItems([]); setTotal(0); setLoadError(e); }
     finally { setLoading(false); }
-  }, [filterStatus, page, showList]);
+  }, [filterStatus, page, showList, ownAccounts]);
   useEffect(() => { load(); }, [load]);
 
   const openDetail = async (advance: SalaryAdvance) => {
     setSelected(advance); setDetail(null); setDetailError(null); setDetailOpen(true);
-    try { setDetail(await advancesApi.get(advance.id)); } catch (e) { setDetailError(e); }
+    try { setDetail(await advancesApi.get(advance.id, ownAccounts)); } catch (e) { setDetailError(e); }
   };
 
   const createAdvance = async () => {
@@ -853,7 +867,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
       });
       setCreateModal(false); setSelectedEmployee(null); toast?.success?.(t('Advance request submitted.')); load();
     }
-    catch (e) { setError(apiErrorReason(e, t('Failed to create advance.'))); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to create advance.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -865,7 +879,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
       await advancesApi.approve(selected.id, { ...approveForm, repaymentStartDate: approveForm.repaymentStartDate || undefined });
       setApproveModal(false); load();
     }
-    catch (e) { setError(apiErrorReason(e, t('Failed to approve.'))); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to approve.'), locale)); }
     finally { setSaving(false); }
   };
 
@@ -873,8 +887,45 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
     if (!selected) return;
     setSaving(true); setError('');
     try { await advancesApi.reject(selected.id, rejectReason); setRejectModal(false); load(); }
-    catch (e) { setError(apiErrorReason(e, t('Failed to reject.'))); }
+    catch (e) { setError(apiErrorReason(e, t('Failed to reject.'), locale)); }
     finally { setSaving(false); }
+  };
+
+  const openPayout = (a: SalaryAdvance) => { setSelected(a); setPayoutForm({ paidDate: localDateToday(), reference: '', notes: '' }); setError(''); setPayoutModal(true); };
+  const refreshOpenDetail = async (id: string) => { if (detailOpen && selected?.id === id) { try { setDetail(await advancesApi.get(id, ownAccounts)); } catch { /* the list reload shows the failure */ } } };
+
+  const payout = async () => {
+    if (!selected) return;
+    if (!payoutForm.reference.trim()) { setError(t('Enter the bank or cash reference of the payment.')); return; }
+    setError('');
+    const ok = await confirm({
+      title: t('Record the payout?'),
+      message: t('Record that {amount} was paid to {name} (reference {reference}) on {date}? This posts the advance journal and starts the repayment schedule. It cannot be undone here.', {
+        amount: fx.plain.money(selected.approvedAmount, currencyCode), name: selected.employeeName, reference: payoutForm.reference.trim(), date: fx.plain.date(payoutForm.paidDate || localDateToday()),
+      }),
+      confirmLabel: t('Mark paid'),
+      tone: 'primary',
+    });
+    if (!ok) return;
+    setSaving(true); setError('');
+    try {
+      await advancesApi.payout(selected.id, { paidDate: payoutForm.paidDate || undefined, reference: payoutForm.reference.trim(), notes: payoutForm.notes.trim() || undefined });
+      setPayoutModal(false); setCancelError(''); setNotice(t('Payout recorded.')); void load(); void refreshOpenDetail(selected.id);
+    } catch (e) { setError(apiErrorReason(e, t('Failed to record the payout.'), locale)); }
+    finally { setSaving(false); }
+  };
+
+  const cancelAdvance = async (a: SalaryAdvance) => {
+    const answer = await ask({
+      title: t('Cancel this advance?'),
+      message: t('The advance {number} for {name} will be cancelled and nothing will be paid. Its repayment schedule is retired.', { number: a.advanceNumber, name: a.employeeName }),
+      confirmLabel: t('Cancel advance'),
+      reason: { required: true, label: t('Reason for cancelling'), maxLength: 1000 },
+    });
+    if (!answer.confirmed) return;
+    setNotice(''); setCancelError('');
+    try { await advancesApi.cancel(a.id, answer.reason.trim()); setNotice(t('Advance cancelled.')); void load(); void refreshOpenDetail(a.id); }
+    catch (e) { setNotice(''); setCancelError(apiErrorReason(e, t('Failed to cancel the advance.'), locale)); }
   };
 
   const repaymentTypeLabel = (type: string) => t(type === 'OneTime' || type === 'FullDeduction' ? 'Full deduction' : type === 'Installments' ? 'Installments' : type);
@@ -893,9 +944,11 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
             <Plus className="h-4 w-4" /> {t('New Advance Request')}
           </button>
         </div>
-        {!showList && (
+        {notice && <p role="status" data-testid="advance-notice" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">{notice}</p>}
+        {cancelError && <p role="alert" data-testid="advance-action-error" className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300">{cancelError}</p>}
+        {(!showList || (ownAccounts && statusOf(loadError) === 403)) && (
           <p role="note" className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
-            {t('Your request is approved by someone other than you, then repaid through payroll. HR and Finance follow its status.')}
+            {t('Your request is approved by someone other than you, then paid out by Finance and repaid through payroll. HR and Finance follow its status.')}
           </p>
         )}
         {showList && (
@@ -911,7 +964,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
             <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
               {loading ? (
                 <tr><td colSpan={8} className="py-12 text-center"><div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-sapphire border-t-transparent" /></td></tr>
-              ) : loadError != null ? (
+              ) : loadError != null && !(ownAccounts && statusOf(loadError) === 403) ? (
                 <LoadFailedRow colSpan={8} error={loadError} onRetry={() => { void load(); }} />
               ) : items.length === 0 ? (
                 <tr><td colSpan={8} className="py-12 text-center text-slate-400">{t('No advances found')}</td></tr>
@@ -927,7 +980,13 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
                   <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-1">
                       <button type="button" onClick={() => openDetail(a)} className="rounded px-2 py-1 text-xs text-sapphire hover:bg-sapphire/10" aria-label={t('View advance {number}', { number: a.advanceNumber })}>{t('View')}</button>
-                      {a.status === 'Pending' && (
+                      {a.status === 'Approved' && canPayout && (
+                        <button type="button" onClick={() => openPayout(a)} className="btn-primary h-6 px-2 text-xs">{t('Mark paid')}</button>
+                      )}
+                      {canCancel(a) && (
+                        <button type="button" onClick={() => { void cancelAdvance(a); }} className="h-6 px-2 text-xs rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-white/10 dark:text-slate-300" aria-label={t('Cancel advance {number}', { number: a.advanceNumber })}>{t('Cancel')}</button>
+                      )}
+                      {a.status === 'Pending' && !ownAccounts && (
                         <>
                           <button type="button" onClick={() => { setSelected(a); setApproveForm({ approvedAmount: a.requestedAmount, installments: a.installments || 1, repaymentStartDate: (a.repaymentStartDate ?? '').slice(0, 10) }); setError(''); setApproveModal(true); }} className="btn-primary h-6 px-2 text-xs">{t('Approve')}</button>
                           <button type="button" onClick={() => { setSelected(a); setRejectReason(''); setError(''); setRejectModal(true); }} className="h-6 px-2 text-xs rounded-lg border border-red-200 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20">{t('Reject')}</button>
@@ -954,7 +1013,11 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
       </div>
 
       <Modal isOpen={detailOpen && !!selected} title={t('Advance — {number}', { number: selected?.advanceNumber ?? '' })} onClose={() => setDetailOpen(false)} size="lg"
-        footer={<button type="button" onClick={() => setDetailOpen(false)} className="btn-secondary ms-auto">{t('Close')}</button>}>
+        footer={<div className="flex w-full items-center gap-2">
+          {selected && (detail?.advance ?? selected).status === 'Approved' && canPayout && <button type="button" onClick={() => { setDetailOpen(false); openPayout(detail?.advance ?? selected); }} className="btn-primary">{t('Mark paid')}</button>}
+          {selected && canCancel(detail?.advance ?? selected) && <button type="button" onClick={() => { setDetailOpen(false); void cancelAdvance(detail?.advance ?? selected); }} className="btn-secondary">{t('Cancel advance')}</button>}
+          <button type="button" onClick={() => setDetailOpen(false)} className="btn-secondary ms-auto">{t('Close')}</button>
+        </div>}>
         {selected && (
           <div className="space-y-4" data-testid="advance-detail">
             {detailError != null && (
@@ -965,7 +1028,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
             )}
             {(() => {
               const adv = detail?.advance ?? selected;
-              const payoutDate = adv.paidOutDate;
+              const payoutDate = adv.paidAtUtc;
               return (
                 <>
                   <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
@@ -981,9 +1044,14 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
                   </div>
                   {adv.reason && <p className="text-sm text-slate-600 dark:text-slate-300"><span className="text-xs text-slate-400">{t('Reason')}: </span>{adv.reason}</p>}
                   {adv.rejectionReason && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-500/10 dark:text-red-300"><span className="text-xs">{t('Rejection Reason')}: </span>{adv.rejectionReason}</p>}
-                  {(payoutDate || adv.payoutReference) && (
+                  {adv.status === 'Cancelled' && (adv.cancelledAtUtc || adv.cancelReason) && (
+                    <p data-testid="advance-cancelled" className="rounded-lg bg-slate-100 p-3 text-sm text-slate-700 dark:bg-white/10 dark:text-slate-200">
+                      {t('Cancelled on {date}. Reason: {reason}', { date: adv.cancelledAtUtc ? fx.plain.date(adv.cancelledAtUtc) : '—', reason: adv.cancelReason || '—' })}
+                    </p>
+                  )}
+                  {(payoutDate || adv.paymentReference) && (
                     <p data-testid="advance-payout" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800 dark:bg-emerald-500/10 dark:text-emerald-200">
-                      {t('Paid out on {date}. Reference: {reference}', { date: payoutDate ? fx.plain.date(payoutDate) : '—', reference: adv.payoutReference || '—' })}
+                      {t('Paid out on {date}. Reference: {reference}', { date: payoutDate ? fx.plain.date(payoutDate) : '—', reference: adv.paymentReference || '—' })}
                     </p>
                   )}
                 </>
@@ -1076,6 +1144,22 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
         <FormError error={error} />
         <FormField label={t('Rejection Reason')}><textarea value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="input w-full" rows={3} placeholder={t('Reason for rejection…')} /></FormField>
       </Modal>
+
+      <Modal isOpen={payoutModal} title={t('Mark paid — {number}', { number: selected?.advanceNumber ?? '' })} onClose={() => !saving && setPayoutModal(false)}
+        footer={<><button type="button" onClick={() => setPayoutModal(false)} disabled={saving} className="btn-secondary">{t('Cancel')}</button><button type="button" onClick={payout} disabled={saving} className="btn-primary disabled:opacity-60">{saving ? t('Recording…') : t('Mark paid')}</button></>}>
+        <FormError error={error} />
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">{t('Record the payment of {amount} to {name} once the money has actually been sent. Whoever approved the advance, and the employee it pays, cannot record its payout.', { amount: selected ? fx.plain.money(selected.approvedAmount, currencyCode) : '', name: selected?.employeeName ?? '' })}</p>
+          <FormField label={t('Paid date')} required hint={t('Not in the future, and not before the advance was requested.')}>
+            <DatePicker aria-label={t('Paid date')} value={payoutForm.paidDate} onChange={(v) => setPayoutForm(x => ({ ...x, paidDate: v }))} />
+          </FormField>
+          <FormField label={t('Payment reference')} required hint={t('The bank transfer or cash receipt number. Each reference can be used once in a company.')}>
+            <input value={payoutForm.reference} onChange={(e) => setPayoutForm(x => ({ ...x, reference: e.target.value }))} className="input w-full" title={t('Payment reference')} maxLength={100} dir="ltr" />
+          </FormField>
+          <FormField label={t('Notes')}><textarea value={payoutForm.notes} onChange={(e) => setPayoutForm(x => ({ ...x, notes: e.target.value }))} className="input w-full" rows={2} maxLength={1000} title={t('Notes')} /></FormField>
+        </div>
+      </Modal>
+      {confirmDialog}
     </>
   );
 }
