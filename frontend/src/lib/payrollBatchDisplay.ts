@@ -1,4 +1,5 @@
 import type { MessageParams } from '../i18n/translations';
+import { isCustomFormatId } from '../api/saudiBankExports';
 
 type Translator = (key: string, params?: MessageParams) => string;
 
@@ -28,4 +29,16 @@ export function bankAcceptanceLabel(t: Translator, status: string | null | undef
   const text = (status ?? '').trim();
   const key = ACCEPTANCE_KEYS[text];
   return key ? t(key) : text;
+}
+
+/**
+ * A bank format's display name for a stored format id (the generated export records only the id). It uses the same name source
+ * as the Format select (the API's format list, translated; a customer template carries the "custom template" suffix) and
+ * falls back to the id when the format is not in the list.
+ */
+export function bankFormatLabel(t: Translator, formats: ReadonlyArray<{ id: string; name: string }>, id: string | null | undefined, customSuffix: string): string {
+  const formatId = (id ?? '').trim();
+  const format = formats.find((f) => f.id === formatId);
+  if (!format) return formatId;
+  return isCustomFormatId(formatId) ? `${t(format.name)} (${customSuffix})` : t(format.name);
 }
