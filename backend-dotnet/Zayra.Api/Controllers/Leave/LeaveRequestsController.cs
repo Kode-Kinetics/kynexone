@@ -899,6 +899,9 @@ public class LeaveRequestsController : ControllerBase
             return typesByCompany[key] = (byCode, byName);
         }
 
+        var canMarkEmergency = User.HasPermission("leave.write");
+        var importerEmployeeId = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct);
+
         int created = 0, skipped = 0;
         var errors = new List<string>();
         var rowNum = 1;
@@ -952,7 +955,10 @@ public class LeaveRequestsController : ControllerBase
                 DayType = row.GetValueOrDefault("DayType", "Full").Trim(),
                 HoursRequested = hours,
                 Reason = row.GetValueOrDefault("Reason", string.Empty).Trim(),
-                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase),
+                // Same rule as filing a request: an emergency waives the notice period, so only leave administration (leave.write)
+                // may mark one, and never on the importer's own employee record.
+                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase)
+                    && canMarkEmergency && importerEmployeeId != employee.Id,
                 AttachmentPath = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim(),
                 PayrollImpact = leaveType.IsPaid ? "Full" : "None"
             };
