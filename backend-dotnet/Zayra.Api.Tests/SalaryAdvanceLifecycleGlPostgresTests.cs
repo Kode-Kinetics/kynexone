@@ -423,10 +423,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     //  5. Final settlement with an outstanding advance
     // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "DEFECT: a final-settlement run (no recurring pay) withholds the advance and decrements it, but with the pay " +
-                 "component engine on (the default) it emits no ADVANCE_EMI line (PayrollRunProcessor: effectiveComponents keeps " +
-                 "only supplemental components when the run pays no recurring salary), so the run carries PAYSLIP_LINES_MISMATCH, an " +
-                 "Error that cannot be overridden: it can never be approved or locked, while the advance already shows Closed.")]
+    [Fact]
     public async Task FinalSettlement_LargeEnough_RecoversTheWholeAdvanceFromTheFinalPay_And1410EndsAtZero()
     {
         var w = await SeedAsync(costing: false, withColleague: true);

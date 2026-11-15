@@ -1928,9 +1928,14 @@ public sealed class PayrollRunProcessor
                 // same rows: BASIC's EmitWhenZero flag would otherwise emit a 0.00 BASIC line here while
                 // the legacy branch skipped it entirely. Bonus / Adjustment / Statutory providers survive —
                 // those are exactly the supplemental families a non-recurring run pays.
+                // A leaver whose final settlement this run pays has their loans and advances recovered from it (empLoans / empAdv
+                // above), so their instalment lines are emitted too. Without them the slip's deduction total carried an amount no
+                // line explained (PAYSLIP_LINES_MISMATCH, an Error that blocks Approve and Lock and cannot be overridden) and the
+                // accrual, built from the lines, never relieved 1400 / 1410 while the loan or advance already showed it repaid.
+                // Nobody else in a run without recurring pay has a debt taken, so for them the set is unchanged.
                 var effectiveComponents = includesRecurringPay
                     ? payComponents
-                    : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
+                    : payComponents.Where(c => IsSupplementalPayComponent(c) || (isSettlingEmployee && IsDebtRecoveryPayComponent(c))).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
                 // Defence in depth against paying one code twice. The catalog API refuses a component on a cash allowance's code, but a row written
                 // before that rule (or by a path that skipped it) can still be in the store: the engine would pay its configured amount here and the
@@ -2877,6 +2882,11 @@ public sealed class PayrollRunProcessor
             return true;
         return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
+
+    /// <summary>The loan and advance instalment components: emitted in a run without recurring pay only for a leaver whose final
+    /// settlement the run pays, because that is the only employee such a run recovers a debt from.</summary>
+    internal static bool IsDebtRecoveryPayComponent(PayComponent c) =>
+        c.ProviderKey is PayComponentProviders.Loan or PayComponentProviders.Advance;
 
     /// <summary>
     /// The operator's include/exclude intent for one run, and THE rule for who it admits: any Include row makes the run an allow-list (only the named
