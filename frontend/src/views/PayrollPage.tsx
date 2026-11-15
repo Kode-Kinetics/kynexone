@@ -178,6 +178,7 @@ const btn = {
 
 type Tab = 'dashboard' | 'salary-structures' | 'employee-salary' | 'runs' | 'validation' | 'approvals' | 'payslips' | 'bank-wps' | 'payment-tracking' | 'reports' | 'eosb' | 'ai-validation' | 'audit-integrity' | 'gl-journal' | 'reconciliation' | 'final-settlement';
 
+// The order is the order of the groups below: arrow keys move through the tabs in this order.
 const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: 'dashboard',        label: msg('Dashboard'),          icon: BarChart2 },
   { key: 'salary-structures', label: msg('Grade Packages'),     icon: Layers3 },
@@ -189,12 +190,21 @@ const TABS: { key: Tab; label: string; icon: React.ComponentType<{ className?: s
   { key: 'bank-wps',         label: msg('Bank / WPS Files'),    icon: Landmark },
   { key: 'payment-tracking', label: msg('Payment Tracking'),    icon: TrendingUp },
   { key: 'reports',          label: msg('Reports'),             icon: BarChart2 },
-  { key: 'eosb',             label: msg('EOSB / Gratuity'),    icon: FileText },
   { key: 'gl-journal',       label: msg('GL Journal'),          icon: BookOpen },
   { key: 'reconciliation',   label: msg('Reconciliation'),      icon: RefreshCw },
+  { key: 'eosb',             label: msg('EOSB / Gratuity'),    icon: FileText },
   { key: 'final-settlement', label: msg('Final Settlement'),    icon: Calculator },
   { key: 'ai-validation',    label: msg('Anomaly Checks'),      icon: ShieldCheck },
   { key: 'audit-integrity',  label: msg('Audit Integrity'),     icon: Shield },
+];
+
+/** The sixteen tabs as five labelled groups, in the order a payroll month goes. */
+const TAB_GROUPS: { label: string; ids: Tab[] }[] = [
+  { label: msg('Set up'),             ids: ['dashboard', 'salary-structures', 'employee-salary'] },
+  { label: msg('Run payroll'),        ids: ['runs', 'validation', 'approvals', 'payslips'] },
+  { label: msg('Pay out'),            ids: ['bank-wps', 'payment-tracking'] },
+  { label: msg('Report and ledger'),  ids: ['reports', 'gl-journal', 'reconciliation'] },
+  { label: msg('Settle and check'),   ids: ['eosb', 'final-settlement', 'ai-validation', 'audit-integrity'] },
 ];
 
 // ── Payroll Setup Wizard ───────────────────────────────────────────────────────
@@ -2939,8 +2949,10 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
               <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
                 <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Records — {batchNumber}', { batchNumber: selectedBatch.batchNumber })}</p>
               </div>
-              <table className="w-full text-sm">
-                <thead>
+              {/* A long batch scrolls inside its own region (header stays in view) instead of making the whole tab tall. */}
+              <div role="region" aria-label={t('Payment records')} tabIndex={0} className="max-h-[22rem] overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-primary" data-testid="bank-records-scroll">
+              <table className="w-full min-w-[34rem] text-sm">
+                <thead className="sticky top-0 z-10 bg-surface">
                   <tr className="border-b border-slate-100 dark:border-white/[0.07]">
                     {[t('Employee'), t('Amount'), 'IBAN', t('WPS Reference'), t('Status')].map(h => (
                       <th key={h} className="px-4 py-2 text-start text-xs font-bold uppercase text-fg-muted">{h}</th>
@@ -2968,6 +2980,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
                   ))}
                 </tbody>
               </table>
+              </div>
             </>
           )}
         </div>
@@ -4226,6 +4239,18 @@ export function PayrollPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, contextRunId]);
 
+  // Changing tab never moves the page when the tab strip is in view. When something else changed the tab (the pipeline's next-step
+  // button) and the strip has scrolled out of view, the strip is brought back to the top: the least movement that shows the new tab.
+  const tabsAnchor = useRef<HTMLDivElement>(null);
+  const firstTabRender = useRef(true);
+  useEffect(() => {
+    if (firstTabRender.current) { firstTabRender.current = false; return; }
+    const el = tabsAnchor.current;
+    if (!el) return;
+    const top = el.getBoundingClientRect().top;
+    if (top < 64 || top > window.innerHeight * 0.75) el.scrollIntoView({ block: 'start', behavior: 'auto' });
+  }, [activeTab]);
+
   const handleSelectRun = (run: PayrollRun, tab: Tab) => {
     setContextRunId(run.id);
     setActiveTab(tab);
@@ -4260,7 +4285,7 @@ export function PayrollPage() {
     : null;
 
   return (
-    <div className="space-y-5">
+    <div className="kx-scroll-tables space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-950 dark:text-white">{t('Payroll Management')}</h1>
@@ -4278,14 +4303,18 @@ export function PayrollPage() {
         reviewRequestKey={reviewRequest}
       />
 
-      <RovingTabList
-        items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
-        activeId={activeTab}
-        onChange={setActiveTab}
-        idPrefix="payroll"
-        label={t('Payroll workspace sections')}
-        compact
-      />
+      <div ref={tabsAnchor} data-testid="payroll-tabs-anchor">
+        <RovingTabList
+          items={visibleTabs.map(({ key, label, icon }) => ({ id: key, label: t(label), icon }))}
+          activeId={activeTab}
+          onChange={setActiveTab}
+          idPrefix="payroll"
+          label={t('Payroll workspace sections')}
+          compact
+          scrollCue
+          groups={TAB_GROUPS.map(g => ({ label: t(g.label), ids: g.ids }))}
+        />
+      </div>
 
       <TabPanel idPrefix="payroll" tabId={activeTab}>{renderTab()}</TabPanel>
     </div>

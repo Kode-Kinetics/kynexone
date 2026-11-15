@@ -51,14 +51,16 @@ type Mock = {
   records?: unknown[];
 };
 
-async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar' } = {}) {
+async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar'; stages?: 'open' | 'folded' | 'default' } = {}) {
   let processingCalls = 0;
-  await page.addInitScript(([th, locale]) => {
+  await page.addInitScript(([th, locale, stages]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', th);
     if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
-  }, [opts.theme ?? 'light', opts.locale ?? ''] as const);
+    // The stage cards start folded once a run is chosen; the stage assertions below read them, so they open them (the folded default has its own tests).
+    if (stages !== 'default') localStorage.setItem('kynexone-payroll-pipeline-stages', stages);
+  }, [opts.theme ?? 'light', opts.locale ?? '', opts.stages ?? 'open'] as const);
   await page.route('**/api/**', (route: Route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname;

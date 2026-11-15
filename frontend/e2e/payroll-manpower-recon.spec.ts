@@ -67,6 +67,8 @@ async function boot(page: Page, opts: { recon?: string; permissions?: string[]; 
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', th);
     localStorage.setItem('kynexone-locale-choice-v2', lang);
+    // The stage cards start folded once a run is chosen; these tests read them.
+    localStorage.setItem('kynexone-payroll-pipeline-stages', 'open');
   }, [opts.theme ?? 'light', opts.locale ?? 'en']);
   await page.route('**/api/**', (route: Route) => {
     const req = route.request();

@@ -22,15 +22,17 @@ export const USER = {
 };
 export const COMPANY = { id: 'c1', name: 'Acme Arabia', legalNameEn: 'Acme Arabia LLC', tradeName: 'Acme Arabia', defaultCurrency: 'SAR', countryCode: 'SA', isActive: true, wpsEmployerId: '1234567890', gosiEmployerId: '55512345', code: 'ACME' };
 
-export async function boot(page: Page, opts: { locale: Locale; url: string; routes?: Handler; waitMs?: number }) {
+/** `stages`: the run pipeline's remembered stage-card state. The specs written before the cards started folded open them; 'default' leaves nothing stored. */
+export async function boot(page: Page, opts: { locale: Locale; url: string; routes?: Handler; waitMs?: number; stages?: 'open' | 'folded' | 'default' }) {
   const errors: string[] = [];
   const requests: string[] = [];
   page.on('pageerror', e => errors.push(e.message));
-  await page.addInitScript((locale: string) => {
+  await page.addInitScript(([locale, stages]) => {
     localStorage.setItem('zayra_access_token', 'fixture');
     localStorage.setItem('kynexone-locale-choice-v2', locale);
     localStorage.setItem('kynexone-company:reviewer', 'c1');
-  }, opts.locale);
+    if (stages !== 'default') localStorage.setItem('kynexone-payroll-pipeline-stages', stages);
+  }, [opts.locale, opts.stages ?? 'open'] as const);
   await page.route('**/api/**', async route => {
     const request = route.request();
     const url = new URL(request.url());

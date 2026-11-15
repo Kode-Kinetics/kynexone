@@ -13,6 +13,15 @@ const ar: Record<string, string> = {
   'Choose a payroll run to see its payment batches.': 'اختر مسير رواتب لعرض دفعات الدفع الخاصة به.',
   'The payment records need the Payroll export permission. Ask an administrator to give it to your role.': 'تتطلب سجلات الدفع صلاحية «تصدير الرواتب». اطلب من مسؤول النظام منحها لدورك.',
 
+  // ── W4: page size ──
+  'Set up': 'الإعداد',
+  'Pay out': 'الدفع',
+  'Report and ledger': 'التقارير والدفاتر',
+  'Settle and check': 'التسوية والفحص',
+  'Hide stages': 'إخفاء المراحل',
+  'Show stages': 'عرض المراحل',
+  'Stage {stage}: {state}': 'المرحلة {stage}: {state}',
+  'Payment records': 'سجلات الدفع',
   // ── W5: the bank file as four steps ──
   'Steps to a bank file': 'خطوات إعداد ملف البنك',
   'Choose the payment batch': 'اختيار دفعة الدفع',

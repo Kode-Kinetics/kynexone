@@ -47,6 +47,7 @@ type Opts = {
   slowBatches?: number;
   posts?: string[];
   extra?: Handler;
+  stages?: 'open' | 'folded' | 'default';
 };
 
 const bankHandler = (o: Opts = {}): Handler => (path, search, method, route) => {
@@ -177,6 +178,99 @@ for (const locale of LOCALES) {
       await boot(page, { locale, url: url('payment-tracking'), routes: bankHandler({ batches: 'fail' }), waitMs: 2500 });
       await expect(page.getByRole('tabpanel').getByTestId('list-load-failed')).toBeVisible({ timeout: 90_000 });
       await expect(page.getByText(/^(No payment batches yet|لا توجد دفعات دفع بعد)$/)).toHaveCount(0);
+    });
+  });
+}
+
+// ── W4: shrink the page ───────────────────────────────────────────────────────────────────────────
+
+const MANY = Array.from({ length: 40 }, (_, i) => ({
+  id: `m${i}`, paymentBatchId: BATCH_ID, employeeId: 300 + i, employeeName: `Employee Number ${i + 1}`, employeeCode: `EVT2-${String(100 + i)}`, amount: 9000 + i,
+  iban: `SA03800000006080101675${i}`, wpsReference: `REF-M${i}`, status: 'Pending',
+}));
+
+for (const locale of LOCALES) {
+  test.describe(`W4: a smaller page (${locale})`, () => {
+    test.use({ viewport: { width: 1366, height: 768 } });
+
+    test('the stage cards start folded once a run is chosen, the next step stays, and the choice is remembered', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      const toggle = page.getByTestId('pipeline-stages-toggle');
+      await expect(toggle).toBeVisible({ timeout: 90_000 });
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await expect(page.getByTestId('pipeline-stages')).toBeHidden();
+      await expect(page.getByTestId('pipeline-next-action')).toBeVisible();
+      await expect(page.getByTestId('pipeline-folded-stage')).toBeVisible();
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.getByTestId('pipeline-stages')).toBeVisible();
+      await page.reload();
+      await expect(page.getByTestId('pipeline-stages-toggle')).toHaveAttribute('aria-expanded', 'true', { timeout: 90_000 });
+      await page.getByTestId('pipeline-stages-toggle').click();
+      await page.reload();
+      await expect(page.getByTestId('pipeline-stages-toggle')).toHaveAttribute('aria-expanded', 'false', { timeout: 90_000 });
+    });
+
+    test('with no run chosen the pipeline stays open (runs needing attention are the content)', async ({ page }) => {
+      await boot(page, { locale, url: '/payroll?tab=dashboard', routes: bankHandler(), waitMs: 2500, stages: 'default' });
+      await expect(page.getByTestId('pipeline-attention')).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByTestId('pipeline-stages-toggle')).toHaveCount(0);
+    });
+
+    test('the sixteen tabs are five labelled groups and every tab is reachable without scrolling the strip', async ({ page }) => {
+      await boot(page, { locale, url: url('dashboard'), routes: bankHandler(), waitMs: 2500 });
+      const tabs = page.getByRole('tab');
+      await expect(tabs).toHaveCount(16, { timeout: 90_000 });
+      await expect(page.locator('[data-tab-group]')).toHaveCount(5);
+      const boxes = await tabs.evaluateAll(els => els.map(e => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, w: r.width }; }));
+      for (const b of boxes) { expect(b.w).toBeGreaterThan(0); expect(b.l).toBeGreaterThanOrEqual(0); expect(b.r).toBeLessThanOrEqual(1366); }
+      const strip = page.locator('[data-roving-tabs="payroll"]');
+      expect(await strip.evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+      // Arrow keys still walk the tabs in order.
+      // (From Bank / WPS to Payment Tracking: the next tab in reading order, which in Arabic is the one on the left.)
+      await page.locator('#payroll-tab-bank-wps').focus();
+      await page.keyboard.press(locale === 'ar' ? 'ArrowLeft' : 'ArrowRight');
+      await expect(page.locator('#payroll-tab-payment-tracking')).toHaveAttribute('aria-selected', 'true');
+    });
+
+    test('changing tab does not move the page', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      await expect(page.locator('#payroll-tab-payment-tracking')).toBeVisible({ timeout: 90_000 });
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      await page.evaluate(() => window.scrollTo(0, 120));
+      const before = await page.evaluate(() => window.scrollY);
+      await page.locator('#payroll-tab-payment-tracking').click();
+      await page.waitForTimeout(400);
+      expect(Math.abs((await page.evaluate(() => window.scrollY)) - before)).toBeLessThanOrEqual(2);
+    });
+
+    test('the top bar does not cover an anchor, the assistant is the compact circle, and a long batch scrolls inside its own region', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ records: MANY }), waitMs: 2500 });
+      const region = page.getByTestId('bank-records-scroll');
+      await expect(region).toBeVisible({ timeout: 90_000 });
+      await expect(region).toHaveAttribute('role', 'region');
+      const dims = await region.evaluate(el => ({ sh: el.scrollHeight, ch: el.clientHeight }));
+      expect(dims.sh).toBeGreaterThan(dims.ch);
+      expect(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop))).toBeGreaterThanOrEqual(60);
+      await expect(page.getByRole('button', { name: /Kody/ })).toHaveAttribute('data-compact', 'true');
+    });
+  });
+
+  test.describe(`W4: on a phone (${locale})`, () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test('a deep link does not scroll the page, and a wide table scrolls inside its card', async ({ page }) => {
+      await boot(page, { locale, url: url('payment-tracking'), routes: bankHandler(), waitMs: 2500 });
+      await expect(page.locator('#payroll-tab-payment-tracking')).toBeVisible({ timeout: 90_000 });
+      await page.waitForTimeout(500);
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      const card = page.getByRole('tabpanel').locator('.surface').filter({ has: page.locator('table') }).first();
+      await expect(card).toBeVisible();
+      const m = await card.evaluate(el => ({ ox: getComputedStyle(el).overflowX, sw: el.scrollWidth, cw: el.clientWidth }));
+      expect(m.ox).toBe('auto');
+      expect(m.sw).toBeGreaterThan(m.cw);
+      // The page itself has no sideways scroll.
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
     });
   });
 }
