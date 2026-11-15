@@ -23,6 +23,7 @@ const ar: Record<string, string> = {
   'Stage {stage}: {state}': 'المرحلة {stage}: {state}',
   'Payment records': 'سجلات الدفع',
   // ── W5: the bank file as four steps ──
+  'Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.': 'ملف رواتب البنك السعودي: ملف تعليمات دفع الرواتب (بصيغة البنك) — تعليمات ANB Connect بحقول حماية الأجور — هو الملف الذي يُرسل إلى البنك. لا يقبل «مدد» إلا ملف حماية الأجور الذي يوقّعه بنكك — احتفظ بملف المخرجات من البنك أو بلقطة شاشة من «مدد» كدليل قبل وضع علامة «مقبول» على الدفعة.',
   'Steps to a bank file': 'خطوات إعداد ملف البنك',
   'Choose the payment batch': 'اختيار دفعة الدفع',
   'Check the batch': 'التحقق من الدفعة',

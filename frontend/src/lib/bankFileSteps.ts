@@ -72,3 +72,15 @@ export function deriveBankSteps(input: {
     : { key: 'download', state: 'upcoming', reason: 'needs_file' };
   return [batch, check, create, download];
 }
+
+/**
+ * A starting value for the bank's batch reference (1 to 16 digits, never reused for this establishment): the digits of the payment batch
+ * number (PAY-202611-220353 -> 202611220353), which the server already makes unique per batch; failing that, the run's period and 01.
+ * Only a suggestion: the field stays editable and the server's "already used" check still decides.
+ */
+export function suggestedBatchReference(batchNumber: string | null | undefined, run?: { year: number; month: number } | null): string {
+  const digits = (batchNumber ?? '').replace(/\D/g, '');
+  if (/[1-9]/.test(digits)) return digits.slice(-16);
+  if (run) return `${run.year}${String(run.month).padStart(2, '0')}01`;
+  return '';
+}

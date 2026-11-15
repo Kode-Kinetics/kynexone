@@ -48,13 +48,16 @@ type Opts = {
   posts?: string[];
   extra?: Handler;
   stages?: 'open' | 'folded' | 'default';
+  /** The check's answer (default: passes). */
+  validation?: { canExport: boolean; errors: { code: string; message: string; employeeId?: number; field?: string }[] };
+  runStatus?: string;
 };
 
 const bankHandler = (o: Opts = {}): Handler => (path, search, method, route) => {
   if (o.extra) { const x = o.extra(path, search, method, route); if (x !== undefined) return x; }
   if (path === '/api/auth/me') return { ...USER, roles: o.roles ?? USER.roles, permissions: o.perms ?? [...PERMS, 'payroll.export', 'payroll.structure_manage'] };
   if (method !== 'GET') o.posts?.push(`${method} ${path}`);
-  if (path === '/api/payroll/runs') return { items: [RUN], total: 1, page: 1, pageSize: 100 };
+  if (path === '/api/payroll/runs') return { items: [{ ...RUN, status: o.runStatus ?? RUN.status }], total: 1, page: 1, pageSize: 100 };
   if (path === '/api/payroll/companies') return [COMPANY_ROW];
   if (path === '/api/payroll/readiness') return { year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: true, totalActiveEmployees: 9, employeesWithSalary: 9, salaryCoveragePercent: 100, validationErrors: 0, payrollRunStatus: 'Locked', steps: [] };
   if (path === '/api/payroll/overview') return { year: 2026, month: 11, totalCompanies: 1, totalActiveEmployees: 9, totalGrossPayroll: 144856.25, totalNetPayroll: 133588.9, totalValidationErrors: 0, totalPendingApprovals: 0, companies: [] };
@@ -85,7 +88,12 @@ const bankHandler = (o: Opts = {}): Handler => (path, search, method, route) => 
   if (path === `${bp}/companies/c1/settings`) return SETTINGS;
   if (path === `${bp}/companies/c1/templates`) return [];
   if (path === `${bp}/batches/${BATCH_ID}/context`) return { companyId: 'c1', companyName: 'Acme Arabia', countryCode: 'SA', runStatus: 'Locked', existingExport: null };
-  if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1' };
+  if (path === `${bp}/batches/${BATCH_ID}/validate`) return { canExport: true, errors: [], warnings: [], employeeCount: 9, totalAmount: 133588.9, currency: 'SAR', formatId: 'anb-connect-csv-v1', ...(o.validation ?? {}) };
+  if (path === `${bp}/batches/${BATCH_ID}/generate`) {
+    const body = JSON.parse(route.request().postData() ?? '{}') as { batchReference: string; paymentDate: string };
+    return { id: '44444444-4444-4444-8444-444444444444', formatId: 'anb-connect-csv-v1', files: [{ name: 'header.csv', sha256: 'a'.repeat(64) }, { name: 'body.csv', sha256: 'b'.repeat(64) }],
+      batchReference: body.batchReference, paymentDate: body.paymentDate, employeeCount: 9, totalAmount: 133588.9, downloadUrl: `${bp}/batches/${BATCH_ID}/download` };
+  }
   return undefined;
 };
 
@@ -271,6 +279,90 @@ for (const locale of LOCALES) {
       expect(m.sw).toBeGreaterThan(m.cw);
       // The page itself has no sideways scroll.
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1);
+    });
+  });
+}
+
+// ── W5: the bank file as four steps ───────────────────────────────────────────────────────────────
+
+const step = (page: Page, key: string) => page.locator(`[data-testid="bank-file-steps"] [data-step="${key}"]`);
+async function pickDate(page: Page, locale: Locale) {
+  const group = page.getByRole('group', { name: locale === 'ar' ? 'تاريخ قيمة الإيداع' : 'Credit value date' });
+  const selects = group.getByRole('combobox');
+  await expect(selects).toHaveCount(3);
+  for (let i = 0; i < 3; i++) {
+    const sel = selects.nth(i);
+    const values = await sel.locator('option').evaluateAll(els => els.map(e => (e as HTMLOptionElement).value));
+    await sel.selectOption(values.includes('2026') ? '2026' : values.includes('31') ? '30' : '11');
+  }
+}
+
+for (const locale of LOCALES) {
+  test.describe(`W5: bank file steps (${locale})`, () => {
+    test.use({ viewport: { width: 1366, height: 768 } });
+
+    test('the steps follow the batch: check is current, then done once validated, then the file is made and the download step offers the next move', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      await expect(step(page, 'batch')).toHaveAttribute('data-state', 'done', { timeout: 90_000 });
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'current');
+      await expect(step(page, 'create')).toHaveAttribute('data-state', 'upcoming');
+      await expect(step(page, 'create').getByTestId('bank-step-reason-create')).toContainText(say(locale, 'Waits for a successful check.'));
+      await expect(step(page, 'download')).toHaveAttribute('data-state', 'upcoming');
+      await expect(page.getByTestId('bank-file-steps').locator('[aria-current="step"]')).toHaveCount(1);
+
+      await pickDate(page, locale);
+      await page.getByRole('button', { name: locale === 'ar' ? 'تحقق' : 'Validate', exact: true }).click();
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'done');
+      await expect(step(page, 'create')).toHaveAttribute('data-state', 'current');
+      await page.getByRole('button', { name: locale === 'ar' ? 'إنشاء الملفات' : 'Generate files', exact: true }).click();
+      await expect(step(page, 'create')).toHaveAttribute('data-state', 'done');
+      await expect(step(page, 'download')).toHaveAttribute('data-state', 'current');
+      await step(page, 'download').getByRole('button', { name: say(locale, 'Open Payment Tracking') }).click();
+      await expect(page.locator('#payroll-tab-payment-tracking')).toHaveAttribute('aria-selected', 'true');
+    });
+
+    test('validation blockers block the check step and say where to fix them', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ validation: { canExport: false, errors: [{ code: 'iban_missing', message: 'IBAN is missing', employeeId: 203 }] } }), waitMs: 2500 });
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'current', { timeout: 90_000 });
+      await pickDate(page, locale);
+      await page.getByRole('button', { name: locale === 'ar' ? 'تحقق' : 'Validate', exact: true }).click();
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'blocked');
+      await expect(step(page, 'check').getByTestId('bank-step-reason-check')).toContainText(say(locale, 'The check found blockers. Fix them in the bank file section, then check again.'));
+      await expect(step(page, 'create')).toHaveAttribute('data-state', 'upcoming');
+    });
+
+    test('a closed gate blocks step 2 with its reason (switch off, no permission)', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ availability: { enabled: false } }), waitMs: 2500 });
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'blocked', { timeout: 90_000 });
+      await expect(step(page, 'check').getByTestId('bank-step-reason-check')).toContainText(say(locale, 'Bank file export is switched off for this company. Ask the platform team.'));
+    });
+
+    test('a run that is not locked and has no batch: step 1 is blocked, with the reason', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ batches: [], runStatus: 'Approved' }), waitMs: 2500 });
+      await expect(step(page, 'batch')).toHaveAttribute('data-state', 'blocked', { timeout: 90_000 });
+      await expect(step(page, 'batch').getByTestId('bank-step-reason-batch')).toContainText(say(locale, 'Lock the run first: a payment batch can only be created once the run is Locked.'));
+      await expect(step(page, 'check')).toHaveAttribute('data-state', 'upcoming');
+    });
+
+    test('the bank batch number is suggested from the payment batch number, stays editable, and says where it came from', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 2500 });
+      const input = page.getByLabel(locale === 'ar' ? 'رقم الدفعة' : 'Batch number', { exact: true });
+      await expect(input).toHaveValue('202611220353', { timeout: 90_000 });
+      await expect(page.getByText(locale === 'ar' ? 'مقترح من رقم دفعة الدفع' : 'Suggested from the payment batch number', { exact: false })).toBeVisible();
+      await input.fill('202611999');
+      await expect(input).toHaveValue('202611999');
+      await expect(page.getByText(locale === 'ar' ? 'مقترح من رقم دفعة الدفع' : 'Suggested from the payment batch number', { exact: false })).toHaveCount(0);
+      // The suggestion is only a starting value: the request carries what is in the box.
+      await pickDate(page, locale);
+      const validate = page.waitForRequest(r => r.url().endsWith('/validate'));
+      await page.getByRole('button', { name: locale === 'ar' ? 'تحقق' : 'Validate', exact: true }).click();
+      expect((await validate).postDataJSON()).toMatchObject({ batchReference: '202611999' });
+    });
+
+    test('the hedging sentence "if it does not appear" is gone: the reason is named where the panel would be', async ({ page }) => {
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ perms: FINANCE_PERMS, roles: ['Finance Approver'] }), waitMs: 2500 });
+      await expect(page.getByTestId('bank-file-no-permission')).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByText(/If it does not, you need|وإن لم يظهر/)).toHaveCount(0);
     });
   });
 }

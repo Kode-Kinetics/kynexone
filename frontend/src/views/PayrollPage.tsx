@@ -59,6 +59,8 @@ import { useFeatureFlags } from '../contexts/FeatureFlagContext';
 import { useTenantSettings } from '../contexts/TenantSettingsContext';
 import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
+import { BankFileSteps } from '../components/payroll/BankFileSteps';
+import { deriveBankSteps, suggestedBatchReference, type BankFlowProgress, type BankStepKey } from '../lib/bankFileSteps';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
 import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
@@ -2714,7 +2716,7 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
 const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
 
-function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; onRunChange?: (id: string | null) => void }) {
+function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?: string; onRunChange?: (id: string | null) => void; onNavigate?: (tab: string) => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
   const { hasPermission } = useAuth();
@@ -2740,6 +2742,8 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
   const [batchesState, setBatchesState] = useState<LoadStatus>({ status: 'idle' });
   const [recordsState, setRecordsState] = useState<LoadStatus>({ status: 'idle' });
   const [reloadKey, setReloadKey] = useState(0);
+  // Where the open batch is in check -> create -> download, reported by the bank-file gate and panel for the step strip above.
+  const [flow, setFlow] = useState<BankFlowProgress | null>(null);
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -2767,7 +2771,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     openBatchIdRef.current = batch.id;
-    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' });
+    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' }); setFlow(null);
     payrollApi.paymentRecords(batch.id)
       .then(rows => { if (openBatchIdRef.current === batch.id) { setRecords(rows); setRecordsState({ status: 'ready' }); } })
       .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
@@ -2779,6 +2783,18 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
     openBatch(batches[0]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches, selectedBatch]);
+
+  const steps = deriveBankSteps({
+    hasBatch: !!selectedBatch,
+    runLocked: runIsLocked,
+    canCreateBatch: canExport,
+    isSaudi: selectedBatch?.isSaudi === true,
+    progress: flow,
+    wpsStatus: selectedBatch ? (batches.find(b => b.id === selectedBatch.id)?.effectiveWpsStatus || batches.find(b => b.id === selectedBatch.id)?.wpsStatus) : null,
+  });
+  // The flow is the Saudi bank-file flow: shown while no batch is open (what to do first) and for a Saudi batch; a WPS/SIF batch has its own button.
+  const showSteps = !!runId && (!selectedBatch || selectedBatch.isSaudi === true);
+  const jumpStep = (key: BankStepKey) => jumpTo(key === 'batch' ? 'bank-wps-batches' : key === 'download' && document.getElementById('bank-wps-generated-export') ? 'bank-wps-generated-export' : 'bank-wps-bank-file');
 
   const jumpTo = (id: string) => {
     const target = document.getElementById(id) ?? document.getElementById('bank-wps-bank-file');
@@ -2893,6 +2909,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
         </div>
       )}
 
+      {showSteps && <BankFileSteps steps={steps} onJump={jumpStep} onOpenTracking={onNavigate ? () => onNavigate('payment-tracking') : undefined} />}
       {selectedBatch && (
         <nav aria-label={t('Jump to a section of this tab')} data-testid="bank-wps-jump" className="flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg bg-slate-50 px-3 py-1.5 text-xs dark:bg-white/5">
           <span className="text-slate-500 dark:text-slate-400">{t('Jump to')}</span>
@@ -2906,7 +2923,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
         </nav>
       )}
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="surface overflow-hidden">
+        <div id="bank-wps-batches" tabIndex={-1} className="surface overflow-hidden outline-none">
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
           </div>
@@ -2989,11 +3006,11 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
         <div className="flex items-start gap-2 rounded-lg bg-slate-50 px-4 py-2.5 text-sm text-slate-600 dark:bg-white/5 dark:text-slate-300">
           <Landmark className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. It appears below. If it does not, you need the Payroll export permission, or the platform team has switched bank export off for your company. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
+            {t('Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.')}
           </span>
         </div>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
+      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
     </div>
   );
 }
@@ -4267,7 +4284,7 @@ export function PayrollPage() {
       case 'validation':      return <ValidationTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'approvals':       return <ApprovalsTab selectedRunId={contextRunId} onRunChange={selectRunId} isAdmin={isAdmin} isFinance={isFinance} isHROrPayroll={isHROrPayroll || isAdmin} onReconNotReviewed={reconNotReviewed} />;
       case 'payslips':        return <PayslipsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
-      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
+      case 'bank-wps':        return <BankWpsTab selectedRunId={contextRunId} onRunChange={selectRunId} onNavigate={navigateTab} />;
       case 'payment-tracking': return <PaymentTrackingTab selectedRunId={contextRunId} />;
       case 'reports':         return <ReportsTab selectedRunId={contextRunId} onRunChange={selectRunId} />;
       case 'eosb':            return <EOSBTab />;

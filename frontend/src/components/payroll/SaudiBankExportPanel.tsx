@@ -80,6 +80,7 @@ export type Copy = {
   selectBatchType: string; saveSetup: string; saving: string; saved: string; unsaved: string;
   noManagePerm: string; noExportPerm: string;
   batchTitle: string; batchReference: string; batchReferenceHelp: string; paymentDate: string; paymentDateHelp: string;
+  batchReferenceSuggested: string;
   validate: string; validating: string; generate: string; generating: string; download: string; downloading: string;
   needSave: string; needValidate: string; staleValidation: string; blocked: string; busy: string;
   validationOk: string; validationBlocked: (n: number) => string; warnings: string; employees: string; total: string;
@@ -143,6 +144,7 @@ export const EN: Copy = {
   batchReferenceHelp: '1–16 digits. This is the WPS file reference: it must never repeat for this establishment, including on voided runs; also check references used outside KynexOne.',
   paymentDate: 'Credit value date',
   paymentDateHelp: 'Date the bank should credit employees.',
+  batchReferenceSuggested: 'Suggested from the payment batch number. Change it if your bank or your own records use another number.',
   validate: 'Validate',
   validating: 'Validating…',
   generate: 'Generate files',
@@ -237,6 +239,7 @@ export const AR: Copy = {
   batchReferenceHelp: 'من 1 إلى 16 رقمًا. هذا هو مرجع ملف حماية الأجور ويجب ألا يتكرر لهذه المنشأة أبدًا، بما في ذلك المسيرات الملغاة.',
   paymentDate: 'تاريخ قيمة الإيداع',
   paymentDateHelp: 'التاريخ الذي يودع فيه البنك الرواتب.',
+  batchReferenceSuggested: 'مقترح من رقم دفعة الدفع. غيّره إذا كان بنكك أو سجلاتك تستخدم رقمًا آخر.',
   validate: 'تحقق',
   validating: 'جارٍ التحقق…',
   generate: 'إنشاء الملفات',
@@ -512,8 +515,10 @@ type Busy = null | 'save' | 'validate' | 'generate' | 'download';
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
-export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress }: {
+export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress, suggestedReference }: {
   batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string>;
+  /** Pre-fills the batch number of a batch that has no export yet (editable; the server still refuses a reused one). */
+  suggestedReference?: string;
   /** Where the batch is in check -> create -> download, for the step flow above the panel. */
   onProgress?: (p: BankFlowProgress) => void;
 }) {
@@ -544,6 +549,8 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
   const busyRef = useRef(false);
   const actionAbortRef = useRef<AbortController | null>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const suggestedRef = useRef(suggestedReference ?? '');
+  suggestedRef.current = suggestedReference ?? '';
 
   // ── Load: context first (gives companyId), then formats + settings in parallel.
   useEffect(() => {
@@ -558,7 +565,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
     setFormats([]);
     setSavedSettings(null);
     setDraft(EMPTY_SETTINGS);
-    setBatchInput({ batchReference: '', paymentDate: '' });
+    setBatchInput({ batchReference: suggestedRef.current, paymentDate: '' });
     setValidation(null);
     setArtifact(null);
     setActionError(null);
@@ -869,7 +876,9 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
         <div className="rounded-xl border border-slate-100 p-4 dark:border-white/10">
           <h4 className="text-sm font-semibold text-slate-800 dark:text-white">{c.batchTitle}</h4>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <FieldShell id={fid('batchReference')} label={c.batchReference} help={c.batchReferenceHelp} error={bErr('batchReference')}>
+            <FieldShell id={fid('batchReference')} label={c.batchReference}
+              help={!artifact && suggestedReference && batchInput.batchReference === suggestedReference ? `${c.batchReferenceHelp} ${c.batchReferenceSuggested}` : c.batchReferenceHelp}
+              error={bErr('batchReference')}>
               <input id={fid('batchReference')} className={`${inp} ${bErr('batchReference') ? inpErr : ''}`} value={batchInput.batchReference}
                 onChange={(e) => setBatchField('batchReference', e.target.value)} inputMode="numeric" dir="ltr" autoComplete="off"
                 aria-invalid={bErr('batchReference') ? true : undefined}

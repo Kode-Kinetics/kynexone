@@ -44,7 +44,7 @@ function GateReason({ testId, title, children, action }: { testId: string; title
   );
 }
 
-export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress }: {
+export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSaudi = false, onProgress, suggestedReference }: {
   batchId: string;
   employeeIds: number[];
   employeeLabels?: Record<number, string>;
@@ -52,6 +52,8 @@ export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSa
   isSaudi?: boolean;
   /** The step flow above the panel follows what the gate and the panel report. */
   onProgress?: (p: BankFlowProgress) => void;
+  /** Starting value for the bank's batch number (see suggestedBatchReference). */
+  suggestedReference?: string;
 }) {
   const t = useT();
   const { hasPermission } = useAuth();
@@ -74,7 +76,7 @@ export function SaudiBankExportGate({ batchId, employeeIds, employeeLabels, isSa
   useEffect(() => { if (gate !== 'ready') onProgress?.({ gate, validation: 'none', generated: false }); }, [gate, onProgress]);
 
   if (gate === 'ready') {
-    return <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} />;
+    return <Panel key={batchId} batchId={batchId} employeeIds={employeeIds} employeeLabels={employeeLabels} onProgress={onProgress} suggestedReference={suggestedReference} />;
   }
   if (!isSaudi) return null;
   if (gate === 'checking') return <GateSkeleton />;
