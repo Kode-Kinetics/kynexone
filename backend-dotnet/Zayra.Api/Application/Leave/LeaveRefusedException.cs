@@ -69,5 +69,6 @@ public static class LeaveRefusalCodes
     public const string StatutoryLimit = "leave_statutory_limit";                 // args: days (when known)
     public const string NotEligible = "leave_not_eligible";                       // args: leaveType, leaveTypeAr
     public const string InvalidDates = "leave_invalid_dates";
+    public const string CancelAfterStart = "leave_cancel_after_start";            // an employee cannot cancel approved leave that has started
     public const string Other = "leave_refused";                                  // a refusal with no dedicated sentence yet
 }

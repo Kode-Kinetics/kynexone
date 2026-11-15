@@ -249,6 +249,7 @@ test('a leave refusal code maps to its own kind, ahead of any wording', () => {
   assert.equal(kind('leave_statutory_limit'), 'statutoryLimitNoDays');
   assert.equal(kind('leave_not_eligible', { leaveType: 'Hajj' }), 'notEligible');
   assert.equal(kind('leave_invalid_dates'), 'invalidDates');
+  assert.equal(kind('leave_cancel_after_start'), 'cancelAfterStart');
   assert.equal(kind('leave_refused'), 'refused');
 });
 

@@ -620,6 +620,15 @@ public class LeaveRequestsController : ControllerBase
 
         if (leaveRequest.Status == "Approved")
         {
+            // Owner rule: an employee may ask to cancel approved leave only BEFORE it starts (the tenant's today, as every other
+            // leave date rule reads it). Once it has started, HR decides. Admin and HR Manager are not held to this.
+            if (!isAdminOrHr && leaveRequest.StartDate <= await TenantClock.TodayForAsync(_db, tenantId.Value, ct))
+                return BadRequest(new
+                {
+                    code = LeaveRefusalCodes.CancelAfterStart,
+                    message = "Approved leave can only be cancelled before it starts. Ask HR if it needs to change.",
+                    args = new Dictionary<string, string>(),
+                });
             if (await _db.LeaveCancellationRequests.AnyAsync(x => x.TenantId == tenantId
                     && x.LeaveRequestId == id && x.Status == "Pending", ct))
                 return Conflict(new { message = "A cancellation request is already pending." });
