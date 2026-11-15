@@ -823,7 +823,8 @@ function AdvancesTab() {
       });
       setCreateModal(false); setSelectedEmployee(null); load();
     }
-    catch (e: any) { setError(e?.response?.data || 'Failed to create advance.'); }
+    // A refusal is { error, message, messageAr }: show its sentence in the reader's language, never the object.
+    catch (e) { setError(apiErrorReason(e, 'Failed to create advance.')); }
     finally { setSaving(false); }
   };
 
