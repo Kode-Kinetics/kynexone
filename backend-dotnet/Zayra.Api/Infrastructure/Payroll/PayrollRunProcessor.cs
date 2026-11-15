@@ -2573,6 +2573,28 @@ public sealed class PayrollRunProcessor
                 }
                 continue;
             }
+            // A leaver's final pay that recovers part of the loan settles its instalments in due order, whatever their due dates (the
+            // whole balance was due): each fully covered row Paid, the rest of the take recorded on the next row, every row witnessed.
+            // So a later 1420 move closes exactly the rest, and a void of this run reopens exactly what it took.
+            if (settlingEmployeeIds.Contains(loan.EmployeeIntId ?? 0))
+            {
+                var open = await _db.LoanInstallments
+                    .Where(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                foreach (var row in open)
+                {
+                    if (left <= 0m) break;
+                    var share = Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share <= 0m) continue;
+                    Witness(PayrollConsumptionArtifacts.LoanInstallment, row.Id, loan.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.AmountPaid += share; row.PayrollRunId = id;
+                    if (row.AmountPaid >= row.AmountDue) { row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); }
+                    left -= share;
+                }
+                continue;
+            }
             // Record the paid installment
             var inst = await _db.LoanInstallments
                 .OrderBy(i => i.DueDate)
@@ -2615,6 +2637,26 @@ public sealed class PayrollRunProcessor
                     Witness(PayrollConsumptionArtifacts.AdvanceInstallment, row.Id, adv.EmployeeIntId ?? 0, share,
                             row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
                     row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); row.PayrollRunId = id; row.AmountPaid += share;
+                    left -= share;
+                }
+                continue;
+            }
+            // A leaver's partial recovery: the same in-order settlement as for loans above.
+            if (settlingEmployeeIds.Contains(adv.EmployeeIntId ?? 0))
+            {
+                var open = await _db.AdvanceInstallments
+                    .Where(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                foreach (var row in open)
+                {
+                    if (left <= 0m) break;
+                    var share = Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share <= 0m) continue;
+                    Witness(PayrollConsumptionArtifacts.AdvanceInstallment, row.Id, adv.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.AmountPaid += share; row.PayrollRunId = id;
+                    if (row.AmountPaid >= row.AmountDue) { row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); }
                     left -= share;
                 }
                 continue;
