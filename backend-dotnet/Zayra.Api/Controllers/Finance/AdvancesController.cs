@@ -509,7 +509,9 @@ public partial class AdvancesController : ControllerBase
     /// and the disbursement journal posts Dr Employee Salary Advances (ADVANCE_RECEIVABLE, 1410) / Cr Cash/Bank (CASH_BANK, 1000)
     /// for the approved amount, dated and periodised on the paid date, in the advance's company and currency, once (the same
     /// post-once probe as before). This mirrors the loan payment outcome (LoansController.RecordPaymentLineOutcome): the same
-    /// Admin/Finance gate with the role re-checked in the body, the same closed-period refusal, the same reference evidence.
+    /// audience (loans.write, then the Admin or Finance role checked in the body), the same closed-period refusal, the same
+    /// reference evidence. Gated by permission rather than a role list (the architecture ratchet allows no new role gate); the
+    /// role gate the loan endpoint uses resolves to the same loans.write key.
     /// <para>Controls: the advance lock is held for the whole unit; only an Approved advance can be paid; the payer is never the
     /// person who approved it, nor the employee it pays; the employee must still be serving; a repeat with the same reference
     /// returns the paid advance and posts nothing, a different reference is refused.</para>
@@ -519,7 +521,7 @@ public partial class AdvancesController : ControllerBase
     /// payroll collected a month early and the instalment stamps drifted).</para>
     /// </summary>
     [HttpPost("{id:guid}/payout")]
-    [Authorize(Roles = "Admin,Finance")]
+    [HasPermission("loans.write")]
     public Task<IActionResult> Payout(Guid id, [FromBody] AdvancePayoutRequest req, CancellationToken ct)
     {
         var tid = GetTenantId();
@@ -527,7 +529,7 @@ public partial class AdvancesController : ControllerBase
         return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
             _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
         {
-        // The role gate resolves to loans.write, which HR roles also hold: paying is the Finance tier only.
+        // loans.write is also held by HR roles: paying is the Finance tier only (Admin or Finance), as for loan payments.
         if (!IsFinanceActor()) return Forbid();
         if (uid == null) return Unauthorized();
         var reference = req.Reference?.Trim();

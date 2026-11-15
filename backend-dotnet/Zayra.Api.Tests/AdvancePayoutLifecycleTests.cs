@@ -220,12 +220,17 @@ public class AdvancePayoutLifecycleTests
     }
 
     [Fact]
-    public void Payout_IsAFinanceRoleAction_LikeTheLoanPaymentOutcome()
+    public void Payout_IsGatedOnLoansWrite_WithNoNewRoleGate_TheBodyKeepsItToFinance()
     {
+        // Same audience as the loan payment outcome: loans.write (what that endpoint's role gate resolves to), then the Admin or
+        // Finance role in the body (Payout_ByAnHrManagerWithoutTheFinanceRole_IsForbidden). No [Authorize(Roles)]: the
+        // architecture ratchet allows no new role gate.
         var method = typeof(AdvancesController).GetMethod(nameof(AdvancesController.Payout))!;
-        var roles = method.GetCustomAttributes(typeof(Microsoft.AspNetCore.Authorization.AuthorizeAttribute), true)
-            .Cast<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>().Select(a => a.Roles).Single();
-        Assert.Equal("Admin,Finance", roles);
+        var permission = (Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute)Attribute.GetCustomAttribute(
+            method, typeof(Zayra.Api.Infrastructure.Authorization.HasPermissionAttribute))!;
+        Assert.Equal(new[] { "loans.write" }, permission.Permissions);
+        Assert.DoesNotContain(method.GetCustomAttributes(typeof(Microsoft.AspNetCore.Authorization.AuthorizeAttribute), true)
+            .Cast<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>(), a => !string.IsNullOrEmpty(a.Roles));
         var route = method.GetCustomAttributes(typeof(HttpPostAttribute), true).Cast<HttpPostAttribute>().Single();
         Assert.Equal("{id:guid}/payout", route.Template);
     }

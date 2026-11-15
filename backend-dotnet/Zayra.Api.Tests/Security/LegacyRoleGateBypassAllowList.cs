@@ -67,9 +67,6 @@ public sealed partial class LegacyRoleGateBypassSweepTests
         ("GET Advances.AuditReport", "Manager", TeamScopedRead),
         ("GET Advances.AuditReport", "HR Director", SeniorHr),
         ("PATCH Advances.Reject", "Payroll Manager,Finance Approver", FinanceDecisionGuarded),
-        // Payout resolves to loans.write, which HR Manager holds; the body re-checks IsFinanceActor (Admin or Finance), as the loan
-        // payment outcome does, so HR Manager reaches only a Forbid.
-        ("POST Advances.Payout", "HR Manager", BodyRechecksRole),
         ("POST Applications.AcceptOffer", "Recruiter", OwnModule),
         ("POST Applications.AcceptOffer", "HR Director", SeniorHr),
         ("POST Applications.AddNote", "Recruiter", OwnModule),
