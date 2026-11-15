@@ -236,6 +236,14 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
             return Task.CompletedTask;
         }, (db, id) => db.EosbProvisionSnapshots.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
 
+        yield return new("leave provision snapshot", "leave_provisions", (db, t) =>
+        {
+            var run = new PayrollRun { TenantId = t.TenantId, CompanyId = t.CompanyId, Year = 2026, Month = 6, Status = "Draft" };
+            db.PayrollRuns.Add(run);
+            db.LeaveProvisionSnapshots.Add(new LeaveProvisionSnapshot { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, PayrollRunId = run.Id, Period = "2026-06", MeasuredAt = new DateOnly(2026, 6, 30), Days = 10, DailyRate = 100, Basis = "Gross", Obligation = 1000, Currency = "SAR" });
+            return Task.CompletedTask;
+        }, (db, id) => db.LeaveProvisionSnapshots.IgnoreQueryFilters().CountAsync(x => x.EmployeeId == id));
+
         yield return new("bank payment record", "payment_records", (db, t) =>
         {
             db.PayrollPaymentRecords.Add(new PayrollPaymentRecord { TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, PaymentBatchId = Guid.NewGuid(), Amount = 8000m, Status = "Pending" });
