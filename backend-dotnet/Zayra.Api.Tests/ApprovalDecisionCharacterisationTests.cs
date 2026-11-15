@@ -254,10 +254,10 @@ public class ApprovalDecisionCharacterisationTests
     [InlineData("Rejected")]
     [InlineData("Settled")]
     [InlineData("Cancelled")]
-    public async Task Advances_Approve_OnANonPendingAdvance_IsAPlainStringBadRequest_NotAConflict(string status)
+    public async Task Advances_Approve_OnANonPendingAdvance_IsACodedBadRequest_NotAConflict(string status)
     {
-        // Pinned inconsistency: Approve refuses with 400 + bare string, while Reject (below)
-        // refuses the same condition with 409 + an error code. Same file, same aggregate.
+        // Pinned inconsistency: Approve refuses with 400, while Reject (below) refuses the same condition with 409.
+        // Both now carry the code invalid_advance_state and the sentence in English and Arabic.
         await using var db = CreateDb();
         var f = await SeedAdvanceAsync(db, status: status);
 
@@ -265,7 +265,7 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(1_000m, 2, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Advance is not in Pending status.", bad.Value as string);
+        Assert.Equal("Advance is not in Pending status.", Msg(bad.Value));
         Assert.Equal(status, (await db.SalaryAdvances.SingleAsync()).Status);
         Assert.Empty(await db.AdvanceInstallments.ToListAsync());
     }
@@ -327,7 +327,7 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Advances_Approve_MakerChecker_RefusesWithAPlainStringBadRequest()
+    public async Task Advances_Approve_MakerChecker_RefusesWithACodedBadRequest()
     {
         await using var db = CreateDb();
         var requester = Guid.NewGuid();
@@ -337,7 +337,7 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(1_000m, 1, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Maker-checker control: requester cannot approve their own salary advance.", bad.Value as string);
+        Assert.Equal("Maker-checker control: requester cannot approve their own salary advance.", Msg(bad.Value));
         Assert.Equal("Pending", (await db.SalaryAdvances.SingleAsync()).Status);
     }
 
@@ -696,6 +696,10 @@ public class ApprovalDecisionCharacterisationTests
         await db.SaveChangesAsync();
         return new OfferFixture(tenantId, offer.Id, applicationId, approval.Id, approverUserId);
     }
+
+    /// <summary>The English sentence of a coded refusal body ({ error, message, messageAr }).</summary>
+    private static string? Msg(object? body) =>
+        body is null ? null : System.Text.Json.JsonSerializer.SerializeToElement(body).GetProperty("message").GetString();
 
     private static ZayraDbContext CreateDb()
         => new(new DbContextOptionsBuilder<ZayraDbContext>()

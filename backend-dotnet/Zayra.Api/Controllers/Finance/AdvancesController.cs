@@ -61,7 +61,9 @@ public partial class AdvancesController : ControllerBase
             || req.MaxAdvancesPerYear is < 0 or > 100 || req.MinServiceMonths is < 0 or > 600
             || req.CooldownMonths is < 0 or > 600 || req.MaxInstallments is < 1 or > MaxInstallmentsWithoutPolicy
             || string.IsNullOrWhiteSpace(req.PolicyName) || req.PolicyName.Length > 200)
-            return BadRequest($"Policy values are out of range: salary percentage 0-100, installments 1-{MaxInstallmentsWithoutPolicy}, counts and months non-negative.");
+            return BadRequest(Refusal("advance_policy_invalid",
+                $"Policy values are out of range: salary percentage 0-100, installments 1-{MaxInstallmentsWithoutPolicy}, counts and months non-negative.",
+                $"قيم السياسة خارج النطاق: نسبة الراتب من 0 إلى 100، والأقساط من 1 إلى {MaxInstallmentsWithoutPolicy}، والأعداد والأشهر غير سالبة."));
         var p = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
         var before = p == null ? null : JsonSerializer.Serialize(PolicyValues(p));
         if (p != null)
@@ -189,7 +191,9 @@ public partial class AdvancesController : ControllerBase
         var uid = GetUserId();
         if (uid == null) return Unauthorized();
         if (!IsMoney(req.RequestedAmount))
-            return BadRequest("The requested amount must be a positive amount with at most two decimal places.");
+            return BadRequest(Refusal("advance_amount_invalid",
+                "The requested amount must be a positive amount with at most two decimal places.",
+                "يجب أن يكون المبلغ المطلوب موجبًا وبمنزلتين عشريتين على الأكثر."));
         // Who the caller IS comes from the login-to-employee link (CallerEmployeeResolver), the one lookup
         // self-service, mobile and the data scope share. The legacy Employee.UserAccountId column is not used:
         // a login linked only through EmployeeUserAccounts would otherwise be refused its own request.
@@ -197,11 +201,13 @@ public partial class AdvancesController : ControllerBase
         if (req.EmployeeId == Guid.Empty && !req.EmployeeIntId.HasValue)
         {
             // Self-service: no employee named means the signed-in employee, as for a loan request.
-            if (!ownId.HasValue) return BadRequest(EssLinkGuidance.En);
+            if (!ownId.HasValue) return BadRequest(Refusal("ess_link_missing", EssLinkGuidance.En, EssLinkGuidance.Ar));
             req = req with { EmployeeIntId = ownId };
         }
         var identity = await _db.ResolveEmployeeAsync(tid, req.EmployeeId, req.EmployeeIntId, ct);
-        if (!identity.IsSuccess) return BadRequest(identity.Error);
+        if (!identity.IsSuccess)
+            return BadRequest(Refusal("advance_employee_not_found", identity.Error ?? "The employee could not be identified.",
+                "تعذر تحديد الموظف المطلوب له السلفة."));
         var employee = identity.Employee!;
         var scope = await _scopeService.ResolveAsync(User, tid, ct);
         if (!scope.CanAccessEmployee(employee.Id)) return Forbid();
@@ -230,7 +236,9 @@ public partial class AdvancesController : ControllerBase
             var now = DateTime.UtcNow;
             if (policy.MinServiceMonths > 0
                 && (employee.JoiningDate == default || employee.JoiningDate.Date > now.Date.AddMonths(-policy.MinServiceMonths)))
-                return BadRequest($"At least {policy.MinServiceMonths} completed service month(s) are required before a salary advance.");
+                return BadRequest(Refusal("advance_min_service",
+                    $"At least {policy.MinServiceMonths} completed service month(s) are required before a salary advance.",
+                    $"يلزم إكمال {policy.MinServiceMonths} شهر خدمة على الأقل قبل طلب سلفة راتب."));
 
             var currentYear = now.Year;
             // A rejected or cancelled request never paid anything, so it does not use up the year's allowance; a typo
@@ -240,7 +248,9 @@ public partial class AdvancesController : ControllerBase
                      && x.Status != AdvanceStatuses.Rejected && x.Status != AdvanceStatuses.Cancelled
                      && x.CreatedAtUtc.Year == currentYear, ct);
             if (advancesThisYear >= policy.MaxAdvancesPerYear)
-                return BadRequest($"Employee has already used {advancesThisYear} advance(s) this year. Maximum allowed is {policy.MaxAdvancesPerYear}.");
+                return BadRequest(Refusal("advance_yearly_limit",
+                    $"Employee has already used {advancesThisYear} advance(s) this year. Maximum allowed is {policy.MaxAdvancesPerYear}.",
+                    $"استخدم الموظف {advancesThisYear} سلفة هذا العام. الحد الأقصى المسموح {policy.MaxAdvancesPerYear}."));
 
             if (policy.CooldownMonths > 0)
             {
@@ -250,7 +260,9 @@ public partial class AdvancesController : ControllerBase
                     x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
                          && (x.Status == "Settled" || x.Status == "Closed") && x.UpdatedAtUtc > cooldownCutoff, ct);
                 if (recentlySettled)
-                    return BadRequest($"Employee must wait {policy.CooldownMonths} month(s) after settling an advance before requesting a new one.");
+                    return BadRequest(Refusal("advance_cooldown",
+                        $"Employee must wait {policy.CooldownMonths} month(s) after settling an advance before requesting a new one.",
+                        $"يجب على الموظف الانتظار {policy.CooldownMonths} شهر بعد تسوية سلفة قبل طلب سلفة جديدة."));
             }
 
             if (await SalaryCapRefusalAsync(tid, employee, policy, req.RequestedAmount, ct) is { } capRefusal)
@@ -344,9 +356,13 @@ public partial class AdvancesController : ControllerBase
         // The approved terms are bounded by the request and by the active policy; the checker may lower the
         // amount, never raise it past what was asked for or past the salary cap.
         if (!IsMoney(req.ApprovedAmount))
-            return BadRequest("The approved amount must be a positive amount with at most two decimal places.");
+            return BadRequest(Refusal("advance_amount_invalid",
+                "The approved amount must be a positive amount with at most two decimal places.",
+                "يجب أن يكون المبلغ المعتمد موجبًا وبمنزلتين عشريتين على الأكثر."));
         if (req.ApprovedAmount > adv.RequestedAmount)
-            return BadRequest("The approved amount cannot exceed the requested amount.");
+            return BadRequest(Refusal("advance_amount_above_request",
+                "The approved amount cannot exceed the requested amount.",
+                "لا يمكن أن يتجاوز المبلغ المعتمد المبلغ المطلوب."));
         if (StartDateRefusal(req.RepaymentStartDate) is { } startRefusal) return BadRequest(startRefusal);
         var employee = await LoadAdvanceEmployeeAsync(tid, adv, ct);
         if (await EmploymentRefusalAsync(tid, employee, ct) is { } notServing) return BadRequest(notServing);
@@ -634,7 +650,9 @@ public partial class AdvancesController : ControllerBase
     [HttpPatch("{id:guid}/installments/{installmentId:guid}/pay")]
     [Authorize(Roles = "Admin,Finance,HR Manager")]
     public Task<IActionResult> MarkInstallmentPaid(Guid id, Guid installmentId, [FromBody] PayAdvanceInstallmentRequest req, CancellationToken ct) =>
-        Task.FromResult<IActionResult>(Conflict("Salary advances are repaid through payroll deduction. An installment cannot be marked paid by hand; a cash repayment needs a receipt with a payment reference, which is not available for advances yet."));
+        Task.FromResult<IActionResult>(Conflict(Refusal("advance_installment_manual_payment_refused",
+            "Salary advances are repaid through payroll deduction. An installment cannot be marked paid by hand; a cash repayment needs a receipt with a payment reference, which is not available for advances yet.",
+            "تُسترد سلف الرواتب عبر الخصم من الرواتب. لا يمكن تسجيل سداد قسط يدويًا؛ السداد النقدي يحتاج إلى إيصال بمرجع دفع، وهو غير متاح للسلف بعد.")));
 
     // ── Audit & Reconciliation Report ────────────────────────────────────────
 
@@ -780,8 +798,12 @@ public partial class AdvancesController : ControllerBase
     private IActionResult AdvanceApproveRefusal(ApprovalGuardVerdict verdict) => verdict.Outcome switch
     {
         ApprovalGuardOutcome.ParentNotFound => NotFound(),
-        ApprovalGuardOutcome.ParentStateForbidsDecision => BadRequest("Advance is not in Pending status."),
-        ApprovalGuardOutcome.MakerIsChecker or ApprovalGuardOutcome.SubjectIsDecider => BadRequest(verdict.Message),
+        ApprovalGuardOutcome.ParentStateForbidsDecision => BadRequest(Refusal("invalid_advance_state",
+            "Advance is not in Pending status.", "السلفة ليست في حالة انتظار.")),
+        ApprovalGuardOutcome.MakerIsChecker => BadRequest(Refusal("advance_maker_is_checker", verdict.Message!,
+            "ضابط الفصل بين المهام: لا يمكن لمقدم الطلب اعتماد سلفة الراتب التي طلبها.")),
+        ApprovalGuardOutcome.SubjectIsDecider => BadRequest(Refusal("advance_subject_is_decider", verdict.Message!,
+            "الفصل بين المهام: لا يمكنك اعتماد سلفة راتب مدفوعة لك.")),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 
@@ -790,11 +812,9 @@ public partial class AdvancesController : ControllerBase
     {
         ApprovalGuardOutcome.ParentNotFound => NotFound(),
         ApprovalGuardOutcome.ParentStateForbidsDecision =>
-            Conflict(new
-            {
-                error = "invalid_advance_state",
-                message = $"Only a Pending advance can be rejected (current: {advanceStatus})."
-            }),
+            Conflict(Refusal("invalid_advance_state",
+                $"Only a Pending advance can be rejected (current: {advanceStatus}).",
+                $"لا يمكن رفض إلا سلفة في حالة انتظار (الحالة الحالية: {advanceStatus}).")),
         _ => throw new InvalidOperationException($"Unhandled approval guard outcome '{verdict.Outcome}'."),
     };
 
@@ -825,17 +845,19 @@ public partial class AdvancesController : ControllerBase
 
     /// <summary>The policy's installment rule for an amount: 1..MaxInstallments, exactly 1 when installments are
     /// not allowed, and every installment at least 0.01. Null when the request complies.</summary>
-    private static string? InstallmentsRefusal(AdvancePolicy? policy, decimal amount, int installments)
+    private static object? InstallmentsRefusal(AdvancePolicy? policy, decimal amount, int installments)
     {
         var max = policy == null ? MaxInstallmentsWithoutPolicy
             : !policy.AllowInstallments ? 1
             : Math.Clamp(policy.MaxInstallments, 1, MaxInstallmentsWithoutPolicy);
         if (installments < 1 || installments > max)
             return max == 1
-                ? "This advance policy requires repayment in a single installment."
-                : $"Installments must be between 1 and {max}.";
+                ? Refusal("advance_installments_invalid", "This advance policy requires repayment in a single installment.",
+                    "تشترط سياسة السلف السداد على قسط واحد.")
+                : Refusal("advance_installments_invalid", $"Installments must be between 1 and {max}.",
+                    $"يجب أن يكون عدد الأقساط بين 1 و{max}.");
         if (amount < installments * .01m)
-            return "Each installment must be at least 0.01.";
+            return Refusal("advance_installments_invalid", "Each installment must be at least 0.01.", "يجب ألا يقل كل قسط عن 0.01.");
         return null;
     }
 
@@ -845,13 +867,17 @@ public partial class AdvancesController : ControllerBase
     /// allowances, in the company's currency). An unknown wage refuses rather than lets the request through.
     /// Null when the amount is within the cap or the policy sets no percentage.
     /// </summary>
-    private async Task<string?> SalaryCapRefusalAsync(Guid tid, Employee employee, AdvancePolicy policy, decimal amount, CancellationToken ct)
+    private async Task<object?> SalaryCapRefusalAsync(Guid tid, Employee employee, AdvancePolicy policy, decimal amount, CancellationToken ct)
     {
         if (policy.MaxPercentageOfSalary <= 0) return null;
         if (await SalaryCapAsync(tid, employee, policy, ct) is not { } cap)
-            return "An active salary structure in the company's currency is required to apply the advance policy's salary cap.";
+            return Refusal("advance_salary_unknown",
+                "An active salary structure in the company's currency is required to apply the advance policy's salary cap.",
+                "يلزم هيكل راتب نشط بعملة الشركة لتطبيق حد الراتب في سياسة السلف.");
         return amount > cap.Amount
-            ? $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap.Amount:0.00} {cap.Currency})."
+            ? Refusal("advance_salary_cap",
+                $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap.Amount:0.00} {cap.Currency}).",
+                $"يتجاوز المبلغ حد السياسة البالغ {policy.MaxPercentageOfSalary:0.##}% من الراتب الشهري ({cap.Amount:0.00} {cap.Currency}).")
             : null;
     }
 
