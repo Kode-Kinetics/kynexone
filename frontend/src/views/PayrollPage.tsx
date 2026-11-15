@@ -2366,7 +2366,8 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const outsideList = overrideReport?.paidOutsideBankFile ?? [];
   const outsideCount = outsideList.length;
   const needsOutsideAck = outsideCount > 0;
-  // People the run pays although their record says something that may mean they are not owed a full month.
+  // People the run pays although their record says something that may mean they are not owed a full month, and people
+  // it does not pay although their status says employed: one count the approver states.
   const payWarnings = population?.payWarnings ?? [];
   const payWarningCount = population?.payWarningCount ?? 0;
   const needsPayWarningAck = payWarningCount > 0;
@@ -2557,11 +2558,11 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                 <AcknowledgementPanel
                   tone="amber"
                   ackId="ack-pay-warnings"
-                  title={t('{payWarningCount} employee(s) are paid with a warning', { payWarningCount })}
-                  blurb={t('These people are paid, but their record suggests they may not be owed a full month. Check each one before approving.')}
+                  title={t('{payWarningCount} employee(s) need a check before approval', { payWarningCount })}
+                  blurb={t('Some are paid although their record suggests they may not be owed a full month; others are not paid although their status says they are employed. Check each one before approving.')}
                   checked={ackPayWarnings}
                   onChange={setAckPayWarnings}
-                  confirmLabel={t('I have reviewed the list and confirm exactly {payWarningCount} employee(s) are paid with a warning.', { payWarningCount })}
+                  confirmLabel={t('I have reviewed the list and confirm exactly {payWarningCount} employee(s) need a check.', { payWarningCount })}
                   rows={payWarnings.map(w => ({
                     key: `${w.employeeId}-${w.reasonCode}`,
                     primary: `${w.code} — ${w.name}`,

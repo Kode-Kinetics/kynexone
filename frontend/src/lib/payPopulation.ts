@@ -25,6 +25,7 @@ const REASON_LABELS: Record<string, string> = {
   WARN_NO_LAST_WORKING_DAY: msg('Resigned or on notice with no last working day — paid in full'),
   WARN_STATUS_ON_LEAVE_NO_LEAVE_REQUEST: msg('Status On leave with no approved leave this period — paid in full'),
   DELETED_BUT_WAGES_OWED: msg('Record deleted but wages owed — paid to the last working day'),
+  WARN_EMPLOYED_STATUS_NOT_PAID: msg('Status says employed, but not paid by this run'),
 };
 
 /** The translated words for a reason code; a code the screen does not know is shown as is. */

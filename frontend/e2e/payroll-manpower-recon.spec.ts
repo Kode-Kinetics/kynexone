@@ -590,12 +590,13 @@ const POPULATION = {
   leftOutCounts: { SUSPENDED_PAY_HOLD: 1, LEFT_BEFORE_PERIOD: 1, NOT_YET_EMPLOYED: 1 },
   payWarnings: [
     { employeeId: 304, code: 'E-304', name: 'Majed Al-Qahtani', status: 'Resigned', reasonCode: 'WARN_NO_LAST_WORKING_DAY', date: null, message: '' },
+    { employeeId: 305, code: 'E-305', name: 'Nora Al-Harbi', status: 'Active', reasonCode: 'WARN_EMPLOYED_STATUS_NOT_PAID', date: '2025-06-30', message: '' },
   ],
-  payWarningCount: 1,
+  payWarningCount: 2,
 };
 
 test.describe('pay population at Approve', () => {
-  test('people paid with a warning are acknowledged by count, and everyone left out is listed with a reason', async ({ page }) => {
+  test('people paid with a warning or employed but unpaid are acknowledged by count, and everyone left out is listed with a reason', async ({ page }) => {
     const s = await boot(page, { recon: 'recon-signed.json', url: `/payroll?tab=approvals&run=${RUN}`, population: POPULATION });
     await expect(page.getByTestId('pipeline-next-title')).toHaveText('Approve the run');
     const leftOut = page.getByTestId('payroll-left-out');
@@ -603,12 +604,15 @@ test.describe('pay population at Approve', () => {
     await expect(leftOut).toContainText('Suspended — not paid (pay hold)');
     await expect(leftOut).toContainText('Left before this period');
     await expect(page.getByText('Majed Al-Qahtani', { exact: false })).toBeVisible();
+    // Not paid although the status says employed: counted in the same acknowledgement, never shown as routine.
+    await expect(page.getByText('Nora Al-Harbi', { exact: false })).toBeVisible();
+    await expect(page.getByText('Status says employed, but not paid by this run')).toBeVisible();
     const approve = page.getByRole('button', { name: 'Approve — Final' });
     await expect(approve).toBeDisabled();
-    await page.getByLabel('I have reviewed the list and confirm exactly 1 employee(s) are paid with a warning.').check();
+    await page.getByLabel('I have reviewed the list and confirm exactly 2 employee(s) need a check.').check();
     await expect(approve).toBeEnabled();
     await approve.click();
-    await expect.poll(() => s.approveBodies.at(-1)?.expectedPayWarningCount).toBe(1);
+    await expect.poll(() => s.approveBodies.at(-1)?.expectedPayWarningCount).toBe(2);
   });
 
   test('in Arabic the reasons read in Arabic, right to left', async ({ page }) => {
@@ -617,5 +621,6 @@ test.describe('pay population at Approve', () => {
     const leftOut = page.getByTestId('payroll-left-out');
     await expect(leftOut).toContainText('موقوف — لا يُصرف له (إيقاف الصرف)');
     await expect(page.getByText('مستقيل أو في فترة الإشعار دون آخر يوم عمل — يُصرف له كاملًا')).toBeVisible();
+    await expect(page.getByText('حالته تفيد أنه على رأس العمل، لكن هذا المسير لا يصرف له')).toBeVisible();
   });
 });

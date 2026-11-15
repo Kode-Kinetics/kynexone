@@ -236,7 +236,8 @@ export interface PayrollRunPopulation {
   leftOut?: PayrollPopulationEntry[];
   /** Count per reason code of `leftOut`. */
   leftOutCounts?: Record<string, number>;
-  /** People the run pays with a warning. The approver must state this count to approve the run. */
+  /** People the run pays with a warning, and people it does not pay although their status says employed
+   *  (WARN_EMPLOYED_STATUS_NOT_PAID). The approver must state this count to approve the run. */
   payWarnings?: PayrollPopulationEntry[];
   payWarningCount?: number;
 }
