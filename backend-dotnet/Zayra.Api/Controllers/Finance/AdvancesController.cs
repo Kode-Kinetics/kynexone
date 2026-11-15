@@ -208,11 +208,12 @@ public partial class AdvancesController : ControllerBase
                 return BadRequest($"At least {policy.MinServiceMonths} completed service month(s) are required before a salary advance.");
 
             var currentYear = now.Year;
-            // A rejected request never paid anything, so it does not use up the year's allowance; a typo that was
-            // refused used to lock the employee out of advances for the rest of the year.
+            // A rejected or cancelled request never paid anything, so it does not use up the year's allowance; a typo
+            // that was refused used to lock the employee out of advances for the rest of the year.
             var advancesThisYear = await _db.SalaryAdvances.CountAsync(
                 x => x.TenantId == tid && x.EmployeeIntId == employee.Id && !x.IsDeleted
-                     && x.Status != "Rejected" && x.CreatedAtUtc.Year == currentYear, ct);
+                     && x.Status != AdvanceStatuses.Rejected && x.Status != AdvanceStatuses.Cancelled
+                     && x.CreatedAtUtc.Year == currentYear, ct);
             if (advancesThisYear >= policy.MaxAdvancesPerYear)
                 return BadRequest($"Employee has already used {advancesThisYear} advance(s) this year. Maximum allowed is {policy.MaxAdvancesPerYear}.");
 
@@ -533,6 +534,66 @@ public partial class AdvancesController : ControllerBase
     }
 
     /// <summary>
+    /// Pending or Approved → Cancelled: the unpaid exit. HR or Finance cancel any unpaid advance in their data scope; the
+    /// requester and the employee the advance pays may withdraw their own while it is Pending. A reason is required. Nothing was
+    /// posted for an unpaid advance, so nothing is reversed; an approved advance's schedule is retired. A paid (Active) advance
+    /// is recovered through payroll and cannot be cancelled here. Serialized on the advance lock, so a cancel and a payout
+    /// racing on one advance cannot both win.
+    /// </summary>
+    [HttpPost("{id:guid}/cancel")]
+    [HasPermission("loans.self", "loans.write")]
+    public Task<IActionResult> Cancel(Guid id, [FromBody] AdvanceCancelRequest req, CancellationToken ct)
+    {
+        var tid = GetTenantId();
+        var uid = GetUserId();
+        return FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+            _db, FinanceDecisionSerializer.ScopeAdvance, tid, id, async () =>
+        {
+        if (uid == null) return Unauthorized();
+        var reason = req.Reason?.Trim();
+        if (string.IsNullOrEmpty(reason) || reason.Length > 1000)
+            return BadRequest(Refusal("advance_cancel_reason_required",
+                "A reason of up to 1000 characters is required to cancel an advance.",
+                "يلزم ذكر سبب لا يتجاوز 1000 حرف لإلغاء السلفة."));
+        var adv = await _db.SalaryAdvances.FirstOrDefaultAsync(x => x.Id == id && x.TenantId == tid && !x.IsDeleted, ct);
+        if (adv == null) return NotFound();
+        if (!await CanAccessAdvanceAsync(adv, ct)) return Forbid();
+        // Who: HR and Finance may cancel any unpaid advance in their scope. Anyone else only their own (the one they requested,
+        // or the one that pays them), and only while it is Pending: once approved, withdrawing it is an HR or Finance decision.
+        var ownId = await CallerEmployeeResolver.ResolveAsync(_db, User, tid, ct);
+        var isOwn = adv.CreatedBy == uid || (ownId.HasValue && adv.EmployeeIntId == ownId);
+        var hrOrFinance = IsHrActor() || IsFinanceActor();
+        if (!isOwn && !hrOrFinance) return Forbid();
+        if (!hrOrFinance && adv.Status == AdvanceStatuses.Approved)
+            return StatusCode(StatusCodes.Status403Forbidden, Refusal("advance_cancel_own_pending_only",
+                "You can cancel your own advance only while it is pending. Ask HR or Finance to cancel an approved advance.",
+                "يمكنك إلغاء سلفتك فقط وهي قيد الانتظار. اطلب من الموارد البشرية أو المالية إلغاء السلفة المعتمدة."));
+        if (adv.Status is not (AdvanceStatuses.Pending or AdvanceStatuses.Approved))
+            return Conflict(Refusal("invalid_advance_state",
+                $"Only a pending or approved advance that has not been paid can be cancelled (current: {adv.Status}). A paid advance is recovered through payroll.",
+                $"لا يمكن إلغاء إلا سلفة معلقة أو معتمدة لم تُصرف بعد (الحالة الحالية: {adv.Status}). السلفة المصروفة تُسترد عبر الرواتب."));
+        // Defence in depth: an unpaid advance has no journal; if one exists it must be reversed, not cancelled.
+        if (await DisbursementAlreadyPostedAsync(tid, id, ct))
+            return Conflict(Refusal("advance_already_paid",
+                $"Advance {adv.AdvanceNumber} already has a disbursement journal and cannot be cancelled.",
+                $"يوجد قيد صرف للسلفة {adv.AdvanceNumber} ولا يمكن إلغاؤها."));
+
+        var oldStatus = adv.Status;
+        adv.Status = AdvanceStatuses.Cancelled;
+        adv.CancelledAtUtc = DateTime.UtcNow; adv.CancelReason = reason;
+        adv.UpdatedAtUtc = DateTime.UtcNow; adv.UpdatedBy = uid;
+        var schedule = await _db.AdvanceInstallments
+            .Where(x => x.TenantId == tid && x.AdvanceId == id && x.Status == "Pending").ToListAsync(ct);
+        foreach (var row in schedule) row.Status = AdvanceStatuses.Cancelled;
+        await _db.SaveChangesAsync(ct);
+        await WriteAdvanceAudit(tid, uid, id, "AdvanceCancelled",
+            JsonSerializer.Serialize(new { Status = oldStatus }),
+            JsonSerializer.Serialize(new { adv.Status, Reason = reason, CancelledInstallments = schedule.Count }), ct);
+        return Ok(SalaryAdvanceDto.Project(adv));
+        }, ct);
+    }
+
+    /// <summary>
     /// Refused, exactly as <c>LoansController.MarkInstallmentPaid</c> refuses it. This route let an operator write
     /// any amount (negative included) straight onto an installment, retire the balance and post a cash receipt,
     /// with no payment reference, no bounds, no data-scope check and no bar on the borrower recording their own
@@ -777,5 +838,7 @@ public record AdvanceApproveRequest(decimal ApprovedAmount, int Installments, Da
 /// <summary>Payout of an approved advance. <paramref name="PaidDate"/> defaults to today; <paramref name="Reference"/> is the
 /// bank or cash reference (required, at most 100 characters).</summary>
 public record AdvancePayoutRequest(DateOnly? PaidDate, string? Reference, string? Notes);
+/// <summary>Cancellation of an unpaid advance; <paramref name="Reason"/> is required (at most 1000 characters).</summary>
+public record AdvanceCancelRequest(string? Reason);
 public record RejectRequest(string? Reason);
 public record PayAdvanceInstallmentRequest(decimal AmountPaid, DateOnly PaidDate, Guid? PayrollRunId);
