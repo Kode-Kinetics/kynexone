@@ -224,6 +224,9 @@ test.describe('Bank / WPS tab opened from the pipeline', () => {
     totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'NotGenerated', wpsStatusChangedAtUtc: null,
     wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
   };
+  // The batch's entry in the run's batch list. The number also appears in the tab's status line and, once the run's only
+  // batch has opened itself, in the records heading, so the list entry is found by its role.
+  const batchButton = (page: Page) => page.getByRole('button', { name: new RegExp(`^${BATCH.batchNumber}\\b`) });
   const RECORD = {
     id: 'r1', paymentBatchId: BATCH.id, employeeId: 226, employeeName: 'Layla Al-Harbi', employeeCode: 'EMP-0226',
     amount: 9000, iban: 'SA03****0000', status: 'Pending', wpsReference: 'WPS-EMP-0226-202609',
@@ -236,18 +239,18 @@ test.describe('Bank / WPS tab opened from the pipeline', () => {
     await expect(page.getByRole('tab', { name: 'Bank / WPS Files', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
     await expect(page.getByText('No batches yet.')).toHaveCount(0);
-    await expect(page.getByText(BATCH.batchNumber)).toBeVisible();
+    await expect(batchButton(page)).toBeVisible();
   });
 
   test('a deep link to the Bank / WPS tab preselects the run too', async ({ page }) => {
     await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
     await expect(page.getByLabel('Select payroll run', { exact: true })).toHaveValue(RUN_PREV);
-    await expect(page.getByText(BATCH.batchNumber)).toBeVisible();
+    await expect(batchButton(page)).toBeVisible();
   });
 
   test('payment records show the employee name, not a bare id', async ({ page }) => {
     await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [RECORD] });
-    await page.getByText(BATCH.batchNumber).click();
+    await batchButton(page).click();
     const row = page.getByRole('row', { name: /WPS-EMP-0226-202609/ });
     await expect(row).toContainText('Layla Al-Harbi');
     await expect(row).not.toContainText('Emp #226');
@@ -257,7 +260,7 @@ test.describe('Bank / WPS tab opened from the pipeline', () => {
   test('a record from an older server with no name still shows the id', async ({ page }) => {
     const { employeeName: _n, employeeCode: _c, ...bare } = RECORD;
     await open(page, `/payroll?tab=bank-wps&run=${RUN_PREV}`, { batches: [BATCH], records: [bare] });
-    await page.getByText(BATCH.batchNumber).click();
+    await batchButton(page).click();
     await expect(page.getByRole('row', { name: /WPS-EMP-0226-202609/ })).toContainText('Emp #226');
   });
 });
