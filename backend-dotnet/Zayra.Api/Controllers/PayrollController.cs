@@ -842,10 +842,14 @@ public partial class PayrollController : ControllerBase
     /// </summary>
     private async Task<List<Employee>> LoadEligibleEmployeesAsync(
         Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking, CancellationToken ct,
-        bool includeSettlementLeavers = false)
-        => (await LoadEligibleWithLeaversAsync(tenantId, companyId, allowLegacyUnscopedEmployees, asNoTracking,
-                periodStart: null, periodEnd: null, excludeRunId: null, ct,
-                includeSettlementLeavers)).Employees;
+        PayrollRun run)
+    {
+        // The run's OWN period: the population depends on dates (joining, last working day), not on today's status.
+        var periodStart = new DateOnly(run.Year, run.Month, 1);
+        return (await LoadEligibleWithLeaversAsync(tenantId, companyId, allowLegacyUnscopedEmployees, asNoTracking,
+                periodStart, periodStart.AddMonths(1).AddDays(-1), excludeRunId: run.Id, ct,
+                run.SettlesFinalSettlements)).Employees;
+    }
 
     /// <summary>
     /// POD-B2 — resolve the run's legal entity and the legacy-unscoped-employee allowance exactly the way
@@ -919,8 +923,7 @@ public partial class PayrollController : ControllerBase
         // POD-C1 — a settlement run's eligible set INCLUDES its approved leavers, or the selector would
         // stamp them NotEligible and the run would pay nobody (ResolveRunPopulationAsync intersects
         // Include rows WITH this set).
-        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken,
-            includeSettlementLeavers: run.SettlesFinalSettlements);
+        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken, run);
         List<int> targetIds;
         if (req.AllEligible)
         {
@@ -1015,14 +1018,56 @@ public partial class PayrollController : ControllerBase
         if (company is null)
             return UnprocessableEntity(new { error = "company_not_resolved", message = "The run must be linked to an active legal entity." });
 
-        // POD-C1 — a settlement run's eligible set INCLUDES its approved leavers, or the selector would
-        // stamp them NotEligible and the run would pay nobody (ResolveRunPopulationAsync intersects
-        // Include rows WITH this set).
-        var eligible = await LoadEligibleEmployeesAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true, cancellationToken,
-            includeSettlementLeavers: run.SettlesFinalSettlements);
+        // The SAME loader Process uses, for the run's own period: who is paid is decided by dates (joining, last working
+        // day) and the one employment predicate, and everyone it does not pay comes back with a reason.
+        // POD-C1 — a settlement run's eligible set INCLUDES its approved leavers, or the selector would stamp them
+        // NotEligible and the run would pay nobody (ResolveRunPopulationAsync intersects Include rows WITH this set).
+        var periodStart = new DateOnly(run.Year, run.Month, 1);
+        var periodEnd = periodStart.AddMonths(1).AddDays(-1);
+        var (eligible, _, _, report, _) = await LoadEligibleWithLeaversAsync(tenantId, company.Id, allowLegacyUnscoped, asNoTracking: true,
+            periodStart, periodEnd, excludeRunId: run.Id, cancellationToken, includeSettlementLeavers: run.SettlesFinalSettlements);
         // AsNoTracking selections: this is a preview, the Outcome stamps must not leak into a SaveChanges.
         var pop = await ResolveRunPopulationAsync(tenantId, run, eligible, cancellationToken);
         foreach (var s in pop.Selections) _db.Entry(s).State = EntityState.Detached;
+
+        // A joiner after the period is left out by Process's employment-window maths; the preview says so too.
+        static DateOnly? Joined(Employee e) => e.JoiningDate == default ? null : DateOnly.FromDateTime(e.JoiningDate);
+        var notYetJoined = pop.Employees.Where(e => Joined(e) is DateOnly j && j > periodEnd).ToList();
+        var included = pop.Employees.Except(notYetJoined).ToList();
+        var includedIds = included.Select(e => e.Id).ToHashSet();
+
+        static object Row(PayPopulationEntry x) => new
+        {
+            employeeId = x.EmployeeId, code = x.EmployeeCode, name = x.EmployeeName, status = x.Status,
+            reasonCode = x.Code, date = x.Date?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), message = x.Message,
+        };
+        var leftOut = report.LeftOut
+            .Concat(notYetJoined.Select(e => new PayPopulationEntry(e.Id, e.EmployeeCode, e.FullName, e.Status, PayPopulationReasons.NotYetEmployed,
+                $"Joins {Joined(e):yyyy-MM-dd}, after this period ends: nothing is owed for {run.Year}-{run.Month:D2}.", Joined(e))))
+            .Concat(pop.Exclusions.Select(x => new PayPopulationEntry(x.EmployeeId, x.EmployeeCode, x.EmployeeName, string.Empty,
+                PayPopulationReasons.ExcludedFromRun, x.Reason)))
+            .Concat(pop.NotEligible.Select(x => new PayPopulationEntry(x.EmployeeId, x.EmployeeCode, x.EmployeeName, string.Empty,
+                PayPopulationReasons.SelectionNotEligible, x.Reason)))
+            .ToList();
+
+        // Paid with a warning. Once the run has been processed the acknowledgement Approve asks for is the run's STORED
+        // list (what Process decided); before that, the live preview.
+        List<PayPopulationEntry> payWarnings;
+        if (run.Status == "Draft")
+            payWarnings = report.PayWarnings.Where(w => includedIds.Contains(w.EmployeeId)).ToList();
+        else
+        {
+            var stored = await _db.PayrollValidationResults.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null
+                         && PayPopulationReasons.AcknowledgeBeforeApprove.Contains(x.Code))
+                .Select(x => new { EmployeeId = x.EmployeeId!.Value, x.Code, x.Message })
+                .ToListAsync(cancellationToken);
+            var byId = eligible.ToDictionary(e => e.Id);
+            payWarnings = stored.Select(x => byId.TryGetValue(x.EmployeeId, out var e)
+                    ? new PayPopulationEntry(x.EmployeeId, e.EmployeeCode, e.FullName, e.Status, x.Code, x.Message)
+                    : new PayPopulationEntry(x.EmployeeId, x.EmployeeId.ToString(CultureInfo.InvariantCulture), string.Empty, string.Empty, x.Code, x.Message))
+                .ToList();
+        }
 
         return Ok(new
         {
@@ -1031,12 +1076,18 @@ public partial class PayrollController : ControllerBase
             includesRecurringPay = run.IncludesRecurringPay,
             populationMode       = pop.Mode,
             eligibleCount        = eligible.Count,
-            includedCount        = pop.Employees.Count,
+            includedCount        = included.Count,
             excludedCount        = pop.Exclusions.Count,
             notEligibleCount     = pop.NotEligible.Count,
-            included    = pop.Employees.Select(e => new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName }).ToList(),
+            included    = included.Select(e => new { employeeId = e.Id, code = e.EmployeeCode, name = e.FullName }).ToList(),
             excluded    = pop.Exclusions.Select(x => new { employeeId = x.EmployeeId, code = x.EmployeeCode, name = x.EmployeeName, reason = x.Reason }).ToList(),
             notEligible = pop.NotEligible.Select(x => new { employeeId = x.EmployeeId, code = x.EmployeeCode, name = x.EmployeeName, reason = x.Reason }).ToList(),
+            // Everyone in the company scope this run does NOT pay, each with a reason code. Never capped.
+            leftOut       = leftOut.Select(Row).ToList(),
+            leftOutCounts = leftOut.GroupBy(x => x.Code).ToDictionary(g => g.Key, g => g.Count()),
+            // Paid with a warning: the approver states this count (expectedPayWarningCount) to approve.
+            payWarnings     = payWarnings.Select(Row).ToList(),
+            payWarningCount = payWarnings.Select(x => x.EmployeeId).Distinct().Count(),
         });
     }
 
@@ -1125,10 +1176,10 @@ public partial class PayrollController : ControllerBase
         => _processor.ResolveRunPopulationAsync(tenantId, run, eligible, ct);
 
     private Task<(List<Employee> Employees, HashSet<int> LeaverIds, Dictionary<int, DateOnly> LastWorkingDays,
-                        List<(Employee Employee, string Reason)> UnpayableNonActive, HashSet<int> SettlementIds)>
+                        PayPopulationReport Report, HashSet<int> SettlementIds)>
         LoadEligibleWithLeaversAsync(
             Guid tenantId, Guid companyId, bool allowLegacyUnscopedEmployees, bool asNoTracking,
-            DateOnly? periodStart, DateOnly? periodEnd, Guid? excludeRunId, CancellationToken ct,
+            DateOnly periodStart, DateOnly periodEnd, Guid? excludeRunId, CancellationToken ct,
             bool includeSettlementLeavers = false)
         => _processor.LoadEligibleWithLeaversAsync(tenantId, companyId, allowLegacyUnscopedEmployees, asNoTracking, periodStart, periodEnd, excludeRunId, ct, includeSettlementLeavers);
 
@@ -1746,8 +1797,10 @@ public partial class PayrollController : ControllerBase
         // POD-C1 — same reason as Process: a settlement run's leavers must be in Validate's eligible set,
         // or Rule 1 MISSING_SALARY_STRUCTURE-style Errors would be raised for people the run legitimately
         // pays, and the run could never be approved or locked.
-        var eligibleForValidation = await LoadEligibleEmployeesAsync(
-            tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true, cancellationToken,
+        var validationPeriodStart = new DateOnly(run.Year, run.Month, 1);
+        var (eligibleForValidation, validationLeaverIds, _, validationPopulationReport, _) = await LoadEligibleWithLeaversAsync(
+            tenantId, company.Id, allowLegacyUnscopedEmployeesForValidation, asNoTracking: true,
+            validationPeriodStart, validationPeriodStart.AddMonths(1).AddDays(-1), excludeRunId: run.Id, cancellationToken,
             includeSettlementLeavers: run.SettlesFinalSettlements);
         var validationPopulation = await ResolveRunPopulationAsync(tenantId, run, eligibleForValidation, cancellationToken);
         // /validate is a read-model refresh; the Outcome stamps belong to Process (inside its transaction).
@@ -1759,6 +1812,16 @@ public partial class PayrollController : ControllerBase
         var salaries = await _db.EmployeeSalaryStructures.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.IsActive && x.EffectiveDate <= validationAsOf && employeeIdsForValidation.Contains(x.EmployeeId))
             .ToListAsync(cancellationToken);
+        // Same as Process: a leaver's salary row survives the offboarding exit cascade (IsActive = false), so the
+        // leavers the run pays are matched to it, or Rule 1 would raise MISSING_SALARY_STRUCTURE for people Process paid.
+        var validationLeavers = validationLeaverIds.Where(employeeIdsForValidation.Contains).ToList();
+        if (validationLeavers.Count > 0)
+        {
+            var knownSalaryIds = salaries.Select(x => x.Id).ToHashSet();
+            salaries.AddRange((await _db.EmployeeSalaryStructures.AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.EffectiveDate <= validationAsOf && validationLeavers.Contains(x.EmployeeId))
+                .ToListAsync(cancellationToken)).Where(x => !knownSalaryIds.Contains(x.Id)));
+        }
         var profiles    = await _db.EmployeePayrollProfiles.AsNoTracking().Where(p => p.TenantId == tenantId && !p.IsDeleted && employeeIdsForValidation.Contains(p.EmployeeId)).ToListAsync(cancellationToken);
         var deductions  = await _db.PayrollDeductions.AsNoTracking().Where(d => d.TenantId == tenantId && d.PayrollRunId == id && employeeIdsForValidation.Contains(d.EmployeeId)).ToListAsync(cancellationToken);
         var earnings    = await _db.PayrollEarnings.AsNoTracking().Where(e => e.TenantId == tenantId && e.PayrollRunId == id && employeeIdsForValidation.Contains(e.EmployeeId)).ToListAsync(cancellationToken);
@@ -1880,6 +1943,9 @@ public partial class PayrollController : ControllerBase
         var results = PayrollValidationEngine.Run(ctx);
         // Same finding Process writes — /validate replaces the stored results wholesale, so it must re-add it.
         results.AddRange(await ReadinessPayValidationFindingsAsync(tenantId, id, employees, Zayra.Api.Infrastructure.Employees.BorderNumberRule.PeriodEnd(run.Year, run.Month), cancellationToken));
+        // Same pay-population list Process writes (who is left out, who is paid with a warning) — /validate replaces the
+        // stored results wholesale, so it must re-add it or the Approve acknowledgement would silently lose its subject.
+        results.AddRange(PayPopulationFindings.ToResults(tenantId, id, validationPopulationReport, employeeIdsForValidation));
 
         // Replace stored results with fresh engine output.
         await _db.PayrollValidationResults
@@ -2048,6 +2114,26 @@ public partial class PayrollController : ControllerBase
                           $"re-submit with expectedOutsideBankCount={outsideBankCount} to acknowledge.",
                 outsideBankCount,
                 acknowledged = req.ExpectedOutsideBankCount,
+            });
+
+        // ── Pay population: people paid WITH A WARNING must be acknowledged the same way ─────────────────
+        // Resigned / Notice period with no last working day, "On leave" with no approved leave, a deleted record still
+        // owed wages: each is paid in full, but the record suggests HR may have meant otherwise. Warn, never block: the
+        // approver states how many such people they reviewed, exactly like a cash count. Read from the run's stored
+        // findings, which Process writes and /validate re-derives.
+        var payWarningCodes = Infrastructure.Payroll.PayPopulationReasons.AcknowledgeBeforeApprove;
+        var payWarningCount = (await _db.PayrollValidationResults.AsNoTracking()
+            .Where(x => x.TenantId == tenantId && x.PayrollRunId == id && x.EmployeeId != null && payWarningCodes.Contains(x.Code))
+            .Select(x => x.EmployeeId!.Value).Distinct().ToListAsync(cancellationToken)).Count;
+        if (payWarningCount > 0 && req.ExpectedPayWarningCount != payWarningCount)
+            return Conflict(new
+            {
+                error           = "pay_warnings_not_acknowledged",
+                message         = $"This run pays {payWarningCount} employee(s) with a warning (no last working day, 'On leave' with no " +
+                                  "approved leave, or a deleted record still owed wages). Review GET /api/payroll/runs/{id}/population and " +
+                                  $"re-submit with expectedPayWarningCount={payWarningCount} to acknowledge.",
+                payWarningCount,
+                acknowledged    = req.ExpectedPayWarningCount,
             });
 
         // ── POD-B3: OVERRIDDEN compliance errors must be acknowledged the same way ────────────────────
@@ -10708,8 +10794,10 @@ public record EmployeeSalaryStructureRequest(int EmployeeId, Guid? SalaryStructu
 // errors. Optional and defaulted, so a run with no overrides (i.e. every run today) is unaffected.
 /// <param name="ExpectedOutsideBankCount">Acknowledges, by count, the employees paid by cash or cheque (outside
 /// the bank/WPS file). Required when the run has any.</param>
+/// <param name="ExpectedPayWarningCount">Acknowledges, by count, the employees the run pays with a pay-population
+/// warning (no last working day, "On leave" with no approved leave, deleted but owed wages). Required when it has any.</param>
 public record PayrollDecisionRequest(string? Notes, int? ExpectedExcludedCount = null, int? ExpectedOverriddenCount = null,
-    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null);
+    int? ExpectedOutsideBankCount = null, int? ExpectedUncostedCount = null, int? ExpectedPayWarningCount = null);
 /// <param name="ExpectedOutsideBankCount">Only for a run locked before payment methods were frozen: acknowledges,
 /// by count, the cash/cheque employees the batch will leave out of the bank file.</param>
 public record PayrollPaymentBatchRequest(string? PaymentMethod, string? Currency, int? ExpectedOutsideBankCount = null);
