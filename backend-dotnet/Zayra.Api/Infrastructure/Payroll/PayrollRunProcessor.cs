@@ -1067,12 +1067,14 @@ public sealed class PayrollRunProcessor
         // read-only snapshots loaded above are immutable and safe to reuse across a retry.
         int? failingEmployeeId = null;
         string? failingEmployeeCode = null;
+        PayrollProcessOutcome? refusedUnderLock = null;
         var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
         try
         {
             await strategy.ExecuteAsync(async () =>
             {
+            refusedUnderLock = null;
             // Retry-safety: on a transient RETRY, discard the failed attempt's tracked state so the
             // rebuild starts clean. We do NOT clear on the first attempt — that would detach entities
             // the caller is still holding (the request's scoped context), changing observable behaviour.
@@ -1085,6 +1087,20 @@ public sealed class PayrollRunProcessor
             // The transaction MUST open BEFORE the ExecuteUpdateAsync impact-status writes below,
             // otherwise that raw SQL auto-commits on its own connection and re-opens the split.
             await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+            // LOCK ORDER, step 2 (FinanceDecisionSerializer.AcquireDebtLocksAsync documents the whole order): the run row FOR UPDATE,
+            // FIRST in the transaction, before the loan and advance locks below. A void of a run in a processable status (Draft,
+            // Failed) takes this row first and, when it cascades over a live child run, the chain's debt locks after it; Process used
+            // to take the debt locks first and write the run row last, so a void cascading over a Draft child could deadlock with the
+            // Process of that child (40P01), and a Process that had read the run before a void committed could write "Processed" over
+            // "Voided". Settle needs a Locked run, which Process refuses, so it cannot meet Process on one run. The status is read
+            // again under the lock (the tracked copy above may be stale, and a tracked entity is not refreshed by a second query):
+            // a run voided or processed while this pass waited is refused with the same answer the up-front check gives.
+            var lockedStatus = await Op(_db.PayrollRuns).TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .AsNoTracking().Where(r => r.Id == id && r.TenantId == tenantId)
+                .Select(r => r.Status).FirstOrDefaultAsync(cancellationToken);
+            if (lockedStatus is null) { refusedUnderLock = NotFound(); return; }
+            if (CheckRunState(new PayrollRun { Status = lockedStatus }) is { } refusal) { refusedUnderLock = refusal; return; }
 
             // Loan-level serialisation with every other writer of these loans, above all the cash early settlement
             // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken FIRST in the
@@ -2793,6 +2809,8 @@ public sealed class PayrollRunProcessor
         {
             throw; // never reached: the filter only tags the exception and answers false
         }
+        // Refused under the run lock: the transaction ended without a commit, so nothing was written.
+        if (refusedUnderLock is { } refusedOutcome) return refusedOutcome;
         return Ok(run);
     }
 

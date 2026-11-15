@@ -134,14 +134,17 @@ public static class FinanceDecisionSerializer
     /// <para><b>The lock order.</b> A writer takes only the steps it needs, but always in this order and never back:</para>
     /// <list type="number">
     ///   <item>the <c>payroll.batch-payment</c> advisory lock of a payment batch (settle, payment outside the bank file);</item>
-    ///   <item>the <c>payroll_runs</c> row FOR UPDATE (settle; void, which takes a cascade's runs parents first; reopen);</item>
-    ///   <item><see cref="ScopeLoan"/> locks, ascending key (this method; payroll Process takes them first in its transaction);</item>
+    ///   <item>the <c>payroll_runs</c> row FOR UPDATE (settle; void, which takes a cascade's runs parents first; reopen; and payroll
+    ///   Process, as the first step of its transaction, re-reading the run's status under the lock);</item>
+    ///   <item><see cref="ScopeLoan"/> locks, ascending key (this method; payroll Process takes them right after its run row);</item>
     ///   <item><see cref="ScopeAdvance"/> locks, ascending key (this method);</item>
     ///   <item>everything else: row locks (offboardings, settlements, leave balances) and the writes.</item>
     /// </list>
-    /// <para>Process starts at step 3 and takes no batch lock and no lock on another run's row, so it can wait for a settle or a
-    /// void but never hold something either of them waits for while waiting itself. A single-loan or single-advance writer
-    /// (repayment, approval, lifecycle) holds one lock of step 3 or 4 and nothing earlier.</para>
+    /// <para>Process starts at step 2 with its own run row, and takes no batch lock and no lock on another run's row, so it can wait
+    /// for a settle or a void but never hold a debt lock while waiting for a run row, which is the inversion that let a void
+    /// cascading over a Draft child run deadlock with the Process of that child. (Settle needs a Locked run, which Process refuses,
+    /// so those two never meet on one run.) A single-loan or single-advance writer (repayment, approval, lifecycle) holds one lock
+    /// of step 3 or 4 and nothing earlier.</para>
     /// </summary>
     public static async Task AcquireDebtLocksAsync(
         ZayraDbContext db, Guid tenantId, IEnumerable<Guid> loanIds, IEnumerable<Guid> advanceIds, CancellationToken ct = default)
