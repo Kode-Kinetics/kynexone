@@ -30,7 +30,7 @@ public static class PayrollRunDefinitionStaleness
             .ToList();
         if (consumed.Count == 0) return null;
         var codes = consumed.Select(c => c.Code).Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal).ToList();
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true);
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, companyId: run.CompanyId);
         foreach (var code in codes)
         {
             var applicable = CashAllowanceDefinitions.ForPeriod(versions[code], runMonth);

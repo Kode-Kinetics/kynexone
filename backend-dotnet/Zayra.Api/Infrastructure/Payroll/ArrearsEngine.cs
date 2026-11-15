@@ -115,7 +115,8 @@ public sealed class ArrearsEngine
         var allowanceCodes = (await Zayra.Api.Infrastructure.Data.ScopedBypass.TenantWide(_db.PayComponents, tenantId,
                     "Back pay settles each cash allowance on its own code; the definitions are tenant-wide, removed ones included (history).")
                 .AsNoTracking()
-                .Where(c => c.CompanyId == null && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage
+                .Where(c => (c.CompanyId == null || (c.CompanyId == companyId && c.IsOffered))
+                         && c.ComponentType == PayComponentTypes.Earning && c.CalcMethod == PayComponentCalcMethods.GradePackage
                          && c.Code.StartsWith("ALW_"))
                 .Select(c => c.Code).ToListAsync(ct))
             .ToHashSet(StringComparer.Ordinal);

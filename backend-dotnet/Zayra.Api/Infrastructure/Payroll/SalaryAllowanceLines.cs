@@ -87,7 +87,8 @@ public static class SalaryAllowanceLines
     /// something on this basic.
     /// </summary>
     public static async Task<(List<ResolvedAllowanceLine> Lines, AllowanceProblem? Problem)> ValidateAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct, decimal slotsGross = 0m)
+        ZayraDbContext db, Guid tenantId, IReadOnlyList<SalaryAllowanceLine>? proposed, decimal basic, CancellationToken ct, decimal slotsGross = 0m,
+        Guid? companyId = null)
     {
         var resolved = new List<ResolvedAllowanceLine>();
         if (proposed is null || proposed.Count == 0) return (resolved, null);
@@ -130,7 +131,8 @@ public static class SalaryAllowanceLines
             }
         }
 
-        var faults = await DefinitionFaultsAsync(db, tenantId, seen.ToList(), ct);
+        // The employee's company decides which definitions exist for it: the group's, and that company's own (a sister company's own is no definition).
+        var faults = await DefinitionFaultsAsync(db, tenantId, seen.ToList(), ct, companyId);
         foreach (var line in resolved)
             if (faults.TryGetValue(line.Code, out var fault))
                 return (resolved, FaultProblem(line.Code, fault));
@@ -151,11 +153,11 @@ public static class SalaryAllowanceLines
     /// effect today or later; a definition Finance has not confirmed; or one with no GL driver. A salary line is only ever put on a CONFIRMED definition.
     /// </summary>
     public static async Task<Dictionary<string, AllowanceDefinitionFault>> DefinitionFaultsAsync(
-        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+        ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct, Guid? companyId = null)
     {
         var result = new Dictionary<string, AllowanceDefinitionFault>(StringComparer.Ordinal);
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, companyId: companyId);
         var today = Today();
         foreach (var code in codes)
             if (CashAllowanceDefinitions.SalaryLineFault(versions[code], today) is { } fault) result[code] = fault;
@@ -172,9 +174,10 @@ public static class SalaryAllowanceLines
     };
 
     /// <summary>The codes among <paramref name="codes"/> that can go on a salary today: a live, Finance-confirmed tenant-wide cash allowance definition.</summary>
-    public static async Task<HashSet<string>> LiveDefinitionCodesAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct)
+    public static async Task<HashSet<string>> LiveDefinitionCodesAsync(ZayraDbContext db, Guid tenantId, IReadOnlyCollection<string> codes, CancellationToken ct,
+        Guid? companyId = null)
     {
-        var faults = await DefinitionFaultsAsync(db, tenantId, codes, ct);
+        var faults = await DefinitionFaultsAsync(db, tenantId, codes, ct, companyId);
         return codes.Where(c => !faults.ContainsKey(c)).ToHashSet(StringComparer.Ordinal);
     }
 
@@ -200,7 +203,9 @@ public static class SalaryAllowanceLines
             lines = current.Lines.Select(l => new SalaryAllowanceLine(l.Code, l.Basis, l.Rate, l.Basis == AllowanceBases.Amount ? l.Amount : null)).ToList();
         }
         if (lines.Count == 0) return new AllowanceResolution([], carried, null);
-        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct, slotsGross);
+        // The employee's company: a company's own allowance can be on its own employees' salaries only. The caller has authorised the employee.
+        var companyId = await db.Employees.AsNoTracking().Where(e => e.TenantId == tenantId && e.Id == employeeId).Select(e => e.CompanyId).FirstOrDefaultAsync(ct);
+        var (resolved, problem) = await ValidateAsync(db, tenantId, lines, basic, ct, slotsGross, companyId);
         if (problem is not null && carried)
             problem = problem with { Message = "This employee's current salary carries an allowance that cannot be carried over. " + problem.Message };
         return new AllowanceResolution(resolved, carried, problem);
@@ -419,7 +424,9 @@ public static class SalaryAllowanceLines
         if (codes.Count == 0) return result;
         // The version a screen shows is the one in effect today (else the latest): names are the same in every version, the GL driver and the
         // end-of-service answer are the current ones. A removed definition still names its lines.
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true);
+        // Every company's own definitions too: these lines are already on salary records the caller may read, and only a line validated for the
+        // employee's company is ever written (a sister company's own allowance never reaches one).
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, includeRemoved: true, anyCompany: true);
         var today = Today();
         var rows = codes.Select(code => CashAllowanceDefinitions.Current(versions[code], today)).Where(c => c is not null).Select(c => c!).ToList();
         var driverKeys = rows.Where(r => !string.IsNullOrWhiteSpace(r.GlDriverKey)).Select(r => r.GlDriverKey!).Distinct().ToList();
@@ -478,7 +485,8 @@ public static class SalaryAllowanceLines
         var rows = await LoadAsync(db, tenantId, salaryIds, ct);
         var codes = rows.SelectMany(g => g).Select(r => r.Code).Distinct().ToList();
         if (codes.Count == 0) return result;
-        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct);
+        // A company's own allowance counts like a group one: the line is on the record, so its definition decides (never silently left out).
+        var versions = await CashAllowanceDefinitions.VersionsAsync(db, tenantId, codes, ct, anyCompany: true);
         var counted = new HashSet<string>(StringComparer.Ordinal);
         foreach (var code in codes)
         {
