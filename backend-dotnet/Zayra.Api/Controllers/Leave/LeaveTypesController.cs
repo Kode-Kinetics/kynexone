@@ -20,11 +20,13 @@ public class LeaveTypesController : ControllerBase
 {
     private readonly ZayraDbContext _db;
     private readonly ILeaveService _leaveService;
+    private readonly IDataScopeService? _scopeService;
 
-    public LeaveTypesController(ZayraDbContext db, ILeaveService leaveService)
+    public LeaveTypesController(ZayraDbContext db, ILeaveService leaveService, IDataScopeService? scopeService = null)
     {
         _db = db;
         _leaveService = leaveService;
+        _scopeService = scopeService;
     }
 
     /// <summary>
@@ -47,6 +49,12 @@ public class LeaveTypesController : ControllerBase
         (string? Gender, Guid? CompanyId)? forWhom = null;
         if (employeeId is int forEmployee)
         {
+            // The list is filtered by this employee's gender, so asking for it reveals something about them: only a caller
+            // whose data scope reaches the employee may ask (the employee themself, their manager, HR). Out of scope answers
+            // exactly as an unknown employee does. No scope service (a hand-built controller) refuses.
+            if (_scopeService is null
+                || !(await _scopeService.ResolveAsync(User, tenantId.Value, ct)).CanAccessEmployee(forEmployee))
+                return NotFound();
             // Visible only when the caller can see the employee (the employee query filter applies).
             var employee = await _db.Employees.AsNoTracking()
                 .Where(e => e.TenantId == tenantId && e.Id == forEmployee && !e.IsDeleted)
