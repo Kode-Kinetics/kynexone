@@ -113,4 +113,62 @@ public sealed class LeaveUnpaidSlicingTests
 
         (await Impacts(w, request.Id)).Select(r => (r.PayPeriod, r.Days, r.Amount)).Should().Equal(("2026-01", 5m, 1_000m));
     }
+
+    [Fact]
+    public async Task EachSliceRecordsTheDatesItCharges()
+    {
+        var w = await LeaveBatch1World.CreateAsync();
+        var unpaid = await UnpaidTypeAsync(w);
+        await SalaryAsync(w, 6_000m, new DateOnly(2024, 1, 1));
+
+        var crossing = await ApproveAsync(w, unpaid, new DateOnly(2026, 1, 25), new DateOnly(2026, 2, 5));
+        var inside = await ApproveAsync(w, unpaid, new DateOnly(2026, 3, 8), new DateOnly(2026, 3, 12));
+
+        (await Impacts(w, crossing.Id)).Select(r => (r.SliceFrom, r.SliceTo)).Should().Equal(
+            (new DateOnly(2026, 1, 25), new DateOnly(2026, 1, 31)),
+            (new DateOnly(2026, 2, 1), new DateOnly(2026, 2, 5)));
+        (await Impacts(w, inside.Id)).Select(r => (r.SliceFrom, r.SliceTo)).Should().Equal(
+            (new DateOnly(2026, 3, 8), new DateOnly(2026, 3, 12)));
+    }
+
+    [Fact]
+    public async Task ALoneSurvivingSlice_RecordsItsOwnMonthsDates_NotTheWholeRequest()
+    {
+        // 26 Apr - 2 May 2026: 1-2 May are Fri/Sat, so April's 5 days are the whole request and the only slice.
+        var w = await LeaveBatch1World.CreateAsync();
+        var unpaid = await UnpaidTypeAsync(w);
+        await SalaryAsync(w, 6_000m, new DateOnly(2024, 1, 1));
+
+        var request = await ApproveAsync(w, unpaid, new DateOnly(2026, 4, 26), new DateOnly(2026, 5, 2));
+
+        var row = (await Impacts(w, request.Id)).Should().ContainSingle().Subject;
+        (row.PayPeriod, row.Days, row.SliceFrom, row.SliceTo).Should().Be(("2026-04", 5m, new DateOnly(2026, 4, 26), new DateOnly(2026, 4, 30)));
+    }
+
+    [Fact]
+    public async Task WhenTheMonthsDoNotAddUpToTheTotal_OneWholeRowIsKept_AndTheFallbackIsLogged()
+    {
+        var w = await LeaveBatch1World.CreateAsync();
+        var unpaid = await UnpaidTypeAsync(w);
+        await SalaryAsync(w, 6_000m, new DateOnly(2024, 1, 1));
+        var request = await w.Service.SubmitRequestAsync(w.TenantId, new LeaveRequest
+        {
+            TenantId = w.TenantId, EmployeeId = w.Emp.Id, LeaveTypeId = unpaid.Id, StartDate = new DateOnly(2026, 1, 25),
+            EndDate = new DateOnly(2026, 2, 5), DayType = "Full", Reason = "family matter",
+        }, w.EmpUserId);
+        // A request counted under a rule that has since changed: its months no longer add up to its total.
+        await using (var other = w.NewContext())
+        {
+            (await other.LeaveRequests.FirstAsync(r => r.Id == request.Id)).TotalDays = 11m;
+            await other.SaveChangesAsync();
+        }
+        w.Db.ChangeTracker.Clear();
+
+        await w.Service.ApproveRequestAsync(w.TenantId, request.Id, w.HrUserId, "HR", "ok");
+
+        var row = (await Impacts(w, request.Id)).Should().ContainSingle().Subject;
+        (row.PayPeriod, row.Days, row.SliceFrom, row.SliceTo).Should().Be(("2026-01", 11m, new DateOnly(2026, 1, 25), new DateOnly(2026, 2, 5)));
+        (await w.Db.LeaveAuditLogs.AsNoTracking().Where(a => a.EntityId == request.Id.ToString()).Select(a => a.Action).ToListAsync())
+            .Should().Contain("UnpaidLeaveSliceFallback", "charging a whole request to one month must leave a trace");
+    }
 }

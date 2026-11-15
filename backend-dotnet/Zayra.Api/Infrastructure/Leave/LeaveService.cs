@@ -1387,6 +1387,9 @@ public partial class LeaveService : ILeaveService
                     ImpactType = "Leave Deduction (Unpaid)",
                     Days = slice.Days,
                     Amount = amount,
+                    // Payroll scales a slice for a joiner or leaver by the days it charges, never by the request's span.
+                    SliceFrom = slice.From,
+                    SliceTo = slice.To,
                     Status = "Pending",
                 });
             }
@@ -2258,18 +2261,20 @@ public partial class LeaveService : ILeaveService
         await _db.SaveChangesAsync(ct);
     }
 
-    /// <summary>One calendar month of an unpaid leave: its first day in that month and its deductible days there.</summary>
-    internal readonly record struct UnpaidLeaveMonthSlice(DateOnly From, decimal Days);
+    /// <summary>One calendar month of an unpaid leave: its first and last day in that month and its deductible days there.
+    /// The one-slice fallback spans the whole request.</summary>
+    internal readonly record struct UnpaidLeaveMonthSlice(DateOnly From, DateOnly To, decimal Days);
 
     /// <summary>
     /// Splits an approved unpaid leave into calendar-month slices for payroll. A single-date request (half day, hourly)
     /// and a request inside one month are one slice carrying the request's own TotalDays, exactly as before. Otherwise each
     /// month's days are counted with the same working-day rules the request was counted with; if those do not add up to
-    /// TotalDays exactly (they always should), the request is kept as one slice rather than charge a different number of days.
+    /// TotalDays exactly (they always should), the request is kept as one slice rather than charge a different number of days,
+    /// and that fallback is written to the leave audit log: the whole request then lands on its first month.
     /// </summary>
     private async Task<List<UnpaidLeaveMonthSlice>> UnpaidLeaveMonthSlicesAsync(Guid tenantId, LeaveRequest request, CancellationToken ct)
     {
-        var whole = new List<UnpaidLeaveMonthSlice> { new(request.StartDate, request.TotalDays) };
+        var whole = new List<UnpaidLeaveMonthSlice> { new(request.StartDate, request.EndDate, request.TotalDays) };
         var sameMonth = request.StartDate.Year == request.EndDate.Year && request.StartDate.Month == request.EndDate.Month;
         if (sameMonth || request.StartDate == request.EndDate
             || request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase)
@@ -2283,9 +2288,17 @@ public partial class LeaveService : ILeaveService
             var monthEnd = monthStart.AddMonths(1).AddDays(-1);
             var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
             var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
-            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, days));
+            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, to, days));
         }
-        return slices.Count > 0 && slices.Sum(x => x.Days) == request.TotalDays ? slices : whole;
+        if (slices.Count > 0 && slices.Sum(x => x.Days) == request.TotalDays) return slices;
+
+        await LogAuditAsync(tenantId, "LeaveRequest", request.Id.ToString(), "UnpaidLeaveSliceFallback",
+            $"{request.TotalDays:0.##} deductible day(s) on the request; by month: "
+            + (slices.Count == 0 ? "none" : string.Join(", ", slices.Select(x => $"{x.From:yyyy-MM} {x.Days:0.##}"))),
+            $"One deduction of {request.TotalDays:0.##} day(s) charged to {request.StartDate:yyyy-MM}",
+            "The month-by-month days do not add up to the request's total, so the whole request is charged to its first month. Check the request's day count.",
+            "System", ct);
+        return whole;
     }
 
     private async Task<List<LeaveYearSegment>> CalculateYearSegmentsAsync(

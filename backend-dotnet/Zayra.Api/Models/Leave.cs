@@ -477,6 +477,13 @@ public class LeavePayrollImpact : ITenantOwned
     public string ImpactType { get; set; } = "Deduction";
     public decimal Days { get; set; }
     public decimal Amount { get; set; }
+    /// <summary>
+    /// The first and last calendar day this row charges, for a month slice of an unpaid leave (one row per month the
+    /// leave covers). Payroll scales a slice for a joiner or leaver by THESE dates. Null on a row that charges the whole
+    /// request (rows written before slicing, the sick-leave scale row): payroll then uses the request's own dates.
+    /// </summary>
+    public DateOnly? SliceFrom { get; set; }
+    public DateOnly? SliceTo { get; set; }
     public string Status { get; set; } = "Pending";
     public DateTime? ProcessedAtUtc { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
