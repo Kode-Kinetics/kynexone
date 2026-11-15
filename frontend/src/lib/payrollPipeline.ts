@@ -48,6 +48,7 @@ export type ReasonId =
   | 'no_batch'              // locked, no payment batch yet
   | 'batch_not_exported'    // batch exists, bank file not generated
   | 'bank_file_not_generated' // only the internal payroll register exists; the bank export has not been generated
+  | 'awaiting_bank_confirmation' // the bank file exists, but the bank has not confirmed every payment ({confirmed} of {total} when known)
   | 'voided';
 
 /**
@@ -60,7 +61,7 @@ export type PipelineBatch = PayrollPaymentBatch & { bankFileAvailable?: boolean;
 /** Which file the batch detail names: the bank file, the internal register, or (unknown / not Saudi) what the API's label says. */
 export type BatchFileKind = 'bank_file' | 'register';
 
-export interface Reason { id: ReasonId; count?: number; message?: string }
+export interface Reason { id: ReasonId; count?: number; message?: string; confirmed?: number; total?: number }
 
 export interface PipelineStage {
   key: StageKey;
@@ -85,7 +86,7 @@ export type PayrollTabKey = string;
 export interface NextAction {
   kind: NextActionKind;
   /** Which sentence labels the button; the screen owns the words. */
-  label: 'process' | 'retry' | 'review_validation' | 'review_attendance' | 'review' | 'approve' | 'lock' | 'bank' | 'none';
+  label: 'process' | 'retry' | 'review_validation' | 'review_attendance' | 'review' | 'approve' | 'lock' | 'bank' | 'confirm_bank' | 'none';
   tab?: PayrollTabKey;
   /** The button is shown but cannot be used; `reason` says why. */
   disabled: boolean;
@@ -165,6 +166,22 @@ function fileKindOf(b: PipelineBatch): BatchFileKind | undefined {
   if (b.bankFileGenerated) return 'bank_file';
   // A Saudi company's generated XML is the internal register even where the bank export is switched off.
   return b.bankFileAvailable || b.isSaudi ? 'register' : undefined;
+}
+
+/**
+ * The bank file exists but the bank has not confirmed every payment: the batch lists payments still unconfirmed and it has
+ * not been settled (Paid / Reconciled). Null when the API sent no confirmation facts (an older one): the file alone then
+ * completes the stage, as before. The counts come from what the list carries, the unconfirmed payments and the share the
+ * bank has spoken about: total = unconfirmed / (1 - coverage) and confirmed = total - unconfirmed.
+ */
+function awaitingBankConfirmation(b: PipelineBatch): Reason | null {
+  const unconfirmed = b.unconfirmedPayments?.count;
+  if (typeof unconfirmed !== 'number' || unconfirmed <= 0) return null;
+  if (wpsOf(b) === 'Paid' || wpsOf(b) === 'Reconciled') return null;
+  const coverage = b.confirmationCoverage;
+  if (typeof coverage !== 'number' || !Number.isFinite(coverage) || coverage < 0) return { id: 'awaiting_bank_confirmation' };
+  const total = Math.round(unconfirmed / (1 - Math.min(coverage, 0.9999)));
+  return { id: 'awaiting_bank_confirmation', confirmed: Math.max(0, total - unconfirmed), total };
 }
 
 const newestFirst = (a: PipelineBatch, b: PipelineBatch) =>
@@ -269,13 +286,15 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
   const batch = exportedBatch(batches);
   if (phase === 4) paid.state = 'done';
   else if (phase === 3) {
-    if (batch) paid.state = 'done';
+    const waiting = batch ? awaitingBankConfirmation(batch) : null;
+    if (waiting) { paid.state = 'current'; paid.reason = waiting; }
+    else if (batch) paid.state = 'done';
     else {
       paid.state = 'current';
       paid.reason = { id: !batches || batches.length === 0 ? 'no_batch' : batches.some(onlyRegister) ? 'bank_file_not_generated' : 'batch_not_exported' };
     }
   } else paid.reason = { id: phase === 0 ? 'needs_process' : 'needs_lock' };
-  if (batch && paid.state === 'done') {
+  if (batch && (paid.state === 'done' || paid.reason?.id === 'awaiting_bank_confirmation')) {
     paid.whenUtc = batch.wpsStatusChangedAtUtc ?? batch.createdAtUtc;
     const file = fileKindOf(batch);
     paid.detail = {
@@ -323,7 +342,9 @@ export function derivePipeline(input: PipelineInput): PipelineModel {
       } else { next = { kind: 'lock', label: 'lock', disabled: true }; nextReason = locked.reason; }
       break;
     case 'paid':
-      next = { kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false };
+      next = paid.reason?.id === 'awaiting_bank_confirmation'
+        ? { kind: 'goto', label: 'confirm_bank', tab: 'payment-tracking', disabled: false }
+        : { kind: 'goto', label: 'bank', tab: 'bank-wps', disabled: false };
       nextReason = paid.reason;
       break;
     default: break;

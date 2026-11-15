@@ -553,6 +553,10 @@ function reasonText(t: T, r: Reason): string {
     case 'no_batch': return t('No payment batch exists yet. Create one on the Bank / WPS tab.');
     case 'batch_not_exported': return t('A payment batch exists, but its bank file has not been generated yet.');
     case 'bank_file_not_generated': return t('The internal payroll register is generated, but the bank file has not been generated yet.');
+    case 'awaiting_bank_confirmation':
+      return r.total === undefined || r.confirmed === undefined
+        ? t('Bank file ready — waiting for bank confirmation')
+        : t('Bank file ready — waiting for bank confirmation ({confirmed} of {total})', { confirmed: r.confirmed, total: r.total });
     case 'voided': return t('Voided.');
   }
 }
@@ -567,6 +571,7 @@ function nextTitle(t: T, next: NextAction, focus: PipelineStage | null): string 
     case 'approve': return t('Approve the run');
     case 'lock': return t('Lock the run');
     case 'bank': return t('Create the bank file');
+    case 'confirm_bank': return t('Confirm payments with the bank');
     case 'none': return focus && focus.key === 'processed' ? t('Processing…') : t('All stages are complete.');
   }
 }
@@ -581,6 +586,7 @@ function actionLabel(t: T, next: NextAction, busy: boolean): string {
     case 'approve': return t('Go to Approvals');
     case 'lock': return busy ? t('Locking…') : t('Review summary and lock');
     case 'bank': return t('Open Bank / WPS');
+    case 'confirm_bank': return t('Open Payment Tracking');
     case 'none': return '';
   }
 }

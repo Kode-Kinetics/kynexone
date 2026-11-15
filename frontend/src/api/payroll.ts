@@ -354,6 +354,10 @@ export interface PayrollPaymentBatch {
   excludedTotal?: number;
   /** Shown when the batch leaves cash/cheque wages out of the bank/WPS file. */
   mudadNote?: string | null;
+  /** Payments the bank has not confirmed yet (neither paid, returned nor rejected). Absent from an older API. */
+  unconfirmedPayments?: { count: number; total: number };
+  /** Share (0..1) of the batch's payments the bank has spoken about: paid, returned or rejected. Absent from an older API. */
+  confirmationCoverage?: number;
 }
 
 export interface PaymentBatchExclusion {
