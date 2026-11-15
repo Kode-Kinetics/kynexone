@@ -507,10 +507,17 @@ public sealed partial class MigrationImportController : ControllerBase
             }
             catch (Exception ex)
             {
+                // A failed row leaves nothing behind: what it added is detached, and what it loaded and then changed or deleted is
+                // put back as it was read, so the section's save cannot write half a row (a restated balance without its journal).
                 foreach (var entity in trackedThisRow.ToList())
                 {
                     var entry = _db.Entry(entity);
                     if (entry.State == EntityState.Added) entry.State = EntityState.Detached;
+                    else if (entry.State is EntityState.Modified or EntityState.Deleted)
+                    {
+                        entry.CurrentValues.SetValues(entry.OriginalValues);
+                        entry.State = EntityState.Unchanged;
+                    }
                 }
                 result.Skipped++; result.Errors.Add($"{section} row {index}: {ex.Message}");
             }
@@ -535,14 +542,24 @@ public sealed partial class MigrationImportController : ControllerBase
                 RequireCutoverStatus(row);
                 return await _db.CompanyCutovers.AnyAsync(x => x.TenantId == tenantId && x.CompanyId == cutoverCompany.Id, ct)
                     ? "updated" : "created";
+            // The dry run refuses a loan or advance row for exactly the reasons the commit would (the guards, the opening
+            // journal's closed-period and remap checks), so every refusal is visible before anything is committed.
             case "loans":
+            {
                 var loanPlan = await PlanLoanAsync(row, tenantId, cutover, ct);
-                return await _db.EmployeeLoans.AnyAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct)
-                    ? "updated" : "created";
+                var loan = await _db.EmployeeLoans.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.LoanNumber == loanPlan.LoanNumber && !x.IsDeleted, ct);
+                if (loan is not null && await GuardLoanRestatementAsync(loan, loanPlan, tenantId, ct)) return "skipped";
+                await PrepareLoanJournalAsync(loanPlan, loan, tenantId, ct);
+                return loan is null ? "created" : "updated";
+            }
             case "advances":
+            {
                 var advancePlan = await PlanAdvanceAsync(row, tenantId, cutover, ct);
-                return await _db.SalaryAdvances.AnyAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct)
-                    ? "updated" : "created";
+                var advance = await _db.SalaryAdvances.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.AdvanceNumber == advancePlan.AdvanceNumber && !x.IsDeleted, ct);
+                if (advance is not null) await GuardAdvanceRestatementAsync(advance, advancePlan, tenantId, ct);
+                await PrepareAdvanceJournalAsync(advancePlan, advance, tenantId, ct);
+                return advance is null ? "created" : "updated";
+            }
             case "eosbOpeningProvision":
                 var eosbEmployee = await Employee(row, tenantId, ct);
                 RequireCutoverFor(eosbEmployee, cutover);

@@ -37,21 +37,29 @@ public sealed record OpeningBalanceDebt(
 /// </summary>
 public static class OpeningBalanceJournal
 {
-    /// <summary>Adds the opening line the debt still needs to the context (saved by the caller) and returns the signed amount
-    /// posted to the receivable: positive a debit, negative a credit, zero when the ledger already carries the balance.</summary>
-    public static async Task<decimal> PostAsync(
-        ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, string currency, Guid? postedBy, string postedByName,
-        CancellationToken ct)
+    /// <summary>What the opening journal of a debt still needs, worked out and checked BEFORE anything is changed: the caller runs
+    /// this first, so a refusal (a closed period, a remapped chart) leaves the debt, its schedule and the ledger untouched, and only
+    /// then changes the debt and calls <see cref="Apply"/>.</summary>
+    public sealed record Prepared(OpeningBalanceDebt Debt, decimal Difference, bool IsRestatement, string Receivable, string Equity,
+        DateOnly OpeningDate, string Period);
+
+    /// <summary>Reads what this debt's opening lines already carry (debit the receivable: increase; credit it: decrease) and
+    /// returns the difference to <see cref="OpeningBalanceDebt.OutstandingBalance"/>. Throws a coded, bilingual
+    /// <see cref="InvalidOperationException"/> when a non-zero difference cannot be posted: the period is closed, or the chart
+    /// was remapped since the opening was posted.</summary>
+    public static async Task<Prepared> PrepareAsync(ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, CancellationToken ct)
     {
         var glCtx = await GlAccountResolver.LoadAsync(db, debt.TenantId, debt.CompanyId, ct);
         var receivable = GlAccountResolver.AccountLabel(debt.ReceivableDriver, glCtx);
         var equity = GlAccountResolver.AccountLabel(ProvisionCatchUpRoute.EquityDriverKey, glCtx);
 
-        var posted = await db.FinanceGlEntries.AsNoTracking()
-            .Where(x => x.TenantId == debt.TenantId && x.SourceModule == debt.SourceModule && x.SourceEntityId == debt.EntityId
-                     && x.EventType == GlEventTypes.OpeningBalance && !x.IsReversed)
-            .Select(x => new { x.DebitAccount, x.CreditAccount, x.Amount })
-            .ToListAsync(ct);
+        var posted = debt.EntityId == Guid.Empty
+            ? []
+            : await db.FinanceGlEntries.AsNoTracking()
+                .Where(x => x.TenantId == debt.TenantId && x.SourceModule == debt.SourceModule && x.SourceEntityId == debt.EntityId
+                         && x.EventType == GlEventTypes.OpeningBalance && !x.IsReversed)
+                .Select(x => new PostedLine(x.DebitAccount, x.CreditAccount, x.Amount))
+                .ToListAsync(ct);
         var onLedger = 0m;
         foreach (var line in posted)
         {
@@ -62,29 +70,48 @@ public static class OpeningBalanceJournal
                 // apart from the accounts it names now. Refuse the row rather than post a difference against the wrong figure.
                 throw new InvalidOperationException(
                     $"[opening_journal_remapped] {debt.Kind} {debt.Reference}'s opening journal was posted to accounts the chart no longer maps " +
-                    "(the receivable or opening balance equity was remapped), so its opening balance cannot be restated here. Correct it with a manual GL adjustment.");
+                    "(the receivable or opening balance equity was remapped), so its opening balance cannot be restated here. Correct it with a manual GL adjustment. " +
+                    $"/ قيد الرصيد الافتتاحي لـ {debt.Reference} مُرحّل إلى حسابات لم يعد دليل الحسابات يربطها، فلا يمكن إعادة بيان رصيده هنا. صحّحه بقيد تسوية يدوي.");
         }
 
         var difference = Math.Round(debt.OutstandingBalance - onLedger, 2);
-        if (difference == 0m) return 0m;
-
         var period = openingDate.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture);
-        await PeriodCloseGuard.ThrowIfClosedAsync(db, debt.TenantId, debt.CompanyId, period, ct);
-        var increase = difference > 0m;
+        if (difference != 0m && await PeriodCloseGuard.IsClosedAsync(db, debt.TenantId, debt.CompanyId, period, ct))
+            throw new InvalidOperationException(
+                $"[opening_journal_period_closed] {debt.Kind} {debt.Reference}: GL period {period} (the cutover month its opening balance is dated in) is closed, so its opening balance cannot be posted or restated. Reopen the period first; nothing was changed. " +
+                $"/ {debt.Reference}: الفترة المحاسبية {period} (شهر التحويل الذي يؤرَّخ فيه رصيده الافتتاحي) مقفلة، فلا يمكن ترحيل رصيده الافتتاحي أو إعادة بيانه. أعد فتح الفترة أولًا؛ لم يتغير شيء.");
+        return new Prepared(debt, difference, posted.Count > 0, receivable, equity, openingDate, period);
+    }
+
+    /// <summary>Adds the line <paramref name="prepared"/> worked out (none when the difference is zero) for the debt whose id is
+    /// <paramref name="entityId"/>; saved by the caller. Returns the signed amount posted to the receivable.</summary>
+    public static decimal Apply(ZayraDbContext db, Prepared prepared, Guid entityId, string currency, Guid? postedBy, string postedByName)
+    {
+        if (prepared.Difference == 0m) return 0m;
+        var debt = prepared.Debt;
+        var increase = prepared.Difference > 0m;
         db.FinanceGlEntries.Add(new FinanceGlEntry
         {
             TenantId = debt.TenantId, CompanyId = debt.CompanyId,
-            SourceModule = debt.SourceModule, SourceEntityId = debt.EntityId, SourceEntityRef = debt.Reference,
+            SourceModule = debt.SourceModule, SourceEntityId = entityId, SourceEntityRef = debt.Reference,
             EventType = GlEventTypes.OpeningBalance,
-            DebitAccount = increase ? receivable : equity,
-            CreditAccount = increase ? equity : receivable,
-            Amount = Math.Abs(difference), Currency = currency,
-            EntryDate = openingDate, Period = period,
-            Description = posted.Count == 0
-                ? $"{debt.Kind} opening balance carried in: {debt.Reference}"
-                : $"{debt.Kind} opening balance restated: {debt.Reference}",
+            DebitAccount = increase ? prepared.Receivable : prepared.Equity,
+            CreditAccount = increase ? prepared.Equity : prepared.Receivable,
+            Amount = Math.Abs(prepared.Difference), Currency = currency,
+            EntryDate = prepared.OpeningDate, Period = prepared.Period,
+            Description = prepared.IsRestatement
+                ? $"{debt.Kind} opening balance restated: {debt.Reference}"
+                : $"{debt.Kind} opening balance carried in: {debt.Reference}",
             PostedBy = postedBy, PostedByName = postedByName,
         });
-        return difference;
+        return prepared.Difference;
     }
+
+    /// <summary><see cref="PrepareAsync"/> then <see cref="Apply"/>, for a caller with nothing to change in between.</summary>
+    public static async Task<decimal> PostAsync(
+        ZayraDbContext db, OpeningBalanceDebt debt, DateOnly openingDate, string currency, Guid? postedBy, string postedByName,
+        CancellationToken ct) =>
+        Apply(db, await PrepareAsync(db, debt, openingDate, ct), debt.EntityId, currency, postedBy, postedByName);
+
+    private sealed record PostedLine(string DebitAccount, string CreditAccount, decimal Amount);
 }
