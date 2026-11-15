@@ -33,13 +33,13 @@ public sealed class LeaveAttachmentDownloadTests
     }
 
     private static async Task<(LeaveBatch1World W, LeaveRequest Leave, EmployeeDocument Doc, string Key)> SeedAsync(
-        string fileName = "sick note.pdf", bool withDocument = true, bool attach = true)
+        string fileName = "sick note.pdf", bool withDocument = true, bool attach = true, string documentType = "Leave Attachment")
     {
         var w = await LeaveBatch1World.CreateAsync();
         var key = $"{w.TenantId:N}/documents/{Guid.NewGuid():N}_note.pdf";
         var doc = new EmployeeDocument
         {
-            TenantId = w.TenantId, CompanyId = w.CompanyId, EmployeeId = w.Emp.Id, DocumentType = "Leave Attachment",
+            TenantId = w.TenantId, CompanyId = w.CompanyId, EmployeeId = w.Emp.Id, DocumentType = documentType,
             FileName = fileName, ContentType = "application/pdf", StorageUrl = key, ScanStatus = "clean",
         };
         if (withDocument) w.Db.EmployeeDocuments.Add(doc);
@@ -161,5 +161,47 @@ public sealed class LeaveAttachmentDownloadTests
         var header = c.Response.Headers.ContentDisposition.ToString();
         header.Should().StartWith("inline");
         header.Should().NotContain("\r").And.NotContain("\n").And.NotContain("..").And.NotContain("\\");
+    }
+
+    [Fact]
+    public async Task An_hr_evidence_document_is_never_served_through_a_leave()
+    {
+        // HR evidence (Qiwa evidence, loan-deduction consent, non-renewal notice) is not the employee's to see or attach.
+        var (w, leave, _, key) = await SeedAsync(documentType: "QiwaEvidence");
+
+        (await Controller(w, key, w.User(w.EmpUserId, "Employee", "leave.read", "ess.read"), w.OwnScope(w.Emp))
+            .DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+        (await Controller(w, key, w.User(Guid.NewGuid(), "HR Manager", "leave.read", "employees.sensitive"), LeaveBatch1World.OrgScope())
+            .DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+    }
+
+    [Fact]
+    public async Task An_identity_document_attached_to_leave_needs_the_sensitive_permission_like_any_other_download()
+    {
+        var (w, leave, _, key) = await SeedAsync(documentType: "Passport");
+
+        (await Controller(w, key, w.User(Guid.NewGuid(), "HR Officer", "leave.read", "employees.documents"), LeaveBatch1World.OrgScope())
+            .DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<NotFoundResult>();
+        (await Controller(w, key, w.User(Guid.NewGuid(), "HR Manager", "leave.read", "employees.sensitive"), LeaveBatch1World.OrgScope())
+            .DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<FileContentResult>();
+        (await Controller(w, key, w.User(w.EmpUserId, "Employee", "leave.read", "ess.read"), w.OwnScope(w.Emp))
+            .DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<FileContentResult>("it is the employee's own document");
+    }
+
+    [Theory]
+    [InlineData("text/html", "attachment", "application/octet-stream")]
+    [InlineData("image/svg+xml", "attachment", "application/octet-stream")]
+    [InlineData("image/png", "inline", "image/png")]
+    public async Task Only_a_pdf_or_a_photo_opens_inline_and_anything_else_is_a_download(string stored, string disposition, string served)
+    {
+        var (w, leave, doc, key) = await SeedAsync();
+        w.Db.EmployeeDocuments.Single(d => d.Id == doc.Id).ContentType = stored;
+        await w.Db.SaveChangesAsync();
+        var c = Controller(w, key, w.User(Guid.NewGuid(), "HR Officer", "leave.read"), LeaveBatch1World.OrgScope());
+
+        var file = (await c.DownloadAttachment(leave.Id, CancellationToken.None)).Should().BeOfType<FileContentResult>().Subject;
+
+        file.ContentType.Should().Be(served);
+        c.Response.Headers.ContentDisposition.ToString().Should().StartWith(disposition);
     }
 }

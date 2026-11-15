@@ -286,10 +286,18 @@ public class LeaveRequestsController : ControllerBase
 
         var key = request.AttachmentPath.Trim();
         var document = await _db.EmployeeDocuments.AsNoTracking()
-            .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId && d.StorageUrl == key && !d.IsDeleted)
+            .Where(d => d.TenantId == tenantId && d.EmployeeId == request.EmployeeId && d.StorageUrl == key && !d.IsDeleted
+                // HR evidence is never a leave attachment: the employee may not see it (the submit and import paths refuse it too).
+                && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()))
             .OrderByDescending(d => d.UploadedAtUtc)
             .FirstOrDefaultAsync(ct);
         if (document is null || !Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return NotFound();
+        // An identity, payroll or contract document needs employees.sensitive here exactly as on the employee-document
+        // download; the leave's own employee always sees their own file.
+        if (scope.CallerEmployeeId != request.EmployeeId
+            && Zayra.Api.Application.Employees.EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
+            && !User.HasPermission("employees.sensitive"))
+            return NotFound();
 
         byte[] contents;
         try { contents = await _storage.GetBytesAsync(tenantId.Value, document.StorageUrl, ct); }
