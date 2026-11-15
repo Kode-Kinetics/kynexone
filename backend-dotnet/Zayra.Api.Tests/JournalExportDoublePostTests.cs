@@ -319,15 +319,17 @@ public class JournalExportDoublePostTests
     [Fact]
     public async Task EveryFormat_DownloadsTheExactBytesItRecorded()
     {
-        var (db, tenantId) = await TenantAsync();
-        SeedJuly(db, tenantId);
-        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
         foreach (var f in JournalExportFormatterGoldenTests.AllFormatters())
         {
+            // Each format in its own tenant: a one-company file of company A would otherwise overlap the group files still
+            // waiting for the ERP's result, which C-1 refuses (and acknowledgeOtherFormatLive does not override).
+            var (db, tenantId) = await TenantAsync();
+            SeedJuly(db, tenantId);
+            var maker = await CallerAsync(db, tenantId, "Payroll Manager");
             // One-company formats are exported per company; a required ERP setting (Oracle's ledger id) is supplied.
             var required = f.Options.Where(o => o.Required).ToDictionary(o => o.Key, _ => "300000046975971");
             var created = await Ctrl(db, maker).Create(Period, null, f.SingleEntity ? CompanyA : null, "SAR", false, false, f.Key, default,
-                options: required, acknowledgeOtherFormatLive: true);
+                options: required);
             StatusOf(created).Should().Be(201, f.Key);
             var hash = Body(created).GetProperty("fileHash").GetString();
             db.ChangeTracker.Clear();

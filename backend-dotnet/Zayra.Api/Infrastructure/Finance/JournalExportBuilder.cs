@@ -102,16 +102,35 @@ public static class JournalExportLiveOverlaps
                 + "لا يمكن إنشاء هذا الملف حتى تُسجَّل نتيجة ذلك الملف (مرحّل أو مرفوض)، أو يُصدَّر نطاق ذلك الملف نفسه مجددًا بالصيغة نفسها ليحلّ محله.");
         if (string.Equals(h.FormatKey, formatKey, StringComparison.Ordinal) && string.Equals(h.Currency, currency, StringComparison.Ordinal))
             return new(h, SupersededByThisExport,
-                $"{rows} of these ledger rows {be} in export {h.FileName}, which is waiting for its ERP result. Creating this file will "
-                + "supersede it: send only the new file to your ERP.",
+                $"{rows} of these ledger rows {be} in export {h.FileName}, which is waiting for its ERP result. This file of the same "
+                + "scope and format supersedes it: send only the new file to your ERP.",
                 $"{rows} من قيود دفتر الأستاذ هذه موجودة في ملف التصدير {h.FileName} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
-                + "إنشاء هذا الملف سيحلّ محله: أرسل الملف الجديد فقط إلى نظام تخطيط الموارد.");
+                + "هذا الملف للنطاق والصيغة نفسيهما يحلّ محله: أرسل الملف الجديد فقط إلى نظام تخطيط الموارد.");
         return new(h, SameScopeOtherFormat,
             $"{rows} of these ledger rows {be} already in the {h.FormatKey} export {h.FileName}, which is waiting for its ERP result. "
             + "Record that export's ERP result (posted or rejected) before sending these rows in another format: two files of the same "
             + "rows could make your ERP post them twice.",
             $"{rows} من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير {h.FileName} بصيغة {h.FormatKey} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
             + "سجّل نتيجة ذلك الملف (مرحّل أو مرفوض) قبل إرسال هذه القيود بصيغة أخرى: ملفان للقيود نفسها قد يجعلان النظام يرحّلها مرتين.");
+    }
+
+    /// <summary>The create refusal (409 <see cref="JournalExportErrors.EntriesInLiveExport"/>) for files of other scopes that
+    /// already hold some of the rows, oldest first. Names the first; says how many more there are.</summary>
+    public static (string Message, string MessageAr) Refusal(IReadOnlyList<LiveExportHolder> holders)
+    {
+        var h = holders[0];
+        var rows = h.Rows.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var be = h.Rows == 1 ? "is" : "are";
+        var more = holders.Count - 1;
+        return (
+            $"{rows} of these ledger rows {be} already in export {h.FileName}, which is waiting for its ERP result. Sending them in a "
+            + "second file could make your ERP post them twice. Record that export's ERP result (posted or rejected) first, or export "
+            + "that export's own scope again in the same format to supersede it."
+            + (more > 0 ? $" {more} other waiting export(s) also hold some of these rows." : string.Empty),
+            $"{rows} من قيود دفتر الأستاذ هذه موجودة بالفعل في ملف التصدير {h.FileName} الذي ما زال بانتظار نتيجة نظام تخطيط الموارد. "
+            + "إرسالها في ملف ثانٍ قد يجعل النظام يرحّلها مرتين. سجّل أولًا نتيجة ذلك الملف (مرحّل أو مرفوض)، أو صدّر نطاق ذلك الملف نفسه مجددًا "
+            + "بالصيغة نفسها ليحلّ محله."
+            + (more > 0 ? $" كما توجد بعض هذه القيود في {more} من ملفات التصدير الأخرى التي ما زالت بانتظار النتيجة." : string.Empty));
     }
 }
 
@@ -140,6 +159,7 @@ public static class JournalExportErrors
     public const string UncostedRequiredLines = "uncosted_required_lines";
     public const string UnsafeCompanyCode = "unsafe_company_code";
     public const string OtherFormatLive = "other_format_export_live";
+    public const string EntriesInLiveExport = "entries_in_live_export";
 }
 
 /// <summary>Rounded DR/CR of one company inside an export — every company must balance on its own.</summary>

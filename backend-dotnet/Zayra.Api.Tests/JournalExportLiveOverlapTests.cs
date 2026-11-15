@@ -80,6 +80,68 @@ public class JournalExportLiveOverlapTests
         overlap.GetProperty("message").GetString().Should().Contain("supersede");
     }
 
+    // ── 2. Create: refused while another scope's file waits ───────────────────────────────────────
+
+    [Fact]
+    public async Task Create_WhileARunExportIsLive_APeriodExportOfTheSameMonth_IsRefused_AndWritesNothing()
+    {
+        var (db, tenantId, run) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var runExport = await CreateRunAsync(db, maker, run);
+        var runFile = Body(runExport).GetProperty("fileName").GetString()!;
+
+        var period = await CreatePeriodAsync(db, maker);
+
+        StatusOf(period).Should().Be(409);
+        var body = Body(period);
+        body.GetProperty("error").GetString().Should().Be("entries_in_live_export");
+        body.GetProperty("code").GetString().Should().Be("entries_in_live_export");
+        body.GetProperty("exportId").GetGuid().Should().Be(IdOf(runExport));
+        body.GetProperty("fileName").GetString().Should().Be(runFile);
+        body.GetProperty("rows").GetInt32().Should().Be(2);
+        body.GetProperty("message").GetString().Should().Contain("2 of these ledger rows").And.Contain(runFile)
+            .And.Contain("waiting for its ERP result").And.Contain("posted or rejected").And.Contain("supersede")
+            .And.NotContain("Replacement");
+        body.GetProperty("messageAr").GetString().Should().Contain(runFile).And.Contain("بانتظار");
+        body.GetProperty("liveExports").EnumerateArray().Should().ContainSingle()
+            .Which.GetProperty("exportId").GetGuid().Should().Be(IdOf(runExport));
+
+        (await db.GlJournalExports.AsNoTracking().CountAsync()).Should().Be(1, "a refusal writes no artifact");
+        (await db.GlJournalExports.AsNoTracking().SingleAsync()).Status.Should().Be(GlJournalExportStatuses.Exported, "the waiting file is untouched");
+        (await db.FinanceGlEntries.AsNoTracking().SingleAsync(e => e.SourceModule == "Loan")).ErpPostingStatus
+            .Should().NotBe(ErpPostingStatuses.Exported, "nothing was stamped for the refused file");
+    }
+
+    [Fact]
+    public async Task Create_WhileACompanyExportIsLive_AGroupExportOfTheSameMonth_IsRefused()
+    {
+        var (db, tenantId, _) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var companyExport = await CreatePeriodAsync(db, maker, CompanyA);
+        StatusOf(companyExport).Should().Be(201);
+
+        var group = await CreatePeriodAsync(db, maker);
+
+        StatusOf(group).Should().Be(409);
+        Body(group).GetProperty("error").GetString().Should().Be("entries_in_live_export");
+        Body(group).GetProperty("exportId").GetGuid().Should().Be(IdOf(companyExport));
+        Body(group).GetProperty("rows").GetInt32().Should().Be(2, "company A's two payroll rows are in the waiting file");
+    }
+
+    [Fact]
+    public async Task AcknowledgingAnotherFormat_DoesNotOverrideTheRefusal()
+    {
+        var (db, tenantId, run) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        await CreateRunAsync(db, maker, run);
+
+        var sap = await CreatePeriodAsync(db, maker, format: "sap-s4-gje", acknowledgeOtherFormatLive: true);
+
+        StatusOf(sap).Should().Be(409, "the acknowledgement covers another format of the SAME scope, never another scope's file");
+        Body(sap).GetProperty("error").GetString().Should().Be("entries_in_live_export");
+        (await db.GlJournalExports.AsNoTracking().CountAsync()).Should().Be(1);
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>July: company A payroll run (two one-sided accrual rows), company B loan disbursement (two-sided).</summary>
@@ -115,6 +177,15 @@ public class JournalExportLiveOverlapTests
     private static async Task<IActionResult> CreateRunAsync(ZayraDbContext db, ClaimsPrincipal maker, Guid run, string format = "generic-csv")
     {
         var result = await Ctrl(db, maker).Create(Period, run, null, "SAR", false, false, format, default);
+        db.ChangeTracker.Clear();
+        return result;
+    }
+
+    private static async Task<IActionResult> CreatePeriodAsync(ZayraDbContext db, ClaimsPrincipal maker, Guid? companyId = null,
+        string format = "generic-csv", bool acknowledgeOtherFormatLive = false)
+    {
+        var result = await Ctrl(db, maker).Create(Period, null, companyId, "SAR", false, false, format, default,
+            acknowledgeOtherFormatLive: acknowledgeOtherFormatLive);
         db.ChangeTracker.Clear();
         return result;
     }
