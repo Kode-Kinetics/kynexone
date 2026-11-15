@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { loansApi, type EmployeeLoan, type LoanDetail } from '../../api/loans';
 import { loanErrorMessage, localDateToday } from '../../lib/loanWorkflow';
 import { useFormat } from '../../hooks/useFormat';
@@ -20,6 +20,8 @@ const LABELS = { requested: 'Requested', approved: 'Approved', disbursed: 'Disbu
 
 export function LoanAccountSummary({ mine, version }: { mine: boolean; version: number }) {
   const { t } = useLocale();
+  const tRef = useRef(t);
+  tRef.current = t;
   // A loan carried in with no currency (before #188 stamped it) used to throw here and blank the Loans page.
   const fx = useFormat();
   const [loans, setLoans] = useState<EmployeeLoan[]>([]);
@@ -32,7 +34,7 @@ export function LoanAccountSummary({ mine, version }: { mine: boolean; version: 
         const all = [...first.items];
         for (let page = 2; all.length < first.total; page++) { const next = await loansApi.list({ mine, page, pageSize: 100 }); if (!next.items.length) break; all.push(...next.items); }
         if (active) { setLoans(all); setError(''); }
-      } catch (e) { if (active) setError(loanErrorMessage(e, t('Unable to load account totals.'))); }
+      } catch (e) { if (active) setError(loanErrorMessage(e, tRef.current('Unable to load account totals.'))); }
     })();
     return () => { active = false; };
   }, [mine, version]);

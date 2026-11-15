@@ -1889,7 +1889,6 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
     }).finally(() => setLoading(false));
   };
 
-  useEffect(() => { if (selectedRunId) { setRunId(selectedRunId); } }, [selectedRunId]);
 
   const warnings = results.filter(r => r.severity === 'Warning');
   const errors = results.filter(r => r.severity === 'Error');
@@ -2263,7 +2262,6 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   }, [t]);
 
   useEffect(() => { refreshRuns(); }, []);
-  useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
   useEffect(() => {
     if (!runId) return;
     payrollApi.runApprovals(runId).then(setApprovals).catch(() => {});
@@ -2724,7 +2722,6 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
   currentRunRef.current = runId;
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
-  useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3665,7 +3662,7 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
   // Arriving from a run card ("Review & lock") reads that run's journal at once; otherwise Generate Journal does.
   useEffect(() => {
     if (!selectedRunId) return;
-    setRunId(selectedRunId);
+    setLocalRunId(selectedRunId);
     runIdRef.current = selectedRunId;
     void load(selectedRunId);
   }, [selectedRunId, load]);
@@ -3793,7 +3790,6 @@ function ReconciliationTab({ selectedRunId, onRunChange }: { selectedRunId?: str
   const runCurrency = useRunCurrency(runs.find(r => r.id === runId));
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
-  useEffect(() => { if (selectedRunId) setRunId(selectedRunId); }, [selectedRunId]);
 
   const load = async () => {
     if (!runId) return;

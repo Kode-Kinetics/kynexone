@@ -200,12 +200,10 @@
   "react-hooks/exhaustive-deps": 1
  },
  "src/views/AttendancePage.tsx": {
-  "@typescript-eslint/no-explicit-any": 1,
   "@typescript-eslint/no-unused-vars": 1
  },
  "src/views/CompliancePage.tsx": {
   "@typescript-eslint/no-unused-vars": 1,
-  "jsx-a11y/label-has-associated-control": 1,
   "react-hooks/exhaustive-deps": 4
  },
  "src/views/ComplianceProfilesPage.tsx": {
@@ -227,10 +225,10 @@
  },
  "src/views/LeavePage.tsx": {
   "react-hooks/exhaustive-deps": 10,
-  "react/no-unescaped-entities": 3
+  "react/no-unescaped-entities": 2
  },
  "src/views/LoansPage.tsx": {
-  "@typescript-eslint/no-explicit-any": 7
+  "@typescript-eslint/no-explicit-any": 6
  },
  "src/views/LoginPage.tsx": {
   "@typescript-eslint/no-explicit-any": 4
@@ -250,9 +248,7 @@
  },
  "src/views/PayrollPage.tsx": {
   "@typescript-eslint/no-unused-vars": 2,
-  "jsx-a11y/label-has-associated-control": 6,
-  "react-hooks/exhaustive-deps": 2,
-  "react/no-unescaped-entities": 1
+  "react-hooks/exhaustive-deps": 2
  },
  "src/views/PerformancePage.tsx": {
   "react-hooks/exhaustive-deps": 4
@@ -263,7 +259,6 @@
  "src/views/RecruitmentPage.tsx": {
   "@typescript-eslint/no-unused-vars": 8,
   "jsx-a11y/click-events-have-key-events": 1,
-  "jsx-a11y/label-has-associated-control": 50,
   "jsx-a11y/no-static-element-interactions": 1,
   "react-hooks/exhaustive-deps": 11
  },

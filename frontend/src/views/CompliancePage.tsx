@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { notifyApiError } from '../api/client';
 import { useBusyKeys } from '../hooks/useBusyKeys';
@@ -664,6 +664,8 @@ function ExpiryAlertsTab() {
 
 function EmployeeDocumentsTab() {
   const { t } = useLocale();
+  const tRef = useRef(t);
+  tRef.current = t;
   const fx = useFormat();
   const { hasPermission } = useAuth();
   const searchParams = useSearchParams();
@@ -688,8 +690,8 @@ function EmployeeDocumentsTab() {
         if (cancelled) return;
         const status = (e as { response?: { status?: number } })?.response?.status;
         setError(status === 403
-          ? t('Your role cannot read employee document reports. These are restricted to Admin, HR Manager, HR Officer, Payroll Officer and Auditor.')
-          : t('The employee document report could not be loaded.'));
+          ? tRef.current('Your role cannot read employee document reports. These are restricted to Admin, HR Manager, HR Officer, Payroll Officer and Auditor.')
+          : tRef.current('The employee document report could not be loaded.'));
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };

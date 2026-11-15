@@ -994,7 +994,7 @@ function AdvancesTab({ ownAccounts }: { ownAccounts: boolean }) {
               <>
                 <div>
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{t('Repayment schedule')}</p>
-                  {detail.installments.length === 0 ? <p className="py-3 text-center text-sm text-slate-400">{t('No installments scheduled yet')}</p> : (
+                  {detail.installments.length === 0 ? <p className="py-3 text-center text-sm text-slate-400">{t('The repayment schedule is empty.')}</p> : (
                     <div className="surface max-h-56 overflow-y-auto">
                       <table className="w-full text-xs">
                         <thead><tr className="border-b border-slate-100 dark:border-white/10">{['#', 'Due Date', 'Amount Due', 'Paid', 'Status'].map((h) => <th key={h} className="px-3 py-2 text-start font-semibold uppercase tracking-wide text-slate-400">{h === '#' ? h : t(h)}</th>)}</tr></thead>
@@ -1699,7 +1699,7 @@ function BonusBatchesTab({ bonusTypes }: { bonusTypes: BonusType[] }) {
                 {departments.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
             </FormField>
-            <FormField label={t('Override Calculation Value ({unit}) — leave blank to use type default', { unit: bonusTypes.find(bt => bt.id === selected?.batch.bonusTypeId)?.calculationMethod === 'PercentageSalary' ? '%' : t('amount') })}>
+            <FormField label={t('Override Calculation Value ({unit}) — leave blank to use type default', { unit: bonusTypes.find(bt => bt.id === selected?.batch.bonusTypeId)?.calculationMethod === 'PercentageSalary' ? '%' : t('Amount') })}>
               <input
                 type="number" min={0} step={0.01}
                 value={bulkForm.overrideValue}
@@ -1965,9 +1965,9 @@ export function LoansPage() {
 
       {summary && canViewFinanceModules && !ownAccounts && !['loans', 'loanPayments'].includes(activeTab) && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <SummaryCard label={t('Active Obligations')} value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub={t('loans + advances')} />
-          <SummaryCard label={t('Total Outstanding')} value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub={t('loans + advances')} />
-          <SummaryCard label={t('Pending Approval')} value={summary.pendingLoans} icon={AlertTriangle} color="text-sapphire" sub={t('awaiting decision')} />
+          <SummaryCard label={t('Active Obligations')} value={summary.activeLoans} icon={CreditCard} color="text-blue-600 dark:text-blue-400" sub={t('Loans + advances')} />
+          <SummaryCard label={t('Total Outstanding')} value={fmt(summary.totalOutstanding)} icon={DollarSign} color="text-amber-600 dark:text-amber-400" sub={t('Loans + advances')} />
+          <SummaryCard label={t('Pending Approval')} value={summary.pendingLoans} icon={AlertTriangle} color="text-sapphire" sub={t('Awaiting decision')} />
           <SummaryCard label={t('Audit Status')} value={t('Ready')} icon={ShieldCheck} color="text-emerald-600 dark:text-emerald-400" sub={t('GL entries current')} />
         </div>
       )}
