@@ -51,13 +51,14 @@ type Mock = {
   records?: unknown[];
 };
 
-async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark' } = {}) {
+async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'dark'; locale?: 'en' | 'ar' } = {}) {
   let processingCalls = 0;
-  await page.addInitScript((th) => {
+  await page.addInitScript(([th, locale]) => {
     localStorage.setItem('zayra_access_token', 'fixture-token');
     localStorage.setItem('zayra_refresh_token', 'fixture-refresh');
     localStorage.setItem('kynexone.theme', th);
-  }, opts.theme ?? 'light');
+    if (locale) localStorage.setItem('kynexone-locale-choice-v2', locale);
+  }, [opts.theme ?? 'light', opts.locale ?? ''] as const);
   await page.route('**/api/**', (route: Route) => {
     const req = route.request();
     const p = new URL(req.url()).pathname;
@@ -98,7 +99,7 @@ async function open(page: Page, url: string, opts: Mock & { theme?: 'light' | 'd
     return json([]);
   });
   await page.goto(url);
-  await expect(page.getByRole('heading', { name: 'Payroll Management' })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole('heading', { name: opts.locale === 'ar' ? 'إدارة الرواتب' : 'Payroll Management' })).toBeVisible({ timeout: 30_000 });
 }
 
 const recon = (name: string) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8'));
@@ -333,4 +334,55 @@ test.describe('payroll tables in dark mode', () => {
       await page.unroute('**/api/**');
     }
   });
+});
+
+test.describe('Paid / Exported names the file that exists (a company whose bank file is the Saudi bank export)', () => {
+  // RUN_PREV is Locked. Generating the INTERNAL payroll register sets its batch to Generated; it is not a bank file.
+  const BATCH = {
+    id: 'b2222222-2222-4222-8222-222222222222', payrollRunId: RUN_PREV, batchNumber: 'PB-2026-09-0002', paymentMethod: 'WPS',
+    totalAmount: 90000, currency: 'SAR', status: 'Created', wpsStatus: 'Generated', effectiveWpsStatus: 'Generated',
+    wpsStatusLabel: 'Generated (file ready for the bank)', wpsStatusChangedAtUtc: '2026-09-30T08:00:00Z',
+    wpsSubmissionReference: null, wpsRejectionReason: null, createdAtUtc: '2026-09-29T08:00:00Z', isSaudi: true,
+    bankFileAvailable: true, bankFileGenerated: false,
+  };
+  // The screen isolates the batch number (a left-to-right code) so an Arabic sentence does not reorder it.
+  const LTR = (code: string) => `\u2066${code}\u2069`;
+  const WORDS = {
+    en: {
+      registerOnly: 'The internal payroll register is generated, but the bank file has not been generated yet.',
+      bankFile: `Batch ${LTR(BATCH.batchNumber)}: Bank file generated`,
+      done: 'Done',
+    },
+    ar: {
+      registerOnly: 'أُنشئ سجل الرواتب الداخلي، لكن الملف البنكي لم يُنشأ بعد.',
+      bankFile: `الدفعة ${LTR(BATCH.batchNumber)}: أُنشئ الملف البنكي`,
+      done: 'مكتمل',
+    },
+  } as const;
+  const paidStage = (page: Page) => page.getByTestId('pipeline-stages').locator('> li[data-stage="paid"]');
+  const shot = async (page: Page, name: string) => {
+    if (process.env.SHOT_DIR) await page.getByTestId('run-pipeline').screenshot({ path: `${process.env.SHOT_DIR}/${name}.png` });
+  };
+
+  for (const locale of ['en', 'ar'] as const) {
+    test(`[${locale}] the internal register alone does not complete Paid / Exported, and says the bank file is missing`, async ({ page }) => {
+      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [BATCH], locale });
+      if (locale === 'ar') await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
+      await expect(paidStage(page)).toHaveAttribute('data-state', 'current');
+      await expect(paidStage(page)).toHaveAttribute('aria-current', 'step');
+      await expect(page.getByTestId('stage-reason-paid')).toHaveText(WORDS[locale].registerOnly);
+      await expect(page.getByTestId('pipeline-next-reason')).toHaveText(WORDS[locale].registerOnly);
+      await expect(paidStage(page)).not.toContainText(WORDS[locale].done);
+      await shot(page, `pipeline-register-only-${locale}`);
+    });
+
+    test(`[${locale}] a generated bank file completes Paid / Exported and the detail names the bank file`, async ({ page }) => {
+      await open(page, `/payroll?tab=runs&run=${RUN_PREV}`, { batches: [{ ...BATCH, bankFileGenerated: true }], locale });
+      await expect(paidStage(page)).toHaveAttribute('data-state', 'done');
+      await expect(paidStage(page)).toContainText(WORDS[locale].done);
+      await expect(paidStage(page)).toContainText(WORDS[locale].bankFile);
+      await expect(page.getByTestId('stage-reason-paid')).toHaveCount(0);
+      await shot(page, `pipeline-bank-file-${locale}`);
+    });
+  }
 });

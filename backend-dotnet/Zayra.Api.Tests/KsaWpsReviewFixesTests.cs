@@ -275,7 +275,8 @@ public class KsaWpsReviewFixesTests
 
     internal static PayrollController Payroll(ZayraDbContext db, Guid tenantId, Guid userId,
         Zayra.Api.Infrastructure.Documents.IDocumentStorage? storage = null,
-        Zayra.Api.Application.CountryPack.ICountryPackResolver? resolver = null)
+        Zayra.Api.Application.CountryPack.ICountryPackResolver? resolver = null,
+        IConfiguration? configuration = null)
     {
         var claims = new List<Claim>
         {
@@ -284,7 +285,8 @@ public class KsaWpsReviewFixesTests
         };
         var http = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) };
         return new PayrollController(db, new _RfScope(), new _RfHttp(http), new _RfNotifications(), resolver ?? new _RfKsaPackResolver(),
-            new StubRuleReader(), new _RfLetters(), storage ?? new MemoryDocumentStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1))
+            new StubRuleReader(), new _RfLetters(), storage ?? new MemoryDocumentStorage(), new Zayra.Api.Infrastructure.Documents.PdfRenderGate(1),
+            configuration: configuration)
         {
             ControllerContext = new ControllerContext { HttpContext = http },
         };
