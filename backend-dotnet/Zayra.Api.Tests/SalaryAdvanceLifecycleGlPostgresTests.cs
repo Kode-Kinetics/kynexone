@@ -654,6 +654,91 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Balance(await LedgerAsync(w), Emp1420).Should().Be(2_500m, "completing it again posts nothing");
     }
 
+    /// <summary>
+    /// A completed settlement is voided and then completed again, by either path: with nothing to pay, or by a paid batch that
+    /// pays a colleague (the zero-net leaver is left out of it). At every step the leaver's debt on the books (1410 plus 1420) is
+    /// exactly what they owe (the advance's balance plus their open 1420 sub-ledger rows): 2,500 after the first completion,
+    /// 3,000 once the void gives back the 500 the final pay took, 2,500 after the second. The leftover moves to 1420 once: the
+    /// void leaves the first move standing and the advance holds only the 500 given back, which the second final pay recovers
+    /// in full, so the second completion has nothing left to move.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task VoidThenRecomplete_TheDebtOnTheBooksIsAlwaysWhatIsOwed_AndTheLeftoverMovesTo1420Once(bool paidBatch)
+    {
+        var w = await SeedAsync(costing: false, withColleague: paidBatch);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+        int? colleagueId = null;
+        if (paidBatch)
+        {
+            await using var db = _fx.CreateDb();
+            colleagueId = await db.Employees.Where(e => e.TenantId == w.TenantId && e.Id != w.EmployeeId).Select(e => e.Id).SingleAsync();
+            await SeedApprovedSettlementAsync(w, gross: 1_000m, employeeId: colleagueId, intoRunId: s.RunId);
+        }
+
+        await PayOrCompleteAsync(w, s.RunId, s.SettlementId, paidBatch);
+        await AssertDebtOnBooksAsync(w, advId, 2_500m);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(paidBatch
+                ? await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct,
+                    settlementDisposition: "FundsRecalled", settlementReference: "RECALL-1")
+                : await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Approved);
+        await AssertDebtOnBooksAsync(w, advId, 3_000m);
+
+        Guid run2;
+        await using (var db = _fx.CreateDb())
+        {
+            var created = Ok<object>(await Payroll(db, w, w.RunCreator, "Payroll Manager").CreateFinalSettlementRun(s.SettlementId, Ct), "second settlement run");
+            run2 = JsonSerializer.SerializeToElement(created).GetProperty("runId").GetGuid();
+        }
+        if (colleagueId is int c)
+            await using (var db = _fx.CreateDb())
+                Ok<object>(await Payroll(db, w, w.RunCreator, "Payroll Manager").UpsertRunSelection(run2,
+                    new PayrollRunSelectionRequest(PayrollRunSelectionModes.Include, "Colleague's final settlement", new List<int> { c }), Ct), "add colleague");
+        await PayOrCompleteAsync(w, run2, s.SettlementId, paidBatch);
+
+        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
+        await AssertDebtOnBooksAsync(w, advId, 2_500m);
+        await using (var db = _fx.CreateDb())
+        {
+            var moves = await db.FinanceGlEntries.IgnoreQueryFilters().AsNoTracking()
+                .Where(g => g.TenantId == w.TenantId && g.SourceEntityId == s.SettlementId && g.EventType == GlEventTypes.SettlementResidualReclass)
+                .Select(g => g.Amount).ToListAsync();
+            moves.Should().Equal(new[] { 2_500m }, "the leftover is moved to 1420 once, never again on the second completion");
+        }
+    }
+
+    private async Task PayOrCompleteAsync(World w, Guid runId, Guid settlementId, bool paidBatch)
+    {
+        await ProcessAsync(w, runId);
+        await OverrideHalfWageCapAsync(w, runId);
+        await ApproveAsync(w, runId, expectedOverridden: 1);
+        await LockAsync(w, runId);
+        if (paidBatch) await PayBatchAsync(w, runId);
+        else await CompleteWithoutPaymentAsync(w, settlementId);
+    }
+
+    /// <summary>The leaver's debt on the books (1410 + 1420; only the leaver has an advance or a 1420 row here) equals what they
+    /// owe (the advance's balance plus their open 1420 sub-ledger rows), and is <paramref name="expected"/>.</summary>
+    private async Task AssertDebtOnBooksAsync(World w, Guid advId, decimal expected)
+    {
+        var ledger = await LedgerAsync(w);
+        var onBooks = Balance(ledger, Adv1410) + Balance(ledger, Emp1420);
+        await using var db = _fx.CreateDb();
+        var advance = (await AdvanceAsync(advId)).OutstandingBalance;
+        var receivables = (await db.PayrollEmployeeReceivables.IgnoreQueryFilters().AsNoTracking()
+                .Where(r => r.TenantId == w.TenantId && r.EmployeeId == w.EmployeeId)
+                .Select(r => new { r.Amount, r.RecoveredAmount, r.Status }).ToListAsync())
+            .Where(r => r.Status == PayrollReceivableStatuses.Outstanding).Sum(r => r.Amount - r.RecoveredAmount);
+        (onBooks, advance + receivables).Should().Be((expected, expected), "1410 + 1420 on the ledger must be exactly what the leaver owes");
+        Debits(ledger).Should().Be(Credits(ledger));
+    }
+
     /// <summary>An Active loan collected by payroll, its first instalment due on <paramref name="firstDue"/>.</summary>
     private async Task<Guid> SeedPayrollLoanAsync(World w, decimal amount, DateOnly firstDue)
     {
@@ -963,12 +1048,13 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     /// advance, and a Draft off-cycle settlement run for this month that carries the leaver. Seeded as
     /// <see cref="SettlementDisbursementRacePostgresTests"/> seeds it.
     /// </summary>
-    private async Task<SettlementWorld> SeedApprovedSettlementAsync(World w, decimal gross)
+    private async Task<SettlementWorld> SeedApprovedSettlementAsync(World w, decimal gross, int? employeeId = null, Guid? intoRunId = null)
     {
         await using var db = _fx.CreateDb();
-        var employee = await db.Employees.SingleAsync(e => e.Id == w.EmployeeId);
+        var leaverId = employeeId ?? w.EmployeeId;
+        var employee = await db.Employees.SingleAsync(e => e.Id == leaverId);
         employee.Status = EmployeeStatuses.Offboarded;
-        var outstanding = await db.SalaryAdvances.Where(a => a.EmployeeIntId == w.EmployeeId && a.Status == "Active").SumAsync(a => a.OutstandingBalance);
+        var outstanding = await db.SalaryAdvances.Where(a => a.EmployeeIntId == leaverId && a.Status == "Active").SumAsync(a => a.OutstandingBalance);
         var lastDay = w.Month1.AddMonths(1).AddDays(-1);
         var offboarding = new EmployeeOffboarding
         {
@@ -993,7 +1079,8 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
             RunType = PayrollRunTypes.OffCycle, IncludesRecurringPay = false, SettlesFinalSettlements = true, CreatedByUserId = w.RunCreator,
             CreatedAtUtc = new DateTime(w.Month1.Year, w.Month1.Month, 1, 0, 0, 0, DateTimeKind.Utc),
         };
-        db.AddRange(offboarding, settlement, run);
+        if (intoRunId is Guid existingRun) { run.Id = existingRun; db.AddRange(offboarding, settlement); }
+        else db.AddRange(offboarding, settlement, run);
         db.FinalSettlementLines.Add(new FinalSettlementLine
         {
             TenantId = w.TenantId, SettlementId = settlement.Id, ComponentCode = FinalSettlementComponents.Gratuity,
