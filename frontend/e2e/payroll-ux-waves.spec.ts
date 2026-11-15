@@ -54,9 +54,9 @@ type Opts = {
 };
 
 const bankHandler = (o: Opts = {}): Handler => (path, search, method, route) => {
+  if (method !== 'GET') o.posts?.push(`${method} ${path}`);
   if (o.extra) { const x = o.extra(path, search, method, route); if (x !== undefined) return x; }
   if (path === '/api/auth/me') return { ...USER, roles: o.roles ?? USER.roles, permissions: o.perms ?? [...PERMS, 'payroll.export', 'payroll.structure_manage'] };
-  if (method !== 'GET') o.posts?.push(`${method} ${path}`);
   if (path === '/api/payroll/runs') return { items: [{ ...RUN, status: o.runStatus ?? RUN.status }], total: 1, page: 1, pageSize: 100 };
   if (path === '/api/payroll/companies') return [COMPANY_ROW];
   if (path === '/api/payroll/readiness') return { year: 2026, month: 11, companyId: null, completionPercent: 100, isReadyForProcessing: true, totalActiveEmployees: 9, employeesWithSalary: 9, salaryCoveragePercent: 100, validationErrors: 0, payrollRunStatus: 'Locked', steps: [] };
@@ -363,6 +363,55 @@ for (const locale of LOCALES) {
       await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ perms: FINANCE_PERMS, roles: ['Finance Approver'] }), waitMs: 2500 });
       await expect(page.getByTestId('bank-file-no-permission')).toBeVisible({ timeout: 90_000 });
       await expect(page.getByText(/If it does not, you need|وإن لم يظهر/)).toHaveCount(0);
+    });
+  });
+}
+
+// ── W6: say what will post to the GL before it posts ──────────────────────────────────────────────
+
+const ACCEPTED = { ...BATCH, status: 'FileGenerated', wpsStatus: 'Accepted', effectiveWpsStatus: 'Accepted', wpsStatusLabel: 'Accepted', allowedNextStatuses: [] };
+const PAID = { ...ACCEPTED, wpsStatus: 'Paid', effectiveWpsStatus: 'Paid', wpsStatusLabel: 'Paid' };
+
+for (const locale of LOCALES) {
+  test.describe(`W6: confirm before a GL posting (${locale})`, () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+    const dialog = (page: Page) => page.getByRole('dialog');
+
+    test('Settle net pay names the batch, journal, amount and date; Cancel posts nothing; confirming posts once', async ({ page }) => {
+      const posts: string[] = [];
+      await boot(page, { locale, url: url('payment-tracking'), routes: bankHandler({ batches: [ACCEPTED], posts, extra: (p, _s, m) => (m === 'POST' && p.endsWith('/settle') ? { batchId: BATCH_ID, runId: RUN_ID, wpsStatus: 'Paid', settled: 9 } : undefined) }), waitMs: 2500 });
+      const settle = page.getByRole('button', { name: locale === 'ar' ? /تسوية صافي الرواتب في دفتر الأستاذ/ : 'Settle net pay to GL' }).first();
+      await expect(settle).toBeVisible({ timeout: 90_000 });
+      await settle.click();
+      const d = dialog(page);
+      await expect(d).toBeVisible();
+      await expect(d).toContainText(say(locale, 'Post the net pay settlement to the general ledger?'));
+      const facts = d.getByTestId('gl-post-confirm');
+      await expect(facts).toContainText('PAY-202611-220353');
+      await expect(facts).toContainText('133,588.90');
+      await expect(facts).toContainText(say(locale, 'Payment batch'));
+      await expect(facts).toContainText(say(locale, 'Journal'));
+      expect(posts.filter(x => x.endsWith('/settle'))).toHaveLength(0);
+      await d.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel' }).click();
+      await expect(d).toHaveCount(0);
+      expect(posts.filter(x => x.endsWith('/settle'))).toHaveLength(0);
+      await settle.click();
+      await d.getByRole('button', { name: say(locale, 'Post settlement') }).click();
+      await expect.poll(() => posts.filter(x => x.endsWith('/settle')).length).toBe(1);
+    });
+
+    test('Remit names the group and says the amounts appear on the GL Journal tab', async ({ page }) => {
+      const posts: string[] = [];
+      await boot(page, { locale, url: url('payment-tracking'), routes: bankHandler({ batches: [PAID], posts }), waitMs: 2500 });
+      const remit = page.getByRole('button', { name: locale === 'ar' ? 'تحويل' : 'Remit', exact: true }).first();
+      await expect(remit).toBeVisible({ timeout: 90_000 });
+      await remit.click();
+      const d = dialog(page);
+      await expect(d).toContainText(say(locale, 'Post the statutory remittance to the general ledger?'));
+      await expect(d.getByTestId('gl-post-confirm')).toContainText(say(locale, 'GOSI, tax and loan remittances'));
+      expect(posts.filter(x => x.endsWith('/remit'))).toHaveLength(0);
+      await d.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel' }).click();
+      expect(posts.filter(x => x.endsWith('/remit'))).toHaveLength(0);
     });
   });
 }

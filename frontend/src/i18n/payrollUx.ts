@@ -22,6 +22,19 @@ const ar: Record<string, string> = {
   'Show stages': 'عرض المراحل',
   'Stage {stage}: {state}': 'المرحلة {stage}: {state}',
   'Payment records': 'سجلات الدفع',
+  // ── W6: what a GL posting will do, before it does it ──
+  'Payment batch': 'دفعة الدفع',
+  'Journal': 'القيد',
+  'Remittance date': 'تاريخ السداد',
+  'GOSI, tax and loan remittances': 'سداد التأمينات والضريبة وأقساط القروض',
+  'Post the net pay settlement to the general ledger?': 'ترحيل تسوية صافي الرواتب إلى دفتر الأستاذ؟',
+  'Post the statutory remittance to the general ledger?': 'ترحيل السداد النظامي إلى دفتر الأستاذ؟',
+  'This posts a journal to the general ledger. It is reversed with a contra journal, not deleted.': 'يرحّل هذا الإجراء قيدًا إلى دفتر الأستاذ. ويُعكس بقيد عكسي ولا يُحذف.',
+  'This posts a journal to the general ledger. It is reversed with a contra journal, not deleted. The amounts come from the run and appear on the GL Journal tab once posted.': 'يرحّل هذا الإجراء قيدًا إلى دفتر الأستاذ. ويُعكس بقيد عكسي ولا يُحذف. تُحتسب المبالغ من المسير وتظهر في تبويب قيود دفتر الأستاذ بعد الترحيل.',
+  'Settle net pay to GL': 'تسوية صافي الرواتب في دفتر الأستاذ',
+  'Post settlement': 'ترحيل التسوية',
+  'Post remittance': 'ترحيل السداد',
+
   // ── W5: the bank file as four steps ──
   'Saudi bank payroll file: the Payroll payment instruction file (bank format) — the ANB Connect instruction with WPS fields — is the file to send to the bank. Mudad accepts only the WPS file your bank signs — keep the bank’s output file or a Mudad screenshot as evidence before marking the batch Accepted.': 'ملف رواتب البنك السعودي: ملف تعليمات دفع الرواتب (بصيغة البنك) — تعليمات ANB Connect بحقول حماية الأجور — هو الملف الذي يُرسل إلى البنك. لا يقبل «مدد» إلا ملف حماية الأجور الذي يوقّعه بنكك — احتفظ بملف المخرجات من البنك أو بلقطة شاشة من «مدد» كدليل قبل وضع علامة «مقبول» على الدفعة.',
   'Steps to a bank file': 'خطوات إعداد ملف البنك',

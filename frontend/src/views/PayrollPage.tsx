@@ -3136,9 +3136,47 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
       notifyApiError({ response: { data: { message: t('A reason is required for reversal.') } } });
       return;
     }
+    // Every action that posts to the general ledger says what will post before it does: the batch, the amount, the date and the journal.
+    // The accounts are not part of the data this tab holds (they come from the GL setup), so they are not listed.
+    const postingFacts = (rows: [string, string][]) => (
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-lg bg-slate-50 p-3 text-sm dark:bg-white/5" data-testid="gl-post-confirm">
+        {rows.map(([k, v]) => <React.Fragment key={k}><dt className="text-fg-muted">{k}</dt><dd className="font-medium text-fg"><bdi>{v}</bdi></dd></React.Fragment>)}
+      </dl>
+    );
+    const when = form.date ? fx.date(form.date) : t('Today');
+    const batchRow: [string, string] = [t('Payment batch'), batch.batchNumber];
+    const amountRow: [string, string] = [t('Amount'), fmtAmt(batch.totalAmount, batch.currency)];
+    const groupName = form.group === 'All' ? t('GOSI, tax and loan remittances') : form.group === 'GOSI' ? t('GOSI remittance') : form.group === 'TAX' ? t('Tax remittance') : t('Loan remittance');
+    if (action === 'settle' && !(await confirm({
+      title: t('Post the net pay settlement to the general ledger?'),
+      message: (
+        <div>
+          <p>{t('This posts a journal to the general ledger. It is reversed with a contra journal, not deleted.')}</p>
+          {postingFacts([batchRow, [t('Journal'), t('Net pay settlement')], amountRow, [t('Paid date'), when], ...(form.reference ? [[t('Reference'), form.reference] as [string, string]] : [])])}
+        </div>
+      ),
+      confirmLabel: t('Post settlement'),
+      tone: 'primary',
+    }))) return;
+    if (action === 'remit' && !(await confirm({
+      title: t('Post the statutory remittance to the general ledger?'),
+      message: (
+        <div>
+          <p>{t('This posts a journal to the general ledger. It is reversed with a contra journal, not deleted. The amounts come from the run and appear on the GL Journal tab once posted.')}</p>
+          {postingFacts([batchRow, [t('Journal'), groupName], [t('Remittance date'), when], ...(form.reference ? [[t('Reference'), form.reference] as [string, string]] : [])])}
+        </div>
+      ),
+      confirmLabel: t('Post remittance'),
+      tone: 'primary',
+    }))) return;
     if (action.startsWith('reverse') && !(await confirm({
       title: t('Post a contra journal?'),
-      message: t('Reversing posts a contra journal that offsets the original entry. The reason you entered is sent with the reversal.'),
+      message: (
+        <div>
+          <p>{t('Reversing posts a contra journal that offsets the original entry. The reason you entered is sent with the reversal.')}</p>
+          {postingFacts([batchRow, [t('Journal'), action === 'reverse-settle' ? t('Net pay settlement reversal') : groupName], ...(action === 'reverse-settle' ? [amountRow] : []), [t('Reason'), form.reason.trim()]])}
+        </div>
+      ),
       confirmLabel: t('Post contra journal'),
     }))) return;
     setFinanceSaving(`${batch.id}:${action}`);
