@@ -881,9 +881,67 @@ public sealed partial class MigrationImportController
         if (created) _db.SalaryAdvances.Add(advance);
         else { advance.UpdatedAtUtc = DateTime.UtcNow; advance.UpdatedBy = UserId(); }
 
+        // The remaining instalments, so payroll keeps deducting where the previous system stopped, and the receivable on the
+        // ledger (DR 1410 / CR 3900 on the cutover date, only the difference on a restatement), so the instalments payroll
+        // credits to 1410 relieve a debit that exists. Both run inside the section's locked, retry-safe transaction.
+        await RebuildAdvanceScheduleAsync(advance, plan, ct);
+        await Zayra.Api.Infrastructure.Finance.AdvanceOpeningJournal.PostAsync(
+            _db, advance, plan.CutoverDate, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty, ct);
+
         await StampOriginAsync(OpeningBalanceEntityTypes.Advance, advance.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
+    }
+
+    /// <summary>
+    /// The advance's schedule, instalment 1 to N, exactly as <see cref="RebuildLoanScheduleAsync"/> builds a loan's: the first
+    /// <c>InstallmentsPaid</c> settled in the previous system (Paid, no payroll run), the rest Pending from the first unpaid due
+    /// date, the last absorbing the rounding so the Pending rows sum to the carried outstanding balance. A restatement rewrites
+    /// the rows in place (it is only allowed before payroll has collected anything) and drops rows beyond a shorter schedule.
+    /// </summary>
+    private async Task RebuildAdvanceScheduleAsync(SalaryAdvance advance, AdvancePlan plan, CancellationToken ct)
+    {
+        var existing = await _db.AdvanceInstallments
+            .Where(x => x.TenantId == advance.TenantId && x.AdvanceId == advance.Id)
+            .ToListAsync(ct);
+        var byNumber = existing.ToDictionary(x => x.InstallmentNumber);
+
+        var paidPerInstallment = plan.InstallmentsPaid == 0
+            ? 0m
+            : Math.Round(plan.TotalRepaid / plan.InstallmentsPaid, 2);
+        var unpaidCount = plan.TotalInstallments - plan.InstallmentsPaid;
+        var lastUnpaidResidual = plan.OutstandingBalance - (unpaidCount - 1) * plan.InstallmentAmount;
+
+        for (var n = 1; n <= plan.TotalInstallments; n++)
+        {
+            var isPaid = n <= plan.InstallmentsPaid;
+            var unpaidIndex = n - plan.InstallmentsPaid - 1; // 0-based position among unpaid rows
+            var dueDate = plan.FirstUnpaidDueDate.AddMonths(unpaidIndex);
+            var amountDue = isPaid
+                ? paidPerInstallment
+                : (unpaidIndex == unpaidCount - 1 ? lastUnpaidResidual : plan.InstallmentAmount);
+
+            if (!byNumber.TryGetValue(n, out var inst))
+            {
+                inst = new AdvanceInstallment { TenantId = advance.TenantId, AdvanceId = advance.Id, InstallmentNumber = n };
+                _db.AdvanceInstallments.Add(inst);
+            }
+            // Never rewrite an instalment this product collected (the restatement guard already refuses such an advance).
+            else if (inst.Status == "Paid" && inst.PayrollRunId is not null)
+            {
+                continue;
+            }
+
+            inst.DueDate = dueDate;
+            inst.AmountDue = amountDue;
+            inst.AmountPaid = isPaid ? amountDue : 0m;
+            inst.Status = isPaid ? "Paid" : "Pending";
+            inst.PaidDate = isPaid ? dueDate : null;
+            inst.PayrollRunId = null;
+        }
+
+        foreach (var surplus in existing.Where(x => x.InstallmentNumber > plan.TotalInstallments && x.PayrollRunId is null))
+            _db.AdvanceInstallments.Remove(surplus);
     }
 
     // ── eosbOpeningProvision ────────────────────────────────────────────────────────────────────────

@@ -350,6 +350,13 @@ public static class GlEventTypes
     public static bool IsPayrollLockEvent(string? eventType) =>
         eventType is not null && Array.IndexOf(PayrollLockEvents, eventType) >= 0;
 
+    /// <summary>
+    /// A balance carried in from the client's previous system by the opening-balance import, booked against Opening Balance
+    /// Equity (3900) on the cutover date: today only a carried-in salary advance (DR 1410 / CR 3900, a restatement posting the
+    /// difference either way; <c>AdvanceOpeningJournal</c>). Written once per source entity and amount, never by payroll.
+    /// </summary>
+    public const string OpeningBalance = "OpeningBalance";
+
     public static string Remit(string group)         => RemitPrefix + group;
     public static string RemitReversal(string group) => RemitReversalPrefix + group;
     public static string RemitReclass(string group)  => RemitReclassPrefix + group;

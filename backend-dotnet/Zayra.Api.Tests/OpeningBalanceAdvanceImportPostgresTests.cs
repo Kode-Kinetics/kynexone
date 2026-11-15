@@ -27,9 +27,7 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
     /// <summary>The event type of the opening journal (GlEventTypes.OpeningBalance).</summary>
     private const string OpeningBalanceEvent = "OpeningBalance";
 
-    [Fact(Skip = "OPEN (needs a decision): the import does not yet post the carried-in advance to the ledger (DR 1410 / CR 3900, once " +
-                 "per origin row, a restatement posting the difference) nor build its instalment schedule. That change adds a ledger " +
-                 "writer to the import and was not applied in this branch.")]
+    [Fact]
     public async Task CarriedInAdvance_PostsItsOpeningJournalOnce_BuildsItsSchedule_AndARestatementPostsTheDifference()
     {
         var (b, cutover, number) = await SeedAsync();
@@ -58,6 +56,61 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
         schedule = await ScheduleAsync(advance.Id);
         Assert.Equal(500m, schedule.Where(i => i.Status == "Pending").Sum(i => i.AmountDue - i.AmountPaid));
         Assert.Equal(1, schedule.Count(i => i.Status == "Paid"));
+    }
+
+    /// <summary>
+    /// The opening journal is what makes the carried-in advance a receivable on this company's ledger: the 1410 tie-out (sub-ledger
+    /// against GL) holds straight after the import, and still holds once payroll has collected an instalment and the run's Lock
+    /// journal has credited 1410 with it.
+    /// </summary>
+    [Fact]
+    public async Task CarriedInAdvance_TiesOutWithTheLedger_AfterTheImport_AndAfterOnePayrollDeduction()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        Assert.Equal((300m, 300m, true), await TieOutAsync(b));
+
+        var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);
+        await using (var db = fixture.CreateDb())
+            Assert.Equal(200, (await Kit.ProcessAsync(db, b, runId, null, CancellationToken.None)).StatusCode);
+        await using (var db = fixture.CreateDb()) await ReconTestSupport.SignOffAsync(db, runId);
+        await using (var db = fixture.CreateDb())
+        {
+            var approved = await Kit.Payroll(db, b.Tenant).Approve(runId, new PayrollDecisionRequest("reviewed"), CancellationToken.None);
+            Assert.True(approved is OkObjectResult, Describe(approved));
+        }
+        await using (var db = fixture.CreateDb())
+        {
+            var locked = await Kit.Payroll(db, b.Tenant).Lock(runId, CancellationToken.None);
+            Assert.True(locked is OkObjectResult, Describe(locked));
+        }
+
+        var advance = await AdvanceAsync(b, number);
+        Assert.Equal(200m, advance.OutstandingBalance);
+        Assert.Equal((200m, 200m, true), await TieOutAsync(b));
+    }
+
+    /// <summary>
+    /// The journal export has no rule for opening-balance entries: it sends every ledger row of the period, as it already does
+    /// for the provision catch-up booked to 3900. So the advance opening journal is selected like any other row, and carries
+    /// EventType "OpeningBalance" so the ERP side can tell it apart. Pinned as it stands, not as a decision: a client whose ERP
+    /// already holds the receivable from the old system would book it twice if it imported this line. Whether opening entries
+    /// should be excluded or flagged in the export is an open product decision.
+    /// </summary>
+    [Fact]
+    public async Task CarriedInAdvance_OpeningJournal_IsInThePeriodsJournalExport_TaggedOpeningBalance()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        var advance = await AdvanceAsync(b, number);
+
+        await using var db = fixture.CreateDb();
+        var selection = await Zayra.Api.Infrastructure.Finance.JournalExportBuilder.SelectAsync(db, b.Tenant,
+            new Zayra.Api.Infrastructure.Finance.JournalExportFilter(Period: $"{cutover:yyyy-MM}", CompanyId: b.CompanyId));
+        var opening = Assert.Single(selection.Entries, e => e.SourceEntityId == advance.Id);
+        Assert.Equal((OpeningBalanceEvent, 300m, cutover), (opening.EventType, opening.Amount, opening.EntryDate));
+        Assert.StartsWith("1410", opening.DebitAccount, StringComparison.Ordinal);
+        Assert.StartsWith("3900", opening.CreditAccount, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -144,6 +197,17 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
         if (!expectErrors) Assert.True(dto.Errors.Count == 0, string.Join(" | ", dto.Errors));
         return dto.Errors.ToList();
     }
+
+    /// <summary>The company's 1410 tie-out row: (sub-ledger, GL, tied out).</summary>
+    private async Task<(decimal SubLedger, decimal Gl, bool Tied)> TieOutAsync(Kit.Borrower b)
+    {
+        await using var db = fixture.CreateDb();
+        var row = (await Zayra.Api.Infrastructure.Finance.AdvanceReceivableTieOut.ComputeAsync(db, b.Tenant, new[] { b.CompanyId }, CancellationToken.None)).Single();
+        return (row.SubLedgerOutstanding, row.GlBalance, row.IsTiedOut);
+    }
+
+    private static string Describe(IActionResult result) =>
+        result is ObjectResult o ? $"{o.StatusCode}: {System.Text.Json.JsonSerializer.Serialize(o.Value)}" : result.GetType().Name;
 
     private async Task<SalaryAdvance> AdvanceAsync(Kit.Borrower b, string number)
     {
