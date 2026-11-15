@@ -293,6 +293,65 @@ for (const locale of LOCALES) {
   });
 }
 
+// ── One selected run across the payroll tabs; Bank / WPS Files opens on the run's only batch ──────────
+
+const BANK_BATCH = { ...BATCH, status: 'Draft', wpsStatus: 'Draft', effectiveWpsStatus: 'Draft', wpsStatusLabel: 'Draft', generatedFileLabel: null };
+const bankRoutes = (batch: Record<string, unknown> = BATCH) => payroll((path, search) => {
+  if (path === '/api/payroll/payment-batches') return search.get('runId') === RUN_ID || !search.get('runId') ? [batch] : [];
+  if (path === '/api/payroll/payment-batches/b1/records') return [{ id: 'r1', paymentBatchId: 'b1', employeeId: 8, employeeName: 'Maha Almutairi', employeeCode: 'EVT2-0008', amount: 12000, iban: 'SA0380000000608010167519', wpsReference: 'REF-1', status: 'Pending' }];
+  if (path === '/api/payroll/bank-exports/batches/b1/availability') return { enabled: false };
+  return undefined;
+});
+
+for (const locale of LOCALES) {
+  test.describe(`Payroll: one selected run, Bank / WPS Files (${locale})`, () => {
+    test('the Bank tab opens on the selected run and on its only batch, with a status line instead of a dead button', async ({ page }) => {
+      await boot(page, { locale, url: `/payroll?tab=bank-wps&run=${RUN_ID}`, routes: bankRoutes(), waitMs: 2500 });
+      const top = page.locator('#pipeline-run-picker');
+      await expect(top).toBeVisible({ timeout: 90_000 });
+      const tab = page.getByRole('tabpanel').getByRole('combobox').first();
+      await expect(tab).toHaveValue(RUN_ID);
+      await expect(top).toHaveValue(RUN_ID);
+      // The only batch is open: its records show, nothing asks to "Select a batch".
+      await expect(page.getByText('Maha Almutairi')).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(locale === 'ar' ? 'اختر دفعة' : 'Select a batch to view payment records')).toHaveCount(0);
+      const status = page.getByTestId('bank-batch-status');
+      await expect(status).toContainText('PAY-202611-220353');
+      await expect(status).toContainText(locale === 'ar' ? 'تم إنشاء ملف البنك' : 'bank file generated');
+      await expect(page.getByRole('button', { name: /Payment Batch Created|Create Payment Batch|إنشاء دفعة/ })).toHaveCount(0);
+      await expect(page.getByTestId('bank-wps-jump')).toBeVisible();
+      await shot(page, 'payroll-bank-one-batch', locale);
+    });
+
+    test('a batch whose file is not generated says so in words', async ({ page }) => {
+      await boot(page, { locale, url: `/payroll?tab=bank-wps&run=${RUN_ID}`, routes: bankRoutes(BANK_BATCH), waitMs: 2500 });
+      const status = page.getByTestId('bank-batch-status');
+      await expect(status).toBeVisible({ timeout: 90_000 });
+      await expect(status).toContainText(locale === 'ar' ? 'لم يُنشأ ملف البنك بعد' : 'bank file not generated yet');
+    });
+
+    test('"Open Bank / WPS" keeps the run, and a run chosen in a tab is the pipeline\'s run too', async ({ page }) => {
+      await boot(page, { locale, url: `/payroll?tab=dashboard&run=${RUN_ID}`, routes: bankRoutes(BANK_BATCH), waitMs: 2500 });
+      const open = page.getByRole('button', { name: locale === 'ar' ? /فتح.*البنك/ : /Open Bank \/ WPS/ });
+      await expect(open).toBeVisible({ timeout: 90_000 });
+      await open.click();
+      const tab = page.getByRole('tabpanel').getByRole('combobox').first();
+      await expect(tab).toHaveValue(RUN_ID);
+      await expect(page.locator('#pipeline-run-picker')).toHaveValue(RUN_ID);
+      // The other direction: clearing the choice in the tab clears it in the pipeline.
+      await tab.selectOption('');
+      await expect(page.locator('#pipeline-run-picker')).toHaveValue('');
+    });
+
+    test('Payment Tracking lists the selected run\'s batches and offers all runs', async ({ page }) => {
+      await boot(page, { locale, url: `/payroll?tab=payment-tracking&run=${RUN_ID}`, routes: bankRoutes(), waitMs: 2500 });
+      await expect(page.getByTestId('tracking-run-scope')).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByText('PAY-202611-220353').first()).toBeVisible();
+      await shot(page, 'payroll-payment-tracking-run', locale);
+    });
+  });
+}
+
 // ── Offer workspace (a Sent offer) ───────────────────────────────────────────
 
 const OFFER_ID = 'o-1';
