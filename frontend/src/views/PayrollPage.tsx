@@ -3634,8 +3634,10 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
   const { companies: payrollCompanies } = usePayrollCompanies();
   const [runs, setRuns] = useState<PayrollRun[]>([]);
   const [runId, setLocalRunId] = useState(selectedRunId ?? '');
-  // A choice made here is the page's selected run too, but the journal is still generated only by the button.
-  const setRunId = React.useCallback((id: string) => { setLocalRunId(id); onRunChange?.(id || null); }, [onRunChange]);
+  // A choice made here is the page's selected run too, but the journal is still generated only by the button. The page
+  // hands the choice back as selectedRunId; ownChoiceRef tells that echo apart from a run picked elsewhere.
+  const ownChoiceRef = useRef<string | null>(null);
+  const setRunId = React.useCallback((id: string) => { ownChoiceRef.current = id || null; setLocalRunId(id); onRunChange?.(id || null); }, [onRunChange]);
   const [journal, setJournal] = useState<PayrollGLJournal | null>(null);
   const [loading, setLoading] = useState(false);
   // A failed read is shown with a Retry, never swallowed: an empty run list or journal would read as "nothing to post".
@@ -3661,7 +3663,9 @@ function GlJournalTab({ selectedRunId, onRunChange, onGoToApprovals }: { selecte
   runIdRef.current = runId;
   // Arriving from a run card ("Review & lock") reads that run's journal at once; otherwise Generate Journal does.
   useEffect(() => {
-    if (!selectedRunId) return;
+    const echo = !!selectedRunId && selectedRunId === ownChoiceRef.current;
+    ownChoiceRef.current = null;
+    if (!selectedRunId || echo) return;
     setLocalRunId(selectedRunId);
     runIdRef.current = selectedRunId;
     void load(selectedRunId);
