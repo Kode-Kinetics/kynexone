@@ -2,6 +2,7 @@ import { formatMessage, type MessageParams } from './message';
 import { numberLocale } from '../lib/format';
 import { releaseA } from './releaseA';
 import { launchPayroll } from './launchPayroll';
+import { payPopulation } from './payPopulation';
 import { launchSaudiOps } from './launchSaudiOps';
 import { launchLeave } from './launchLeave';
 import { launchCompliance } from './launchCompliance';
@@ -110,6 +111,8 @@ const en: Dict = {
   // Launch rehearsal wording (payroll, leave, compliance, attendance, recruitment, new hires). First, so any key another module already translates keeps its existing wording.
   ...launchSaudiOps.en,
   ...launchPayroll.en,
+  // Payroll pay population: who a run leaves out and why — see ./payPopulation.
+  ...payPopulation.en,
   ...launchLeave.en,
   ...launchCompliance.en,
   ...launchAttendance.en,
@@ -1697,6 +1700,7 @@ const en: Dict = {
 const ar: Dict = {
   ...launchSaudiOps.ar,
   ...launchPayroll.ar,
+  ...payPopulation.ar,
   ...launchLeave.ar,
   ...launchCompliance.ar,
   ...launchAttendance.ar,

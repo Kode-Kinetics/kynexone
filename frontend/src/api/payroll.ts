@@ -232,6 +232,25 @@ export interface PayrollRunPopulation {
   /** Deliberate hold-outs. The approver must state this count to approve the run. */
   excluded: PayrollPopulationMember[];
   notEligible: PayrollPopulationMember[];
+  /** Everyone in the run's company scope the run does NOT pay, each with a reason code (never capped). */
+  leftOut?: PayrollPopulationEntry[];
+  /** Count per reason code of `leftOut`. */
+  leftOutCounts?: Record<string, number>;
+  /** People the run pays with a warning. The approver must state this count to approve the run. */
+  payWarnings?: PayrollPopulationEntry[];
+  payWarningCount?: number;
+}
+
+/** One person the run leaves out, or pays with a warning. `reasonCode` is a stable server code (PayPopulationReasons). */
+export interface PayrollPopulationEntry {
+  employeeId: number;
+  code: string;
+  name: string;
+  status: string;
+  reasonCode: string;
+  /** The date behind the reason (a last working day), ISO yyyy-mm-dd. */
+  date?: string | null;
+  message: string;
 }
 
 /** A blocking compliance error a human consciously cleared, with the reason they gave. */
@@ -813,7 +832,7 @@ export const payrollApi = {
   // cash count, so a client that silently echoes the server's number back would be no control.
   approveRun: (
     id: string,
-    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null } = {},
+    body: { notes?: string; expectedExcludedCount?: number | null; expectedOverriddenCount?: number | null; expectedOutsideBankCount?: number | null; expectedUncostedCount?: number | null; expectedPayWarningCount?: number | null } = {},
   ) =>
     client
       .post<PayrollRun>(`/api/payroll/runs/${id}/approve`, {
@@ -821,6 +840,8 @@ export const payrollApi = {
         expectedExcludedCount: body.expectedExcludedCount ?? null,
         expectedOverriddenCount: body.expectedOverriddenCount ?? null,
         expectedOutsideBankCount: body.expectedOutsideBankCount ?? null,
+        // People paid with a warning (no last working day, "On leave" with no leave, deleted but owed).
+        expectedPayWarningCount: body.expectedPayWarningCount ?? null,
         // S-048: the uncosted-Optional count the approver affirmed (costing on only).
         expectedUncostedCount: body.expectedUncostedCount ?? null,
       })
