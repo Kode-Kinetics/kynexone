@@ -733,6 +733,19 @@ for (const locale of ['en', 'ar'] as const) {
         expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
         expect(errors).toEqual([]);
       });
+
+      test('a company admin on a phone adds for their company: the dialog fits and says it is for that company only', async ({ page }) => {
+        const { errors } = await boot(page, locale, { isGroupScope: false, myCompanies: [logistics], companyMatrix: companyView() });
+        await addBenefitButton(page, locale).click();
+        const dialog = addDialog(page, locale);
+        await expect(dialog.getByTestId('add-benefit-company')).toContainText(logistics.name);
+        const box = (await settledBox(dialog))!;
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(390 + 1);
+        await shot(page, `phone-company-add-benefit-${locale}`);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+        expect(errors).toEqual([]);
+      });
     });
   });
 }
