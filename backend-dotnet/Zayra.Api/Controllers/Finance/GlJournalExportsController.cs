@@ -1101,16 +1101,21 @@ public class GlJournalExportsController : ControllerBase
     internal static object OpeningBalanceExclusion(JournalExportSelection selection)
     {
         var count = selection.OpeningBalanceExcludedCount;
-        var total = JournalAmount.Round(selection.OpeningBalanceExcludedTotal, JournalAmount.ScaleForAll(selection.Currencies));
+        var scale = JournalAmount.ScaleForAll(selection.Currencies);
+        var net = JournalAmount.Round(selection.OpeningBalanceExcludedNet, scale);
+        var debits = JournalAmount.Round(selection.OpeningBalanceExcludedDebits, scale);
+        var credits = JournalAmount.Round(selection.OpeningBalanceExcludedCredits, scale);
         return new
         {
             count,
-            total,
+            net,
+            debits,
+            credits,
             message = count == 0 ? null
-                : $"{count} opening-balance ledger row(s) ({total:N2}) are not exported: they carry balances brought in from your previous " +
-                  "system, which your ERP already holds. Exporting them would book those balances twice.",
+                : $"{count} opening-balance ledger row(s) are not exported (net {net:N2}: {debits:N2} added to receivables, {credits:N2} reduced): " +
+                  "they carry balances brought in from your previous system, which your ERP already holds. Exporting them would book those balances twice.",
             messageAr = count == 0 ? null
-                : $"لم يُصدَّر {count} من قيود الأرصدة الافتتاحية ({total:N2}): فهي تحمل أرصدة مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، وتصديرها يعني تسجيل هذه الأرصدة مرتين.",
+                : $"لم يُصدَّر {count} من قيود الأرصدة الافتتاحية (الصافي {net:N2}: {debits:N2} إضافة إلى الذمم المدينة، {credits:N2} تخفيض): فهي تحمل أرصدة مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، وتصديرها يعني تسجيل هذه الأرصدة مرتين.",
         };
     }
 

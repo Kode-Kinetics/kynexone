@@ -65,7 +65,7 @@ public sealed class PeriodHandoffReconciler
             unpostableEntryIds = selection.UnpostableEntryIds,
             unattributedExcluded = new { count = selection.UnattributedExcludedCount, total = selection.UnattributedExcludedTotal },
             // Opening balances from the previous system are never exported, so they are left out of "posted" too.
-            openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, total = selection.OpeningBalanceExcludedTotal },
+            openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, net = selection.OpeningBalanceExcludedNet, debits = selection.OpeningBalanceExcludedDebits, credits = selection.OpeningBalanceExcludedCredits },
             byCurrency = selection.Entries.GroupBy(e => e.Currency)
                 .Select(g => new { currency = g.Key, entries = g.Count(), total = JournalAmount.Round(g.Sum(x => x.Amount), JournalAmount.ScaleFor(g.Key)) })
                 .OrderBy(x => x.currency, StringComparer.Ordinal).ToList(),

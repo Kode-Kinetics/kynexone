@@ -100,6 +100,8 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
     {
         var (b, cutover, number) = await SeedAsync();
         await CommitAsync(b, AdvanceCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        // A restatement down: the excluded lines are a 300 increase and a 100 reduction, 200 net (never a gross 400).
+        await CommitAsync(b, AdvanceCsv(b, number, paid: 4, outstanding: 200m, cutover));
         var advance = await AdvanceAsync(b, number);
         var period = $"{cutover:yyyy-MM}";
 
@@ -109,7 +111,8 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
                 new Zayra.Api.Infrastructure.Finance.JournalExportFilter(Period: period, CompanyId: b.CompanyId));
             Assert.DoesNotContain(selection.Entries, e => e.SourceEntityId == advance.Id);
             Assert.DoesNotContain(selection.Entries, e => e.EventType == OpeningBalanceEvent);
-            Assert.Equal((1, 300m), (selection.OpeningBalanceExcludedCount, selection.OpeningBalanceExcludedTotal));
+            Assert.Equal((2, 200m, 300m, 100m), (selection.OpeningBalanceExcludedCount, selection.OpeningBalanceExcludedNet,
+                selection.OpeningBalanceExcludedDebits, selection.OpeningBalanceExcludedCredits));
         }
 
         await using (var db = fixture.CreateDb())
@@ -118,14 +121,16 @@ public class OpeningBalanceAdvanceImportPostgresTests(PostgresFixture fixture)
                 .Preview(period, null, b.CompanyId, "SAR", false, false, "generic-csv", default));
             using var doc = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(preview.Value));
             var note = doc.RootElement.GetProperty("openingBalanceExcluded");
-            Assert.Equal((1, 300m), (note.GetProperty("count").GetInt32(), note.GetProperty("total").GetDecimal()));
+            Assert.Equal((2, 200m, 300m, 100m), (note.GetProperty("count").GetInt32(), note.GetProperty("net").GetDecimal(),
+                note.GetProperty("debits").GetDecimal(), note.GetProperty("credits").GetDecimal()));
+            Assert.Contains("200.00", note.GetProperty("message").GetString());
             Assert.Contains("ERP", note.GetProperty("message").GetString());
             Assert.False(string.IsNullOrWhiteSpace(note.GetProperty("messageAr").GetString()));
             Assert.DoesNotContain(doc.RootElement.GetProperty("sample").EnumerateArray(),
                 l => l.GetProperty("EventType").GetString() == OpeningBalanceEvent);
         }
 
-        Assert.Equal((300m, 300m, true), await TieOutAsync(b));
+        Assert.Equal((200m, 200m, true), await TieOutAsync(b));
     }
 
     [Fact]

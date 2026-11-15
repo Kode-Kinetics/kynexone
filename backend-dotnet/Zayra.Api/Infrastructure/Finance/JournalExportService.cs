@@ -147,7 +147,7 @@ public sealed class JournalExportService
                     ? "لا توجد قيود للتصدير لهذا النطاق: القيود الوحيدة فيه أرصدة افتتاحية مُرحّلة من نظامك السابق يحتفظ بها نظامك المحاسبي بالفعل، فلا تُصدَّر أبدًا."
                     : null,
                 unattributedExcluded = new { count = selection.UnattributedExcludedCount, total = selection.UnattributedExcludedTotal },
-                openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, total = selection.OpeningBalanceExcludedTotal },
+                openingBalanceExcluded = new { count = selection.OpeningBalanceExcludedCount, net = selection.OpeningBalanceExcludedNet, debits = selection.OpeningBalanceExcludedDebits, credits = selection.OpeningBalanceExcludedCredits },
                 hint = selection.UnattributedExcludedCount > 0
                     ? "Every pre-POD-B1b ledger row is unattributed (CompanyId is null). Re-run with includeUnattributed=true "
                     + "or without companyId to include them."

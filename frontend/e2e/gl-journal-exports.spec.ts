@@ -138,7 +138,7 @@ async function boot(page: Page, options: BootOptions = {}): Promise<State> {
     }));
     if (path === `${gl}/preview` && options.openingBalances) return reply(forViewer({
       ...manifest(null, 'Full'),
-      openingBalanceExcluded: { count: 2, total: 4300, message: 'not shown', messageAr: 'not shown' },
+      openingBalanceExcluded: { count: 2, net: 4300, debits: 4800, credits: 500, message: 'not shown', messageAr: 'not shown' },
     }));
     if (path === `${gl}/preview`) return reply(forViewer(manifest(null, 'Supplementary')));
     if (path === gl && request.method() === 'POST') {
@@ -586,6 +586,8 @@ test('opening-balance lines are named as not exported, because the ERP already h
   await expect(note).toContainText('2 opening-balance ledger rows');
   await expect(note).toContainText('not exported');
   await expect(note).toContainText('4,300');
+  await expect(note).toContainText('4,800');
+  await expect(note).toContainText('500');
   expect(state.errors).toEqual([]);
 });
 
