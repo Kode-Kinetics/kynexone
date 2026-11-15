@@ -47,7 +47,8 @@ interface EmployeeWorkspaceShellProps {
 const destinations: Array<{ id: EmployeeSection; label: string; icon: typeof LayoutDashboard }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'personal', label: 'Personal', icon: UserRound },
-  { id: 'employment', label: 'Employment', icon: BriefcaseBusiness },
+  // Its own key: the plain "Employment" is shared with the wizard, and "التوظيف" is the Recruitment menu item.
+  { id: 'employment', label: 'Employee record section: Employment', icon: BriefcaseBusiness },
   { id: 'pay-benefits', label: 'Pay & Benefits', icon: WalletCards },
   { id: 'compliance-documents', label: 'Compliance & Documents', icon: FileCheck2 },
   { id: 'access-onboarding', label: 'Access & Onboarding', icon: ShieldCheck },

@@ -716,7 +716,10 @@ test('Arabic workspace keeps RTL direction, logical navigation, and focus', asyn
   await page.addInitScript(() => localStorage.setItem('kynexone-locale-choice-v2', 'ar'));
   await page.goto('/people/901?section=employment');
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  const employment = page.getByRole('navigation', { name: /Employee record sections|أقسام/ }).getByRole('link', { name: /Employment|التوظيف/ });
+  // The record's Employment section must not read as the Recruitment menu item (both were "التوظيف").
+  const sections = page.getByRole('navigation', { name: /Employee record sections|أقسام/ });
+  await expect(sections.getByRole('link', { name: 'التوظيف', exact: true })).toHaveCount(0);
+  const employment = sections.getByRole('link', { name: 'بيانات الوظيفة', exact: true });
   await employment.focus();
   await expect(employment).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
