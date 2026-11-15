@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 using System.Text.Json;
 using Zayra.Api.Application.Approvals;
 using Zayra.Api.Application.Common;
@@ -10,6 +11,7 @@ using Zayra.Api.Data;
 using Zayra.Api.Infrastructure.Approvals;
 using Zayra.Api.Infrastructure.Authorization;
 using Zayra.Api.Infrastructure.Common;
+using Zayra.Api.Infrastructure.Data;
 using Zayra.Api.Infrastructure.Finance;
 using Zayra.Api.Infrastructure.Payroll;
 using Zayra.Api.Models;
@@ -163,9 +165,23 @@ public partial class AdvancesController : ControllerBase
 
     [HttpPost]
     [HasPermission("loans.self", "loans.write")]
-    public Task<IActionResult> Create([FromBody] CreateAdvanceRequest req, CancellationToken ct) =>
-        FinanceDecisionSerializer.SerializeAsync<IActionResult>(
-            _db, AdvanceCreateLockScope, GetTenantId(), GetTenantId(), () => CreateCore(req, ct), ct);
+    public async Task<IActionResult> Create([FromBody] CreateAdvanceRequest req, CancellationToken ct)
+    {
+        try
+        {
+            return await FinanceDecisionSerializer.SerializeAsync<IActionResult>(
+                _db, AdvanceCreateLockScope, GetTenantId(), GetTenantId(), () => CreateCore(req, ct), ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            // The number is allocated after the highest one in use, under the tenant's create lock, so only a writer outside
+            // that lock (an opening-balance import landing at the same moment) can take it first. The transaction rolled back
+            // and nothing was saved; a retry allocates the next number.
+            return Conflict(Refusal("advance_number_conflict",
+                "Another advance took this advance number at the same moment. Nothing was saved; submit the request again.",
+                "استُخدم رقم السلفة نفسه لسلفة أخرى في اللحظة ذاتها. لم يُحفظ شيء؛ أعد إرسال الطلب."));
+        }
+    }
 
     private async Task<IActionResult> CreateCore(CreateAdvanceRequest req, CancellationToken ct)
     {
@@ -194,6 +210,8 @@ public partial class AdvancesController : ControllerBase
         // loans.self only, so self-service stays limited to the caller's own record.
         if (employee.Id != ownId && !IsHrActor() && !IsFinanceActor() && !User.HasPermission("loans.write"))
             return Forbid();
+        if (await EmploymentRefusalAsync(tid, employee, ct) is { } notServing) return BadRequest(notServing);
+        if (StartDateRefusal(req.RepaymentStartDate) is { } startRefusal) return BadRequest(startRefusal);
 
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
         // Audit P2-5: with no active policy every amount used to be allowed (only the 60-instalment hard cap applied). The
@@ -239,8 +257,7 @@ public partial class AdvancesController : ControllerBase
                 return BadRequest(capRefusal);
         }
 
-        var count = await _db.SalaryAdvances.CountAsync(x => x.TenantId == tid, ct);
-        var advNumber = $"ADV-{DateTime.UtcNow.Year}-{(count + 1):D5}";
+        var advNumber = await NextAdvanceNumberAsync(tid, ct);
 
         var adv = new SalaryAdvance
         {
@@ -328,18 +345,15 @@ public partial class AdvancesController : ControllerBase
             return BadRequest("The approved amount must be a positive amount with at most two decimal places.");
         if (req.ApprovedAmount > adv.RequestedAmount)
             return BadRequest("The approved amount cannot exceed the requested amount.");
+        if (StartDateRefusal(req.RepaymentStartDate) is { } startRefusal) return BadRequest(startRefusal);
+        var employee = await LoadAdvanceEmployeeAsync(tid, adv, ct);
+        if (await EmploymentRefusalAsync(tid, employee, ct) is { } notServing) return BadRequest(notServing);
+        ArgumentNullException.ThrowIfNull(employee);
         var policy = await _db.AdvancePolicies.FirstOrDefaultAsync(x => x.TenantId == tid && x.IsActive, ct);
         if (InstallmentsRefusal(policy, req.ApprovedAmount, req.Installments) is { } installmentsRefusal)
             return BadRequest(installmentsRefusal);
         if (policy is { MaxPercentageOfSalary: > 0 })
         {
-            var employee = adv.EmployeeIntId is int empId
-                ? await Zayra.Api.Infrastructure.Data.ScopedBypass.NullableTenantWide(_db.Employees, tid,
-                    "Read the advance's employee to apply the salary cap at approval, even after a legal-entity transfer.")
-                    .AsNoTracking().FirstOrDefaultAsync(x => x.Id == empId, ct)
-                : null;
-            if (employee == null)
-                return BadRequest("The advance has no linked employee, so the policy's salary cap cannot be applied.");
             if (await SalaryCapRefusalAsync(tid, employee, policy, req.ApprovedAmount, ct) is { } capRefusal)
                 return BadRequest(capRefusal);
         }
@@ -497,6 +511,10 @@ public partial class AdvancesController : ControllerBase
             return BadRequest(Refusal("advance_payer_is_subject",
                 "Segregation of duties: you cannot record the payout of a salary advance paid to you.",
                 "الفصل بين المهام: لا يمكنك تسجيل صرف سلفة راتب مدفوعة لك."));
+
+        // The employee must still be serving when the cash moves, not only when the terms were agreed.
+        if (await EmploymentRefusalAsync(tid, await LoadAdvanceEmployeeAsync(tid, adv, ct), ct) is { } notServing)
+            return BadRequest(notServing);
 
         var companyId = await ResolveAdvanceCompanyAsync(tid, adv, ct);
         if (await PeriodCloseGuard.IsClosedAsync(_db, tid, companyId, paidDate.ToString("yyyy-MM"), ct))
@@ -825,6 +843,64 @@ public partial class AdvancesController : ControllerBase
         return amount > cap
             ? $"The amount exceeds the policy limit of {policy.MaxPercentageOfSalary:0.##}% of monthly salary ({cap:0.00} {currency})."
             : null;
+    }
+
+    /// <summary>
+    /// Audit P3 and decision G1: an advance is for an employee who is serving, the loan module's default eligibility
+    /// (LoanEligibilityService: allowed statuses Active, BlockDuringNotice). Not Active (Offboarded, Suspended, Terminated…),
+    /// deleted, or on notice (an offboarding in progress) is refused, at request, approval and payout. Null when eligible.
+    /// </summary>
+    private async Task<object?> EmploymentRefusalAsync(Guid tid, Employee? employee, CancellationToken ct)
+    {
+        if (employee == null)
+            return Refusal("advance_employee_missing",
+                "The advance has no linked employee, so their employment cannot be checked.",
+                "السلفة غير مرتبطة بموظف، فلا يمكن التحقق من حالة توظيفه.");
+        var onNotice = await _db.EmployeeOffboardings.AsNoTracking()
+            .AnyAsync(x => x.TenantId == tid && x.EmployeeId == employee.Id && x.Status == "InProgress", ct);
+        if (employee.IsDeleted || onNotice || !string.Equals(employee.Status, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase))
+            return Refusal("advance_employee_not_eligible",
+                $"A salary advance is only for an active employee who is not serving notice (status: {employee.Status}{(onNotice ? ", offboarding in progress" : string.Empty)}).",
+                $"سلفة الراتب للموظف النشط غير المنتهية خدمته فقط (الحالة: {employee.Status}{(onNotice ? "، إجراءات إنهاء الخدمة جارية" : string.Empty)}).");
+        return null;
+    }
+
+    /// <summary>The advance's employee, even after a legal-entity transfer (the bar and the cap follow the person).</summary>
+    private async Task<Employee?> LoadAdvanceEmployeeAsync(Guid tid, SalaryAdvance adv, CancellationToken ct) =>
+        adv.EmployeeIntId is int empId
+            ? await ScopedBypass.NullableTenantWide(_db.Employees, tid,
+                    "Read the advance's employee to check employment and apply the salary cap, even after a legal-entity transfer.")
+                .AsNoTracking().FirstOrDefaultAsync(x => x.Id == empId, ct)
+            : null;
+
+    /// <summary>Audit P3: the first repayment date may not be before yesterday (a request typed late in the day in another
+    /// timezone) nor more than twelve months out. Null when no date is given or it is inside the window.</summary>
+    private static object? StartDateRefusal(DateOnly? start)
+    {
+        if (start is not { } date) return null;
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        return date < today.AddDays(-1) || date > today.AddMonths(12)
+            ? Refusal("advance_repayment_start_invalid",
+                "The first repayment date must be between yesterday and twelve months from today.",
+                "يجب أن يكون تاريخ أول سداد بين الأمس واثني عشر شهراً من اليوم.")
+            : null;
+    }
+
+    /// <summary>
+    /// Audit P3: the next advance number for this year, after the highest one already used in the tenant, whatever company,
+    /// deleted or imported. It was a count of the caller's visible rows plus one, which collided with an imported or deleted
+    /// number (or another company's) and failed the unique index with a 500. Called under the tenant's create lock.
+    /// </summary>
+    private async Task<string> NextAdvanceNumberAsync(Guid tid, CancellationToken ct)
+    {
+        var prefix = $"ADV-{DateTime.UtcNow.Year}-";
+        var used = await ScopedBypass.TenantWide(_db.SalaryAdvances, tid,
+                "Allocate the next advance number: the unique index is tenant-wide, across every company and deleted rows.")
+            .AsNoTracking().Where(x => x.AdvanceNumber.StartsWith(prefix)).Select(x => x.AdvanceNumber).ToListAsync(ct);
+        var highest = used
+            .Select(n => int.TryParse(n.AsSpan(prefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out var v) ? v : 0)
+            .DefaultIfEmpty(0).Max();
+        return $"{prefix}{highest + 1:D5}";
     }
 
     private async Task WriteAdvanceAudit(Guid tid, Guid? uid, Guid advId, string action, string? oldVal, string newVal, CancellationToken ct)

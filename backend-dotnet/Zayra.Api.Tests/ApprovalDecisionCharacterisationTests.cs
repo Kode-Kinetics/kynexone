@@ -618,10 +618,19 @@ public class ApprovalDecisionCharacterisationTests
         ZayraDbContext db, string status, Guid? createdBy = null, bool lockedByPayroll = false)
     {
         var tenantId = Guid.NewGuid();
+        // Approval checks that the employee is serving, so the advance pays an active employee.
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "SARA-001", FullName = "Sara Ahmed", Status = EmployeeStatuses.Active,
+            JoiningDate = DateTime.UtcNow.AddYears(-2),
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
         var advance = new SalaryAdvance
         {
             TenantId = tenantId,
-            EmployeeId = Guid.NewGuid(),
+            EmployeeId = employee.PublicId,
+            EmployeeIntId = employee.Id,
             EmployeeName = "Sara Ahmed",
             AdvanceNumber = "ADV-2026-00001",
             RequestedAmount = 2_400m,
