@@ -58,6 +58,33 @@ export interface JournalExportScope {
  * The refusal for an export in a second format while another live file covers the same unconfirmed rows (HTTP 409, error
  * other_format_export_live). Returns the live file the server names (first one), or null for any other error.
  */
+/** A live file (still waiting for the ERP's result) that already holds some of an export's rows. */
+export interface JournalExportLiveOverlap {
+  exportId: string;
+  fileName: string;
+  format: string;
+  rows: number;
+  /** other_scope: creating is refused (409 entries_in_live_export) until that file's ERP result is recorded. */
+  relation: 'other_scope' | 'same_scope_other_format' | 'superseded_by_this_export';
+  message: string;
+  messageAr: string;
+}
+
+/**
+ * The manifest's warnings for display: the waiting-file notices in the viewer's language, and every other warning with the
+ * English copy of those notices taken out, so each is shown once.
+ */
+export function splitManifestWarnings(
+  m: { warnings: string[]; liveExportOverlaps?: JournalExportLiveOverlap[] }, locale: string,
+): { liveOverlaps: string[]; others: string[] } {
+  const overlaps = m.liveExportOverlaps ?? [];
+  const english = new Set(overlaps.map(o => o.message));
+  return {
+    liveOverlaps: overlaps.map(o => (locale === 'ar' ? o.messageAr || o.message : o.message || o.messageAr)),
+    others: m.warnings.filter(w => !english.has(w)),
+  };
+}
+
 export function readOtherFormatLive(err: unknown): { format: string; fileName: string } | null {
   const response = (err as { response?: { status?: number; data?: unknown } } | null)?.response;
   if (response?.status !== 409) return null;
@@ -94,6 +121,11 @@ export interface JournalExportManifest {
   journalCount: number;
   previouslyConfirmedExcluded: { count: number; total: number; exportIds: string[] };
   warnings: string[];
+  /**
+   * C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages. The English
+   * sentence is also in `warnings`; show it through {@link splitManifestWarnings}. Absent from an older API.
+   */
+  liveExportOverlaps?: JournalExportLiveOverlap[];
   unattributedExcluded?: { excluded: boolean; count: number | null; total: number | null; note: string | null };
   outOfPeriodEntryDateCount: number;
   downloadUrl: string | null;

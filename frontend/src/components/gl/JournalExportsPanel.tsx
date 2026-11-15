@@ -3,11 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiErrorReason } from '../../api/client';
 import {
-  financeErpApi, readOtherFormatLive, saveJournalFile,
+  financeErpApi, readOtherFormatLive, saveJournalFile, splitManifestWarnings,
   type CompanyBalance, type JournalExportDetail, type JournalExportFormat, type JournalExportManifest,
   type JournalExportScope, type JournalExportSummary, type JournalOutcome,
 } from '../../api/financeErp';
 import { useCompany } from '../../contexts/CompanyContext';
+import { useLocale } from '../../contexts/LocaleContext';
 import { usePayrollCompanies } from '../../hooks/usePayrollCompanies';
 import { useFormat } from '../../hooks/useFormat';
 import { useT } from '../../hooks/useT';
@@ -68,6 +69,7 @@ function refusalOf(err: unknown, fallback: string): Refusal {
 export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string }) {
   const t = useT();
   const f = useFormat();
+  const { locale } = useLocale();
   const { companies } = usePayrollCompanies();
   // Only a group-scoped user may export (or list) "all companies"; the API forbids it to anyone else, so a
   // company-scoped user starts on their own company and never sees the group option.
@@ -112,6 +114,7 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
   const format = useMemo(() => formats?.find(x => x.key === formatKey) ?? null, [formats, formatKey]);
   const scope: JournalExportScope = { period, companyId: companyId || null, format: formatKey, options };
   const currencyOf = (m: { currency: string }) => m.currency || null;
+  const shownWarnings = manifest ? splitManifestWarnings(manifest, locale) : null;
 
   const run = async (kind: 'preview' | 'create', acknowledgeOtherFormatLive = false) => {
     setBusy(kind);
@@ -250,7 +253,11 @@ export function JournalExportsPanel({ defaultPeriod }: { defaultPeriod?: string 
             })}
           </p>
           <CompanyTable rows={manifest.byCompany} currency={currencyOf(manifest)} />
-          {manifest.warnings.map(w => <p key={w} className="text-xs text-amber-700 dark:text-amber-300">{w}</p>)}
+          {/* C-1: a file still waiting for the ERP that already holds some of these rows is named in the viewer's language. */}
+          {shownWarnings?.liveOverlaps.map(w => (
+            <p key={w} className="text-xs font-semibold text-amber-700 dark:text-amber-300" data-testid="journal-export-live-overlap">{w}</p>
+          ))}
+          {shownWarnings?.others.map(w => <p key={w} className="text-xs text-amber-700 dark:text-amber-300">{w}</p>)}
           {/* AM-21: a read-only finance user gets no example lines; say so instead of showing nothing. */}
           {manifest.sample === null && (
             <p data-testid="journal-export-lines-hidden" className="text-xs text-slate-500 dark:text-slate-400">

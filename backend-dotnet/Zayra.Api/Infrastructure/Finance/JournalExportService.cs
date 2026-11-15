@@ -23,7 +23,9 @@ public sealed record JournalExportBuild(
     int OutOfPeriodEntryDateCount,
     string Kind = JournalExportKinds.Full,
     IReadOnlyDictionary<string, string>? Options = null,
-    IReadOnlyList<string>? Warnings = null);
+    IReadOnlyList<string>? Warnings = null,
+    // C-1: live files (any scope) already holding some of these rows. Create refuses the other-scope ones.
+    IReadOnlyList<LiveExportOverlap>? LiveOverlaps = null);
 
 /// <summary>
 /// Produces the journal artifact a client's ERP can actually ingest, and the evidence trail that lets
@@ -370,6 +372,13 @@ public sealed class JournalExportService
             warnings.Add($"Cost centre {costCentre} has no ERP segment, so the file carries the internal code {costCentre}. "
                        + "Set its ERP segment on the cost centre if your ERP uses a different value.");
 
+        // C-1: a row already in a file that is waiting for the ERP's result must not go into a second file unnoticed.
+        // Create runs this after it has locked the scope's ledger rows, so the answer cannot go stale before its insert.
+        var liveOverlaps = (await JournalExportBuilder.LiveHoldersAsync(_db, tenantId, selection.Entries.Select(e => e.Id).ToList(), ct))
+            .Select(h => JournalExportLiveOverlaps.Describe(h, filter, formatter.Key, currency))
+            .ToList();
+        warnings.AddRange(liveOverlaps.Select(o => o.Message));
+
         var bytes = formatter.Format(doc);
         var scopeTag = filter.PayrollRunId is { } rid ? "run-" + rid.ToString("N")[..8]
                      : string.IsNullOrWhiteSpace(period) ? "all" : period;
@@ -386,7 +395,7 @@ public sealed class JournalExportService
             JournalExportBuilder.TryParsePeriod(e.Period, out var s, out var en) && (e.EntryDate < s || e.EntryDate > en));
 
         return (new JournalExportBuild(doc, formatter, selection, tieOut, bytes, Sha256(bytes), fileName,
-            companyCode, outOfPeriod, kind, validOptions, warnings), null);
+            companyCode, outOfPeriod, kind, validOptions, warnings, liveOverlaps), null);
     }
 
     /// <summary>Only keys the formatter declares, each bounded and free of control characters — the values

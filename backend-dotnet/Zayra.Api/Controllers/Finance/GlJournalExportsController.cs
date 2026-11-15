@@ -173,6 +173,37 @@ public class GlJournalExportsController : ControllerBase
             var (build, refusal) = await _exports.BuildAsync(tid.Value, filter, format, ct, options);
             if (refusal is not null) return (StatusCode(refusal.Status, refusal.Payload), false);
 
+            // C-1: ONE LIVE FILE PER LEDGER ROW. The probe above sees only this exact scope; a file of ANOTHER scope (the run while
+            // the month is exported, a company while the group is) that is still waiting for the ERP's result may already hold
+            // some of these rows, and both files would be importable. The build found such files after step 2's ledger locks, so
+            // an overlapping create cannot commit in between: it queues on the same rows (JournalExportLiveOverlapPostgresTests).
+            // Not overridable, acknowledgeOtherFormatLive included: that covers another format of THIS scope only.
+            // Left to the rules below: the live files of this scope read in step 1, and a file of this exact scope, format and
+            // currency committed since (the live-scope index refuses that insert as a concurrent export, as before).
+            var sameScopeIds = scopeLive.Select(x => x.Id).ToHashSet();
+            var otherScopeLive = (build!.LiveOverlaps ?? Array.Empty<LiveExportOverlap>())
+                .Where(o => !sameScopeIds.Contains(o.Holder.ExportId) && o.Relation != JournalExportLiveOverlaps.SupersededByThisExport)
+                .Select(o => o.Holder).ToList();
+            if (otherScopeLive.Count > 0)
+            {
+                var (overlapMessage, overlapMessageAr) = JournalExportLiveOverlaps.Refusal(otherScopeLive);
+                return (Conflict(new
+                {
+                    error = JournalExportErrors.EntriesInLiveExport,
+                    code = JournalExportErrors.EntriesInLiveExport,
+                    message = overlapMessage,
+                    messageAr = overlapMessageAr,
+                    exportId = otherScopeLive[0].ExportId,
+                    fileName = otherScopeLive[0].FileName,
+                    rows = otherScopeLive[0].Rows,
+                    liveExports = otherScopeLive.Select(h => new
+                    {
+                        exportId = h.ExportId, fileName = h.FileName, format = h.FormatKey, rows = h.Rows,
+                        exportedAtUtc = h.ExportedAtUtc, status = GlJournalExportStatuses.Exported,
+                    }).ToList(),
+                }), false);
+            }
+
             var priorLive = scopeLive
                 .Where(x => x.FormatKey == build!.Formatter.Key && x.Currency == build.Document.Currency).ToList();
 
@@ -1100,6 +1131,18 @@ public class GlJournalExportsController : ControllerBase
             exportIds = build.Selection.PreviouslyConfirmedExportIds,
         },
         warnings = build.Warnings ?? Array.Empty<string>(),
+        // C-1: files still waiting for the ERP's result that already hold some of these rows, in both languages (the
+        // English sentence is also in warnings).
+        liveExportOverlaps = (build.LiveOverlaps ?? Array.Empty<LiveExportOverlap>()).Select(o => new
+        {
+            exportId = o.Holder.ExportId,
+            fileName = o.Holder.FileName,
+            format = o.Holder.FormatKey,
+            rows = o.Holder.Rows,
+            relation = o.Relation,
+            message = o.Message,
+            messageAr = o.MessageAr,
+        }).ToList(),
         tieOut = new
         {
             ok = build.TieOut.Ok,
