@@ -751,8 +751,8 @@ export function EmployeesPage({ createOnly = false }: { createOnly?: boolean } =
   const canBulkActivate = hasPermission('employees.approve');
   const canBulkDeactivate = hasPermission('employees.write');
   const canBulkDelete = hasPermission('employees.delete');
-  // Merging a duplicate removes one record, so the backend needs Delete (not just Edit) for it.
-  const canMergeDuplicates = hasPermission('employees.delete');
+  // Merging (and undoing a merge) needs Edit employees, the same as every other way of resolving a duplicate.
+  const canMergeDuplicates = hasPermission('employees.write');
   // Same audience as the API's people export: employees.write.
   const canBulkExport = hasPermission('employees.write');
   // Create and edit are `employees.write`, import is `employees.bulk_import` (EmployeesController).

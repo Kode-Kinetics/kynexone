@@ -5228,17 +5228,6 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "merge")
         {
-            // A merge soft-deletes the duplicate record (IsDeleted, retention clock, approvals cancelled, payroll deactivated): the same effect as
-            // DELETE /api/employees/{id}, which needs employees.delete. Write alone must not be a way round that permission.
-            if (!User.HasPermission("employees.delete"))
-                return StatusCode(StatusCodes.Status403Forbidden, new
-                {
-                    error = "merge_requires_delete_permission",
-                    code = "merge_requires_delete_permission",
-                    message = "Merging removes the duplicate record, so it needs the Delete employees permission.",
-                    messageAr = "الدمج يزيل السجل المكرر، لذلك يتطلب صلاحية حذف الموظفين.",
-                    requiredPermission = "employees.delete",
-                });
             if (req.IntoEmployeeId is not int intoId) return BadRequest(new { message = "intoEmployeeId is required for a merge." });
             if (intoId == id) return BadRequest(new { message = "An employee cannot be merged into itself." });
             if (string.IsNullOrWhiteSpace(req.Reason))
@@ -5423,16 +5412,6 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "unmerge")
         {
-            // Undoing a merge restores a record the merge removed, so it needs the same permission as the merge (and as DELETE).
-            if (!User.HasPermission("employees.delete"))
-                return StatusCode(StatusCodes.Status403Forbidden, new
-                {
-                    error = "unmerge_requires_delete_permission",
-                    code = "unmerge_requires_delete_permission",
-                    message = "Undoing a merge restores a record that the merge removed, so it needs the Delete employees permission.",
-                    messageAr = "التراجع عن الدمج يعيد سجلاً أزاله الدمج، لذلك يتطلب صلاحية حذف الموظفين.",
-                    requiredPermission = "employees.delete",
-                });
             // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the
             // record; payroll reactivation is best-effort (only what the merge's footprint row says it switched off) —
             // a deep field-level reconciliation is out of scope for this slice.

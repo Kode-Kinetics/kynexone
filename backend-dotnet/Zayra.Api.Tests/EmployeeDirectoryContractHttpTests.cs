@@ -996,7 +996,7 @@ public sealed class EmployeeDirectoryContractHttpTests(EmployeeDirectoryHttpFixt
         r.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    // ═════════════════════════════ 7. resolve-duplicate "merge" is a delete, so it needs the delete permission ═════════════════════════════
+    // ═════════════════════════════ 7. resolve-duplicate: merge and unmerge need employees.write, as before ═════════════════════════════
 
     private async Task<(Employee Duplicate, Employee Survivor)> Twins()
     {
@@ -1008,29 +1008,35 @@ public sealed class EmployeeDirectoryContractHttpTests(EmployeeDirectoryHttpFixt
     private Task<HttpResponseMessage> Merge(string role, Employee duplicate, Employee survivor) =>
         f.Send(HttpMethod.Post, $"/api/employees/{duplicate.Id}/resolve-duplicate", f.Token(role), new { resolution = "merge", intoEmployeeId = survivor.Id, reason = "same person" });
 
+    private Task<HttpResponseMessage> Unmerge(string role, Employee duplicate) =>
+        f.Send(HttpMethod.Post, $"/api/employees/{duplicate.Id}/resolve-duplicate", f.Token(role), new { resolution = "unmerge", reason = "wrong twins" });
+
     [Fact]
-    public async Task ResolveDuplicate_Merge_ByTheWriteOnlyRole_IsForbidden_AndDeletesNothing()
+    public async Task ResolveDuplicate_Merge_ByTheWriteOnlyRole_Merges()
     {
         var (dup, survivor) = await Twins();
         using var r = await Merge("HR Officer", dup, survivor);
-        r.StatusCode.Should().Be(HttpStatusCode.Forbidden, "a merge soft-deletes the duplicate, which DELETE /{id} reserves for employees.delete");
-        var text = await r.Content.ReadAsStringAsync();
-        text.Should().NotBeNullOrWhiteSpace("a refusal must say why, not return an empty body");
-        using var body = JsonDocument.Parse(text);
-        body.RootElement.GetProperty("error").GetString().Should().Be("merge_requires_delete_permission");
-        body.RootElement.GetProperty("code").GetString().Should().Be("merge_requires_delete_permission");
-        body.RootElement.GetProperty("message").GetString().Should().Be("Merging removes the duplicate record, so it needs the Delete employees permission.");
-        body.RootElement.GetProperty("messageAr").GetString().Should().NotBeNullOrWhiteSpace().And.MatchRegex("[\\u0600-\\u06FF]", "the Arabic text is Arabic");
-        body.RootElement.GetProperty("requiredPermission").GetString().Should().Be("employees.delete");
-        (await f.IsDeleted(dup.Id)).Should().BeFalse();
+        r.StatusCode.Should().Be(HttpStatusCode.OK, "owner decision: merge needs employees.write, as it did before the delete-permission refusal: " + await r.Content.ReadAsStringAsync());
+        (await f.IsDeleted(dup.Id)).Should().BeTrue();
         (await f.IsDeleted(survivor.Id)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveDuplicate_Unmerge_ByTheWriteOnlyRole_Restores()
+    {
+        var (dup, survivor) = await Twins();
+        using (var merged = await Merge("HR Officer", dup, survivor)) merged.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var r = await Unmerge("HR Officer", dup);
+        r.StatusCode.Should().Be(HttpStatusCode.OK, await r.Content.ReadAsStringAsync());
+        (await f.IsDeleted(dup.Id)).Should().BeFalse();
     }
 
     [Theory]
     [InlineData("Admin")]
     [InlineData("HR Director")]
     [InlineData("HR Manager")]
-    public async Task ResolveDuplicate_Merge_ByTheRolesHoldingWriteAndDelete_StillMerges(string role)
+    [InlineData("HR Officer")]
+    public async Task ResolveDuplicate_Merge_ByTheRolesHoldingWrite_Merges(string role)
     {
         var (dup, survivor) = await Twins();
         using var r = await Merge(role, dup, survivor);
@@ -1040,21 +1046,18 @@ public sealed class EmployeeDirectoryContractHttpTests(EmployeeDirectoryHttpFixt
     }
 
     [Fact]
-    public async Task ResolveDuplicate_MergeNeedsExactlyTheSamePermissionsAsDelete_ForEverySeededRole()
+    public async Task ResolveDuplicate_MergeNeedsExactlyEmployeesWrite_ForEverySeededRole()
     {
-        // The expectation is computed from the seeded bundles, so a future change to a role's grants cannot silently split the two doors.
+        // The expectation is computed from the seeded bundles, so a future change to a role's grants cannot silently move the door.
         var held = await f.PermissionsByRoleAsync();
         foreach (var role in EmployeeDirectoryHttpFixture.Roles)
         {
             var (dup, survivor) = await Twins();
-            var (dup2, _) = await Twins();
             using var merge = await Merge(role, dup, survivor);
-            using var delete = await f.Send(HttpMethod.Delete, $"/api/employees/{dup2.Id}", f.Token(role));
-            var mayDelete = held[role].Contains("employees.delete");
-            var mayMerge = held[role].Contains("employees.write") && mayDelete;
+            var mayMerge = held[role].Contains("employees.write");
             (merge.StatusCode == HttpStatusCode.OK).Should().Be(mayMerge, $"{role}: merge reached {(int)merge.StatusCode}");
-            if (!mayDelete) merge.StatusCode.Should().BeOneOf(HttpStatusCode.Forbidden, HttpStatusCode.Unauthorized);
-            (delete.StatusCode == HttpStatusCode.NoContent || delete.StatusCode == HttpStatusCode.OK).Should().Be(mayDelete, $"{role}: delete reached {(int)delete.StatusCode}");
+            if (!mayMerge) merge.StatusCode.Should().BeOneOf(HttpStatusCode.Forbidden, HttpStatusCode.Unauthorized);
+            (await f.IsDeleted(dup.Id)).Should().Be(mayMerge, $"{role}: the duplicate is removed exactly when the merge succeeded");
         }
     }
 

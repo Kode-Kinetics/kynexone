@@ -1,46 +1,29 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { MERGE_NEEDS_DELETE_REASON, mergeRefusal } from '../src/lib/duplicateMerge';
+import { mergeRefusal } from '../src/lib/duplicateMerge';
 import { translate, type MessageParams } from '../src/i18n/translations';
 
 /**
- * Duplicate merge needs `employees.delete` (the backend refuses it otherwise, because a merge removes the duplicate
- * record). The screen must not offer a button that will be refused, must say why, and a 403 on the call must show the
- * same reason. Source-scan tests read EmployeesPage.tsx as text (same approach as peopleLinks.spec.ts).
+ * Duplicate merge and unmerge need `employees.write`, the same as every other way of resolving a duplicate. The screen offers
+ * Merge to anyone who can edit employees, and a failure shows the server's own sentence in the viewer's language. Source-scan
+ * tests read EmployeesPage.tsx as text (same approach as peopleLinks.spec.ts).
  */
 const page = fs.readFileSync(path.resolve(__dirname, '..', 'src/views/EmployeesPage.tsx'), 'utf8');
 const en = (key: string, params?: MessageParams) => translate('en', key, params);
 const ar = (key: string, params?: MessageParams) => translate('ar', key, params);
 const http = (status: number, data?: unknown) => ({ isAxiosError: true, response: { status, data } });
 
-const REASON_EN = 'Merging removes the duplicate record, so it needs the Delete employees permission.';
-
-test('the permission reason is the owner-approved sentence, with an Arabic translation', () => {
-  expect(MERGE_NEEDS_DELETE_REASON).toBe(REASON_EN);
-  expect(en(MERGE_NEEDS_DELETE_REASON)).toBe(REASON_EN);
-  const arabic = ar(MERGE_NEEDS_DELETE_REASON);
-  expect(arabic).not.toBe(REASON_EN);
-  expect(arabic).toMatch(/[؀-ۿ]/);
-});
-
-test('a 403 on merge with an EMPTY body shows the permission reason, never the generic merge failure', () => {
+test('a 403 on merge is the generic refusal: what did not happen, then who can grant access', () => {
   for (const body of [undefined, '', {}]) {
     const message = mergeRefusal(http(403, body), (k, p) => en(k, p), 'en');
-    expect(message).toContain(REASON_EN);
-    expect(message).not.toContain('Could not merge. Try again.');
+    expect(message).toContain('The records were not merged');
+    expect(message).toContain('Ask your HR administrator to grant you access.');
+    expect(message).not.toContain('Delete employees permission');
   }
-});
-
-test('a 403 on merge shows the permission reason in Arabic', () => {
-  const message = mergeRefusal(http(403, undefined), (k, p) => ar(k, p), 'ar');
-  expect(message).toContain(ar(MERGE_NEEDS_DELETE_REASON));
-  expect(message).not.toContain('Could not merge');
-});
-
-test('a 403 that carries the same permission sentence is not doubled', () => {
-  const message = mergeRefusal(http(403, { code: 'forbidden', message: REASON_EN }), (k, p) => en(k, p), 'en');
-  expect(message.split(REASON_EN).length - 1).toBe(1);
+  const arabic = mergeRefusal(http(403, undefined), (k, p) => ar(k, p), 'ar');
+  expect(arabic).toMatch(/[؀-ۿ]/);
+  expect(arabic).not.toContain('Ask your HR administrator');
 });
 
 test('other failures keep the server sentence; an unexplained one is a refusal, not a bare string', () => {
@@ -58,11 +41,12 @@ test('mergeInto is guarded by the permission and uses mergeRefusal, not the raw 
   expect(body).not.toContain("'Could not merge. Try again.'");
 });
 
-test("canMergeDuplicates is hasPermission('employees.delete')", () => {
-  expect(page).toMatch(/const canMergeDuplicates = hasPermission\('employees\.delete'\)/);
+test("canMergeDuplicates is hasPermission('employees.write'), not the delete permission", () => {
+  expect(page).toMatch(/const canMergeDuplicates = hasPermission\('employees\.write'\)/);
+  expect(page).not.toMatch(/const canMergeDuplicates = hasPermission\('employees\.delete'\)/);
 });
 
-test('the create dialog Merge only opens the existing record, so it stays open to edit users (no delete gate)', () => {
+test('the create dialog Merge only opens the existing record and is not gated on a delete permission', () => {
   const fn = page.slice(page.indexOf('const mergeFromCreate = '), page.indexOf('const saveEdit = async'));
   expect(fn).not.toContain('canMergeDuplicates');
   expect(fn).not.toContain('resolveDuplicate');
@@ -70,7 +54,6 @@ test('the create dialog Merge only opens the existing record, so it stays open t
   expect(start).toBeGreaterThan(0);
   const around = page.slice(start - 300, start + 300);
   expect(around).not.toContain('canMergeDuplicates');
-  expect(around).not.toContain('merge-needs-delete');
   expect(around).toContain("{t('Merge')}");
   expect(page).toContain("{t('View existing')}");
 });
@@ -88,7 +71,7 @@ test('Resigned stays in the ACTIVE list filter; only Terminated and Retired are 
   expect(kept).not.toContain('Retired');
 });
 
-// The real bodies the backend now sends (EmployeesController.ResolveDuplicate / Unresolve): each carries `error`, `code`,
+// The real bodies the backend sends (EmployeesController.ResolveDuplicate / Unresolve): each carries `error`, `code`,
 // an English `message` and an Arabic `messageAr`. The screen shows the viewer's language once, with no doubled sentence.
 const BODIES = {
   blocked: {
@@ -101,10 +84,6 @@ const BODIES = {
     error: 'merge_across_companies', code: 'merge_across_companies',
     message: 'These two records belong to different companies. A merge only combines duplicate entries of the same person within one company.',
     messageAr: 'السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة لنفس الشخص داخل شركة واحدة.',
-  },
-  needsDelete: {
-    error: 'merge_requires_delete_permission', code: 'merge_requires_delete_permission',
-    message: REASON_EN, messageAr: 'الدمج يزيل السجل المكرر، لذلك يتطلب صلاحية حذف الموظفين.', requiredPermission: 'employees.delete',
   },
 };
 
@@ -119,12 +98,4 @@ test('a 409 refusal shows the server sentence in English and messageAr in Arabic
     expect(arabic.split(body.messageAr).length - 1).toBe(1);
     expect(arabic).not.toContain(body.message);
   }
-});
-
-test('the real 403 body is not doubled in either language', () => {
-  const english = mergeRefusal(http(403, BODIES.needsDelete), (k, p) => en(k, p), 'en');
-  expect(english.split(REASON_EN).length - 1).toBe(1);
-  const arabic = mergeRefusal(http(403, BODIES.needsDelete), (k, p) => ar(k, p), 'ar');
-  expect(arabic).toContain(BODIES.needsDelete.messageAr);
-  expect(arabic.split(BODIES.needsDelete.messageAr).length - 1).toBe(1);
 });

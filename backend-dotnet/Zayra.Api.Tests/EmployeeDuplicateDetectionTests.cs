@@ -99,8 +99,6 @@ public class EmployeeDuplicateDetectionTests
             new(ClaimTypes.Role, role),
             new("permission", "employees.read"),
             new("permission", "employees.write"),
-            // A merge soft-deletes the duplicate (employees.delete): the HR Manager / Admin bundle.
-            new("permission", "employees.delete"),
         };
         if (extraClaims is not null) claims.AddRange(extraClaims);
         controller.ControllerContext = new ControllerContext

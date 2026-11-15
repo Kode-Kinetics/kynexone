@@ -3,9 +3,9 @@ import { ALL_PERMISSIONS, bootPeopleFixture, type Locale } from './people-list.f
 
 /**
  * Duplicate warning in the Add Employee dialog (route-mocked, see people-list.fixture.ts). The dialog's Merge does NOT call
- * the resolve-duplicate endpoint: it abandons the draft and opens the matched record for editing, so an edit user (employees.write,
- * no employees.delete) keeps it. Only `mergeInto` calls the endpoint (it needs employees.delete) and has no screen entry point today;
- * its gate and 403 reason are covered in unit/duplicateMerge.spec.ts.
+ * the resolve-duplicate endpoint: it abandons the draft and opens the matched record for editing. Merge and unmerge need
+ * employees.write only (owner decision), so an edit user without employees.delete keeps the button. Only `mergeInto` calls the
+ * endpoint and has no screen entry point today; its gate and refusal wording are covered in unit/duplicateMerge.spec.ts.
  */
 const EDIT_ONLY = ALL_PERMISSIONS.filter((p) => p !== 'employees.delete');
 
@@ -33,11 +33,10 @@ async function openDuplicateWarning(page: Page, permissions: string[], locale: L
 }
 
 for (const locale of ['en', 'ar'] as const) {
-  test(`edit-only user (${locale}): Merge and View existing stay available and no permission reason is shown`, async ({ page }) => {
+  test(`edit-only user (${locale}): Merge and View existing are available without the delete permission`, async ({ page }) => {
     const { alert } = await openDuplicateWarning(page, EDIT_ONLY, locale);
     await expect(alert.getByRole('button', { name: locale === 'ar' ? /^دمج$/ : /^Merge$/ })).toBeVisible();
     await expect(alert.getByRole('button', { name: locale === 'ar' ? /عرض السجل الحالي/ : /View existing/ })).toBeVisible();
-    await expect(alert.getByTestId('merge-needs-delete')).toHaveCount(0);
   });
 }
 

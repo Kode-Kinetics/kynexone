@@ -702,7 +702,7 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
     }
 
     [Fact]
-    public async Task Unmerge_WithoutTheDeletePermission_Is403WithACodeAndBothLanguages_AndRestoresNothing()
+    public async Task Unmerge_WithEmployeesWriteOnly_RestoresTheRecord()
     {
         var t = await SeedTwinsAsync();
         await MarkMergedAsync(t);
@@ -711,19 +711,25 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         await using (var db = _fx.CreateDb())
             result = await Controller(db, t, mayDelete: false).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("unmerge", null, "wrong twins"), CancellationToken.None);
 
-        var forbidden = Assert.IsAssignableFrom<ObjectResult>(result);
-        forbidden.StatusCode.Should().Be(StatusCodes.Status403Forbidden);
-        using var body = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(forbidden.Value));
-        body.RootElement.GetProperty("error").GetString().Should().Be("unmerge_requires_delete_permission");
-        body.RootElement.GetProperty("code").GetString().Should().Be("unmerge_requires_delete_permission");
-        body.RootElement.GetProperty("message").GetString().Should().NotBeNullOrWhiteSpace();
-        body.RootElement.GetProperty("messageAr").GetString().Should().MatchRegex("[\\u0600-\\u06FF]");
-        body.RootElement.GetProperty("requiredPermission").GetString().Should().Be("employees.delete");
-        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue("a refused unmerge restores nothing");
+        Assert.IsType<OkObjectResult>(result);
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeFalse("owner decision: undoing a merge needs employees.write, as before");
     }
 
     [Fact]
-    public async Task Unmerge_WithTheDeletePermission_RestoresTheRecord()
+    public async Task Merge_WithEmployeesWriteOnly_Merges()
+    {
+        var t = await SeedTwinsAsync();
+
+        IActionResult result;
+        await using (var db = _fx.CreateDb())
+            result = await Controller(db, t, mayDelete: false).ResolveDuplicate(t.Duplicate.Id, new ResolveDuplicateRequest("merge", t.Survivor.Id, "same person"), CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        (await IsDeletedAsync(t.Duplicate.Id)).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Unmerge_WithBothPermissions_RestoresTheRecord()
     {
         var t = await SeedTwinsAsync();
         await MarkMergedAsync(t);
