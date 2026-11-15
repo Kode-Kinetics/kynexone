@@ -35,7 +35,8 @@ export type EnumName =
   | 'InterviewRecommendation'
   | 'BankBatchType'
   | 'NitaqatGroup'
-  | 'EmploymentType';
+  | 'EmploymentType'
+  | 'ComplianceDoc';
 
 /** "Half day" → "HalfDay", "pending" → "Pending", "PendingHRApproval" unchanged. */
 export function normaliseEnumValue(value: string): string {

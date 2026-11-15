@@ -5314,7 +5314,21 @@ public class ZayraDbContext : DbContext, IDataProtectionKeyContext
             entity.Property(x => x.InstallmentAmount).HasPrecision(14, 2);
             entity.Property(x => x.TotalRepaid).HasPrecision(14, 2);
             entity.Property(x => x.OutstandingBalance).HasPrecision(14, 2);
+            entity.Property(x => x.PaymentReference).HasMaxLength(100);
+            entity.Property(x => x.CancelReason).HasMaxLength(1000);
             entity.HasIndex(x => new { x.TenantId, x.AdvanceNumber }).IsUnique();
+            // One bank or cash reference evidences one payout in a company: the payout's check-then-write is not atomic across two
+            // different advances (the advance lock is per advance), so the database refuses the second. NULL is distinct in a unique
+            // index, so an advance that has no reference is unconstrained, and the legacy advance that has no company needs its own
+            // index (the controller's check treats "no company" as one bucket per tenant, and so does this).
+            entity.HasIndex(x => new { x.TenantId, x.CompanyId, x.PaymentReference })
+                .HasDatabaseName("ux_salary_advances_payment_reference")
+                .IsUnique()
+                .HasFilter("payment_reference IS NOT NULL");
+            entity.HasIndex(x => new { x.TenantId, x.PaymentReference })
+                .HasDatabaseName("ux_salary_advances_payment_reference_unattributed")
+                .IsUnique()
+                .HasFilter("company_id IS NULL AND payment_reference IS NOT NULL");
             entity.HasIndex(x => new { x.TenantId, x.EmployeeId, x.Status });
             entity.HasIndex(x => new { x.TenantId, x.EmployeeIntId, x.Status });
         });

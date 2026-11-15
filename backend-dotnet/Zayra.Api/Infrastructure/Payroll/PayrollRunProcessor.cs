@@ -556,10 +556,7 @@ public sealed class PayrollRunProcessor
         // A first, unlocked look. The loans this run collects from are locked and re-read inside the transaction below.
         var activeLoans = await Op(_db.EmployeeLoans).AsNoTracking().Where(collectableLoan).ToListAsync(cancellationToken);
         var loanCandidateIds = activeLoans.Select(l => l.Id).ToList();
-        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking()
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
-            .ToListAsync(cancellationToken);
+        // The salary advances are loaded below, once the leavers this run settles are known.
 
         var approvedAdjustments = await _db.PayrollAdjustments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == id && a.Status == "Approved" && employeeIdsForRun.Contains(a.EmployeeId))
@@ -1036,6 +1033,27 @@ public sealed class PayrollRunProcessor
             }
         }
 
+        // COMPLIANCE: the salary advances this run collects from. A first, unlocked look, like the loans: they are locked and
+        // re-read inside the transaction below. A leaver whose final settlement this run pays has the WHOLE outstanding advance
+        // recovered from the final pay whatever its repayment start date: the settlement planned exactly that
+        // (PlannedAdvanceRecovery counts every open advance), and skipping one not yet due paid the full settlement out and moved
+        // the advance to 1420, to be chased from an ex-employee. Everyone else is collected from the advance's start date.
+        //
+        // Only advances owned by this run's company, exactly as for loans (collectableLoan): an advance is the 1410 receivable of
+        // the legal entity that paid it, and this run's accrual relieves this company's 1410. An employee who moved to another
+        // entity is therefore NOT charged in the new entity's payroll for the old entity's advance; it is collected only in the
+        // owning entity's runs, which no longer carry the employee, so (as for a loan) the old entity must settle it at the
+        // transfer. Collecting it here instead would credit a 1410 this company never debited. A legacy advance with no company
+        // (written before company scope was required, not yet backfilled) is still collected, as before: the ledger treats the
+        // unattributed 1410 pool as part of every company's view (GlControlAccounts), and dropping it would silently stop
+        // collecting a debt.
+        var settlingEmployeeIds = settlementsByEmp.Keys.ToList();
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> collectableAdvance = a =>
+            a.TenantId == tenantId && (a.CompanyId == loanCompanyId || a.CompanyId == null) && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
+                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd || settlingEmployeeIds.Contains(a.EmployeeIntId.Value));
+        var activeAdvances = await Op(_db.SalaryAdvances).AsNoTracking().Where(collectableAdvance).ToListAsync(cancellationToken);
+        var advanceCandidateIds = activeAdvances.Select(a => a.Id).ToList();
+
         // ── P0-2: ALL-OR-NOTHING MUTATION ──────────────────────────────────────────
         // Everything from here (idempotent delete → slip writes → statutory/loan/advance
         // ledger decrements → audit) commits as one transaction, so a cancel/crash/DB error
@@ -1049,12 +1067,14 @@ public sealed class PayrollRunProcessor
         // read-only snapshots loaded above are immutable and safe to reuse across a retry.
         int? failingEmployeeId = null;
         string? failingEmployeeCode = null;
+        PayrollProcessOutcome? refusedUnderLock = null;
         var attempt = 0;
         var strategy = _db.Database.CreateExecutionStrategy();
         try
         {
             await strategy.ExecuteAsync(async () =>
             {
+            refusedUnderLock = null;
             // Retry-safety: on a transient RETRY, discard the failed attempt's tracked state so the
             // rebuild starts clean. We do NOT clear on the first attempt — that would detach entities
             // the caller is still holding (the request's scoped context), changing observable behaviour.
@@ -1068,17 +1088,34 @@ public sealed class PayrollRunProcessor
             // otherwise that raw SQL auto-commits on its own connection and re-opens the split.
             await using var tx = await _db.Database.BeginTransactionAsync(cancellationToken);
 
+            // LOCK ORDER, step 2 (FinanceDecisionSerializer.AcquireDebtLocksAsync documents the whole order): the run row FOR UPDATE,
+            // FIRST in the transaction, before the loan and advance locks below. A void of a run in a processable status (Draft,
+            // Failed) takes this row first and, when it cascades over a live child run, the chain's debt locks after it; Process used
+            // to take the debt locks first and write the run row last, so a void cascading over a Draft child could deadlock with the
+            // Process of that child (40P01), and a Process that had read the run before a void committed could write "Processed" over
+            // "Voided". Settle needs a Locked run, which Process refuses, so it cannot meet Process on one run. The status is read
+            // again under the lock (the tracked copy above may be stale, and a tracked entity is not refreshed by a second query):
+            // a run voided or processed while this pass waited is refused with the same answer the up-front check gives.
+            var lockedStatus = await Op(_db.PayrollRuns).TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                .AsNoTracking().Where(r => r.Id == id && r.TenantId == tenantId)
+                .Select(r => r.Status).FirstOrDefaultAsync(cancellationToken);
+            if (lockedStatus is null) { refusedUnderLock = NotFound(); return; }
+            if (CheckRunState(new PayrollRun { Status = lockedStatus }) is { } refusal) { refusedUnderLock = refusal; return; }
+
             // Loan-level serialisation with every other writer of these loans, above all the cash early settlement
-            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken FIRST in the
-            // transaction, before any other lock or row write, in ascending key order (the order the loan payout batch
+            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken right after the
+            // run row above, before any other lock or row write, in ascending key order (the order the loan payout batch
             // uses), so it cannot deadlock against them. The loans are then re-read under the lock: one settled in cash
             // after the unlocked look above drops out, and no payoff can commit until this run has committed its
             // instalment, after which RecordRepayment refuses because an unlocked run holds that instalment.
-            foreach (var loanId in loanCandidateIds.Distinct()
-                         .OrderBy(x => FinanceDecisionSerializer.ComputeLockKey(FinanceDecisionSerializer.ScopeLoan, tenantId, x)))
-                await FinanceDecisionSerializer.AcquireAsync(_db, FinanceDecisionSerializer.ScopeLoan, tenantId, loanId, cancellationToken);
+            // The advances follow the loans, in the one order every multi-lock writer uses (FinanceDecisionSerializer.AcquireDebtLocksAsync):
+            // the leaver-settlement payment moves both to 1420 and the void restores both, and each re-reads them under these locks.
+            await FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanCandidateIds, advanceCandidateIds, cancellationToken);
             activeLoans = loanCandidateIds.Count == 0 ? [] : await Op(_db.EmployeeLoans).AsNoTracking()
                 .Where(collectableLoan).Where(l => loanCandidateIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
+            activeAdvances = advanceCandidateIds.Count == 0 ? [] : await Op(_db.SalaryAdvances).AsNoTracking()
+                .Where(collectableAdvance).Where(a => advanceCandidateIds.Contains(a.Id))
                 .ToListAsync(cancellationToken);
 
             // Idempotent delete of previously-generated rows (enrolls in this tx).
@@ -1923,9 +1960,14 @@ public sealed class PayrollRunProcessor
                 // same rows: BASIC's EmitWhenZero flag would otherwise emit a 0.00 BASIC line here while
                 // the legacy branch skipped it entirely. Bonus / Adjustment / Statutory providers survive —
                 // those are exactly the supplemental families a non-recurring run pays.
+                // A leaver whose final settlement this run pays has their loans and advances recovered from it (empLoans / empAdv
+                // above), so their instalment lines are emitted too. Without them the slip's deduction total carried an amount no
+                // line explained (PAYSLIP_LINES_MISMATCH, an Error that blocks Approve and Lock and cannot be overridden) and the
+                // accrual, built from the lines, never relieved 1400 / 1410 while the loan or advance already showed it repaid.
+                // Nobody else in a run without recurring pay has a debt taken, so for them the set is unchanged.
                 var effectiveComponents = includesRecurringPay
                     ? payComponents
-                    : payComponents.Where(c => IsSupplementalPayComponent(c)).ToList();
+                    : payComponents.Where(c => IsSupplementalPayComponent(c) || (isSettlingEmployee && IsDebtRecoveryPayComponent(c))).ToList();
                 var computation = PayComponentEngine.Compute(effectiveComponents, payCtx);
                 // Defence in depth against paying one code twice. The catalog API refuses a component on a cash allowance's code, but a row written
                 // before that rule (or by a path that skipped it) can still be in the store: the engine would pay its configured amount here and the
@@ -2477,8 +2519,7 @@ public sealed class PayrollRunProcessor
             .Where(collectableLoan)
             .ToListAsync(cancellationToken);
         var activeAdvMutable = !runDecrementsDebt ? new List<SalaryAdvance>() : await Op(_db.SalaryAdvances)
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null && employeeIdsForRun.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0
-                && (!a.RepaymentStartDate.HasValue || a.RepaymentStartDate.Value <= periodEnd))
+            .Where(collectableAdvance)
             .ToListAsync(cancellationToken);
 
         // POD-B3 — the loan witness is UNCONDITIONAL and PER-LOAN, and it records the balances as they were
@@ -2768,6 +2809,8 @@ public sealed class PayrollRunProcessor
         {
             throw; // never reached: the filter only tags the exception and answers false
         }
+        // Refused under the run lock: the transaction ended without a commit, so nothing was written.
+        if (refusedUnderLock is { } refusedOutcome) return refusedOutcome;
         return Ok(run);
     }
 
@@ -2873,6 +2916,11 @@ public sealed class PayrollRunProcessor
             return true;
         return c.ProviderKey is PayComponentProviders.Bonus or PayComponentProviders.Adjustment or PayComponentProviders.Tax;
     }
+
+    /// <summary>The loan and advance instalment components: emitted in a run without recurring pay only for a leaver whose final
+    /// settlement the run pays, because that is the only employee such a run recovers a debt from.</summary>
+    internal static bool IsDebtRecoveryPayComponent(PayComponent c) =>
+        c.ProviderKey is PayComponentProviders.Loan or PayComponentProviders.Advance;
 
     /// <summary>
     /// The operator's include/exclude intent for one run, and THE rule for who it admits: any Include row makes the run an allow-list (only the named

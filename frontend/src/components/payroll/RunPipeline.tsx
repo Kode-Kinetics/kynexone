@@ -18,6 +18,7 @@ import {
   type AttentionKind, type NextAction, type PipelineStage, type Reason, type StageKey,
 } from '../../lib/payrollPipeline';
 import { isPeriodOwning, priorRunCandidates, reviewFromSignoff, reviewIsRequired } from '../../lib/payrollRecon';
+import { isolateLtr } from '../../lib/bidi';
 import { requestFailureReason } from '../../lib/requestFailure';
 import { EnumLabel } from '../EnumLabel';
 import { Button } from '../ui/Button';
@@ -481,7 +482,16 @@ function attentionText(t: T, kind: AttentionKind): string {
 function detailText(t: T, d: NonNullable<PipelineStage['detail']>): string {
   switch (d.id) {
     // The label is the API's English status text; the dictionary holds its Arabic (an unknown status prints as sent).
-    case 'batch': return t('Bank file {number}: {label}', { number: d.number, label: t(d.label) });
+    case 'batch': {
+      // Where the API says which file exists, name it: a Saudi company's internal register is not its bank file.
+      if (!d.file) return t('Bank file {number}: {label}', { number: d.number, label: t(d.label) });
+      // The batch number is a left-to-right code inside what may be an Arabic sentence: isolate it so it is not reordered.
+      const number = isolateLtr(d.number);
+      const file = d.file === 'bank_file'
+        ? t('Batch {number}: Bank file generated', { number })
+        : t('Batch {number}: Register generated (internal, not a bank file)', { number });
+      return d.statusAfterFile ? `${file} ${t('Status: {status}', { status: t(d.label) })}` : file;
+    }
     case 'payroll_review': return t('Payroll review is done');
     case 'overrides': return t('{count, plural, one {# error cleared by override} other {# errors cleared by override}}', { count: d.count });
     case 'signed_off': return d.name ? t('Signed off by {name}', { name: d.name }) : t('Reconciliation signed off');
@@ -510,6 +520,7 @@ function reasonText(t: T, r: Reason): string {
     case 'currency_unconfirmed': return t('The company currency is not confirmed, so the lock summary cannot name one. Check Setup → Companies.');
     case 'no_batch': return t('No payment batch exists yet. Create one on the Bank / WPS tab.');
     case 'batch_not_exported': return t('A payment batch exists, but its bank file has not been generated yet.');
+    case 'bank_file_not_generated': return t('The internal payroll register is generated, but the bank file has not been generated yet.');
     case 'voided': return t('Voided.');
   }
 }

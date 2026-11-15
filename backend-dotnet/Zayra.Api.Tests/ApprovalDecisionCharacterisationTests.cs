@@ -249,13 +249,15 @@ public class ApprovalDecisionCharacterisationTests
     // ─────────────────────────────────────────────────────────────────────────────
 
     [Theory]
+    [InlineData("Approved")]
     [InlineData("Active")]
     [InlineData("Rejected")]
     [InlineData("Settled")]
-    public async Task Advances_Approve_OnANonPendingAdvance_IsAPlainStringBadRequest_NotAConflict(string status)
+    [InlineData("Cancelled")]
+    public async Task Advances_Approve_OnANonPendingAdvance_IsACodedBadRequest_NotAConflict(string status)
     {
-        // Pinned inconsistency: Approve refuses with 400 + bare string, while Reject (below)
-        // refuses the same condition with 409 + an error code. Same file, same aggregate.
+        // Pinned inconsistency: Approve refuses with 400, while Reject (below) refuses the same condition with 409.
+        // Both now carry the code invalid_advance_state and the sentence in English and Arabic.
         await using var db = CreateDb();
         var f = await SeedAdvanceAsync(db, status: status);
 
@@ -263,15 +265,17 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(1_000m, 2, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Advance is not in Pending status.", bad.Value as string);
+        Assert.Equal("Advance is not in Pending status.", Msg(bad.Value));
         Assert.Equal(status, (await db.SalaryAdvances.SingleAsync()).Status);
         Assert.Empty(await db.AdvanceInstallments.ToListAsync());
     }
 
     [Theory]
+    [InlineData("Approved")]     // approved but not paid: withdrawn through Cancel, not Reject
     [InlineData("Active")]
     [InlineData("Settled")]
     [InlineData("Rejected")]
+    [InlineData("Cancelled")]
     public async Task Advances_Reject_OnANonPendingAdvance_IsConflictWithErrorCode(string status)
     {
         // This is the guard the correctness batch added. Before it, rejecting an Active advance
@@ -291,24 +295,28 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Advances_Approve_ActivatesGeneratesInstallmentsPostsGlAndWritesApprovalRowAndAudit()
+    public async Task Advances_Approve_AgreesTermsGeneratesInstallmentsAndWritesApprovalRowAndAudit_ButPostsNoJournal()
     {
+        // Approval moved to Pending -> Approved: it agrees the amount and the schedule; the disbursement journal and the
+        // receivable balance wait for Finance's payout (AdvancesController.Payout).
         await using var db = CreateDb();
         var f = await SeedAdvanceAsync(db, status: "Pending");
+        var start = DateOnly.FromDateTime(DateTime.UtcNow).AddMonths(1);
 
         var result = await Advances(db, f.TenantId, Guid.NewGuid())
-            .Approve(f.AdvanceId, new AdvanceApproveRequest(2_400m, 3, new DateOnly(2026, 12, 1)), CancellationToken.None);
+            .Approve(f.AdvanceId, new AdvanceApproveRequest(2_400m, 3, start), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
         var adv = await db.SalaryAdvances.SingleAsync();
-        Assert.Equal("Active", adv.Status);
+        Assert.Equal("Approved", adv.Status);
         Assert.Equal(2_400m, adv.ApprovedAmount);
         Assert.Equal(3, adv.Installments);
         Assert.Equal(800m, adv.InstallmentAmount);
-        Assert.Equal(2_400m, adv.OutstandingBalance);
+        Assert.Equal(0m, adv.OutstandingBalance);
+        Assert.Equal(start, adv.RepaymentStartDate);
 
         Assert.Equal(3, await db.AdvanceInstallments.CountAsync());
-        Assert.NotEmpty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == f.AdvanceId).ToListAsync());
+        Assert.Empty(await db.FinanceGlEntries.Where(x => x.SourceEntityId == f.AdvanceId).ToListAsync());
 
         var approval = Assert.Single(await db.AdvanceApprovals.ToListAsync());
         Assert.Equal("Approved", approval.Status);
@@ -319,7 +327,7 @@ public class ApprovalDecisionCharacterisationTests
     }
 
     [Fact]
-    public async Task Advances_Approve_MakerChecker_RefusesWithAPlainStringBadRequest()
+    public async Task Advances_Approve_MakerChecker_RefusesWithACodedBadRequest()
     {
         await using var db = CreateDb();
         var requester = Guid.NewGuid();
@@ -329,7 +337,7 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(1_000m, 1, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Maker-checker control: requester cannot approve their own salary advance.", bad.Value as string);
+        Assert.Equal("Maker-checker control: requester cannot approve their own salary advance.", Msg(bad.Value));
         Assert.Equal("Pending", (await db.SalaryAdvances.SingleAsync()).Status);
     }
 
@@ -362,7 +370,7 @@ public class ApprovalDecisionCharacterisationTests
             .Approve(f.AdvanceId, new AdvanceApproveRequest(500m, 1, null), CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(approve);
-        Assert.Equal("Active", (await db.SalaryAdvances.SingleAsync()).Status);
+        Assert.Equal("Approved", (await db.SalaryAdvances.SingleAsync()).Status);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -610,10 +618,19 @@ public class ApprovalDecisionCharacterisationTests
         ZayraDbContext db, string status, Guid? createdBy = null, bool lockedByPayroll = false)
     {
         var tenantId = Guid.NewGuid();
+        // Approval checks that the employee is serving, so the advance pays an active employee.
+        var employee = new Employee
+        {
+            TenantId = tenantId, EmployeeCode = "SARA-001", FullName = "Sara Ahmed", Status = EmployeeStatuses.Active,
+            JoiningDate = DateTime.UtcNow.AddYears(-2),
+        };
+        db.Employees.Add(employee);
+        await db.SaveChangesAsync();
         var advance = new SalaryAdvance
         {
             TenantId = tenantId,
-            EmployeeId = Guid.NewGuid(),
+            EmployeeId = employee.PublicId,
+            EmployeeIntId = employee.Id,
             EmployeeName = "Sara Ahmed",
             AdvanceNumber = "ADV-2026-00001",
             RequestedAmount = 2_400m,
@@ -679,6 +696,10 @@ public class ApprovalDecisionCharacterisationTests
         await db.SaveChangesAsync();
         return new OfferFixture(tenantId, offer.Id, applicationId, approval.Id, approverUserId);
     }
+
+    /// <summary>The English sentence of a coded refusal body ({ error, message, messageAr }).</summary>
+    private static string? Msg(object? body) =>
+        body is null ? null : System.Text.Json.JsonSerializer.SerializeToElement(body).GetProperty("message").GetString();
 
     private static ZayraDbContext CreateDb()
         => new(new DbContextOptionsBuilder<ZayraDbContext>()

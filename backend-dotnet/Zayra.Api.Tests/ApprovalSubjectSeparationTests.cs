@@ -174,10 +174,14 @@ public class ApprovalSubjectSeparationTests
             .Approve(advance.Id, new AdvanceApproveRequest(2_400m, 3, null), CancellationToken.None);
 
         var bad = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Equal("Segregation of duties: you cannot approve a salary advance paid to you.", bad.Value as string);
+        Assert.Equal("Segregation of duties: you cannot approve a salary advance paid to you.", Msg(bad.Value));
         Assert.Equal("Pending", (await db.SalaryAdvances.SingleAsync()).Status);
         Assert.Empty(await db.FinanceGlEntries.ToListAsync());
     }
+
+    /// <summary>The English sentence of a coded refusal body ({ error, message, messageAr }).</summary>
+    private static string? Msg(object? body) =>
+        body is null ? null : System.Text.Json.JsonSerializer.SerializeToElement(body).GetProperty("message").GetString();
 
     // ── fixture ──────────────────────────────────────────────────────────────────
 

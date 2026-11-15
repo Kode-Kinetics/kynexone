@@ -181,6 +181,41 @@ public sealed class PayrollVoidService
         if (run is null) return VoidRunResult.NotFound;
         if (run.Status == "Voided") return VoidRunResult.AlreadyVoided;
 
+        // ── 0. LOCK ORDER: run rows, then the debts ────────────────────────────────────────────────
+        // The void gives loan and advance instalments back (step 8), so it takes their finance.loan / finance.advance locks
+        // in the one order every writer of those balances uses: run rows first, then the debt locks, loans then advances,
+        // each ascending (FinanceDecisionSerializer.AcquireDebtLocksAsync). A cascade voids a whole chain: its run rows are
+        // locked here, parents first as the recursion below would, and then the UNION of the chain's debt locks at once.
+        // Letting each run of the chain take its own debt locks inside the recursion would acquire them in several batches
+        // out of key order, which could deadlock against a payroll Process (all its debt locks at once, ascending) or a
+        // settle on a child run's batch (batch lock, child run row, then debt locks).
+        if (cascadedFromRunId is null)
+        {
+            var chain = new List<Guid> { runId };
+            if (opts.Cascade)
+            {
+                var parents = new List<Guid> { runId };
+                while (parents.Count > 0)
+                {
+                    var level = parents;
+                    var children = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
+                        .Where(r => r.TenantId == tenantId && r.ParentRunId != null && level.Contains(r.ParentRunId.Value) && r.Status != "Voided")
+                        .OrderBy(r => r.Id).Select(r => r.Id).ToListAsync(ct);
+                    children.RemoveAll(chain.Contains);
+                    chain.AddRange(children);
+                    parents = children;
+                }
+            }
+            var debts = await _db.PayrollRunConsumptions.AsNoTracking()
+                .Where(c => c.TenantId == tenantId && chain.Contains(c.PayrollRunId)
+                         && (c.ArtifactType == PayrollConsumptionArtifacts.Loan || c.ArtifactType == PayrollConsumptionArtifacts.Advance))
+                .Select(c => new { c.ArtifactType, c.ArtifactId })
+                .ToListAsync(ct);
+            await Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId,
+                debts.Where(d => d.ArtifactType == PayrollConsumptionArtifacts.Loan).Select(d => d.ArtifactId),
+                debts.Where(d => d.ArtifactType == PayrollConsumptionArtifacts.Advance).Select(d => d.ArtifactId), ct);
+        }
+
         var today  = DateOnly.FromDateTime(DateTime.UtcNow);
         // POD-B2 (M7) — the ACCRUAL contra must land in the SAME period the accrual did. For a non-Regular
         // run that booked into a later open month (GlPostingPeriod), reversing into its pay period instead
@@ -875,6 +910,18 @@ public sealed class PayrollVoidService
     {
         var result = new OperationalRestoreResult();
 
+        // ── Consumption witnesses, and the debt locks FIRST ───────────────────────────────────────
+        // The loans and advances this run collected from are locked before anything else this method writes, in the one order
+        // every writer of those balances uses (FinanceDecisionSerializer.AcquireDebtLocksAsync): the caller already holds the run
+        // row, and the debt locks come next. A void of a cascade took the whole chain's locks already (re-taking one is a no-op).
+        var witnesses = await _db.PayrollRunConsumptions
+            .Where(c => c.TenantId == tenantId && c.PayrollRunId == runId)
+            .ToListAsync(ct);
+        result.WitnessRowCount = witnesses.Count;
+        await Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId,
+            witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.Loan).Select(w => w.ArtifactId),
+            witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.Advance).Select(w => w.ArtifactId), ct);
+
         // ── Payment batch + records + SIF filing ───────────────────────────────────────────────────
         // Pre-B3 this only flipped Paid → Accepted, which is a false statement twice over: "Accepted"
         // asserts the bank accepted an instruction for a run that no longer exists, and it left the batch
@@ -914,12 +961,6 @@ public sealed class PayrollVoidService
         result.ArrearsLinesReleased = await _db.PayrollArrearsLines
             .Where(a => a.TenantId == tenantId && a.PayrollRunId == runId && a.Status == PayrollArrearsStatuses.Settled)
             .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, PayrollArrearsStatuses.Voided), ct);
-
-        // ── Consumption witnesses ─────────────────────────────────────────────────────────────────
-        var witnesses = await _db.PayrollRunConsumptions
-            .Where(c => c.TenantId == tenantId && c.PayrollRunId == runId)
-            .ToListAsync(ct);
-        result.WitnessRowCount = witnesses.Count;
 
         // POD-C3 — restore any 1420 receivable this run NETTED. The witness carries the prior
         // RecoveredAmount, so a recovery is undone exactly, using B3's own replay machinery. Without
@@ -994,8 +1035,9 @@ public sealed class PayrollVoidService
         // ── POD-C1 — RESTORE LEAVE ENCASHED DAYS ─────────────────────────────────────────────────
         // Distinct from LeaveImpact, which restores an unpaid-leave DEDUCTION on a completely different
         // entity. The witness carries the PRIOR Encashed value, so the balance is put back exactly rather
-        // than by subtracting a re-derived number — the same rule as the loan restore below, and for the
-        // same reason: a balance edited between the run and the void must not corrupt the restore.
+        // than by subtracting a re-derived number: a balance edited between the run and the void must not
+        // corrupt the restore. (Loans and advances below are given back by the amount taken instead: other
+        // writers legitimately move those balances between the run and the void, under the debt locks.)
         var encashmentWitnesses = witnesses
             .Where(w => w.ArtifactType == PayrollConsumptionArtifacts.LeaveEncashment).ToList();
         if (encashmentWitnesses.Count > 0)
@@ -1016,10 +1058,16 @@ public sealed class PayrollVoidService
             }
         }
 
-        // Loans / advances — restore the RECORDED prior values, never a recomputed installment. The
-        // aggregate LOAN_EMI deduction on the slip cannot attribute an employee's two loans, and
+        // Loans / advances — give back EXACTLY what this run took (the witness Amount), on top of the balance
+        // as it stands NOW, never a recomputed instalment and never the balance recorded when the run ran.
+        // The aggregate LOAN_EMI deduction on the slip cannot attribute an employee's two loans, and
         // `Math.Min(InstallmentAmount, OutstandingBalance)` re-evaluated today would silently apply a
-        // schedule change made after the run.
+        // schedule change made after the run. Restoring the recorded prior balance was wrong the other way:
+        // a later run's instalment, a cash settlement or a leaver settlement's move to 1420 since this run
+        // changed the balance, and putting the old figure back undid all of them (the employee repaid twice,
+        // and 1400/1410 no longer tied to the sub-ledger). The rows are read under the finance.loan /
+        // finance.advance locks taken at the top of this method, so no concurrent writer can slip between
+        // this read and the commit. The item is open again only if it now owes something.
         var loanIds = witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.Loan)
                                .Select(w => w.ArtifactId).ToList();
         if (loanIds.Count > 0)
@@ -1029,29 +1077,16 @@ public sealed class PayrollVoidService
             // id-set predicate re-applies exact tenant scope and never reads another tenant.
             var loans = await _db.EmployeeLoans.IgnoreQueryFilters()
                 .Where(l => l.TenantId == tenantId && loanIds.Contains(l.Id)).ToListAsync(ct);
-            // Cash receipts recorded AFTER the run took its instalment (an early settlement of the remainder). The prior
-            // balances predate them, so restoring those alone would put the settled amount back as owed and collect it twice.
-            var cashAfterRun = await ScopedBypass.TenantWide(_db.LoanRepayments, tenantId,
-                    "A void is a system correction that must see every company's receipts for the loans the run consumed.")
-                .Where(r => loanIds.Contains(r.LoanId) && !r.IsReversed)
-                .Select(r => new { r.LoanId, r.Amount, r.CreatedAtUtc })
-                .ToListAsync(ct);
             foreach (var w in witnesses.Where(w => w.ArtifactType == PayrollConsumptionArtifacts.Loan))
             {
                 var loan = loans.FirstOrDefault(l => l.Id == w.ArtifactId);
                 if (loan is null) continue;
-                if (w.PriorOutstandingBalance.HasValue) loan.OutstandingBalance = w.PriorOutstandingBalance.Value;
-                if (w.PriorTotalRepaid.HasValue)        loan.TotalRepaid        = w.PriorTotalRepaid.Value;
-                // Restore the RECORDED prior status, not an assumed "Closed → Active": a loan that was
-                // already being settled, or was Overdue, must come back as what it was.
-                if (!string.IsNullOrWhiteSpace(w.PriorStatus)) loan.Status = w.PriorStatus!;
-                var settledByCash = cashAfterRun.Where(r => r.LoanId == loan.Id && r.CreatedAtUtc > w.CreatedAtUtc).Sum(r => r.Amount);
-                if (settledByCash > 0m)
-                {
-                    loan.OutstandingBalance = Math.Max(0m, loan.OutstandingBalance - settledByCash);
-                    loan.TotalRepaid += settledByCash;
-                    if (loan.OutstandingBalance <= 0m) loan.Status = "Settled";
-                }
+                loan.OutstandingBalance = Math.Round(loan.OutstandingBalance + w.Amount, 2);
+                loan.TotalRepaid        = Math.Round(loan.TotalRepaid - w.Amount, 2);
+                // A loan this run (or a later payment) closed comes back as what it was before the run — Active, or Overdue —
+                // and only while it owes something. A loan still open keeps its current status.
+                if (loan.OutstandingBalance > 0m && loan.Status is "Closed" or "Settled")
+                    loan.Status = w.PriorStatus is "Active" or "Overdue" ? w.PriorStatus! : "Active";
                 result.LoansRestored++;
                 result.LoanRestoreDetail.Add(new
                 {
@@ -1072,9 +1107,11 @@ public sealed class PayrollVoidService
             {
                 var adv = advances.FirstOrDefault(a => a.Id == w.ArtifactId);
                 if (adv is null) continue;
-                if (w.PriorOutstandingBalance.HasValue) adv.OutstandingBalance = w.PriorOutstandingBalance.Value;
-                if (w.PriorTotalRepaid.HasValue)        adv.TotalRepaid        = w.PriorTotalRepaid.Value;
-                if (!string.IsNullOrWhiteSpace(w.PriorStatus)) adv.Status = w.PriorStatus!;
+                // Same rule as loans: give back this run's instalment on top of the balance as it stands now.
+                adv.OutstandingBalance = Math.Round(adv.OutstandingBalance + w.Amount, 2);
+                adv.TotalRepaid        = Math.Round(adv.TotalRepaid - w.Amount, 2);
+                if (adv.OutstandingBalance > 0m && adv.Status is "Closed" or "Settled")
+                    adv.Status = "Active";
                 result.AdvancesRestored++;
                 result.LoanRestoreDetail.Add(new
                 {

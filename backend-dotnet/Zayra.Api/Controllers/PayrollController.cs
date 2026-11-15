@@ -60,6 +60,7 @@ public partial class PayrollController : ControllerBase
     private readonly PayrollRunProcessor _processor;
     // Null means the registry defaults (both approval relaxations OFF).
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
@@ -69,9 +70,12 @@ public partial class PayrollController : ControllerBase
         IProrationPolicyResolver? prorationPolicy = null,
         Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null,
         Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null,
-        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
     {
         _policySettings = policySettings;
+        // Read only for the Saudi bank-export activation (the operator's kill switch and allow-list); DI always supplies it.
+        _configuration = configuration;
         _db = db;
         _scopeService = scopeService;
         _http = http;
@@ -4256,7 +4260,9 @@ public partial class PayrollController : ControllerBase
         // and post its cash journal after a concurrent void of the run had committed. Waiting on the run row
         // makes the two strictly sequential: this settle then reads the committed status (Voided -> refused
         // below) and the void, if it comes second, sees the settlement and asks for its cash election.
-        // Lock order is batch advisory lock -> run row; no path takes the run row and then a batch lock.
+        // Lock order is batch advisory lock -> run row -> the leaver's loan, then advance, locks (FinalizePaidSettlementsAsync);
+        // no path takes the run row and then a batch lock, and none takes a debt lock and then a run row or a batch lock.
+        // The full order is documented on FinanceDecisionSerializer.AcquireDebtLocksAsync.
         var run = await _db.PayrollRuns.TagWith(Zayra.Api.Infrastructure.Jobs.RowLockingInterceptor.ForUpdateTag)
             .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == batch.PayrollRunId, cancellationToken);
         if (run is null) return NotFound();
@@ -4307,8 +4313,6 @@ public partial class PayrollController : ControllerBase
         var netLines = accrualLines
             .Where(l => string.IsNullOrEmpty(l.DebitAccount) && l.Description == PayrollGlDescriptions.NetPayable)
             .ToList();
-        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
-            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
 
         // The bank batch settles ONLY what it carries. Employees left out of it (cash/cheque, zero net)
         // stay open in 2100 until their payment outside the bank file is recorded against this batch —
@@ -4318,6 +4322,21 @@ public partial class PayrollController : ControllerBase
         var batchEmployeeIds = (await _db.PayrollPaymentRecords.AsNoTracking()
             .Where(x => x.TenantId == tenantId && x.PaymentBatchId == batch.Id && x.Status != PaymentRecordStatuses.Cancelled)
             .Select(x => x.EmployeeId).ToListAsync(cancellationToken)).ToHashSet();
+        // A leaver whose final pay was all taken by the debts the run recovered has a ZERO net: the batch leaves them out because
+        // there is nothing to send, and no payment record is made for zero. Their settlement is nonetheless complete once the
+        // run's payment is settled — nothing else will ever pay it — so it is completed here with everyone the batch paid, and
+        // what the final pay could not cover moves to 1420 like any other leaver's. (Before, they were never seen: the
+        // settlement stayed Disbursing and the leftover stayed on an ex-employee's loan or advance.)
+        var zeroNetEmployeeIds = batchExclusions
+            .Where(x => x.ReasonCode == Infrastructure.Payroll.PaymentBatchExclusions.ZeroNetCode)
+            .Select(x => x.EmployeeId).ToHashSet();
+        var completedEmployeeIds = batchEmployeeIds.Union(zeroNetEmployeeIds).ToHashSet();
+
+        // A run whose payslips are ALL zero still has nothing to settle here (no cash journal to post); completing its zero-net
+        // leavers' settlements without a paying batch is an open decision, not made in this change.
+        if (netLines.Count == 0 || netLines.Sum(l => l.Amount) <= 0m)
+            return BadRequest(new { error = "nothing_to_settle", message = "No open net-pay liability was found on the accrual to settle." });
+
         var toSettle = netLines.Sum(l => l.Amount) - excludedOpen;
         if (toSettle <= 0m)
             return BadRequest(new { error = "nothing_to_settle", message = "Every payslip in this run is paid outside the bank file; record those payments instead of settling the batch." });
@@ -4358,7 +4377,7 @@ public partial class PayrollController : ControllerBase
         // This is the ONLY place a settlement reaches Paid, and it is the ordinary net-pay settlement
         // journal that does it — no second payment mechanism anywhere in the pipeline.
         var settlementResult = await FinalizePaidSettlementsAsync(
-            tenantId, run, batch, glCtx, settlementPeriod, batchEmployeeIds, cancellationToken);
+            tenantId, run, batch, glCtx, settlementPeriod, completedEmployeeIds, cancellationToken);
 
         await PayrollAudit("payroll.batch.settled", "PayrollPaymentBatch", batch.Id.ToString(),
             new
@@ -4691,10 +4710,36 @@ public partial class PayrollController : ControllerBase
         var advanceReceivableAccount = GlAccountResolver.AccountLabel("ADVANCE_RECEIVABLE", glCtx);
         var employeeReceivableAccount = GlAccountResolver.AccountLabel(
             GlControlAccounts.EmployeeReceivableDriver, glCtx);
+        // The leaver's loans and advances are LOCKED before their balances are read. A payroll run that includes the same leaver
+        // collects an instalment from them under the same finance.loan / finance.advance locks; without these, one write overwrote
+        // the other and the employee repaid through payroll while the whole residual also moved to 1420. The unlocked look only
+        // names the candidates; the tracked rows are read after the locks, so the residual is what payroll left, and payroll, if
+        // it comes second, sees the debt already moved. Lock order: the caller holds the batch-payment lock (and, for the bank
+        // settlement, the run row); the debt locks come next, loans then advances, each ascending (AcquireDebtLocksAsync).
+        System.Linq.Expressions.Expression<Func<EmployeeLoan, bool>> openLoan = l =>
+            l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
+            && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0;
+        // Only the paying company's advances, as for loans: an advance another legal entity paid (an employee who moved) is that
+        // entity's 1410 receivable; this company's settlement neither reclassifies nor reports it. A legacy advance with no company
+        // is still dispositioned here, as payroll still collects it (PayrollRunProcessor, collectableAdvance).
+        System.Linq.Expressions.Expression<Func<SalaryAdvance, bool>> openAdvance = a =>
+            a.TenantId == tenantId && (a.CompanyId == run.CompanyId || a.CompanyId == null) && a.Status == "Active" && a.EmployeeIntId != null
+            && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0;
+        var loanIds = await _db.EmployeeLoans.AsNoTracking().Where(openLoan).Select(l => l.Id).ToListAsync(ct);
+        var advanceIds = await _db.SalaryAdvances.AsNoTracking().Where(openAdvance).Select(a => a.Id).ToListAsync(ct);
+        await Infrastructure.Finance.FinanceDecisionSerializer.AcquireDebtLocksAsync(_db, tenantId, loanIds, advanceIds, ct);
+        var loans = loanIds.Count == 0 ? new List<EmployeeLoan>() : await _db.EmployeeLoans
+            .Where(openLoan).Where(l => loanIds.Contains(l.Id))
+            .ToListAsync(ct);
+        var advances = advanceIds.Count == 0 ? new List<SalaryAdvance>() : await _db.SalaryAdvances
+            .Where(openAdvance).Where(a => advanceIds.Contains(a.Id))
+            .ToListAsync(ct);
+
         // AvailableForRelief, never the raw scoped balance: the unattributed (CompanyId == null) pool sits
         // inside every company's view while the relief posted against it is stamped with the relieving
         // company, so two entities reading the same pool would each relieve it in full and drive the ASSET
-        // into credit. Same clamp POD-B1b's loan remittance uses.
+        // into credit. Same clamp POD-B1b's loan remittance uses. Read after the debt locks, so a cash
+        // settlement of one of these loans that committed first is already in the balance.
         var loanBalance    = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, loanReceivableAccount, ct);
         var advanceBalance = await GlControlAccounts.LoadAsync(_db, tenantId, run.CompanyId, advanceReceivableAccount, ct);
         var reclassBudget = new Dictionary<string, decimal>(StringComparer.Ordinal)
@@ -4702,15 +4747,6 @@ public partial class PayrollController : ControllerBase
             [loanReceivableAccount]    = Math.Max(0m, loanBalance.AvailableForRelief),
             [advanceReceivableAccount] = Math.Max(0m, advanceBalance.AvailableForRelief),
         };
-
-        var loans = await _db.EmployeeLoans
-            .Where(l => l.TenantId == tenantId && l.CompanyId == run.CompanyId && !l.IsDeleted && l.CollectionStatus != "OnHold" && l.RepaymentMethod == "PayrollDeduction" && (l.Status == "Active" || l.Status == "Overdue") && l.EmployeeIntId != null
-                     && employeeIds.Contains(l.EmployeeIntId.Value) && l.OutstandingBalance > 0)
-            .ToListAsync(ct);
-        var advances = await _db.SalaryAdvances
-            .Where(a => a.TenantId == tenantId && a.Status == "Active" && a.EmployeeIntId != null
-                     && employeeIds.Contains(a.EmployeeIntId.Value) && a.OutstandingBalance > 0)
-            .ToListAsync(ct);
 
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
         decimal totalReclassed = 0m, totalUnbooked = 0m;
@@ -4792,8 +4828,13 @@ public partial class PayrollController : ControllerBase
             {
                 var moved = Reclass(s, advanceReceivableAccount, Math.Round(a.OutstandingBalance, 2), "advance");
                 if (moved <= 0m) continue;
+                var before = a.OutstandingBalance;
                 a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
                 if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+                // On the advance's own trail, with the amount: the advance audit counts it (a move to 1420 is not a repayment, so
+                // TotalRepaid is unchanged and only this row explains the drop in the balance).
+                _db.AdvanceAuditLogs.Add(Infrastructure.Payroll.AdvanceResidualAudit.Entry(
+                    tenantId, a, moved, before, s.Id, run.Id, batch.Id, GetUserId(), GetUserName()));
             }
 
             await PayrollAudit("payroll.final_settlement.paid", "EmployeeFinalSettlement", s.Id.ToString(), new
@@ -5534,6 +5575,12 @@ public partial class PayrollController : ControllerBase
                                 where r.TenantId == tenantId && batchRunIds.Contains(r.Id)
                                       && (c.CountryCode == "SA" || c.CountryCode == "SAU" || c.CountryCode == "KSA")
                                 select r.Id).ToListAsync(cancellationToken)).ToHashSet();
+        // Where the Saudi bank export applies, ITS file is the bank file and the generated XML above is only the internal
+        // register (which still sets WpsStatus to Generated). The run pipeline needs both facts per batch, so they ride on
+        // this page: which runs' companies have the export open (one set-based read), and which batches have an export
+        // (instructionMakers, already read above for the whole page).
+        var bankExportRunIds = await Infrastructure.Payroll.SaudiBankExports.SaudiBankExportActivation.OpenRunIdsAsync(
+            _db, _configuration, tenantId, batchRunIds, cancellationToken);
         var d4Records = d4BatchIds.Count == 0
             ? new List<PayrollPaymentRecord>()
             : await _db.PayrollPaymentRecords.AsNoTracking()
@@ -5584,6 +5631,8 @@ public partial class PayrollController : ControllerBase
                 generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
                     ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
                     : "WPS/SIF file (not verified with any gateway)",
+                bankFileAvailable = bankExportRunIds.Contains(b.PayrollRunId),
+                bankFileGenerated = hasInstruction,
             };
         }).ToList());
     }
