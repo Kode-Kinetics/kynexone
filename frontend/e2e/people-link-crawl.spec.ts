@@ -442,7 +442,7 @@ test.describe('People crawl: employee workspace /people/[employeeId]', () => {
       }
     };
     await probe('main', '/people', /^$/);
-    await probe('main.employee-workspace', '/people/1000?returnTo=%2Fpeople', /^$/);
+    await probe('.employee-workspace', '/people/1000?returnTo=%2Fpeople', /^$/);
     expect(dead, `dead buttons: ${dead.join(' ; ')}`).toEqual([]);
   });
 });
