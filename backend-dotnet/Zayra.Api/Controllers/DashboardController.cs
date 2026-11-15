@@ -1143,10 +1143,10 @@ public class DashboardController : ControllerBase
     {
         var today = await Zayra.Api.Infrastructure.Common.TenantClock.TodayForAsync(_db, tenantId, ct);
         var firstMonth = new DateOnly(today.Year, today.Month, 1).AddMonths(-(months - 1));
-        var exitStatuses = ExitEmployeeStatuses.Exit;
+        var exitStatuses = ExitEmployeeStatuses.ExitLower;   // lower case: matched with ToLower() so a legacy lower-case status still counts as an exit
 
         var peopleQuery = _db.Employees
-            .Where(e => e.TenantId == tenantId && (e.Status == "Active" || exitStatuses.Contains(e.Status)));
+            .Where(e => e.TenantId == tenantId && (e.Status == "Active" || exitStatuses.Contains(e.Status.ToLower())));
         if (ids is not null) peopleQuery = peopleQuery.Where(e => ids.Contains(e.Id));
         var people = await peopleQuery
             .Select(e => new { e.Id, e.JoiningDate, e.Status })
@@ -1154,7 +1154,7 @@ public class DashboardController : ControllerBase
 
         var offboardings = _db.EmployeeOffboardings
             .Where(o => o.TenantId == tenantId && o.Status != "Cancelled" && o.LastWorkingDay > MinPlausibleExpiry
-                && _db.Employees.Any(e => e.Id == o.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)));
+                && _db.Employees.Any(e => e.Id == o.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status.ToLower())));
         if (ids is not null) offboardings = offboardings.Where(o => ids.Contains(o.EmployeeId));
         var offboardingExit = await offboardings
             .GroupBy(o => o.EmployeeId)
@@ -1162,8 +1162,8 @@ public class DashboardController : ControllerBase
             .ToDictionaryAsync(x => x.EmployeeId, x => x.Exit, ct);
 
         var histories = _db.EmployeeStatusHistories
-            .Where(h => h.TenantId == tenantId && exitStatuses.Contains(h.NewStatus) && h.EffectiveDate > MinPlausibleExpiry
-                && _db.Employees.Any(e => e.Id == h.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status)));
+            .Where(h => h.TenantId == tenantId && exitStatuses.Contains(h.NewStatus.ToLower()) && h.EffectiveDate > MinPlausibleExpiry
+                && _db.Employees.Any(e => e.Id == h.EmployeeId && e.TenantId == tenantId && exitStatuses.Contains(e.Status.ToLower())));
         if (ids is not null) histories = histories.Where(h => ids.Contains(h.EmployeeId));
         var historyExit = await histories
             .GroupBy(h => h.EmployeeId)

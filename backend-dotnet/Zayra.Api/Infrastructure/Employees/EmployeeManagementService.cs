@@ -81,7 +81,7 @@ public class EmployeeManagementService : IEmployeeManagementService
         var accessFilter = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.ParseFilter(access);
         // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
         var includeFormer = Zayra.Api.Infrastructure.Auth.EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
-        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(x.Status)));
+        var query = _db.Employees.AsNoTracking().Where(x => x.TenantId == tenantId && !x.IsDeleted && (includeFormer || !ExitEmployeeStatuses.ExitLower.Contains(x.Status.ToLower())));
         query = EmployeeSearch.Apply(query, _db.Branches, search, includeSensitive);
         if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
         if (!string.IsNullOrWhiteSpace(department)) query = query.Where(x => x.Department == department);

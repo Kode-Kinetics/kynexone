@@ -118,7 +118,7 @@ public class EmployeesController : ControllerBase
         var accessFilter = EmployeeAccessStates.ParseFilter(access);
         // "Access stopped" also lists former employees whose access ended (EmployeeAccessStates.IncludesFormerEmployees).
         var includeFormer = EmployeeAccessStates.IncludesFormerEmployees(accessFilter);
-        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && (includeFormer || !ExitEmployeeStatuses.Exit.Contains(e.Status)));
+        var query = _db.Employees.Where(e => e.TenantId == tenantId && !e.IsDeleted && (includeFormer || !ExitEmployeeStatuses.ExitLower.Contains(e.Status.ToLower())));
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
@@ -168,7 +168,7 @@ public class EmployeesController : ControllerBase
         // IgnoreQueryFilters() is REQUIRED to see IsDeleted rows; tenant + data-scope + operational
         // company scope are therefore re-applied here by hand. These are the tenant-isolation boundary.
         var query = _db.Employees.AsNoTracking().IgnoreQueryFilters().Where(e => e.TenantId == tenantId);
-        query = query.Where(e => e.IsDeleted || ExitEmployeeStatuses.Exit.Contains(e.Status));
+        query = query.Where(e => e.IsDeleted || ExitEmployeeStatuses.ExitLower.Contains(e.Status.ToLower()));
         if (scope.OrganizationCompanyIds is { } scopeCompanies)
         {
             // An organisation-wide caller bounded to some companies: AllowedEmployeeIds was materialised from LIVE employees only, so
@@ -210,7 +210,7 @@ public class EmployeesController : ControllerBase
         // Exit date sources: terminate writes an EmployeeStatusHistory row; offboarding writes the
         // status DIRECTLY (no history row) but stamps EmployeeOffboarding.CompletedAtUtc / LastWorkingDay.
         var statusExit = await _db.EmployeeStatusHistories.AsNoTracking()
-            .Where(h => h.TenantId == tenantId && ids.Contains(h.EmployeeId) && ExitEmployeeStatuses.Exit.Contains(h.NewStatus))
+            .Where(h => h.TenantId == tenantId && ids.Contains(h.EmployeeId) && ExitEmployeeStatuses.ExitLower.Contains(h.NewStatus.ToLower()))
             .GroupBy(h => h.EmployeeId)
             .Select(g => new { EmployeeId = g.Key, When = g.Max(h => h.CreatedAtUtc) })
             .ToDictionaryAsync(x => x.EmployeeId, x => (DateTime?)x.When, cancellationToken);
@@ -4955,7 +4955,7 @@ public class EmployeesController : ControllerBase
     private async Task<List<int>> ResolveTargetIdsAsync(BulkActionRequest req, bool idsMode, Guid tenantId, DataScope scope, EntityScopeContext entityScope, CancellationToken ct)
     {
         var query = _db.Employees.AsNoTracking()
-            .Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(e.Status));
+            .Where(e => e.TenantId == tenantId && !e.IsDeleted && !ExitEmployeeStatuses.ExitLower.Contains(e.Status.ToLower()));
         if (!scope.IsUnrestricted)
             query = query.Where(e => scope.AllowedEmployeeIds!.Contains(e.Id));
         if (!entityScope.IsGroupLevel)
@@ -6166,7 +6166,7 @@ public class EmployeesController : ControllerBase
         var normalized = (query ?? string.Empty).ToLowerInvariant();
         // Same base predicate as the People list: tenant, not soft-deleted, not a former employee.
         var employees = _db.Employees.AsNoTracking()
-            .Where(x => x.TenantId == tenantId && !x.IsDeleted && !ExitEmployeeStatuses.Exit.Contains(x.Status));
+            .Where(x => x.TenantId == tenantId && !x.IsDeleted && !ExitEmployeeStatuses.ExitLower.Contains(x.Status.ToLower()));
         // DATA SCOPE: a Manager/Supervisor sees their reporting tree, an unscoped caller sees nothing.
         if (!scope.IsUnrestricted)
             employees = employees.Where(x => scope.AllowedEmployeeIds!.Contains(x.Id));
@@ -7723,6 +7723,12 @@ public static class ExitEmployeeStatuses
         EmployeeStatuses.Archived, EmployeeStatuses.Offboarded, EmployeeStatuses.Terminated, EmployeeStatuses.Exited,
         "Retired", "Deceased"
     };
+
+    /// <summary><see cref="Exit"/> in lower case, for matching IN SQL: <c>ExitLower.Contains(x.Status.ToLower())</c> translates to
+    /// <c>lower(status) = ANY(...)</c>, so a legacy row stored as "retired" or "TERMINATED" (written before statuses were canonicalised) is
+    /// still a former employee. Matching <see cref="Exit"/> directly in SQL is case-sensitive and silently drops those rows from the
+    /// archive and puts them back in the current list.</summary>
+    public static readonly string[] ExitLower = Exit.Select(x => x.ToLowerInvariant()).ToArray();
 
     /// <summary>Statuses that, when reached via a direct status change, deactivate the WPS footprint.
     /// Excludes Offboarded — notice-period staff may still be paid and a rescind must stay clean.</summary>
