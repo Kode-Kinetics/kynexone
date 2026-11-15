@@ -115,6 +115,27 @@ public class OpeningBalanceLoanImportPostgresTests(PostgresFixture fixture)
         Assert.Single(await OpeningJournalAsync(b, loan.Id));
     }
 
+    /// <summary>A carried-in loan can be settled early in cash like any other: its opening journal is its booking on 1400, so the
+    /// receipt credits the 1400 the opening journal debited and the loan sub-ledger still ties out with the ledger.</summary>
+    [Fact]
+    public async Task ACarriedInLoan_CanBeSettledEarlyInCash_And1400StillTiesOut()
+    {
+        var (b, cutover, number) = await SeedAsync();
+        await CommitAsync(b, LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), withCutover: true);
+        var loan = await LoanAsync(b, number);
+
+        await using (var db = fixture.CreateDb())
+        {
+            var settled = await Kit.Loans(db, b.Tenant).RecordRepayment(loan.Id,
+                new Zayra.Api.Controllers.Finance.RecordLoanRepaymentRequest(300m, b.Today, "CASH-EARLY-1", "BankTransfer"), CancellationToken.None);
+            Assert.True(settled is OkObjectResult, Describe(settled));
+        }
+
+        loan = await LoanAsync(b, number);
+        Assert.Equal((0m, "Settled"), (loan.OutstandingBalance, loan.Status));
+        Assert.Equal((100m, 100m), await TieOutAsync(b));
+    }
+
     private async Task ProcessThisMonthAsync(Kit.Borrower b)
     {
         var runId = await Kit.SeedDraftRunAsync(fixture, b, b.Today.Year, b.Today.Month);

@@ -27,6 +27,31 @@ public partial class LoansController
         return original;
     }
 
+    /// <summary>
+    /// The journal that booked this loan on the receivable, for a cash receipt to credit: its disbursement, or, for a loan the
+    /// opening-balance import carried in, its opening journal (DR 1400 / CR 3900). The same rule as LoanReliefEligibility: a
+    /// carried-in loan is booked by its opening journal net of any restatement, so the receipt may credit the receivable only up to
+    /// what that journal put there (the AvailableForRelief and amount checks of the caller still apply on top).
+    /// </summary>
+    private async Task<FinanceGlEntry?> BookingJournalAsync(EmployeeLoan loan, CancellationToken ct)
+    {
+        if (await OriginalDisbursementAsync(loan, ct) is { } disbursement) return disbursement;
+        if (!await _db.OpeningBalanceOrigins.AsNoTracking().AnyAsync(o => o.TenantId == loan.TenantId
+                && o.EntityType == OpeningBalanceEntityTypes.Loan && o.EntityId == loan.Id, ct)) return null;
+        var opening = await _db.FinanceGlEntries.AsNoTracking()
+            .Where(x => x.TenantId == loan.TenantId && x.SourceModule == "Loan" && x.SourceEntityId == loan.Id
+                     && x.EventType == GlEventTypes.OpeningBalance && !x.IsReversed)
+            .OrderBy(x => x.CreatedAtUtc).ToListAsync(ct);
+        if (opening.Count == 0) return null;
+        // The first line is the carried-in balance (DR receivable); later lines are restatements of it.
+        var first = opening[0];
+        if (!JournalMatchesLoan(first, loan)) return null;
+        var receivable = first.DebitAccount;
+        var net = opening.Sum(x => x.DebitAccount == receivable ? x.Amount : x.CreditAccount == receivable ? -x.Amount : 0m);
+        if (net <= 0m || opening.Any(x => x.DebitAccount != receivable && x.CreditAccount != receivable)) return null;
+        return first;
+    }
+
     private async Task<FinanceGlEntry?> OriginalReceiptAsync(EmployeeLoan loan, LoanRepayment receipt, CancellationToken ct)
     {
         // Legacy loan-level repayment source IDs do not distinguish repeated identical receipts.
