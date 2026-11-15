@@ -4822,7 +4822,11 @@ public partial class PayrollController : ControllerBase
                 if (moved <= 0m) continue;
                 l.OutstandingBalance = Math.Round(l.OutstandingBalance - moved, 2);
                 l.TotalRepaid = Math.Round(l.TotalRepaid, 2);   // unchanged: a reclass is not a repayment
-                if (l.OutstandingBalance <= 0m) l.Status = "Closed";
+                if (l.OutstandingBalance <= 0m)
+                {
+                    l.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, run, s.EmployeeId, loanId: l.Id, advanceId: null, ct);
+                }
             }
             foreach (var a in advances.Where(a => a.EmployeeIntId == s.EmployeeId && a.OutstandingBalance > 0m))
             {
@@ -4830,7 +4834,11 @@ public partial class PayrollController : ControllerBase
                 if (moved <= 0m) continue;
                 var before = a.OutstandingBalance;
                 a.OutstandingBalance = Math.Round(a.OutstandingBalance - moved, 2);
-                if (a.OutstandingBalance <= 0m) a.Status = "Closed";
+                if (a.OutstandingBalance <= 0m)
+                {
+                    a.Status = "Closed";
+                    await CloseRemainingInstalmentsAsync(tenantId, run, s.EmployeeId, loanId: null, advanceId: a.Id, ct);
+                }
                 // On the advance's own trail, with the amount: the advance audit counts it (a move to 1420 is not a repayment, so
                 // TotalRepaid is unchanged and only this row explains the drop in the balance).
                 _db.AdvanceAuditLogs.Add(Infrastructure.Payroll.AdvanceResidualAudit.Entry(
@@ -4848,6 +4856,39 @@ public partial class PayrollController : ControllerBase
         return new PaidSettlementResult(
             settlements.Select(s => s.Id).ToList(),
             Math.Round(totalReclassed, 2), Math.Round(totalUnbooked, 2));
+    }
+
+    /// <summary>
+    /// A loan or advance a final settlement closed by moving its leftover to 1420 keeps no Pending instalments: they are closed as
+    /// Cancelled, the status a schedule closed without payment already takes (a cancelled advance's or loan's rows), because nothing
+    /// was paid on them and the debt now lives in the 1420 sub-ledger. Marking them Paid would claim a repayment the deduction
+    /// statement would then show. Each row is witnessed on the settlement's run, so a void of that run restores it exactly
+    /// (PayrollVoidService replays the instalment witnesses).
+    /// </summary>
+    private async Task CloseRemainingInstalmentsAsync(Guid tenantId, PayrollRun run, int employeeId, Guid? loanId, Guid? advanceId, CancellationToken ct)
+    {
+        if (loanId is Guid lid)
+            foreach (var row in await _db.LoanInstallments.Where(i => i.TenantId == tenantId && i.LoanId == lid && i.Status == "Pending").ToListAsync(ct))
+            {
+                _db.PayrollRunConsumptions.Add(new PayrollRunConsumption
+                {
+                    TenantId = tenantId, CompanyId = run.CompanyId, PayrollRunId = run.Id, ArtifactType = PayrollConsumptionArtifacts.LoanInstallment,
+                    ArtifactId = row.Id, EmployeeId = employeeId, Amount = 0m, PriorStatus = row.Status, PriorAmountPaid = row.AmountPaid,
+                    PriorPayrollRunId = row.PayrollRunId,
+                });
+                row.Status = "Cancelled";
+            }
+        if (advanceId is Guid aid)
+            foreach (var row in await _db.AdvanceInstallments.Where(i => i.TenantId == tenantId && i.AdvanceId == aid && i.Status == "Pending").ToListAsync(ct))
+            {
+                _db.PayrollRunConsumptions.Add(new PayrollRunConsumption
+                {
+                    TenantId = tenantId, CompanyId = run.CompanyId, PayrollRunId = run.Id, ArtifactType = PayrollConsumptionArtifacts.AdvanceInstallment,
+                    ArtifactId = row.Id, EmployeeId = employeeId, Amount = 0m, PriorStatus = row.Status, PriorAmountPaid = row.AmountPaid,
+                    PriorPayrollRunId = row.PayrollRunId,
+                });
+                row.Status = AdvanceStatuses.Cancelled;
+            }
     }
 
     /// <summary>

@@ -750,6 +750,30 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         }
     }
 
+    /// <summary>
+    /// When a settlement moves a leaver's leftover advance to 1420 and so closes the advance, its instalments still pending are
+    /// closed too, as Cancelled (the status a schedule closed without payment already takes: nothing was paid on them, the debt now
+    /// lives in 1420), each witnessed on the settlement run so a void of that run puts them back exactly.
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_LeftoverMovedTo1420_ClosesTheRemainingInstalments_AndAVoidRestoresThem()
+    {
+        var w = await SeedAsync(costing: false);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, w.Start);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, w.Start);
+        var s = await SeedApprovedSettlementAsync(w, gross: 500m);
+
+        await PayOrCompleteAsync(w, s.RunId, s.SettlementId, paidBatch: false);
+
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 500m);
+        (await AdvanceInstallmentsAsync(advId)).Should().HaveCount(3).And.NotContain(i => i.Status == "Pending");
+        (await AdvanceInstallmentsAsync(advId)).Should().OnlyContain(i => i.Status == "Cancelled" && i.AmountPaid == 0m);
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        (await AdvanceInstallmentsAsync(advId)).Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null);
+    }
+
     private async Task PayOrCompleteAsync(World w, Guid runId, Guid settlementId, bool paidBatch)
     {
         await ProcessAsync(w, runId);
