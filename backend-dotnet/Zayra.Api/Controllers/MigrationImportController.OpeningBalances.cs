@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Application.Common;
 using Zayra.Api.Models;
@@ -706,16 +708,49 @@ public sealed partial class MigrationImportController
         return created ? "created" : "updated";
     }
 
-    /// <summary>The roles that may import rows posting an opening journal (loans, advances). The import itself is open to
-    /// Admin and HR Manager; a row that books a receivable against opening balance equity is a finance posting.</summary>
-    private static readonly string[] OpeningJournalRoles = { "Admin", "Finance", "Finance Controller", "Finance Approver" };
+    /// <summary>The permission that lets the finance roles import the opening-balance debt sections (loans, advances).</summary>
+    internal const string OpeningBalanceImportPermission = "finance.opening_balances.import";
+    private static readonly string[] FinanceImportRoles = { "Finance", "Finance Controller", "Finance Approver" };
+    private static readonly string[] DebtSections = { "loans", "advances" };
+
+    private bool HasPermissionClaim(string permission) =>
+        User.Claims.Any(c => c.Type == "permission" && string.Equals(c.Value, permission, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Who the import has always admitted for every section: Admin, a holder of employees.bulk_import, or an HR Manager
+    /// (who holds it in every seeded bundle) unless they reach the import only as a finance importer.</summary>
+    private bool IsImporter =>
+        User.IsInRole("Admin") || HasPermissionClaim("employees.bulk_import")
+        || (User.IsInRole("HR Manager") && !HasPermissionClaim(OpeningBalanceImportPermission));
+
+    /// <summary>A finance importer: a finance role, or the opening-balance import permission.</summary>
+    private bool IsFinanceImporter => FinanceImportRoles.Any(User.IsInRole) || HasPermissionClaim(OpeningBalanceImportPermission);
+
+    /// <summary>
+    /// The package gate. An importer imports any section. A finance importer who is not also an importer imports the opening-balance
+    /// debt sections only (loans, advances); a package of theirs naming any other section is refused whole, before anything is
+    /// read, in both languages. Anyone else is forbidden.
+    /// </summary>
+    private ActionResult? ImportAccessRefusal(MigrationPackageRequest request)
+    {
+        if (IsImporter) return null;
+        if (!IsFinanceImporter) return Forbid();
+        var others = (request.Sections?.Keys ?? Enumerable.Empty<string>()).Where(k => !DebtSections.Contains(k, StringComparer.Ordinal)).ToList();
+        if (others.Count == 0) return null;
+        return StatusCode(StatusCodes.Status403Forbidden, new
+        {
+            error = "import_section_not_permitted",
+            message = $"Finance imports only the opening-balance loans and advances. These sections are imported by HR: {string.Join(", ", others)}. Nothing was imported.",
+            messageAr = $"تستورد المالية قروض وسلف الأرصدة الافتتاحية فقط. هذه الأقسام تستوردها الموارد البشرية: {string.Join(", ", others)}. لم يُستورد شيء.",
+            sections = others,
+        });
+    }
 
     private void RequireOpeningJournalRole()
     {
-        if (OpeningJournalRoles.Any(User.IsInRole)) return;
+        if (User.IsInRole("Admin") || IsFinanceImporter) return;
         throw new InvalidOperationException(
-            "[opening_balance_needs_finance] This row posts an opening balance to the general ledger, so it must be imported by Finance or an Admin. The package's other sections are not affected. " +
-            "/ يرحّل هذا السطر رصيدًا افتتاحيًا إلى دفتر الأستاذ العام، لذا يجب أن تستورده المالية أو مسؤول النظام. لا تتأثر الأقسام الأخرى في الحزمة.");
+            "[opening_balance_needs_finance] Loan and advance rows post an opening balance to the general ledger, so Finance (or an Admin) imports them; HR imports the rest of the package. " +
+            "/ ترحّل صفوف القروض والسلف رصيدًا افتتاحيًا إلى دفتر الأستاذ العام، لذا تستوردها المالية (أو مسؤول النظام)؛ وتستورد الموارد البشرية بقية الحزمة.");
     }
 
     /// <summary>

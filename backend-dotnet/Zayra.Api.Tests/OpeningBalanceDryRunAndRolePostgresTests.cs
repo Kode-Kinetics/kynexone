@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Zayra.Api.Models;
 using K = Zayra.Api.Tests.OpeningBalanceImportKit;
@@ -71,5 +72,36 @@ public class OpeningBalanceDryRunAndRolePostgresTests(PostgresFixture fixture)
         // An HR Manager who is also a Finance approver may.
         await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), roles: new[] { "HR Manager", "Finance Approver" });
         Assert.Single(await K.OpeningJournalAsync(fixture, b, (await K.LoanAsync(fixture, b, number)).Id));
+    }
+
+    /// <summary>Finance imports the opening-balance debt sections (loans, advances) and nothing else: a Finance user's package with
+    /// any other section is refused before anything is read, in both languages, and the endpoints that are not package imports
+    /// stay with HR and Admin.</summary>
+    [Fact]
+    public async Task FinanceImportsTheDebtSections_AndIsRefusedEveryOtherSection()
+    {
+        var (b, cutover, number) = await K.SeedAsync(fixture, "FN-LN");
+        await K.CommitAsync(fixture, b, "companyCutover", await K.CutoverCsvAsync(fixture, b));   // HR's part (Admin here)
+
+        await K.CommitAsync(fixture, b, "loans", K.LoanCsv(b, number, paid: 3, outstanding: 300m, cutover), roles: new[] { "Finance" });
+        Assert.Single(await K.OpeningJournalAsync(fixture, b, (await K.LoanAsync(fixture, b, number)).Id));
+        await K.CommitAsync(fixture, b, "advances", K.AdvanceCsv(b, $"FN-ADV-{Guid.NewGuid():N}"[..18], paid: 3, outstanding: 300m, cutover),
+            dryRun: true, roles: new[] { "Finance Controller" });
+
+        await using var db = fixture.CreateDb();
+        var controller = K.Migration(db, b.Tenant, "Finance Approver");
+        var sections = new Dictionary<string, string>
+        {
+            ["companyCutover"] = await K.CutoverCsvAsync(fixture, b),
+            ["loans"] = K.LoanCsv(b, $"FN-2-{Guid.NewGuid():N}"[..18], paid: 3, outstanding: 300m, cutover),
+        };
+        var refused = Assert.IsType<ObjectResult>((await controller.Commit(new Zayra.Api.Models.MigrationPackageRequest($"pkg-{Guid.NewGuid():N}", sections, false), default)).Result);
+        Assert.Equal(403, refused.StatusCode);
+        var body = System.Text.Json.JsonSerializer.Serialize(refused.Value);
+        Assert.Contains("import_section_not_permitted", body, StringComparison.Ordinal);
+        Assert.Contains("companyCutover", body, StringComparison.Ordinal);
+        Assert.Contains("messageAr", body, StringComparison.Ordinal);
+        Assert.IsType<ForbidResult>(K.Migration(db, b.Tenant, "Finance").Template());
+        Assert.IsType<ForbidResult>((await K.Migration(db, b.Tenant, "Finance").Get(Guid.NewGuid(), default)).Result);
     }
 }

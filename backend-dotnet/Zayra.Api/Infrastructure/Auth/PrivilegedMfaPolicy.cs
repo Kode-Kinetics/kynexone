@@ -125,6 +125,7 @@ public static class PrivilegedMfaPolicy
         ReportAccessPolicy.SensitivePermission, // employees.sensitive — salary, IBAN, identity fields
         "loans.write", "loans.approve", "loans.policy_manage",
         "finance.gl.manage", "finance.gl.export", "finance.gl.drivers.manage", "finance.gl.drivers.author_predicates", "finance.erp.confirm",
+        "finance.opening_balances.import", // posts opening journals to the receivables
         "finance.gl.period.reopen", // un-freezes closed books
         // Employee records and bulk changes.
         "employees.write", "employees.delete", "employees.approve", "employees.documents", "employees.templates", "onboarding.templates.manage",
