@@ -34,7 +34,7 @@ const SETTINGS = {
   organizationAddress2: 'Olaya', organizationAddress3: 'Building 10', companyName: 'Acme Arabia LLC', narrative: 'November payroll', batchType: 'PAYROLL', autoWpsUpload: false,
   nationalUnifiedNo: '', debitAccountIban: '',
 };
-const FORMATS = [{ id: 'anb-connect-csv-v1', name: 'ANB Connect payroll payment — header.csv + body.csv', bank: 'Arab National Bank (ANB)', channel: 'ANB Connect API channel; not corporate portal WPY',
+const FORMATS = [{ id: 'anb-connect-csv-v1', name: 'ANB Connect payroll payment — header.csv + body.csv', bank: 'Arab National Bank (ANB)', channel: 'ANB Connect API channel (payroll-payment). Not the ANB corporate-portal WPY upload.',
   sourceUrl: 'https://connect.anb.com.sa/apis/api/payroll-payment', reviewedOn: '2026-09-26', acceptanceStatus: 'specification-implemented; bank-acceptance-not-verified' }];
 
 type Opts = {
@@ -412,6 +412,65 @@ for (const locale of LOCALES) {
       expect(posts.filter(x => x.endsWith('/remit'))).toHaveLength(0);
       await d.getByRole('button', { name: locale === 'ar' ? 'إلغاء' : 'Cancel' }).click();
       expect(posts.filter(x => x.endsWith('/remit'))).toHaveLength(0);
+    });
+  });
+}
+
+// ── W7: names, and no English left in Arabic on these tabs ───────────────────────────────────────
+
+/** Latin words of four or more letters: what an Arabic reader would meet as English. Mock data (names, codes) and product/bank terms are not chrome. */
+const latinWords = (text: string) => (text.replace(/https?:\/\/\S+/g, ' ').replace(/[A-Za-z]+(?=EVT)|EVT2?-\d+/g, ' ').match(/[A-Za-z]{4,}/g) ?? []).filter(w => !/^(ANB|Connect|CSV|IBAN|SHA|SAR|Mudad|header|body|zip|REF|EVT|PAY|Acme|Arabia|Maha|Almutairi|Layla|Harbi|Fahad|Alharbi|Nora|Khalid|Alotaibi|Sara|Alzahrani|Omar|Aldosari|Huda|Alqahtani|Yousef|Alshehri|Employee|Number|Kody|Riyadh|Olaya|Building|Test|Account|Admin|BIC|SWIFT|WPS|MOL|Qiwa|GOSI|WPY|Arab|National|Bank|payroll|payment|instruction|file)$/i.test(w));
+
+for (const locale of LOCALES) {
+  test.describe(`W7: names and language (${locale})`, () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test('a record from an older server with no name shows the name the run knows, not Emp #id', async ({ page }) => {
+      const bare = RECORDS.map(({ employeeName: _n, employeeCode: _c, ...rest }) => rest);
+      const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 9, includedCount: 9, excludedCount: 0, notEligibleCount: 0,
+        included: RECORDS.map(r => ({ employeeId: r.employeeId, code: r.employeeCode, name: r.employeeName })), excluded: [], notEligible: [] };
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ records: bare, extra: p => (/\/population$/.test(p) ? population : undefined) }), waitMs: 2500 });
+      const row = page.getByRole('row', { name: /REF-1\b/ });
+      await expect(row).toContainText('Maha Almutairi', { timeout: 90_000 });
+      await expect(row).not.toContainText(/Emp #|#200/);
+    });
+
+    test('validation findings name the employee', async ({ page }) => {
+      const population = { runId: RUN_ID, runType: 'Regular', includesRecurringPay: true, populationMode: 'All', eligibleCount: 1, includedCount: 1, excludedCount: 0, notEligibleCount: 0,
+        included: [{ employeeId: 226, code: 'EVT2-0226', name: 'Layla Al-Harbi' }], excluded: [], notEligible: [] };
+      const finding = { id: 'v1', employeeId: 226, severity: 'Error', code: 'MISSING_IBAN', message: 'IBAN is missing', isResolved: false };
+      await boot(page, { locale, url: url('validation'), routes: bankHandler({ extra: p => (/\/population$/.test(p) ? population : /\/runs\/[^/]+\/validate$/.test(p) ? [finding] : undefined) }), waitMs: 2500 });
+      await expect(page.getByRole('tabpanel')).toContainText('Layla Al-Harbi', { timeout: 90_000 });
+      await expect(page.getByRole('tabpanel')).not.toContainText('Emp #226');
+    });
+
+    test('the Bank / WPS and Payment Tracking tabs leave no English in Arabic', async ({ page }) => {
+      test.skip(locale === 'en', 'Arabic only');
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler({ batches: [BATCH] }), waitMs: 3000 });
+      await expect(page.getByRole('cell', { name: /Maha Almutairi/ })).toBeVisible({ timeout: 90_000 });
+      await page.waitForTimeout(1500);
+      const bank = await page.locator('main').innerText();
+      expect(latinWords(bank), `Bank / WPS: ${[...new Set(latinWords(bank))].join(', ')}`).toEqual([]);
+      await page.locator('#payroll-tab-payment-tracking').click();
+      await expect(page.getByRole('tabpanel').getByRole('table')).toBeVisible({ timeout: 30_000 });
+      const tracking = await page.getByRole('tabpanel').innerText();
+      expect(latinWords(tracking), `Payment Tracking: ${[...new Set(latinWords(tracking))].join(', ')}`).toEqual([]);
+    });
+
+    test('Payment Tracking on an accepted batch leaves no English in Arabic', async ({ page }) => {
+      test.skip(locale === 'en', 'Arabic only');
+      await boot(page, { locale, url: url('payment-tracking'), routes: bankHandler({ batches: [{ ...ACCEPTED, paymentExclusions: [{ employeeId: 204, employeeCode: 'EVT2-0005', amount: 500, reasonCode: 'CASH', reason: 'Paid in cash', canRecordOutsidePayment: true }], excludedTotal: 500 }] }), waitMs: 3000 });
+      await expect(page.getByRole('tabpanel').getByRole('table')).toBeVisible({ timeout: 90_000 });
+      const text = await page.getByRole('tabpanel').innerText();
+      expect(latinWords(text.replace(/Paid in cash/g, '')), `Payment Tracking (accepted): ${[...new Set(latinWords(text))].join(', ')}`).toEqual([]);
+    });
+
+    test('page header, tab groups and pipeline are Arabic', async ({ page }) => {
+      test.skip(locale === 'en', 'Arabic only');
+      await boot(page, { locale, url: url('bank-wps'), routes: bankHandler(), waitMs: 3000 });
+      await expect(page.getByTestId('payroll-tabs-anchor')).toBeVisible({ timeout: 90_000 });
+      const head = await page.locator('main').first().evaluate(el => (el.querySelector('h1')?.parentElement?.innerText ?? '') + ' ' + (document.querySelector('[data-testid="payroll-tabs-anchor"]') as HTMLElement).innerText);
+      expect(latinWords(head), head).toEqual([]);
     });
   });
 }

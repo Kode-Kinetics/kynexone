@@ -22,11 +22,11 @@ import {
   type PayrollRunPopulation, type PayrollValidationOverrideReport, type AuditIntegrityReport,
 } from '../api/payroll';
 import { identityAuditApi } from '../api/identity';
-import { formatCalendarDate } from '../lib/calendarDate';
 import { requestFailureReason } from '../lib/requestFailure';
 import { commonPayrollCurrency, resolvePayrollRunCurrency, totalsByCurrency, type CompaniesLoadState } from '../lib/payrollCurrency';
 import { usePayrollCompanies } from '../hooks/usePayrollCompanies';
-import { employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { employeeLabel, employeeLabelsFromRecords } from '../lib/employeeLabel';
+import { useRunEmployeeLabels } from '../hooks/useRunEmployeeLabels';
 import { RunSelectOptions } from '../components/payroll/RunSelectOptions';
 import { filterPayrollInsightsForReadiness, paymentReadinessHeadline, prerequisiteLabel, type PaymentPrerequisites, type PayrollReadinessWithPrerequisites } from '../lib/payrollPrerequisites';
 import client, { apiErrorReason, notifyApiError } from '../api/client';
@@ -91,8 +91,10 @@ import { languageLabel } from '../lib/displayLabels';
 import { wpsStatusNote } from '../lib/payrollBatchDisplay';
 // ── Shared helpers ──────────────────────────────────────────────────────────────
 
-function fmtDate(s: string | null | undefined) {
-  return formatCalendarDate(s, 'en-US');
+/** A date or timestamp in the viewer's language and calendar (month names follow the language; digits stay Latin). */
+function useFmtDate() {
+  const fx = useFormat();
+  return useCallback((s: string | null | undefined) => (s ? fx.date(s) : '—'), [fx]);
 }
 
 /** An amount with its currency in the viewer's language (Arabic shows the Arabic currency symbol and a bidi-safe order). */
@@ -1187,6 +1189,7 @@ function EmployeeSalaryTab() {
   const [showAssign, setShowAssign] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const t = useT();
+  const fmtDate = useFmtDate();
 
   const load = () => {
     setLoading(true);
@@ -1769,6 +1772,7 @@ function ChainVerifier({ title, description, allowedRoles, verify }: {
   verify: () => Promise<AuditIntegrityReport>;
 }) {
   const t = useT();
+  const fmtDate = useFmtDate();
   const [report, setReport] = useState<AuditIntegrityReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -1870,6 +1874,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
   const [error, setError] = useState('');
   const [overridableCodes, setOverridableCodes] = useState<string[]>([]);
   const [overriding, setOverriding] = useState<PayrollValidationResult | null>(null);
+  const names = useRunEmployeeLabels(runId);
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
@@ -1986,7 +1991,7 @@ function ValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: string;
                 <div className="flex items-center gap-2">
                   <StatusBadge status={r.severity} />
                   <span className="font-mono text-xs text-slate-500">{r.code}</span>
-                  {r.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: r.employeeId })}</span>}
+                  {r.employeeId && <span className="text-xs text-slate-400"><bdi>{employeeLabel(r.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))}</bdi></span>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{r.message}</p>
               </div>
@@ -2234,6 +2239,7 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
 }) {
   const { hasPermission } = useAuth();
   const t = useT();
+  const fmtDate = useFmtDate();
   const monthLabel = useMonthLabel();
   const [reconNotice, setReconNotice] = useState('');
   const [runs, setRuns] = useState<PayrollRun[]>([]);
@@ -2255,6 +2261,13 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
   const [ackExcluded, setAckExcluded] = useState(false);
   const [ackOverridden, setAckOverridden] = useState(false);
   const [ackOutside, setAckOutside] = useState(false);
+  // The cash/cheque list names the person (the run's population is already loaded for the gate) and falls back to the number.
+  const employeeName = (id: number, ibanOnFile: boolean) => {
+    const member = population ? [...population.included, ...population.excluded, ...population.notEligible].find(m => m.employeeId === id) : undefined;
+    const known = member?.name ? (member.code ? `${member.code} · ${member.name}` : member.name) : '';
+    if (known) return ibanOnFile ? t('{name} — a valid IBAN is on file', { name: known }) : known;
+    return ibanOnFile ? t('Employee #{id} — a valid IBAN is on file', { id }) : t('Employee #{id}', { id });
+  };
 
   const refreshRuns = () =>
     payrollApi.listAllRuns().then(setRuns).catch(() => {});
@@ -2465,13 +2478,13 @@ function ApprovalsTab({ selectedRunId, onRunChange, isAdmin, isFinance, isHROrPa
                 <AcknowledgementPanel
                   tone="amber"
                   title={t('{outsideCount} employee(s) are paid by cash or cheque, outside the bank/WPS file', { outsideCount })}
-                  blurb={`They will be left out of the bank file and their wages must be paid and recorded separately. ${overrideReport.mudadNote ?? ''}`}
+                  blurb={`${t('They will be left out of the bank file and their wages must be paid and recorded separately.')} ${overrideReport.mudadNote ?? ''}`}
                   checked={ackOutside}
                   onChange={setAckOutside}
                   confirmLabel={t('I have reviewed the list and confirm exactly {outsideCount} employee(s) are paid outside the bank file.', { outsideCount })}
                   rows={outsideList.map(o => ({
                     key: String(o.employeeId),
-                    primary: o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN' ? t('Employee #{id} — a valid IBAN is on file', { id: o.employeeId }) : t('Employee #{id}', { id: o.employeeId }),
+                    primary: employeeName(o.employeeId, o.code === 'PAID_OUTSIDE_BANK_FILE_WITH_IBAN'),
                     secondary: o.message,
                   }))}
                 />
@@ -2744,6 +2757,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
   const [reloadKey, setReloadKey] = useState(0);
   // Where the open batch is in check -> create -> download, reported by the bank-file gate and panel for the step strip above.
   const [flow, setFlow] = useState<BankFlowProgress | null>(null);
+  const runNames = useRunEmployeeLabels(runId);
 
   useEffect(() => {
     setRunsState({ status: 'loading' });
@@ -2986,8 +3000,8 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
                         {r.employeeName
-                          ? <>{r.employeeName}{r.employeeCode && <span className="ms-1.5 text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
-                          : t('Emp #{id}', { id: r.employeeId })}
+                          ? <><bdi>{r.employeeName}</bdi>{r.employeeCode && <span className="ms-1.5 text-xs font-normal text-slate-400"><bdi>{r.employeeCode}</bdi></span>}</>
+                          : runNames[r.employeeId] ? <bdi>{runNames[r.employeeId]}</bdi> : t('Emp #{id}', { id: r.employeeId })}
                       </td>
                       <td className="px-4 py-2 font-semibold text-slate-700 dark:text-slate-300">{r.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{r.iban || <span className="text-rose-500">{t('Missing IBAN')}</span>}</td>
@@ -3010,7 +3024,7 @@ function BankWpsTab({ selectedRunId, onRunChange, onNavigate }: { selectedRunId?
           </span>
         </div>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
+      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} onProgress={setFlow} suggestedReference={suggestedBatchReference(selectedBatch.batchNumber, selectedRun)} employeeIds={records.map(r => r.employeeId)} employeeLabels={{ ...runNames, ...employeeLabelsFromRecords(records) }} /></div>}
     </div>
   );
 }
@@ -3185,7 +3199,7 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
       if (action === 'reverse-settle') await payrollApi.reversePaymentSettlement(batch.id, form.reason);
       if (action === 'remit') await payrollApi.remitRun(batch.payrollRunId, { group: form.group, reference: form.reference || undefined, remitDate: form.date || undefined });
       if (action === 'reverse-remit') {
-        if (form.group === 'All') throw new Error('Choose GOSI, TAX, or LOAN before reversing a remittance.');
+        if (form.group === 'All') throw new Error(t('Choose GOSI, TAX, or LOAN before reversing a remittance.'));
         await payrollApi.reverseRemittance(batch.payrollRunId, { group: form.group, reason: form.reason });
       }
       loadBatches();
@@ -3562,6 +3576,7 @@ function AIValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: strin
   const [runId, setRunId] = useSharedRun(selectedRunId, onRunChange);
   const [result, setResult] = useState<{ advisoryOnly: boolean; warnings: PayrollValidationResult[]; summary: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const names = useRunEmployeeLabels(runId);
 
   useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
 
@@ -3620,7 +3635,7 @@ function AIValidationTab({ selectedRunId, onRunChange }: { selectedRunId?: strin
                       <div className="flex items-center gap-2">
                         <StatusBadge status={w.severity} />
                         <span className="font-mono text-xs text-slate-500">{w.code}</span>
-                        {w.employeeId && <span className="text-xs text-slate-400">{t('Emp #{employeeId}', { employeeId: w.employeeId })}</span>}
+                        {w.employeeId && <span className="text-xs text-slate-400"><bdi>{employeeLabel(w.employeeId, names, id => t('Emp #{employeeId}', { employeeId: id }))}</bdi></span>}
                       </div>
                       <p className="mt-1 text-sm text-slate-700 dark:text-slate-300">{w.message}</p>
                     </div>

@@ -928,7 +928,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
           {actionError && (
             <Alert tone="error">
               <p role="alert">{actionError.message}</p>
-              {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} onFocusField={focusField} />}
+              {actionError.issues && actionError.issues.length > 0 && <IssueList issues={actionError.issues} c={c} labels={employeeLabels} onFocusField={focusField} />}
             </Alert>
           )}
 
@@ -947,7 +947,7 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
                     {' '}({c.runNet}: <span className="tabular-nums" dir="ltr">{fmtMoney(result.runNetTotal ?? 0, result.currency)}</span>)
                   </p>
                 )}
-                {result.errors.length > 0 && <IssueList issues={result.errors} c={c} onFocusField={focusField} />}
+                {result.errors.length > 0 && <IssueList issues={result.errors} c={c} labels={employeeLabels} onFocusField={focusField} />}
               </Alert>
               {(result.exclusions?.length ?? 0) > 0 && (
                 <Alert tone="warn">
@@ -1008,14 +1008,14 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onP
 
 const FOCUSABLE_FIELDS = new Set<string>([...SETTINGS_KEYS, 'batchReference', 'paymentDate']);
 
-function IssueList({ issues, c, onFocusField }: { issues: SaudiBankExportIssue[]; c: Copy; onFocusField: (k: string) => void }) {
+function IssueList({ issues, c, labels, onFocusField }: { issues: SaudiBankExportIssue[]; c: Copy; labels?: Record<number, string>; onFocusField: (k: string) => void }) {
   // Every blocker is rendered (scrollable, never truncated): the file is all-or-nothing.
   return (
     <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto pe-1 text-xs">
       {issues.map((i, idx) => (
         <li key={`${i.code}-${i.employeeId ?? ''}-${i.field ?? ''}-${idx}`} className="rounded-md bg-white/60 px-2 py-1.5 dark:bg-black/10">
           <span className="font-mono text-[11px] opacity-80">{i.code}</span>
-          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium">{c.employee(String(i.employeeId))}</span>}
+          {i.employeeId != null && i.employeeId !== '' && <span className="ms-2 font-medium"><bdi>{labels?.[Number(i.employeeId)] || c.employee(String(i.employeeId))}</bdi></span>}
           {i.field && <span className="ms-2 opacity-80">{c.field}: <span className="font-mono" dir="ltr">{i.field}</span></span>}
           <span className="block">{i.message}</span>
           {i.field && FOCUSABLE_FIELDS.has(i.field) && (

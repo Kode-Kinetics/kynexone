@@ -154,7 +154,7 @@
   "totals": {
     "hardcoded": 2446,
     "rawStatus": 19,
-    "locale": 165,
+    "locale": 164,
     "icons": 0,
     "files": 111
   },
@@ -541,7 +541,7 @@
       "locale": 2
     },
     "src/views/PayrollPage.tsx": {
-      "locale": 30
+      "locale": 29
     },
     "src/views/PublicCredentialPage.tsx": {
       "hardcoded": 11
