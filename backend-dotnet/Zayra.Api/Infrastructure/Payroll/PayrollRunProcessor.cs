@@ -880,10 +880,17 @@ public sealed class PayrollRunProcessor
                 var req = reqs.FirstOrDefault(r => r.Id == imp.LeaveRequestId);
                 if (req is null) continue;
                 var pr = prorationByEmp[imp.EmployeeId];
-                var reqDays = req.EndDate.DayNumber - req.StartDate.DayNumber + 1;
+                // The dates this impact charges. An approved unpaid leave that crosses a month end is written as one
+                // impact per month (LeaveService), each carrying only its month's days: that slice covers the request's
+                // days inside THIS period, and scaling it by the whole request's span would cut it a second time. A
+                // row written before slicing carries the whole request (Days == TotalDays) and keeps the whole span.
+                var isMonthSlice = (req.StartDate < periodStart || req.EndDate > periodEnd) && imp.Days < req.TotalDays;
+                var rangeStart = isMonthSlice && req.StartDate < periodStart ? periodStart : req.StartDate;
+                var rangeEnd   = isMonthSlice && req.EndDate > periodEnd ? periodEnd : req.EndDate;
+                var reqDays = rangeEnd.DayNumber - rangeStart.DayNumber + 1;
                 if (reqDays <= 0) continue;
-                var from = req.StartDate > pr.PaidFrom ? req.StartDate : pr.PaidFrom;
-                var to   = req.EndDate   < pr.PaidTo   ? req.EndDate   : pr.PaidTo;
+                var from = rangeStart > pr.PaidFrom ? rangeStart : pr.PaidFrom;
+                var to   = rangeEnd   < pr.PaidTo   ? rangeEnd   : pr.PaidTo;
                 var inside = to < from ? 0 : to.DayNumber - from.DayNumber + 1;
                 var scale = Math.Round(inside / (decimal)reqDays, 6);
                 if (scale >= 1m) continue;

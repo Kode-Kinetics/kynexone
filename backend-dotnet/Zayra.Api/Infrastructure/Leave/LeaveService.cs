@@ -1358,31 +1358,38 @@ public partial class LeaveService : ILeaveService
         if (leaveType is not null && !leaveType.IsPaid && request.TotalDays > 0
             && !await _db.LeavePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.LeaveRequestId == requestId, ct))
         {
-            var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
-                .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive && s.EffectiveDate <= request.StartDate)
-                .OrderByDescending(s => s.EffectiveDate)
-                .FirstOrDefaultAsync(ct);
-            // POD-C3 (MF-6c) — the divisor is READ, not hard-coded. This literal 30 was a THIRD day-rate
-            // in the product (alongside lop.monthly_day_divisor and the proration basis): a tenant on a
-            // 26-day divisor charged unpaid leave at basic/30 here and unpaid absence at basic/26 in
-            // payroll, on the same payslip. With proration in play the mismatch can drive net negative.
-            // Resolution order mirrors the payroll run exactly: the tenant/platform StatutoryRule for the
-            // employee's company country, falling back to 30 — so nothing changes for a tenant that never
-            // configured one. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
-            var basic = salary?.BasicSalary ?? 0m;
-            var lopDivisor = await ResolveLopDayDivisorAsync(tenantId, request.EmployeeId, request.StartDate, ct);
-            var amount = Math.Round(basic / lopDivisor * request.TotalDays, 2);
-            _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+            // A day's pay belongs to the month the day falls in: a leave that crosses a month end is charged to EACH
+            // month it covers, one impact per month (25 Jan - 5 Feb is 5 days on January's payslip and 5 on February's,
+            // not 10 on January's). Each month's days are the same deductible days the request already counts (they sum
+            // to TotalDays), priced at that month's own salary and divisor and rounded on their own.
+            foreach (var slice in await UnpaidLeaveMonthSlicesAsync(tenantId, request, ct))
             {
-                TenantId = tenantId,
-                LeaveRequestId = requestId,
-                EmployeeId = request.EmployeeId,
-                PayPeriod = $"{request.StartDate.Year}-{request.StartDate.Month:00}",
-                ImpactType = "Leave Deduction (Unpaid)",
-                Days = request.TotalDays,
-                Amount = amount,
-                Status = "Pending",
-            });
+                var salary = await _db.EmployeeSalaryStructures.AsNoTracking()
+                    .Where(s => s.TenantId == tenantId && s.EmployeeId == request.EmployeeId && s.IsActive && s.EffectiveDate <= slice.From)
+                    .OrderByDescending(s => s.EffectiveDate)
+                    .FirstOrDefaultAsync(ct);
+                // POD-C3 (MF-6c) — the divisor is READ, not hard-coded. This literal 30 was a THIRD day-rate
+                // in the product (alongside lop.monthly_day_divisor and the proration basis): a tenant on a
+                // 26-day divisor charged unpaid leave at basic/30 here and unpaid absence at basic/26 in
+                // payroll, on the same payslip. With proration in play the mismatch can drive net negative.
+                // Resolution order mirrors the payroll run exactly: the tenant/platform StatutoryRule for the
+                // employee's company country, falling back to 30 — so nothing changes for a tenant that never
+                // configured one. Resolved for the slice's own month. [FLAG-COMPLIANCE: confirm divisor per jurisdiction before filing.]
+                var basic = salary?.BasicSalary ?? 0m;
+                var lopDivisor = await ResolveLopDayDivisorAsync(tenantId, request.EmployeeId, slice.From, ct);
+                var amount = Math.Round(basic / lopDivisor * slice.Days, 2);
+                _db.LeavePayrollImpacts.Add(new LeavePayrollImpact
+                {
+                    TenantId = tenantId,
+                    LeaveRequestId = requestId,
+                    EmployeeId = request.EmployeeId,
+                    PayPeriod = $"{slice.From.Year}-{slice.From.Month:00}",
+                    ImpactType = "Leave Deduction (Unpaid)",
+                    Days = slice.Days,
+                    Amount = amount,
+                    Status = "Pending",
+                });
+            }
         }
         else if (leaveType is not null && leaveType.IsPaid && request.TotalDays > 0
             && !await _db.LeavePayrollImpacts.AnyAsync(x => x.TenantId == tenantId && x.LeaveRequestId == requestId, ct))
@@ -2249,6 +2256,36 @@ public partial class LeaveService : ILeaveService
         }
 
         await _db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>One calendar month of an unpaid leave: its first day in that month and its deductible days there.</summary>
+    internal readonly record struct UnpaidLeaveMonthSlice(DateOnly From, decimal Days);
+
+    /// <summary>
+    /// Splits an approved unpaid leave into calendar-month slices for payroll. A single-date request (half day, hourly)
+    /// and a request inside one month are one slice carrying the request's own TotalDays, exactly as before. Otherwise each
+    /// month's days are counted with the same working-day rules the request was counted with; if those do not add up to
+    /// TotalDays exactly (they always should), the request is kept as one slice rather than charge a different number of days.
+    /// </summary>
+    private async Task<List<UnpaidLeaveMonthSlice>> UnpaidLeaveMonthSlicesAsync(Guid tenantId, LeaveRequest request, CancellationToken ct)
+    {
+        var whole = new List<UnpaidLeaveMonthSlice> { new(request.StartDate, request.TotalDays) };
+        var sameMonth = request.StartDate.Year == request.EndDate.Year && request.StartDate.Month == request.EndDate.Month;
+        if (sameMonth || request.StartDate == request.EndDate
+            || request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase)
+            || request.DayType.Equals("Hourly", StringComparison.OrdinalIgnoreCase))
+            return whole;
+
+        var slices = new List<UnpaidLeaveMonthSlice>();
+        for (var monthStart = new DateOnly(request.StartDate.Year, request.StartDate.Month, 1); monthStart <= request.EndDate; monthStart = monthStart.AddMonths(1))
+        {
+            var from = request.StartDate > monthStart ? request.StartDate : monthStart;
+            var monthEnd = monthStart.AddMonths(1).AddDays(-1);
+            var to = request.EndDate < monthEnd ? request.EndDate : monthEnd;
+            var days = await CalculateWorkingDaysAsync(tenantId, from, to, request.PolicyId, request.CompanyId, ct);
+            if (days > 0) slices.Add(new UnpaidLeaveMonthSlice(from, days));
+        }
+        return slices.Count > 0 && slices.Sum(x => x.Days) == request.TotalDays ? slices : whole;
     }
 
     private async Task<List<LeaveYearSegment>> CalculateYearSegmentsAsync(

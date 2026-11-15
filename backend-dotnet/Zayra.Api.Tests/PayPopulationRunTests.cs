@@ -542,6 +542,41 @@ public class PayPopulationRunTests
         bridge.Ties.Should().BeTrue();
     }
 
+
+    // ══ Section 2 (R5b) — a month slice of an unpaid leave is not scaled a second time ═══════════════
+
+    [Fact]
+    public async Task AMonthSliceOfUnpaidLeave_IsScaledOnlyByItsOwnDaysInsideTheEmploymentWindow()
+    {
+        var (db, conn) = NewDb();
+        await using var _ = conn; await using var __ = db;
+        var co = await SeedCompany(db, Guid.NewGuid());
+        await AddEmployee(db, co, "Active");
+        var e = await AddEmployee(db, co, "Resigned");
+        await AddOffboarding(db, co, e, new DateOnly(2026, 2, 3));
+        var leave = new LeaveRequest
+        {
+            TenantId = co.TenantId, CompanyId = co.CompanyId, EmployeeId = e.Id, StartDate = new DateOnly(2026, 1, 25),
+            EndDate = new DateOnly(2026, 2, 5), TotalDays = 10m, Status = "Approved", DayType = "Full",
+        };
+        db.LeaveRequests.Add(leave);
+        db.LeavePayrollImpacts.AddRange(
+            new LeavePayrollImpact { TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-01",
+                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Processed" },
+            new LeavePayrollImpact { TenantId = co.TenantId, LeaveRequestId = leave.Id, EmployeeId = e.Id, PayPeriod = "2026-02",
+                ImpactType = "Leave Deduction (Unpaid)", Days = 5m, Amount = 1_000m, Status = "Pending" });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var feb = await AddRun(db, co, 2026, 2);
+
+        await Process(db, co, feb.Id);
+
+        var leaveDeduction = (await db.PayrollDeductions.AsNoTracking()
+            .Where(d => d.PayrollRunId == feb.Id && d.EmployeeId == e.Id && d.ComponentCode == "LEAVE").Select(d => d.Amount).ToListAsync()).Sum();
+        leaveDeduction.Should().Be(600m,
+            "the February slice covers 1-5 Feb and 1-3 Feb are inside employment: 3/5 of 1,000, not 3/12 of it (the whole request's days)");
+    }
+
     // ══ Section 4 — runs past Processed are never rewritten ═════════════════════════════════════════
 
     [Theory]
