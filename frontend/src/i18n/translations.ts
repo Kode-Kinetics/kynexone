@@ -41,6 +41,7 @@ import { glLeaveProvision } from './glLeaveProvision';
 import { belowMinimum } from './belowMinimum';
 import { loanBatchApprover } from './loanBatchApprover';
 import { deadEnds } from './deadEnds';
+import { leaveDocument } from './leaveDocument';
 import { recruitmentDemo } from './recruitmentDemo';
 import { setupPolicyConfiguration } from './setupPolicyConfiguration';
 import { policyIntelligence } from './policyIntelligence';
@@ -90,6 +91,7 @@ import { onboardingP2 } from './onboardingP2';
 import { onboardingP4 } from './onboardingP4';
 import { uxFoundation } from './uxFoundation';
 import { leaveOpenYear } from './leaveOpenYear';
+import { leaveRefusal } from './leaveRefusal';
 
 export type LocaleCode = 'en' | 'ar' | 'fr' | 'es';
 export type { MessageParams };
@@ -127,6 +129,7 @@ const en: Dict = {
   ...dailyD.en,
   ...dailyE.en,
   ...leaveOpenYear.en,
+  ...leaveRefusal.en,
   ...companyWizard.en,
   ...companyWizardRules.en,
   ...setupDataEntry.en,
@@ -1673,6 +1676,7 @@ const en: Dict = {
   ...belowMinimum.en,
   ...loanBatchApprover.en,
   ...deadEnds.en,
+  ...leaveDocument.en,
   ...recruitmentDemo.en,
   ...setupPolicyConfiguration.en,
   ...policyIntelligence.en,
@@ -1711,6 +1715,7 @@ const ar: Dict = {
   ...dailyD.ar,
   ...dailyE.ar,
   ...leaveOpenYear.ar,
+  ...leaveRefusal.ar,
   ...companyWizard.ar,
   ...companyWizardRules.ar,
   ...setupDataEntry.ar,
@@ -3248,6 +3253,7 @@ const ar: Dict = {
   ...belowMinimum.ar,
   ...loanBatchApprover.ar,
   ...deadEnds.ar,
+  ...leaveDocument.ar,
   ...recruitmentDemo.ar,
   ...setupPolicyConfiguration.ar,
   ...policyIntelligence.ar,

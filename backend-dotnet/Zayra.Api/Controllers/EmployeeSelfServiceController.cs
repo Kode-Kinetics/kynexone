@@ -862,7 +862,7 @@ public class EmployeeSelfServiceController : ControllerBase
         var employee = await OwnEmployee(tenantId, employeeId, cancellationToken);
         if (employee is null) return NotFound();
         var leaveType = await _db.LeaveTypes.AsNoTracking().FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == request.LeaveTypeId && x.IsActive, cancellationToken);
-        if (leaveType is null) return BadRequest(new { message = "Leave type is not available." });
+        if (leaveType is null) return BadRequest(new { code = Zayra.Api.Application.Leave.LeaveRefusalCodes.TypeUnavailable, message = "Leave type is not available." });
 
         // The supporting document is a reference to a document the CALLER owns (uploaded first via POST /api/ess/documents), resolved to its
         // storage key here: never a path from the browser, never a colleague's document. Leave types that need one were unreachable from here before.
@@ -873,7 +873,7 @@ public class EmployeeSelfServiceController : ControllerBase
                 .Where(x => x.TenantId == tenantId && x.EmployeeId == employeeId && x.Id == attachmentId && !x.IsDeleted
                     && !RestrictedEmployeeDocumentTypes.Lowered.Contains(x.DocumentType.Trim().ToLower()))
                 .Select(x => x.StorageUrl).FirstOrDefaultAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(key)) return BadRequest(new { message = "The attachment was not found among your documents." });
+            if (string.IsNullOrWhiteSpace(key)) return BadRequest(new { code = Zayra.Api.Application.Leave.LeaveRefusalCodes.AttachmentNotFound, message = "The attachment was not found among your documents." });
             attachmentPath = key;
         }
 
@@ -905,6 +905,8 @@ public class EmployeeSelfServiceController : ControllerBase
             leave = await _leaveService.SubmitRequestAsync(tenantId, leave, cancellationToken);
         }
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // A refusal by the leave rules: same 400 and English message, plus the stable code and its values for the clients to translate.
+        catch (Zayra.Api.Application.Leave.LeaveRefusedException ex) { return BadRequest(new { code = ex.Code, message = ex.Message, args = ex.Args }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });
@@ -913,7 +915,9 @@ public class EmployeeSelfServiceController : ControllerBase
         if (_notifications is not null)
             await Zayra.Api.Infrastructure.Leave.LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId, leave, cancellationToken);
         await EssAudit(tenantId, employeeId, "ess.leave.requested", "LeaveRequest", leave.Id.ToString(), cancellationToken);
-        return Created($"/api/ess/leave/request/{leave.Id}", leave);
+        // Through the one leave file-key rule, like every other leave response (the caller here is always the leave's own employee).
+        var ownScope = new DataScope { Level = DataScopeLevel.Own, CallerEmployeeId = employeeId, AllowedEmployeeIds = new[] { employeeId } };
+        return Created($"/api/ess/leave/request/{leave.Id}", Zayra.Api.Infrastructure.Leave.LeaveFileKeyExposure.ForReader(_db, leave, User, ownScope));
     }
 
     [HttpGet("documents")]

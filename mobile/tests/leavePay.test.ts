@@ -30,7 +30,7 @@ import {
   unitemisedAmount,
 } from '../src/features/payslips/payslipLogic.ts';
 import { mapLeaveBalanceRow, simpleBalanceEquation } from '../src/api/leaveBalanceMapper.ts';
-import { classifyLeavePayError, errorShape, pluralCategory } from '../src/features/leave/leavePayText.ts';
+import { classifyLeavePayError, errorShape, pluralCategory, refusalLeaveTypeName } from '../src/features/leave/leavePayText.ts';
 
 // ---- Leave ---------------------------------------------------------------------------------
 
@@ -227,6 +227,59 @@ test('server refusals map to plain-language message kinds', () => {
   assert.deepEqual(errorShape({ request: {}, message: 'Network Error' }), { network: true, message: 'Network Error' });
 });
 
+test('a leave refusal code maps to its own kind, ahead of any wording', () => {
+  const kind = (code: string, args?: Record<string, string>) => classifyLeavePayError({ status: 400, code, message: 'whatever', args });
+  assert.equal(kind('leave_overlap'), 'overlap');
+  assert.equal(kind('leave_notice_required', { days: '3' }), 'notice');
+  assert.equal(kind('leave_insufficient_balance', { year: '2026' }), 'insufficientBalance');
+  assert.equal(kind('leave_balance_not_set_up', { year: '2026', leaveType: 'Annual' }), 'balanceNotSetUp');
+  assert.equal(kind('leave_probation'), 'probation');
+  assert.equal(kind('leave_min_service_months', { months: '6' }), 'minService');
+  assert.equal(kind('leave_max_consecutive_days', { days: '10' }), 'maxConsecutive');
+  assert.equal(kind('leave_min_days', { days: '2' }), 'minDays');
+  assert.equal(kind('leave_max_days', { days: '5' }), 'maxDays');
+  assert.equal(kind('leave_reason_required'), 'reasonRequired');
+  assert.equal(kind('leave_attachment_required'), 'attachmentRequired');
+  assert.equal(kind('leave_attachment_not_found'), 'attachmentNotFound');
+  assert.equal(kind('leave_half_day_not_allowed'), 'halfDayNotAllowed');
+  assert.equal(kind('leave_hourly_not_allowed'), 'hourly');
+  assert.equal(kind('leave_blackout'), 'blackout');
+  assert.equal(kind('leave_type_unavailable'), 'typeUnavailable');
+  assert.equal(kind('leave_statutory_limit', { days: '15' }), 'statutoryLimit');
+  assert.equal(kind('leave_statutory_limit'), 'statutoryLimitNoDays');
+  assert.equal(kind('leave_not_eligible', { leaveType: 'Hajj' }), 'notEligible');
+  assert.equal(kind('leave_invalid_dates'), 'invalidDates');
+  assert.equal(kind('leave_refused'), 'refused');
+});
+
+test('a code wins over the English sentence, and a code that needs a value it did not get degrades to the refused wording', () => {
+  // The sentence says "blackout" but the code says overlap: the code decides.
+  assert.equal(classifyLeavePayError({ status: 400, code: 'leave_overlap', message: 'This is a blackout period.' }), 'overlap');
+  assert.equal(classifyLeavePayError({ status: 400, code: 'leave_notice_required', message: 'x' }), 'refused');
+  assert.equal(classifyLeavePayError({ status: 400, code: 'leave_balance_not_set_up', args: { year: '2026' }, message: 'x' }), 'refused');
+});
+
+test('an unknown leave code, or any other 400, shows the refused wording and never the server-trouble sentence', () => {
+  assert.equal(classifyLeavePayError({ status: 400, code: 'leave_brand_new_rule', message: 'Something new.' }), 'refused');
+  assert.equal(classifyLeavePayError({ status: 400, message: 'Some sentence this app has never seen.' }), 'refused');
+  assert.equal(classifyLeavePayError({ status: 400 }), 'refused');
+  // A server fault is still a server fault.
+  assert.equal(classifyLeavePayError({ status: 500 }), 'generic');
+});
+
+test('older servers that send only a message still classify by wording', () => {
+  assert.equal(classifyLeavePayError({ status: 400, message: 'Insufficient leave balance for 2026.' }), 'insufficientBalance');
+  assert.equal(classifyLeavePayError({ status: 400, message: 'Employee already has an approved or pending leave for the requested dates.' }), 'overlap');
+});
+
+test('errorShape carries the refusal args, and adds nothing when there are none', () => {
+  assert.deepEqual(
+    errorShape({ response: { status: 400, data: { code: 'leave_notice_required', message: 'm', args: { days: '3' } } } }),
+    { status: 400, message: 'm', code: 'leave_notice_required', args: { days: '3' } },
+  );
+  assert.deepEqual(errorShape({ response: { status: 400, data: { message: 'm', args: 'nope' } } }), { status: 400, message: 'm', code: undefined });
+});
+
 // ---- Leave balance mapping (real responses, Mohammed @ masar, 2026-10-10) ------------------
 
 
@@ -259,4 +312,18 @@ test('leave balance: no equation when carry-forward or adjustments are in play',
   assert.equal(row.available, 16);
   assert.equal(simpleBalanceEquation(row), null);
   assert.equal(simpleBalanceEquation(mapLeaveBalanceRow({ ...BALANCES_EMPLOYEE_3[0], available: 12 })), null);
+});
+
+test('a refusal names the leave type in Arabic when the UI is Arabic and the server sent the Arabic name', () => {
+  const args = { year: '2026', leaveType: 'Annual Leave', leaveTypeAr: 'إجازة سنوية' };
+  assert.equal(refusalLeaveTypeName(args, 'ar'), 'إجازة سنوية');
+  assert.equal(refusalLeaveTypeName(args, 'en'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({ leaveType: 'Annual Leave' }, 'ar'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({ leaveType: 'Annual Leave', leaveTypeAr: '  ' }, 'ar'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({}, 'ar'), '');
+});
+
+test('errorShape keeps the Arabic leave type name the server sent', () => {
+  const shape = errorShape({ response: { status: 400, data: { code: 'leave_not_eligible', args: { leaveType: 'Hajj Leave', leaveTypeAr: 'إجازة الحج' } } } });
+  assert.equal(shape.args?.leaveTypeAr, 'إجازة الحج');
 });

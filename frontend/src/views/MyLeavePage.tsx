@@ -8,10 +8,10 @@ import { leaveRequestsApi, type LeaveRequest, type LeaveType } from '@/src/api/l
 import { StatusChip } from '@/src/components/StatusChip';
 import { EssCard, EssEmpty, EssField, EssLoadError, EssNotice, EssPageHeader, essInput, essPrimaryButton, useOwnEmployeeId, useEssDate, useCanWriteEss, EssReadOnly } from '@/src/components/ess/EssParts';
 import { useLocale } from '@/src/contexts/LocaleContext';
-import { canCancelLeave, cancellationHolders, leaveStatus } from '@/src/lib/essSelfService';
+import { canCancelLeave, canRequestLeaveCancellation, cancellationHolders, leaveStatus } from '@/src/lib/essSelfService';
 import { isDeclarableLeave, isSaudiStatutoryLeave } from '@/src/lib/ksaStatutoryLeave';
 import { fillTemplate } from '@/src/lib/gradeLoanLimits';
-import { requestFailureReason } from '@/src/lib/requestFailure';
+import { leaveRefusalText } from '@/src/lib/leaveRefusal';
 
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
@@ -127,9 +127,30 @@ export function MyLeavePage() {
       setNotice({ tone: 'ok', text: t('Your leave request was sent for approval.') });
       await load();
     } catch (err) {
-      setNotice({ tone: 'error', text: t(requestFailureReason(err)) });
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // Approved leave that has not started: the server turns the cancel call into a pending cancellation for the approver.
+  const requestCancellation = async (r: LeaveRequest) => {
+    const ok = await confirm({
+      title: t('Request cancellation'),
+      message: t('Request cancellation of this approved leave? Your approver will decide whether it is cancelled, and your balance stays as it is until they do.'),
+      confirmLabel: t('Request cancellation'),
+    });
+    if (!ok) return;
+    setCancellingId(r.id);
+    setNotice(null);
+    try {
+      await essActionsApi.cancelLeave(r.id, 'Cancellation requested by the employee in self-service');
+      setNotice({ tone: 'ok', text: t('Cancellation requested. Your approver will review it.') });
+      await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
+    } finally {
+      setCancellingId(null);
     }
   };
 
@@ -143,7 +164,7 @@ export function MyLeavePage() {
       setNotice({ tone: 'ok', text: t('Your leave request was cancelled.') });
       await load();
     } catch (err) {
-      setNotice({ tone: 'error', text: t(requestFailureReason(err)) });
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
     } finally {
       setCancellingId(null);
     }
@@ -284,6 +305,12 @@ export function MyLeavePage() {
                             <button type="button" disabled={cancellingId === r.id} onClick={() => void cancel(r)}
                               className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-white/[0.12] dark:text-slate-200 dark:hover:bg-white/[0.06]">
                               {cancellingId === r.id ? t('Cancelling…') : t('Cancel request')}
+                            </button>
+                          )}
+                          {canWrite && canRequestLeaveCancellation(r.status, r.startDate) && (
+                            <button type="button" disabled={cancellingId === r.id} onClick={() => void requestCancellation(r)} data-testid="request-leave-cancellation"
+                              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 dark:border-white/[0.12] dark:text-slate-200 dark:hover:bg-white/[0.06]">
+                              {cancellingId === r.id ? t('Requesting…') : t('Request cancellation')}
                             </button>
                           )}
                         </div>

@@ -35,6 +35,7 @@ interface Options {
   waiting?: unknown[];
   queueTotal?: number;
   cut?: boolean;
+  arabic?: boolean;
 }
 
 async function boot(page: Page, url: string, opts: Options = {}) {
@@ -42,10 +43,10 @@ async function boot(page: Page, url: string, opts: Options = {}) {
   const errors: string[] = [];
   let current = [...(opts.queue ?? [])];
   page.on('pageerror', e => errors.push(e.message));
-  await page.addInitScript(() => {
+  await page.addInitScript((arabic) => {
     localStorage.setItem('zayra_access_token', 'fixture');
-    localStorage.setItem('kynexone-locale-choice-v2', 'en');
-  });
+    localStorage.setItem('kynexone-locale-choice-v2', arabic ? 'ar' : 'en');
+  }, opts.arabic === true);
   await page.route('**/api/**', async route => {
     const request = route.request(); const path = new URL(request.url()).pathname;
     const reply = (json: unknown) => route.fulfill({ json });
@@ -167,4 +168,40 @@ test('a complete queue shows no cap notice', async ({ page }) => {
   await page.getByRole('tab', { name: 'Approvals' }).click({ timeout: 90_000 });
   await expect(page.getByTestId('leave-approval-decision')).toHaveCount(1);
   await expect(page.getByTestId('leave-queue-cut')).toHaveCount(0);
+});
+
+test('a request with a supporting document offers View document, and opens it through the authenticated route', async ({ page, context }) => {
+  // The server sets hasDocument only for whoever may open the file (the employee, HR, Admin); a line manager never sees the action.
+  const withDocument = { ...DECISION_HR_STEP, hasDocument: true };
+  const withoutDocument = { ...DECISION_HR_STEP, id: 'req-plain', employeeName: 'Sara Ali', hasDocument: false };
+  const { errors } = await boot(page, '/leave', { queue: [withDocument, withoutDocument] });
+  const fetched: string[] = [];
+  await page.route('**/api/leave/requests/*/attachment', route => {
+    fetched.push(new URL(route.request().url()).pathname);
+    return route.fulfill({ status: 200, contentType: 'application/pdf', body: Buffer.from('%PDF-1.4\n%%EOF\n') });
+  });
+  await page.getByRole('tab', { name: 'Approvals' }).click({ timeout: 90_000 });
+
+  const omar = page.getByTestId('leave-approval-decision').filter({ hasText: 'Omar Haddad' });
+  const sara = page.getByTestId('leave-approval-decision').filter({ hasText: 'Sara Ali' });
+  await expect(omar.getByTestId('leave-view-document')).toHaveText('View document');
+  await expect(sara.getByTestId('leave-view-document')).toHaveCount(0);
+
+  const opened = context.waitForEvent('page');
+  await omar.getByTestId('leave-view-document').click();
+  await opened;
+  await expect.poll(() => fetched).toEqual(['/api/leave/requests/req-hr/attachment']);
+  expect(errors).toEqual([]);
+});
+
+test('on the Arabic screen the HR approval card writes its dates in Arabic, not as "Dec 1, 2026"', async ({ page }) => {
+  await boot(page, '/leave', { arabic: true, queue: [DECISION_HR_STEP] });
+  await page.getByRole('tab').filter({ hasText: /الاعتمادات/ }).first().click({ timeout: 90_000 });
+
+  const decision = page.getByTestId('leave-approval-decision');
+  await expect(decision).toHaveCount(1);
+  await expect(decision).toContainText('Omar Haddad');
+  const text = (await decision.innerText()).replace('Omar Haddad', '').replace('Annual Leave', '').replace('Ops', '').replace('Officer', '');
+  expect(text).not.toMatch(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/);
+  expect(text).toMatch(/ديسمبر/);
 });

@@ -14,6 +14,7 @@ import { PendingTransfersPanel } from '../components/people/PendingTransfersPane
 import { approvalDetailRenderers } from '../components/approvals/approvalDetailRenderers';
 import { SlateApprovalLink } from '../components/succession/SlateApprovalLink';
 import { leaveRequestsApi } from '../api/leave';
+import { LeaveDocumentLink } from '../components/leave/LeaveDocumentLink';
 import { LeaveCancellationQueue } from '../components/leave/LeaveCancellationQueue';
 import { useLocale } from '../contexts/LocaleContext';
 import { useFormat } from '../hooks/useFormat';
@@ -475,6 +476,7 @@ export function ApprovalsPage() {
               </div>
             </div>
             <StatutoryLeaveHistory context={statutoryContext} />
+            {selected.entityName === 'LeaveRequest' && <div><LeaveDocumentLink key={selected.entityId} leaveId={selected.entityId} /></div>}
             {(() => {
               // Entity-specific detail (e.g. a renewal offer's before → after), registered per entityName.
               const Detail = approvalDetailRenderers[selected.entityName];

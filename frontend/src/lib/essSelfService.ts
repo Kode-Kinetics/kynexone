@@ -5,6 +5,8 @@
  * who clicked was sent to "Access Denied". These pages are gated on ess.read and call only endpoints
  * that are scoped to the caller's own record.
  */
+import { daysUntilCalendarDate } from './calendarDate';
+
 export const ESS_LEAVE_PATH = '/ess/leave';
 export const ESS_OVERTIME_PATH = '/ess/overtime';
 export const ESS_REQUESTS_PATH = '/ess/requests';
@@ -15,6 +17,16 @@ export type StatusTone = 'blue' | 'emerald' | 'amber' | 'rose' | 'slate';
 const PENDING_LEAVE = new Set(['Draft', 'Submitted', 'PendingManagerApproval', 'PendingHRApproval']);
 
 export const canCancelLeave = (status: string) => PENDING_LEAVE.has(status);
+
+/**
+ * Approved leave that has not started yet: the employee may ask for it to be cancelled. The server turns it into a pending
+ * cancellation for the approver to decide; the balance is untouched until then. Leave that starts today or has started is HR's to adjust.
+ */
+export function canRequestLeaveCancellation(status: string, startDate: string | null | undefined, now: Date = new Date()): boolean {
+  if (status !== 'Approved') return false;
+  const days = daysUntilCalendarDate(startDate, now);
+  return days != null && days > 0;
+}
 
 /** A plain-language label (an English t() key) and a tone for a leave request status. */
 export function leaveStatus(status: string): { label: string; tone: StatusTone } {
