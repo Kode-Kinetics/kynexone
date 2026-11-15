@@ -42,6 +42,7 @@ export type LeavePayErrorKind =
   | 'hourly'
   | 'attachmentNotFound'
   | 'invalidDates'
+  | 'cancelAfterStart'
   | 'refused'
   | 'blackout'
   | 'reasonRequired'
@@ -127,6 +128,7 @@ const LEAVE_CODE_KINDS: Record<string, { kind: LeavePayErrorKind; needs?: readon
   leave_type_unavailable: { kind: 'typeUnavailable' },
   leave_not_eligible: { kind: 'notEligible', needs: ['leaveType'] },
   leave_invalid_dates: { kind: 'invalidDates' },
+  leave_cancel_after_start: { kind: 'cancelAfterStart' },
   leave_refused: { kind: 'refused' },
 };
 

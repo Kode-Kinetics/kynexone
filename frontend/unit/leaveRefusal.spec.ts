@@ -36,7 +36,7 @@ test('every code in the catalogue reads as Arabic with no English left in it', (
     ['leave_max_consecutive_days', { days: '10' }], ['leave_min_days', { days: '2' }], ['leave_max_days', { days: '5' }],
     ['leave_reason_required'], ['leave_attachment_required'], ['leave_attachment_not_found'], ['leave_half_day_not_allowed'],
     ['leave_hourly_not_allowed'], ['leave_blackout'], ['leave_type_unavailable'], ['leave_statutory_limit', { days: '15' }],
-    ['leave_statutory_limit'], ['leave_not_eligible', { leaveType: 'إجازة سنوية' }], ['leave_invalid_dates'], ['leave_refused'],
+    ['leave_statutory_limit'], ['leave_not_eligible', { leaveType: 'إجازة سنوية' }], ['leave_invalid_dates'], ['leave_cancel_after_start'], ['leave_refused'],
   ];
   for (const [code, args] of cases) {
     const text = leaveRefusalText(refuse(code, args), ar);
@@ -44,6 +44,12 @@ test('every code in the catalogue reads as Arabic with no English left in it', (
     expect(hasLatinLetters(text), `${code}: ${text}`).toBe(false);
     expect(text, code).not.toMatch(/[{}]/);
   }
+});
+
+test('cancelling approved leave that has started is refused in the viewer\'s language', () => {
+  const err = refuse('leave_cancel_after_start');
+  expect(leaveRefusalText(err, en)).toBe('Approved leave can only be cancelled before it starts. Ask HR if it needs to change.');
+  expect(leaveRefusalText(err, ar)).toMatch(/قبل/);
 });
 
 test('leave_refused is a neutral sentence, never the English text', () => {

@@ -27,11 +27,12 @@ const statutory = 'This is more than the legal limit for this leave type, which 
 const statutoryAny = 'This is more than the legal limit for this leave type.';
 const notEligible = 'The eligibility rules for {leaveType} are not met. Ask HR if this looks wrong.';
 const invalidDates = 'These dates are not valid. Check them and try again.';
+const cancelAfterStart = 'Approved leave can only be cancelled before it starts. Ask HR if it needs to change.';
 const refused = 'The request was refused. Check the details or ask HR.';
 
 export const LEAVE_REFUSAL_KEYS = {
   overlap, notice, insufficient, balanceSelf, balanceHr, probation, minService, maxConsecutive, minDays, maxDays, reason,
-  attachment, attachmentMissing, halfDay, hourly, blackout, unavailable, statutory, statutoryAny, notEligible, invalidDates, refused,
+  attachment, attachmentMissing, halfDay, hourly, blackout, unavailable, statutory, statutoryAny, notEligible, invalidDates, cancelAfterStart, refused,
 } as const;
 
 export const leaveRefusal = {
@@ -63,6 +64,7 @@ export const leaveRefusal = {
     [statutoryAny]: 'الطلب يتجاوز الحد النظامي لهذا النوع من الإجازات.',
     [notEligible]: 'لا تنطبق شروط الأهلية لإجازة {leaveType}. راجع الموارد البشرية إن بدا لك ذلك غير صحيح.',
     [invalidDates]: 'التواريخ غير صالحة. راجعها وحاول مرة أخرى.',
+    [cancelAfterStart]: 'لا يمكن إلغاء الإجازة المعتمدة إلا قبل أن تبدأ. اسأل الموارد البشرية إن كانت بحاجة إلى تغيير.',
     [refused]: 'رُفض الطلب. راجع التفاصيل أو اسأل الموارد البشرية.',
     'Request cancellation': 'طلب الإلغاء',
     'Request cancellation of this approved leave? Your approver will decide whether it is cancelled, and your balance stays as it is until they do.': 'هل تريد طلب إلغاء هذه الإجازة المعتمدة؟ سيقرر المعتمِد ما إذا كانت ستُلغى، ويبقى رصيدك كما هو حتى يقرر.',

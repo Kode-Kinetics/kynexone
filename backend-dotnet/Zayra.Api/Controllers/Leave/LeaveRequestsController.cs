@@ -39,6 +39,13 @@ public class LeaveRequestsController : ControllerBase
         _audit = audit;
     }
 
+    /// <summary>
+    /// The caller's own employee record: the data scope's when it has one, else the linked employee (an organisation-wide scope
+    /// carries none). Used wherever "is this the caller's own leave" decides who sees a document.
+    /// </summary>
+    private async Task<int?> SelfEmployeeIdAsync(Guid tenantId, DataScope scope, CancellationToken ct) =>
+        scope.CallerEmployeeId ?? await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId, ct);
+
     [HttpGet]
     public async Task<IActionResult> List(
         [FromQuery] string? status,
@@ -81,7 +88,8 @@ public class LeaveRequestsController : ControllerBase
             .ToListAsync(ct);
 
         // The attachment key is the handle to a medical document: only the leave's employee and HR see it.
-        var shown = items.Select(i => LeaveFileKeyExposure.ForReader(_db, i, User, scope)).ToList();
+        var listSelf = await SelfEmployeeIdAsync(tenantId.Value, scope, ct);
+        var shown = items.Select(i => LeaveFileKeyExposure.ForReader(_db, i, User, scope, listSelf)).ToList();
         return Ok(new PagedResult<LeaveRequest>(shown, total, page, pageSize));
     }
 
@@ -128,6 +136,7 @@ public class LeaveRequestsController : ControllerBase
         // The decision endpoints are [Authorize(Roles = "Manager,HR Manager,Admin")]; a caller they would turn away
         // has nothing to decide.
         if (!LeaveNotifications.CancellationDeciderRoles.Any(User.IsInRole)) return items;
+        var self = await SelfEmployeeIdAsync(tenantId, scan.Scope, ct);
         foreach (var r in scan.Rows)
         {
             if (r.Status == "CancellationRequested")
@@ -141,7 +150,7 @@ public class LeaveRequestsController : ControllerBase
             if (await LeaveService.MakerCheckerRefusalAsync(_db, r, userId, ct) is not null) continue;
             // Whether a supporting document is attached, only for whoever may open it (never the key itself).
             items.Add(LeaveAwaitingDecisionDto.From(r, "Decision", null, null,
-                !string.IsNullOrWhiteSpace(r.AttachmentPath) && LeaveFileKeyExposure.MaySeeKey(User, scan.Scope, r.EmployeeId)));
+                !string.IsNullOrWhiteSpace(r.AttachmentPath) && LeaveFileKeyExposure.MaySeeKey(User, scan.Scope, r.EmployeeId, self)));
         }
         return items;
     }
@@ -256,7 +265,7 @@ public class LeaveRequestsController : ControllerBase
             };
         }
 
-        return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope), approvals, statutoryHistory, statutory, cancellation });
+        return Ok(new { request = LeaveFileKeyExposure.ForReader(_db, request, User, scope, await SelfEmployeeIdAsync(tenantId.Value, scope, ct)), approvals, statutoryHistory, statutory, cancellation });
     }
 
     /// <summary>The types a browser shows inline without running anything; every other stored type is served as a download.</summary>
@@ -275,13 +284,15 @@ public class LeaveRequestsController : ControllerBase
     {
         var tenantId = this.GetTenantId();
         if (tenantId is null) return Unauthorized();
-        if (_storage is null) return NotFound();
+        // Every download is audited: with no audit service there is no download (fail closed, same answer as no storage).
+        if (_storage is null || _audit is null) return NotFound();
 
         var request = await _db.LeaveRequests.AsNoTracking().FirstOrDefaultAsync(r => r.Id == id && r.TenantId == tenantId, ct);
         if (request is null || string.IsNullOrWhiteSpace(request.AttachmentPath)) return NotFound();
 
         var scope = await _scopeService.ResolveAsync(User, tenantId.Value, ct);
-        if (!scope.CanAccessEmployee(request.EmployeeId) || !LeaveFileKeyExposure.MaySeeKey(User, scope, request.EmployeeId))
+        var self = await SelfEmployeeIdAsync(tenantId.Value, scope, ct);
+        if (!scope.CanAccessEmployee(request.EmployeeId) || !LeaveFileKeyExposure.MaySeeKey(User, scope, request.EmployeeId, self))
             return NotFound();
 
         var key = request.AttachmentPath.Trim();
@@ -294,7 +305,7 @@ public class LeaveRequestsController : ControllerBase
         if (document is null || !Zayra.Api.Application.Employees.Ess.ScanStatuses.IsServable(document.ScanStatus)) return NotFound();
         // An identity, payroll or contract document needs employees.sensitive here exactly as on the employee-document
         // download; the leave's own employee always sees their own file.
-        if (scope.CallerEmployeeId != request.EmployeeId
+        if (self != request.EmployeeId
             && Zayra.Api.Application.Employees.EmployeeDocumentDto.IsSensitiveDocument(document.DocumentType, document.DocumentCategory)
             && !User.HasPermission("employees.sensitive"))
             return NotFound();
@@ -303,15 +314,16 @@ public class LeaveRequestsController : ControllerBase
         try { contents = await _storage.GetBytesAsync(tenantId.Value, document.StorageUrl, ct); }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException) { return NotFound(); }
 
-        if (_audit is not null)
-            await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
-                new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
-                    this.GetUserId(), tenantId.Value),
-                System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
+        await _audit.RecordEventAsync("leave.attachment_downloaded", nameof(LeaveRequest), id.ToString(),
+            new Zayra.Api.Application.Auth.RequestContext(HttpContext.Connection.RemoteIpAddress?.ToString(), Request.Headers.UserAgent.ToString(),
+                this.GetUserId(), tenantId.Value),
+            System.Text.Json.JsonSerializer.Serialize(new { documentId = document.Id, employeeId = request.EmployeeId }), ct);
 
         var declared = (document.ContentType ?? string.Empty).Split(';')[0].Trim();
         var inline = InlineAttachmentTypes.Contains(declared);
         Response.Headers["X-Content-Type-Options"] = "nosniff";
+        // Whatever the stored type, the response may not run scripts or load anything if a browser opens it.
+        Response.Headers["Content-Security-Policy"] = "sandbox";
         Response.Headers.CacheControl = "no-store";
         Response.Headers.ContentDisposition = new Microsoft.Net.Http.Headers.ContentDispositionHeaderValue(inline ? "inline" : "attachment")
         {
@@ -460,7 +472,7 @@ public class LeaveRequestsController : ControllerBase
             // The employee and whoever decides the first step; never the whole workspace. The same path Self-Service uses.
             await LeaveNotifications.NotifySubmittedAsync(_db, _notifications, tenantId.Value, submitted, ct);
             // The attachment key is the handle to a medical document: only the employee and HR/Admin get it back, whoever filed the request.
-            return Created($"/api/leave/requests/{submitted.Id}", LeaveFileKeyExposure.ForReader(_db, submitted, User, scope));
+            return Created($"/api/leave/requests/{submitted.Id}", LeaveFileKeyExposure.ForReader(_db, submitted, User, scope, self));
         }
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
@@ -608,6 +620,15 @@ public class LeaveRequestsController : ControllerBase
 
         if (leaveRequest.Status == "Approved")
         {
+            // Owner rule: an employee may ask to cancel approved leave only BEFORE it starts (the tenant's today, as every other
+            // leave date rule reads it). Once it has started, HR decides. Admin and HR Manager are not held to this.
+            if (!isAdminOrHr && leaveRequest.StartDate <= await TenantClock.TodayForAsync(_db, tenantId.Value, ct))
+                return BadRequest(new
+                {
+                    code = LeaveRefusalCodes.CancelAfterStart,
+                    message = "Approved leave can only be cancelled before it starts. Ask HR if it needs to change.",
+                    args = new Dictionary<string, string>(),
+                });
             if (await _db.LeaveCancellationRequests.AnyAsync(x => x.TenantId == tenantId
                     && x.LeaveRequestId == id && x.Status == "Pending", ct))
                 return Conflict(new { message = "A cancellation request is already pending." });
@@ -899,6 +920,9 @@ public class LeaveRequestsController : ControllerBase
             return typesByCompany[key] = (byCode, byName);
         }
 
+        var canMarkEmergency = User.HasPermission("leave.write");
+        var importerEmployeeId = await CallerEmployeeResolver.ResolveAsync(_db, User, tenantId.Value, ct);
+
         int created = 0, skipped = 0;
         var errors = new List<string>();
         var rowNum = 1;
@@ -952,7 +976,10 @@ public class LeaveRequestsController : ControllerBase
                 DayType = row.GetValueOrDefault("DayType", "Full").Trim(),
                 HoursRequested = hours,
                 Reason = row.GetValueOrDefault("Reason", string.Empty).Trim(),
-                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase),
+                // Same rule as filing a request: an emergency waives the notice period, so only leave administration (leave.write)
+                // may mark one, and never on the importer's own employee record.
+                IsEmergency = row.TryGetValue("IsEmergency", out var emergencyRaw) && string.Equals(emergencyRaw, "true", StringComparison.OrdinalIgnoreCase)
+                    && canMarkEmergency && importerEmployeeId != employee.Id,
                 AttachmentPath = row.GetValueOrDefault("AttachmentPath", string.Empty).Trim(),
                 PayrollImpact = leaveType.IsPaid ? "Full" : "None"
             };

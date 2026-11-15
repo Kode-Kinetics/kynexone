@@ -39,6 +39,7 @@ const RULES: Record<string, Rule> = {
   leave_type_unavailable: { key: K.unavailable },
   leave_not_eligible: { key: K.notEligible, needs: ['leaveType'] },
   leave_invalid_dates: { key: K.invalidDates },
+  leave_cancel_after_start: { key: K.cancelAfterStart },
   leave_refused: { key: K.refused },
 };
 
