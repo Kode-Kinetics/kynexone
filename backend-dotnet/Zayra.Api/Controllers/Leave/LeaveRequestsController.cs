@@ -299,7 +299,7 @@ public class LeaveRequestsController : ControllerBase
         var leaveType = await _db.LeaveTypes
             .FirstOrDefaultAsync(t => t.Id == req.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
-            return BadRequest(new { message = "Leave type not found." });
+            return BadRequest(new { code = LeaveRefusalCodes.TypeUnavailable, message = "Leave type not found." });
 
         var employee = await _db.Employees
             .FirstOrDefaultAsync(e => e.Id == req.EmployeeId && e.TenantId == tenantId, ct);
@@ -307,7 +307,7 @@ public class LeaveRequestsController : ControllerBase
             return BadRequest(new { message = "Employee not found." });
 
         if (req.EndDate < req.StartDate)
-            return BadRequest(new { message = "End date must be after start date." });
+            return BadRequest(new { code = LeaveRefusalCodes.InvalidDates, message = "End date must be after start date." });
 
         // W2-D (S1): AttachmentPath holds a STORAGE KEY, never file bytes, and only the key of a
         // document the leave's employee owns. The app sends AttachmentDocumentId (the id returned by
@@ -321,7 +321,7 @@ public class LeaveRequestsController : ControllerBase
                     && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()))
                 .Select(d => d.StorageUrl).FirstOrDefaultAsync(ct);
             if (string.IsNullOrWhiteSpace(key))
-                return BadRequest(new { message = "The attachment was not found among the employee's documents." });
+                return BadRequest(new { code = LeaveRefusalCodes.AttachmentNotFound, message = "The attachment was not found among the employee's documents." });
             attachmentPath = key;
         }
         else if (!string.IsNullOrWhiteSpace(req.AttachmentPath))
@@ -331,7 +331,7 @@ public class LeaveRequestsController : ControllerBase
                 .AnyAsync(d => d.TenantId == tenantId && d.EmployeeId == req.EmployeeId && d.StorageUrl == candidate && !d.IsDeleted
                     && !RestrictedEmployeeDocumentTypes.Lowered.Contains(d.DocumentType.Trim().ToLower()), ct);
             if (!owned)
-                return BadRequest(new { message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
+                return BadRequest(new { code = LeaveRefusalCodes.AttachmentNotFound, message = "attachmentPath must reference an uploaded document. Upload the file first (POST /api/ess/documents) and send its id as attachmentDocumentId." });
             attachmentPath = candidate;
         }
 
@@ -381,6 +381,8 @@ public class LeaveRequestsController : ControllerBase
         // F1 — approval CONFIGURATION errors (no applicable workflow / broken workflow) are 422 with a
         // stable code, distinct from ordinary validation failures.
         catch (Zayra.Api.Application.Approvals.ApprovalRoutingException ex) { return UnprocessableEntity(new { code = ex.Code, message = ex.Message }); }
+        // A refusal by the leave rules: same 400 and English message, plus the stable code and its values for the clients to translate.
+        catch (LeaveRefusedException ex) { return BadRequest(new { code = ex.Code, message = ex.Message, args = ex.Args }); }
         catch (InvalidOperationException ex)
         {
             return BadRequest(new { message = ex.Message });

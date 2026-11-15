@@ -876,7 +876,7 @@ public partial class LeaveService : ILeaveService
     private async Task<LeaveRequest> SubmitRequestCoreAsync(Guid tenantId, LeaveRequest request, Guid? requestedByUserId, CancellationToken ct)
     {
         if (request.EndDate < request.StartDate)
-            throw new InvalidOperationException("End date must be after start date.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.InvalidDates, "End date must be after start date.");
 
         // One submission (and one final approval) per employee at a time. Every check below reads the
         // employee's other requests — overlap, Hajj once in service, one statutory event — and under
@@ -885,11 +885,11 @@ public partial class LeaveService : ILeaveService
 
         var hasOverlap = await HasOverlappingLeaveAsync(tenantId, request.EmployeeId, request.StartDate, request.EndDate, null, ct);
         if (hasOverlap)
-            throw new InvalidOperationException("Employee already has an approved or pending leave for the requested dates.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.Overlap, "Employee already has an approved or pending leave for the requested dates.");
 
         var leaveType = await _db.LeaveTypes.FirstOrDefaultAsync(t => t.Id == request.LeaveTypeId && t.TenantId == tenantId, ct);
         if (leaveType is null)
-            throw new InvalidOperationException("Invalid leave type.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.TypeUnavailable, "Invalid leave type.");
 
         var employee = await _db.Employees.AsNoTracking()
             .FirstOrDefaultAsync(e => e.TenantId == tenantId && e.Id == request.EmployeeId && !e.IsDeleted, ct)
@@ -899,7 +899,7 @@ public partial class LeaveService : ILeaveService
         // another legal entity's books; an unassigned legacy type is still a fallback when the company has no type of
         // that code.
         if (!await LeaveCompanyScope.IsUsableByAsync(_db, leaveType, employee.CompanyId, ct))
-            throw new InvalidOperationException(LeaveCompanyScope.NotThisCompanysType);
+            throw new LeaveRefusedException(LeaveRefusalCodes.TypeUnavailable, LeaveCompanyScope.NotThisCompanysType);
 
         var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
             .Where(b => b.TenantId == tenantId
@@ -911,7 +911,7 @@ public partial class LeaveService : ILeaveService
             .Select(b => new { b.NameEn, b.StartDate, b.EndDate, b.Reason })
             .FirstOrDefaultAsync(ct);
         if (blackout is not null)
-            throw new InvalidOperationException(
+            throw new LeaveRefusedException(LeaveRefusalCodes.Blackout,
                 $"Leave cannot be requested during blackout '{blackout.NameEn}' " +
                 $"({blackout.StartDate:yyyy-MM-dd} to {blackout.EndDate:yyyy-MM-dd}). {blackout.Reason}".Trim());
 
@@ -945,7 +945,7 @@ public partial class LeaveService : ILeaveService
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase))
         {
             if (request.StartDate != request.EndDate)
-                throw new InvalidOperationException("Half-day leave must be for a single date.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.InvalidDates, "Half-day leave must be for a single date.");
             workingDays = 0.5m;
         }
         else if (isHourly)
@@ -970,10 +970,10 @@ public partial class LeaveService : ILeaveService
         request.TotalDays = workingDays;
 
         if (leaveType.RequiresAttachment && string.IsNullOrWhiteSpace(request.AttachmentPath))
-            throw new InvalidOperationException("An attachment is required for this leave type.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.AttachmentRequired, "An attachment is required for this leave type.");
 
         if (leaveType.RequiresReason && string.IsNullOrWhiteSpace(request.Reason))
-            throw new InvalidOperationException("A reason is required for this leave type.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.ReasonRequired, "A reason is required for this leave type.");
 
         // KSA statutory special leave (Arts. 113, 114, 151, 160). A request the statute grants is never
         // refused by a configured cap; any other request meets the caps exactly as configured.
@@ -1012,12 +1012,12 @@ public partial class LeaveService : ILeaveService
                     request.StatutoryEventDate = null;
                 }
                 if (request.SeparateEventReason is { Length: > 1000 })
-                    throw new InvalidOperationException("The reason for a separate event must be 1,000 characters or fewer.");
+                    throw new LeaveRefusedException(LeaveRefusalCodes.Other, "The reason for a separate event must be 1,000 characters or fewer.");
                 if (request.SeparateEventReason is not null && request.StatutoryEventDate is null)
-                    throw new InvalidOperationException(
+                    throw new LeaveRefusedException(LeaveRefusalCodes.Other,
                         "To declare a separate event, give the date of the event (the death, birth or marriage) as well as the reason.");
                 if (request.StatutoryEventDate is { } eventDate && eventDate > request.EndDate)
-                    throw new InvalidOperationException("The event date cannot be after the last day of the leave.");
+                    throw new LeaveRefusedException(LeaveRefusalCodes.InvalidDates, "The event date cannot be after the last day of the leave.");
                 if (request.StatutoryEventDate is { } earliestCheck)
                 {
                     // Leave for a death, a birth or a marriage is taken close to the event. How close is a
@@ -1032,7 +1032,7 @@ public partial class LeaveService : ILeaveService
                             KsaSpecialLeaveRuleKeys.EventDateMaxLeadDays, request.StartDate, null, ct)
                         ?? KsaSpecialLeaveDefaults.EventDateMaxLeadDays);
                     if (earliestCheck < request.StartDate.AddDays(-maxLead))
-                        throw new InvalidOperationException(
+                        throw new LeaveRefusedException(LeaveRefusalCodes.InvalidDates,
                             $"The event date is more than {maxLead} days before the leave starts. Leave for a death, birth or "
                             + $"marriage has to start within {maxLead} days of the event — give the date it happened, no earlier "
                             + $"than {request.StartDate.AddDays(-maxLead):dd MMM yyyy}.");
@@ -1056,26 +1056,26 @@ public partial class LeaveService : ILeaveService
         }
 
         if (!withinStatutory && leaveType.MaxConsecutiveDays > 0 && workingDays > leaveType.MaxConsecutiveDays)
-            throw new InvalidOperationException($"This leave type allows a maximum of {leaveType.MaxConsecutiveDays} consecutive day(s). Requested: {workingDays}.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.MaxConsecutiveDays, $"This leave type allows a maximum of {leaveType.MaxConsecutiveDays} consecutive day(s). Requested: {workingDays}.", LeaveRefusedException.ArgsOf(("days", leaveType.MaxConsecutiveDays)));
 
         if (request.DayType.StartsWith("Half", StringComparison.OrdinalIgnoreCase) && !leaveType.IsHalfDayAllowed)
-            throw new InvalidOperationException("Half-day leave is not allowed for this leave type.");
+            throw new LeaveRefusedException(LeaveRefusalCodes.HalfDayNotAllowed, "Half-day leave is not allowed for this leave type.");
         if (isHourly)
         {
-            if (!leaveType.IsHourlyAllowed) throw new InvalidOperationException("Hourly leave is not allowed for this leave type.");
+            if (!leaveType.IsHourlyAllowed) throw new LeaveRefusedException(LeaveRefusalCodes.HourlyNotAllowed, "Hourly leave is not allowed for this leave type.");
             // The upper bound was the same hardcoded 8, so a tenant on a six-hour day could book
             // eight hours — 1.33 days — as a single "hourly" request.
             var dayHours = hourlyDayMinutes / 60m;
             if (request.StartDate != request.EndDate || request.HoursRequested <= 0 || request.HoursRequested > dayHours)
-                throw new InvalidOperationException(
+                throw new LeaveRefusedException(LeaveRefusalCodes.Other,
                     $"Hourly leave must be for one day and between 0 and {dayHours:0.##} hours.");
         }
         if (effectivePolicy is not null)
         {
             if (workingDays < effectivePolicy.MinimumDaysPerRequest)
-                throw new InvalidOperationException($"This policy requires at least {effectivePolicy.MinimumDaysPerRequest} day(s) per request.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.MinDaysPerRequest, $"This policy requires at least {effectivePolicy.MinimumDaysPerRequest} day(s) per request.", LeaveRefusedException.ArgsOf(("days", effectivePolicy.MinimumDaysPerRequest)));
             if ((!withinStatutory || AcknowledgedCap(effectivePolicy)) && effectivePolicy.MaximumDaysPerRequest > 0 && workingDays > effectivePolicy.MaximumDaysPerRequest)
-                throw new InvalidOperationException($"This policy allows at most {effectivePolicy.MaximumDaysPerRequest:0.##} day(s) per request.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.MaxDaysPerRequest, $"This policy allows at most {effectivePolicy.MaximumDaysPerRequest:0.##} day(s) per request.", LeaveRefusedException.ArgsOf(("days", effectivePolicy.MaximumDaysPerRequest)));
             var noticeDays = request.StartDate.DayNumber - (await TenantTodayAsync(tenantId, ct)).DayNumber;
             // A policy that requires NO notice must not refuse a backdated request. The guard used
             // to read `NoticeRequiredDays > noticeDays` alone, and for a request that started
@@ -1088,20 +1088,21 @@ public partial class LeaveService : ILeaveService
             // number, and that case is unchanged.
             if (!request.IsEmergency && effectivePolicy.NoticeRequiredDays > 0
                 && effectivePolicy.NoticeRequiredDays > noticeDays)
-                throw new InvalidOperationException($"This policy requires {effectivePolicy.NoticeRequiredDays} day(s) advance notice.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.NoticeRequired, $"This policy requires {effectivePolicy.NoticeRequiredDays} day(s) advance notice.", LeaveRefusedException.ArgsOf(("days", effectivePolicy.NoticeRequiredDays)));
             if (!effectivePolicy.AppliesOnProbation && employee.ProbationEndDate.HasValue
                 && request.StartDate <= employee.ProbationEndDate.Value)
-                throw new InvalidOperationException("This leave policy does not apply during probation.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.Probation, "This leave policy does not apply during probation.");
             // The company's service requirement. Statutory event leave is the law's to grant, not the policy's.
             if (statutoryKind is null && effectivePolicy.MinimumServiceMonths > 0)
             {
                 if (employee.JoiningDate == default)
-                    throw new InvalidOperationException(
-                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service, and the employee has no joining date. Add the joining date first.");
+                    throw new LeaveRefusedException(LeaveRefusalCodes.MinServiceMonths,
+                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service, and the employee has no joining date. Add the joining date first.", LeaveRefusedException.ArgsOf(("months", effectivePolicy.MinimumServiceMonths)));
                 var eligibleFrom = DateOnly.FromDateTime(employee.JoiningDate).AddMonths(effectivePolicy.MinimumServiceMonths);
                 if (request.StartDate < eligibleFrom)
-                    throw new InvalidOperationException(
-                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service — from {eligibleFrom:dd MMM yyyy}.");
+                    throw new LeaveRefusedException(LeaveRefusalCodes.MinServiceMonths,
+                        $"This leave policy applies after {effectivePolicy.MinimumServiceMonths} month(s) of service — from {eligibleFrom:dd MMM yyyy}.",
+                        LeaveRefusedException.ArgsOf(("months", effectivePolicy.MinimumServiceMonths)));
             }
         }
 
@@ -1114,13 +1115,14 @@ public partial class LeaveService : ILeaveService
             // grants a "Yearly" policy a balance.
             var isCalendar = KsaStatutorySpecialLeave.IsCalendarSpan(eventKind);
             if (!withinStatutory && !withinPolicy)
-                throw new InvalidOperationException(
+                throw new LeaveRefusedException(LeaveRefusalCodes.StatutoryLimit,
                     $"{KsaStatutorySpecialLeave.Describe(eventKind)} is {statutorySpan:0.##} {(isCalendar ? "calendar " : string.Empty)}day(s) per event "
                     + $"({KsaStatutorySpecialLeave.Citation(eventKind)})"
                     + (effectivePolicy is { AnnualEntitlementDays: > 0m } p
                         ? $", or {p.AnnualEntitlementDays:0.##} day(s) as your company policy counts them"
                         : string.Empty)
-                    + $". Requested: {(isCalendar ? calendarDays : workingDays):0.##}{(isCalendar ? " calendar" : string.Empty)} day(s).");
+                    + $". Requested: {(isCalendar ? calendarDays : workingDays):0.##}{(isCalendar ? " calendar" : string.Empty)} day(s).",
+                    LeaveRefusedException.ArgsOf(("days", statutorySpan)));
         }
         else if (!DrawsNoBalance(leaveType, effectivePolicy))
         {
@@ -1130,9 +1132,12 @@ public partial class LeaveService : ILeaveService
                     // "Insufficient" was the same sentence for "you have 2 days left" and "no balance exists for that year at all", and told the person nothing to do.
                     var hasRow = await _db.EmployeeLeaveBalances.AsNoTracking().AnyAsync(b =>
                         b.TenantId == tenantId && b.EmployeeId == request.EmployeeId && b.LeaveTypeId == request.LeaveTypeId && b.Year == segment.Year, ct);
-                    throw new InvalidOperationException(hasRow
-                        ? $"Insufficient leave balance for {segment.Year}."
-                        : $"Your {leaveType.NameEn} balance for {segment.Year} has not been set up yet. Ask HR to set up your {segment.Year} leave balance.");
+                    throw hasRow
+                        ? new LeaveRefusedException(LeaveRefusalCodes.InsufficientBalance, $"Insufficient leave balance for {segment.Year}.",
+                            LeaveRefusedException.ArgsOf(("year", segment.Year)))
+                        : new LeaveRefusedException(LeaveRefusalCodes.BalanceNotSetUp,
+                            $"Your {leaveType.NameEn} balance for {segment.Year} has not been set up yet. Ask HR to set up your {segment.Year} leave balance.",
+                            LeaveRefusedException.ArgsOf(("year", segment.Year), ("leaveType", leaveType.NameEn)));
                 }
         }
 
@@ -2581,6 +2586,10 @@ public partial class LeaveService : ILeaveService
     /// <para><b>The others</b> are per event (<see cref="ResolveStatutoryEventAsync"/>). The event may
     /// total the statutory figure, or the company policy's entitlement in its own unit if larger.</para>
     /// </summary>
+    /// <summary>The leave type's name for a Hajj refusal's <c>leaveType</c> arg (the request carries it; Hajj leave otherwise).</summary>
+    private static string HajjTypeName(LeaveRequest request) =>
+        string.IsNullOrWhiteSpace(request.LeaveTypeName) ? "Hajj Leave" : request.LeaveTypeName;
+
     private async Task EnforceKsaStatutoryEventLimitsAsync(
         Guid tenantId, Employee employee, LeaveRequest request, KsaStatutoryLeaveKind kind,
         decimal statutoryDays, LeavePolicy? policy, bool approvedOnly, CancellationToken ct)
@@ -2591,22 +2600,24 @@ public partial class LeaveService : ILeaveService
             var earlier = (await SameKindRequestsAsync(tenantId, employee.Id, kind, request.Id, approvedOnly, null, null, ct))
                 .FirstOrDefault();
             if (earlier is not null)
-                throw new InvalidOperationException(
+                throw new LeaveRefusedException(LeaveRefusalCodes.NotEligible,
                     $"Hajj leave is granted once in an employee's service (Saudi Labour Law Art. 114), and {employee.FullName} "
                     + $"already has Hajj leave from {earlier.StartDate:dd MMM yyyy} ({earlier.Status}). The company can choose to "
-                    + "grant more by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.");
+                    + "grant more by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.",
+                    LeaveRefusedException.ArgsOf(("leaveType", HajjTypeName(request))));
             if (employee.JoiningDate == default)
-                throw new InvalidOperationException(
+                throw new LeaveRefusedException(LeaveRefusalCodes.Other,
                     "Joining date missing — cannot verify Hajj eligibility (Art. 114). Record the employee's joining date, "
                     + "or the company can tick 'Hajj: allow before 2 years or more than once' on the leave policy.");
             var minYears = await _rules.GetDecimalAsync(CountryCodes.Saudi, Jurisdictions.KsaMainland,
                 KsaSpecialLeaveRuleKeys.HajjMinServiceYears, request.StartDate, null, ct) ?? KsaSpecialLeaveDefaults.HajjMinServiceYears;
             var years = KsaAnnualLeaveScale.ContinuousServiceYears(DateOnly.FromDateTime(employee.JoiningDate), request.StartDate);
             if (years < minYears)
-                throw new InvalidOperationException(
+                throw new LeaveRefusedException(LeaveRefusalCodes.NotEligible,
                     $"Hajj leave requires at least {minYears:0.##} consecutive years of service (Saudi Labour Law Art. 114); "
                     + $"{employee.FullName} will have {years:0.#} on {request.StartDate:dd MMM yyyy}. The company can choose to "
-                    + "grant it earlier by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.");
+                    + "grant it earlier by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.",
+                    LeaveRefusedException.ArgsOf(("leaveType", HajjTypeName(request))));
             return;
         }
 
@@ -2617,7 +2628,7 @@ public partial class LeaveService : ILeaveService
 
         var calendar = KsaStatutorySpecialLeave.IsCalendarSpan(kind);
         var first = ev.All.Where(h => ev.SameEvent.Contains(h.Id)).Min(h => h.StartDate);
-        throw new InvalidOperationException(
+        throw new LeaveRefusedException(LeaveRefusalCodes.StatutoryLimit,
             $"{KsaStatutorySpecialLeave.Describe(kind)} is {statutoryDays:0.##} {(calendar ? "calendar " : string.Empty)}day(s) per event "
             + $"({KsaStatutorySpecialLeave.Citation(kind)})"
             + (policyDays > statutoryDays ? $", or {policyDays:0.##} day(s) under your company policy" : string.Empty)
@@ -2626,7 +2637,8 @@ public partial class LeaveService : ILeaveService
             + (IsDeclarable(kind)
                 ? " If this is a separate event (for example a second bereavement), declare it by giving the event date and the "
                   + "reason; if you cannot enter them where you are making this request, ask HR or use the web app to declare a separate event."
-                : string.Empty));
+                : string.Empty),
+            LeaveRefusedException.ArgsOf(("days", statutoryDays)));
     }
 
     /// <summary>
@@ -3065,9 +3077,9 @@ public partial class LeaveService : ILeaveService
         {
             var requested = policies.FirstOrDefault(p => p.Id == requestedPolicyId.Value);
             if (requested is null)
-                throw new InvalidOperationException("Selected leave policy is not active for this leave type.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.TypeUnavailable, "Selected leave policy is not active for this leave type.");
             if (!IsPolicyEligible(requested, eligibilityRows, countryCode, employee.CompanyId, employee.BranchId, employee.DepartmentId, employee.GradeId, employee.Department, employee.Grade, employee.EmploymentType, employee.ContractType, employee.Gender, Zayra.Api.Infrastructure.Compliance.EmployeeNationality.Effective(employee), referenceLists))
-                throw new InvalidOperationException("Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
+                throw new LeaveRefusedException(LeaveRefusalCodes.Other, "Selected leave policy is not eligible for the employee's country, legal entity, branch, department, grade, employment type, or contract type.");
             return requested;
         }
 

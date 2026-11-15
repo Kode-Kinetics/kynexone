@@ -19,6 +19,20 @@ public sealed class LeaveRefusedException : InvalidOperationException
 
     public string Code { get; }
     public IReadOnlyDictionary<string, string> Args { get; }
+
+    /// <summary>The args map, each value culture-invariant (a decimal as <c>0.##</c>), so clients parse the same text everywhere.</summary>
+    public static IReadOnlyDictionary<string, string> ArgsOf(params (string Key, object Value)[] pairs)
+    {
+        var map = new Dictionary<string, string>(pairs.Length);
+        foreach (var (key, value) in pairs)
+            map[key] = value switch
+            {
+                decimal d => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
+                IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                _ => value?.ToString() ?? string.Empty,
+            };
+        return map;
+    }
 }
 
 /// <summary>The leave refusal codes. Clients map each to a translated sentence; an unknown code falls back to the English message.</summary>
