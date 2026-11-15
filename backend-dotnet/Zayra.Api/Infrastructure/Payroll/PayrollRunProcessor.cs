@@ -2554,6 +2554,26 @@ public sealed class PayrollRunProcessor
             loan.OutstandingBalance -= deducted;
             loan.TotalRepaid += deducted;
             if (loan.OutstandingBalance <= 0) loan.Status = "Closed";
+            // Closed by this run (a leaver's final pay recovering the whole loan, or the last instalment): every instalment still
+            // open is settled by it, as a cash early settlement settles them (Paid), so a closed loan carries no Pending rows.
+            if (loan.OutstandingBalance <= 0)
+            {
+                var open = await _db.LoanInstallments
+                    .Where(i => i.TenantId == tenantId && i.LoanId == loan.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                for (var k = 0; k < open.Count; k++)
+                {
+                    var row = open[k];
+                    var share = k == open.Count - 1 ? left : Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share < 0m) share = 0m;
+                    Witness(PayrollConsumptionArtifacts.LoanInstallment, row.Id, loan.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); row.PayrollRunId = id; row.AmountPaid += share;
+                    left -= share;
+                }
+                continue;
+            }
             // Record the paid installment
             var inst = await _db.LoanInstallments
                 .OrderBy(i => i.DueDate)
@@ -2581,6 +2601,25 @@ public sealed class PayrollRunProcessor
             adv.OutstandingBalance -= deducted;
             adv.TotalRepaid += deducted;
             if (adv.OutstandingBalance <= 0) adv.Status = "Closed";
+            // Closed by this run: every instalment still open is settled by it (Paid), exactly as for loans above.
+            if (adv.OutstandingBalance <= 0)
+            {
+                var open = await _db.AdvanceInstallments
+                    .Where(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending")
+                    .OrderBy(i => i.DueDate).ThenBy(i => i.InstallmentNumber).ToListAsync(cancellationToken);
+                var left = deducted;
+                for (var k = 0; k < open.Count; k++)
+                {
+                    var row = open[k];
+                    var share = k == open.Count - 1 ? left : Math.Min(left, row.AmountDue - row.AmountPaid);
+                    if (share < 0m) share = 0m;
+                    Witness(PayrollConsumptionArtifacts.AdvanceInstallment, row.Id, adv.EmployeeIntId ?? 0, share,
+                            row.Status, priorAmountPaid: row.AmountPaid, priorRunId: row.PayrollRunId);
+                    row.Status = "Paid"; row.PaidDate = DateOnly.FromDateTime(DateTime.UtcNow); row.PayrollRunId = id; row.AmountPaid += share;
+                    left -= share;
+                }
+                continue;
+            }
             var inst = await _db.AdvanceInstallments
                 .OrderBy(i => i.DueDate)
                 .FirstOrDefaultAsync(i => i.TenantId == tenantId && i.AdvanceId == adv.Id && i.Status == "Pending" && i.DueDate <= periodEnd, cancellationToken);

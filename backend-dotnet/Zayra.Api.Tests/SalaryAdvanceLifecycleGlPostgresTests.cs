@@ -555,6 +555,43 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         (loan.OutstandingBalance, loan.Status).Should().Be((0m, "Closed"));
     }
 
+    /// <summary>
+    /// A leaver's final pay that recovers a loan and an advance in full, before their instalments are due, settles every one of
+    /// their remaining instalments, as a cash early settlement does: Paid, by this run, nothing left Pending on a closed debt.
+    /// A void of the run puts each instalment back exactly as it was.
+    /// </summary>
+    [Fact]
+    public async Task FinalSettlement_FullRecovery_SettlesEveryRemainingInstalment_OfTheLoanAndTheAdvance_AndAVoidRestoresThem()
+    {
+        var w = await SeedAsync(costing: false);
+        var next = w.Month1.AddMonths(1);
+        var advId = await RequestAsSelfAsync(w, 3_000m, 3, next);
+        await ApproveAndDisburseAsync(w, advId, 3_000m, 3, next);
+        var loanId = await SeedPayrollLoanAsync(w, 1_500m, firstDue: next);
+        var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
+
+        await ProcessAsync(w, s.RunId);
+
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 3_000m);
+        (await AdvanceInstallmentsAsync(advId)).Should().HaveCount(3).And
+            .OnlyContain(i => i.Status == "Paid" && i.AmountPaid == i.AmountDue && i.PayrollRunId == s.RunId && i.PaidDate != null);
+        await using (var db = _fx.CreateDb())
+        {
+            var loan = await db.EmployeeLoans.AsNoTracking().SingleAsync(l => l.Id == loanId);
+            (loan.OutstandingBalance, loan.Status).Should().Be((0m, "Closed"));
+            (await db.LoanInstallments.AsNoTracking().Where(i => i.LoanId == loanId).ToListAsync()).Should().HaveCount(3).And
+                .OnlyContain(i => i.Status == "Paid" && i.AmountPaid == i.AmountDue && i.PayrollRunId == s.RunId && i.PaidDate != null);
+        }
+
+        await using (var db = _fx.CreateDb())
+            Ok<object>(await Payroll(db, w, w.Approver, "Admin").VoidRun(s.RunId, new PayrollDecisionRequest("wrong leaver processed"), Ct), "void");
+        await AssertAdvanceAsync(advId, "Active", outstanding: 3_000m, repaid: 0m);
+        (await AdvanceInstallmentsAsync(advId)).Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null && i.PaidDate == null);
+        await using (var db = _fx.CreateDb())
+            (await db.LoanInstallments.AsNoTracking().Where(i => i.LoanId == loanId).ToListAsync())
+                .Should().OnlyContain(i => i.Status == "Pending" && i.AmountPaid == 0m && i.PayrollRunId == null && i.PaidDate == null);
+    }
+
     [Fact]
     public async Task FinalSettlement_RecoversThePaidOutAdvance_AndLeavesAnApprovedAdvanceAwaitingPayoutAlone()
     {
@@ -753,6 +790,12 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
             InstallmentAmount = amount / 3, RepaymentStartDate = firstDue, OutstandingBalance = amount, Status = "Active",
         };
         db.AddRange(type, loan);
+        for (var n = 1; n <= 3; n++)
+            db.LoanInstallments.Add(new LoanInstallment
+            {
+                TenantId = w.TenantId, LoanId = loan.Id, InstallmentNumber = n, DueDate = firstDue.AddMonths(n - 1),
+                AmountDue = amount / 3, Status = "Pending",
+            });
         await db.SaveChangesAsync();
         return loan.Id;
     }
