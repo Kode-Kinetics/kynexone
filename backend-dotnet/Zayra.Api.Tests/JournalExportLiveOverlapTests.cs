@@ -142,6 +142,81 @@ public class JournalExportLiveOverlapTests
         (await db.GlJournalExports.AsNoTracking().CountAsync()).Should().Be(1);
     }
 
+    // ── 3. A recorded ERP result releases the rows ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AfterTheRunExportIsConfirmed_ThePeriodExportSendsOnlyTheRowsTheErpHasNotPosted()
+    {
+        var (db, tenantId, run) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var checker = await CallerAsync(db, tenantId, "Finance Approver");
+        var runId = IdOf(await CreateRunAsync(db, maker, run));
+        StatusOf(await Ctrl(db, checker).Confirm(runId, new ErpImportConfirmationRequest("SAP-RUN-1"), default)).Should().Be(200);
+        db.ChangeTracker.Clear();
+
+        var period = await CreatePeriodAsync(db, maker);
+
+        StatusOf(period).Should().Be(201);
+        Body(period).GetProperty("kind").GetString().Should().Be("Supplementary");
+        Body(period).GetProperty("previouslyConfirmedExcluded").GetProperty("count").GetInt32().Should().Be(2);
+        Body(period).GetProperty("liveExportOverlaps").EnumerateArray().Should().BeEmpty();
+        (await db.GlJournalExportLines.AsNoTracking().Where(l => l.GlJournalExportId == IdOf(period)).Select(l => l.SourceModule).Distinct().ToListAsync())
+            .Should().Equal(new[] { "Loan" }, "the payroll rows are in the ERP; only the loan is owed");
+    }
+
+    [Fact]
+    public async Task AfterTheRunExportIsRejected_ThePeriodExportSendsEveryRow()
+    {
+        var (db, tenantId, run) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var checker = await CallerAsync(db, tenantId, "Finance Approver");
+        var runId = IdOf(await CreateRunAsync(db, maker, run));
+        StatusOf(await Ctrl(db, checker).Reject(runId, new ErpImportRejectionRequest("Wrong cost centre"), default)).Should().Be(200);
+        db.ChangeTracker.Clear();
+
+        var period = await CreatePeriodAsync(db, maker);
+
+        StatusOf(period).Should().Be(201);
+        Body(period).GetProperty("kind").GetString().Should().Be("Full");
+        Body(period).GetProperty("entryCount").GetInt32().Should().Be(3);
+        Body(period).GetProperty("liveExportOverlaps").EnumerateArray().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ExportingTheWaitingFilesOwnScopeAgain_SupersedesIt_AndTheNewFileThenHoldsTheRows()
+    {
+        var (db, tenantId, run) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var first = IdOf(await CreateRunAsync(db, maker, run));
+
+        var again = await CreateRunAsync(db, maker, run);
+
+        StatusOf(again).Should().Be(201, "the way forward the refusal names: the same scope again, in the same format");
+        (await db.GlJournalExports.AsNoTracking().SingleAsync(x => x.Id == first)).Status.Should().Be(GlJournalExportStatuses.Superseded);
+        var period = await CreatePeriodAsync(db, maker);
+        StatusOf(period).Should().Be(409);
+        Body(period).GetProperty("exportId").GetGuid().Should().Be(IdOf(again), "a superseded file holds nothing; the new one does");
+    }
+
+    [Fact]
+    public async Task ARejectedJournalOfAWaitingFile_IsOwedAgain_ButItsPendingJournalStillBlocks()
+    {
+        var (db, tenantId, _) = await JulyAsync();
+        var maker = await CallerAsync(db, tenantId, "Payroll Manager");
+        var checker = await CallerAsync(db, tenantId, "Finance Approver");
+        var group = IdOf(await CreatePeriodAsync(db, maker));
+        var loanJournal = Body(await Ctrl(db, checker).Get(group, default)).GetProperty("journals").EnumerateArray()
+            .Select(j => j.GetProperty("journalRef").GetString()!).Single(r => r.Contains("Loan"));
+        var reject = await Ctrl(db, checker).RejectJournals(group, new ErpJournalRejectionRequest(new() { new(loanJournal, "Bank account unknown") }), default);
+        Body(reject).GetProperty("status").GetString().Should().Be(GlJournalExportStatuses.Exported, "the payroll journal is still waiting");
+        db.ChangeTracker.Clear();
+
+        StatusOf(await CreatePeriodAsync(db, maker, CompanyB)).Should().Be(201, "the ERP refused the loan journal, so its rows are owed again");
+        var companyA = await CreatePeriodAsync(db, maker, CompanyA);
+        StatusOf(companyA).Should().Be(409);
+        Body(companyA).GetProperty("exportId").GetGuid().Should().Be(group);
+    }
+
     // ── Harness ───────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>July: company A payroll run (two one-sided accrual rows), company B loan disbursement (two-sided).</summary>
