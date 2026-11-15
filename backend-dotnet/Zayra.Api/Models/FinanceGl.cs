@@ -352,8 +352,9 @@ public static class GlEventTypes
 
     /// <summary>
     /// A balance carried in from the client's previous system by the opening-balance import, booked against Opening Balance
-    /// Equity (3900) on the cutover date: today only a carried-in salary advance (DR 1410 / CR 3900, a restatement posting the
-    /// difference either way; <c>AdvanceOpeningJournal</c>). Written once per source entity and amount, never by payroll.
+    /// Equity (3900) on the cutover date: a carried-in loan (DR 1400 / CR 3900) or salary advance (DR 1410 / CR 3900), a
+    /// restatement posting the difference either way (<c>OpeningBalanceJournal</c>). Written once per source entity and amount,
+    /// never by payroll, and never sent to the ERP: the journal export leaves these rows out (the client's ERP already holds them).
     /// </summary>
     public const string OpeningBalance = "OpeningBalance";
 

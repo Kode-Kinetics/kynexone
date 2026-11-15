@@ -38,9 +38,9 @@ public class FinanceLedgerWriterSweepTests
         ["Controllers/Finance/LoansController.Corrections.cs"] = (0, 1, 0, 0),
         // Advance disbursement posting.
         ["Controllers/Finance/AdvancesController.cs"] = (1, 0, 0, 1),
-        // A carried-in advance's opening journal from the opening-balance import (inserts only: the first posting, then only a
-        // restatement's difference), driven by OpeningBalanceAdvanceImportPostgresTests.
-        ["Infrastructure/Finance/AdvanceOpeningJournal.cs"] = (1, 0, 0, 1),
+        // A carried-in loan's or advance's opening journal from the opening-balance import (inserts only: the first posting, then
+        // only a restatement's difference), driven by OpeningBalanceLoanImportPostgresTests and OpeningBalanceAdvanceImportPostgresTests.
+        ["Infrastructure/Finance/OpeningBalanceJournal.cs"] = (1, 0, 0, 1),
         // Bonus accrual, cancel contra (+ origin.IsReversed = true only when the contra closes the accrual), payment.
         ["Controllers/Finance/BonusesController.cs"] = (3, 1, 0, 2),   // accrual now built by BonusCostSplit; driven by BonusCostingPostgresTests
         // Manual GL adjustments (inserts only).

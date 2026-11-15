@@ -692,6 +692,10 @@ public sealed partial class MigrationImportController
         else { loan.UpdatedAtUtc = DateTime.UtcNow; loan.UpdatedBy = UserId(); }
 
         await RebuildLoanScheduleAsync(loan, plan, ct);
+        // The receivable on the ledger, as for a carried-in advance: DR 1400 / CR 3900 on the cutover date, only the difference on
+        // a restatement and nothing on a repeat, inside the section's locked, retry-safe transaction. Never exported to the ERP.
+        await Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PostAsync(
+            _db, Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt.For(loan), plan.CutoverDate, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty, ct);
         await StampOriginAsync(OpeningBalanceEntityTypes.Loan, loan.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
         return created ? "created" : "updated";
@@ -885,8 +889,8 @@ public sealed partial class MigrationImportController
         // ledger (DR 1410 / CR 3900 on the cutover date, only the difference on a restatement), so the instalments payroll
         // credits to 1410 relieve a debit that exists. Both run inside the section's locked, retry-safe transaction.
         await RebuildAdvanceScheduleAsync(advance, plan, ct);
-        await Zayra.Api.Infrastructure.Finance.AdvanceOpeningJournal.PostAsync(
-            _db, advance, plan.CutoverDate, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty, ct);
+        await Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.PostAsync(
+            _db, Zayra.Api.Infrastructure.Finance.OpeningBalanceDebt.For(advance), plan.CutoverDate, plan.Currency, UserId(), User.Identity?.Name ?? string.Empty, ct);
 
         await StampOriginAsync(OpeningBalanceEntityTypes.Advance, advance.Id, plan.Employee, plan.CutoverDate,
             plan.OutstandingBalance, plan.Currency, plan.SourceSystem, plan.SourceRecordId, cutover, ct);
