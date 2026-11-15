@@ -659,6 +659,15 @@ public partial class AdvancesController : ControllerBase
         var glEntries = await _db.FinanceGlEntries
             .Where(x => x.TenantId == tid && x.SourceModule == "Advance"
                 && (scope.IsUnrestricted || advanceIds.Contains(x.SourceEntityId))).ToListAsync(ct);
+        // Audit P1-5 — the sub-ledger against the 1410 balance, per company, for an org-wide reader only: a team-scoped
+        // reader's sub-ledger is partial (the comparison would be meaningless) and the company GL balance is not theirs.
+        IReadOnlyList<AdvanceReceivableTieOutRow>? tieOut = null;
+        if (scope.IsUnrestricted)
+        {
+            var entityScope = this.GetEntityScope();
+            tieOut = await AdvanceReceivableTieOut.ComputeAsync(_db, tid,
+                entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds.ToArray(), ct);
+        }
 
         return Ok(new
         {
@@ -676,6 +685,7 @@ public partial class AdvancesController : ControllerBase
             TotalOutstanding = advances.Sum(x => x.OutstandingBalance),
             TotalRepaid = advances.Sum(x => x.TotalRepaid),
             GlEntriesCount = glEntries.Count,
+            ReceivableTieOut = tieOut,
             Reconciliation = advances.Select(a =>
             {
                 var disbursed = AdvanceStatuses.IsPaid(a.Status) ? a.ApprovedAmount : 0m;

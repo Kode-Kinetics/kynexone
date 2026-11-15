@@ -787,6 +787,10 @@ public partial class FinanceGlController : ControllerBase
         if (ScopeError(companyId) is { } err) return err;
 
         var rows = await GlControlAccounts.CheckAsync(_db, tid.Value, companyId, ct);
+        // Audit P1-5 — the advance sub-ledger (Σ OutstandingBalance of Active advances) against the 1410 balance, per company:
+        // the requested company, or every company plus the unattributed bucket for a group-level reader. Added alongside the
+        // existing fields; `healthy` keeps its meaning (the sign invariants) and the tie-out carries its own flag.
+        var tieOut = await AdvanceReceivableTieOut.ComputeAsync(_db, tid.Value, companyId is { } cid ? new[] { cid } : null, ct);
         return Ok(new
         {
             generatedAtUtc = DateTime.UtcNow,
@@ -797,6 +801,7 @@ public partial class FinanceGlController : ControllerBase
             {
                 r.Driver, r.Account, r.Nature, r.ScopedBalance, r.TenantBalance, r.IsHealthy, r.Violation,
             }).ToList(),
+            advanceReceivableTieOut = new { healthy = tieOut.All(r => !r.Flagged), companies = tieOut },
         });
     }
 
