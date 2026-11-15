@@ -1013,6 +1013,14 @@ public sealed partial class MigrationImportController
         if (advance.Status != "Active")
             throw new InvalidOperationException(
                 $"[advance_not_active] Advance {plan.AdvanceNumber} is {advance.Status}, so it is not restated or reopened.");
+        // A final settlement moved (part of) it to the 1420 employee receivable: the balance dropped with nothing repaid, and the
+        // move is on the advance's own trail. Restating it would put the debt back on the advance while 1420 still carries it.
+        if (Math.Abs(advance.ApprovedAmount - advance.TotalRepaid - advance.OutstandingBalance) > 0.005m
+            || await _db.AdvanceAuditLogs.AsNoTracking().AnyAsync(
+                l => l.TenantId == tenantId && l.AdvanceId == advance.Id && l.Action == Zayra.Api.Infrastructure.Payroll.AdvanceResidualAudit.Action, ct))
+            throw new InvalidOperationException(
+                $"[advance_moved_to_employee_receivable] Advance {plan.AdvanceNumber} has been moved (in part) to the 1420 employee receivable by a final settlement, so its opening balance is not restated. Correct it in Salary Advances. " +
+                $"/ نُقلت السلفة {plan.AdvanceNumber} (جزئيًا) إلى ذمم الموظفين المدينة 1420 بتسوية نهائية، فلا يُعاد بيان رصيدها الافتتاحي. صحّحها من شاشة السلف.");
     }
 
     private Task<Zayra.Api.Infrastructure.Finance.OpeningBalanceJournal.Prepared> PrepareAdvanceJournalAsync(
