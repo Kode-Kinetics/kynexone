@@ -40,6 +40,8 @@ try {
    if(p.startsWith(bp))bankRequests.push(p);
    if(p===bp+`/batches/${batchId}/availability`)return json({enabled:activation});
    if(p===bp+'/formats')return json(formats);
+   if(p===bp+`/companies/${companyId}/templates`)return json([]);
+   if(p===bp+'/templates/catalog')return json({fields:[],layouts:[],encodings:[],lineEndings:[],extensions:[],delimiters:[],quoteRules:[],dateFormats:[],decimalSeparators:[],thousandsSeparators:[],starters:[],acceptanceStatus:''});
    if(p===bp+`/companies/${companyId}/settings`)return json(settings);
    if(p===bp+`/batches/${batchId}/context`)return json({companyId,companyName:'Synthetic Employer',countryCode:'SA',runStatus:'Locked',existingExport:artifact});
    if(p===bp+`/batches/${batchId}/validate`)return json({canExport:true,errors:[],warnings:[],employeeCount:2,totalAmount:11550.5,currency:'SAR',formatId});

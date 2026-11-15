@@ -32,6 +32,7 @@ import { DatePicker } from '../ui/DateParts';
 import { useAuth } from '../../contexts/AuthContext';
 import { bankFileProductionAllowed, bankTemplatesAllowed } from '../../lib/payrollPaymentAccess';
 import { SaudiBankBeneficiaryEditor } from './SaudiBankBeneficiaryEditor';
+import type { BankFlowProgress } from '../../lib/bankFileSteps';
 import { CustomBankTemplateEditor } from './CustomBankTemplateEditor';
 
 // Copy for the custom-template format only (the ANB copy above is unchanged).
@@ -511,7 +512,11 @@ type Busy = null | 'save' | 'validate' | 'generate' | 'download';
 type LoadState = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready' };
 type ActionError = { message: string; issues?: SaudiBankExportIssue[] } | null;
 
-export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: { batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string> }) {
+export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels, onProgress }: {
+  batchId: string; employeeIds?: number[]; employeeLabels?: Record<number, string>;
+  /** Where the batch is in check -> create -> download, for the step flow above the panel. */
+  onProgress?: (p: BankFlowProgress) => void;
+}) {
   const { locale, t } = useLocale();
   const c = locale === 'ar' ? AR : EN;
   const { hasPermission } = useAuth();
@@ -620,6 +625,16 @@ export function SaudiBankExportPanel({ batchId, employeeIds, employeeLabels }: {
   const existingMatches = !!artifact
     && artifact.batchReference === batchInput.batchReference
     && (artifact.paymentDate ?? '').slice(0, 10) === batchInput.paymentDate;
+
+  // The step flow above this panel follows the same facts the buttons below use.
+  const progressValidation: BankFlowProgress['validation'] = busy === 'validate' ? 'running'
+    : !validation ? 'none' : validationStale ? 'stale' : validation.result.canExport ? 'passed' : 'blocked';
+  const progressGenerated = !!artifact;
+  useEffect(() => {
+    if (load.status !== 'ready') { onProgress?.({ gate: 'ready', validation: 'none', generated: false }); return; }
+    onProgress?.({ gate: 'ready', validation: progressValidation, generated: progressGenerated });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load.status, progressValidation, progressGenerated]);
 
   // Pre-select the only supported format when nothing is saved yet (explicit, visible choice).
   useEffect(() => {

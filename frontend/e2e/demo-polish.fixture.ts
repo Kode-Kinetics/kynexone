@@ -6,6 +6,8 @@ import type { Page, Route } from '@playwright/test';
  * screen makes, and a per-test route table. Nothing is read from or written to a real backend.
  */
 export type Locale = 'en' | 'ar';
+/** Returned by a handler that answers the route itself (a status, a delay): the shell then does not fulfil it again. */
+export const HANDLED = Symbol('route handled by the handler');
 /** Return a JSON body to answer the request, or undefined to fall through to the defaults. */
 export type Handler = (path: string, search: URLSearchParams, method: string, route: Route) => unknown | undefined;
 
@@ -36,6 +38,7 @@ export async function boot(page: Page, opts: { locale: Locale; url: string; rout
     requests.push(`${request.method()} ${path}`);
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
     const custom = opts.routes?.(path, url.searchParams, request.method(), route);
+    if (custom === HANDLED) return;
     if (custom !== undefined) return json(custom);
     if (path === '/api/auth/me') return json(USER);
     if (path === '/api/auth/mfa/status') return json({ promptToEnroll: false });

@@ -61,7 +61,8 @@ import { RovingTabList, TabPanel } from '../components/ui/RovingTabs';
 import { SaudiBankExportGate } from '../components/payroll/SaudiBankExportGate';
 import { AttendanceReconciliationPanel } from '../components/payroll/AttendanceReconciliationPanel';
 import { payrollInsightEmptyCopy, payrollInsightState, payrollPeriodState } from '../lib/payrollInsightState';
-import { LoadFailedNotice } from '../components/ui/LoadFailedRow';
+import { LoadFailedNotice, LoadFailedRow } from '../components/ui/LoadFailedRow';
+import { SkeletonRows } from '../components/ui/Skeleton';
 import { employeeWorkspaceHref } from '../lib/peopleRoutes';
 import { RunPipeline } from '../components/payroll/RunPipeline';
 import { useLockWithSummary } from '../hooks/useLockWithSummary';
@@ -2699,6 +2700,10 @@ function PayslipsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; o
 
 // ── Bank / WPS Files Tab ────────────────────────────────────────────────────────
 
+/** A read a tab makes: still loading, loaded, or failed (with the error, so a refusal is told from an outage). */
+type LoadStatus = { status: 'idle' } | { status: 'loading' } | { status: 'ready' } | { status: 'failed'; error: unknown };
+const isForbidden = (error: unknown) => (error as { response?: { status?: number } } | null)?.response?.status === 403;
+
 function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; onRunChange?: (id: string | null) => void }) {
   const t = useT();
   // Creating a batch and generating the file need payroll.export (Admin) or payroll.payment_batch.manage. Without either the actions are shown off, with the reason.
@@ -2720,19 +2725,30 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
   const autoOpenedRef = useRef<string | null>(null);
   const currentRunRef = useRef(runId);
   currentRunRef.current = runId;
+  // A list that is still loading or failed to load is never shown as an empty one.
+  const [runsState, setRunsState] = useState<LoadStatus>({ status: 'loading' });
+  const [batchesState, setBatchesState] = useState<LoadStatus>({ status: 'idle' });
+  const [recordsState, setRecordsState] = useState<LoadStatus>({ status: 'idle' });
+  const [reloadKey, setReloadKey] = useState(0);
 
-  useEffect(() => { payrollApi.listAllRuns().then(setRuns).catch(() => {}); }, []);
+  useEffect(() => {
+    setRunsState({ status: 'loading' });
+    payrollApi.listAllRuns().then(rows => { setRuns(rows); setRunsState({ status: 'ready' }); }).catch(error => setRunsState({ status: 'failed', error }));
+  }, [reloadKey]);
 
   useEffect(() => {
     let cancelled = false;
     openBatchIdRef.current = null;
     autoOpenedRef.current = null;
-    setBatches([]); setSelectedBatch(null); setRecords([]);
-    if (!runId) return;
+    setBatches([]); setSelectedBatch(null); setRecords([]); setRecordsState({ status: 'idle' });
+    if (!runId) { setBatchesState({ status: 'idle' }); return; }
     setError('');
-    payrollApi.listPaymentBatches(runId).then(rows => { if (!cancelled) setBatches(rows); }).catch(() => {});
+    setBatchesState({ status: 'loading' });
+    payrollApi.listPaymentBatches(runId)
+      .then(rows => { if (!cancelled) { setBatches(rows); setBatchesState({ status: 'ready' }); } })
+      .catch(error => { if (!cancelled) setBatchesState({ status: 'failed', error }); });
     return () => { cancelled = true; };
-  }, [runId]);
+  }, [runId, reloadKey]);
 
   const selectedRun = runs.find(r => r.id === runId);
   // Backend (C5 control) only allows payment batches for Locked runs — finance must lock first.
@@ -2741,9 +2757,10 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
 
   const openBatch = (batch: PayrollPaymentBatch) => {
     openBatchIdRef.current = batch.id;
-    setSelectedBatch(batch); setRecords([]);
+    setSelectedBatch(batch); setRecords([]); setRecordsState({ status: 'loading' });
     payrollApi.paymentRecords(batch.id)
-      .then(rows => { if (openBatchIdRef.current === batch.id) setRecords(rows); }).catch(() => {});
+      .then(rows => { if (openBatchIdRef.current === batch.id) { setRecords(rows); setRecordsState({ status: 'ready' }); } })
+      .catch(error => { if (openBatchIdRef.current === batch.id) setRecordsState({ status: 'failed', error }); });
   };
 
   useEffect(() => {
@@ -2858,6 +2875,13 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
           <span>{error}</span>
         </div>
       )}
+      {runsState.status === 'failed' && (
+        <div role="alert" data-testid="bank-runs-failed" className="flex flex-wrap items-center gap-2 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-400">
+          <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>{t('The payroll runs could not be loaded.')}</span>
+          <button type="button" className={btn.link} onClick={() => setReloadKey(n => n + 1)}>{t('Retry')}</button>
+        </div>
+      )}
 
       {selectedBatch && (
         <nav aria-label={t('Jump to a section of this tab')} data-testid="bank-wps-jump" className="flex flex-wrap items-center gap-x-1 gap-y-1 rounded-lg bg-slate-50 px-3 py-1.5 text-xs dark:bg-white/5">
@@ -2876,7 +2900,10 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
           <div className="border-b border-slate-100 px-4 py-3 dark:border-white/5">
             <p className="text-sm font-semibold text-slate-800 dark:text-white">{t('Payment Batches')}</p>
           </div>
-          {batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
+          {!runId ? <p className="p-5 text-sm text-fg-muted">{t('Choose a payroll run to see its payment batches.')}</p>
+            : batchesState.status === 'loading' ? <SkeletonRows rows={2} className="p-4" />
+            : batchesState.status === 'failed' ? <LoadFailedNotice error={batchesState.error} onRetry={() => setReloadKey(n => n + 1)} />
+            : batches.length === 0 ? <p className="p-5 text-sm text-slate-400">{t('No batches yet.')}</p> : (
             <div className="divide-y divide-slate-100 dark:divide-white/5">
               {batches.map(b => (
                 <div key={b.id} role="button" tabIndex={0} onClick={() => openBatch(b)}
@@ -2921,7 +2948,11 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-white/[0.05]">
-                  {records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
+                  {recordsState.status === 'loading' && <tr><td colSpan={5} className="p-4"><SkeletonRows rows={4} /></td></tr>}
+                  {recordsState.status === 'failed' && (isForbidden(recordsState.error)
+                    ? <tr><td colSpan={5} role="alert" data-testid="bank-records-forbidden" className="py-8 text-center text-sm text-fg-muted">{t('The payment records need the Payroll export permission. Ask an administrator to give it to your role.')}</td></tr>
+                    : <LoadFailedRow colSpan={5} error={recordsState.error} onRetry={() => openBatch(selectedBatch)} />)}
+                  {recordsState.status === 'ready' && records.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-sm text-slate-400">{t('No records.')}</td></tr>}
                   {records.map(r => (
                     <tr key={r.id} className="hover:bg-slate-50 dark:hover:bg-white/[0.03]">
                       <td className="px-4 py-2 font-medium text-slate-900 dark:text-white">
@@ -2949,7 +2980,7 @@ function BankWpsTab({ selectedRunId, onRunChange }: { selectedRunId?: string; on
           </span>
         </div>
       )}
-      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
+      {selectedBatch && <div id="bank-wps-bank-file" tabIndex={-1} className="outline-none"><SaudiBankExportGate key={selectedBatch.id} batchId={selectedBatch.id} isSaudi={selectedBatch.isSaudi === true} employeeIds={records.map(r => r.employeeId)} employeeLabels={employeeLabelsFromRecords(records)} /></div>}
     </div>
   );
 }
@@ -2980,9 +3011,14 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
   // With a run selected on the page, this tab lists that run's batches (the same run the other tabs work on); "Show all runs" lifts that.
   const [showAllRuns, setShowAllRuns] = useState(false);
   const scopedRunId = !showAllRuns && selectedRunId ? selectedRunId : undefined;
+  // A failed read is not an empty register: the tab says it could not load and offers Retry.
+  const [loadError, setLoadError] = useState<unknown>(null);
   const loadBatches = () => {
     setLoading(true);
-    payrollApi.listPaymentBatches(scopedRunId).then(setBatches).catch(() => {}).finally(() => setLoading(false));
+    payrollApi.listPaymentBatches(scopedRunId)
+      .then(rows => { setBatches(rows); setLoadError(null); })
+      .catch(error => { setBatches([]); setLoadError(error ?? new Error('load failed')); })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => { loadBatches(); // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3117,7 +3153,9 @@ function PaymentTrackingTab({ selectedRunId }: { selectedRunId?: string }) {
           <KpiCard label={t('Total Amount')} value={totalLabel} sub={totalLabel === t('Mixed currencies') ? perCurrency(totals, fmtAmt, t) : undefined} icon={TrendingUp} color="bg-cyan-100 text-cyan-600 dark:bg-cyan-500/20 dark:text-cyan-400" />
         </div>
       )}
-      {loading ? <p className="text-sm text-slate-400">{t('Loading…')}</p> : batches.length === 0 ? (
+      {loading ? <SkeletonRows rows={3} />
+        : loadError != null ? <div className="surface"><LoadFailedNotice error={loadError} onRetry={loadBatches} /></div>
+        : batches.length === 0 ? (
         <div className="surface flex flex-col items-center py-16 text-center">
           <TrendingUp className="mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">{t('No payment batches yet')}</p>
