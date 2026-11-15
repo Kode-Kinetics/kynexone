@@ -127,7 +127,7 @@ export function MyLeavePage() {
       setNotice({ tone: 'ok', text: t('Your leave request was sent for approval.') });
       await load();
     } catch (err) {
-      setNotice({ tone: 'error', text: leaveRefusalText(err, t) });
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
     } finally {
       setSubmitting(false);
     }
@@ -148,7 +148,7 @@ export function MyLeavePage() {
       setNotice({ tone: 'ok', text: t('Cancellation requested. Your approver will review it.') });
       await load();
     } catch (err) {
-      setNotice({ tone: 'error', text: leaveRefusalText(err, t) });
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
     } finally {
       setCancellingId(null);
     }
@@ -164,7 +164,7 @@ export function MyLeavePage() {
       setNotice({ tone: 'ok', text: t('Your leave request was cancelled.') });
       await load();
     } catch (err) {
-      setNotice({ tone: 'error', text: leaveRefusalText(err, t) });
+      setNotice({ tone: 'error', text: leaveRefusalText(err, t, 'self', locale) });
     } finally {
       setCancellingId(null);
     }

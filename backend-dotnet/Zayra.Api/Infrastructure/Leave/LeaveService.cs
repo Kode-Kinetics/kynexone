@@ -905,7 +905,7 @@ public partial class LeaveService : ILeaveService
         // whoever files it, before any statutory or balance rule. An employee whose gender is not recorded is refused nothing.
         if (!await LeaveTypeEligibility.IsEligibleAsync(_db, tenantId, leaveType, employee, ct))
             throw new LeaveRefusedException(LeaveRefusalCodes.NotEligible, $"{leaveType.NameEn} is not available to you.",
-                LeaveRefusedException.ArgsOf(("leaveType", leaveType.NameEn)));
+                LeaveRefusedException.ArgsWithLeaveType(leaveType.NameEn, leaveType.NameAr));
 
         var blackout = await _db.LeaveBlackoutDates.AsNoTracking()
             .Where(b => b.TenantId == tenantId
@@ -1143,7 +1143,7 @@ public partial class LeaveService : ILeaveService
                             LeaveRefusedException.ArgsOf(("year", segment.Year)))
                         : new LeaveRefusedException(LeaveRefusalCodes.BalanceNotSetUp,
                             $"Your {leaveType.NameEn} balance for {segment.Year} has not been set up yet. Ask HR to set up your {segment.Year} leave balance.",
-                            LeaveRefusedException.ArgsOf(("year", segment.Year), ("leaveType", leaveType.NameEn)));
+                            LeaveRefusedException.ArgsWithLeaveType(leaveType.NameEn, leaveType.NameAr, ("year", segment.Year)));
                 }
         }
 
@@ -2596,6 +2596,9 @@ public partial class LeaveService : ILeaveService
     private static string HajjTypeName(LeaveRequest request) =>
         string.IsNullOrWhiteSpace(request.LeaveTypeName) ? "Hajj Leave" : request.LeaveTypeName;
 
+    private async Task<string?> HajjTypeNameArAsync(LeaveRequest request, CancellationToken ct) =>
+        await _db.LeaveTypes.AsNoTracking().Where(t => t.Id == request.LeaveTypeId).Select(t => t.NameAr).FirstOrDefaultAsync(ct);
+
     private async Task EnforceKsaStatutoryEventLimitsAsync(
         Guid tenantId, Employee employee, LeaveRequest request, KsaStatutoryLeaveKind kind,
         decimal statutoryDays, LeavePolicy? policy, bool approvedOnly, CancellationToken ct)
@@ -2610,7 +2613,7 @@ public partial class LeaveService : ILeaveService
                     $"Hajj leave is granted once in an employee's service (Saudi Labour Law Art. 114), and {employee.FullName} "
                     + $"already has Hajj leave from {earlier.StartDate:dd MMM yyyy} ({earlier.Status}). The company can choose to "
                     + "grant more by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.",
-                    LeaveRefusedException.ArgsOf(("leaveType", HajjTypeName(request))));
+                    LeaveRefusedException.ArgsWithLeaveType(HajjTypeName(request), await HajjTypeNameArAsync(request, ct)));
             if (employee.JoiningDate == default)
                 throw new LeaveRefusedException(LeaveRefusalCodes.Other,
                     "Joining date missing — cannot verify Hajj eligibility (Art. 114). Record the employee's joining date, "
@@ -2623,7 +2626,7 @@ public partial class LeaveService : ILeaveService
                     $"Hajj leave requires at least {minYears:0.##} consecutive years of service (Saudi Labour Law Art. 114); "
                     + $"{employee.FullName} will have {years:0.#} on {request.StartDate:dd MMM yyyy}. The company can choose to "
                     + "grant it earlier by ticking 'Hajj: allow before 2 years or more than once' on the leave policy.",
-                    LeaveRefusedException.ArgsOf(("leaveType", HajjTypeName(request))));
+                    LeaveRefusedException.ArgsWithLeaveType(HajjTypeName(request), await HajjTypeNameArAsync(request, ct)));
             return;
         }
 

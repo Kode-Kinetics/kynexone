@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useFormat } from '@/utils/format';
 import { splitMinutes } from '@/features/overtime/overtimeLogic';
-import { classifyLeavePayError, errorShape, pluralCategory } from './leavePayText';
+import { classifyLeavePayError, errorShape, pluralCategory, refusalLeaveTypeName } from './leavePayText';
 
 type PluralGroup = 'days' | 'calendarDays' | 'months' | 'daysLeft' | 'instalmentsLeft';
 
@@ -48,7 +48,7 @@ export function useLeavePayText() {
         days: inline('days', args.days),
         months: inline('months', args.months),
         year: args.year ?? '',
-        leaveType: args.leaveType ?? '',
+        leaveType: refusalLeaveTypeName(args, language),
       });
     };
 

@@ -30,7 +30,7 @@ import {
   unitemisedAmount,
 } from '../src/features/payslips/payslipLogic.ts';
 import { mapLeaveBalanceRow, simpleBalanceEquation } from '../src/api/leaveBalanceMapper.ts';
-import { classifyLeavePayError, errorShape, pluralCategory } from '../src/features/leave/leavePayText.ts';
+import { classifyLeavePayError, errorShape, pluralCategory, refusalLeaveTypeName } from '../src/features/leave/leavePayText.ts';
 
 // ---- Leave ---------------------------------------------------------------------------------
 
@@ -312,4 +312,18 @@ test('leave balance: no equation when carry-forward or adjustments are in play',
   assert.equal(row.available, 16);
   assert.equal(simpleBalanceEquation(row), null);
   assert.equal(simpleBalanceEquation(mapLeaveBalanceRow({ ...BALANCES_EMPLOYEE_3[0], available: 12 })), null);
+});
+
+test('a refusal names the leave type in Arabic when the UI is Arabic and the server sent the Arabic name', () => {
+  const args = { year: '2026', leaveType: 'Annual Leave', leaveTypeAr: 'إجازة سنوية' };
+  assert.equal(refusalLeaveTypeName(args, 'ar'), 'إجازة سنوية');
+  assert.equal(refusalLeaveTypeName(args, 'en'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({ leaveType: 'Annual Leave' }, 'ar'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({ leaveType: 'Annual Leave', leaveTypeAr: '  ' }, 'ar'), 'Annual Leave');
+  assert.equal(refusalLeaveTypeName({}, 'ar'), '');
+});
+
+test('errorShape keeps the Arabic leave type name the server sent', () => {
+  const shape = errorShape({ response: { status: 400, data: { code: 'leave_not_eligible', args: { leaveType: 'Hajj Leave', leaveTypeAr: 'إجازة الحج' } } } });
+  assert.equal(shape.args?.leaveTypeAr, 'إجازة الحج');
 });

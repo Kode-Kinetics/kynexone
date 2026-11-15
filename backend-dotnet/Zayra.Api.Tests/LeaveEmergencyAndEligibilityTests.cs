@@ -267,6 +267,8 @@ public sealed class LeaveEmergencyAndEligibilityTests
         var w = await LeaveBatch1World.CreateAsync();
         await MakeCompanyKsaAsync(w, country);
         var maternity = await AddTypeAsync(w, "MATERNITY", "Maternity Leave", "Maternity");
+        maternity.NameAr = "إجازة الأمومة";
+        await w.Db.SaveChangesAsync();
         await SetGenderAsync(w, "MALE");
 
         var day = w.NextWorkday();
@@ -279,6 +281,7 @@ public sealed class LeaveEmergencyAndEligibilityTests
         refused.Code.Should().Be(LeaveRefusalCodes.NotEligible);
         refused.Message.Should().Be("Maternity Leave is not available to you.");
         refused.Args["leaveType"].Should().Be("Maternity Leave");
+        refused.Args["leaveTypeAr"].Should().Be("إجازة الأمومة");
         (await w.Db.LeaveRequests.AnyAsync(r => r.LeaveTypeId == maternity.Id)).Should().BeFalse();
     }
 

@@ -13,6 +13,9 @@ import { requestFailureReason } from './requestFailure';
  *
  * `audience` only changes the missing-balance sentence: "your balance" for an employee in self-service, "this employee" for HR
  * applying on someone's behalf.
+ *
+ * `locale` picks the leave type's name: the server sends `leaveType` (English) and, when the type has one, `leaveTypeAr`. In
+ * Arabic the sentence uses the Arabic name; without one (or in any other language) it keeps the English name.
  */
 type Translator = (key: string, params?: MessageParams) => string;
 
@@ -51,11 +54,12 @@ function argsOf(raw: unknown): Record<string, string> {
   return out;
 }
 
-export function leaveRefusalText(err: unknown, t: Translator, audience: 'self' | 'hr' = 'self'): string {
+export function leaveRefusalText(err: unknown, t: Translator, audience: 'self' | 'hr' = 'self', locale?: string): string {
   const data = (err as ErrorLike)?.response?.data;
   const code = typeof data?.code === 'string' ? data.code : '';
   if (!code.startsWith('leave_')) return t(requestFailureReason(err));
   const args = argsOf(data?.args);
+  if (locale === 'ar' && args.leaveTypeAr?.trim() && args.leaveType) args.leaveType = args.leaveTypeAr.trim();
 
   if (code === 'leave_balance_not_set_up') {
     return args.year && args.leaveType

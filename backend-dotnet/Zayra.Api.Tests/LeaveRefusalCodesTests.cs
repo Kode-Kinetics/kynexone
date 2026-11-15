@@ -292,6 +292,35 @@ public sealed class LeaveRefusalCodesTests
     }
 
     [Fact]
+    public async Task BalanceNotSetUp_also_carries_the_arabic_leave_type_name_when_the_type_has_one()
+    {
+        var w = await LeaveBatch1World.CreateAsync();
+        var day = w.NextWorkday();
+        w.Db.EmployeeLeaveBalances.RemoveRange(w.Db.EmployeeLeaveBalances.Where(b => b.EmployeeId == w.Emp.Id));
+        (await w.Db.LeaveTypes.SingleAsync(t => t.Id == w.LeaveType.Id)).NameAr = "إجازة سنوية";
+        await w.Db.SaveChangesAsync();
+
+        var refused = await RefusedAsync(w, Req(w, day));
+
+        refused.Args.Should().ContainKey("leaveType").WhoseValue.Should().Be("Annual Leave");
+        refused.Args.Should().ContainKey("leaveTypeAr").WhoseValue.Should().Be("إجازة سنوية");
+        refused.Message.Should().Be($"Your Annual Leave balance for {day.Year} has not been set up yet. Ask HR to set up your {day.Year} leave balance.");
+    }
+
+    [Fact]
+    public async Task BalanceNotSetUp_leaves_the_arabic_name_out_when_the_type_has_none()
+    {
+        var w = await LeaveBatch1World.CreateAsync();
+        var day = w.NextWorkday();
+        w.Db.EmployeeLeaveBalances.RemoveRange(w.Db.EmployeeLeaveBalances.Where(b => b.EmployeeId == w.Emp.Id));
+        await w.Db.SaveChangesAsync();
+
+        var refused = await RefusedAsync(w, Req(w, day));
+
+        refused.Args.Should().NotContainKey("leaveTypeAr");
+    }
+
+    [Fact]
     public async Task AnExistingInvalidOperationCatch_still_sees_the_refusal()
     {
         var w = await LeaveBatch1World.CreateAsync();

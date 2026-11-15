@@ -65,3 +65,26 @@ test('failures that are not leave refusals are described as before', () => {
   expect(leaveRefusalText(http(403, { message: 'Nope.' }), en)).toBe('You do not have permission for this. Nope.');
   expect(leaveRefusalText({ isAxiosError: true }, en)).toBe('The server could not be reached. Check your connection, then retry.');
 });
+
+test('in Arabic the sentence names the leave type in Arabic when the server sent the Arabic name', () => {
+  const balance = refuse('leave_balance_not_set_up', { year: '2027', leaveType: 'Annual Leave', leaveTypeAr: 'إجازة سنوية' });
+  const arabic = leaveRefusalText(balance, ar, 'self', 'ar');
+  expect(arabic).toContain('إجازة سنوية');
+  expect(arabic).not.toContain('Annual Leave');
+  expect(hasLatinLetters(arabic)).toBe(false);
+  expect(leaveRefusalText(balance, ar, 'hr', 'ar')).toContain('إجازة سنوية');
+
+  const eligibility = refuse('leave_not_eligible', { leaveType: 'Maternity Leave', leaveTypeAr: 'إجازة الأمومة' });
+  expect(leaveRefusalText(eligibility, ar, 'self', 'ar')).toContain('إجازة الأمومة');
+  expect(leaveRefusalText(eligibility, ar, 'self', 'ar')).not.toContain('Maternity');
+});
+
+test('in English the leave type stays the English name, and Arabic falls back to it when no Arabic name was sent', () => {
+  const both = refuse('leave_balance_not_set_up', { year: '2027', leaveType: 'Annual Leave', leaveTypeAr: 'إجازة سنوية' });
+  expect(leaveRefusalText(both, en, 'self', 'en')).toContain('Annual Leave');
+  expect(leaveRefusalText(both, en, 'self', 'en')).not.toContain('إجازة سنوية');
+  const englishOnly = refuse('leave_balance_not_set_up', { year: '2027', leaveType: 'Annual Leave' });
+  expect(leaveRefusalText(englishOnly, ar, 'self', 'ar')).toContain('Annual Leave');
+  const blankArabic = refuse('leave_not_eligible', { leaveType: 'Maternity Leave', leaveTypeAr: '' });
+  expect(leaveRefusalText(blankArabic, ar, 'self', 'ar')).toContain('Maternity Leave');
+});

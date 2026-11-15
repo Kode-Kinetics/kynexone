@@ -66,7 +66,7 @@ export interface ErrorShape {
   status?: number;
   message?: string;
   code?: string;
-  /** The values a refusal sentence needs (days, months, year, leaveType). Present only when the server sent them. */
+  /** The values a refusal sentence needs (days, months, year, leaveType, and leaveTypeAr when the type has an Arabic name). Present only when the server sent them. */
   args?: Record<string, string>;
 }
 
@@ -83,6 +83,15 @@ export function errorShape(error: unknown): ErrorShape {
   const args = stringArgs(e.response.data?.args);
   if (args) shape.args = args;
   return shape;
+}
+
+/**
+ * The leave type's name for a refusal sentence. The server sends `leaveType` (English) and, when the type has one,
+ * `leaveTypeAr`; Arabic UI uses the Arabic name and falls back to the English one.
+ */
+export function refusalLeaveTypeName(args: Record<string, string> | undefined, language: 'en' | 'ar'): string {
+  const ar = args?.leaveTypeAr?.trim();
+  return language === 'ar' && ar ? ar : (args?.leaveType ?? '');
 }
 
 /** The refusal args as a string map, or undefined when the server sent none (older servers) or something else. */

@@ -33,6 +33,18 @@ public sealed class LeaveRefusedException : InvalidOperationException
             };
         return map;
     }
+
+    /// <summary>
+    /// The args for a refusal that names a leave type: <c>leaveType</c> (the English name, which the English message uses) and,
+    /// when the type has an Arabic name, <c>leaveTypeAr</c> so an Arabic client can name it in Arabic. Left out when blank,
+    /// so a client falls back to the English name.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ArgsWithLeaveType(string nameEn, string? nameAr, params (string Key, object Value)[] pairs)
+    {
+        var map = new Dictionary<string, string>(ArgsOf(pairs)) { ["leaveType"] = nameEn };
+        if (!string.IsNullOrWhiteSpace(nameAr)) map["leaveTypeAr"] = nameAr.Trim();
+        return map;
+    }
 }
 
 /// <summary>The leave refusal codes. Clients map each to a translated sentence; an unknown code falls back to the English message.</summary>
@@ -55,7 +67,7 @@ public static class LeaveRefusalCodes
     public const string Blackout = "leave_blackout";
     public const string TypeUnavailable = "leave_type_unavailable";
     public const string StatutoryLimit = "leave_statutory_limit";                 // args: days (when known)
-    public const string NotEligible = "leave_not_eligible";                       // args: leaveType
+    public const string NotEligible = "leave_not_eligible";                       // args: leaveType, leaveTypeAr
     public const string InvalidDates = "leave_invalid_dates";
     public const string Other = "leave_refused";                                  // a refusal with no dedicated sentence yet
 }

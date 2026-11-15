@@ -549,7 +549,7 @@ const LEAVE_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const LEAVE_ATTACHMENT_ACCEPT = '.pdf,.jpg,.jpeg,.png,.heic,application/pdf,image/jpeg,image/png,image/heic';
 
 function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?: number; isEmployee?: boolean }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { user } = useAuth();
   const [attachment, setAttachment] = useState<File | null>(null);
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
@@ -649,7 +649,7 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
       const data = (e as { response?: { data?: { code?: unknown; message?: string } } })?.response?.data;
       // A leave refusal carries a stable code the screen translates; anything else keeps the server's sentence.
       setError(typeof data?.code === 'string' && data.code.startsWith('leave_')
-        ? leaveRefusalText(e, t, 'hr')
+        ? leaveRefusalText(e, t, 'hr', locale)
         : data?.message ?? t('Failed to submit request.'));
     }
     setSaving(false);
