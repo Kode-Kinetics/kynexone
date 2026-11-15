@@ -2972,23 +2972,15 @@ public class EmployeesController : ControllerBase
             if (request.CostCenterId is not null && !OrgWriteRules.MayManageCostCentres(this)) return Forbid();
 
             // Enforce employee limit
-            var sub = await _db.TenantSubscriptions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(s => s.TenantId == tenantId, cancellationToken);
-
-            if (sub is not null && sub.MaxEmployees > 0)
-            {
-                var count = await _db.Employees.CountAsync(e => e.TenantId == tenantId && e.Status == "Active" && !e.IsDeleted, cancellationToken);
-                if (count >= sub.MaxEmployees)
-                    return StatusCode(402, new
-                    {
-                        error           = "employee_limit_reached",
-                        currentCount    = count,
-                        maxAllowed      = sub.MaxEmployees,
-                        message         = $"Your plan allows up to {sub.MaxEmployees} active employees. You have {count}. Upgrade your plan to add more.",
-                        upgradeRequired = true,
-                    });
-            }
+            if (await EmployeeSeatLimit.ReachedAsync(_db, tenantId, cancellationToken) is { } reached)
+                return StatusCode(402, new
+                {
+                    error           = "employee_limit_reached",
+                    currentCount    = reached.Count,
+                    maxAllowed      = reached.Max,
+                    message         = $"Your plan allows up to {reached.Max} active employees. You have {reached.Count}. Upgrade your plan to add more.",
+                    upgradeRequired = true,
+                });
 
             // CanViewSensitive() — the write response is a read of the record and obeys the same mask
             // gate as GET {id}; see IEmployeeManagementService.CreateAsync.
@@ -4452,6 +4444,7 @@ public class EmployeesController : ControllerBase
             {
                 error = "unknown_status",
                 message = $"'{request.Status}' is not an employee status. Use one of: {string.Join(", ", EmployeeStatuses.Assignable)}.",
+                messageAr = $"'{request.Status}' ليست حالة موظف. استخدم إحدى الحالات التالية: {string.Join("، ", EmployeeStatuses.Assignable)}.",
                 allowed = EmployeeStatuses.Assignable,
             });
         try
@@ -5201,7 +5194,9 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> ResolveDuplicate(int id, [FromBody] ResolveDuplicateRequest req, CancellationToken ct)
     {
         var tenantId = RequireTenant();
-        if (!await CanAccessEmployeeAsync(id, ct)) return Forbid();
+        // A merged duplicate is soft-deleted, so it is authorised by its own company (as the Ex-Employees archive does): the live-employee id
+        // set a company-bounded caller carries never holds it, which made unmerge and a repeated merge unreachable for them.
+        if (!await CanAccessEmployeeOrMergedRowAsync(id, ct)) return Forbid();
         var resolution = (req.Resolution ?? string.Empty).Trim().ToLowerInvariant();
         var context = Context();
 
@@ -5210,7 +5205,12 @@ public class EmployeesController : ControllerBase
             var employee = await _db.Employees.FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && !x.IsDeleted, ct);
             if (employee is null) return NotFound();
             if (string.IsNullOrWhiteSpace(req.Reason))
-                return BadRequest(new { message = "A reason is required to confirm this is a distinct person." });
+                return BadRequest(new
+                {
+                    error = "reason_required", code = "reason_required",
+                    message = "A reason is required to confirm this is a distinct person.",
+                    messageAr = "يجب ذكر سبب لتأكيد أن هذا شخص مختلف.",
+                });
 
             var open = await _db.EmployeeImportGaps
                 .Where(g => g.TenantId == tenantId && g.EmployeeId == id && g.ResolvedAtUtc == null
@@ -5228,10 +5228,27 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "merge")
         {
-            if (req.IntoEmployeeId is not int intoId) return BadRequest(new { message = "intoEmployeeId is required for a merge." });
-            if (intoId == id) return BadRequest(new { message = "An employee cannot be merged into itself." });
+            if (req.IntoEmployeeId is not int intoId)
+                return BadRequest(new
+                {
+                    error = "into_employee_required", code = "into_employee_required",
+                    message = "intoEmployeeId is required for a merge.",
+                    messageAr = "يجب تحديد السجل الذي سيُدمج فيه السجل المكرر (intoEmployeeId).",
+                });
+            if (intoId == id)
+                return BadRequest(new
+                {
+                    error = "merge_into_itself", code = "merge_into_itself",
+                    message = "An employee cannot be merged into itself.",
+                    messageAr = "لا يمكن دمج الموظف في نفسه.",
+                });
             if (string.IsNullOrWhiteSpace(req.Reason))
-                return BadRequest(new { message = "A reason is required to merge a duplicate record." });
+                return BadRequest(new
+                {
+                    error = "reason_required", code = "reason_required",
+                    message = "A reason is required to merge a duplicate record.",
+                    messageAr = "يجب ذكر سبب لدمج السجل المكرر.",
+                });
             if (!await CanAccessEmployeeAsync(intoId, ct)) return Forbid();
 
             IActionResult MergeBlocked(IReadOnlyList<MergeBlocker> blockers) => Conflict(new
@@ -5247,15 +5264,40 @@ public class EmployeesController : ControllerBase
                 blockers = blockers.Select(b => new { type = b.Type, label = b.Label, labelAr = b.LabelAr, count = b.Count }),
             });
 
+            IActionResult SurvivorNotFound() => BadRequest(new
+            {
+                error = "survivor_not_found", code = "survivor_not_found",
+                message = "The survivor record was not found.",
+                messageAr = "لم يتم العثور على السجل المراد الإبقاء عليه.",
+            });
+
+            // A merge combines two entries of the SAME person within ONE company. Two records in different companies (or one with a company
+            // and one without) cannot be shown to be the same company, so the merge is refused before anything is read or written.
+            // Neither record having a company (legacy unscoped rows) crosses no company boundary and is allowed.
+            IActionResult AcrossCompanies() => Conflict(new
+            {
+                error = "merge_across_companies",
+                code = "merge_across_companies",
+                message = "These two records belong to different companies. A merge only combines duplicate entries of the same person within one company; moving someone between companies is not a merge.",
+                messageAr = "هذان السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة للشخص نفسه داخل شركة واحدة، ونقل شخص بين الشركات ليس دمجاً.",
+            });
+
             // A REPEAT of a merge that already happened (its answer was lost): the duplicate is already merged into this survivor. Answer 200 and
             // write nothing. Any other deleted record is still "not found".
             var before = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Merge: read the duplicate whether or not it is already merged; the tenant is pinned.")
-                .AsNoTracking().Where(x => x.Id == id).Select(x => new { x.IsDeleted, x.DuplicateOfEmployeeId, x.PublicId }).FirstOrDefaultAsync(ct);
+                .AsNoTracking().Where(x => x.Id == id).Select(x => new { x.IsDeleted, x.DuplicateOfEmployeeId, x.PublicId, x.CompanyId }).FirstOrDefaultAsync(ct);
             if (before is null) return NotFound();
             if (before.IsDeleted)
                 return before.DuplicateOfEmployeeId == intoId ? Ok(new { resolved = "merge", intoEmployeeId = intoId, alreadyMerged = true }) : NotFound();
 
-            // ALL the blocker counts first, as ONE statement and BEFORE any lock is taken: a duplicate that is going to be refused never
+            // EVERY refusal that needs only the two rows comes BEFORE the tenant-wide finance create locks below: a merge that is going to be
+            // refused (no usable survivor, two companies) must not queue behind a loan or an advance being created in the whole tenant.
+            var survivorRow = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId, "Merge: is the survivor a live record, and which company; the tenant is pinned.")
+                .AsNoTracking().Where(x => x.Id == intoId).Select(x => new { x.IsDeleted, x.CompanyId }).FirstOrDefaultAsync(ct);
+            if (survivorRow is null || survivorRow.IsDeleted) return SurvivorNotFound();
+            if (before.CompanyId != survivorRow.CompanyId) return AcrossCompanies();
+
+            // ALL the blocker counts next, as ONE statement and BEFORE any lock is taken: a duplicate that is going to be refused never
             // holds or queues for a row lock. Only the cheap checks are repeated under the locks below.
             var preBlockers = await EmployeeMergeBlockers.FindAsync(_db, tenantId, id, before.PublicId, null, ct);
             if (preBlockers.Count > 0) return MergeBlocked(preBlockers);
@@ -5284,19 +5326,10 @@ public class EmployeesController : ControllerBase
                 return done == intoId ? Ok(new { resolved = "merge", intoEmployeeId = intoId, alreadyMerged = true }) : NotFound();
             }
             var survivor = lockedRows.FirstOrDefault(x => x.Id == intoId);
-            if (survivor is null) return BadRequest(new { message = "The survivor record was not found." });
+            if (survivor is null) return SurvivorNotFound();
 
-            // A merge combines two entries of the SAME person within ONE company. Two records in different companies (or one with a company
-            // and one without) cannot be shown to be the same company, so the merge is refused before anything is read or written.
-            // Neither record having a company (legacy unscoped rows) crosses no company boundary and is allowed.
-            if (duplicate.CompanyId != survivor.CompanyId)
-                return Conflict(new
-                {
-                    error = "merge_across_companies",
-                    code = "merge_across_companies",
-                    message = "These two records belong to different companies. A merge only combines duplicate entries of the same person within one company; moving someone between companies is not a merge.",
-                    messageAr = "هذان السجلان يتبعان شركتين مختلفتين. الدمج يجمع فقط الإدخالات المكررة للشخص نفسه داخل شركة واحدة، ونقل شخص بين الشركات ليس دمجاً.",
-                });
+            // Re-checked under the row locks: the rows were only read, not locked, when the early refusals above ran.
+            if (duplicate.CompanyId != survivor.CompanyId) return AcrossCompanies();
 
             // The merge moves NOTHING to the kept employee. The full count already ran before the locks (so a refusal never queues behind a
             // row lock); it is repeated here, under them, for EVERY type: it is one statement, and the wait for the finance locks can be as long
@@ -5359,16 +5392,10 @@ public class EmployeesController : ControllerBase
                 bulkTokenUpdates: false,
                 ct);
 
-            // Deactivate the merged record's payroll footprint (it is now IsDeleted, so EOSB/settlement calculators can no longer read
-            // its salary structure). STAGED, so it commits with the merge or not at all. Reversible via unmerge (best-effort).
-            var (profilesDeactivated, structuresDeactivated) = await EmployeeManagementService.StagePayrollFootprintDeactivationAsync(
-                _db, tenantId, id, deactivateSalaryStructure: true, context, ct);
-            if (profilesDeactivated > 0 || structuresDeactivated > 0)
-                _audit.Stage("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
-                    JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = structuresDeactivated, profileDeactivated = profilesDeactivated }));
-
-            // Full, reconstructable audit link (S4): both codes + signals, not just ids. Staged LAST: the whole merge is ONE SaveChanges, so
-            // the soft-delete, the approvals, the flags, the credential closure, the payroll footprint and this row commit together or not at all.
+            // Full, reconstructable audit link (S4): both codes + signals, not just ids. The whole merge is ONE SaveChanges, so the soft-delete,
+            // the approvals, the flags, the credential closure, the payroll footprint and these rows commit together or not at all. This row is staged
+            // BEFORE the footprint row below on purpose: an unmerge takes the footprint row written at or after the merge's own row as the record of
+            // what this merge switched off, so the footprint must never carry an earlier time than the merge row.
             _audit.Stage("employee.merged_into_existing", "Employee", id.ToString(), context, JsonSerializer.Serialize(new
             {
                 intoEmployeeId = intoId,
@@ -5390,6 +5417,14 @@ public class EmployeesController : ControllerBase
                 },
                 reversible = "POST resolve-duplicate {resolution:'unmerge'} restores this record."
             }));
+
+            // Deactivate the merged record's payroll footprint (it is now IsDeleted, so EOSB/settlement calculators can no longer read
+            // its salary structure). STAGED, so it commits with the merge or not at all. Reversible via unmerge (best-effort).
+            var (profilesDeactivated, structuresDeactivated) = await EmployeeManagementService.StagePayrollFootprintDeactivationAsync(
+                _db, tenantId, id, deactivateSalaryStructure: true, context, ct);
+            if (profilesDeactivated > 0 || structuresDeactivated > 0)
+                _audit.Stage("employee.payroll_footprint_deactivated", "Employee", id.ToString(), context,
+                    JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = structuresDeactivated, profileDeactivated = profilesDeactivated }));
             await _db.SaveChangesAsync(ct);
             return Ok(new { resolved = "merge", intoEmployeeId = intoId });
             }
@@ -5412,11 +5447,10 @@ public class EmployeesController : ControllerBase
 
         if (resolution == "unmerge")
         {
-            // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the
-            // record; payroll reactivation is best-effort (only what the merge's footprint row says it switched off) —
-            // a deep field-level reconciliation is out of scope for this slice.
+            // Recovery path for a mistaken merge (twins wrongly merged). Reverses the link + restores the record. It needs employees.write,
+            // like the merge. Authorised above by the row's own company (the merged record is soft-deleted).
             // IgnoreQueryFilters is intentional: the merged record is soft-deleted so the global !IsDeleted
-            // filter hides it — bypass to read it back (scope already enforced by CanAccessEmployeeAsync above).
+            // filter hides it — bypass to read it back (scope already enforced above).
             var merged = await _db.Employees.IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.TenantId == tenantId && x.Id == id && x.IsDeleted && x.DuplicateOfEmployeeId != null, ct);
             if (merged is null) return NotFound();
@@ -5426,45 +5460,57 @@ public class EmployeesController : ControllerBase
             merged.DeletedBy = null;
             merged.RetentionUntilUtc = null;
             merged.PrivacyStatus = string.Empty;
-            // Back to the status it had before the merge, read from the merge's own audit row. A merge made before that was recorded has
-            // nothing to read: it falls back to Draft (the longstanding behaviour; Active is never assumed) and the status history says so.
+            // The status it had before the merge, read from the merge's own audit row. A merge made before that was recorded has nothing to
+            // read: it falls back to Draft (Active is never assumed) and the status history says so. ONLY the newest merge row is read: an
+            // older merge's status is never borrowed. That row's time also bounds which payroll-footprint row belongs to this merge (below).
             var mergeAudits = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
                     "Unmerge reads the merge's own audit row, whatever company it was written under; the tenant is pinned.")
                 .Where(a => a.Action == "employee.merged_into_existing" && a.EntityId == id.ToString() && a.Metadata != null)
-                .OrderByDescending(a => a.CreatedAtUtc).Select(a => a.Metadata).Take(1).ToListAsync(ct);   // ONLY the newest merge row: an older merge's status is never borrowed
+                .OrderByDescending(a => a.CreatedAtUtc).Select(a => new { a.Metadata, a.CreatedAtUtc }).Take(1).ToListAsync(ct);
             string? recordedStatus = null;
-            foreach (var meta in mergeAudits)
+            DateTime? mergeAuditAt = mergeAudits.Count > 0 ? mergeAudits[0].CreatedAtUtc : null;
+            foreach (var row in mergeAudits)
             {
                 try
                 {
-                    using var doc = JsonDocument.Parse(meta!);
+                    using var doc = JsonDocument.Parse(row.Metadata!);
                     if (doc.RootElement.TryGetProperty("previousStatus", out var ps) && ps.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(ps.GetString()))
                     { recordedStatus = ps.GetString(); break; }
                 }
                 catch (JsonException) { /* an unreadable row proves nothing */ }
             }
+            // The record always comes back as Draft first. Going on to the pre-merge status is a normal status change (below), so it passes
+            // every gate a normal status change does: the activation/readiness gate, the establishment seat check, the plan's employee limit.
+            var requestedStatus = recordedStatus is null ? null : EmployeeStatuses.Canonical(recordedStatus) ?? recordedStatus;
             var statusBeforeUnmerge = merged.Status;
-            merged.Status = recordedStatus ?? "Draft";
+            merged.Status = EmployeeStatuses.Draft;
+            var restoreHistoryId = Guid.NewGuid();
             _db.EmployeeStatusHistories.Add(new EmployeeStatusHistory
             {
-                TenantId = tenantId, EmployeeId = id, OldStatus = statusBeforeUnmerge ?? string.Empty, NewStatus = merged.Status,
+                Id = restoreHistoryId, TenantId = tenantId, EmployeeId = id, OldStatus = statusBeforeUnmerge ?? string.Empty, NewStatus = merged.Status,
                 EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow), ChangedByUserId = context.UserId,
                 Reason = recordedStatus is null
                     ? "Merge undone. The status before the merge was not recorded (an older merge), so the record returns to Draft."
-                    : "Merge undone. The record returns to the status it had before the merge.",
+                    : string.Equals(requestedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase)
+                        ? "Merge undone. The record returns to Draft, the status it had before the merge."
+                        : $"Merge undone. The record returns to Draft first, then to {requestedStatus}, the status it had before the merge, if the normal status checks allow it.",
             });
             merged.DuplicateOfEmployeeId = null;
 
             // Put back only what the merge took away. The merge records how many salary structures it deactivated; a structure that was
             // already inactive before the merge (a closed, historical package) must stay closed, so with no such record nothing is
-            // reactivated, and otherwise at most that many, latest effective date first.
-            var mergeFootprints = await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
-                    "Unmerge reads the merge's own footprint audit row, whatever company it was written under; the tenant is pinned.")
-                .Where(a => a.Action == "employee.payroll_footprint_deactivated" && a.EntityId == id.ToString() && a.Metadata != null)
-                .OrderByDescending(a => a.CreatedAtUtc)
-                .Select(a => a.Metadata)
-                .Take(20)
-                .ToListAsync(ct);
+            // reactivated, and otherwise at most that many, latest effective date first. The footprint row must be the one THIS merge wrote:
+            // one at or after the merge's own audit row (an earlier merge-and-unmerge cycle's row, or a row with no merge row to be tied to,
+            // is never used).
+            var mergeFootprints = mergeAuditAt is not { } mergeTime
+                ? new List<string?>()
+                : await ScopedBypass.NullableTenantWide(_db.AuditLogs, tenantId,
+                        "Unmerge reads the merge's own footprint audit row, whatever company it was written under; the tenant is pinned.")
+                    .Where(a => a.Action == "employee.payroll_footprint_deactivated" && a.EntityId == id.ToString() && a.Metadata != null && a.CreatedAtUtc >= mergeTime)
+                    .OrderByDescending(a => a.CreatedAtUtc)
+                    .Select(a => a.Metadata)
+                    .Take(20)
+                    .ToListAsync(ct);
             var mergeFootprint = mergeFootprints.FirstOrDefault(m => m is not null && m.Contains("merged_duplicate"));
             var toReactivate = 0;
             var wpsToRestore = 0;
@@ -5481,7 +5527,7 @@ public class EmployeesController : ControllerBase
             // WPS eligibility goes back only where the merge switched it off: at most as many profiles as the merge recorded clearing, and never
             // for a twin that comes back with an exit status (the exit cascade's "never pay this profile again" gate stays shut). With no footprint
             // row (an older merge) the profiles are left exactly as they are. A profile that was never WPS-eligible is never turned on.
-            if (wpsToRestore > 0 && !WpsRestoreBlockedStatuses.Contains(merged.Status, StringComparer.OrdinalIgnoreCase))
+            if (wpsToRestore > 0 && !WpsRestoreBlockedStatuses.Contains(requestedStatus ?? EmployeeStatuses.Draft, StringComparer.OrdinalIgnoreCase))
             {
                 var cleared = await _db.EmployeePayrollProfiles
                     .Where(x => x.TenantId == tenantId && x.EmployeeId == id && !x.IsDeleted && !x.WpsEligible)
@@ -5498,12 +5544,91 @@ public class EmployeesController : ControllerBase
 
             await _db.SaveChangesAsync(ct);
             await RefreshReadinessByIdAsync(tenantId, id, ct);
+
+            // Back to the pre-merge status, only through the same checks a normal status change makes. Anything that stops it leaves the record
+            // as the Draft it was just restored to, with the reason noted, never a half-applied status.
+            string? fallbackReason = recordedStatus is null ? "not_recorded" : null;
+            if (requestedStatus is not null && !string.Equals(requestedStatus, EmployeeStatuses.Draft, StringComparison.OrdinalIgnoreCase))
+            {
+                if (EmployeeStatuses.Canonical(requestedStatus) is null)
+                    fallbackReason = "status_change_refused";
+                else if (string.Equals(requestedStatus, EmployeeStatuses.Active, StringComparison.OrdinalIgnoreCase)
+                         && await EmployeeSeatLimit.ReachedAsync(_db, tenantId, ct) is not null)
+                    fallbackReason = "plan_limit";
+                else
+                {
+                    var statusService = HttpContext?.RequestServices?.GetService(typeof(IEmployeeManagementService)) as IEmployeeManagementService
+                        ?? new EmployeeManagementService(_db, _audit, _documents, _notifications, _establishmentGuard, _activationGuard, _duplicateDetector);
+                    try
+                    {
+                        await statusService.ChangeStatusAsync(tenantId, id,
+                            new EmployeeStatusChangeRequest(requestedStatus, DateOnly.FromDateTime(DateTime.UtcNow), "Merge undone: back to the status the record had before the merge."),
+                            context, ct);
+                    }
+                    catch (EmployeeActivationBlockedException) { fallbackReason = "activation_blocked"; }
+                    catch (EmployeeValidationException) { fallbackReason = "activation_blocked"; }
+                    catch (EstablishmentBudgetExceededException) { fallbackReason = "establishment_full"; }
+                    catch (SettledServiceReactivationException) { fallbackReason = "settled_service"; }
+                    catch (InvalidOperationException) { fallbackReason = "status_change_refused"; }
+                    catch (DbUpdateException) { fallbackReason = "status_change_refused"; }
+                    // A refused change rolled its own transaction back; nothing it tracked in memory may leak into what is written next.
+                    if (fallbackReason is not null) _db.ChangeTracker.Clear();
+                }
+            }
+
+            var finalStatus = await _db.Employees.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.TenantId == tenantId && x.Id == id).Select(x => x.Status).FirstAsync(ct);
+            var statusRestored = fallbackReason is null;
+            var (reasonEn, reasonAr) = fallbackReason switch
+            {
+                "activation_blocked" => ("it does not yet meet the activation requirements (see its readiness checklist)", "لا يستوفي متطلبات التفعيل بعد (راجع قائمة الجاهزية الخاصة به)"),
+                "establishment_full" => ("there is no free seat in its department's staffing budget", "لا يوجد مقعد شاغر في ميزانية الملاك الوظيفي لقسمه"),
+                "plan_limit" => ("the plan's limit of active employees is reached", "تم بلوغ الحد الأقصى للموظفين النشطين في الباقة"),
+                "settled_service" => ("its final settlement for the current service period is already approved or paid; bring the person back with Rehire", "تمت الموافقة على تسوية نهاية الخدمة لفترة الخدمة الحالية أو دفعها؛ أعد الشخص عبر إعادة التعيين"),
+                "status_change_refused" => ("the status change was refused", "تم رفض تغيير الحالة"),
+                "not_recorded" => ("the status before the merge was not recorded (an older merge)", "لم تُسجَّل الحالة السابقة للدمج (دمج قديم)"),
+                _ => (string.Empty, string.Empty),
+            };
+            if (fallbackReason is not null && fallbackReason != "not_recorded")
+            {
+                var history = await _db.EmployeeStatusHistories.FirstOrDefaultAsync(h => h.Id == restoreHistoryId, ct);
+                if (history is not null)
+                {
+                    history.Reason = $"Merge undone. The record returns to Draft instead of {requestedStatus}: {reasonEn}.";
+                    await _db.SaveChangesAsync(ct);
+                }
+            }
+
+            // The merge closed the duplicate's login, and an unmerge never re-opens it: that is a separate, privileged access decision.
+            var facts = await EmployeeAccessStates.LoadAsync(_db, tenantId, [id], ct);
+            var loginClosed = !(facts.TryGetValue(id, out var accessFacts) && EmployeeAccessStates.LoginEnabled(accessFacts));
+            var messageEn = statusRestored
+                ? $"Merge undone. The record is back as {finalStatus}."
+                : $"Merge undone. The record is back as Draft instead of {requestedStatus ?? "its earlier status"}: {reasonEn}.";
+            var messageAr = statusRestored
+                ? $"تم التراجع عن الدمج. عاد السجل بحالة {finalStatus}."
+                : $"تم التراجع عن الدمج. عاد السجل بحالة مسودة بدلاً من {requestedStatus ?? "حالته السابقة"}: {reasonAr}.";
+            if (loginClosed)
+            {
+                messageEn += " Its login stays closed: the merge closed it, and it must be re-issued (a new welcome code) before this person can sign in.";
+                messageAr += " يبقى تسجيل الدخول مغلقاً: أغلقه الدمج، ويجب إعادة إصداره (رمز ترحيب جديد) قبل أن يتمكن الشخص من تسجيل الدخول.";
+            }
+
             await _audit.WriteAsync("employee.duplicate_merge_reversed", "Employee", id.ToString(), context,
-                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, restoredStatus = merged.Status, reason = req.Reason?.Trim() }), ct);
-            return Ok(new { resolved = "unmerge", restored = id });
+                JsonSerializer.Serialize(new { restoredFromMergeInto = intoId, restoredStatus = finalStatus, requestedStatus, fallbackReason, reason = req.Reason?.Trim() }), ct);
+            return Ok(new
+            {
+                resolved = "unmerge", restored = id, status = finalStatus, requestedStatus, statusRestored, fallbackReason,
+                loginClosed, loginReissueRequired = loginClosed, message = messageEn, messageAr,
+            });
         }
 
-        return BadRequest(new { message = "resolution must be 'distinct', 'merge', or 'unmerge'." });
+        return BadRequest(new
+        {
+            error = "unknown_resolution", code = "unknown_resolution",
+            message = "resolution must be 'distinct', 'merge', or 'unmerge'.",
+            messageAr = "يجب أن تكون قيمة resolution إحدى القيم: distinct أو merge أو unmerge.",
+        });
     }
 
     /// <summary>
@@ -7473,6 +7598,32 @@ public class EmployeesController : ControllerBase
 
         var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
         return scope.CanAccessEmployee(employeeId) && this.GetEntityScope().CanAccessCompany(employee.CompanyId);
+    }
+
+    /// <summary>
+    /// <see cref="CanAccessEmployeeAsync"/> for a row that may be soft-deleted (a merged duplicate). A live row is authorised exactly as
+    /// before. A soft-deleted row is authorised on its own CompanyId against the caller's companies, the way the Ex-Employees archive does:
+    /// the data scope's employee-id set was built from LIVE employees only, so for an organisation-level caller bounded to some companies it
+    /// can never contain a merged duplicate. A row with no company, or one outside the caller's companies, never matches. An absent row is
+    /// the action's own 404, not a refusal.
+    /// </summary>
+    private async Task<bool> CanAccessEmployeeOrMergedRowAsync(int employeeId, CancellationToken cancellationToken)
+    {
+        var tenantId = RequireTenant();
+        var row = await ScopedBypass.NullableTenantWide(_db.Employees, tenantId,
+                "Merge/unmerge authorization must resolve the target's company and deleted flag before the ambient filters can hide it.")
+            .AsNoTracking()
+            .Where(x => x.Id == employeeId)
+            .Select(x => new { x.CompanyId, x.IsDeleted })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (row is null) return true;
+        if (!row.IsDeleted) return await CanAccessEmployeeAsync(employeeId, cancellationToken);
+
+        var scope = await _scopeService.ResolveAsync(User, tenantId, cancellationToken);
+        var inScope = scope.OrganizationCompanyIds is { } companies
+            ? row.CompanyId.HasValue && companies.Contains(row.CompanyId.Value)
+            : scope.CanAccessEmployee(employeeId);
+        return inScope && this.GetEntityScope().CanAccessCompany(row.CompanyId);
     }
 
     private async Task<IReadOnlyCollection<int>?> ResolveVisibleEmployeeIdsAsync(CancellationToken cancellationToken)

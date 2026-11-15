@@ -752,11 +752,19 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
                     TenantId = t.TenantId, EmployeeId = t.Duplicate.Id, SalaryStructureId = Guid.NewGuid(), BasicSalary = 1000m * year, Currency = name,
                     EffectiveDate = new DateOnly(year, 1, 1), IsActive = false,
                 });
+            // The merge's own audit row, then (a moment later, as a real merge writes them) the footprint row of what it switched off.
+            seed.AuditLogs.Add(new AuditLog
+            {
+                TenantId = t.TenantId, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(),
+                Metadata = "{\"reason\":\"same person\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+            });
+            await seed.SaveChangesAsync();
             if (mergeDeactivated > 0)
                 seed.AuditLogs.Add(new AuditLog
                 {
                     TenantId = t.TenantId, Action = "employee.payroll_footprint_deactivated", EntityName = "Employee", EntityId = t.Duplicate.Id.ToString(),
                     Metadata = System.Text.Json.JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = mergeDeactivated, profileDeactivated = 0 }),
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10).AddSeconds(1),
                 });
             await seed.SaveChangesAsync();
         }
@@ -901,6 +909,7 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
     public async Task Unmerge_PutsTheRecordBackToItsPreMergeStatus_AndWritesAStatusHistoryRow()
     {
         var t = await SeedTwinsAsync();   // the duplicate is an Active imported twin with no status history of its own
+        await MakeActivationFixtureAsync(t, complete: true);   // complete, so the normal activation gate lets it back to Active
         Assert.IsType<OkObjectResult>(await MergeAsync(t));
 
         await using (var db = _fx.CreateDb())
@@ -909,7 +918,8 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
         await using var read = _fx.CreateDb();
         (await read.Employees.IgnoreQueryFilters().SingleAsync(e => e.Id == t.Duplicate.Id)).Status.Should().Be("Active", "it comes back as it was, not forced to Draft");
         var rows = await read.EmployeeStatusHistories.IgnoreQueryFilters().Where(h => h.EmployeeId == t.Duplicate.Id).ToListAsync();
-        rows.Should().Contain(h => h.OldStatus == "Inactive" && h.NewStatus == "Active", "the transition is recorded");
+        rows.Should().Contain(h => h.OldStatus == "Inactive" && h.NewStatus == "Draft", "the restore itself is recorded");
+        rows.Should().Contain(h => h.OldStatus == "Draft" && h.NewStatus == "Active", "and so is the return to the pre-merge status, written by the normal status change");
     }
 
     [Fact]
@@ -1021,6 +1031,7 @@ public sealed partial class EmployeeMergeOwnedRecordsPostgresTests
     public async Task Unmerge_WritesTheRestoredStatusIntoItsAuditRow()
     {
         var t = await SeedTwinsAsync();
+        await MakeActivationFixtureAsync(t, complete: true);
         Assert.IsType<OkObjectResult>(await MergeAsync(t));
 
         await using (var db = _fx.CreateDb())

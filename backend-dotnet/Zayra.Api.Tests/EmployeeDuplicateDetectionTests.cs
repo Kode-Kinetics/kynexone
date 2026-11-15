@@ -711,8 +711,14 @@ public class EmployeeDuplicateDetectionTests
         db.EmployeeSalaryStructures.Add(new EmployeeSalaryStructure { TenantId = t, EmployeeId = dupId, IsActive = false, EffectiveDate = DateOnly.FromDateTime(DateTime.UtcNow) });
         db.AuditLogs.Add(new AuditLog
         {
+            TenantId = t, Action = "employee.merged_into_existing", EntityName = "Employee", EntityId = dupId.ToString(),
+            Metadata = "{\"reason\":\"same person\"}", CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10),
+        });
+        db.AuditLogs.Add(new AuditLog
+        {
             TenantId = t, Action = "employee.payroll_footprint_deactivated", EntityName = "Employee", EntityId = dupId.ToString(),
             Metadata = JsonSerializer.Serialize(new { reason = "merged_duplicate", salaryDeactivated = 1, profileDeactivated = 1 }),
+            CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10).AddSeconds(1),
         });
         var mergedRow = await db.Employees.SingleAsync(e => e.Id == dupId);
         mergedRow.IsDeleted = true;

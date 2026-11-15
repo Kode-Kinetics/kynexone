@@ -1153,6 +1153,7 @@ public sealed class EmployeeDirectoryHttpFixture : IAsyncLifetime
 
         foreach (var role in Roles) _tokens[role] = await MintAsync(scope, TenantId, role, null, role);
         _tokens["scoped:HR Officer"] = await MintAsync(scope, TenantId, "HR Officer", CompanyId, "scoped-HR Officer");
+        _tokens["scoped:HR Manager"] = await MintAsync(scope, TenantId, "HR Manager", CompanyId, "scoped-HR Manager");
         _tokens["other:HR Officer"] = await MintAsync(scope, OtherTenantId, "HR Officer", null, "other-HR Officer");
         _tokens["other:HR Manager"] = await MintAsync(scope, OtherTenantId, "HR Manager", null, "other-HR Manager");
     }
@@ -1199,6 +1200,13 @@ public sealed class EmployeeDirectoryHttpFixture : IAsyncLifetime
     }
 
     private ZayraDbContext Db(IServiceScope s) => s.ServiceProvider.GetRequiredService<ZayraDbContext>();
+
+    /// <summary>Runs one piece of direct database work (seeding something the API cannot create, or reading back what it left) in its own scope.</summary>
+    public async Task<T> WithDbAsync<T>(Func<ZayraDbContext, Task<T>> body)
+    {
+        using var scope = Host.Services.CreateScope();
+        return await body(Db(scope));
+    }
 
     public async Task<List<Employee>> SeedAsync(string tag, int count, string status = "Active", Guid? companyId = null, string suffix = "", Action<Employee, int>? tweak = null)
     {
