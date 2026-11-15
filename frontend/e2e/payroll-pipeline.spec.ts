@@ -203,6 +203,8 @@ test.describe('payroll run pipeline', () => {
     await expect(summary.getByTestId('lock-summary-excluded')).toContainText('2');
     await expect(summary.getByTestId('lock-summary-overrides')).toContainText('1');
     await expect(summary.getByTestId('lock-summary-currency')).toContainText('SAR');
+    // Locking publishes the payslips to the employees, and the dialog says so before it happens.
+    await expect(summary.getByTestId('lock-summary-payslips')).toContainText('Locking also publishes the payslips to the employees');
 
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
@@ -211,6 +213,15 @@ test.describe('payroll run pipeline', () => {
     await page.getByTestId('pipeline-next-action').click();
     await page.getByRole('dialog').getByRole('button', { name: 'Lock run' }).click();
     await expect.poll(() => locked).toBe(1);
+  });
+
+  test('[ar] the Lock dialog says in Arabic that locking publishes the payslips to the employees', async ({ page }) => {
+    await open(page, `/payroll?tab=runs&run=${RUN_APPROVED}`, { locale: 'ar' });
+    await page.getByTestId('pipeline-next-action').click();
+    const note = page.getByRole('dialog').getByTestId('lock-summary-payslips');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText('قسائم الرواتب للموظفين');
+    await expect(note).not.toContainText(/Locking|Self-Service/);
   });
 
   test('Lock is withheld, with a reason, when the company currency cannot be confirmed', async ({ page }) => {
