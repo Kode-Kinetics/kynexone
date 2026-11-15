@@ -1103,8 +1103,8 @@ public sealed class PayrollRunProcessor
             if (CheckRunState(new PayrollRun { Status = lockedStatus }) is { } refusal) { refusedUnderLock = refusal; return; }
 
             // Loan-level serialisation with every other writer of these loans, above all the cash early settlement
-            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken FIRST in the
-            // transaction, before any other lock or row write, in ascending key order (the order the loan payout batch
+            // (LoansController.RecordRepayment), which holds the same finance.loan advisory lock. Taken right after the
+            // run row above, before any other lock or row write, in ascending key order (the order the loan payout batch
             // uses), so it cannot deadlock against them. The loans are then re-read under the lock: one settled in cash
             // after the unlocked look above drops out, and no payoff can commit until this run has committed its
             // instalment, after which RecordRepayment refuses because an unlocked run holds that instalment.
