@@ -19,7 +19,7 @@ export interface CellViewInput {
   startsOn?: string;
   /** A cash allowance waiting for Finance: it takes no value yet. */
   pending: boolean;
-  /** Not set in this grid at all: a loan facility (set in Loans) or a benefit this company skips. */
+  /** Not changeable here: a loan facility the viewer may not publish limits for, or a benefit this company skips. */
   fixedElsewhere: boolean;
   /** The viewer may change values (entitlements.manage). */
   canEdit: boolean;

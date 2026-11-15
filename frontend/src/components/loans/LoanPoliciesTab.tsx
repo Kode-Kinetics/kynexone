@@ -38,7 +38,11 @@ const checks = [
   ['allowEarlySettlement', 'Allow early settlement'], ['allowRescheduling', 'Allow approved rescheduling'],
 ] as const;
 
-export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanTypes: LoanType[]; onGradeLimitedChanged: (loanTypeId: string, gradeLimited: boolean) => void }) {
+export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged, focusLoanTypeId, focusCompanyId }: {
+  loanTypes: LoanType[]; onGradeLimitedChanged: (loanTypeId: string, gradeLimited: boolean) => void;
+  /** Where a link to Limits by grade points: this loan type and company open first (each ignored unless it exists for this viewer). */
+  focusLoanTypeId?: string; focusCompanyId?: string | null;
+}) {
   const t = useT();
   const { user } = useAuth();
   const isAdmin = user?.roles.includes('Admin') ?? false;
@@ -132,6 +136,6 @@ export function LoanPoliciesTab({ loanTypes, onGradeLimitedChanged }: { loanType
       </div>
     </Modal>
     <LoanOfferingsPanel key={`offerings-${companyId}-${notice}`} companyId={companyId} companyName={companies.find(c => c.id === companyId)?.legalNameEn ?? ''} />
-    <GradeLimitsPanel loanTypes={loanTypes} companies={companies.map(c => ({ id: c.id, name: c.legalNameEn }))} initialLoanTypeId={typeId} onGradeLimitedChanged={onGradeLimitedChanged} />
+    <GradeLimitsPanel loanTypes={loanTypes} companies={companies.map(c => ({ id: c.id, name: c.legalNameEn }))} initialLoanTypeId={typeId || loanTypes.find(type => type.id === focusLoanTypeId)?.id} initialCompanyId={focusCompanyId} onGradeLimitedChanged={onGradeLimitedChanged} />
   </div>;
 }

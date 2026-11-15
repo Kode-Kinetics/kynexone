@@ -10,11 +10,14 @@ import {
 import { useCompany } from '../../contexts/CompanyContext';
 import { useLocale } from '../../contexts/LocaleContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { loanTypesApi, type LoanType } from '../../api/loans';
 import { LegacyImportPanel } from './LegacyImportPanel';
+import { LoanLimitEditor } from './LoanLimitEditor';
 import { fillTemplate, localName } from '../../lib/gradeLoanLimits';
 import { isolateName } from '../../lib/bidi';
 import { numberLocale } from '../../lib/format';
 import { loanErrorMessage } from '../../lib/loanWorkflow';
+import { canEditLoanLimits, loanLimitsLink, loanTypeForComponent } from '../../lib/loanLimitsInGrid';
 import {
   addBenefitProblems, addBenefitRequest, allowanceWarnings, benefitServerProblem, blankAddBenefit, isCashAllowance, isPendingFinance, staleRunMonths, waitingForFinance,
   type AddBenefitField, type AddBenefitForm, type AddBenefitProblems, type ServerProblem,
@@ -72,13 +75,16 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
   companies: { id: string; name: string }[]; embedded?: boolean; onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t, locale } = useLocale();
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
   const canManage = hasPermission('entitlements.manage');
   // Finance (payroll.approve) confirms a cash allowance somebody else added, and corrects a confirmed one.
   const canFinance = hasPermission('payroll.approve');
   const fmt = useFormat();
   const { isGroupScope, selectedCompanyId } = useCompany();
   const [companyId, setCompanyId] = useState(isGroupScope ? '' : (selectedCompanyId ?? companies[0]?.id ?? ''));
+  // Loan limits are the loan policy owners' to change, in this grid or in Loan policies: the same gate, never a wider one.
+  const canEditLoans = canEditLoanLimits({ hasRole, hasPermission, isGroupScope, companyId });
+  const [loanTypes, setLoanTypes] = useState<LoanType[] | null>(null);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [original, setOriginal] = useState<Drafts>({});
   const [drafts, setDrafts] = useState<Drafts>({});
@@ -165,6 +171,18 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
     return [...groupOrder.flatMap(group => list.filter(c => c.group === group && !c.isLoanFacility)), ...list.filter(c => c.isLoanFacility)];
   }, [matrix]);
   const grades = useMemo(() => matrix?.grades ?? [], [matrix]);
+  // The loan types behind the loan rows, asked for only by someone who may change their limits; the server decides which types they see.
+  const hasLoanRows = components.some(c => c.isLoanFacility);
+  useEffect(() => {
+    if (!canEditLoans || !hasLoanRows) return;
+    let live = true;
+    loanTypesApi.list({ includeInactive: true }).then(list => { if (live) setLoanTypes(list); }).catch(() => { if (live) setLoanTypes(null); });
+    return () => { live = false; };
+  }, [canEditLoans, hasLoanRows, companyId]);
+  const loanFor = (c: MatrixComponent) => {
+    const type = canEditLoans && c.isLoanFacility ? loanTypeForComponent(loanTypes, c.code) : undefined;
+    return { editable: !!type, href: canEditLoans && c.isLoanFacility ? loanLimitsLink(type?.id, companyId) : null };
+  };
   const offering = (code: string): MatrixOffering | undefined => matrix?.offerings.find(o => o.componentCode === code);
   const changed = useMemo(() => Object.values(drafts).filter(d => original[cellKey(d.gradeId, d.componentCode)] && !sameDraft(d, original[cellKey(d.gradeId, d.componentCode)])), [drafts, original]);
   const componentOf = useCallback((code: string) => matrix?.components.find(c => c.code === code), [matrix]);
@@ -424,7 +442,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
         {(() => {
           const rowProps = (c: MatrixComponent) => ({
             component: c, grades, drafts, original, gapKeys, offering: offering(c.code), companyView: !!companyId, canManage, today: matrix.today, companyId,
-            canFinance, makerBlocked: makerBlocked.has(c.code), financeOpen: finance?.code === c.code ? finance.mode : null,
+            loan: loanFor(c), canFinance, makerBlocked: makerBlocked.has(c.code), financeOpen: finance?.code === c.code ? finance.mode : null,
             onFinance: (mode: 'confirm' | 'correct') => { setFinance({ code: c.code, mode }); setNotice(''); setCautions([]); setStaleNote(''); setEditing(null); },
             canRemove: powers.canRemove(c), onRemoved: (name: string) => { setNotice(fillTemplate(t('{benefit} was removed.'), { benefit: name })); void load(asOf); },
             onEdit: openCell, onMarkRest: () => setDrafts(list => markRestNotOffered(list, grades, c, new Set(scheduled.keys()))), onOfferingChanged: () => void load(asOf),
@@ -434,7 +452,7 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
             const rows = group === 'Loans' ? shown.filter(c => c.isLoanFacility) : shown.filter(c => c.group === group && !c.isLoanFacility);
             return rows.length === 0 ? [] : [{ group, rows }];
           });
-          const bandLabel = (group: (typeof groups)[number]['group']) => t(group === 'Loans' ? 'Loan facilities — set in Loans' : groupKeys[group]);
+          const bandLabel = (group: (typeof groups)[number]['group']) => t(group === 'Loans' ? 'Loan facilities — limits by grade' : groupKeys[group]);
 
           if (phone) return <div data-testid="grade-cards" className="space-y-3">
             <div className="flex items-center gap-2">
@@ -513,7 +531,12 @@ export function EntitlementMatrix({ companies, embedded = false, onDirtyChange }
             await load(asOf);
           }} />}
 
-        {editingDraft && editingComponent && editingGrade && <CellEditor
+        {editingDraft && editingComponent && editingGrade && editingComponent.isLoanFacility && loanFor(editingComponent).editable
+          && <LoanLimitEditor key={editing} title={`${componentName(editingComponent)} — ${gradeName(editingGrade)}`} grade={editingGrade}
+            loanType={loanTypeForComponent(loanTypes, editingComponent.code)!} companyId={companyId} companyLabel={companyLabel} currency={currency}
+            today={matrix.today} asOf={asOf} onClose={() => setEditing(null)}
+            onSaved={async message => { setEditing(null); await load(asOf); setNotice(message); }} />}
+        {editingDraft && editingComponent && editingGrade && !(editingComponent.isLoanFacility && loanFor(editingComponent).editable) && <CellEditor
           key={editing} draft={editingDraft} component={editingComponent} grade={editingGrade} grades={grades} companyView={!!companyId}
           hasCompanyValue={!!cellByKey.get(editing!)?.isCompanyOverride}
           currency={currency} readOnly={!canManage} reasonText={reasonText} componentName={componentName} gradeName={gradeName}
@@ -573,8 +596,10 @@ const chipTone: Record<RowChip['tone'], string> = {
  * same header above the one grade picked.
  */
 function MatrixRow({ layout, onlyGradeId, isNew, component: c, grades, drafts, original, gapKeys, offering, companyView, canManage, today, companyId, canRemove, onRemoved, onEdit, onMarkRest,
-  onOfferingChanged, say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled, canFinance, makerBlocked, financeOpen, onFinance }: {
+  onOfferingChanged, say, money, reasonText, componentName, serverError, editing, cellByKey, scheduled, loan, canFinance, makerBlocked, financeOpen, onFinance }: {
   layout: 'table' | 'card'; onlyGradeId?: string; isNew: boolean;
+  /** A loan row: whether this viewer may change its limits here (the loan policy owners), and where its loan type's policy is. */
+  loan: { editable: boolean; href: string | null };
   component: MatrixComponent; grades: MatrixGrade[]; drafts: Drafts; original: Drafts; gapKeys: Set<string>; offering?: MatrixOffering;
   companyView: boolean; canManage: boolean; today: string; companyId: string; editing: string | null;
   canRemove: boolean; onRemoved: (name: string) => void;
@@ -620,7 +645,7 @@ function MatrixRow({ layout, onlyGradeId, isNew, component: c, grades, drafts, o
       {t('You added this allowance, so someone else in Finance must confirm it.')}</span>}
     {pending && !canFinance && <span className="block text-meta text-fg-muted">{t('Finance must confirm it before it can be used.')}</span>}
     {companyView && offering?.changesOn && <span className="block text-meta text-fg-muted">{fillTemplate(t(offering.offered ? 'Not offered from {date}' : 'Offered again from {date}'), { date: offering.changesOn })}</span>}
-    {c.isLoanFacility && <Link href="/loans" className="inline-flex min-h-6 items-center text-meta font-semibold text-primary-fg underline">{t('Edit in Loans → Loan policies → Limits by grade')}</Link>}
+    {c.isLoanFacility && loan.href && <Link href={loan.href} className="inline-flex min-h-6 items-center text-meta font-semibold text-primary-fg underline">{t('Edit in Loans → Loan policies → Limits by grade')}</Link>}
     {panel === 'offering' && offering && <OfferingPanel code={c.code} name={name} companyId={companyId} offering={offering} today={today} onChanged={() => { setPanel(null); onOfferingChanged(); }} onClose={() => setPanel(null)} />}
     {panel === 'remove' && <RemovePanel code={c.code} name={name} onRemoved={onRemoved} onClose={() => setPanel(null)} />}
   </div>;
@@ -636,9 +661,11 @@ function MatrixRow({ layout, onlyGradeId, isNew, component: c, grades, drafts, o
     const startsOn = d.state === 'unset' ? scheduled.get(key) : undefined;
     const summary = pending ? t('Waiting for Finance') : c.isLoanFacility ? loanSummary(cellByKey.get(key), money, t)
       : startsOn ? fillTemplate(t('Starts {date}'), { date: startsOn }) : say(summarise(d, money));
-    const view = cellView({ state: d.state, dirty, invalid: !!problem || !!refused, startsOn, pending, fixedElsewhere: c.isLoanFacility || skipped, canEdit: canManage });
+    // A loan limit is edited by the loan policy owners and saved on its own; a benefit by whoever manages the grid, and published with it.
+    const canChange = c.isLoanFacility ? loan.editable : canManage;
+    const view = cellView({ state: d.state, dirty, invalid: !!problem || !!refused, startsOn, pending, fixedElsewhere: (c.isLoanFacility && !loan.editable) || skipped, canEdit: canChange });
     const value = [summary, gap && !dirty ? t('Needs a value') : '', dirty ? t('Changed — not published yet') : ''].filter(Boolean).join(', ');
-    const label = fillTemplate(t(view.interactive && canManage ? '{benefit} for {grade}: {value}. Edit' : '{benefit} for {grade}: {value}'), { benefit: name, grade: g.code, value });
+    const label = fillTemplate(t(view.interactive && canChange ? '{benefit} for {grade}: {value}. Edit' : '{benefit} for {grade}: {value}'), { benefit: name, grade: g.code, value });
     const problemText = problem ? (problem === FLOOR_PROBLEM ? reasonText(c.floorReason, 'title') : t(problem)) : undefined;
     return <GridCell view={view} label={label} summary={summary} selected={editing === key} edited={dirty} problem={problemText}
       override={tailored && !!cellByKey.get(key)?.isCompanyOverride && !dirty} onOpen={() => onEdit(key)} />;
