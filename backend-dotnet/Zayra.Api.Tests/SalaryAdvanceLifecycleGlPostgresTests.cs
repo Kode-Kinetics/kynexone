@@ -390,10 +390,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertSubLedgerEqualsGlAsync(w, 666.67m);
     }
 
-    [Fact(Skip = "DEFECT (fix in progress on another branch: the void restores by delta): voiding run 1 after run 2 also deducted " +
-                 "restores the advance to its balance BEFORE run 1 (1,000 owed, 0 repaid) and wipes out run 2's 333.33, while the " +
-                 "GL keeps run 2's relief, so the sub-ledger (1,000) and 1410 (666.67) disagree. PayrollVoidService restores the " +
-                 "witnessed absolute prior OutstandingBalance / TotalRepaid / Status.")]
+    [Fact]
     public async Task Void_OfAnEarlierRun_AfterALaterRunAlsoDeducted_RestoresOnlyTheEarlierRunsInstalment()
     {
         var w = await SeedAsync(costing: true);
