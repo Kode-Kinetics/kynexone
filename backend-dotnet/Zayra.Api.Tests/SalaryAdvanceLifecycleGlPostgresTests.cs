@@ -535,8 +535,10 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     //  6. Concurrency: payroll Process versus FinalizePaidSettlements on the same leaver's advance
     // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "advance lock work in progress: payroll Process and FinalizePaidSettlements do not yet serialise on the " +
-                 "advance row (owned by another branch). Desired outcome: the leaver's advance is collected exactly once.")]
+    [Fact(Skip = "SUPERSEDED: payroll Process and the settlement payment now serialise on the finance.advance lock, proved both ways " +
+                 "round in SettlementResidualDebtRacePostgresTests. This scenario no longer leaves anything to race: a settling leaver's " +
+                 "advance not yet due is now recovered by the settlement run itself, so the regular run has nothing to collect and the " +
+                 "payment nothing to move. Rewrite it around a residual once a zero-net leaver's settlement can complete without a paying batch.")]
     public async Task Race_ProcessCollectingAnInstalment_AndASettlementPaymentReclassifyingTheSameAdvance_CollectItOnce()
     {
         // The leaver's settlement run (this month) is locked and its bank batch accepted; the advance (repayment from next
