@@ -45,6 +45,7 @@ import { useAppToast } from '../components/ui/AppToast';
 import { usePagedList } from '../hooks/usePagedList';
 import { ListWindowFooter } from '../components/ListWindowFooter';
 import { requestFailureReason } from '../lib/requestFailure';
+import { leaveRefusalText } from '../lib/leaveRefusal';
 import { essApi } from '../api/ess';
 import { employeesApi } from '../api/employees';
 import { StatutoryLeaveHistory } from '../components/StatutoryLeaveHistory';
@@ -645,8 +646,11 @@ function ApplyLeaveTab({ selfEmployeeId, isEmployee = false }: { selfEmployeeId?
       setAttachment(null);
       setSuccess(true);
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? t('Failed to submit request.'));
+      const data = (e as { response?: { data?: { code?: unknown; message?: string } } })?.response?.data;
+      // A leave refusal carries a stable code the screen translates; anything else keeps the server's sentence.
+      setError(typeof data?.code === 'string' && data.code.startsWith('leave_')
+        ? leaveRefusalText(e, t, 'hr')
+        : data?.message ?? t('Failed to submit request.'));
     }
     setSaving(false);
   };
@@ -868,7 +872,7 @@ function MyRequestsTab() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{r.leaveTypeName}</p>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 uppercase dark:bg-rose-500/20 dark:text-rose-400">{t('Emergency')}</span>}
                   </div>
                   <p className="mt-0.5 text-xs text-slate-400">{fmtDate(r.startDate)} – {fmtDate(r.endDate)} · {t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</p>
                   {r.rejectionReason && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{t('Rejected: {rejectionReason}', { rejectionReason: r.rejectionReason })}</p>}
@@ -1040,7 +1044,7 @@ function ApprovalsTab({ groupFilter = {} }: { groupFilter?: GroupFilter }) {
                     <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 dark:bg-white/10 dark:text-slate-300">{r.leaveTypeName}</span>
                     <span className="text-xs text-slate-500">{fmtDate(r.startDate)} – {fmtDate(r.endDate)}</span>
                     <span className="text-xs font-semibold text-sapphire dark:text-cyanAccent">{t('{count, plural, one {# day} other {# days}}', { count: r.totalDays })}</span>
-                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 dark:bg-rose-500/20 dark:text-rose-400">EMERGENCY</span>}
+                    {r.isEmergency && <span className="rounded bg-rose-100 px-1.5 py-0.5 text-caption font-semibold text-rose-600 uppercase dark:bg-rose-500/20 dark:text-rose-400">{t('Emergency')}</span>}
                   </div>
                   {r.kind === 'Cancellation'
                     ? <LeaveCancellationDetail item={r} />
