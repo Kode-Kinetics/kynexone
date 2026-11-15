@@ -71,6 +71,25 @@ public static class SaudiBankExportActivation
         return saudi.Concat(EnabledCompanies(configuration, tenantId)).Distinct().ToArray();
     }
 
+    /// <summary>
+    /// Of the given payroll runs, the ones whose legal entity has the export open, so a page of payment batches can say which
+    /// of them take their bank file from the export. Set-based: the tenant-wide decision once, then ONE read of the runs, never
+    /// one per run. The read keeps the tenant filter and the context's company filter; a run without a legal entity is never open.
+    /// </summary>
+    public static async Task<IReadOnlySet<Guid>> OpenRunIdsAsync(
+        ZayraDbContext db, IConfiguration? configuration, Guid tenantId, IReadOnlyCollection<Guid> runIds, CancellationToken ct)
+    {
+        if (runIds.Count == 0) return new HashSet<Guid>();
+        var open = (await EnabledCompanyIdsAsync(db, configuration, tenantId, ct)).ToArray();
+        if (open.Length == 0) return new HashSet<Guid>();
+        var ids = runIds.ToArray();
+        return (await db.PayrollRuns.AsNoTracking()
+                .Where(r => r.TenantId == tenantId && ids.Contains(r.Id) && r.CompanyId != null && open.Contains(r.CompanyId.Value))
+                .Select(r => r.Id)
+                .ToListAsync(ct))
+            .ToHashSet();
+    }
+
     // A flag row exists only when the platform wrote one; IsEnabled = false is the kill switch, anything else is "default".
     private static Task<bool> IsSwitchedOffByPlatformAsync(ZayraDbContext db, Guid tenantId, CancellationToken ct) =>
         db.TenantFeatureFlags.AsNoTracking()

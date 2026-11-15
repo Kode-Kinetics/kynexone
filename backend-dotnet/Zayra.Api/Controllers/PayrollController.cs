@@ -60,6 +60,7 @@ public partial class PayrollController : ControllerBase
     private readonly PayrollRunProcessor _processor;
     // Null means the registry defaults (both approval relaxations OFF).
     private readonly Zayra.Api.Infrastructure.Policy.IPolicySettings? _policySettings;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration? _configuration;
 
     public PayrollController(ZayraDbContext db, IDataScopeService scopeService, IHttpContextAccessor http,
         INotificationService notifications, ICountryPackResolver packResolver, IStatutoryRuleReader ruleReader,
@@ -69,9 +70,12 @@ public partial class PayrollController : ControllerBase
         IProrationPolicyResolver? prorationPolicy = null,
         Zayra.Api.Application.WorkWeek.IWorkWeekService? workWeek = null,
         Zayra.Api.Infrastructure.Payroll.SalaryChangeDecisionService? salaryDecisions = null,
-        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null)
+        Zayra.Api.Infrastructure.Policy.IPolicySettings? policySettings = null,
+        Microsoft.Extensions.Configuration.IConfiguration? configuration = null)
     {
         _policySettings = policySettings;
+        // Read only for the Saudi bank-export activation (the operator's kill switch and allow-list); DI always supplies it.
+        _configuration = configuration;
         _db = db;
         _scopeService = scopeService;
         _http = http;
@@ -5534,6 +5538,12 @@ public partial class PayrollController : ControllerBase
                                 where r.TenantId == tenantId && batchRunIds.Contains(r.Id)
                                       && (c.CountryCode == "SA" || c.CountryCode == "SAU" || c.CountryCode == "KSA")
                                 select r.Id).ToListAsync(cancellationToken)).ToHashSet();
+        // Where the Saudi bank export applies, ITS file is the bank file and the generated XML above is only the internal
+        // register (which still sets WpsStatus to Generated). The run pipeline needs both facts per batch, so they ride on
+        // this page: which runs' companies have the export open (one set-based read), and which batches have an export
+        // (instructionMakers, already read above for the whole page).
+        var bankExportRunIds = await Infrastructure.Payroll.SaudiBankExports.SaudiBankExportActivation.OpenRunIdsAsync(
+            _db, _configuration, tenantId, batchRunIds, cancellationToken);
         var d4Records = d4BatchIds.Count == 0
             ? new List<PayrollPaymentRecord>()
             : await _db.PayrollPaymentRecords.AsNoTracking()
@@ -5584,6 +5594,8 @@ public partial class PayrollController : ControllerBase
                 generatedFileLabel = ksaRunIds.Contains(b.PayrollRunId)
                     ? Infrastructure.Payroll.WpsConformance.KsaPayrollRegisterLabel
                     : "WPS/SIF file (not verified with any gateway)",
+                bankFileAvailable = bankExportRunIds.Contains(b.PayrollRunId),
+                bankFileGenerated = hasInstruction,
             };
         }).ToList());
     }
