@@ -34,8 +34,8 @@ for (const locale of ['en', 'ar'] as const) {
     });
 
     await page.goto('/loans');
-    // The module's tab labels are not translated yet, so the tab reads the same in both languages.
-    await page.getByRole('button', { name: 'Salary Advances', exact: true }).click();
+    // The module's tab labels read in the viewer's language.
+    await page.getByRole('button', { name: locale === 'ar' ? 'السلف على الراتب' : 'Salary Advances', exact: true }).click();
     await page.getByRole('button', { name: /New Advance Request|طلب سلفة جديد/ }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByPlaceholder(/Search by name or code|ابحث/).fill('Amira');
