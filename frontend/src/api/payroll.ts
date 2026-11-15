@@ -581,6 +581,8 @@ export interface FinalSettlementListRow {
   linkedRunStatus?: string | null;
   /** G-006: approved, no run yet: a Payroll Manager still has to create the off-cycle run. */
   runDutyOpen?: boolean;
+  /** Disbursing on a locked run whose payslip nets to zero: no batch will pay it, so it is completed with nothing to pay. */
+  completableWithoutPayment?: boolean;
 }
 
 export interface FinalSettlementListResponse {
@@ -899,6 +901,10 @@ export const payrollApi = {
   /** G-006: creates (or returns) the pre-filled OffCycle run that pays an approved settlement. */
   createFinalSettlementRun: (id: string) =>
     client.post<{ runId: string; created: boolean }>(`/api/payroll/final-settlements/${id}/offcycle-run`).then((r) => r.data),
+
+  completeFinalSettlementWithoutPayment: (id: string, reason?: string) =>
+    client.post<{ settlementId: string; status: string; alreadyCompleted: boolean; residualDebtReclassed: number; residualDebtUnbooked: number }>(
+      `/api/payroll/final-settlements/${id}/complete-without-payment`, { reason }).then((r) => r.data),
 
   cancelFinalSettlement: (id: string, reason: string) =>
     client.post<{ settlementId: string; status: string }>(`/api/payroll/final-settlements/${id}/cancel`, { reason }).then((r) => r.data),

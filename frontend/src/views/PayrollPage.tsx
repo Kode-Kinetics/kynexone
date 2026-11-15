@@ -3915,6 +3915,10 @@ function FinalSettlementTab() {
   const t = useT();
   const fmtAmt = useFmtAmt();
   const { confirm, dialog: confirmDialog } = useConfirm();
+  // Completing a zero-net settlement is a payment decision: the same keys as settling a payment batch (the server checks again).
+  const { hasPermission } = useAuth();
+  const { locale } = useLocale();
+  const maySettlePayments = paymentActionsAllowed(hasPermission, ['settle']);
   const [form, setForm] = useState({ employeeId: '', lastWorkingDay: new Date().toISOString().slice(0, 10), noticePeriodDaysShort: '0', terminationReason: '' });
   const [result, setResult] = useState<FinalSettlementResult | null>(null);
   const [settlements, setSettlements] = useState<FinalSettlementListRow[]>([]);
@@ -3965,6 +3969,23 @@ function FinalSettlementTab() {
       await loadSettlements();
     } catch (e: unknown) {
       setError((e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? `${action} failed.`);
+    } finally { setActionSaving(null); }
+  };
+
+  const completeWithoutPayment = async (settlement: FinalSettlementListRow) => {
+    if (!(await confirm({
+      title: t('Complete this settlement with nothing to pay?'),
+      message: t("{employeeName}'s final pay was all recovered against their debts, so there is nothing to send to the bank. The settlement is marked paid with no payment, and any debt still owed moves to the employee receivable.", { employeeName: settlement.employeeName }),
+      confirmLabel: t('Complete — nothing to pay'),
+    }))) return;
+    setActionSaving(`${settlement.id}:complete`); setError('');
+    try {
+      await payrollApi.completeFinalSettlementWithoutPayment(settlement.id);
+      await loadSettlements();
+    } catch (e: unknown) {
+      // The server's refusal in the viewer's language (every refusal of this action carries messageAr).
+      const data = (e as { response?: { data?: { message?: string; messageAr?: string } } })?.response?.data;
+      setError((locale === 'ar' ? data?.messageAr || data?.message : data?.message) ?? t('Completing the settlement failed.'));
     } finally { setActionSaving(null); }
   };
 
@@ -4102,6 +4123,9 @@ function FinalSettlementTab() {
                       {(s.status === 'Draft' || s.status === 'PendingApproval') && <button type="button" className={btn.primary} onClick={() => transition(s, 'approve')} disabled={actionSaving !== null}>{t('Approve & Post GL')}</button>}
                       <button type="button" className={btn.danger} onClick={() => transition(s, 'cancel')} disabled={actionSaving !== null}>{t('Cancel')}</button>
                     </div>
+                  </div> : s.status === 'Disbursing' && s.completableWithoutPayment ? <div className="grid gap-2">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{t('Nothing to pay: the final pay was all recovered.')}</p>
+                    {maySettlePayments && <button type="button" className={btn.primary} onClick={() => void completeWithoutPayment(s)} disabled={actionSaving !== null}>{t('Complete — nothing to pay')}</button>}
                   </div> : <p className="text-xs text-slate-400">{s.status === 'Approved' ? t('Create an off-cycle settlement run to disburse.') : t('No direct action.')}</p>}
                 </td>
               </tr>;

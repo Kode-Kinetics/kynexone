@@ -584,10 +584,12 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         }
     }
 
-    [Fact(Skip = "OPEN (needs a decision): the only payslip of this settlement run is zero, so its payment batch carries no money and " +
-                 "SettlePaymentBatch refuses it as nothing_to_settle; the leaver's settlement then stays Disbursing and the 2,500 leftover " +
-                 "never reaches 1420. A zero-net leaver in a batch that pays others is now completed when that batch is settled " +
-                 "(SettlementAdvanceResidualTests); completing one with no paying batch is not done in this branch.")]
+    /// <summary>
+    /// The only payslip of this settlement run is zero, so no payment batch will ever pay it: Finance completes the settlement with
+    /// nothing to pay (POST final-settlements/{id}/complete-without-payment), and the leftover moves to 1420 exactly as it does
+    /// for a zero-net leaver inside a batch that pays others. Asking again changes nothing.
+    /// </summary>
+    [Fact]
     public async Task FinalSettlement_TooSmallToCoverTheAdvance_IsPaid_AndTheLeftoverMovesTo1420()
     {
         // The final pay (500) cannot cover the 3,000 advance: the run withholds all 500, the net is zero, and the 2,500
@@ -609,13 +611,26 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Sides((await RunGlAsync(s.RunId)).Where(l => l.Amount != 0m).ToList())
             .Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
 
-        await PayBatchAsync(w, s.RunId);
-        (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+        var settlement = await SettlementAsync(s.SettlementId);
+        settlement.Status.Should().Be(FinalSettlementStatuses.Paid);
+        settlement.PaymentBatchId.Should().BeNull("nothing was paid through a bank batch");
+        settlement.ResidualDebtReclassed.Should().Be(2_500m);
         await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 500m);
         var ledger = await LedgerAsync(w);
         Balance(ledger, Emp1420).Should().Be(2_500m);
         Debits(ledger).Should().Be(Credits(ledger));
         await AssertSubLedgerEqualsGlAsync(w, 0m);
+
+        await CompleteWithoutPaymentAsync(w, s.SettlementId);
+        Balance(await LedgerAsync(w), Emp1420).Should().Be(2_500m, "completing it again posts nothing");
+    }
+
+    private async Task CompleteWithoutPaymentAsync(World w, Guid settlementId)
+    {
+        await using var db = _fx.CreateDb();
+        Ok<object>(await Payroll(db, w, w.Approver, "Admin").CompleteFinalSettlementWithoutPayment(settlementId,
+            new PayrollReasonRequest("The final pay was all recovered against the advance."), Ct), "complete without payment");
     }
 
     // ══════════════════════════════════════════════════════════════════════════════════════════════

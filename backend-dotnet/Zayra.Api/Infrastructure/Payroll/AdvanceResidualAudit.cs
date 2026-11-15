@@ -20,10 +20,10 @@ public static class AdvanceResidualAudit
     public const string Action = "ResidualMovedToEmployeeReceivable";
 
     private sealed record Moved(decimal MovedToEmployeeReceivable, decimal OutstandingBefore, decimal OutstandingAfter,
-        Guid SettlementId, Guid PayrollRunId, Guid PaymentBatchId);
+        Guid SettlementId, Guid PayrollRunId, Guid? PaymentBatchId);
 
     public static AdvanceAuditLog Entry(Guid tenantId, SalaryAdvance advance, decimal moved, decimal outstandingBefore,
-        Guid settlementId, Guid runId, Guid batchId, Guid? userId, string userName) => new()
+        Guid settlementId, Guid runId, Guid? batchId, Guid? userId, string userName) => new()
     {
         TenantId = tenantId, AdvanceId = advance.Id, Action = Action,
         OldValuesJson = JsonSerializer.Serialize(new { outstandingBalance = outstandingBefore, status = "Active" }),
