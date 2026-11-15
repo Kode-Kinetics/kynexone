@@ -420,10 +420,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await AssertSubLedgerEqualsGlAsync(w, 666.67m);
     }
 
-    [Fact(Skip = "DEFECT (fix in progress on another branch: the void restores by delta): voiding run 1 after run 2 also deducted " +
-                 "restores the advance to its balance BEFORE run 1 (1,000 owed, 0 repaid) and wipes out run 2's 333.33, while the " +
-                 "GL keeps run 2's relief, so the sub-ledger (1,000) and 1410 (666.67) disagree. PayrollVoidService restores the " +
-                 "witnessed absolute prior OutstandingBalance / TotalRepaid / Status.")]
+    [Fact]
     public async Task Void_OfAnEarlierRun_AfterALaterRunAlsoDeducted_RestoresOnlyTheEarlierRunsInstalment()
     {
         var w = await SeedAsync(costing: true);
@@ -456,10 +453,7 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     //  5. Final settlement with an outstanding advance
     // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "DEFECT: a final-settlement run (no recurring pay) withholds the advance and decrements it, but with the pay " +
-                 "component engine on (the default) it emits no ADVANCE_EMI line (PayrollRunProcessor: effectiveComponents keeps " +
-                 "only supplemental components when the run pays no recurring salary), so the run carries PAYSLIP_LINES_MISMATCH, an " +
-                 "Error that cannot be overridden: it can never be approved or locked, while the advance already shows Closed.")]
+    [Fact]
     public async Task FinalSettlement_LargeEnough_RecoversTheWholeAdvanceFromTheFinalPay_And1410EndsAtZero()
     {
         var w = await SeedAsync(costing: false, withColleague: true);
@@ -496,10 +490,11 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     }
 
     [Fact]
-    public async Task FinalSettlement_AdvanceNotYetDue_IsMovedTo1420_TheAdvanceGoesToZero_AndTheJournalBalances()
+    public async Task FinalSettlement_AdvanceNotYetDue_IsRecoveredFromTheFinalPay_LikeTheSettlementPlannedIt()
     {
-        // The advance's repayment starts next month, so the settlement run (this month) does not withhold it; when the
-        // settlement is paid the outstanding advance is reclassified DR 1420 / CR 1410 and the advance is closed.
+        // The advance's repayment starts next month, but the employee is leaving: the settlement PLANNED to recover the whole
+        // advance from the final pay, so the settlement run withholds it whatever its repayment start date. (It used to skip
+        // it: the full settlement was paid out and the whole advance moved to 1420 to be chased from an ex-employee.)
         var w = await SeedAsync(costing: false, withColleague: true);
         var next = w.Month1.AddMonths(1);
         var advId = await RequestAsSelfAsync(w, 3_000m, 3, next);
@@ -507,41 +502,35 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         var s = await SeedApprovedSettlementAsync(w, gross: 12_000m);
 
         await ProcessAsync(w, s.RunId);
-        await AssertSlipAsync(w, s.RunId, advanceDeduction: 0m, net: 12_000m);
+        await AssertSlipAsync(w, s.RunId, advanceDeduction: 3_000m, net: 9_000m);
+        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 3_000m);
         await ApproveAsync(w, s.RunId);
         await LockAsync(w, s.RunId);
-        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|12000.00", $"CR|{Net2100}|12000.00" });
+        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[]
+        {
+            $"DR|{Settle2320}|12000.00", $"CR|{Adv1410}|3000.00", $"CR|{Net2100}|9000.00",
+        });
 
         await PayBatchAsync(w, s.RunId);
         var settlement = await SettlementAsync(s.SettlementId);
         settlement.Status.Should().Be(FinalSettlementStatuses.Paid);
-        settlement.ResidualDebtReclassed.Should().Be(3_000m);
+        settlement.ResidualDebtReclassed.Should().Be(0m);
         settlement.ResidualDebtUnbooked.Should().Be(0m);
-        await AssertAdvanceAsync(advId, "Closed", outstanding: 0m, repaid: 0m);
 
         var ledger = await LedgerAsync(w);
         Dump("Ledger after settlement paid (advance not yet due)", ledger);
-        var reclass = ledger.Where(l => l.EventType == GlEventTypes.SettlementResidualReclass).ToList();
-        reclass.Should().ContainSingle();
-        (reclass[0].DebitAccount, reclass[0].CreditAccount, reclass[0].Amount, reclass[0].CompanyId)
-            .Should().Be((Emp1420, Adv1410, 3_000m, w.CompanyId));
-        reclass[0].Period.Should().Be(TodayPeriod(), "dated into the payment period");
+        ledger.Should().NotContain(l => l.EventType == GlEventTypes.SettlementResidualReclass, "nothing was left to reclassify");
         Debits(ledger).Should().Be(Credits(ledger));
-        Balance(ledger, Emp1420).Should().Be(3_000m);
+        Balance(ledger, Emp1420).Should().Be(0m);
         await AssertSubLedgerEqualsGlAsync(w, 0m);
-        await using (var db = _fx.CreateDb())
-            (await db.PayrollEmployeeReceivables.AsNoTracking().Where(r => r.TenantId == w.TenantId).ToListAsync())
-                .Should().ContainSingle().Which.Should().Match<PayrollEmployeeReceivable>(r =>
-                    r.EmployeeId == w.EmployeeId && r.Amount == 3_000m && r.Status == PayrollReceivableStatuses.Outstanding,
-                    "the 1420 debit has its per-employee sub-ledger row");
 
         await AssertNotDeductedNextMonthAsync(w, advId);
     }
 
-    [Fact(Skip = "DEFECT: as FinalSettlement_LargeEnough (no ADVANCE_EMI line on a settlement run, so it cannot lock). Also suspected " +
-                 "from the code, not yet observable: a leaver whose final pay is fully taken by the advance has zero net, is left out " +
-                 "of the bank batch, so FinalizePaidSettlements never sees them; the settlement stays Disbursing and the leftover " +
-                 "never reaches 1420.")]
+    [Fact(Skip = "OPEN (needs a decision): the only payslip of this settlement run is zero, so its payment batch carries no money and " +
+                 "SettlePaymentBatch refuses it as nothing_to_settle; the leaver's settlement then stays Disbursing and the 2,500 leftover " +
+                 "never reaches 1420. A zero-net leaver in a batch that pays others is now completed when that batch is settled " +
+                 "(SettlementAdvanceResidualTests); completing one with no paying batch is not done in this branch.")]
     public async Task FinalSettlement_TooSmallToCoverTheAdvance_IsPaid_AndTheLeftoverMovesTo1420()
     {
         // The final pay (500) cannot cover the 3,000 advance: the run withholds all 500, the net is zero, and the 2,500
@@ -554,9 +543,14 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         await ProcessAsync(w, s.RunId);
         await AssertSlipAsync(w, s.RunId, advanceDeduction: 500m, net: 0m);
         await AssertAdvanceAsync(advId, "Active", outstanding: 2_500m, repaid: 500m);
-        await ApproveAsync(w, s.RunId);
+        // Taking all of the final pay is above the KSA Art. 92/93 half-wage cap, an Error the approver may clear only by
+        // naming the written basis for it. That is the operator's path for a leaver whose debts consume the final pay.
+        await OverrideHalfWageCapAsync(w, s.RunId);
+        await ApproveAsync(w, s.RunId, expectedOverridden: 1);
         await LockAsync(w, s.RunId);
-        Sides(await RunGlAsync(s.RunId)).Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
+        // (Lock writes the net-pay line even at 0.00; only the lines that move money are compared.)
+        Sides((await RunGlAsync(s.RunId)).Where(l => l.Amount != 0m).ToList())
+            .Should().BeEquivalentTo(new[] { $"DR|{Settle2320}|500.00", $"CR|{Adv1410}|500.00" });
 
         await PayBatchAsync(w, s.RunId);
         (await SettlementAsync(s.SettlementId)).Status.Should().Be(FinalSettlementStatuses.Paid);
@@ -571,8 +565,10 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
     //  6. Concurrency: payroll Process versus FinalizePaidSettlements on the same leaver's advance
     // ══════════════════════════════════════════════════════════════════════════════════════════════
 
-    [Fact(Skip = "advance lock work in progress: payroll Process and FinalizePaidSettlements do not yet serialise on the " +
-                 "advance row (owned by another branch). Desired outcome: the leaver's advance is collected exactly once.")]
+    [Fact(Skip = "SUPERSEDED: payroll Process and the settlement payment now serialise on the finance.advance lock, proved both ways " +
+                 "round in SettlementResidualDebtRacePostgresTests. This scenario no longer leaves anything to race: a settling leaver's " +
+                 "advance not yet due is now recovered by the settlement run itself, so the regular run has nothing to collect and the " +
+                 "payment nothing to move. Rewrite it around a residual once a zero-net leaver's settlement can complete without a paying batch.")]
     public async Task Race_ProcessCollectingAnInstalment_AndASettlementPaymentReclassifyingTheSameAdvance_CollectItOnce()
     {
         // The leaver's settlement run (this month) is locked and its bank batch accepted; the advance (repayment from next
@@ -763,11 +759,24 @@ public sealed class SalaryAdvanceLifecycleGlPostgresTests
         Ok<object>(await Payroll(db, w, w.Preparer, "Payroll Officer").Process(runId, Ct), "process");
     }
 
-    private async Task ApproveAsync(World w, Guid runId)
+    private async Task ApproveAsync(World w, Guid runId, int? expectedOverridden = null)
     {
         await using (var db = _fx.CreateDb()) await ReconTestSupport.SignOffAsync(db, runId);
         await using var db2 = _fx.CreateDb();
-        Ok<object>(await Payroll(db2, w, w.Approver, "Admin").Approve(runId, new PayrollDecisionRequest("reviewed"), Ct), "approve run");
+        Ok<object>(await Payroll(db2, w, w.Approver, "Admin").Approve(runId,
+            new PayrollDecisionRequest("reviewed", ExpectedOverriddenCount: expectedOverridden), Ct), "approve run");
+    }
+
+    /// <summary>Clears the run's DEDUCTIONS_EXCEED_HALF_WAGE Error the documented way: the approver (never the preparer) gives the
+    /// reason and the reference of the written basis.</summary>
+    private async Task OverrideHalfWageCapAsync(World w, Guid runId)
+    {
+        await using var db = _fx.CreateDb();
+        var result = await db.PayrollValidationResults.AsNoTracking()
+            .SingleAsync(r => r.PayrollRunId == runId && r.Code == "DEDUCTIONS_EXCEED_HALF_WAGE" && !r.IsResolved);
+        Ok<object>(await Payroll(db, w, w.Approver, "Admin").ResolveValidationResult(runId, result.Id,
+            new PayrollReasonRequest("The leaver's advance is recovered from the end-of-service dues.", "SETTLEMENT-AGREEMENT-1"), Ct),
+            "override the half-wage cap");
     }
 
     private async Task LockAsync(World w, Guid runId)

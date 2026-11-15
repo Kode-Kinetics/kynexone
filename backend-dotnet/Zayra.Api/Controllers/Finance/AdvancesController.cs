@@ -734,6 +734,8 @@ public partial class AdvancesController : ControllerBase
             tieOut = await AdvanceReceivableTieOut.ComputeAsync(_db, tid,
                 entityScope.IsGroupLevel ? null : entityScope.AccessibleCompanyIds.ToArray(), ct);
         }
+        // What a paid final settlement moved to the 1420 Employee Receivable: off the balance, but not a repayment.
+        var movedTo1420 = await AdvanceResidualAudit.MovedByAdvanceAsync(_db, tid, advanceIds, ct);
 
         return Ok(new
         {
@@ -754,13 +756,17 @@ public partial class AdvancesController : ControllerBase
             ReceivableTieOut = tieOut,
             Reconciliation = advances.Select(a =>
             {
+                // Only a paid advance disbursed anything; a paid final settlement's move to 1420 lowers the balance without
+                // being a repayment. Disbursed − repaid − moved to 1420 − outstanding is zero on a reconciled advance.
                 var disbursed = AdvanceStatuses.IsPaid(a.Status) ? a.ApprovedAmount : 0m;
+                var moved = movedTo1420.GetValueOrDefault(a.Id);
                 return new
                 {
                     a.AdvanceNumber, a.EmployeeName, a.Status, a.ApprovedAmount,
                     a.TotalRepaid, a.OutstandingBalance,
-                    BalanceCheck = Math.Round(disbursed - a.TotalRepaid - a.OutstandingBalance, 2),
-                    IsReconciled = Math.Abs(disbursed - a.TotalRepaid - a.OutstandingBalance) < 0.01m,
+                    MovedToEmployeeReceivable = moved,
+                    BalanceCheck = Math.Round(disbursed - a.TotalRepaid - moved - a.OutstandingBalance, 2),
+                    IsReconciled = Math.Abs(disbursed - a.TotalRepaid - moved - a.OutstandingBalance) < 0.01m,
                 };
             }).ToList(),
         });

@@ -839,6 +839,25 @@ public sealed partial class MigrationImportController
         var advance = await _db.SalaryAdvances.FirstOrDefaultAsync(
             x => x.TenantId == tenantId && x.AdvanceNumber == plan.AdvanceNumber && !x.IsDeleted, ct);
         var created = advance is null;
+        // An existing advance is restated only when this import carried it in, payroll has not collected from it, and it is still
+        // Active. Anything else is someone's live money: a native advance (approved and paid here), one payroll has taken an
+        // instalment from (restating it would forget the instalment), or one already Closed, Settled or Rejected (which a
+        // restatement must never reopen). The row is refused with a code; nothing about the advance changes.
+        if (advance is not null)
+        {
+            var carriedIn = await _db.OpeningBalanceOrigins.AsNoTracking().AnyAsync(
+                o => o.TenantId == tenantId && o.EntityType == OpeningBalanceEntityTypes.Advance && o.EntityId == advance.Id, ct);
+            if (!carriedIn)
+                throw new InvalidOperationException(
+                    $"[advance_not_carried_in] Advance {plan.AdvanceNumber} already exists and was not carried in by an opening-balance import, so it is not restated. Use a different advance number, or correct the advance in Salary Advances.");
+            if (await _db.PayrollRunConsumptions.AsNoTracking().AnyAsync(
+                    c => c.TenantId == tenantId && c.ArtifactType == PayrollConsumptionArtifacts.Advance && c.ArtifactId == advance.Id, ct))
+                throw new InvalidOperationException(
+                    $"[advance_collected_by_payroll] Advance {plan.AdvanceNumber} has already had an instalment collected by payroll, so its opening balance can no longer be restated. Correct it in Salary Advances.");
+            if (advance.Status != "Active")
+                throw new InvalidOperationException(
+                    $"[advance_not_active] Advance {plan.AdvanceNumber} is {advance.Status}, so it is not restated or reopened.");
+        }
         advance ??= new SalaryAdvance
         {
             TenantId = tenantId,
