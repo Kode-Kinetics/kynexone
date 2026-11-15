@@ -39,9 +39,7 @@ public class AdvanceCompanyScopeTests
         Assert.Equal((300m, 300m), (collected.OutstandingBalance, collected.TotalRepaid));
     }
 
-    [Fact(Skip = "OPEN: the settlement plan (PayrollController.FinalSettlement) still counts advances of every company while the run " +
-                 "now recovers only its own company's; the matching company filter on the plan's advance query was not applied in this " +
-                 "branch and needs a decision. Until then the run reports the difference as WARN_SETTLEMENT_RECOVERY_REDUCED.")]
+    [Fact]
     public async Task FinalSettlement_PlansOnlyTheAdvanceOwnedByTheSettlementCompany()
     {
         await using var h = await Fixture.Create();
