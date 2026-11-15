@@ -18,7 +18,8 @@ namespace Zayra.Api.Tests;
 /// The collection path that remains once an advance installment can no longer be marked paid by hand
 /// (<see cref="AdvanceRepaymentControlTests"/>): an advance requested, approved and paid out through the hardened endpoints is
 /// deducted by <c>PayrollController.Process</c>, which retires the balance and stamps the installment it funded. An advance
-/// that is approved but not yet paid out is never collected.
+/// that is approved but not yet paid out is never collected; an Active advance created by the old approve-and-disburse flow
+/// (no payout record) still is.
 /// </summary>
 public class AdvancePayrollDeductionTests
 {
@@ -88,6 +89,38 @@ public class AdvancePayrollDeductionTests
         var rows = await db.AdvanceInstallments.AsNoTracking().Where(x => x.AdvanceId == advanceId).OrderBy(x => x.InstallmentNumber).ToListAsync();
         rows[0].PayrollRunId.Should().Be(runs[1].Id);
         rows.Skip(1).Should().OnlyContain(i => i.Status == "Pending");
+    }
+
+    [Fact]
+    public async Task ALegacyActiveAdvance_FromTheOldApproveAndDisburseFlow_IsStillCollected()
+    {
+        var (db, conn, tenantId, emp, runs) = await SeedAsync(runMonths: 1, maxInstallments: 4);
+        await using var _ = conn; await using var __ = db;
+        // The old flow made an advance Active at approval with no payout record: PaidAtUtc and PaymentReference are null.
+        var legacy = new SalaryAdvance
+        {
+            TenantId = tenantId, CompanyId = emp.CompanyId, EmployeeId = emp.PublicId, EmployeeIntId = emp.Id, EmployeeName = emp.FullName,
+            AdvanceNumber = "ADV-LEGACY-1", RequestedAmount = 1_000m, ApprovedAmount = 1_000m, OutstandingBalance = 1_000m,
+            Installments = 2, InstallmentAmount = 500m, RepaymentType = "Installments", RepaymentStartDate = Today,
+            Status = "Active", CreatedBy = Requester,
+        };
+        db.SalaryAdvances.Add(legacy);
+        db.AdvanceInstallments.AddRange(
+            new AdvanceInstallment { TenantId = tenantId, AdvanceId = legacy.Id, InstallmentNumber = 1, DueDate = Today, AmountDue = 500m, Status = "Pending" },
+            new AdvanceInstallment { TenantId = tenantId, AdvanceId = legacy.Id, InstallmentNumber = 2, DueDate = Today.AddMonths(1), AmountDue = 500m, Status = "Pending" });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        (await Payroll(db, tenantId).Process(runs[0].Id, CancellationToken.None)).Should().BeOfType<OkObjectResult>();
+        db.ChangeTracker.Clear();
+
+        var adv = await db.SalaryAdvances.AsNoTracking().SingleAsync(x => x.Id == legacy.Id);
+        adv.PaidAtUtc.Should().BeNull("a legacy row is not backfilled");
+        adv.Status.Should().Be("Active");
+        adv.TotalRepaid.Should().Be(500m);
+        adv.OutstandingBalance.Should().Be(500m);
+        (await db.AdvanceInstallments.AsNoTracking().SingleAsync(x => x.AdvanceId == legacy.Id && x.InstallmentNumber == 1))
+            .Status.Should().Be("Paid");
     }
 
     // The schedule rounds each installment DOWN to cents and puts the remainder in the LAST row, so the payroll
